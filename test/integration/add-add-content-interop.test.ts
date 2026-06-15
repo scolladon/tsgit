@@ -780,14 +780,16 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const peerResult = peerMergeConflict('side');
-          let oursResult: { kind: string; paths: ReadonlyArray<string> | undefined } | undefined;
+          let oursResult:
+            | { kind: string; untracked: ReadonlyArray<string> | undefined }
+            | undefined;
           try {
             const r = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
-            oursResult = { kind: r.kind, paths: undefined };
+            oursResult = { kind: r.kind, untracked: undefined };
           } catch (err) {
             oursResult = {
               kind: 'would-overwrite',
-              paths: (err as { data?: { paths?: ReadonlyArray<string> } }).data?.paths,
+              untracked: (err as { data?: { untracked?: ReadonlyArray<string> } }).data?.untracked,
             };
           }
 
@@ -796,7 +798,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(peerResult.stderr + peerResult.stdout).toContain('untracked');
           // tsgit: would-overwrite refusal with the blocker path
           expect(oursResult?.kind).toBe('would-overwrite');
-          expect(oursResult?.paths).toContain('f~side');
+          expect(oursResult?.untracked).toContain('f~side');
           // Blocker untouched
           const blocker = await readFile(path.join(pair.ours, 'f~side'), 'utf8');
           expect(blocker).toBe('untracked-blocker\n');
