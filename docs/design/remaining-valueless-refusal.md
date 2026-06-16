@@ -228,3 +228,173 @@ Per the four-lens rule: these are **command-surface refusals**, not a parser/rou
 - **Porcelain read surfaces** (`config --get`/`--list`/`--type=bool`) — already faithful via ADR-314 (C2/C11); explicitly kept non-throwing by placing every guard at command consumers, never in `readConfig`/`findFirstValuelessEntry`.
 - **Writing valueless entries** — git's CLI cannot; not a surface (ADR-314/315 D5).
 - **The byte-exact repo-relative `file '<F>'` token** — caller-side rendering (ADR-249); library emits its absolute resolved path in `source`; interop normalizes.
+
+## Expansion (folded in by user request — E1/E2/E3)
+
+> Three additions the user folded into this in-flight PR, all in the config / command-preamble area. The core slices have already landed (the eager `core` guard `assertNoValuelessCoreConfig` is wired into 37 command files; `branch`/`merge`/`pushUrl` guards shipped). These three build **on top of** that state. None changes the pinned refusal behaviour above — E1 is pure perf, E2 is a behaviour-preserving structural consolidation, E3 fixes a pre-existing *empty-string* divergence orthogonal to the *valueless* refusal.
+>
+> Each addition carries its own ADR-candidate (recorded at the end). New ADRs start at **350** (last accepted is 349).
+
+### E-Context — the as-landed shape these build on
+
+- `assertNoValuelessCoreConfig(ctx)` (`commands/internal/valueless-config-guard.ts`) wraps `assertNoValuelessConfig(ctx, 'core', undefined, ['excludesfile','attributesfile','hookspath'])`. It is called at the **top of 37 command files**, each as the literal pair `await assertRepository(ctx); await assertNoValuelessCoreConfig(ctx);` (67 call sites across multi-entry files: `tag`, `worktree`, `submodule`, `cherry-pick`, `revert`, `rebase`, `stash`). The non-callers are exactly `config.ts`, `init.ts`, `clone.ts` (plus `index.ts`, the barrel).
+- `assertNoValuelessCoreConfig` and `assertNoValuelessInSection` re-read the config **uncached**: each calls `findFirstValuelessEntry`/`findFirstValuelessInSection` → `scanFirstValueless`, which does its own `readRawConfig(ctx, path)` (`fs.readUtf8`) + `tokenizeConfig`. This runs on **every command**, in addition to the cached `readConfig(ctx)` the command's real work performs. That double-read (one cached parse + one uncached tokenize) is the cold-path re-read 24.9l accepted on the *refusal* path — but ADR-348 made it an *every-command* path, so it is now a hot-path cost. That is what E1 removes.
+- `pull` preamble order (as landed), the one combined-asserts call site to preserve: `assertRepository → assertNoValuelessCoreConfig → assertNotBare(ctx,'pull') → assertNoPendingOperation → assertNoValuelessInSection(ctx,'branch',['merge','remote'])`.
+
+---
+
+### E1 — per-Context config TOKEN cache (perf; faithfulness-NEUTRAL)
+
+**Problem.** `scanFirstValueless` re-reads + re-tokenizes `.git/config` on every command (via the eager `core` guard), and again per `pull`/content-merge (the wildcard scans). `readConfig` already tokenizes the same bytes once (`loadConfig → parseConfigText → parseIniSections → tokenizeConfig`) and caches the *parsed* result — but it discards the token stream, and the guards cannot consume the parsed `ParsedConfig` because the merge layer erases `value===null` to absent (ADR-315 D4), losing the very signal the guard needs. So today the guards re-derive the tokens the parser already produced and threw away.
+
+**Goal.** Make `scanFirstValueless` reuse an already-tokenized form, cached + invalidated in lockstep with `readConfig`, with **byte-identical guard results**: same `{ key, source, line }` for every input. The token stream retains `value===null` and `startLine`, so detection and the reported line are preserved exactly — the change is *where the tokens come from*, never *what the scan computes*.
+
+**Constraints (binding).**
+- (a) **Behaviour-identical.** `findFirstValuelessEntry` / `findFirstValuelessInSection` must return the same value for every config input. They keep their exact match/lower-case/verbatim-subsection logic; only their token *source* changes from a fresh `readRawConfig`+`tokenizeConfig` to the cached stream. The `source` path stays `${commonGitDir(ctx)}/config` (the absolute path the tokens were read from), unchanged.
+- (b) **Shared lifetime + invalidation.** The token cache is keyed on the same `Context` identity as `readConfig`'s WeakMap, populated single-flight, and **dropped by the same invalidators**: `invalidateConfigCache(ctx)` (called by config writes) and `__resetConfigCacheForTests()`. A config write must invalidate BOTH parsed and tokens together, or a guard could scan stale tokens after a write fixed/introduced a valueless key. This is the load-bearing correctness property — the token cache must never outlive the parse cache.
+- (c) **Porcelain `config` exemption unaffected.** The exemption is that `config.ts` does not *call the guard* — it is the guard that is omitted, not the cache. Caching tokens does not put a throw anywhere near `readConfig`/`config`; `config` continues to read via `readConfig` (or its own raw reads) and never invokes a finder. No change to C2/C11.
+- The token cache, like `readConfig`, holds `Promise<…>` for single-flight, and on a missing file caches the empty/`undefined` outcome so the guard's "no config → no valueless → return undefined" path is preserved (today `scanFirstValueless` returns `undefined` when `readRawConfig` is `undefined`).
+
+**Recommended cache shape — (a) extend the existing cache value to `{ parsed, tokens }`** (see ADR-candidate E1 for the ≤3 alternatives and the recommendation rationale). Sketch under the recommended shape:
+
+```
+// config-read.ts — one cache, one read, both products
+interface ConfigCacheEntry {
+  readonly parsed: ParsedConfig;
+  readonly tokens: ReadonlyArray<ConfigToken>;   // [] when the file is absent
+  readonly source: string;                       // the absolute config path the tokens came from
+}
+let cache: WeakMap<Context, Promise<ConfigCacheEntry>> = new WeakMap();
+
+// readConfig returns entry.parsed (unchanged public contract / return type).
+// scanFirstValueless takes entry.tokens instead of re-reading+re-tokenizing:
+const scanFirstValueless = async (ctx, section, keys, matchHeader) => {
+  const { tokens, source } = await readConfigEntry(ctx);   // cached, single-flight, shared invalidation
+  // …identical match/lower-case/first-by-line walk over `tokens`, returning the same {key,source,line}…
+};
+```
+
+`loadConfig` becomes "read raw once → tokenize once → assemble parsed from the tokens", so a single `fs.readUtf8` + single `tokenizeConfig` feeds both the parser and the guards. `parseIniSections` already drives off `tokenizeConfig` internally; the entry just *keeps* the token array the parser consumes rather than rebuilding it. `invalidateConfigCache`/`__resetConfigCacheForTests` operate on the one WeakMap unchanged.
+
+**Why faithfulness-neutral.** No observable behaviour (refusal, key, line, exit, on-disk state) changes — the guard computes the identical answer from identical tokens, just sourced from cache. Confirmed by the existing finder + guard unit tests continuing to pass unmodified, plus one new cache-reuse test (below). The empty-string and absent paths are unchanged (the tokens for an empty config are `[]`/the file-absent outcome is cached).
+
+**Test (unit only — pure perf, behaviour-identical):**
+- All existing `findFirstValuelessEntry` / `findFirstValuelessInSection` / `assertNoValuelessCoreConfig` / `assertNoValuelessInSection` tests pass **unchanged** (the behaviour-identity proof).
+- **Cache-reuse test:** with a `Context` whose `fs.readUtf8` is a spy, call `readConfig(ctx)` then `assertNoValuelessCoreConfig(ctx)` (or a finder) on the same `ctx`; assert `fs.readUtf8` for the config path is invoked **once**, not twice (killing a "re-read per guard" regression). Pair it with: after `invalidateConfigCache(ctx)`, the next finder call re-reads (spy count increments) — proving shared invalidation. A finder that runs *before* `readConfig` populates and serves the cache too (single source either way).
+- No interop (no behaviour to pin against git; faithfulness-neutral by construction).
+
+---
+
+### E2 — shared command preamble hosting the eager core guard (architectural; ADR-348 deferred this)
+
+**Problem.** The 37 non-exempt commands each open with the literal pair `await assertRepository(ctx); await assertNoValuelessCoreConfig(ctx);` — 67 duplicated call-site sequences. ADR-348 explicitly deferred consolidating this: "a future refactor MAY hoist it into a shared command preamble, but that preamble does not exist today … is out of this PR's scope" / "Shares the eager-validation shape with ADR-349 … the revised design decides whether they share a helper". The design's Out-of-scope list names "A shared command preamble for `core`" as a follow-up. The user folded that follow-up in.
+
+**Goal.** A single shared preamble helper so each non-exempt command makes **one** call instead of the pair, giving future cross-cutting per-command asserts (the next ADR-348-shaped guard) a single home. Behaviour-preserving: the same two asserts fire, in the same order, on the same command surface.
+
+**Recommended shape — the minimal pair** (`assertRepository` + `assertNoValuelessCoreConfig`), see ADR-candidate E2 for alternatives:
+
+```
+// commands/internal/repo-state.ts (lives next to assertRepository / assertNotBare / assertNoPendingOperation)
+/**
+ * The universal command entry guard: every non-`config`/`init`/`clone` command
+ * opens with this. Asserts a repository exists, then refuses a valueless core
+ * path-like (git's eager git_default_core_config die). Other near-universal
+ * asserts (bare/pending/branch) stay per-command — they are NOT universal.
+ */
+export const assertCommandPreamble = (ctx: Context): Promise<void> =>
+  assertRepository(ctx).then(() => assertNoValuelessCoreConfig(ctx));
+```
+
+Each of the 37 files replaces:
+```
+await assertRepository(ctx);
+await assertNoValuelessCoreConfig(ctx);
+```
+with:
+```
+await assertCommandPreamble(ctx);
+```
+
+**Exact placement, ordering, and routing (pinned):**
+- **Which commands route through it:** the **37 non-exempt** command files currently carrying the pair (every shipped command except `config`, `init`, `clone`). The exempt three keep what they have today: `config` uses **bare `assertRepository`** with NO core guard (porcelain exemption, C2/C11 — it must not gain the core guard via the preamble); `init`/`clone` create the repo and have no pre-existing `.git/config` to validate (they keep their own current entry, neither calls the preamble). The preamble helper itself encodes the core guard, so routing `config` through it would regress C2 — `config` deliberately does NOT call `assertCommandPreamble`.
+- **Ordering inside the preamble is repo→core** (matches `assertRepository` first so a non-repo still yields `NOT_A_REPOSITORY` before the config die — git also errors on no-repo first). The helper sequences them with `.then` (or an `await` pair in an `async` body) to preserve that order deterministically.
+- **Commands with additional asserts keep them AFTER the preamble, in today's order.** The combined order must be preserved exactly. The load-bearing case is `pull`: today `repo → core → bare → pending → branch`. After E2 it becomes:
+  ```
+  await assertCommandPreamble(ctx);                 // repo → core
+  await assertNotBare(ctx, 'pull');                 // bare
+  await assertNoPendingOperation(ctx);              // pending
+  await assertNoValuelessInSection(ctx,'branch',['merge','remote']);  // branch
+  ```
+  identical observable sequence. Other multi-assert commands (`merge`/`abort-merge`/`cherry-pick`/`revert`/`rebase`/`stash` calling `assertNotBare`/`assertNoPendingOperation`) likewise keep their extra asserts immediately after the preamble, unchanged in order. The preamble absorbs **only** the universal repo+core pair; bare/pending/branch are NOT universal (many read commands have none) so they stay per-command — folding them in would fire `assertNotBare` on `log`/`status`, a behaviour change.
+
+**Blast radius (scope the re-touch).** E2 re-touches the **same 37 files the core slices just edited in this PR** — a two-line→one-line swap per entry point (67 sequences). This is mechanical and behaviour-preserving, but it is a large diff landing on freshly-changed files. Mitigation: E2 is one slice family in the plan, sequenced **after** E1 (so the cache lands first and the preamble inherits it), each commit scoped to a command family, with the representative throw tests (already existing per command) re-run to confirm the guard still fires through the preamble. The import swap is `assertNoValuelessCoreConfig` (+ `assertRepository`) → `assertCommandPreamble` from `repo-state.js`; `assertNoValuelessCoreConfig` stays exported (still used directly by the preamble helper and any future caller) — no public-surface change, no barrel change (these are `internal/`).
+
+**Test (unit — behaviour-preserving):**
+- `assertCommandPreamble` unit: on a non-repo `ctx` → throws `NOT_A_REPOSITORY` (and the core guard is never reached — order proof, e.g. via a fixture where both would throw, asserting the repo error wins); on a repo with a valueless `core.excludesFile` → throws `CONFIG_MISSING_VALUE { key:'core.excludesfile' }`; on a clean repo → resolves. These mirror the asserts' own existing tests, now via the single entry.
+- **The 37 routes:** the representative per-command throw tests that already exist (a valueless `core.*` makes `status`/`add`/`commit`/… refuse) **pass unchanged** — they now exercise the throw *through* `assertCommandPreamble`. Confirm `config` still does NOT throw on the same fixture (porcelain exemption intact, the negative-route proof) and `init`/`clone` are unaffected.
+- No interop (no new behaviour; the C5–C9 sweep already pins the surface and is unchanged).
+
+---
+
+### E3 — empty-string `core` path-likes faithfulness fix (a pre-existing divergence; git is the spec — PINNED)
+
+**Problem (pre-existing divergence, NOT introduced by this PR).** A **valued-but-EMPTY** `core.excludesFile = ` / `core.attributesFile = ` / `core.hooksPath = ` is a *valued* state (`value === ''`, not `null`), so the merge layer keeps it (`if (value !== null) acc.core.excludesFile = value` → `''`). It therefore does NOT trigger the valueless refusal (correct — git does not die on empty, see C10 / E3-control below), but tsgit's *consumers* then treat `''` as a literal path:
+- `readGlobalExcludes` (`read-gitignore.ts` L37–44): `raw = ''`; `raw === undefined`? no → `expandUserPath(ctx,'')` returns `''` (not `~`/`~/`) → `loadCappedUtf8(ctx,'',…)` → `lstat('')` → errors (e.g. `PATHSPEC_OUTSIDE_REPO`/path-resolve failure) instead of feature-off.
+- `readGlobal` (`read-gitattributes.ts` L33–39): identical trap on `core.attributesFile`.
+- `resolveHooksDir` (`run-hook.ts` L19–30): `hooksPath=''`; `'' === undefined`? no; `''.startsWith('~/')`? no; `isAbsolutePath('')`? no → returns `` `${workDir}/` `` — the wrong directory (the worktree root), not feature-off. git's empty `hooksPath` fires **no** hook at all (pinned E3c below).
+
+git is the spec: empty = feature-off (same observable result as absent), exit 0. This is a faithfulness bug; the fix makes each consumer treat empty-string as feature-off.
+
+**Pinned git behaviour (git 2.54.0; `env -i`-style: all `GIT_*` scrubbed, isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, signing off; fixtures written directly into `<tmp>/.git/config` in a `mktemp -d` throwaway; the worktree `.git/config` was spot-checked intact afterwards — `remote.origin.url` and the developer's real `core.excludesfile` unchanged).** These rows EXTEND the §"Pinned git behaviour" matrix above (C10 already pinned "empty does not die"; E3a–E3c pin the *feature-off semantics* the fix must reproduce):
+
+| # | Config (in `.git/config`) | Command(s) | git result | exit | Conclusion |
+|---|---|---|---|---|---|
+| **E3a** | `[core]` / `excludesFile = ` (empty, has `=`) | `status --porcelain`, `log -1`, `rev-parse HEAD`, `add -A`, `diff`, `show HEAD` | no die; an untracked `ignoreme.log` shows as `?? ignoreme.log` exactly as with **absent** `excludesFile` | 0 | **empty `excludesFile` == absent: global-ignore feature OFF, no file loaded.** Not resolved as a path. |
+| **E3a-ctrl** | `[core]` / `excludesFile` (valueless, null, no `=`) | `status --porcelain` | `error: missing value for 'core.excludesfile'` / `fatal: bad config variable … at line N` | 128 | control — **valueless (null) dies (the refusal above); empty (`''`) does not.** The E1/E2/E3 boundary. |
+| **E3a-cfg** | `[core]` / `excludesFile = ` (empty) | `config --list`, `config --get core.excludesFile` | both succeed; `--list` prints `core.excludesfile=` (empty value preserved); `--get` prints empty line | 0 | porcelain reads keep the empty value (ADR-314 parity), unaffected by the fix. |
+| **E3b** | `[core]` / `attributesFile = ` (empty) | `status --porcelain`, `add -A`, `checkout .`, `diff` | no die; `checkout .` → `Updated 0 paths` | 0 | **empty `attributesFile`: attributes feature OFF, no file loaded.** Not resolved as a path. |
+| **E3c** | `[core]` / `hooksPath = ` (empty) | `commit` (with an executable `.git/hooks/pre-commit` that `exit 1`s); `add -A`; `status` | commit **SUCCEEDS** — the pre-commit hook does **NOT** fire; `add`/`status` exit 0 | 0 | **empty `hooksPath`: hooks feature OFF — NO hook fires.** Distinct from both *absent* and the default dir (see E3c-dist). |
+| **E3c-dist** | `[core]` / `hooksPath = ` (empty) vs UNSET vs `= .git/hooks` (explicit default), same blocking pre-commit; also empty + a `./pre-commit` in CWD | `commit` | **EMPTY → commit SUCCEEDS (no hook)**; **UNSET → commit BLOCKED (default `.git/hooks` hook FIRES)**; **`.git/hooks` explicit → BLOCKED (fires)**; **EMPTY + `./pre-commit` → SUCCEEDS (CWD hook does NOT fire either)** | 0 / 1 / 1 / 0 | **DECISIVE — empty `hooksPath` is NOT "fall back to default dir" and NOT "resolve to CWD"; it is genuinely "no hooks directory" (no hook fires).** So the `hooksPath` fix differs from `excludesFile`/`attributesFile`: empty `hooksPath` ≠ absent `hooksPath` (absent fires the default-dir hook), so it must NOT map to the default — it must produce a hooks dir that matches nothing. |
+| **E3-all** | `[core]` / all three (`excludesFile`/`attributesFile`/`hooksPath`) empty together | `status`, `add -A`, `ls-files`, `rev-parse --git-dir`, `branch --list`, `cat-file -p HEAD`, `stash list` | every command exits 0 | 0 | feature-off across the board; no command errors on any combination of empty path-likes. |
+
+**The fix (consumer-side, faithful per the matrix).** Empty-string path-likes are treated as feature-off at each consumer — **distinct from the valueless refusal** (which fires null-only and is unchanged): empty is *valued*, so it does NOT refuse; it just must not be a literal path.
+
+- **`readGlobalExcludes` (`read-gitignore.ts`)** — feature-off on empty, identical to absent:
+  ```
+  const raw = config.core?.excludesFile;
+  if (raw === undefined || raw === '') return undefined;   // empty == absent (E3a): global-ignore OFF
+  ```
+  (Cheapest, most local: the `=== ''` short-circuit returns the same `undefined` the absent branch already returns, before `expandUserPath`/`lstat` can mis-resolve `''`.)
+- **`readGlobal` (`read-gitattributes.ts`)** — identical guard on `core.attributesFile` (E3b):
+  ```
+  const raw = (await readConfig(ctx)).core?.attributesFile;
+  if (raw === undefined || raw === '') return undefined;   // empty == absent (E3b): attributes OFF
+  ```
+- **`resolveHooksDir` (`run-hook.ts`)** — empty `hooksPath` is feature-off, and per E3c-dist it is **NOT** the default dir. Reproduce "no hook fires" by resolving to a directory that matches nothing — git's empty `core.hooksPath` yields a hooks path under which `find_hook` never finds an executable. Faithful target: an empty `hooksPath` must make `runHook` find no hook (the same observable as E3c: commit succeeds, no hook fires). Concretely, treat `hooksPath === ''` as a sentinel that resolves to a hooks dir guaranteed to contain no hook scripts (NOT the `${gitDir}/hooks` default, which would re-enable hooks — the UNSET behaviour E3c-dist proves is different). The exact sentinel (e.g. resolve to `''` and have the runner treat an empty hooks dir as "no runner match", or resolve to a path that cannot hold hooks) is an implementation detail the plan pins against the E3c interop; the design constraint is: **empty `hooksPath` ⇒ no hook fires, and it must NOT collapse to the default dir.** This is the one path-like whose empty-handling is not simply "== absent", because for `hooksPath` absent ≠ off.
+
+**Why no `ParsedConfig` change.** The parser already keeps the empty string (`''` is valued; only `null` is dropped). The fix is purely at the three consumers; no type, no merge-layer, no error-code change. The valueless refusal (null) is untouched — E3a-ctrl confirms null still dies, E3a confirms empty does not.
+
+**ADR? — confirmed NO new ADR for E3.** It is a faithfulness bug fix where git is the unambiguous spec (the prime directive, ADR-226/249, already binds it): match git's observable empty=feature-off, exit 0. There is no design *choice* to record (no alternatives to weigh — git's behaviour is the only faithful answer), only a matrix + a three-consumer fix. The matrix rows E3a–E3-all are the pin; the interop tests are the enforcement. (Contrast E1/E2, which embody genuine architectural choices → each gets an ADR.)
+
+**Test (unit + interop — faithfulness-bearing):**
+- **Unit** — three isolated consumer tests:
+  - `readGlobalExcludes` with `core.excludesFile = ''` → returns `undefined` (no `lstat('')`, no throw); regression: absent → `undefined` (unchanged); a real valued path still loads.
+  - `readGlobal` (attributes) with `core.attributesFile = ''` → `buildAttributeProvider` yields no global source, no throw; valued path still loads.
+  - `resolveHooksDir('', layout)` → does NOT return `` `${workDir}/` `` and does NOT return the `${gitDir}/hooks` default; `runHook` with empty `hooksPath` fires no hook (drive via a hook-runner stub asserting it is never matched / never invoked, matching E3c). Pair with: `resolveHooksDir(undefined, layout)` → default dir (UNSET unchanged, E3c-dist control); a valued `hooksPath` → resolves as today.
+- **Interop (`test/integration/missing-value-refusal-interop.test.ts`, extend — these are the *empty-string* distinctness pins; the file already houses the valueless interop):**
+  - `core.excludesFile = ` (empty) → real `git status` exits 0 with an untracked file shown AND tsgit `status` exits 0 / does not raise, the global-ignore feature off in both (E3a).
+  - `core.attributesFile = ` (empty) → real `git status`/`checkout .` exit 0 AND tsgit does not raise (E3b).
+  - `core.hooksPath = ` (empty) with a blocking pre-commit hook present → real `git commit` succeeds (hook does not fire) AND tsgit `commit` succeeds (hook does not fire) — the decisive E3c/E3c-dist parity (and the control: UNSET `hooksPath` → the hook fires in both).
+  - Distinctness control alongside the existing C10 row: empty `core.excludesFile` exits 0 in both, while **valueless** `core.excludesFile` dies 128 in both (E3a-ctrl) — documenting empty-vs-valueless as the same boundary git draws.
+
+---
+
+### Expansion decisions — open ADR candidates (user decides; designer never decides these)
+
+The three additions surface **three** load-bearing choices. E3 is confirmed to need **no** ADR (faithfulness bug fix, git is the spec); E1 and E2 each carry one cache/preamble-shape choice. New ADRs start at **350**.
+
+| Item | Choice | Candidates (≤3) | Recommendation |
+|---|---|---|---|
+| **E1 — token-cache shape** | How the already-tokenized config is cached so the guards reuse it, sharing lifetime + invalidation with `readConfig`. | **(a)** Extend the existing `readConfig` cache value to `{ parsed, tokens, source }` — one WeakMap, one read, both products; `readConfig` returns `.parsed`, finders consume `.tokens`. **(b)** A second parallel WeakMap keyed on the same `Context` holding `Promise<tokens>`, populated alongside the parsed cache, invalidated in the same `invalidateConfigCache`/`__resetConfigCacheForTests`. **(c)** Cache a derived `valuelessEntries` list (pre-scanned candidates) instead of raw tokens. | **(a)** — single source of truth, single read, single invalidation point (one WeakMap to clear ⇒ no risk of parsed/tokens drifting out of sync, the constraint-(b) correctness property); `loadConfig` already tokenizes once, so the entry just keeps the array `parseIniSections` consumes. (b) duplicates the lifetime-coupling surface (two maps to invalidate atomically — a latent staleness bug); (c) over-specializes the cache to today's guards (each new key-set needs a re-scan or a wider cached list) and bakes guard logic into the read primitive, closer to the porcelain `config` path the design keeps guard-free. |
+| **E2 — preamble shape** | What the shared command-entry helper absorbs. | **(a, minimal pair)** `assertCommandPreamble = assertRepository + assertNoValuelessCoreConfig` only — bare/pending/branch stay per-command. **(b, richer)** also fold in the *near*-universal asserts (`assertNotBare` and/or `assertNoPendingOperation`) behind options/flags. **(c)** keep per-command pairs (no helper) — i.e. decline E2. | **(a, the minimal pair)** — repo+core is the only **truly universal** preamble (every non-exempt command has exactly these two, in this order); bare/pending/branch are NOT universal (read commands have none), so folding them in would either fire them where git doesn't (a behaviour change — `assertNotBare` on `log`) or require per-call flags that re-introduce the duplication E2 removes. (b) couples unrelated asserts and risks ordering regressions; (c) leaves the 67-sequence duplication ADR-348 explicitly flagged for consolidation. The minimal pair gives the single home for future ADR-348-shaped per-command guards without changing any observable order. |
+| **E3 — needs an ADR?** | Whether the empty-string path-like fix warrants an ADR. | **(a)** No ADR — faithfulness bug fix, git is the spec (matrix E3a–E3-all + interop are the record). **(b)** One ADR documenting the empty=feature-off decision and the `hooksPath`-is-special nuance. | **(a) No ADR** — there is no design *choice* (git's empty=feature-off is the only faithful answer; ADR-226/249 already bind it); the matrix + interop pin and enforce it. The one subtlety worth surfacing — empty `hooksPath` ≠ absent (E3c-dist) — is captured in this design section and the E3c interop, not a separable decision. |
