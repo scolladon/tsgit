@@ -1197,13 +1197,13 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
     });
 
     describe('When tsgit status is run', () => {
-      it('Then it does not raise CONFIG_MISSING_VALUE (empty is valued, not valueless)', async () => {
+      it('Then it succeeds without raising (empty excludesFile is feature-off, parity with git exit 0)', async () => {
         // Arrange
         initRepo(ours);
         await writeFile(path.join(ours, '.git', 'config'), EMPTY_CORE_EXCLUDES_FIXTURE);
         const repo = await openRepository({ cwd: ours });
 
-        // Act — capture whatever status does; the valueless guard must not fire
+        // Act
         let caught: unknown;
         try {
           await repo.status();
@@ -1211,10 +1211,54 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
           caught = err;
         }
 
-        // Assert — an empty-string path-like never trips the null-only refusal
-        const code =
-          caught instanceof TsgitError ? (caught.data as { code?: string }).code : undefined;
-        expect(code).not.toBe('CONFIG_MISSING_VALUE');
+        // Assert — an empty-string path-like resolves feature-off (never a literal path),
+        // so status succeeds exactly as git does (exit 0) — not merely "not CONFIG_MISSING_VALUE".
+        expect(caught).toBeUndefined();
+      });
+    });
+  });
+
+  /**
+   * An empty-string (valued) `core.attributesFile = ` — like excludesFile, git
+   * treats empty as feature-off (exit 0), only a valueless (null) key dies. tsgit
+   * must resolve the empty path-like to "no global attributes" and not raise (E3b).
+   * Line 3: \tattributesFile =   <- empty string (valued)
+   */
+  const EMPTY_CORE_ATTRIBUTES_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n\tattributesFile = \n';
+
+  describe('Given a config with an empty-string core.attributesFile', () => {
+    describe('When git status is run', () => {
+      it('Then git succeeds with exit 0 (empty is feature-off, not valueless)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), EMPTY_CORE_ATTRIBUTES_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(true);
+      });
+    });
+
+    describe('When tsgit status is run', () => {
+      it('Then it succeeds without raising (empty attributesFile is feature-off, parity with git exit 0)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), EMPTY_CORE_ATTRIBUTES_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.status();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — empty attributesFile resolves feature-off, no throw (parity with git exit 0)
+        expect(caught).toBeUndefined();
       });
     });
   });
