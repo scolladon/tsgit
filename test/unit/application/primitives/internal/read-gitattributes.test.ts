@@ -123,6 +123,27 @@ describe('buildAttributeProvider', () => {
     });
   });
 
+  describe('Given core.attributesFile = "" (empty string)', () => {
+    describe('When resolving', () => {
+      it("Then there is no global source ('unspecified') and the empty value is never resolved as a path", async () => {
+        // Arrange — a valued-but-empty attributesFile must be feature-off, identical
+        // to absent: the empty value must NEVER reach the path loader (which would
+        // lstat('') — an ENOENT throw on a real filesystem). Spying on lstat proves
+        // the short-circuit fires before resolution.
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = \n');
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const sut = await merge(ctx, 'a.txt');
+
+        // Assert — feature-off, and the empty value was never handed to lstat.
+        expect(sut).toBe('unspecified');
+        expect(lstat).not.toHaveBeenCalledWith('');
+      });
+    });
+  });
+
   describe('Given core.attributesFile starting with `~/` and homeDir set', () => {
     describe('When resolving', () => {
       it('Then it resolves under the home directory', async () => {

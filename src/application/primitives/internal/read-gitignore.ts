@@ -29,7 +29,8 @@ export const readInfoExclude = async (ctx: Context): Promise<IgnoreRuleset | und
 /**
  * Load the global excludes file pointed at by `core.excludesFile` in
  * the repo's config. Returns `undefined` when:
- * - the config key is unset,
+ * - the config key is unset or set to the empty string (feature-off,
+ *  matching git — an empty path-like is never resolved as a path),
  * - the path starts with `~/` but `ctx.layout.homeDir` is undefined
  *  (silent miss),
  * - or the file does not exist.
@@ -37,7 +38,7 @@ export const readInfoExclude = async (ctx: Context): Promise<IgnoreRuleset | und
 export const readGlobalExcludes = async (ctx: Context): Promise<IgnoreRuleset | undefined> => {
   const config = await readConfig(ctx);
   const raw = config.core?.excludesFile;
-  if (raw === undefined) return undefined;
+  if (raw === undefined || raw === '') return undefined;
   const resolved = expandUserPath(ctx, raw);
   if (resolved === undefined) return undefined;
   return loadAndParse(ctx, resolved);

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   readGitignore,
@@ -160,6 +160,28 @@ describe('readGlobalExcludes', () => {
 
         // Assert
         expect(await readGlobalExcludes(ctx)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given core.excludesFile = "" (empty string)', () => {
+    describe('When read', () => {
+      it('Then returns undefined without resolving the empty value as a path', async () => {
+        // Arrange — a valued-but-empty excludesFile must be feature-off, identical to
+        // absent: the empty value must NEVER reach the path loader (which would
+        // lstat('') — an ENOENT throw on a real filesystem). Spying on lstat proves
+        // the short-circuit fires before resolution, distinguishing the empty case
+        // from the absent case at the production boundary.
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  excludesFile = \n');
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const sut = await readGlobalExcludes(ctx);
+
+        // Assert — feature-off, and the empty value was never handed to lstat.
+        expect(sut).toBeUndefined();
+        expect(lstat).not.toHaveBeenCalledWith('');
       });
     });
   });

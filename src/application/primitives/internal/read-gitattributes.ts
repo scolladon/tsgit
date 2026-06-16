@@ -30,9 +30,14 @@ const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | u
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
   loadAndParse(ctx, `${commonGitDir(ctx)}/info/attributes`);
 
+/**
+ * Load the global attributes file pointed at by `core.attributesFile`.
+ * An unset or empty-string value is feature-off (matching git — an empty
+ * path-like is never resolved as a path), so the global source is absent.
+ */
 const readGlobal = async (ctx: Context): Promise<ParsedAttributes | undefined> => {
   const raw = (await readConfig(ctx)).core?.attributesFile;
-  if (raw === undefined) return undefined;
+  if (raw === undefined || raw === '') return undefined;
   const resolved = expandUserPath(ctx, raw);
   if (resolved === undefined) return undefined;
   return loadAndParse(ctx, resolved);
