@@ -10,7 +10,7 @@
  *   unique:         valueless identity refusal two-line reconstruction + absent-case distinctness
  *   interopSurface: config
  */
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -2682,6 +2682,104 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(caught).toBeUndefined();
+        });
+      });
+    });
+  },
+);
+
+const EMPTY_HOOKSPATH_FIXTURE = '[core]\n\thooksPath = \n';
+const BLOCKING_PRE_COMMIT = '#!/bin/sh\nexit 1\n';
+
+const installBlockingPreCommit = async (repoDir: string): Promise<void> => {
+  const hookPath = path.join(repoDir, '.git', 'hooks', 'pre-commit');
+  await writeFile(hookPath, BLOCKING_PRE_COMMIT);
+  await chmod(hookPath, 0o755);
+};
+
+// The pre-commit hook must be executable, which only the POSIX bit conveys —
+// skip on Windows where the hook would never be treated as runnable anyway.
+describe.skipIf(process.platform === 'win32' || !GIT_AVAILABLE)(
+  'missing-value-refusal interop — empty core.hooksPath is a no-hooks sentinel',
+  () => {
+    let ours: string;
+
+    beforeEach(async () => {
+      ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-empty-hooks-')));
+      runGit(['init', '-q', '-b', 'main', ours]);
+      await writeFile(path.join(ours, 'r.txt'), 'root\n');
+      runGit(['-C', ours, 'add', 'r.txt']);
+      runGit(['-C', ours, 'commit', '-q', '-m', 'root'], { env: CORE_AUTHOR_ENV });
+      await installBlockingPreCommit(ours);
+    });
+
+    afterEach(async () => {
+      await rm(ours, { recursive: true, force: true });
+    });
+
+    describe('Given an empty core.hooksPath and a blocking default-dir pre-commit (E3c)', () => {
+      describe('When git commit and tsgit commit run', () => {
+        it('Then git commit succeeds because the hook does not fire', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), EMPTY_HOOKSPATH_FIXTURE);
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: CORE_AUTHOR_ENV });
+
+          // Assert — empty hooksPath is feature-off: the blocking hook never runs
+          expect(g.ok).toBe(true);
+        });
+
+        it('Then tsgit commit succeeds because the hook does not fire', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), EMPTY_HOOKSPATH_FIXTURE);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act — the node hook runner is wired, so a real hook would fire if found
+          const result = await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+
+          // Assert — a commit object is produced; the sentinel dir holds no hook
+          expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+        });
+      });
+    });
+
+    describe('Given an UNSET core.hooksPath and the same blocking pre-commit (E3c-dist)', () => {
+      describe('When git commit and tsgit commit run', () => {
+        it('Then git commit is blocked because the default-dir hook fires', () => {
+          // Arrange — config left as git init wrote it (no [core] hooksPath line):
+          // absent fires the default .git/hooks dir
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x', '--allow-empty'], {
+            env: CORE_AUTHOR_ENV,
+          });
+
+          // Assert — absent ≠ empty: the blocking default-dir hook fires
+          expect(g.ok).toBe(false);
+        });
+
+        it('Then tsgit commit throws HOOK_FAILED because the default-dir hook fires', async () => {
+          // Arrange — no hooksPath written: absent fires the default .git/hooks dir
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — absent ≠ empty: the default-dir hook fires and blocks
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('HOOK_FAILED');
         });
       });
     });

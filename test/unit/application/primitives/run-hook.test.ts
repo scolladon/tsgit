@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import {
+  NO_HOOKS_SUBDIR,
   resolveHooksDir,
   runHook,
   runInformationalHook,
@@ -95,6 +96,34 @@ describe('primitives/run-hook resolveHooksDir', () => {
         // Arrange + Assert
         // The drive-letter form is absolute only when it anchors the start.
         expect(resolveHooksDir('hooks/c:/sub', layout())).toBe('/repo/hooks/c:/sub');
+      });
+    });
+  });
+
+  describe('Given an empty hooksPath', () => {
+    describe('When resolveHooksDir', () => {
+      it('Then it does NOT resolve to the default <gitDir>/hooks', () => {
+        // Arrange
+        const sut = resolveHooksDir('', layout());
+
+        // Assert — absent fires the default dir; empty must not collapse to it
+        expect(sut).not.toBe(`${layout().gitDir}/hooks`);
+      });
+
+      it('Then it does NOT resolve to the worktree root', () => {
+        // Arrange
+        const sut = resolveHooksDir('', layout());
+
+        // Assert — empty must not resolve against the CWD / worktree root
+        expect(sut).not.toBe(`${layout().workDir}/`);
+      });
+
+      it('Then it resolves to the no-hooks sentinel directory under gitDir', () => {
+        // Arrange
+        const sut = resolveHooksDir('', layout());
+
+        // Assert — a reserved dir guaranteed to hold no hook script
+        expect(sut).toBe(`${layout().gitDir}/${NO_HOOKS_SUBDIR}`);
       });
     });
   });
@@ -346,6 +375,54 @@ describe('primitives/run-hook runHook', () => {
         await runHook(ctx, 'pre-commit');
 
         // Assert
+        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/hooks`);
+      });
+    });
+  });
+
+  describe('Given an empty core.hooksPath', () => {
+    describe('When runHook resolves the hooks dir', () => {
+      it('Then the request hooksDir is the sentinel, not the default dir', async () => {
+        // Arrange — an unmapped runner skips, mirroring a real hook lookup miss
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath = \n');
+
+        // Act
+        await runHook(ctx, 'pre-commit');
+
+        // Assert — sentinel resolves so a real runner finds no hook to fire
+        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/${NO_HOOKS_SUBDIR}`);
+        expect(runner.calls[0]?.hooksDir).not.toBe(`${ctx.layout.gitDir}/hooks`);
+      });
+    });
+  });
+
+  describe('Given an absent core.hooksPath and a blocking pre-commit', () => {
+    describe('When runHook resolves the hooks dir', () => {
+      it('Then absent fires the default-dir hook and throws HOOK_FAILED', async () => {
+        // Arrange — the E3c-dist control: absent ≠ empty (absent fires the default)
+        const runner = new MemoryHookRunner({
+          'pre-commit': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'blocked' },
+        });
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        let caught: unknown;
+        try {
+          await runHook(ctx, 'pre-commit');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — absent resolved to the default dir, so the hook fired
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'pre-commit',
+          exitCode: 1,
+          stderr: 'blocked',
+        });
         expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/hooks`);
       });
     });
