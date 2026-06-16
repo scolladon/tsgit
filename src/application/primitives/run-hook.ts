@@ -3,6 +3,7 @@ import type { HookName } from '../../domain/hooks/index.js';
 import type { Context, RepositoryLayout } from '../../ports/context.js';
 import type { HookRequest, HookResult } from '../../ports/hook-runner.js';
 import { readConfig } from './config-read.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 const HOOKS_SUBDIR = 'hooks';
 
@@ -40,7 +41,9 @@ export interface HookInput {
  * invoke the runner. Returns `undefined` when no runner is wired (browser, or
  * opted out); otherwise the raw `HookResult`. The shared chokepoint both the
  * blocking (`runHook`) and informational (`runInformationalHook`) entry points
- * layer exit-code policy on top of.
+ * layer exit-code policy on top of. Refuses a present-but-valueless
+ * `core.hooksPath` at the point the hooks dir is resolved (mirroring git's
+ * `find_hook` death), before any hook file is looked up.
  */
 const invokeHook = async (
   ctx: Context,
@@ -49,6 +52,7 @@ const invokeHook = async (
 ): Promise<HookResult | undefined> => {
   const runner = ctx.hooks;
   if (runner === undefined) return undefined;
+  await assertNoValuelessConfig(ctx, 'core', undefined, ['hookspath']);
   const config = await readConfig(ctx);
   const request: HookRequest = {
     name,

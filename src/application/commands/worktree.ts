@@ -45,7 +45,7 @@ import { readTree } from '../primitives/read-tree.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { branchCreate } from './branch.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 import { status } from './status.js';
 
@@ -63,7 +63,7 @@ export interface WorktreeListResult {
  * first, then each linked worktree sorted by path.
  */
 export const worktreeList = async (ctx: Context): Promise<WorktreeListResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   return { entries: await listWorktrees(ctx) };
 };
 
@@ -205,7 +205,7 @@ export const worktreeAdd = async (
   ctx: Context,
   opts: WorktreeAddOptions,
 ): Promise<WorktreeAddResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   if (opts.path === '') throw worktreePathExists('');
   const worktreePath = resolveWorktreePath(ctx.cwd, opts.path) as FilePath;
   // Defence in depth: the admin id is the path basename, joined onto
@@ -294,7 +294,7 @@ export const worktreeMove = async (
   to: string,
   opts: WorktreeMoveOptions = {},
 ): Promise<WorktreeMoveResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const fromPath = resolveWorktreePath(ctx.cwd, from) as FilePath;
   const toPath = resolveWorktreePath(ctx.cwd, to) as FilePath;
   const entry = await resolveLinked(ctx, fromPath, 'move');
@@ -327,7 +327,7 @@ export const worktreeRemove = async (
   path: string,
   opts: WorktreeRemoveOptions = {},
 ): Promise<WorktreeRemoveResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const worktreePath = resolveWorktreePath(ctx.cwd, path) as FilePath;
   const entry = await resolveLinked(ctx, worktreePath, 'remove');
   assertUnlocked(entry, opts.force === true);

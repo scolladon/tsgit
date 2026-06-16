@@ -30,7 +30,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -404,7 +404,7 @@ const runNoCommit = async (ctx: Context, todo: ReadonlyArray<ObjectId>): Promise
 };
 
 export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<RevertResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'revert');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -483,7 +483,7 @@ const finaliseInProgressRevert = async (
  * or the index is unmerged; a resolution that yields no change re-stops empty.
  */
 export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'revert --continue');
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -529,7 +529,7 @@ export interface RevertAbortResult {
  * state), then resume the remaining sequencer reverts (if any).
  */
 export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'revert --skip');
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -555,7 +555,7 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
  * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
  */
 export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'revert --abort');
   const source = await readRevertHead(ctx);
   const seqHead = await readSequencerHead(ctx);

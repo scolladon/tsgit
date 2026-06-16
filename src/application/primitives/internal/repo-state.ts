@@ -7,6 +7,7 @@ import { refNotFound } from '../../../domain/refs/error.js';
 import { parseLooseRef } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
+import { assertNoValuelessConfig } from './valueless-config-guard.js';
 
 const HEAD_REF = RefName.from('HEAD');
 
@@ -27,6 +28,30 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   }
   const root = ctx.layout.bare ? ctx.layout.gitDir : ctx.layout.workDir;
   return root as FilePath;
+};
+
+/**
+ * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) is
+ * present-but-valueless, mirroring git's eager `git_default_config` validation
+ * which dies on the whole operational surface — including config-free
+ * ref-listing — before the command does its work. `hookspath` is NOT in this
+ * broad pair: it dies on a narrower surface (work-doing commands only). No-op
+ * for a valued or absent `[core]` section.
+ */
+export const assertNoValuelessCorePaths = async (ctx: Context): Promise<void> => {
+  await assertNoValuelessConfig(ctx, 'core', undefined, ['excludesfile', 'attributesfile']);
+};
+
+/**
+ * The operational entry point: confirm a real repository (HEAD exists) AND that
+ * no `[core]` path-like is valueless, then return the repo root. Operational
+ * commands take this; the config porcelain stays on the bare `assertRepository`
+ * so it survives a valueless `[core]` path-like (git's split).
+ */
+export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
+  const root = await assertRepository(ctx);
+  await assertNoValuelessCorePaths(ctx);
+  return root;
 };
 
 /** Read `core.bare` from `.git/config`. Defaults to false when missing. */

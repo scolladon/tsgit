@@ -27,7 +27,7 @@ import { hashBlob } from '../primitives/hash-blob.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   type HeadState,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
@@ -186,7 +186,7 @@ export const stashPush = async (
   ctx: Context,
   opts: StashPushInput = {},
 ): Promise<StashPushResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'stash');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -274,7 +274,7 @@ export interface StashListResult {
 
 /** List the stash stack, newest-first (`stash@{0}` first). */
 export const stashList = async (ctx: Context): Promise<StashListResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   return { entries: await readStashStack(ctx) };
 };
 
@@ -287,7 +287,7 @@ export const stashDrop = async (
   ctx: Context,
   input: StashDropInput = {},
 ): Promise<StashDropResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'stash drop');
   return dropStashEntry(ctx, input.index ?? 0);
 };
@@ -412,7 +412,7 @@ export const stashApply = async (
   ctx: Context,
   input: StashApplyInput = {},
 ): Promise<StashApplyResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'stash apply');
   await assertNoPendingOperation(ctx);
   const w = await resolveStashEntry(ctx, input.index ?? 0);

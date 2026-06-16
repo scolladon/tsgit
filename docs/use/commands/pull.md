@@ -78,6 +78,9 @@ await repo.pull({ remote: 'upstream', ref: 'main' });
 
 - `NO_UPSTREAM_CONFIGURED` — no `branch` argument and no `branch.<current>.merge`
   (or a detached HEAD).
+- `CONFIG_MISSING_VALUE` — `branch.<current>.remote` or `branch.<current>.merge` is
+  present but valueless (git NULL); carries `{ key, source, line }`. Distinct from
+  the absent case (`NO_UPSTREAM_CONFIGURED`).
 - `REMOTE_NOT_CONFIGURED` — the resolved remote has no configured URL.
 - `REF_NOT_FOUND` — the remote does not advertise the requested branch.
 - `BARE_REPOSITORY` / `OPERATION_IN_PROGRESS` — refused before the fetch.

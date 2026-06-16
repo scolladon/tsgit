@@ -29,7 +29,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -416,7 +416,7 @@ export const cherryPickRun = async (
   ctx: Context,
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'cherry-pick');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -517,7 +517,7 @@ export const cherryPickContinue = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'cherry-pick --continue');
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -567,7 +567,7 @@ export const cherryPickSkip = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'cherry-pick --skip');
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -598,7 +598,7 @@ export const cherryPickSkip = async (
  * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
  */
 export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'cherry-pick --abort');
   const source = await readCherryPickHead(ctx);
   const seqHead = await readSequencerHead(ctx);

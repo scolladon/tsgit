@@ -312,3 +312,432 @@ describe('Given a submodule whose branch diverges from the pinned commit', () =>
     });
   });
 });
+
+/**
+ * Seed a superproject pinning submodule `lib` (`.gitmodules` on disk, gitlink in
+ * the index, HEAD on `main`) whose `.git/config` is the verbatim `configText` —
+ * so a present-but-valueless `submodule.lib.url` can be expressed (git's CLI /
+ * `updateConfigOperations` cannot emit a valueless entry, file-write is
+ * mandatory). The pin is the remote's `main` commit so a checkout-mode update has
+ * a real source.
+ */
+const seedSuperWithConfigText = async (configText: string): Promise<Context> => {
+  const base = await buildSeededContext();
+  const remote = await buildSubmoduleRemote(base, {
+    branches: [{ name: 'main', file: 'lib.txt', content: 'lib v1\n' }],
+    head: 'main',
+  });
+  const pinned = remote.commits.get('main') as ObjectId;
+  const blob = (await writeObject(base, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: ENCODER.encode('root\n'),
+  })) as ObjectId;
+  const tree = await writeTree(base, [
+    { name: 'README' as FilePath, id: blob, mode: FILE_MODE.REGULAR },
+  ]);
+  const commit = (await writeObject(base, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents: [],
+      author: IDENTITY,
+      committer: IDENTITY,
+      message: 'init',
+      extraHeaders: [],
+    },
+  })) as ObjectId;
+  await base.fs.writeUtf8(`${base.layout.gitDir}/refs/heads/main`, `${commit}\n`);
+  await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  await base.fs.writeUtf8(
+    `${base.layout.workDir}/.gitmodules`,
+    `[submodule "lib"]\n\tpath = lib\n\turl = ${SUB_URL}\n`,
+  );
+  const lock = await acquireIndexLock(base);
+  await lock.commit([
+    entry('README', blob, FILE_MODE.REGULAR),
+    entry('lib', pinned, FILE_MODE.GITLINK),
+  ]);
+  await base.fs.writeUtf8(`${base.layout.gitDir}/config`, configText);
+  return withTransport(base, remote.transport);
+};
+
+/**
+ * Controls line numbers: the valueless `url` lands at line 4.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [submodule "lib"]
+ * Line 4: \turl           <- valueless
+ */
+const VALUELESS_URL_CONFIG = '[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl\n';
+const VALUELESS_URL_LINE = 4;
+
+/** Same shape but a valued url — the guard must no-op. */
+const VALUED_URL_CONFIG = `[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl = ${SUB_URL}\n`;
+
+/** `[submodule "lib"]` present but no url line — the absent case. */
+const ABSENT_URL_CONFIG = '[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n';
+
+describe('Given a superproject whose submodule.lib.url is present-but-valueless', () => {
+  describe('When submoduleUpdate reaches the url-undefined branch', () => {
+    it('Then it refuses with CONFIG_MISSING_VALUE naming submodule.lib.url at its line', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(VALUELESS_URL_CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        key: string;
+        line: number;
+        source: string;
+      };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('submodule.lib.url');
+      expect(data.line).toBe(VALUELESS_URL_LINE);
+      expect(data.source).toMatch(/\/config$/);
+    });
+  });
+});
+
+describe('Given a superproject whose submodule.lib.url is valued', () => {
+  describe('When submoduleUpdate runs', () => {
+    it('Then the url guard no-ops and the pin is checked out', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(VALUED_URL_CONFIG);
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert — no CONFIG_MISSING_VALUE; the valued url resolved to a clone
+      expect(result.entries[0]).toMatchObject({ cloned: true, changed: true, mode: 'checkout' });
+    });
+  });
+});
+
+describe('Given a superproject with [submodule "lib"] but no url (absent)', () => {
+  describe('When submoduleUpdate runs without init', () => {
+    it('Then the guard no-ops and the unregistered submodule is skipped', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(ABSENT_URL_CONFIG);
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert — absent url skips the row, no death
+      expect(result.entries).toHaveLength(0);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
+    });
+  });
+});
+
+/**
+ * Seed a superproject pinning submodule `lib` (gitlink at the remote's `main`
+ * commit) with an independently-controlled `.gitmodules` update mode and config
+ * update mode. The pin matches the remote tip, so a `checkout`-mode update clones
+ * and detaches (`changed: true`), while a `none`-mode update skips
+ * (`changed: false, cloned: false`) — the observable difference that proves which
+ * mode won the precedence chain. `gitmodulesMode`/`configMode` of `undefined`
+ * omit the respective `update` line.
+ */
+const seedSuperWithModes = async (opts: {
+  readonly gitmodulesMode?: string;
+  readonly configMode?: string;
+}): Promise<Context> => {
+  const base = await buildSeededContext();
+  const remote = await buildSubmoduleRemote(base, {
+    branches: [{ name: 'main', file: 'lib.txt', content: 'lib v1\n' }],
+    head: 'main',
+  });
+  const pinned = remote.commits.get('main') as ObjectId;
+  const blob = (await writeObject(base, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: ENCODER.encode('root\n'),
+  })) as ObjectId;
+  const tree = await writeTree(base, [
+    { name: 'README' as FilePath, id: blob, mode: FILE_MODE.REGULAR },
+  ]);
+  const commit = (await writeObject(base, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents: [],
+      author: IDENTITY,
+      committer: IDENTITY,
+      message: 'init',
+      extraHeaders: [],
+    },
+  })) as ObjectId;
+  await base.fs.writeUtf8(`${base.layout.gitDir}/refs/heads/main`, `${commit}\n`);
+  await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const gmUpdate = opts.gitmodulesMode !== undefined ? `\tupdate = ${opts.gitmodulesMode}\n` : '';
+  await base.fs.writeUtf8(
+    `${base.layout.workDir}/.gitmodules`,
+    `[submodule "lib"]\n\tpath = lib\n\turl = ${SUB_URL}\n${gmUpdate}`,
+  );
+  const lock = await acquireIndexLock(base);
+  await lock.commit([
+    entry('README', blob, FILE_MODE.REGULAR),
+    entry('lib', pinned, FILE_MODE.GITLINK),
+  ]);
+  const cfgUpdate = opts.configMode !== undefined ? `\tupdate = ${opts.configMode}\n` : '';
+  await base.fs.writeUtf8(
+    `${base.layout.gitDir}/config`,
+    `[submodule "lib"]\n\turl = ${SUB_URL}\n${cfgUpdate}`,
+  );
+  return withTransport(base, remote.transport);
+};
+
+describe('Given a superproject whose submodule update mode is sourced from config', () => {
+  describe('When config update=checkout overrides .gitmodules update=none', () => {
+    it('Then the update is performed in checkout mode (config wins over .gitmodules)', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ gitmodulesMode: 'none', configMode: 'checkout' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true, cloned: true });
+    });
+  });
+
+  describe('When config update=none overrides .gitmodules update=checkout', () => {
+    it('Then the update is a no-op in none mode (config suppresses the .gitmodules mode)', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ gitmodulesMode: 'checkout', configMode: 'none' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false, cloned: false });
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
+    });
+  });
+
+  describe('When opts.mode overrides a config update mode', () => {
+    it('Then the CLI mode wins over config update=none and checks out the pin', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ configMode: 'none' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'], mode: 'checkout' });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true, cloned: true });
+    });
+  });
+
+  describe('When only config sets the update mode (.gitmodules unset)', () => {
+    it('Then the config mode is applied', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ configMode: 'none' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false, cloned: false });
+    });
+  });
+
+  describe('When only .gitmodules sets the update mode (config unset)', () => {
+    it('Then the .gitmodules mode is applied', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ gitmodulesMode: 'none' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false, cloned: false });
+    });
+  });
+
+  describe('When neither config nor .gitmodules sets the update mode', () => {
+    it('Then the checkout default is applied', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({});
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true, cloned: true });
+    });
+  });
+
+  describe('When the config update mode is an unrecognised value', () => {
+    it('Then it refuses with INVALID_OPTION naming submodule.lib.update', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ configMode: 'bogus' });
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        option: string;
+        reason: string;
+      };
+      expect(data.code).toBe('INVALID_OPTION');
+      expect(data.option).toBe('submodule.lib.update');
+      expect(data.reason).toContain("invalid value 'bogus'");
+    });
+  });
+
+  describe('When opts.mode shadows an unrecognised config update mode', () => {
+    it('Then the CLI mode wins and the config value is never validated', async () => {
+      // Arrange
+      const ctx = await seedSuperWithModes({ configMode: 'bogus' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'], mode: 'checkout' });
+
+      // Assert — git does not validate a config value a CLI mode shadows
+      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true });
+    });
+  });
+});
+
+/**
+ * Controls line numbers for the valueless `submodule.lib.update` case.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [submodule "lib"]
+ * Line 4: \turl = <SUB_URL>
+ * Line 5: \tupdate          <- valueless
+ */
+const VALUELESS_UPDATE_CONFIG = `[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl = ${SUB_URL}\n\tupdate\n`;
+const VALUELESS_UPDATE_LINE = 5;
+
+describe('Given a superproject whose submodule.lib.update is present-but-valueless', () => {
+  describe('When submoduleUpdate resolves the update mode', () => {
+    it('Then it refuses with CONFIG_MISSING_VALUE naming submodule.lib.update at its line', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(VALUELESS_UPDATE_CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        key: string;
+        line: number;
+        source: string;
+      };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('submodule.lib.update');
+      expect(data.line).toBe(VALUELESS_UPDATE_LINE);
+      expect(data.source).toMatch(/\/config$/);
+    });
+  });
+});
+
+/**
+ * Co-occurrence fixtures pinning git's UPDATE-PRIORITY ordering: `git submodule
+ * update` reads `submodule.<n>.update` BEFORE `url` and reports it with strict
+ * priority regardless of file-line order — even when `url` is valueless on an
+ * earlier line. It reports `url` only when `update` is valued/absent.
+ *
+ * url@L4 valueless, update@L5 valueless → reports update (NOT the earlier url).
+ */
+const URL_THEN_UPDATE_VALUELESS_CONFIG =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl\n\tupdate\n';
+/** update@L4 valueless, url@L5 valueless → reports update. */
+const UPDATE_THEN_URL_VALUELESS_CONFIG =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\tupdate\n\turl\n';
+/** url@L4 valueless, update absent → reports url (the url path still works). */
+const URL_VALUELESS_UPDATE_ABSENT_CONFIG =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl\n';
+
+describe('Given a superproject whose submodule.lib has co-occurring valueless keys', () => {
+  describe('When url is valueless on an earlier line than a valueless update', () => {
+    it('Then it reports submodule.lib.update with priority (not the earlier-line url)', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(URL_THEN_UPDATE_VALUELESS_CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; key: string };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('submodule.lib.update');
+    });
+  });
+
+  describe('When update is valueless on an earlier line than a valueless url', () => {
+    it('Then it reports submodule.lib.update', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(UPDATE_THEN_URL_VALUELESS_CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; key: string };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('submodule.lib.update');
+    });
+  });
+
+  describe('When url is valueless and update is absent', () => {
+    it('Then it reports submodule.lib.url (the url path still refuses)', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(URL_VALUELESS_UPDATE_ABSENT_CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; key: string };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('submodule.lib.url');
+    });
+  });
+});

@@ -14,12 +14,20 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { configList } from '../../src/application/commands/config.js';
+import { configGet, configGetRegexp, configList } from '../../src/application/commands/config.js';
 import { TsgitError } from '../../src/domain/error.js';
+import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
+
+const AUTHOR: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
 
 /**
  * A fixture that controls line numbers. The valueless `user.name` lands at line 4.
@@ -257,6 +265,26 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
   /** Fixture with [remote "origin"] but no url line — the absent case. */
   const ABSENT_REMOTE_URL_FIXTURE = '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n';
 
+  /**
+   * The valueless `pushurl` lands at line 4 (url valued at line 5). Git dies on
+   * the valueless `pushurl` even though `url` is valued — the `pushurl ?? url`
+   * fallback does not rescue it.
+   * Line 3: [remote "origin"]
+   * Line 4: \tpushurl       <- valueless
+   * Line 5: \turl = https://example.com/r.git
+   */
+  const VALUELESS_REMOTE_PUSHURL_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\tpushurl\n\turl = https://example.com/r.git\n';
+  const VALUELESS_REMOTE_PUSHURL_LINE = 4;
+
+  /** Both push urls valueless, pushurl earlier (line 4) than url (line 5). */
+  const VALUELESS_REMOTE_BOTH_PUSHURL_FIRST_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\tpushurl\n\turl\n';
+
+  /** Both push urls valueless, url earlier (line 4) than pushurl (line 5). */
+  const VALUELESS_REMOTE_BOTH_URL_FIRST_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl\n\tpushurl\n';
+
   describe('Given a config with a valueless remote.origin.url', () => {
     describe('When git fetch origin is run', () => {
       it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
@@ -441,6 +469,164 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
     });
   });
 
+  describe('Given a config with a valueless remote.origin.pushurl and a valued url', () => {
+    describe('When git push origin main is run', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_REMOTE_PUSHURL_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], {
+          env: runGitEnv(),
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'remote.origin.pushurl'");
+        expect(g.stderr).toContain("bad config variable 'remote.origin.pushurl'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_REMOTE_PUSHURL_LINE}`);
+      });
+    });
+
+    describe('When tsgit push is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key remote.origin.pushurl and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_REMOTE_PUSHURL_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.push({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('remote.origin.pushurl');
+        expect(data.line).toBe(VALUELESS_REMOTE_PUSHURL_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit push structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_REMOTE_PUSHURL_FIXTURE);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], {
+          env: runGitEnv(),
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.push({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+  });
+
+  describe('Given both remote.origin.pushurl and url valueless with pushurl earlier', () => {
+    describe('When git push and tsgit push are run', () => {
+      it('Then both report the earlier-by-line key remote.origin.pushurl at line 4', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(
+          path.join(ours, '.git', 'config'),
+          VALUELESS_REMOTE_BOTH_PUSHURL_FIRST_FIXTURE,
+        );
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.push({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports pushurl (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'remote.origin.pushurl'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('remote.origin.pushurl');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given both remote.origin.pushurl and url valueless with url earlier', () => {
+    describe('When git push and tsgit push are run', () => {
+      it('Then both report the earlier-by-line key remote.origin.url at line 4', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_REMOTE_BOTH_URL_FIRST_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.push({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports url (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'remote.origin.url'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('remote.origin.url');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
   describe('Given a config with no url in remote.origin (absent url)', () => {
     describe('When tsgit fetch is run', () => {
       it('Then throws REMOTE_NOT_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
@@ -488,4 +674,1666 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
       });
     });
   });
+
+  /**
+   * A fixture that controls line numbers. The `[branch "main"]` header lands at
+   * line 3; the valueless `remote` entry lands at line 4 (merge valued at line 5).
+   * Line 1: [core]
+   * Line 2: \trepositoryformatversion = 0
+   * Line 3: [branch "main"]
+   * Line 4: \tremote          <- valueless
+   * Line 5: \tmerge = refs/heads/main
+   */
+  const VALUELESS_BRANCH_REMOTE_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n\tremote\n\tmerge = refs/heads/main\n';
+  const VALUELESS_BRANCH_REMOTE_LINE = 4;
+
+  /** Both upstream keys valueless, remote earlier (line 4) than merge (line 5). */
+  const VALUELESS_BRANCH_BOTH_REMOTE_FIRST_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n\tremote\n\tmerge\n';
+
+  /** Both upstream keys valueless, merge earlier (line 4) than remote (line 5). */
+  const VALUELESS_BRANCH_BOTH_MERGE_FIRST_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n\tmerge\n\tremote\n';
+
+  /** Fixture with [branch "main"] but no remote/merge — the absent case. */
+  const ABSENT_BRANCH_UPSTREAM_FIXTURE = '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n';
+
+  describe('Given a config with a valueless branch.main.remote', () => {
+    describe('When git pull is run', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.main.remote'");
+        expect(g.stderr).toContain("bad config variable 'branch.main.remote'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_BRANCH_REMOTE_LINE}`);
+      });
+    });
+
+    describe('When tsgit pull is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key branch.main.remote and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.main.remote');
+        expect(data.line).toBe(VALUELESS_BRANCH_REMOTE_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit pull structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_REMOTE_FIXTURE);
+        const ctx = createNodeContext({ workDir: ours });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given both branch.main.remote and merge valueless with remote earlier', () => {
+    describe('When git pull and tsgit pull are run', () => {
+      it('Then both report the earlier-by-line key branch.main.remote at line 4', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(
+          path.join(ours, '.git', 'config'),
+          VALUELESS_BRANCH_BOTH_REMOTE_FIRST_FIXTURE,
+        );
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports remote (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.main.remote'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.main.remote');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given both branch.main.remote and merge valueless with merge earlier', () => {
+    describe('When git pull and tsgit pull are run', () => {
+      it('Then both report the earlier-by-line key branch.main.merge at line 4', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(
+          path.join(ours, '.git', 'config'),
+          VALUELESS_BRANCH_BOTH_MERGE_FIRST_FIXTURE,
+        );
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports merge (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.main.merge'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.main.merge');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given a config with [branch "main"] but no upstream keys (absent upstream)', () => {
+    describe('When tsgit pull is run', () => {
+      it('Then throws NO_UPSTREAM_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), ABSENT_BRANCH_UPSTREAM_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
 });
+
+/**
+ * Heavy merge-driver block (`.gitattributes` `* merge=mydriver` + a real
+ * conflicting content merge). One shared `beforeAll` repo pair (project memory:
+ * heavy git-spawning interop times out hooks under validate's concurrency
+ * otherwise). The valueless `[merge "mydriver"]` death fires only when the
+ * driver is selected for a conflicting path, so each test resets the diverged
+ * graph to its pre-merge `main` tip, rewrites `.git/config`, then merges —
+ * neither tool commits on the valueless death, so the shared graph survives.
+ */
+const MERGE_AUTHOR_ENV: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_NAME: 'Ada',
+  GIT_AUTHOR_EMAIL: 'ada@example.com',
+  GIT_AUTHOR_DATE: '1700000000 +0000',
+  GIT_COMMITTER_NAME: 'Ada',
+  GIT_COMMITTER_EMAIL: 'ada@example.com',
+  GIT_COMMITTER_DATE: '1700000000 +0000',
+};
+
+/**
+ * Controls line numbers: the valueless `driver` lands at line 4.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [merge "mydriver"]
+ * Line 4: \tdriver           <- valueless
+ */
+const VALUELESS_MERGE_DRIVER_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tdriver\n';
+const VALUELESS_MERGE_DRIVER_LINE = 4;
+
+/** Both driver keys valueless, driver earlier (line 4) than name (line 5). */
+const VALUELESS_MERGE_BOTH_DRIVER_FIRST_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tdriver\n\tname\n';
+
+/** Both driver keys valueless, name earlier (line 4) than driver (line 5). */
+const VALUELESS_MERGE_BOTH_NAME_FIRST_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tname\n\tdriver\n';
+
+/** No [merge "mydriver"] section — the absent case (built-in text driver). */
+const ABSENT_MERGE_DRIVER_FIXTURE = '[core]\n\trepositoryformatversion = 0\n';
+
+/**
+ * Valued driver, valueless `name` at line 5 — git reads `name` independently of
+ * `driver`, so it dies on `merge.mydriver.name` even with a valued driver.
+ */
+const VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tdriver = cat %A\n\tname\n';
+const VALUELESS_MERGE_NAME_LINE = 5;
+
+describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver', () => {
+  let peer: string;
+  let ours: string;
+
+  /** Build a diverged graph whose merge conflicts on data.txt and engages mydriver. */
+  beforeAll(async () => {
+    peer = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-merge-peer-')));
+    ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-merge-ours-')));
+    for (const dir of [peer, ours]) {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      await writeFile(path.join(dir, '.gitattributes'), '* merge=mydriver\n');
+      await writeFile(path.join(dir, 'data.txt'), 'base\n');
+      runGit(['-C', dir, 'add', '.gitattributes', 'data.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', '-b', 'theirs']);
+      await writeFile(path.join(dir, 'data.txt'), 'theirs\n');
+      runGit(['-C', dir, 'add', 'data.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'theirs'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', 'main']);
+      await writeFile(path.join(dir, 'data.txt'), 'ours\n');
+      runGit(['-C', dir, 'add', 'data.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'ours'], { env: MERGE_AUTHOR_ENV });
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    await rm(peer, { recursive: true, force: true });
+    await rm(ours, { recursive: true, force: true });
+  });
+
+  /** Restore both repos to the pre-merge `main` tip with a clean worktree. */
+  const resetBoth = (): void => {
+    for (const dir of [peer, ours]) {
+      runGit(['-C', dir, 'merge', '--abort'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', '-f', 'main']);
+      runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+    }
+  };
+
+  const writeBothConfig = async (fixture: string): Promise<void> => {
+    await writeFile(path.join(peer, '.git', 'config'), fixture);
+    await writeFile(path.join(ours, '.git', 'config'), fixture);
+  };
+
+  beforeEach(() => {
+    // merge --abort fails cleanly when no merge is in progress; ignore.
+    try {
+      resetBoth();
+    } catch {
+      runGit(['-C', peer, 'checkout', '-q', '-f', 'main']);
+      runGit(['-C', ours, 'checkout', '-q', '-f', 'main']);
+    }
+  });
+
+  describe('Given a valued driver but a valueless merge.mydriver.name at line 5', () => {
+    it('Then git dies on merge.mydriver.name (name read independently of driver)', async () => {
+      // Arrange
+      await writeBothConfig(VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE);
+
+      // Act
+      const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+        env: MERGE_AUTHOR_ENV,
+      });
+
+      // Assert
+      expect(g.ok).toBe(false);
+      expect(g.stderr).toContain("missing value for 'merge.mydriver.name'");
+      expect(g.stderr).toContain(`at line ${VALUELESS_MERGE_NAME_LINE}`);
+    });
+
+    it('Then tsgit throws CONFIG_MISSING_VALUE with key merge.mydriver.name and line 5', async () => {
+      // Arrange
+      await writeBothConfig(VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE);
+      const repo = await openRepository({ cwd: ours });
+
+      // Act
+      let caught: unknown;
+      try {
+        await repo.merge.run({ rev: 'theirs', message: 'm' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('merge.mydriver.name');
+      expect(data.line).toBe(VALUELESS_MERGE_NAME_LINE);
+    });
+  });
+
+  describe('Given a config with a valueless merge.mydriver.driver at line 4', () => {
+    describe('When git merge engages the driver', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.mydriver.driver'");
+        expect(g.stderr).toContain("bad config variable 'merge.mydriver.driver'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_MERGE_DRIVER_LINE}`);
+      });
+    });
+
+    describe('When tsgit merge engages the driver', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key merge.mydriver.driver and correct line', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.mydriver.driver');
+        expect(data.line).toBe(VALUELESS_MERGE_DRIVER_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit merge structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+
+        // Act — run both git and tsgit against the same fixture
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_DRIVER_FIXTURE);
+        const ctx = createNodeContext({ workDir: ours });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given both merge.mydriver.driver and name valueless with driver earlier', () => {
+    describe('When git merge and tsgit merge engage the driver', () => {
+      it('Then both report the earlier-by-line key merge.mydriver.driver at line 4', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_BOTH_DRIVER_FIRST_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports driver (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.mydriver.driver'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.mydriver.driver');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given both merge.mydriver.driver and name valueless with name earlier', () => {
+    describe('When git merge and tsgit merge engage the driver', () => {
+      it('Then both report the earlier-by-line key merge.mydriver.name at line 4', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_BOTH_NAME_FIRST_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git reports name (earlier line)
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.mydriver.name'");
+        expect(g.stderr).toContain('at line 4');
+        // tsgit reports the same earlier-by-line key
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.mydriver.name');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given no [merge "mydriver"] section (absent driver config)', () => {
+    describe('When tsgit merge engages the built-in text driver', () => {
+      it('Then the merge proceeds with a conflict and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange — no driver config: mydriver falls back to the built-in text
+        // driver, which conflicts on the whole-file divergence (no death).
+        await writeBothConfig(ABSENT_MERGE_DRIVER_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        let result: { kind: string } | undefined;
+        try {
+          result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — no CONFIG_MISSING_VALUE; the merge engaged the built-in driver
+        expect(caught).toBeUndefined();
+        expect(result?.kind).toBe('conflict');
+      });
+    });
+  });
+});
+
+/**
+ * Heavy submodule block (`file://` upstream submodule). One shared `beforeAll`
+ * builds a real upstream sub (two commits C1→C2), a superproject pinning the sub
+ * at C2 via a relative url, and `.gitmodules` declaring it — exactly the
+ * canonical-git layout `git submodule update` consumes. Each test takes a fresh
+ * clone (its own `.git/config` to rewrite with a valueless `submodule.mysub.url`),
+ * so the shared upstream survives across cases. 60s timeout: heavy git-spawning
+ * interop times out hooks under validate's concurrency otherwise (project memory).
+ *
+ * The fixture is REUSABLE — `subModuleFixture()` exposes the shared dirs and the
+ * `freshClone()` helper so a later mode-precedence block can drift the working
+ * submodule and vary `.gitmodules` vs config update modes against the same C2 pin.
+ */
+const SUBMODULE_AUTHOR_ENV: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_NAME: 'Ada',
+  GIT_AUTHOR_EMAIL: 'ada@example.com',
+  GIT_AUTHOR_DATE: '1700000000 +0000',
+  GIT_COMMITTER_NAME: 'Ada',
+  GIT_COMMITTER_EMAIL: 'ada@example.com',
+  GIT_COMMITTER_DATE: '1700000000 +0000',
+};
+
+/** `git` with `protocol.file.allow=always` (mandatory for `file://` submodules). */
+const subGit = (cwd: string, ...args: ReadonlyArray<string>): string =>
+  runGit(['-c', 'protocol.file.allow=always', '-C', cwd, ...args], { env: SUBMODULE_AUTHOR_ENV });
+
+interface SubmoduleFixture {
+  /** The base tmpdir holding `sub`, `super`, and the per-test clones. */
+  readonly base: string;
+  /** Clone the superproject into a fresh dir under `base`; returns its path. */
+  readonly freshClone: () => string;
+  /** The sub's C1 and C2 commit oids (C2 is the superproject pin). */
+  readonly c1: string;
+  readonly c2: string;
+}
+
+/**
+ * Controls line numbers in the rewritten clone config: the valueless `url`
+ * lands at line 4.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [submodule "mysub"]
+ * Line 4: \turl           <- valueless
+ */
+const VALUELESS_SUBMODULE_URL_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl\n';
+const VALUELESS_SUBMODULE_URL_LINE = 4;
+
+/** `[submodule "mysub"]` present but no url line — the absent case. */
+const ABSENT_SUBMODULE_URL_FIXTURE = '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n';
+
+describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule url', () => {
+  let fixture: SubmoduleFixture;
+
+  beforeAll(async () => {
+    const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-sub-')));
+    // Upstream sub: two commits so the pin (C2) differs from the tip a fresh
+    // clone might land on — slice-4-ready for a drift-to-C1 precedence matrix.
+    const subDir = path.join(base, 'sub');
+    runGit(['init', '-q', '-b', 'main', subDir]);
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v1\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c1');
+    const c1 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v2\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c2');
+    const c2 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    // Superproject pinning the sub (at C2) via a relative url.
+    const superDir = path.join(base, 'super');
+    runGit(['init', '-q', '-b', 'main', superDir]);
+    await writeFile(path.join(superDir, 'r.txt'), 'root\n');
+    subGit(superDir, 'add', 'r.txt');
+    subGit(superDir, 'commit', '-q', '-m', 'root');
+    subGit(superDir, 'submodule', 'add', '../sub', 'mysub');
+    subGit(superDir, 'commit', '-q', '-m', 'add submodule');
+    let cloneCounter = 0;
+    const freshClone = (): string => {
+      cloneCounter += 1;
+      const dir = path.join(base, `clone-${cloneCounter}`);
+      subGit(base, 'clone', '-q', superDir, dir);
+      return dir;
+    };
+    fixture = { base, freshClone, c1, c2 };
+  }, 60_000);
+
+  afterAll(async () => {
+    if (fixture !== undefined) await rm(fixture.base, { recursive: true, force: true });
+  });
+
+  describe('Given a clone with a valueless submodule.mysub.url at line 4', () => {
+    describe('When git submodule update is run', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+
+        // Act
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'submodule.mysub.url'");
+        expect(g.stderr).toContain("bad config variable 'submodule.mysub.url'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_SUBMODULE_URL_LINE}`);
+      });
+    });
+
+    describe('When tsgit submodule.update is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key submodule.mysub.url and correct line', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('submodule.mysub.url');
+        expect(data.line).toBe(VALUELESS_SUBMODULE_URL_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit submodule.update structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+
+        // Act — run both git and tsgit against the same clone
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+        const repo = await openRepository({ cwd: clone });
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
+        const ctx = createNodeContext({ workDir: clone });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a clone with [submodule "mysub"] but no url (absent)', () => {
+    describe('When tsgit submodule.update is run without init', () => {
+      it('Then the registered-but-urlless submodule is skipped and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange
+        const clone = fixture.freshClone();
+        await writeFile(path.join(clone, '.git', 'config'), ABSENT_SUBMODULE_URL_FIXTURE);
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        let caught: unknown;
+        let result: { entries: ReadonlyArray<unknown> } | undefined;
+        try {
+          result = await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — absent url skips the row, no death
+        expect(caught).toBeUndefined();
+        expect(result?.entries).toHaveLength(0);
+      });
+    });
+  });
+});
+
+/**
+ * Heavy submodule update-mode block (`file://` upstream submodule). One shared
+ * `beforeAll` builds a real upstream sub (C1→C2), a superproject pinning it at C2,
+ * and a `driftedClone()` helper that clones, populates the submodule (at C2 via
+ * `submodule update --init`), and drifts the working submodule back to C1 — so a
+ * `checkout`-mode update moves it C1→C2 and a `none`-mode update leaves it at C1.
+ * The block pins:
+ *   - the config-over-`.gitmodules` precedence matrix (tsgit submodule HEAD == git
+ *     HEAD per row, both override directions),
+ *   - the valueless `submodule.mysub.update` refusal (git pin / tsgit pin /
+ *     reconstruction / absent → `.gitmodules`-sourced mode / `--list` ok),
+ *   - the update-priority co-occurrence ordering (both orders report `update`,
+ *     url-only reports `url`).
+ * 60s timeout: heavy git-spawning interop times out hooks under validate's
+ * concurrency otherwise (project memory).
+ */
+interface UpdateModeFixture {
+  readonly base: string;
+  /** Clone the superproject, populate the submodule at C2, drift it back to C1. */
+  readonly driftedClone: () => string;
+  /** Read the working submodule's current HEAD oid in a clone. */
+  readonly subHead: (clone: string) => string;
+  readonly c1: string;
+  readonly c2: string;
+}
+
+/** Rewrite `submodule.mysub.update` in `.gitmodules`/config (file-write, valued). */
+const setUpdateLine = async (
+  filePath: string,
+  baseText: string,
+  mode: string | undefined,
+): Promise<void> => {
+  const line = mode !== undefined ? `\tupdate = ${mode}\n` : '';
+  await writeFile(filePath, `${baseText}${line}`);
+};
+
+/**
+ * Controls line numbers for the valueless `submodule.mysub.update` case.
+ * Line 1: [core]
+ * Line 2: \trepositoryformatversion = 0
+ * Line 3: [submodule "mysub"]
+ * Line 4: \turl = <relative>
+ * Line 5: \tupdate          <- valueless
+ */
+const VALUELESS_SUBMODULE_UPDATE_LINE = 5;
+/** url@L4 valueless, update@L5 valueless → git reports update (update-priority). */
+const URL_THEN_UPDATE_VALUELESS =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl\n\tupdate\n';
+/** update@L4 valueless, url@L5 valueless → git reports update. */
+const UPDATE_THEN_URL_VALUELESS =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\tupdate\n\turl\n';
+/** url@L4 valueless, update absent → git reports url. */
+const URL_VALUELESS_UPDATE_ABSENT =
+  '[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl\n';
+
+describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule update', () => {
+  let fixture: UpdateModeFixture;
+  /** The clone config preamble whose valueless `url`/`update` lands at line 5. */
+  let configWithUrl: string;
+  /** The clone's `.gitmodules` text up to (not including) the `update` line. */
+  let gitmodulesBase: string;
+
+  beforeAll(async () => {
+    const base = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-subupd-')));
+    const subDir = path.join(base, 'sub');
+    runGit(['init', '-q', '-b', 'main', subDir]);
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v1\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c1');
+    const c1 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    await writeFile(path.join(subDir, 'a.txt'), 'sub v2\n');
+    subGit(subDir, 'add', 'a.txt');
+    subGit(subDir, 'commit', '-q', '-m', 'c2');
+    const c2 = subGit(subDir, 'rev-parse', 'HEAD').trim();
+    const superDir = path.join(base, 'super');
+    runGit(['init', '-q', '-b', 'main', superDir]);
+    await writeFile(path.join(superDir, 'r.txt'), 'root\n');
+    subGit(superDir, 'add', 'r.txt');
+    subGit(superDir, 'commit', '-q', '-m', 'root');
+    subGit(superDir, 'submodule', 'add', '../sub', 'mysub');
+    // Pin the submodule at C2, then drift the superproject's recorded gitlink
+    // is left at C2 (the just-added tip). The clone drifts its working copy.
+    subGit(superDir, 'commit', '-q', '-m', 'add submodule');
+    let cloneCounter = 0;
+    const driftedClone = (): string => {
+      cloneCounter += 1;
+      const dir = path.join(base, `clone-${cloneCounter}`);
+      subGit(base, 'clone', '-q', superDir, dir);
+      subGit(dir, 'submodule', 'update', '--init');
+      subGit(path.join(dir, 'mysub'), 'checkout', '-q', c1);
+      return dir;
+    };
+    const subHead = (clone: string): string =>
+      subGit(path.join(clone, 'mysub'), 'rev-parse', 'HEAD').trim();
+    fixture = { base, driftedClone, subHead, c1, c2 };
+    // The relative url a clone records for the submodule (read from a sample clone).
+    const sample = driftedClone();
+    const url = subGit(sample, 'config', '--get', 'submodule.mysub.url').trim();
+    configWithUrl = `[core]\n\trepositoryformatversion = 0\n[submodule "mysub"]\n\turl = ${url}\n`;
+    gitmodulesBase = `[submodule "mysub"]\n\tpath = mysub\n\turl = ${url}\n`;
+  }, 60_000);
+
+  afterAll(async () => {
+    if (fixture !== undefined) await rm(fixture.base, { recursive: true, force: true });
+  });
+
+  describe('Given config submodule.mysub.update overrides the .gitmodules mode', () => {
+    const matrix: ReadonlyArray<{
+      readonly title: string;
+      readonly gitmodulesMode: string | undefined;
+      readonly configMode: string | undefined;
+    }> = [
+      {
+        title: 'config checkout over .gitmodules none',
+        gitmodulesMode: 'none',
+        configMode: 'checkout',
+      },
+      {
+        title: 'config none over .gitmodules checkout',
+        gitmodulesMode: 'checkout',
+        configMode: 'none',
+      },
+      {
+        title: '.gitmodules none with config unset',
+        gitmodulesMode: 'none',
+        configMode: undefined,
+      },
+      {
+        title: '.gitmodules checkout with config unset',
+        gitmodulesMode: 'checkout',
+        configMode: undefined,
+      },
+      { title: 'both unset (checkout default)', gitmodulesMode: undefined, configMode: undefined },
+    ];
+
+    const applyModes = async (
+      clone: string,
+      gitmodulesMode: string | undefined,
+      configMode: string | undefined,
+    ): Promise<void> => {
+      await setUpdateLine(path.join(clone, '.gitmodules'), gitmodulesBase, gitmodulesMode);
+      if (configMode !== undefined) subGit(clone, 'config', 'submodule.mysub.update', configMode);
+    };
+
+    for (const row of matrix) {
+      describe(`When the resolved mode is ${row.title}`, () => {
+        it('Then tsgit reconciles the working submodule to the same HEAD as git', async () => {
+          // Arrange — two independent drifted clones, identical modes
+          const gitClone = fixture.driftedClone();
+          const tsgitClone = fixture.driftedClone();
+          await applyModes(gitClone, row.gitmodulesMode, row.configMode);
+          await applyModes(tsgitClone, row.gitmodulesMode, row.configMode);
+
+          // Act
+          subGit(gitClone, 'submodule', 'update');
+          const repo = await openRepository({ cwd: tsgitClone });
+          await repo.submodule.update({});
+
+          // Assert — same submodule HEAD, and it is the precedence-decided one
+          expect(fixture.subHead(tsgitClone)).toBe(fixture.subHead(gitClone));
+        });
+      });
+    }
+  });
+
+  describe('Given a clone with a valueless submodule.mysub.update at line 5', () => {
+    const fixtureText = (): string => `${configWithUrl}\tupdate\n`;
+
+    describe('When git submodule update is run', () => {
+      it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+
+        // Act
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'submodule.mysub.update'");
+        expect(g.stderr).toContain("bad config variable 'submodule.mysub.update'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_SUBMODULE_UPDATE_LINE}`);
+      });
+    });
+
+    describe('When tsgit submodule.update is run', () => {
+      it('Then it throws CONFIG_MISSING_VALUE with key submodule.mysub.update and correct line', async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('submodule.mysub.update');
+        expect(data.line).toBe(VALUELESS_SUBMODULE_UPDATE_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two lines from tsgit structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+
+        // Act — run both git and tsgit against the same clone
+        const g = tryRunGit(
+          ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+          { env: SUBMODULE_AUTHOR_ENV },
+        );
+        const repo = await openRepository({ cwd: clone });
+        let caught: unknown;
+        try {
+          await repo.submodule.update({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { key: string; line: number };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        const clone = fixture.driftedClone();
+        await writeFile(path.join(clone, '.git', 'config'), fixtureText());
+        const ctx = createNodeContext({ workDir: clone });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a clone whose submodule.mysub.update is absent (only .gitmodules sets it)', () => {
+    describe('When tsgit submodule.update is run', () => {
+      it('Then the .gitmodules-sourced mode applies (none) and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange — .gitmodules update=none, config has a valued url and no update
+        const clone = fixture.driftedClone();
+        await setUpdateLine(path.join(clone, '.gitmodules'), gitmodulesBase, 'none');
+        const repo = await openRepository({ cwd: clone });
+
+        // Act
+        const result = await repo.submodule.update({});
+
+        // Assert — .gitmodules none was applied (no-op), working submodule stays C1
+        expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false });
+        expect(fixture.subHead(clone)).toBe(fixture.c1);
+      });
+    });
+  });
+
+  describe('Given co-occurring valueless submodule.mysub keys (update-priority)', () => {
+    const cases: ReadonlyArray<{
+      readonly title: string;
+      readonly text: string;
+      readonly expectedKey: string;
+    }> = [
+      {
+        title: 'url valueless on an earlier line than a valueless update',
+        text: URL_THEN_UPDATE_VALUELESS,
+        expectedKey: 'submodule.mysub.update',
+      },
+      {
+        title: 'update valueless on an earlier line than a valueless url',
+        text: UPDATE_THEN_URL_VALUELESS,
+        expectedKey: 'submodule.mysub.update',
+      },
+      {
+        title: 'url valueless and update absent',
+        text: URL_VALUELESS_UPDATE_ABSENT,
+        expectedKey: 'submodule.mysub.url',
+      },
+    ];
+
+    for (const c of cases) {
+      describe(`When ${c.title}`, () => {
+        it(`Then both git and tsgit report ${c.expectedKey}`, async () => {
+          // Arrange
+          const clone = fixture.driftedClone();
+          await writeFile(path.join(clone, '.git', 'config'), c.text);
+
+          // Act — git
+          const g = tryRunGit(
+            ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
+            { env: SUBMODULE_AUTHOR_ENV },
+          );
+          // Act — tsgit
+          const repo = await openRepository({ cwd: clone });
+          let caught: unknown;
+          try {
+            await repo.submodule.update({});
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git reports the priority key, tsgit matches
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain(`missing value for '${c.expectedKey}'`);
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe(c.expectedKey);
+        });
+      });
+    }
+  });
+});
+
+/**
+ * `[core]` eager broad-gate breadth matrix. git validates `core.excludesfile`
+ * and `core.attributesfile` eagerly in `git_default_config`, so they die on the
+ * ENTIRE operational surface — including config-free ref-listing (`branch`/`tag`
+ * list) — yet the config porcelain (`config --get`/`--list`/`--get-regexp`)
+ * survives through its separate read path. tsgit must reproduce this split: the
+ * operational commands refuse via `assertOperationalRepository`, the porcelain
+ * stays on the bare `assertRepository`.
+ *
+ * The fixtures are light (a one-commit repo + a hand-written `[core]` config),
+ * so each case uses its own `beforeEach` tmpdir.
+ */
+const CORE_AUTHOR_ENV: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_NAME: 'Ada',
+  GIT_AUTHOR_EMAIL: 'ada@example.com',
+  GIT_AUTHOR_DATE: '1700000000 +0000',
+  GIT_COMMITTER_NAME: 'Ada',
+  GIT_COMMITTER_EMAIL: 'ada@example.com',
+  GIT_COMMITTER_DATE: '1700000000 +0000',
+};
+
+const CORE_COMMIT_AUTHOR: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+
+/**
+ * Controls line numbers: the valueless `[core]` path-like lands at line 2.
+ * Line 1: [core]
+ * Line 2: \t<key>          <- valueless
+ */
+const valuelessCoreFixture = (key: string): string => `[core]\n\t${key}\n`;
+const VALUELESS_CORE_LINE = 2;
+
+interface CoreData {
+  readonly code: string;
+  readonly key: string;
+  readonly line: number;
+  readonly source: string;
+}
+
+const assertCoreRefusal = (caught: unknown, key: string): void => {
+  expect(caught).toBeInstanceOf(TsgitError);
+  const data = (caught as TsgitError).data as CoreData;
+  expect(data.code).toBe('CONFIG_MISSING_VALUE');
+  expect(data.key).toBe(key);
+  expect(data.line).toBe(VALUELESS_CORE_LINE);
+  expect(data.source).toMatch(/\/config$/);
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'missing-value-refusal interop — core path-likes eager broad gate',
+  () => {
+    let ours: string;
+
+    beforeEach(async () => {
+      ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-core-')));
+      runGit(['init', '-q', '-b', 'main', ours]);
+      await writeFile(path.join(ours, 'r.txt'), 'root\n');
+      runGit(['-C', ours, 'add', 'r.txt']);
+      runGit(['-C', ours, 'commit', '-q', '-m', 'root'], { env: CORE_AUTHOR_ENV });
+      runGit(['-C', ours, 'tag', 'v1']);
+    });
+
+    afterEach(async () => {
+      await rm(ours, { recursive: true, force: true });
+    });
+
+    for (const key of ['excludesfile', 'attributesfile'] as const) {
+      const qualifiedKey = `core.${key}`;
+
+      describe(`Given a config with a valueless core.${key}`, () => {
+        describe('When operational commands run', () => {
+          it('Then git refuses with exit 128 and the two-line missing-value message', async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+
+            // Act — a representative work-doing command plus pure ref-listing
+            const gStatus = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+            const gBranch = tryRunGit(['-C', ours, 'branch'], { env: runGitEnv() });
+            const gTag = tryRunGit(['-C', ours, 'tag'], { env: runGitEnv() });
+
+            // Assert — every operational command dies, including ref-listing
+            for (const g of [gStatus, gBranch, gTag]) {
+              expect(g.ok).toBe(false);
+              expect(g.stderr).toContain(`missing value for '${qualifiedKey}'`);
+              expect(g.stderr).toContain(`bad config variable '${qualifiedKey}'`);
+              expect(g.stderr).toContain(`at line ${VALUELESS_CORE_LINE}`);
+            }
+          });
+
+          it('Then tsgit status refuses with CONFIG_MISSING_VALUE', async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+            const repo = await openRepository({ cwd: ours });
+
+            // Act
+            let caught: unknown;
+            try {
+              await repo.status();
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertCoreRefusal(caught, qualifiedKey);
+          });
+
+          it('Then tsgit log refuses with CONFIG_MISSING_VALUE', async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+            const repo = await openRepository({ cwd: ours });
+
+            // Act
+            let caught: unknown;
+            try {
+              await repo.log({});
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertCoreRefusal(caught, qualifiedKey);
+          });
+
+          it('Then tsgit commit refuses with CONFIG_MISSING_VALUE', async () => {
+            // Arrange
+            await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+            runGit(['-C', ours, 'add', 'r.txt']);
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+            const repo = await openRepository({ cwd: ours });
+
+            // Act
+            let caught: unknown;
+            try {
+              await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertCoreRefusal(caught, qualifiedKey);
+          });
+
+          it('Then tsgit branch.list refuses with CONFIG_MISSING_VALUE (ref-listing breadth)', async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+            const repo = await openRepository({ cwd: ours });
+
+            // Act
+            let caught: unknown;
+            try {
+              await repo.branch.list();
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertCoreRefusal(caught, qualifiedKey);
+          });
+
+          it('Then tsgit tag.list refuses with CONFIG_MISSING_VALUE (ref-listing breadth)', async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+            const repo = await openRepository({ cwd: ours });
+
+            // Act
+            let caught: unknown;
+            try {
+              await repo.tag.list();
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertCoreRefusal(caught, qualifiedKey);
+          });
+        });
+
+        describe("When reconstructing git's two lines from tsgit status fields", () => {
+          it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+
+            // Act — run both git and tsgit on the same fixture
+            const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+            const repo = await openRepository({ cwd: ours });
+            let caught: unknown;
+            try {
+              await repo.status();
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(caught).toBeInstanceOf(TsgitError);
+            const data = (caught as TsgitError).data as CoreData;
+            const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+            const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+            const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+            expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+            const normalizedSource = '.git/config';
+            const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+            const normalizedFatalLine = fatalLine.replace(
+              /in file '[^']+'/,
+              `in file '${normalizedSource}'`,
+            );
+            expect(normalizedFatalLine).toBe(tsgitFatalLine);
+          });
+        });
+
+        describe('When the config porcelain reads the same fixture', () => {
+          it('Then git config --get/--list/--get-regexp all survive (exit 0)', async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+            const configPath = path.join(ours, '.git', 'config');
+
+            // Act
+            const gList = tryRunGit(['config', '--file', configPath, '--list']);
+            const gGet = tryRunGit(['config', '--file', configPath, '--get', qualifiedKey]);
+            const gRegexp = tryRunGit([
+              'config',
+              '--file',
+              configPath,
+              '--get-regexp',
+              'core\\..*',
+            ]);
+
+            // Assert — the porcelain bypasses the eager gate
+            expect(gList.ok).toBe(true);
+            expect(gGet.ok).toBe(true);
+            expect(gRegexp.ok).toBe(true);
+          });
+
+          it('Then tsgit configList/configGet/configGetRegexp all survive with the valueless entry visible', async () => {
+            // Arrange
+            await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
+            const ctx = createNodeContext({ workDir: ours });
+
+            // Act
+            const list = await configList(ctx, {});
+            const regexp = await configGetRegexp(ctx, { keyPattern: /core\..*/ });
+            let getCaught: unknown;
+            try {
+              await configGet(ctx, { key: qualifiedKey });
+            } catch (err) {
+              getCaught = err;
+            }
+
+            // Assert — porcelain survives; the valueless entry is visible as value: null
+            const listed = list.entries.find((e) => e.key === qualifiedKey);
+            expect(listed?.value).toBeNull();
+            const matched = regexp.entries.find((e) => e.key === qualifiedKey);
+            expect(matched?.value).toBeNull();
+            // configGet of a valueless key surfaces it as a present entry, never CONFIG_MISSING_VALUE.
+            if (getCaught !== undefined) {
+              expect((getCaught as TsgitError).data.code).not.toBe('CONFIG_MISSING_VALUE');
+            }
+          });
+        });
+      });
+    }
+
+    describe('Given a config with both core path-likes valueless and excludesfile earlier', () => {
+      describe('When git status and tsgit status run', () => {
+        it('Then both report the earlier-by-line key core.excludesfile at line 2', async () => {
+          // Arrange
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\texcludesfile\n\tattributesfile\n',
+          );
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git reports excludesfile (earlier line), tsgit matches
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain("missing value for 'core.excludesfile'");
+          expect(g.stderr).toContain('at line 2');
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given a config with both core path-likes valueless and attributesfile earlier', () => {
+      describe('When git status and tsgit status run', () => {
+        it('Then both report the earlier-by-line key core.attributesfile at line 2', async () => {
+          // Arrange
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\tattributesfile\n\texcludesfile\n',
+          );
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git reports attributesfile (earlier line), tsgit matches
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain("missing value for 'core.attributesfile'");
+          expect(g.stderr).toContain('at line 2');
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.attributesfile');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given a config with a valued [core] section', () => {
+      describe('When tsgit status runs', () => {
+        it('Then it does not throw CONFIG_MISSING_VALUE (the gate no-ops on valued)', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), '[core]\n\texcludesfile = /tmp/x\n');
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — a valued path-like resolves; no missing-value refusal
+          if (caught !== undefined) {
+            expect((caught as TsgitError).data.code).not.toBe('CONFIG_MISSING_VALUE');
+          }
+        });
+      });
+    });
+  },
+);
+
+/**
+ * `core.hooksPath` per-accessor refusal. Unlike the `[core]` path-likes above,
+ * `hooksPath`'s git death breadth is intricate, ruleless, and flag-dependent, so
+ * tsgit gates it per-accessor at the hook-resolution point (`run-hook`/
+ * `invokeHook`), mirroring git's `find_hook` mechanism. tsgit and git AGREE on
+ * hook-running commands (commit/merge/checkout/…); tsgit accepts a DOCUMENTED
+ * UNDER-REFUSAL on commands that resolve no hook (`branch.list`, `log`, …) where
+ * git dies incidentally — those pins assert tsgit survives and do NOT assert git
+ * agreement.
+ *
+ * The fixtures are light (a one-commit repo + a hand-written `[core]` config), so
+ * each case uses its own `beforeEach` tmpdir.
+ */
+const VALUELESS_HOOKSPATH_FIXTURE = '[core]\n\thooksPath\n';
+const VALUELESS_HOOKSPATH_LINE = 2;
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'missing-value-refusal interop — core.hooksPath per-accessor',
+  () => {
+    let ours: string;
+
+    beforeEach(async () => {
+      ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-hookspath-')));
+      runGit(['init', '-q', '-b', 'main', ours]);
+      await writeFile(path.join(ours, 'r.txt'), 'root\n');
+      runGit(['-C', ours, 'add', 'r.txt']);
+      runGit(['-C', ours, 'commit', '-q', '-m', 'root'], { env: CORE_AUTHOR_ENV });
+    });
+
+    afterEach(async () => {
+      await rm(ours, { recursive: true, force: true });
+    });
+
+    describe('Given a config with a valueless core.hooksPath at line 2', () => {
+      describe('When a hook-resolving command runs', () => {
+        it('Then git commit refuses with exit 128 and the two-line missing-value message', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: CORE_AUTHOR_ENV });
+
+          // Assert
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain("missing value for 'core.hookspath'");
+          expect(g.stderr).toContain("bad config variable 'core.hookspath'");
+          expect(g.stderr).toContain(`at line ${VALUELESS_HOOKSPATH_LINE}`);
+        });
+
+        it('Then tsgit commit refuses with CONFIG_MISSING_VALUE for core.hookspath', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — each field individually (mutation-resistant)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CoreData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.hookspath');
+          expect(data.line).toBe(VALUELESS_HOOKSPATH_LINE);
+          expect(data.source).toMatch(/\/config$/);
+        });
+      });
+
+      describe("When reconstructing git's two lines from tsgit commit fields", () => {
+        it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+
+          // Act — run both git and tsgit on the same fixture
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: CORE_AUTHOR_ENV });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CoreData;
+          const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+          const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+          const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+          expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+          const normalizedSource = '.git/config';
+          const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+          const normalizedFatalLine = fatalLine.replace(
+            /in file '[^']+'/,
+            `in file '${normalizedSource}'`,
+          );
+          expect(normalizedFatalLine).toBe(tsgitFatalLine);
+        });
+      });
+
+      describe('When a command that resolves no hook runs (documented under-refusal)', () => {
+        it('Then tsgit branch.list SURVIVES the valueless hooksPath (no agreement with git asserted)', async () => {
+          // Arrange — git's branch listing dies incidentally on a valueless
+          // hooksPath; tsgit's per-accessor gate is the recorded boundary:
+          // branch.list resolves no hook, so tsgit does NOT refuse. Agreement with
+          // git is deliberately NOT asserted here.
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.branch.list();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — tsgit survives (under-refusal); definitely not a missing-value refusal
+          expect(caught).toBeUndefined();
+        });
+      });
+
+      describe('When the config porcelain reads the same fixture', () => {
+        it('Then tsgit configList/configGet survive with the valueless entry visible', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          const list = await configList(ctx, {});
+          let getCaught: unknown;
+          try {
+            await configGet(ctx, { key: 'core.hookspath' });
+          } catch (err) {
+            getCaught = err;
+          }
+
+          // Assert — porcelain survives; the valueless entry is visible as value: null
+          const listed = list.entries.find((e) => e.key === 'core.hookspath');
+          expect(listed?.value).toBeNull();
+          if (getCaught !== undefined) {
+            expect((getCaught as TsgitError).data.code).not.toBe('CONFIG_MISSING_VALUE');
+          }
+        });
+      });
+    });
+
+    describe('Given a config with an absent core.hooksPath', () => {
+      describe('When tsgit commit runs', () => {
+        it('Then it proceeds (default hooks dir), not a CONFIG_MISSING_VALUE refusal', async () => {
+          // Arrange
+          await writeFile(path.join(ours, 'r.txt'), 'changed\n');
+          runGit(['-C', ours, 'add', 'r.txt']);
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\trepositoryformatversion = 0\n',
+          );
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — no missing-value refusal on the absent path
+          if (caught !== undefined) {
+            expect((caught as TsgitError).data.code).not.toBe('CONFIG_MISSING_VALUE');
+          }
+        });
+      });
+    });
+  },
+);

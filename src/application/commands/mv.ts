@@ -29,7 +29,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
 } from './internal/repo-state.js';
 import { renameInWorkingTree, validatePath } from './internal/working-tree.js';
 
@@ -93,7 +93,7 @@ export const mv = async (
   destination: string,
   opts: MvOptions = {},
 ): Promise<MvResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'mv');
   await assertNoPendingOperation(ctx);
   const validatedSources = sources.map((source) => validatePath(source));

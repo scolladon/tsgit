@@ -40,6 +40,7 @@ import type { HttpTransport } from '../../ports/http-transport.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
+import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -47,8 +48,7 @@ import { walkCommits } from '../primitives/walk-commits.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
-import { assertRepository, readHeadRaw } from './internal/repo-state.js';
-import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
+import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
 
 export interface PushOptions {
   readonly remote?: string;
@@ -86,7 +86,7 @@ const REFS_HEADS_PREFIX = 'refs/heads/';
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
     const remoteName = opts.remote ?? 'origin';
@@ -150,13 +150,14 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
     throw invalidOption('remote', `invalid remote name: ${remoteName}`);
   }
   const config = await readConfig(ctx);
+  // Git validates each entry eagerly: a valueless `pushurl` or `url` dies before
+  // the `pushurl ?? url` fallback can substitute the other, reporting whichever
+  // is valueless first by config-file line.
+  await assertNoValuelessConfig(ctx, 'remote', remoteName, ['pushurl', 'url']);
   const remote = config.remote?.get(remoteName);
   // `pushurl` overrides `url` for push (canonical-git parity).
   const url = remote?.pushUrl ?? remote?.url;
   if (url === undefined) {
-    // Only a valueless `url` reproduces git's lazy `missing value` die here; a
-    // valueless `pushurl` is not yet in scope (no pinned matrix row for it).
-    await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url']);
     throw remoteNotConfigured(remoteName);
   }
   return url;

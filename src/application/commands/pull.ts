@@ -13,12 +13,13 @@ import { noUpstreamConfigured } from '../../domain/commands/error.js';
 import { type AuthorIdentity, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
+import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { type FetchResult, fetch } from './fetch.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
@@ -79,6 +80,9 @@ const resolveUpstream = async (
   fallbackRef: RefName,
 ): Promise<Upstream> => {
   const config = await readConfig(ctx);
+  if (currentBranch !== undefined) {
+    await assertNoValuelessConfig(ctx, 'branch', currentBranch, ['remote', 'merge']);
+  }
   const tracking = currentBranch !== undefined ? config.branch?.get(currentBranch) : undefined;
   const remote = opts.remote ?? tracking?.remote ?? 'origin';
   const branch = opts.ref ?? shortMergeRef(tracking?.merge);
@@ -89,7 +93,7 @@ const resolveUpstream = async (
 };
 
 export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'pull');
   await assertNoPendingOperation(ctx);
 

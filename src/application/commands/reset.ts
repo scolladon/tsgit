@@ -25,7 +25,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
+  assertOperationalRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 
@@ -59,7 +59,7 @@ export interface ResetResult {
  * ahead of HEAD — same recoverable hazard as canonical git.
  */
 export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   if (opts.mode === 'hard') await assertNotBare(ctx, 'reset --hard');
   await assertNoPendingOperation(ctx);
   const id = await resolveTarget(ctx, opts.rev);

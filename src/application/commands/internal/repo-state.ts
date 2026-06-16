@@ -6,6 +6,8 @@
 export {
   assertNoPendingOperation,
   assertNotBare,
+  assertNoValuelessCorePaths,
+  assertOperationalRepository,
   assertRepository,
   isBare,
   readHeadRaw,

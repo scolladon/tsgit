@@ -36,6 +36,7 @@ import {
   deriveSubmoduleCloneContext,
   deriveSubmoduleContext,
 } from '../primitives/internal/submodule-context.js';
+import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { materializeWorktreeFromHead } from '../primitives/materialize-worktree-from-head.js';
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -58,7 +59,7 @@ import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
 import { clone } from './clone.js';
-import { assertNotBare, assertRepository } from './internal/repo-state.js';
+import { assertNotBare, assertOperationalRepository } from './internal/repo-state.js';
 import { mergeRun } from './merge.js';
 import { rebaseRun } from './rebase.js';
 import { status } from './status.js';
@@ -200,7 +201,7 @@ export const submoduleInit = async (
   ctx: Context,
   opts: SubmoduleInitOptions = {},
 ): Promise<SubmoduleInitResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const rows = await readWorktreeGitmodules(ctx);
   const updateModes = validateUpdateModes(rows);
   const selected = selectRows(rows, opts.paths);
@@ -284,7 +285,7 @@ const syncLevel = async (
   depth: number,
   visited: ReadonlySet<string>,
 ): Promise<SubmoduleSyncResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const selected = selectRows(await readWorktreeGitmodules(ctx), opts.paths);
   const config = await readConfig(ctx);
   const base = await resolveBaseUrl(ctx, config);
@@ -375,7 +376,7 @@ export const submoduleDeinit = async (
   ctx: Context,
   opts: SubmoduleDeinitOptions = {},
 ): Promise<SubmoduleDeinitResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   if ((opts.paths === undefined || opts.paths.length === 0) && opts.all !== true) {
     throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
   }
@@ -423,7 +424,7 @@ export const submoduleList = async (
   ctx: Context,
   opts: SubmoduleListOptions = {},
 ): Promise<SubmoduleListResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const ref = coerceRef(opts.ref ?? 'HEAD');
   const recursive = opts.recursive === true;
   const entries: SubmoduleEntry[] = [];
@@ -606,7 +607,7 @@ export const submoduleAdd = async (
   ctx: Context,
   opts: SubmoduleAddOptions,
 ): Promise<SubmoduleAddResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'submodule add');
   const name = opts.name ?? opts.path;
   assertAddInputs(name, opts.path, opts.url);
@@ -668,6 +669,31 @@ const gitlinkFromIndex = (
   index.entries.find((e) => e.path === path && e.mode === FILE_MODE.GITLINK)?.id;
 
 /**
+ * The update mode git applies, by precedence: `opts.mode` (CLI) over config
+ * `submodule.<n>.update` over the `.gitmodules` mode over the `checkout` default.
+ * The config mode overrides `.gitmodules` in both directions. An unrecognised
+ * config value refuses with the same `invalidOption` shape as the `.gitmodules`
+ * path (`validateUpdateModes`) — but only when no CLI mode shadows it: git
+ * validates the config value at the point it would be consumed, so a CLI mode
+ * overrides an invalid config value without reading it.
+ */
+const resolveUpdateMode = (
+  opts: SubmoduleUpdateOptions,
+  config: ParsedConfig,
+  gitmodulesMode: SubmoduleUpdateMode | undefined,
+  name: string,
+): SubmoduleUpdateMode => {
+  // A CLI mode wins without consuming the config value, so it is never validated.
+  if (opts.mode !== undefined) return opts.mode;
+  const configRaw = config.submodule?.get(name)?.update;
+  const configMode = configRaw === undefined ? undefined : parseUpdateMode(configRaw);
+  if (configRaw !== undefined && configMode === undefined) {
+    throw invalidOption(`submodule.${name}.update`, `invalid value '${configRaw}'`);
+  }
+  return configMode ?? gitmodulesMode ?? 'checkout';
+};
+
+/**
  * Reconcile a submodule to the pinned oid per `mode`. `checkout` detaches HEAD at
  * the pin (skipped when already detached there); `rebase`/`merge` delegate to the
  * faithful `rebaseRun`/`mergeRun` on the submodule's current branch. Returns
@@ -703,7 +729,7 @@ export const submoduleUpdate = async (
   ctx: Context,
   opts: SubmoduleUpdateOptions = {},
 ): Promise<SubmoduleUpdateResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'submodule update');
   const rows = await readWorktreeGitmodules(ctx);
   const selected = selectRows(rows, opts.paths);
@@ -714,12 +740,17 @@ export const submoduleUpdate = async (
   for (const row of selected) {
     const pinned = gitlinkFromIndex(index, row.path);
     if (pinned === undefined) continue;
+    // git reads `submodule.<n>.update` before `url` and refuses a valueless one
+    // with strict priority, regardless of file-line order — so this guard fires
+    // before the url-undefined branch below.
+    await assertNoValuelessConfig(ctx, 'submodule', row.name, ['update']);
     if (config.submodule?.get(row.name)?.url === undefined) {
+      await assertNoValuelessConfig(ctx, 'submodule', row.name, ['url']);
       if (opts.init !== true) continue;
       await submoduleInit(ctx, { paths: [row.path] });
       config = await readConfig(ctx);
     }
-    const mode = opts.mode ?? updateModes.get(row.name) ?? 'checkout';
+    const mode = resolveUpdateMode(opts, config, updateModes.get(row.name), row.name);
     if (mode === 'none') {
       entries.push({
         name: row.name,

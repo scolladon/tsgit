@@ -287,6 +287,69 @@ describe('primitives/run-hook runHook', () => {
       });
     });
   });
+
+  describe('Given a valueless core.hooksPath at line 2', () => {
+    describe('When runHook resolves the hooks dir', () => {
+      it('Then it refuses with CONFIG_MISSING_VALUE for core.hookspath at that line', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await runHook(ctx, 'pre-commit');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.hookspath');
+        expect(data.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a valued core.hooksPath', () => {
+    describe('When runHook resolves the hooks dir', () => {
+      it('Then it resolves to that directory without throwing', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath = /opt/gh\n');
+
+        // Act
+        await runHook(ctx, 'pre-commit');
+
+        // Assert
+        expect(runner.calls[0]?.hooksDir).toBe('/opt/gh');
+      });
+    });
+  });
+
+  describe('Given an absent core.hooksPath', () => {
+    describe('When runHook resolves the hooks dir', () => {
+      it('Then it resolves to the <gitDir>/hooks default without throwing', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await runHook(ctx, 'pre-commit');
+
+        // Assert
+        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/hooks`);
+      });
+    });
+  });
 });
 
 describe('primitives/run-hook runInformationalHook', () => {
@@ -437,6 +500,70 @@ describe('primitives/run-hook runInformationalHook', () => {
 
         // Assert
         expect('signal' in (runner.calls[0] ?? {})).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valueless core.hooksPath at line 2', () => {
+    describe('When runInformationalHook resolves the hooks dir', () => {
+      it('Then it also refuses with CONFIG_MISSING_VALUE for core.hookspath at that line', async () => {
+        // Arrange — the informational path shares the same resolution point, so it
+        // must refuse identically to the blocking runHook path.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await runInformationalHook(ctx, 'post-commit');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.hookspath');
+        expect(data.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a valued core.hooksPath', () => {
+    describe('When runInformationalHook resolves the hooks dir', () => {
+      it('Then it resolves to that directory without throwing', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath = /opt/gh\n');
+
+        // Act
+        await runInformationalHook(ctx, 'post-commit');
+
+        // Assert
+        expect(runner.calls[0]?.hooksDir).toBe('/opt/gh');
+      });
+    });
+  });
+
+  describe('Given an absent core.hooksPath', () => {
+    describe('When runInformationalHook resolves the hooks dir', () => {
+      it('Then it resolves to the <gitDir>/hooks default without throwing', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        await runInformationalHook(ctx, 'post-commit');
+
+        // Assert
+        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/hooks`);
       });
     });
   });
