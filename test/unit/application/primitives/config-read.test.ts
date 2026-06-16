@@ -4006,6 +4006,21 @@ describe('Given a section with valueless/valued entries across subsections', () 
       expect(result?.key).toBe('merge.Custom.driver');
       expect(result?.line).toBe(2);
     });
+
+    it('Then a flat (no-subsection) section key has no subsection segment', async () => {
+      // Arrange — a flat `[merge]` (no subsection) holding a valueless `driver`; the
+      // qualified key omits the subsection segment (`merge.driver`, not `merge..driver`).
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.driver');
+      expect(result?.line).toBe(2);
+    });
   });
 });
 
