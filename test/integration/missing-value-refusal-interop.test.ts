@@ -1219,6 +1219,127 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
     });
   });
 
+  /**
+   * A fixture controlling line numbers for the content-merge driver table. The
+   * valueless `[merge "custom"]` `driver` lands at line 4; git loads the whole
+   * `[merge *]` table when it content-merges a path and dies on it, even though
+   * no `.gitattributes` references the driver.
+   * Line 1: [core]
+   * Line 2: \trepositoryformatversion = 0
+   * Line 3: [merge "custom"]
+   * Line 4: \tdriver           <- valueless
+   */
+  const VALUELESS_MERGE_DRIVER_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[merge "custom"]\n\tdriver\n';
+  const VALUELESS_MERGE_DRIVER_LINE = 4;
+
+  /**
+   * Build two diverged branches whose tip commits edit the SAME file on
+   * non-overlapping lines, so merging `feature` into `main` forces a content
+   * merge of that path (driver-table load), not a fast-forward. The merge-driver
+   * config fixture is written LAST, replacing the whole file.
+   */
+  const setupContentMergeRepo = async (dir: string): Promise<void> => {
+    initRepo(dir);
+    const env = makeIdentityEnv();
+    await writeFile(path.join(dir, 'f.txt'), 'L1\nL2\nL3\n');
+    runGit(['-C', dir, 'add', 'f.txt'], { env });
+    runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env });
+    runGit(['-C', dir, 'checkout', '-q', '-b', 'feature'], { env });
+    await writeFile(path.join(dir, 'f.txt'), 'L1\nFEATURE\nL3\n');
+    runGit(['-C', dir, 'commit', '-q', '-am', 'feature'], { env });
+    runGit(['-C', dir, 'checkout', '-q', 'main'], { env });
+    await writeFile(path.join(dir, 'f.txt'), 'OURS\nL2\nL3\n');
+    runGit(['-C', dir, 'commit', '-q', '-am', 'ours'], { env });
+    await writeFile(path.join(dir, '.git', 'config'), VALUELESS_MERGE_DRIVER_FIXTURE);
+  };
+
+  describe('Given a config with a valueless merge.custom.driver and no .gitattributes', () => {
+    describe('When git merge feature is run', () => {
+      it('Then git refuses with exit 128 reporting merge.custom.driver', async () => {
+        // Arrange
+        await setupContentMergeRepo(ours);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'merge', 'feature'], { env: makeIdentityEnv() });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.custom.driver'");
+        expect(g.stderr).toContain("bad config variable 'merge.custom.driver'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_MERGE_DRIVER_LINE}`);
+      });
+    });
+
+    describe('When tsgit merge is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key merge.custom.driver and correct line', async () => {
+        // Arrange
+        await setupContentMergeRepo(ours);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'feature' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.custom.driver');
+        expect(data.line).toBe(VALUELESS_MERGE_DRIVER_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two merge lines from tsgit structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        await setupContentMergeRepo(ours);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'merge', 'feature'], { env: makeIdentityEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'feature' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+  });
+
   describe('Given a config with a valueless core.excludesFile (porcelain exemption)', () => {
     describe('When git config --list is run on the same file', () => {
       it('Then git config succeeds (refusal is at consumer, not read)', async () => {

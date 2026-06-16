@@ -1,3 +1,4 @@
+import { configMissingValue } from '../../domain/commands/error.js';
 import {
   type ContentMergeResult,
   type ContentMerger,
@@ -7,6 +8,7 @@ import {
   mergeContent,
 } from '../../domain/merge/index.js';
 import type { Context } from '../../ports/context.js';
+import { findFirstValuelessInSection } from './config-read.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { readBlob } from './read-blob.js';
 import { resolvePathMergeSpec } from './resolve-merge-driver.js';
@@ -37,6 +39,17 @@ import { runMergeDriver } from './run-merge-driver.js';
  * alongside the driver. Both feed the built-in markers and the external driver's
  * `%L`/`%S`/`%X`/`%Y`.
  */
+/**
+ * Refuse a valueless `[merge "<driver>"]` `driver` or `name` the way git does
+ * when it loads the merge-driver table at content-merge time: scan ALL
+ * `[merge *]` sections and die on the first such key by file line, even when no
+ * `.gitattributes` references the driver.
+ */
+const assertNoValuelessMergeDriver = async (ctx: Context): Promise<void> => {
+  const found = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
+  if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
+};
+
 export const buildContentMerger = (
   ctx: Context,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
@@ -44,7 +57,11 @@ export const buildContentMerger = (
   let providerPromise: Promise<AttributeProvider> | undefined;
   const provider = (): Promise<AttributeProvider> =>
     (providerPromise ??= buildAttributeProvider(ctx));
+  let guardPromise: Promise<void> | undefined;
+  const ensureNoValuelessMergeDriver = (): Promise<void> =>
+    (guardPromise ??= assertNoValuelessMergeDriver(ctx));
   return async (mergeCtx): Promise<ContentMergeResult> => {
+    await ensureNoValuelessMergeDriver();
     const [ours, theirs, base] = await Promise.all([
       // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),
