@@ -2524,3 +2524,166 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+/**
+ * Empty-string `core` path-likes feature-off parity. A valued-but-EMPTY
+ * (`''`, has `=`) `core.excludesFile`/`attributesFile` is feature-OFF in git
+ * (exit 0, no file loaded) — distinct from the VALUELESS (null, no `=`) refusal,
+ * which still dies 128 (the E3a-ctrl boundary). git's CLI cannot emit a valueless
+ * line, but it CAN write an empty one; we use `writeFile` for both to control the
+ * exact bytes (a trailing space after `=` then newline for empty; no `=` for
+ * valueless).
+ *
+ * The fixtures are light (a one-commit repo + a hand-written `[core]` config), so
+ * each case uses its own `beforeEach` tmpdir.
+ */
+const emptyCoreFixture = (key: string): string => `[core]\n\t${key} = \n`;
+const valuelessCorePathLikeFixture = (key: string): string => `[core]\n\t${key}\n`;
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'missing-value-refusal interop — empty core path-likes feature-off',
+  () => {
+    let ours: string;
+
+    beforeEach(async () => {
+      ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-empty-core-')));
+      runGit(['init', '-q', '-b', 'main', ours]);
+      await writeFile(path.join(ours, 'r.txt'), 'root\n');
+      runGit(['-C', ours, 'add', 'r.txt']);
+      runGit(['-C', ours, 'commit', '-q', '-m', 'root'], { env: CORE_AUTHOR_ENV });
+    });
+
+    afterEach(async () => {
+      await rm(ours, { recursive: true, force: true });
+    });
+
+    describe('Given an empty core.excludesFile and an untracked file (E3a)', () => {
+      describe('When git status and tsgit status run', () => {
+        it('Then git status exits 0 with the untracked file shown', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('excludesFile'));
+          await writeFile(path.join(ours, 'ignoreme.log'), 'noise\n');
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
+
+          // Assert — empty excludesFile is feature-off: no global ignore loaded
+          expect(g.ok).toBe(true);
+          expect(g.stdout).toContain('?? ignoreme.log');
+        });
+
+        it('Then tsgit status succeeds and reports the untracked file', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('excludesFile'));
+          await writeFile(path.join(ours, 'ignoreme.log'), 'noise\n');
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          const result = await repo.status();
+
+          // Assert — does not raise; the untracked file is visible
+          expect(result.untracked).toContain('ignoreme.log');
+        });
+      });
+    });
+
+    describe('Given an empty vs a valueless core.excludesFile (E3a-ctrl boundary)', () => {
+      describe('When git status and tsgit status run on each fixture', () => {
+        it('Then empty exits 0 in both while valueless dies 128 in both', async () => {
+          // Arrange — empty fixture
+          await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('excludesFile'));
+
+          // Act — empty: git exits 0, tsgit does not raise
+          const gEmpty = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
+          const emptyRepo = await openRepository({ cwd: ours });
+          let emptyCaught: unknown;
+          try {
+            await emptyRepo.status();
+          } catch (err) {
+            emptyCaught = err;
+          }
+
+          // Assert — empty is feature-off in both tools
+          expect(gEmpty.ok).toBe(true);
+          expect(emptyCaught).toBeUndefined();
+
+          // Arrange — valueless fixture (the control)
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            valuelessCorePathLikeFixture('excludesFile'),
+          );
+
+          // Act — valueless: git dies 128, tsgit refuses
+          const gValueless = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
+          const valuelessRepo = await openRepository({ cwd: ours });
+          let valuelessCaught: unknown;
+          try {
+            await valuelessRepo.status();
+          } catch (err) {
+            valuelessCaught = err;
+          }
+
+          // Assert — valueless still dies in both (the boundary the fix respects)
+          expect(gValueless.ok).toBe(false);
+          expect(gValueless.stderr).toContain("missing value for 'core.excludesfile'");
+          expect(valuelessCaught).toBeInstanceOf(TsgitError);
+          expect((valuelessCaught as TsgitError).data.code).toBe('CONFIG_MISSING_VALUE');
+        });
+      });
+    });
+
+    describe('Given an empty core.excludesFile and the config porcelain (E3a-cfg)', () => {
+      describe('When git config --list and tsgit configList run', () => {
+        it('Then both survive with the empty value kept', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('excludesFile'));
+          const configPath = path.join(ours, '.git', 'config');
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          const gList = tryRunGit(['config', '--file', configPath, '--list']);
+          const list = await configList(ctx, {});
+
+          // Assert — porcelain reads keep the empty value, unaffected by the fix
+          expect(gList.ok).toBe(true);
+          const listed = list.entries.find((e) => e.key === 'core.excludesfile');
+          expect(listed?.value).toBe('');
+        });
+      });
+    });
+
+    describe('Given an empty core.attributesFile (E3b)', () => {
+      describe('When git status / checkout and tsgit status run', () => {
+        it('Then git status and checkout . exit 0', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('attributesFile'));
+
+          // Act
+          const gStatus = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
+          const gCheckout = tryRunGit(['-C', ours, 'checkout', '.'], { env: runGitEnv() });
+
+          // Assert — empty attributesFile is feature-off, not a literal path
+          expect(gStatus.ok).toBe(true);
+          expect(gCheckout.ok).toBe(true);
+        });
+
+        it('Then tsgit status succeeds (does not raise)', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('attributesFile'));
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeUndefined();
+        });
+      });
+    });
+  },
+);

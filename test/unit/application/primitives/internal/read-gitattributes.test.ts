@@ -189,6 +189,37 @@ describe('buildAttributeProvider', () => {
     });
   });
 
+  describe('Given core.attributesFile = "" (empty, feature-off)', () => {
+    describe('When buildAttributeProvider resolves a path', () => {
+      it('Then no global source is yielded', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = \n');
+
+        // Act
+        const sut = await merge(ctx, 'a.txt');
+
+        // Assert — empty attributesFile is feature-off: no global rule applies
+        expect(sut).toBe('unspecified');
+      });
+
+      it('Then it never lstats the empty path', async () => {
+        // Arrange — the memory adapter resolves lstat('') to the rootDir
+        // directory, masking a bare unspecified assertion. The behavioral kill
+        // is the empty path being short-circuited before reaching resolution.
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = \n');
+        const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        await (await buildAttributeProvider(ctx)).sourcesForPath('a.txt' as FilePath);
+
+        // Assert
+        expect(lstatSpy).not.toHaveBeenCalledWith('');
+      });
+    });
+  });
+
   describe('Given a user macro defined in the root .gitattributes', () => {
     describe('When resolving a path the macro matches', () => {
       it('Then the macro expansion applies', async () => {
