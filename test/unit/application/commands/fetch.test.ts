@@ -225,6 +225,73 @@ describe('fetch', () => {
       });
     });
 
+    describe('Given a remote with a valueless pushurl but a valued url', () => {
+      describe('When fetch', () => {
+        it('Then throws CONFIG_MISSING_VALUE with key remote.origin.pushurl at line 3', async () => {
+          // Arrange — url valued at line 2, pushurl valueless at line 3; fetch dies
+          // on the valueless pushurl even though it never reads that URL (P5).
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "origin"]\n\turl = /tmp/x\n\tpushurl\n',
+          );
+          __resetConfigCacheForTests();
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            key: string;
+            line: number;
+            source: string;
+          };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('remote.origin.pushurl');
+          expect(data.line).toBe(3);
+          expect(data.source).toMatch(/\/config$/);
+        });
+      });
+    });
+
+    describe('Given a remote with both url and pushurl valueless, url earlier', () => {
+      describe('When fetch', () => {
+        it('Then throws CONFIG_MISSING_VALUE with key remote.origin.url at line 2', async () => {
+          // Arrange — url valueless at line 2, pushurl valueless at line 3 (P3).
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "origin"]\n\turl\n\tpushurl\n',
+          );
+          __resetConfigCacheForTests();
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('remote.origin.url');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+
     describe('Given an advertisement with zero refs', () => {
       describe('When fetch', () => {
         it('Then throws REMOTE_ADVERTISES_NO_REFS', async () => {

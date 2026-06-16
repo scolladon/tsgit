@@ -138,9 +138,9 @@ const resolveRemoteUrl = async (
 ): Promise<{ url: string; filter: string | undefined }> => {
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
+  await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url', 'pushurl']);
   // An absent OR empty url means the remote is not usably configured.
   if (remote?.url === undefined || remote.url === '') {
-    await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url']);
     throw remoteNotConfigured(remoteName);
   }
   // A partial repo re-applies its recorded filter so a fetch does not pull

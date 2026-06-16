@@ -151,12 +151,10 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   }
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
+  await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url', 'pushurl']);
   // `pushurl` overrides `url` for push (canonical-git parity).
   const url = remote?.pushUrl ?? remote?.url;
   if (url === undefined) {
-    // Only a valueless `url` reproduces git's lazy `missing value` die here; a
-    // valueless `pushurl` is not yet in scope (no pinned matrix row for it).
-    await assertNoValuelessConfig(ctx, 'remote', remoteName, ['url']);
     throw remoteNotConfigured(remoteName);
   }
   return url;

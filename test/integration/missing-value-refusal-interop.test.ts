@@ -488,4 +488,263 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
       });
     });
   });
+
+  /**
+   * A fixture controlling line numbers: a valued `url` (line 4) with a valueless
+   * `pushurl` (line 5). git dies on the valueless `pushurl` even though a usable
+   * url is present, on BOTH push and fetch.
+   * Line 1: [core]
+   * Line 2: \trepositoryformatversion = 0
+   * Line 3: [remote "origin"]
+   * Line 4: \turl = /tmp/nonexistent
+   * Line 5: \tpushurl          <- valueless
+   */
+  const VALUELESS_PUSHURL_VALUED_URL_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl = /tmp/nonexistent\n\tpushurl\n';
+  const VALUELESS_PUSHURL_LINE = 5;
+
+  describe('Given a config with a valued url and a valueless remote.origin.pushurl', () => {
+    describe('When git push origin main is run', () => {
+      it('Then git refuses with exit 128 reporting remote.origin.pushurl', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_PUSHURL_VALUED_URL_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], {
+          env: runGitEnv(),
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'remote.origin.pushurl'");
+        expect(g.stderr).toContain("bad config variable 'remote.origin.pushurl'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_PUSHURL_LINE}`);
+      });
+    });
+
+    describe('When git fetch origin is run', () => {
+      it('Then git refuses with exit 128 reporting remote.origin.pushurl', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_PUSHURL_VALUED_URL_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'fetch', 'origin'], {
+          env: runGitEnv(),
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'remote.origin.pushurl'");
+        expect(g.stderr).toContain("bad config variable 'remote.origin.pushurl'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_PUSHURL_LINE}`);
+      });
+    });
+
+    describe('When tsgit push is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key remote.origin.pushurl and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_PUSHURL_VALUED_URL_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.push({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('remote.origin.pushurl');
+        expect(data.line).toBe(VALUELESS_PUSHURL_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe('When tsgit fetch is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key remote.origin.pushurl and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_PUSHURL_VALUED_URL_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.fetch({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('remote.origin.pushurl');
+        expect(data.line).toBe(VALUELESS_PUSHURL_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two push lines from tsgit structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_PUSHURL_VALUED_URL_FIXTURE);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], {
+          env: runGitEnv(),
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.push({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe("When reconstructing git's two fetch lines from tsgit structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_PUSHURL_VALUED_URL_FIXTURE);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'fetch', 'origin'], {
+          env: runGitEnv(),
+        });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.fetch({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+  });
+
+  /**
+   * Both `url` (line 4) and `pushurl` (line 5) valueless — git reports the FIRST
+   * by file line (url), proving file-order ordering, NOT a `pushurl ?? url`
+   * resolution order (P3).
+   * Line 4: \turl              <- valueless (earlier)
+   * Line 5: \tpushurl          <- valueless
+   */
+  const BOTH_VALUELESS_URL_EARLIER_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl\n\tpushurl\n';
+  const BOTH_VALUELESS_URL_LINE = 4;
+
+  describe('Given a config with both url and pushurl valueless, url earlier', () => {
+    describe('When git push origin main is run', () => {
+      it('Then git refuses reporting the earlier key remote.origin.url', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), BOTH_VALUELESS_URL_EARLIER_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], {
+          env: runGitEnv(),
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'remote.origin.url'");
+        expect(g.stderr).toContain(`at line ${BOTH_VALUELESS_URL_LINE}`);
+      });
+    });
+
+    describe('When tsgit push is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE reporting the earlier key remote.origin.url', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), BOTH_VALUELESS_URL_EARLIER_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.push({ remote: 'origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('remote.origin.url');
+        expect(data.line).toBe(BOTH_VALUELESS_URL_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
 });
