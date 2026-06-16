@@ -28,6 +28,7 @@ import {
   assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export type ResetMode = 'soft' | 'mixed' | 'hard';
 
@@ -60,6 +61,7 @@ export interface ResetResult {
  */
 export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   if (opts.mode === 'hard') await assertNotBare(ctx, 'reset --hard');
   await assertNoPendingOperation(ctx);
   const id = await resolveTarget(ctx, opts.rev);

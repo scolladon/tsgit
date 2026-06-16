@@ -15,6 +15,7 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface BranchInfo {
   readonly name: RefName;
@@ -58,6 +59,7 @@ const HEADS_PREFIX = 'refs/heads/';
 
 export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const headsDir = `${ctx.layout.gitDir}/refs/heads`;
   if (!(await ctx.fs.exists(headsDir))) return { branches: [] };
   const head = await readHeadRaw(ctx);
@@ -94,6 +96,7 @@ export const branchCreate = async (
   input: BranchCreateInput,
 ): Promise<BranchCreateResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   const startPoint = input.startPoint ?? 'HEAD';
   const target = await resolveBranchTarget(ctx, startPoint);
@@ -119,6 +122,7 @@ export const branchDelete = async (
   input: BranchDeleteInput,
 ): Promise<BranchDeleteResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === name) {
@@ -136,6 +140,7 @@ export const branchRename = async (
   input: BranchRenameInput,
 ): Promise<BranchRenameResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
   const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);

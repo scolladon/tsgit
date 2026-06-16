@@ -37,6 +37,7 @@ import {
   assertRepository,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { removeFile } from './internal/working-tree.js';
 
 // A predicate (not a static Set) so Stryker attributes per-test coverage to
@@ -65,6 +66,7 @@ export const rm = async (
   opts: RmOptions = {},
 ): Promise<RmResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();

@@ -31,6 +31,7 @@ import {
   assertNotBare,
   assertRepository,
 } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { renameInWorkingTree, validatePath } from './internal/working-tree.js';
 
 // Same tolerance set as `rm`: a missing-or-unparsable index is treated as
@@ -94,6 +95,7 @@ export const mv = async (
   opts: MvOptions = {},
 ): Promise<MvResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'mv');
   await assertNoPendingOperation(ctx);
   const validatedSources = sources.map((source) => validatePath(source));

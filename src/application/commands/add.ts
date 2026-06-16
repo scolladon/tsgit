@@ -31,6 +31,7 @@ import {
   assertRepository,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { readFile } from './internal/working-tree.js';
 
 const INDEX_MISSING_CODES = new Set([
@@ -69,6 +70,7 @@ export const add = async (
   opts: AddOptions = {},
 ): Promise<AddResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'add');
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.

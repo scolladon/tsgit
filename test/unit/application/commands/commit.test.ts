@@ -817,4 +817,59 @@ describe('commit — hooks', () => {
   });
 });
 
+describe('commit — valueless core path-like refusal', () => {
+  describe('Given a repo with a valueless core.hooksPath and a supplied identity', () => {
+    describe('When commit', () => {
+      it('Then it throws CONFIG_MISSING_VALUE for core.hookspath', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath\n');
+        const sut = commit;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { message: 'm', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.hookspath');
+        expect(data.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a valueless core.hooksPath and no configured identity', () => {
+    describe('When commit', () => {
+      it('Then the core guard fires before the user-identity guard', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath\n');
+        const sut = commit;
+
+        // Act — no author supplied, so the identity guard would otherwise fire
+        let caught: unknown;
+        try {
+          await sut(ctx, { message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — core dies first, not AUTHOR_UNCONFIGURED
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.hookspath');
+      });
+    });
+  });
+});
+
 afterEach(() => __resetConfigCacheForTests());
