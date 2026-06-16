@@ -16,8 +16,7 @@ import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readTree } from '../primitives/read-tree.js';
 import type { ReadObjectOptions } from '../primitives/types.js';
-import { assertRepository } from './internal/repo-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
 
 /** Structured result of reading a file's bytes as of a revision. */
@@ -45,8 +44,7 @@ export const readFileAt = async (
   path: string,
   options?: ReadObjectOptions,
 ): Promise<ReadFileAtResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const revOid = await revParse(ctx, rev);
   const rootTree = await readTree(ctx, revOid);
   const entry = await descendTreePath(ctx, rootTree, path, rev);

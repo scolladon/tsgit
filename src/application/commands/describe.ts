@@ -34,8 +34,7 @@ import {
   parseDescribeOptions,
   type ResolvedDescribePlan,
 } from './internal/describe-options.js';
-import { assertRepository } from './internal/repo-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 import { type NameRevResult, nameRev } from './name-rev.js';
 import { status } from './status.js';
 
@@ -97,8 +96,7 @@ export async function describe(
   rev?: string,
   opts: DescribeOptions = {},
 ): Promise<DescribeResult | NameRevResult> {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   if (opts.contains === true) return describeContains(ctx, rev, parseContainsOptions(opts));
   const plan = parseDescribeOptions(opts, rev !== undefined);
   const target = await resolveCommitIsh(ctx, rev ?? DEFAULT_REV);

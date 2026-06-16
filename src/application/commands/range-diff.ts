@@ -22,9 +22,8 @@ import { diffTrees } from '../primitives/diff-trees.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { readObject } from '../primitives/read-object.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export type {
   RangeDiffCommit,
@@ -120,8 +119,7 @@ export const rangeDiff = async (
   ctx: Context,
   opts: RangeDiffOptions,
 ): Promise<ReadonlyArray<RangeDiffEntry>> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const creationFactor = resolveCreationFactor(opts.creationFactor);
   const oldSeries = await readSeries(ctx, opts.old);
   const newSeries = await readSeries(ctx, opts.new);

@@ -19,18 +19,16 @@ import { getRefStore } from '../primitives/ref-store.js';
 import { readReflog, reflogExists } from '../primitives/reflog-store.js';
 import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 import {
   parseExpression,
   type ReflogSelector,
   type RevExpression,
   type RevOperation,
 } from './internal/rev-parse-grammar.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const expr = parseExpression(expression);
   return evaluate(ctx, expr, expression);
 };

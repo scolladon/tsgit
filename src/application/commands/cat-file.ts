@@ -13,8 +13,7 @@ import { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { catFileBatch } from '../primitives/cat-file-batch.js';
 import type { CatFileBatchEntry, CatFileBatchOptions } from '../primitives/types.js';
-import { assertRepository } from './internal/repo-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 
 export type { CatFileBatchEntry };
 
@@ -37,8 +36,7 @@ const coerceId = (id: ObjectId | string): ObjectId =>
   typeof id === 'string' ? ObjectId.from(id) : id;
 
 export const catFile = async (ctx: Context, opts: CatFileInput): Promise<CatFileResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const ids = opts.ids.map(coerceId);
   const batchOptions: CatFileBatchOptions | undefined =
     opts.maxBytes === undefined ? undefined : { maxBytes: opts.maxBytes };

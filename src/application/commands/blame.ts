@@ -28,8 +28,7 @@ import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
-import { assertRepository } from './internal/repo-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 
 const LINK_ENCODER = new TextEncoder();
 
@@ -116,8 +115,7 @@ export const blame = async (
   path: string,
   opts: BlameOptions = {},
 ): Promise<BlameResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const filePath = FilePathFactory.from(path);
   const board: Scoreboard = { ctx, queue: [], finalized: [] };
   if (opts.worktree === true) {

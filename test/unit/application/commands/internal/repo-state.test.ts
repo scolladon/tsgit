@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  assertCommandPreamble,
   assertNoPendingOperation,
   assertNotBare,
   assertRepository,
   isBare,
   readHeadRaw,
 } from '../../../../../src/application/commands/internal/repo-state.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
@@ -390,6 +392,73 @@ describe('internal/repo-state', () => {
           } else {
             expect.fail(`expected OPERATION_IN_PROGRESS, got ${data.code}`);
           }
+        });
+      });
+    });
+  });
+
+  describe('assertCommandPreamble', () => {
+    describe('Given a non-repo ctx with a valueless core.excludesFile present', () => {
+      describe('When assertCommandPreamble', () => {
+        it('Then the repo check wins — throws NOT_A_REPOSITORY before the core guard', async () => {
+          // Arrange — no HEAD (not a repo) but a valueless core key is also present,
+          // proving the repo assert runs first.
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  excludesFile\n');
+          invalidateConfigCache(ctx);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCommandPreamble(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_REPOSITORY');
+        });
+      });
+    });
+
+    describe('Given a repo with a valueless core.excludesFile', () => {
+      describe('When assertCommandPreamble', () => {
+        it('Then throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  excludesFile\n');
+          invalidateConfigCache(ctx);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCommandPreamble(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          if (data.code === 'CONFIG_MISSING_VALUE') {
+            expect(data.key).toBe('core.excludesfile');
+          }
+        });
+      });
+    });
+
+    describe('Given a clean repo', () => {
+      describe('When assertCommandPreamble', () => {
+        it('Then resolves', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+
+          // Act + Assert — must not throw.
+          await assertCommandPreamble(ctx);
         });
       });
     });
