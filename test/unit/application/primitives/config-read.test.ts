@@ -4,6 +4,7 @@ import {
   __resetConfigCacheForTests,
   type ConfigToken,
   findFirstValuelessEntry,
+  findFirstValuelessInSection,
   type IniSection,
   invalidateConfigCache,
   parseIniSections,
@@ -3842,6 +3843,161 @@ describe('Given a config with valueless/valued entries', () => {
 
       // Act
       const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('When findFirstValuelessInSection', () => {
+    it('Then returns the qualified key for a valueless entry in a single subsection', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[branch "main"]\n\tmerge\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result?.key).toBe('branch.main.merge');
+      expect(result?.line).toBe(2);
+      expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+    });
+
+    it('Then reports the earlier valueless entry across distinct subsections', async () => {
+      // Arrange — two valueless branch sections; the scan must report the one
+      // earlier by file line regardless of its subsection (not a fixed/current one).
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[branch "a"]\n\tmerge\n[branch "b"]\n\tmerge\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result?.key).toBe('branch.a.merge');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then matches a valueless entry under any subsection of the section', async () => {
+      // Arrange — the only branch section is some non-"main" subsection; the scan
+      // is subsection-agnostic and must still find it.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[branch "b"]\n\tmerge\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result?.key).toBe('branch.b.merge');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then returns undefined for a valueless key under a non-matching section', async () => {
+      // Arrange — the valueless key sits under a section other than the target.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[other "x"]\n\tmerge\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined for an empty-string value (not valueless)', async () => {
+      // Arrange — `merge = ` parses to '', a distinct valued state; only
+      // `value === null` is valueless. Mutant (value !== undefined) would match it.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[branch "main"]\n\tmerge = \n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then lower-folds section and key while keeping the subsection verbatim', async () => {
+      // Arrange — section + key fold to lower-case; the subsection is preserved.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[branch "Main"]\n\tMerge\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result?.key).toBe('branch.Main.merge');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then reaches the other key in the set when it is the valueless one', async () => {
+      // Arrange — `merge` is valued, `remote` is valueless; the set's second key
+      // must be reachable.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[branch "main"]\n\tremote\n\tmerge = origin/main\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result?.key).toBe('branch.main.remote');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then returns undefined for a valueless target key before any section header', async () => {
+      // Arrange — a pre-header bare key must NOT match: inSection starts false
+      // and is only set when a matching header is seen.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '\tmerge\n[branch "main"]\n\tremote = origin\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined for a valueless non-target key under a matching section', async () => {
+      // Arrange — a valueless key NOT in the requested set must be skipped.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[branch "main"]\n\tfoo\n\tremote = origin\n');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined when the config file is missing', async () => {
+      // Arrange — no config file written at all.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then returns undefined when the config file is empty', async () => {
+      // Arrange — an empty config has no sections.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '');
+
+      // Act
+      const result = await sut(ctx, 'branch', ['merge', 'remote']);
 
       // Assert
       expect(result).toBeUndefined();

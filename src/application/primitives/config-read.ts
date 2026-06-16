@@ -150,6 +150,46 @@ export const findFirstValuelessEntry = async (
 };
 
 /**
+ * Subsection-wildcard sibling of `findFirstValuelessEntry`: return the FIRST
+ * valueless (`value === null`) entry, by config-file line, whose key
+ * (case-insensitive) is one of `keys` and which sits under ANY subsection of
+ * `[<section> …]` (the matched header's subsection is kept verbatim in the
+ * qualified key). Section and key are lower-cased; the subsection is preserved
+ * as written (`branch.Main.merge`). Returns the qualified key, the absolute
+ * config path, and the 1-based line, or `undefined`. Runs ONLY on a refusal path.
+ */
+export const findFirstValuelessInSection = async (
+  ctx: Context,
+  section: string,
+  keys: ReadonlyArray<string>,
+): Promise<ValuelessEntry | undefined> => {
+  const path = `${commonGitDir(ctx)}/config`;
+  const raw = await readRawConfig(ctx, path);
+  if (raw === undefined) return undefined;
+  const tokens = tokenizeConfig(raw, path);
+  const keySet = new Set(keys.map((k) => k.toLowerCase()));
+  const loweredSection = section.toLowerCase();
+  let subsection: string | undefined;
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = token.section.toLowerCase() === loweredSection;
+      subsection = token.subsection;
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!keySet.has(loweredKey)) continue;
+    const qualifiedKey =
+      subsection === undefined
+        ? `${loweredSection}.${loweredKey}`
+        : `${loweredSection}.${subsection}.${loweredKey}`;
+    return { key: qualifiedKey, source: path, line: token.startLine + 1 };
+  }
+  return undefined;
+};
+
+/**
  * One `[section "subsection"]` block of a git-config-format INI file: the
  * section name, an optional quoted subsection, and its key/value entries.
  * Exported so `.gitmodules` parsing — byte-identical grammar — reuses one

@@ -12,6 +12,7 @@ export { computeChangeset } from './compute-changeset.js';
 export type { IniSection, ParsedConfig, ValuelessEntry } from './config-read.js';
 export {
   findFirstValuelessEntry,
+  findFirstValuelessInSection,
   invalidateConfigCache,
   parseIniSections,
   readConfig,
