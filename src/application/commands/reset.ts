@@ -23,12 +23,11 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
+  assertCommandPreamble,
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export type ResetMode = 'soft' | 'mixed' | 'hard';
 
@@ -60,8 +59,7 @@ export interface ResetResult {
  * ahead of HEAD — same recoverable hazard as canonical git.
  */
 export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   if (opts.mode === 'hard') await assertNotBare(ctx, 'reset --hard');
   await assertNoPendingOperation(ctx);
   const id = await resolveTarget(ctx, opts.rev);

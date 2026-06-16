@@ -35,16 +35,13 @@ import {
   readMergeMsg,
 } from './internal/merge-state.js';
 import {
+  assertCommandPreamble,
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
-import {
-  assertNoValuelessConfig,
-  assertNoValuelessCoreConfig,
-} from './internal/valueless-config-guard.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -73,8 +70,7 @@ export interface CommitResult {
  * and `allowEmptyMessage` is not set.
  */
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'commit');
   // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
   // clear its marker — skip that marker's check. All other in-progress operations

@@ -26,12 +26,11 @@ import type { IgnorePredicate } from './internal/add-ignore.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
+  assertCommandPreamble,
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { readFile } from './internal/working-tree.js';
 
 const INDEX_MISSING_CODES = new Set([
@@ -69,8 +68,7 @@ export const add = async (
   paths: ReadonlyArray<string>,
   opts: AddOptions = {},
 ): Promise<AddResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'add');
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.

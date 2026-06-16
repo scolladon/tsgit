@@ -20,13 +20,12 @@ import { walkTree } from '../primitives/walk-tree.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
+  assertCommandPreamble,
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface CheckoutSwitchOptions {
   readonly rev: string;
@@ -306,8 +305,7 @@ const enumerateSourcePaths = async (
 };
 
 export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'checkout');
   await assertNoPendingOperation(ctx);
 

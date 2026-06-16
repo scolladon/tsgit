@@ -11,8 +11,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { assertRepository, readHeadRaw } from './internal/repo-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
+import { assertCommandPreamble, readHeadRaw } from './internal/repo-state.js';
 
 export interface TagInfo {
   readonly name: RefName;
@@ -43,8 +42,7 @@ export interface TagDeleteResult {
 const TAGS_PREFIX = 'refs/tags/';
 
 export const tagList = async (ctx: Context): Promise<TagListResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const dir = `${ctx.layout.gitDir}/refs/tags`;
   if (!(await ctx.fs.exists(dir))) return { tags: [] };
   const entries = await ctx.fs.readdir(dir);
@@ -63,8 +61,7 @@ export const tagList = async (ctx: Context): Promise<TagListResult> => {
 };
 
 export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<TagCreateResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
   const target = input.target !== undefined ? input.target : await currentHeadId(ctx);
   const id = /^[0-9a-f]{40}$/.test(target)
@@ -88,8 +85,7 @@ export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<Ta
 };
 
 export const tagDelete = async (ctx: Context, input: TagDeleteInput): Promise<TagDeleteResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
   if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`))) {
     throw tagNotFound(name);
