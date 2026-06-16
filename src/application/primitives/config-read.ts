@@ -103,13 +103,53 @@ export interface ValuelessEntry {
   readonly line: number;
 }
 
-const matchesSection = (
-  tokenSection: string,
-  tokenSubsection: string | undefined,
+/** A header that belongs to the scanned section, carrying the subsection to report verbatim. */
+interface SectionMatch {
+  readonly reportSubsection: string | undefined;
+}
+
+/**
+ * Shared cold-path walk behind both valueless finders: re-tokenize the repo-local
+ * config and return the FIRST valueless (`value === null`) entry, by config-file
+ * line, whose key (case-insensitive) is one of `keys` and which sits under a header
+ * accepted by `matchHeader` (`undefined` ⇒ that header is not in the scanned
+ * section). The qualified key lower-cases section and key; the subsection is taken
+ * verbatim from the matched header's `reportSubsection`. Returns the qualified key,
+ * the absolute config path, and the 1-based line, or `undefined`.
+ */
+const scanFirstValueless = async (
+  ctx: Context,
   section: string,
-  subsection: string | undefined,
-): boolean =>
-  tokenSection.toLowerCase() === section.toLowerCase() && tokenSubsection === subsection;
+  keys: ReadonlyArray<string>,
+  matchHeader: (
+    headerSection: string,
+    headerSubsection: string | undefined,
+  ) => SectionMatch | undefined,
+): Promise<ValuelessEntry | undefined> => {
+  const path = `${commonGitDir(ctx)}/config`;
+  const raw = await readRawConfig(ctx, path);
+  if (raw === undefined) return undefined;
+  const tokens = tokenizeConfig(raw, path);
+  const keySet = new Set(keys.map((k) => k.toLowerCase()));
+  const loweredSection = section.toLowerCase();
+  let match: SectionMatch | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      match = matchHeader(token.section, token.subsection);
+      continue;
+    }
+    if (match === undefined || token.kind !== 'entry' || token.value !== null) continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!keySet.has(loweredKey)) continue;
+    const subsection = match.reportSubsection;
+    const qualifiedKey =
+      subsection === undefined
+        ? `${loweredSection}.${loweredKey}`
+        : `${loweredSection}.${subsection}.${loweredKey}`;
+    return { key: qualifiedKey, source: path, line: token.startLine + 1 };
+  }
+  return undefined;
+};
 
 /**
  * Cold-path detection: re-tokenize the repo-local config and return the FIRST
@@ -119,35 +159,17 @@ const matchesSection = (
  * key, the absolute config path, and the 1-based line, or `undefined` when no such
  * entry exists. Runs ONLY on a command's refusal path.
  */
-export const findFirstValuelessEntry = async (
+export const findFirstValuelessEntry = (
   ctx: Context,
   section: string,
   subsection: string | undefined,
   keys: ReadonlyArray<string>,
-): Promise<ValuelessEntry | undefined> => {
-  const path = `${commonGitDir(ctx)}/config`;
-  const raw = await readRawConfig(ctx, path);
-  if (raw === undefined) return undefined;
-  const tokens = tokenizeConfig(raw, path);
-  const keySet = new Set(keys.map((k) => k.toLowerCase()));
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, section, subsection);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
-    const loweredKey = token.key.toLowerCase();
-    if (!keySet.has(loweredKey)) continue;
-    const loweredSection = section.toLowerCase();
-    const qualifiedKey =
-      subsection === undefined
-        ? `${loweredSection}.${loweredKey}`
-        : `${loweredSection}.${subsection}.${loweredKey}`;
-    return { key: qualifiedKey, source: path, line: token.startLine + 1 };
-  }
-  return undefined;
-};
+): Promise<ValuelessEntry | undefined> =>
+  scanFirstValueless(ctx, section, keys, (hSec, hSub) =>
+    hSec.toLowerCase() === section.toLowerCase() && hSub === subsection
+      ? { reportSubsection: subsection }
+      : undefined,
+  );
 
 /**
  * Subsection-wildcard sibling of `findFirstValuelessEntry`: return the FIRST
@@ -158,36 +180,14 @@ export const findFirstValuelessEntry = async (
  * as written (`branch.Main.merge`). Returns the qualified key, the absolute
  * config path, and the 1-based line, or `undefined`. Runs ONLY on a refusal path.
  */
-export const findFirstValuelessInSection = async (
+export const findFirstValuelessInSection = (
   ctx: Context,
   section: string,
   keys: ReadonlyArray<string>,
-): Promise<ValuelessEntry | undefined> => {
-  const path = `${commonGitDir(ctx)}/config`;
-  const raw = await readRawConfig(ctx, path);
-  if (raw === undefined) return undefined;
-  const tokens = tokenizeConfig(raw, path);
-  const keySet = new Set(keys.map((k) => k.toLowerCase()));
-  const loweredSection = section.toLowerCase();
-  let subsection: string | undefined;
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === loweredSection;
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
-    const loweredKey = token.key.toLowerCase();
-    if (!keySet.has(loweredKey)) continue;
-    const qualifiedKey =
-      subsection === undefined
-        ? `${loweredSection}.${loweredKey}`
-        : `${loweredSection}.${subsection}.${loweredKey}`;
-    return { key: qualifiedKey, source: path, line: token.startLine + 1 };
-  }
-  return undefined;
-};
+): Promise<ValuelessEntry | undefined> =>
+  scanFirstValueless(ctx, section, keys, (hSec, hSub) =>
+    hSec.toLowerCase() === section.toLowerCase() ? { reportSubsection: hSub } : undefined,
+  );
 
 /**
  * One `[section "subsection"]` block of a git-config-format INI file: the
