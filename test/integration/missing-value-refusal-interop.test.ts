@@ -971,4 +971,176 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
       });
     });
   });
+
+  /**
+   * A fixture controlling line numbers. The valueless `core.excludesFile` lands
+   * at line 3; git dies eagerly on it for nearly every command (here `status`).
+   * Line 1: [core]
+   * Line 2: \trepositoryformatversion = 0
+   * Line 3: \texcludesFile     <- valueless
+   */
+  const VALUELESS_CORE_EXCLUDES_FIXTURE = '[core]\n\trepositoryformatversion = 0\n\texcludesFile\n';
+  const VALUELESS_CORE_EXCLUDES_LINE = 3;
+
+  describe('Given a config with a valueless core.excludesFile', () => {
+    describe('When git status is run', () => {
+      it('Then git refuses with exit 128 reporting core.excludesfile', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_CORE_EXCLUDES_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'core.excludesfile'");
+        expect(g.stderr).toContain("bad config variable 'core.excludesfile'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_CORE_EXCLUDES_LINE}`);
+      });
+    });
+
+    describe('When tsgit status is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key core.excludesfile and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_CORE_EXCLUDES_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.status();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.excludesfile');
+        expect(data.line).toBe(VALUELESS_CORE_EXCLUDES_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two status lines from tsgit structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_CORE_EXCLUDES_FIXTURE);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.status();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+  });
+
+  /**
+   * An empty-string (valued) `core.excludesFile = ` — git does NOT die on it,
+   * only on a valueless (null) key. tsgit must not raise either.
+   * Line 3: \texcludesFile =   <- empty string (valued)
+   */
+  const EMPTY_CORE_EXCLUDES_FIXTURE = '[core]\n\trepositoryformatversion = 0\n\texcludesFile = \n';
+
+  describe('Given a config with an empty-string core.excludesFile', () => {
+    describe('When git status is run', () => {
+      it('Then git succeeds with exit 0 (empty is distinct from valueless)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), EMPTY_CORE_EXCLUDES_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(true);
+      });
+    });
+
+    describe('When tsgit status is run', () => {
+      it('Then it does not raise CONFIG_MISSING_VALUE (empty is valued, not valueless)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), EMPTY_CORE_EXCLUDES_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act — capture whatever status does; the valueless guard must not fire
+        let caught: unknown;
+        try {
+          await repo.status();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — an empty-string path-like never trips the null-only refusal
+        const code =
+          caught instanceof TsgitError ? (caught.data as { code?: string }).code : undefined;
+        expect(code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+
+  describe('Given a config with a valueless core.excludesFile (porcelain exemption)', () => {
+    describe('When git config --list is run on the same file', () => {
+      it('Then git config succeeds (refusal is at consumer, not read)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_CORE_EXCLUDES_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['config', '--file', path.join(ours, '.git', 'config'), '--list']);
+
+        // Assert
+        expect(g.ok).toBe(true);
+      });
+    });
+
+    describe('When tsgit configList is run on the same file', () => {
+      it('Then tsgit configList does not throw (refusal is at consumer, not read)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_CORE_EXCLUDES_FIXTURE);
+        const ctx = createNodeContext({ workDir: ours });
+
+        // Act + Assert — no throw
+        await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
 });

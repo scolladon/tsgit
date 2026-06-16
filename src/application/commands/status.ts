@@ -24,6 +24,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -112,6 +113,7 @@ interface GranularityTracker {
  */
 export const status = async (ctx: Context): Promise<StatusResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const head = await readHeadRaw(ctx);
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   const detached = head.kind === 'direct';

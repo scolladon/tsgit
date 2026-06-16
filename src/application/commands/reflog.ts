@@ -17,6 +17,7 @@ import { listReflogs, readReflog, reflogExists, writeReflog } from '../primitive
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertRepository } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export type ReflogAction =
   | { readonly action?: 'show'; readonly ref?: string }
@@ -64,6 +65,7 @@ const resolveUserRef = (ref: string): RefName => validateRefName(ref);
 
 export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<ReflogResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   if (opts.action === 'exists') return runExists(ctx, opts.ref);
   if (opts.action === 'delete') return runDelete(ctx, opts);
   if (opts.action === 'expire') return runExpire(ctx, opts);

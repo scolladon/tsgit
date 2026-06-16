@@ -4,6 +4,7 @@ import { diffTrees } from '../primitives/diff-trees.js';
 import type { DiffTreesOptions } from '../primitives/types.js';
 import { assertRepository } from './internal/repo-state.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface DiffOptions {
   /** Resolve to a tree. Accepts any revision (ref, oid, `HEAD`, `~`/`^` grammar). */
@@ -31,6 +32,7 @@ export function diff(ctx: Context, opts: DiffOptions & { withStat: true }): Prom
 export function diff(ctx: Context, opts?: DiffOptions): Promise<TreeDiff>;
 export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDiff | StatTreeDiff> {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const from = await resolveTreeish(ctx, opts.from ?? 'HEAD');
   const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
   const treeOptions: DiffTreesOptions = {

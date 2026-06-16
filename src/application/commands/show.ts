@@ -25,6 +25,7 @@ import type { Context } from '../../ports/context.js';
 import { readObject } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertRepository } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { revParse } from './rev-parse.js';
 
 export type ShowInput = string | ReadonlyArray<string>;
@@ -102,6 +103,7 @@ export async function show(
   opts: ShowOptions = {},
 ): Promise<ShowResult | ReadonlyArray<ShowResult>> {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const withStat = opts.withStat === true;
   if (typeof rev === 'string') return buildForRev(ctx, rev, withStat);
   const results: ShowResult[] = [];

@@ -15,6 +15,7 @@ import {
   toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   FileMode,
@@ -1134,6 +1135,37 @@ describe('status — unmerged column', () => {
 
         // Assert
         expect(sut.unmerged).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('status — valueless core path-like refusal', () => {
+  describe('Given a repo with a valueless core.excludesFile', () => {
+    describe('When status', () => {
+      it('Then it throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        const sut = status;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.excludesfile');
+        expect(data.line).toBe(2);
       });
     });
   });

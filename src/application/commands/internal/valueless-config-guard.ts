@@ -36,3 +36,14 @@ export const assertNoValuelessInSection = async (
   const found = await findFirstValuelessInSection(ctx, section, keys);
   if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
 };
+
+/**
+ * Refuse with `CONFIG_MISSING_VALUE` when any of the flat `core` path-like keys
+ * (`excludesfile`/`attributesfile`/`hookspath`, case-insensitive) is
+ * present-but-valueless, reporting the FIRST such entry by config-file line.
+ * Call from every command's preamble (after `assertRepository`) to reproduce
+ * git's eager `git_default_core_config` die; never from `config`, which stays
+ * non-throwing on valueless keys.
+ */
+export const assertNoValuelessCoreConfig = (ctx: Context): Promise<void> =>
+  assertNoValuelessConfig(ctx, 'core', undefined, ['excludesfile', 'attributesfile', 'hookspath']);

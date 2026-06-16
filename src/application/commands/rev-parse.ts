@@ -26,9 +26,11 @@ import {
   type RevExpression,
   type RevOperation,
 } from './internal/rev-parse-grammar.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const expr = parseExpression(expression);
   return evaluate(ctx, expr, expression);
 };

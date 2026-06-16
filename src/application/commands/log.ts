@@ -4,6 +4,7 @@ import { walkCommits } from '../primitives/walk-commits.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 /**
  * Walk order. `'date'` (default) yields every reachable commit across all
@@ -41,6 +42,7 @@ export const log = async (
   opts: LogOptions = {},
 ): Promise<ReadonlyArray<LogEntry>> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const startId = await resolveCommit(ctx, opts.rev ?? 'HEAD');
   const exclude = await Promise.all((opts.excluding ?? []).map((r) => resolveCommit(ctx, r)));
   const before = opts.before;
