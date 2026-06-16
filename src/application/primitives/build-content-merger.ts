@@ -1,3 +1,4 @@
+import { configMissingValue } from '../../domain/commands/error.js';
 import {
   type ContentMergeResult,
   type ContentMerger,
@@ -7,6 +8,7 @@ import {
   mergeContent,
 } from '../../domain/merge/index.js';
 import type { Context } from '../../ports/context.js';
+import { findFirstValuelessInSection } from './config-read.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { readBlob } from './read-blob.js';
 import { resolvePathMergeSpec } from './resolve-merge-driver.js';
@@ -44,7 +46,13 @@ export const buildContentMerger = (
   let providerPromise: Promise<AttributeProvider> | undefined;
   const provider = (): Promise<AttributeProvider> =>
     (providerPromise ??= buildAttributeProvider(ctx));
+  let driverGuard: Promise<void> | undefined;
+  const ensureNoValuelessMergeDriver = (): Promise<void> =>
+    (driverGuard ??= findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']).then((found) => {
+      if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
+    }));
   return async (mergeCtx): Promise<ContentMergeResult> => {
+    await ensureNoValuelessMergeDriver();
     const [ours, theirs, base] = await Promise.all([
       // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
       readBlob(ctx, mergeCtx.ourId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }),

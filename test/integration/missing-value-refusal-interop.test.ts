@@ -1226,6 +1226,193 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
 });
 
 /**
+ * Valueless `[merge "custom"]` driver with NO `.gitattributes` referencing it.
+ * The driver lands at line 4 — the eager content-merge chokepoint scans the whole
+ * `[merge *]` table independent of attribute resolution, so ANY 3-way content
+ * merge dies on it. Two diverged graphs distinguish the cases:
+ *  - M4: both sides edit `f.txt` on NON-overlapping lines (auto-resolves, no
+ *    conflict) — the merge still dies on the valueless driver, proving the death
+ *    is at table load, not at conflict.
+ *  - M3: only one side advances (fast-forward) — no 3-way content merge runs, so
+ *    the valueless driver is never read and the merge succeeds.
+ */
+const VALUELESS_CUSTOM_DRIVER_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "custom"]\n\tdriver\n';
+const VALUELESS_CUSTOM_DRIVER_LINE = 4;
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'missing-value-refusal interop — merge driver chokepoint (no attribute)',
+  () => {
+    let m4Peer: string;
+    let m4Ours: string;
+    let ffPeer: string;
+    let ffOurs: string;
+
+    /** Build a graph diverging on non-overlapping edits of `f.txt` (auto-resolves). */
+    const buildAutoResolveGraph = async (dir: string): Promise<void> => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      await writeFile(path.join(dir, 'f.txt'), 'A\nB\nC\nD\nE\n');
+      runGit(['-C', dir, 'add', 'f.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', '-b', 'theirs']);
+      await writeFile(path.join(dir, 'f.txt'), 'A\nB\nC\nD\nEEE\n');
+      runGit(['-C', dir, 'add', 'f.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'theirs'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', 'main']);
+      await writeFile(path.join(dir, 'f.txt'), 'AAA\nB\nC\nD\nE\n');
+      runGit(['-C', dir, 'add', 'f.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'ours'], { env: MERGE_AUTHOR_ENV });
+    };
+
+    /** Build a graph where `theirs` strictly advances `main` (fast-forward). */
+    const buildFastForwardGraph = async (dir: string): Promise<void> => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      await writeFile(path.join(dir, 'f.txt'), 'A\n');
+      runGit(['-C', dir, 'add', 'f.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', '-b', 'theirs']);
+      await writeFile(path.join(dir, 'f.txt'), 'A\nB\n');
+      runGit(['-C', dir, 'add', 'f.txt']);
+      runGit(['-C', dir, 'commit', '-q', '-m', 'theirs'], { env: MERGE_AUTHOR_ENV });
+      runGit(['-C', dir, 'checkout', '-q', 'main']);
+    };
+
+    const writeConfig = async (dir: string): Promise<void> => {
+      await writeFile(path.join(dir, '.git', 'config'), VALUELESS_CUSTOM_DRIVER_FIXTURE);
+    };
+
+    beforeAll(async () => {
+      m4Peer = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-m4-peer-')));
+      m4Ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-m4-ours-')));
+      ffPeer = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-ff-peer-')));
+      ffOurs = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-ff-ours-')));
+      await buildAutoResolveGraph(m4Peer);
+      await buildAutoResolveGraph(m4Ours);
+      await buildFastForwardGraph(ffPeer);
+      await buildFastForwardGraph(ffOurs);
+      await writeConfig(m4Peer);
+      await writeConfig(m4Ours);
+      await writeConfig(ffPeer);
+      await writeConfig(ffOurs);
+    }, 60_000);
+
+    afterAll(async () => {
+      for (const dir of [m4Peer, m4Ours, ffPeer, ffOurs]) {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    describe('Given a valueless merge.custom.driver, NO attribute, and an auto-resolving content merge', () => {
+      it('Then git refuses with exit 128 reporting merge.custom.driver at its line', () => {
+        // Act
+        const g = tryRunGit(['-C', m4Peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.custom.driver'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_CUSTOM_DRIVER_LINE}`);
+      });
+
+      it('Then tsgit throws CONFIG_MISSING_VALUE with key merge.custom.driver and the same line', async () => {
+        // Arrange
+        const repo = await openRepository({ cwd: m4Ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.custom.driver');
+        expect(data.line).toBe(VALUELESS_CUSTOM_DRIVER_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Act — run both git and tsgit against the same-shape fixture
+        const g = tryRunGit(['-C', m4Peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: m4Ours });
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { key: string; line: number };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+
+    describe('Given the same valueless driver but a fast-forward merge (no content merge)', () => {
+      it('Then git merge exits 0 (lazy — the driver table is never read)', () => {
+        // Act
+        const g = tryRunGit(['-C', ffPeer, 'merge', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+
+        // Assert
+        expect(g.ok).toBe(true);
+      });
+
+      it('Then tsgit merge succeeds and does not raise CONFIG_MISSING_VALUE', async () => {
+        // Arrange
+        const repo = await openRepository({ cwd: ffOurs });
+
+        // Act
+        let caught: unknown;
+        let result: { kind: string } | undefined;
+        try {
+          result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — no death; the fast-forward materializes zero content-merge paths
+        expect(caught).toBeUndefined();
+        expect(result?.kind).toBe('fast-forward');
+      });
+
+      it('Then git status exits 0 on the same valueless-driver fixture (read command is lazy)', () => {
+        // Act
+        const g = tryRunGit(['-C', ffOurs, 'status', '--porcelain'], { env: MERGE_AUTHOR_ENV });
+
+        // Assert
+        expect(g.ok).toBe(true);
+      });
+    });
+  },
+);
+
+/**
  * Heavy submodule block (`file://` upstream submodule). One shared `beforeAll`
  * builds a real upstream sub (two commits C1→C2), a superproject pinning the sub
  * at C2 via a relative url, and `.gitmodules` declaring it — exactly the

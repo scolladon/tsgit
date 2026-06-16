@@ -170,6 +170,44 @@ export const findFirstValuelessEntry = async (
 };
 
 /**
+ * Subsection-wildcard sibling of `findFirstValuelessEntry`: scan EVERY subsection
+ * of `section` (case-insensitive section match, any `subsection`) and return the
+ * FIRST valueless (`value === null`) entry, by config-file line, whose key
+ * (case-insensitive) is one of `keys`. The qualified key keeps the matched
+ * header's subsection verbatim (`${section}.${subsection}.${key}`, section + key
+ * lower-cased), or `${section}.${key}` for the subsectionless form. Consumes the
+ * cached token stream — one walk, no extra read. Used by the content-merge
+ * chokepoint to reproduce git's whole-`[merge *]`-table valueless death.
+ */
+export const findFirstValuelessInSection = async (
+  ctx: Context,
+  section: string,
+  keys: ReadonlyArray<string>,
+): Promise<ValuelessEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  const keySet = new Set(keys.map((k) => k.toLowerCase()));
+  const loweredSection = section.toLowerCase();
+  let subsection: string | undefined;
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = token.section.toLowerCase() === loweredSection;
+      subsection = token.subsection;
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!keySet.has(loweredKey)) continue;
+    const qualifiedKey =
+      subsection === undefined
+        ? `${loweredSection}.${loweredKey}`
+        : `${loweredSection}.${subsection}.${loweredKey}`;
+    return { key: qualifiedKey, source: path, line: token.startLine + 1 };
+  }
+  return undefined;
+};
+
+/**
  * One `[section "subsection"]` block of a git-config-format INI file: the
  * section name, an optional quoted subsection, and its key/value entries.
  * Exported so `.gitmodules` parsing — byte-identical grammar — reuses one

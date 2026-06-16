@@ -4,6 +4,7 @@ import {
   __resetConfigCacheForTests,
   type ConfigToken,
   findFirstValuelessEntry,
+  findFirstValuelessInSection,
   type IniSection,
   invalidateConfigCache,
   parseIniSections,
@@ -3917,6 +3918,93 @@ describe('Given a config with valueless/valued entries', () => {
 
       // Assert
       expect(result).toBeUndefined();
+    });
+  });
+});
+
+describe('Given a section with valueless/valued entries across subsections', () => {
+  describe('When findFirstValuelessInSection scans every subsection of the section', () => {
+    it('Then it reports a valueless key in the only subsection with its verbatim subsection', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "custom"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.custom.driver');
+      expect(result?.line).toBe(2);
+      expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+    });
+
+    it('Then it reports the earlier-by-line key across two subsections with its verbatim subsection', async () => {
+      // Arrange — name valueless at line 2 (subsection zzz), driver valueless at
+      // line 4 (subsection aaa); the earlier line wins regardless of lexical order.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "zzz"]\n\tname\n[merge "aaa"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.zzz.name');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then it does not report a valueless key under a non-matching section', async () => {
+      // Arrange — the valueless key sits under [other], not [merge].
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[other "custom"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then it does not report an empty-string (valued) key, only a null one', async () => {
+      // Arrange — `driver = ` is valued (empty string), not valueless.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "custom"]\n\tdriver = \n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then it does not report a valueless non-target key under a matching subsection', async () => {
+      // Arrange — `recursive` is not in the requested key set.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "custom"]\n\trecursive\n\tdriver = mycmd\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then it lower-cases the section and key but keeps the subsection verbatim', async () => {
+      // Arrange — section/key matched case-insensitively; subsection case preserved.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[Merge "Custom"]\n\tDRIVER\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.Custom.driver');
+      expect(result?.line).toBe(2);
     });
   });
 });
