@@ -375,6 +375,38 @@ describe('pull', () => {
     });
   });
 
+  describe('Given a detached HEAD and a sectionless [branch] valueless remote', () => {
+    describe('When pull', () => {
+      it('Then skips the branch guard, throwing NO_UPSTREAM_CONFIGURED not CONFIG_MISSING_VALUE', async () => {
+        // Arrange — detached HEAD (no current branch); a sectionless `[branch]`
+        // holds a valueless `remote`. The guard is gated on a current branch, so a
+        // detached HEAD must never read `[branch]` config for the valueless check.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const a = await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${a}\n`);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[remote "origin"]\n\turl = ${REMOTE_URL}\n[branch]\n\tremote\n`,
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const code = (caught as { data?: { code?: string } })?.data?.code;
+        expect(code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+
   describe('Given a bare repository', () => {
     describe('When pull', () => {
       it('Then throws before issuing any fetch', async () => {
