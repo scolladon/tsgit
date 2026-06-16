@@ -7,6 +7,14 @@ import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 const HOOKS_SUBDIR = 'hooks';
 
+/**
+ * Sentinel subdirectory an empty (`''`) `core.hooksPath` resolves to. git never
+ * creates it, so every `${dir}/<hook>` lookup misses and no hook ever fires —
+ * git's "empty hooksPath ⇒ feature-off" without re-enabling the default-dir
+ * hook (absent) or a worktree-root one (CWD).
+ */
+export const NO_HOOKS_SUBDIR = '.tsgit-no-hooks';
+
 /** True for a POSIX-absolute (`/…`) or Windows-absolute (`C:\…`) path. */
 const isAbsolutePath = (path: string): boolean =>
   path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path);
@@ -15,7 +23,9 @@ const isAbsolutePath = (path: string): boolean =>
  * Resolve the directory hook scripts live in: `core.hooksPath` when set, else
  * `${gitDir}/hooks`. An absolute `hooksPath` is used verbatim; a `~/`-prefixed
  * one expands against `layout.homeDir` (falling back to the default when no
- * home is known); a relative one resolves against the working-tree root.
+ * home is known); a relative one resolves against the working-tree root. An
+ * empty `hooksPath` is feature-off — distinct from absent (which fires the
+ * default dir) — so it resolves to a reserved no-hooks sentinel directory.
  */
 export const resolveHooksDir = (
   hooksPath: string | undefined,
@@ -23,6 +33,7 @@ export const resolveHooksDir = (
 ): string => {
   const fallback = `${layout.gitDir}/${HOOKS_SUBDIR}`;
   if (hooksPath === undefined) return fallback;
+  if (hooksPath === '') return `${layout.gitDir}/${NO_HOOKS_SUBDIR}`;
   if (hooksPath.startsWith('~/')) {
     return layout.homeDir === undefined ? fallback : `${layout.homeDir}/${hooksPath.slice(2)}`;
   }

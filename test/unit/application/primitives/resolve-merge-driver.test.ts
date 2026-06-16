@@ -204,93 +204,7 @@ describe('resolvePathMergeSpec — driver resolution', () => {
   });
 });
 
-describe('resolvePathMergeSpec — valueless merge driver config', () => {
-  const chooseData = async (
-    ctx: Context,
-    path: string,
-  ): Promise<{ code?: string; key?: string; line?: number; source?: string }> => {
-    try {
-      await choose(ctx, path);
-    } catch (err) {
-      return (err as { data?: { code?: string; key?: string; line?: number; source?: string } })
-        .data as { code?: string; key?: string; line?: number; source?: string };
-    }
-    return {};
-  };
-
-  describe('Given merge=mydriver with a present-but-valueless driver', () => {
-    describe('When resolving', () => {
-      it('Then throws CONFIG_MISSING_VALUE for merge.mydriver.driver at its line', async () => {
-        // Arrange — driver valueless at line 2.
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=mydriver\n', '[merge "mydriver"]\n\tdriver\n');
-
-        // Act
-        const sut = await chooseData(ctx, 'a.txt');
-
-        // Assert
-        expect(sut.code).toBe('CONFIG_MISSING_VALUE');
-        expect(sut.key).toBe('merge.mydriver.driver');
-        expect(sut.line).toBe(2);
-        expect(sut.source).toMatch(/\/config$/);
-      });
-    });
-  });
-
-  describe('Given merge=mydriver with a valued driver but a valueless name', () => {
-    describe('When resolving', () => {
-      it('Then throws CONFIG_MISSING_VALUE for merge.mydriver.name at its line', async () => {
-        // Arrange — driver valued at line 2; name valueless at line 3.
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=mydriver\n', '[merge "mydriver"]\n\tdriver = mycmd\n\tname\n');
-
-        // Act
-        const sut = await chooseData(ctx, 'a.txt');
-
-        // Assert
-        expect(sut.code).toBe('CONFIG_MISSING_VALUE');
-        expect(sut.key).toBe('merge.mydriver.name');
-        expect(sut.line).toBe(3);
-      });
-    });
-  });
-
-  describe('Given both driver and name valueless with driver earlier', () => {
-    describe('When resolving', () => {
-      it('Then reports the earlier-by-line key merge.mydriver.driver', async () => {
-        // Arrange — driver valueless at line 2, name valueless at line 3.
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=mydriver\n', '[merge "mydriver"]\n\tdriver\n\tname\n');
-
-        // Act
-        const sut = await chooseData(ctx, 'a.txt');
-
-        // Assert
-        expect(sut.code).toBe('CONFIG_MISSING_VALUE');
-        expect(sut.key).toBe('merge.mydriver.driver');
-        expect(sut.line).toBe(2);
-      });
-    });
-  });
-
-  describe('Given both driver and name valueless with name earlier', () => {
-    describe('When resolving', () => {
-      it('Then reports the earlier-by-line key merge.mydriver.name', async () => {
-        // Arrange — name valueless at line 2, driver valueless at line 3.
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=mydriver\n', '[merge "mydriver"]\n\tname\n\tdriver\n');
-
-        // Act
-        const sut = await chooseData(ctx, 'a.txt');
-
-        // Assert
-        expect(sut.code).toBe('CONFIG_MISSING_VALUE');
-        expect(sut.key).toBe('merge.mydriver.name');
-        expect(sut.line).toBe(2);
-      });
-    });
-  });
-
+describe('resolvePathMergeSpec — valueless merge driver config is not guarded here', () => {
   describe('Given merge=mydriver with no matching config section', () => {
     describe('When resolving', () => {
       it('Then it falls back to the text driver and does not throw', async () => {
@@ -327,11 +241,29 @@ describe('resolvePathMergeSpec — valueless merge driver config', () => {
     });
   });
 
+  describe('Given a valueless driver under a [merge "mydriver"] section', () => {
+    describe('When resolving the spec (no chokepoint scan here)', () => {
+      it('Then resolvePathMergeSpec does not throw — the guard lives at the chokepoint', async () => {
+        // Arrange — the guard moved to buildContentMerger; resolvePathMergeSpec
+        // itself no longer scans config for valueless drivers. A valueless
+        // [merge "mydriver"] driver resolves driverless → built-in text.
+        const ctx = createMemoryContext();
+        await seed(ctx, '* merge=mydriver\n', '[merge "mydriver"]\n\tdriver\n');
+
+        // Act
+        const result = await choose(ctx, 'a.txt');
+
+        // Assert
+        expect(result).toEqual({ kind: 'text' });
+      });
+    });
+  });
+
   describe('Given merge=text built-in name with a valueless driver under a same-named section', () => {
     describe('When resolving', () => {
       it('Then the built-in text driver is chosen without consulting config', async () => {
-        // Arrange — built-in name returns before the guard, so the valueless
-        // [merge "text"] section is never read.
+        // Arrange — built-in name returns before any config read, so the
+        // valueless [merge "text"] section is never consulted.
         const ctx = createMemoryContext();
         await seed(ctx, '* merge=text\n', '[merge "text"]\n\tdriver\n');
 

@@ -4,6 +4,7 @@ import {
   __resetConfigCacheForTests,
   type ConfigToken,
   findFirstValuelessEntry,
+  findFirstValuelessInSection,
   type IniSection,
   invalidateConfigCache,
   parseIniSections,
@@ -1559,6 +1560,78 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(sut).not.toThrow();
+      });
+    });
+  });
+
+  describe('Given readConfig has warmed the cache for a config with a valueless [core] path-like', () => {
+    describe('When findFirstValuelessEntry runs on the same context', () => {
+      it('Then fs.readUtf8 for the config path is invoked once across both', async () => {
+        // Arrange — one tokenize/read shared between the parse and the finder.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\texcludesfile\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await readConfig(ctx);
+        const result = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+
+        // Assert — the finder served the cached tokens, no second read.
+        expect(result?.key).toBe('core.excludesfile');
+        expect(result?.line).toBe(2);
+        expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+
+      it('Then after invalidateConfigCache the next finder re-reads (spy count 2)', async () => {
+        // Arrange — shared invalidation drops both parse and tokens together.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\texcludesfile\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await readConfig(ctx);
+        invalidateConfigCache(ctx);
+        await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('When findFirstValuelessEntry runs before readConfig', () => {
+      it('Then a finder before readConfig also serves the cache (single read)', async () => {
+        // Arrange — the finder warms the same entry readConfig then reuses.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\texcludesfile\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const found = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+        const parsed = await readConfig(ctx);
+
+        // Assert — one read, and readConfig yields the parse built from those tokens.
+        expect(found?.key).toBe('core.excludesfile');
+        expect(parsed.core).toBeUndefined();
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given an absent config the cache has warmed', () => {
+    describe('When findFirstValuelessEntry runs on the same context', () => {
+      it('Then an absent config is served from cache without a second fs hit', async () => {
+        // Arrange — the FILE_NOT_FOUND outcome caches tokens: [] for the finder.
+        const ctx = createMemoryContext();
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await readConfig(ctx);
+        const result = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(spy).toHaveBeenCalledTimes(1);
       });
     });
   });
@@ -3845,6 +3918,108 @@ describe('Given a config with valueless/valued entries', () => {
 
       // Assert
       expect(result).toBeUndefined();
+    });
+  });
+});
+
+describe('Given a section with valueless/valued entries across subsections', () => {
+  describe('When findFirstValuelessInSection scans every subsection of the section', () => {
+    it('Then it reports a valueless key in the only subsection with its verbatim subsection', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "custom"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.custom.driver');
+      expect(result?.line).toBe(2);
+      expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+    });
+
+    it('Then it reports the earlier-by-line key across two subsections with its verbatim subsection', async () => {
+      // Arrange — name valueless at line 2 (subsection zzz), driver valueless at
+      // line 4 (subsection aaa); the earlier line wins regardless of lexical order.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "zzz"]\n\tname\n[merge "aaa"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.zzz.name');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then it does not report a valueless key under a non-matching section', async () => {
+      // Arrange — the valueless key sits under [other], not [merge].
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[other "custom"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then it does not report an empty-string (valued) key, only a null one', async () => {
+      // Arrange — `driver = ` is valued (empty string), not valueless.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "custom"]\n\tdriver = \n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then it does not report a valueless non-target key under a matching subsection', async () => {
+      // Arrange — `recursive` is not in the requested key set.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "custom"]\n\trecursive\n\tdriver = mycmd\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then it lower-cases the section and key but keeps the subsection verbatim', async () => {
+      // Arrange — section/key matched case-insensitively; subsection case preserved.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[Merge "Custom"]\n\tDRIVER\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.Custom.driver');
+      expect(result?.line).toBe(2);
+    });
+
+    it('Then a flat (no-subsection) section key has no subsection segment', async () => {
+      // Arrange — a flat `[merge]` (no subsection) holding a valueless `driver`; the
+      // qualified key omits the subsection segment (`merge.driver`, not `merge..driver`).
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert
+      expect(result?.key).toBe('merge.driver');
+      expect(result?.line).toBe(2);
     });
   });
 });

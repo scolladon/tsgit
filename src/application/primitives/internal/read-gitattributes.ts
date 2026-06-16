@@ -32,7 +32,7 @@ const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
 
 const readGlobal = async (ctx: Context): Promise<ParsedAttributes | undefined> => {
   const raw = (await readConfig(ctx)).core?.attributesFile;
-  if (raw === undefined) return undefined;
+  if (raw === undefined || raw === '') return undefined;
   const resolved = expandUserPath(ctx, raw);
   if (resolved === undefined) return undefined;
   return loadAndParse(ctx, resolved);

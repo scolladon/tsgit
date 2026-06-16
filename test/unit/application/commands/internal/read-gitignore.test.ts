@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   readGitignore,
@@ -160,6 +160,38 @@ describe('readGlobalExcludes', () => {
 
         // Assert
         expect(await readGlobalExcludes(ctx)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given core.excludesFile = "" (empty, feature-off)', () => {
+    describe('When readGlobalExcludes runs', () => {
+      it('Then it returns undefined', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile = \n');
+
+        // Act
+        const sut = await readGlobalExcludes(ctx);
+
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+
+      it('Then it never lstats the empty path', async () => {
+        // Arrange — the memory adapter resolves lstat('') to the rootDir
+        // directory, which masks a bare toBeUndefined() assertion. The
+        // behavioral kill is that the empty path is short-circuited before
+        // it can ever reach resolution.
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile = \n');
+        const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        await readGlobalExcludes(ctx);
+
+        // Assert
+        expect(lstatSpy).not.toHaveBeenCalledWith('');
       });
     });
   });

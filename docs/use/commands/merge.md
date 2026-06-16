@@ -129,10 +129,14 @@ shared with `stash apply` / `cherry-pick` / `revert` / `rebase`:
   conflict). `%L` is the resolved `conflict-marker-size` (default 7); `%S` / `%X`
   / `%Y` are the base / ours / theirs conflict labels.
 
-When a path selects `merge=<name>` and the chosen `merge.<name>.driver` or
-`merge.<name>.name` is present but valueless (git NULL), the content merge refuses
-`CONFIG_MISSING_VALUE` (`{ key, source, line }`) rather than falling back to the
-built-in driver. An absent `[merge "<name>"]` section keeps the built-in fallback.
+Any real 3-way content merge loads the whole `[merge "*"]` table: if any
+`merge.<name>.driver` or `merge.<name>.name` is present but valueless (git NULL),
+the content merge refuses `CONFIG_MISSING_VALUE` (`{ key, source, line }` — the
+first valueless key by config-file line) rather than falling back to the built-in
+driver. This fires regardless of whether any path's `.gitattributes` `merge=<name>`
+attribute selects that driver — a configured-but-unused valueless driver refuses
+too. It stays lazy: a fast-forward (no content merge) and read commands never load
+the table. An absent `[merge "<name>"]` section keeps the built-in fallback.
 
 In Node the driver runs by default; pass `openRepository({ command: false })` to
 disable external drivers (they fall back to the built-in merge). The browser /
