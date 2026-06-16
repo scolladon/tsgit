@@ -5057,3 +5057,55 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 });
+
+describe('Given a cached config entry shared by readConfig and the valueless finders', () => {
+  describe('When a finder runs after readConfig on the same Context', () => {
+    it('Then the config file is read only once', async () => {
+      // Arrange — readConfig populates the per-Context entry; the finder must
+      // reuse its cached tokens instead of re-reading + re-tokenizing the file.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      await readConfig(ctx);
+      await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
+
+      // Assert — one underlying read shared by both consumers.
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('When readConfig runs after a finder on the same Context', () => {
+    it('Then the config file is read only once', async () => {
+      // Arrange — the inverse order: the finder primes the entry, readConfig reuses it.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
+      await readConfig(ctx);
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('When the cache is invalidated between readConfig and a finder', () => {
+    it('Then the finder re-reads the config file', async () => {
+      // Arrange — invalidation drops the shared entry, forcing a fresh read.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      await readConfig(ctx);
+      invalidateConfigCache(ctx);
+      await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
+
+      // Assert — the dropped entry forces a second underlying read.
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+  });
+});

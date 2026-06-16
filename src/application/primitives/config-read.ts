@@ -46,10 +46,21 @@ export interface ParsedConfig {
   readonly extensions?: { readonly partialClone?: string };
 }
 
+/**
+ * The single per-Context cache value: the parsed view, the raw token stream the
+ * parse was built from, and the config path the tokens came from. Both consumers
+ * (`readConfig` and the valueless finders) share one tokenize per Context.
+ */
+interface ConfigCacheEntry {
+  readonly parsed: ParsedConfig;
+  readonly tokens: ReadonlyArray<ConfigToken>;
+  readonly source: string;
+}
+
 // Cache reference is mutable so test code can swap in a fresh WeakMap and
 // guarantee isolation between cases that re-use the same Context identity
 // (the WeakMap itself can't be iterated, so a true reset requires replacement).
-let cache: WeakMap<Context, Promise<ParsedConfig>> = new WeakMap();
+let cache: WeakMap<Context, Promise<ConfigCacheEntry>> = new WeakMap();
 
 /**
  * Read and cache `${gitDir}/config`. Missing → empty config (not an error).
@@ -58,10 +69,18 @@ let cache: WeakMap<Context, Promise<ParsedConfig>> = new WeakMap();
  * that re-creates the repo) gets a fresh read. Concurrent calls share the same
  * in-flight promise (per-context single-flight).
  */
-export const readConfig = (ctx: Context): Promise<ParsedConfig> => {
+export const readConfig = (ctx: Context): Promise<ParsedConfig> =>
+  readConfigEntry(ctx).then((entry) => entry.parsed);
+
+/**
+ * Single-flight accessor for the per-Context cache entry. Both `readConfig` and
+ * the valueless finders read through here, so the file is read and tokenized
+ * once per Context regardless of which consumer arrives first.
+ */
+const readConfigEntry = (ctx: Context): Promise<ConfigCacheEntry> => {
   const existing = cache.get(ctx);
   if (existing !== undefined) return existing;
-  const pending = loadConfig(ctx);
+  const pending = loadConfigEntry(ctx);
   cache.set(ctx, pending);
   return pending;
 };
@@ -81,11 +100,12 @@ export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx);
 };
 
-const loadConfig = async (ctx: Context): Promise<ParsedConfig> => {
+const loadConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   const path = `${commonGitDir(ctx)}/config`;
   const raw = await readRawConfig(ctx, path);
-  if (raw === undefined) return {};
-  return parseConfigText(raw, path);
+  if (raw === undefined) return { parsed: {}, tokens: [], source: path };
+  const tokens = tokenizeConfig(raw, path);
+  return { parsed: assembleParsed(parseIniSectionsFromTokens(tokens)), tokens, source: path };
 };
 
 const readRawConfig = async (ctx: Context, path: string): Promise<string | undefined> => {
@@ -109,9 +129,9 @@ interface SectionMatch {
 }
 
 /**
- * Shared cold-path walk behind both valueless finders: re-tokenize the repo-local
- * config and return the FIRST valueless (`value === null`) entry, by config-file
- * line, whose key (case-insensitive) is one of `keys` and which sits under a header
+ * Shared cold-path walk behind both valueless finders: reuse the per-Context
+ * cached config tokens and return the FIRST valueless (`value === null`) entry, by
+ * config-file line, whose key (case-insensitive) is one of `keys` and which sits under a header
  * accepted by `matchHeader` (`undefined` ⇒ that header is not in the scanned
  * section). The qualified key lower-cases section and key; the subsection is taken
  * verbatim from the matched header's `reportSubsection`. Returns the qualified key,
@@ -126,10 +146,7 @@ const scanFirstValueless = async (
     headerSubsection: string | undefined,
   ) => SectionMatch | undefined,
 ): Promise<ValuelessEntry | undefined> => {
-  const path = `${commonGitDir(ctx)}/config`;
-  const raw = await readRawConfig(ctx, path);
-  if (raw === undefined) return undefined;
-  const tokens = tokenizeConfig(raw, path);
+  const { tokens, source } = await readConfigEntry(ctx);
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
   const loweredSection = section.toLowerCase();
   let match: SectionMatch | undefined;
@@ -146,14 +163,14 @@ const scanFirstValueless = async (
       subsection === undefined
         ? `${loweredSection}.${loweredKey}`
         : `${loweredSection}.${subsection}.${loweredKey}`;
-    return { key: qualifiedKey, source: path, line: token.startLine + 1 };
+    return { key: qualifiedKey, source, line: token.startLine + 1 };
   }
   return undefined;
 };
 
 /**
- * Cold-path detection: re-tokenize the repo-local config and return the FIRST
- * valueless (`value === null`) entry, by config-file line, whose key
+ * Cold-path detection: reuse the per-Context cached config tokens and return the
+ * FIRST valueless (`value === null`) entry, by config-file line, whose key
  * (case-insensitive) is one of `keys` and which sits under `[<section> "<subsection>"]`
  * (subsection `undefined` ⇒ the section with no subsection). Returns the fully-qualified
  * key, the absolute config path, and the 1-based line, or `undefined` when no such
@@ -241,11 +258,6 @@ export type ConfigToken =
     }
   | { readonly kind: 'comment'; readonly line: number }
   | { readonly kind: 'blank'; readonly line: number };
-
-const parseConfigText = (text: string, source: string): ParsedConfig => {
-  const sections = parseIniSections(text, source);
-  return assembleParsed(sections);
-};
 
 /** One scanned key: its name, its value (`null` when valueless), and the line after it. */
 interface ScannedKey {
@@ -479,11 +491,22 @@ export const skipGitSpace = (line: string, start: number): number => {
  * (alpha-first, `[a-zA-Z0-9-]`, then space/TAB and `=`-or-EOL) refuses anything
  * else — `bad!key`, `9key`, a mid-key `#`/`;` — with `CONFIG_PARSE_ERROR`.
  */
-export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
+export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> =>
+  parseIniSectionsFromTokens(tokenizeConfig(text, source));
+
+/**
+ * Assemble `IniSection`s from an already-tokenized config stream, so a caller
+ * holding the tokens (e.g. `loadConfigEntry`) does not tokenize the same text a
+ * second time. The leading orphan section is emitted only when it gathered an
+ * entry — a header-only stream yields no leading empty section.
+ */
+const parseIniSectionsFromTokens = (
+  tokens: ReadonlyArray<ConfigToken>,
+): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
   const orphan: SectionBuilder = { section: '', subsection: undefined, entries: [] };
   let current: SectionBuilder = orphan;
-  for (const token of tokenizeConfig(text, source)) {
+  for (const token of tokens) {
     if (token.kind === 'header') {
       current = { section: token.section, subsection: token.subsection, entries: [] };
       sections.push(current);

@@ -18,6 +18,7 @@ import {
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -3652,6 +3653,7 @@ describe('merge — valueless core path-like refusal', () => {
         await add(ctx, ['a.txt']);
         const c = await commit(ctx, { message: 'first', author });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        invalidateConfigCache(ctx);
 
         // Act
         let caught: unknown;

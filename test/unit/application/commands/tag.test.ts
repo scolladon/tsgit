@@ -4,7 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { tagCreate, tagDelete, tagList } from '../../../../src/application/commands/tag.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  invalidateConfigCache,
+} from '../../../../src/application/primitives/config-read.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
@@ -351,6 +354,7 @@ describe('tag — valueless core path-like refusal', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        invalidateConfigCache(ctx);
         const sut = tagList;
 
         // Act

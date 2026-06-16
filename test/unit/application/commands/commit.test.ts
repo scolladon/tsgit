@@ -4,7 +4,10 @@ import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-ru
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  invalidateConfigCache,
+} from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -824,6 +827,7 @@ describe('commit — valueless core path-like refusal', () => {
         // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath\n');
+        invalidateConfigCache(ctx);
         const sut = commit;
 
         // Act
@@ -853,6 +857,7 @@ describe('commit — valueless core path-like refusal', () => {
         // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath\n');
+        invalidateConfigCache(ctx);
         const sut = commit;
 
         // Act — no author supplied, so the identity guard would otherwise fire

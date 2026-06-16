@@ -14,6 +14,7 @@ import {
   toStagedKind,
   toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -1147,6 +1148,7 @@ describe('status — valueless core path-like refusal', () => {
         // Arrange
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        invalidateConfigCache(ctx);
         const sut = status;
 
         // Act

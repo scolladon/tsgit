@@ -6,6 +6,7 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 
@@ -1613,6 +1614,7 @@ describe('checkout — valueless core path-like refusal', () => {
         // Arrange
         const { ctx } = await seedWithBranches();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tattributesFile\n');
+        invalidateConfigCache(ctx);
         const sut = checkout;
 
         // Act

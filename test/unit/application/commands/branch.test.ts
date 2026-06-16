@@ -10,7 +10,10 @@ import {
 } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  invalidateConfigCache,
+} from '../../../../src/application/primitives/config-read.js';
 import { readReflog, reflogExists } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
@@ -617,6 +620,7 @@ describe('branch — valueless core path-like refusal', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        invalidateConfigCache(ctx);
         const sut = branchList;
 
         // Act
