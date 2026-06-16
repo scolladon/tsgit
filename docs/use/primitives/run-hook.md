@@ -19,7 +19,7 @@ interface HookInput {
 
 ## Behaviour
 
-- Honours `core.hooksPath` from `.git/config`.
+- Honours `core.hooksPath` from `.git/config`. A **valueless** `core.hooksPath` (git NULL) refuses with `CONFIG_MISSING_VALUE` via the eager core-config guard on hook-firing commands; an **empty-string** `core.hooksPath` means no hook fires (feature-off) — distinct from **absent**, which falls back to `.git/hooks`.
 - Inherits `process.env` by default; pass `env` to override per call.
 - Returns the exit code so callers can decide whether non-zero is a failure (default policy in `commit` / `push` is to throw `HOOK_FAILED`; lower-level callers can be more permissive).
 
