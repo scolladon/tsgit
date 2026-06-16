@@ -58,8 +58,7 @@ import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
 import { clone } from './clone.js';
-import { assertNotBare, assertRepository } from './internal/repo-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
+import { assertCommandPreamble, assertNotBare } from './internal/repo-state.js';
 import { mergeRun } from './merge.js';
 import { rebaseRun } from './rebase.js';
 import { status } from './status.js';
@@ -201,8 +200,7 @@ export const submoduleInit = async (
   ctx: Context,
   opts: SubmoduleInitOptions = {},
 ): Promise<SubmoduleInitResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const rows = await readWorktreeGitmodules(ctx);
   const updateModes = validateUpdateModes(rows);
   const selected = selectRows(rows, opts.paths);
@@ -286,8 +284,7 @@ const syncLevel = async (
   depth: number,
   visited: ReadonlySet<string>,
 ): Promise<SubmoduleSyncResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const selected = selectRows(await readWorktreeGitmodules(ctx), opts.paths);
   const config = await readConfig(ctx);
   const base = await resolveBaseUrl(ctx, config);
@@ -378,8 +375,7 @@ export const submoduleDeinit = async (
   ctx: Context,
   opts: SubmoduleDeinitOptions = {},
 ): Promise<SubmoduleDeinitResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   if ((opts.paths === undefined || opts.paths.length === 0) && opts.all !== true) {
     throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
   }
@@ -427,8 +423,7 @@ export const submoduleList = async (
   ctx: Context,
   opts: SubmoduleListOptions = {},
 ): Promise<SubmoduleListResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const ref = coerceRef(opts.ref ?? 'HEAD');
   const recursive = opts.recursive === true;
   const entries: SubmoduleEntry[] = [];
@@ -611,8 +606,7 @@ export const submoduleAdd = async (
   ctx: Context,
   opts: SubmoduleAddOptions,
 ): Promise<SubmoduleAddResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'submodule add');
   const name = opts.name ?? opts.path;
   assertAddInputs(name, opts.path, opts.url);
@@ -709,8 +703,7 @@ export const submoduleUpdate = async (
   ctx: Context,
   opts: SubmoduleUpdateOptions = {},
 ): Promise<SubmoduleUpdateResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'submodule update');
   const rows = await readWorktreeGitmodules(ctx);
   const selected = selectRows(rows, opts.paths);
