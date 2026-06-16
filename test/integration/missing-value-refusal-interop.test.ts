@@ -10,7 +10,7 @@
  *   unique:         valueless identity refusal two-line reconstruction + absent-case distinctness
  *   interopSurface: config
  */
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -1218,6 +1218,111 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
       });
     });
   });
+
+  /**
+   * Empty (valued) `core.hooksPath = ` — the DECISIVE distinctness row. git
+   * treats empty as hooks-feature-off: NO hook fires (commit succeeds), distinct
+   * from absent (the default `.git/hooks/pre-commit` fires). Executable-bit hooks
+   * are POSIX-only, so these rows are gated off Windows.
+   */
+  const EMPTY_CORE_HOOKSPATH_FIXTURE = '[core]\n\trepositoryformatversion = 0\n\thooksPath = \n';
+  const ABSENT_CORE_HOOKSPATH_FIXTURE = '[core]\n\trepositoryformatversion = 0\n';
+  const tsgitAuthor = {
+    name: 'Ada',
+    email: 'ada@example.com',
+    timestamp: 1700000000,
+    timezoneOffset: '+0000',
+  };
+
+  const writeBlockingPreCommit = async (dir: string): Promise<void> => {
+    const hooksDir = path.join(dir, '.git', 'hooks');
+    await mkdir(hooksDir, { recursive: true });
+    const hookPath = path.join(hooksDir, 'pre-commit');
+    await writeFile(hookPath, '#!/bin/sh\nexit 1\n');
+    await chmod(hookPath, 0o755);
+  };
+
+  describe.skipIf(process.platform === 'win32')(
+    'Given an empty-string core.hooksPath and a blocking pre-commit hook',
+    () => {
+      describe('When git commit is run', () => {
+        it('Then git succeeds with exit 0 — the pre-commit hook does NOT fire', async () => {
+          // Arrange
+          initRepo(ours);
+          await stageFile(ours);
+          await writeBlockingPreCommit(ours);
+          await writeFile(path.join(ours, '.git', 'config'), EMPTY_CORE_HOOKSPATH_FIXTURE);
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: makeIdentityEnv() });
+
+          // Assert
+          expect(g.ok).toBe(true);
+        });
+      });
+
+      describe('When tsgit commit is run', () => {
+        it('Then it succeeds and produces a commit object — no hook fires', async () => {
+          // Arrange
+          initRepo(ours);
+          await stageFile(ours);
+          await writeBlockingPreCommit(ours);
+          await writeFile(path.join(ours, '.git', 'config'), EMPTY_CORE_HOOKSPATH_FIXTURE);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act — no throw; an actual commit is produced (the hook did not block).
+          const result = await repo.commit({ message: 'x', author: tsgitAuthor });
+
+          // Assert
+          expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+        });
+      });
+    },
+  );
+
+  describe.skipIf(process.platform === 'win32')(
+    'Given an UNSET core.hooksPath and the same blocking pre-commit hook',
+    () => {
+      describe('When git commit is run', () => {
+        it('Then git is BLOCKED with exit 1 — the default-dir hook fires (absent is distinct from empty)', async () => {
+          // Arrange
+          initRepo(ours);
+          await stageFile(ours);
+          await writeBlockingPreCommit(ours);
+          await writeFile(path.join(ours, '.git', 'config'), ABSENT_CORE_HOOKSPATH_FIXTURE);
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: makeIdentityEnv() });
+
+          // Assert
+          expect(g.ok).toBe(false);
+        });
+      });
+
+      describe('When tsgit commit is run', () => {
+        it('Then it throws HOOK_FAILED — the default-dir hook fires when hooksPath is absent', async () => {
+          // Arrange
+          initRepo(ours);
+          await stageFile(ours);
+          await writeBlockingPreCommit(ours);
+          await writeFile(path.join(ours, '.git', 'config'), ABSENT_CORE_HOOKSPATH_FIXTURE);
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.commit({ message: 'x', author: tsgitAuthor });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('HOOK_FAILED');
+        });
+      });
+    },
+  );
 
   /**
    * A fixture controlling line numbers for the content-merge driver table. The

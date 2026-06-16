@@ -98,6 +98,22 @@ describe('primitives/run-hook resolveHooksDir', () => {
       });
     });
   });
+
+  describe('Given an empty-string hooksPath', () => {
+    describe('When resolveHooksDir', () => {
+      it('Then it resolves to a sentinel dir that is neither the default nor the worktree root', () => {
+        // Arrange
+        const sut = resolveHooksDir('', layout());
+
+        // Assert — empty is feature-off: NOT the default dir (absent fires that),
+        // NOT the worktree root (a CWD ./pre-commit must not fire), and the
+        // sentinel cannot hold a runnable hook.
+        expect(sut).not.toBe('/repo/.git/hooks');
+        expect(sut).not.toBe('/repo/');
+        expect(sut).toBe('/repo/.git/.tsgit-no-hooks');
+      });
+    });
+  });
 });
 
 describe('primitives/run-hook runHook', () => {
@@ -251,6 +267,54 @@ describe('primitives/run-hook runHook', () => {
 
         // Assert
         expect(runner.calls[0]?.hooksDir).toBe('/opt/gh');
+      });
+    });
+  });
+
+  describe('Given an empty-string core.hooksPath', () => {
+    describe('When runHook', () => {
+      it('Then it resolves and the request hooksDir is the no-hooks sentinel, not the default', async () => {
+        // Arrange — empty hooksPath is hooks-feature-off: no hook fires.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath = \n');
+
+        // Act & Assert — resolves (no hook fires) and the request never points at
+        // the default dir (which would re-enable hooks).
+        await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
+        expect(runner.calls[0]?.hooksDir).not.toBe(`${ctx.layout.gitDir}/hooks`);
+        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/.tsgit-no-hooks`);
+      });
+    });
+  });
+
+  describe('Given an unset core.hooksPath and a blocking pre-commit', () => {
+    describe('When runHook', () => {
+      it('Then the default dir fires the hook and it throws HOOK_FAILED (absent is distinct from empty)', async () => {
+        // Arrange — the E3c-dist control: absent hooksPath uses the default dir,
+        // so a present blocking hook fires.
+        const runner = new MemoryHookRunner({
+          'pre-commit': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'blocked' },
+        });
+        const ctx = createMemoryContext({ hooks: runner });
+
+        // Act
+        let caught: unknown;
+        try {
+          await runHook(ctx, 'pre-commit');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'pre-commit',
+          exitCode: 1,
+          stderr: 'blocked',
+        });
+        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/hooks`);
       });
     });
   });
