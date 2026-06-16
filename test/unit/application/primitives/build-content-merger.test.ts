@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryCommandRunner } from '../../../../src/adapters/memory/memory-command-runner.js';
@@ -416,18 +416,20 @@ describe('buildContentMerger', () => {
     });
 
     describe('When the merger is constructed but its closure is invoked for zero paths', () => {
-      it('Then no valueless-driver refusal fires (lazy — guard lives in the closure)', async () => {
+      it('Then the config is never scanned at construction (lazy — guard lives in the closure)', async () => {
         // Arrange — a valueless driver is configured, but no content-merge path is
         // ever submitted (the fast-forward / no-content-merge case).
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "custom"]\n\tdriver\n');
+        const readSpy = vi.spyOn(ctx.fs, 'readUtf8');
 
-        // Act
+        // Act — construct the merger; do NOT invoke the returned closure.
         const sut = buildContentMerger(ctx);
 
-        // Assert — constructing the merger does not throw; the guard is latched
-        // inside the closure, which is never invoked here.
+        // Assert — construction reads no config: an eager guard moved into the
+        // synchronous body (instead of the per-path closure) would scan here and be caught.
         expect(sut).toBeInstanceOf(Function);
+        expect(readSpy).not.toHaveBeenCalledWith(`${ctx.layout.gitDir}/config`);
       });
     });
   });
