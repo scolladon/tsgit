@@ -1563,6 +1563,78 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given readConfig has warmed the cache for a config with a valueless [core] path-like', () => {
+    describe('When findFirstValuelessEntry runs on the same context', () => {
+      it('Then fs.readUtf8 for the config path is invoked once across both', async () => {
+        // Arrange — one tokenize/read shared between the parse and the finder.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\texcludesfile\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await readConfig(ctx);
+        const result = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+
+        // Assert — the finder served the cached tokens, no second read.
+        expect(result?.key).toBe('core.excludesfile');
+        expect(result?.line).toBe(2);
+        expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+
+      it('Then after invalidateConfigCache the next finder re-reads (spy count 2)', async () => {
+        // Arrange — shared invalidation drops both parse and tokens together.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\texcludesfile\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await readConfig(ctx);
+        invalidateConfigCache(ctx);
+        await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('When findFirstValuelessEntry runs before readConfig', () => {
+      it('Then a finder before readConfig also serves the cache (single read)', async () => {
+        // Arrange — the finder warms the same entry readConfig then reuses.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\texcludesfile\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const found = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+        const parsed = await readConfig(ctx);
+
+        // Assert — one read, and readConfig yields the parse built from those tokens.
+        expect(found?.key).toBe('core.excludesfile');
+        expect(parsed.core).toBeUndefined();
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given an absent config the cache has warmed', () => {
+    describe('When findFirstValuelessEntry runs on the same context', () => {
+      it('Then an absent config is served from cache without a second fs hit', async () => {
+        // Arrange — the FILE_NOT_FOUND outcome caches tokens: [] for the finder.
+        const ctx = createMemoryContext();
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await readConfig(ctx);
+        const result = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
   describe('partial-clone keys', () => {
     describe('Given an [extensions] partialClone entry', () => {
       describe('When readConfig', () => {

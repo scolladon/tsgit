@@ -46,10 +46,23 @@ export interface ParsedConfig {
   readonly extensions?: { readonly partialClone?: string };
 }
 
+/**
+ * One read of `${gitDir}/config` cached per `Context`: the assembled parse, the
+ * token stream both products are built from, and the absolute path the tokens
+ * were read from. Held as a unit so a single read+tokenize feeds `readConfig`
+ * (`.parsed`) and the valueless finders (`.tokens`), and one invalidation drops
+ * both — they can never drift out of sync. `tokens` is `[]` for an absent file.
+ */
+interface ConfigCacheEntry {
+  readonly parsed: ParsedConfig;
+  readonly tokens: ReadonlyArray<ConfigToken>;
+  readonly source: string;
+}
+
 // Cache reference is mutable so test code can swap in a fresh WeakMap and
 // guarantee isolation between cases that re-use the same Context identity
 // (the WeakMap itself can't be iterated, so a true reset requires replacement).
-let cache: WeakMap<Context, Promise<ParsedConfig>> = new WeakMap();
+let cache: WeakMap<Context, Promise<ConfigCacheEntry>> = new WeakMap();
 
 /**
  * Read and cache `${gitDir}/config`. Missing → empty config (not an error).
@@ -58,10 +71,19 @@ let cache: WeakMap<Context, Promise<ParsedConfig>> = new WeakMap();
  * that re-creates the repo) gets a fresh read. Concurrent calls share the same
  * in-flight promise (per-context single-flight).
  */
-export const readConfig = (ctx: Context): Promise<ParsedConfig> => {
+export const readConfig = (ctx: Context): Promise<ParsedConfig> =>
+  readConfigEntry(ctx).then((entry) => entry.parsed);
+
+/**
+ * The cache accessor: returns the per-`Context` `ConfigCacheEntry` promise,
+ * single-flight (concurrent calls share the same in-flight read). Both
+ * `readConfig` (`.parsed`) and the valueless finders (`.tokens`) consume it, so
+ * the file is read and tokenized at most once per context until invalidated.
+ */
+const readConfigEntry = (ctx: Context): Promise<ConfigCacheEntry> => {
   const existing = cache.get(ctx);
   if (existing !== undefined) return existing;
-  const pending = loadConfig(ctx);
+  const pending = loadConfigEntry(ctx);
   cache.set(ctx, pending);
   return pending;
 };
@@ -81,11 +103,12 @@ export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx);
 };
 
-const loadConfig = async (ctx: Context): Promise<ParsedConfig> => {
+const loadConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   const path = `${commonGitDir(ctx)}/config`;
   const raw = await readRawConfig(ctx, path);
-  if (raw === undefined) return {};
-  return parseConfigText(raw, path);
+  if (raw === undefined) return { parsed: {}, tokens: [], source: path };
+  const tokens = tokenizeConfig(raw, path);
+  return { parsed: assembleParsed(parseIniSectionsFromTokens(tokens)), tokens, source: path };
 };
 
 const readRawConfig = async (ctx: Context, path: string): Promise<string | undefined> => {
@@ -125,10 +148,7 @@ export const findFirstValuelessEntry = async (
   subsection: string | undefined,
   keys: ReadonlyArray<string>,
 ): Promise<ValuelessEntry | undefined> => {
-  const path = `${commonGitDir(ctx)}/config`;
-  const raw = await readRawConfig(ctx, path);
-  if (raw === undefined) return undefined;
-  const tokens = tokenizeConfig(raw, path);
+  const { tokens, source: path } = await readConfigEntry(ctx);
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
   let inSection = false;
   for (const token of tokens) {
@@ -201,11 +221,6 @@ export type ConfigToken =
     }
   | { readonly kind: 'comment'; readonly line: number }
   | { readonly kind: 'blank'; readonly line: number };
-
-const parseConfigText = (text: string, source: string): ParsedConfig => {
-  const sections = parseIniSections(text, source);
-  return assembleParsed(sections);
-};
 
 /** One scanned key: its name, its value (`null` when valueless), and the line after it. */
 interface ScannedKey {
@@ -439,11 +454,22 @@ export const skipGitSpace = (line: string, start: number): number => {
  * (alpha-first, `[a-zA-Z0-9-]`, then space/TAB and `=`-or-EOL) refuses anything
  * else — `bad!key`, `9key`, a mid-key `#`/`;` — with `CONFIG_PARSE_ERROR`.
  */
-export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> => {
+export const parseIniSections = (text: string, source?: string): ReadonlyArray<IniSection> =>
+  parseIniSectionsFromTokens(tokenizeConfig(text, source));
+
+/**
+ * Assemble `IniSection`s from an already-tokenized config stream — the body of
+ * `parseIniSections` minus its `tokenizeConfig` call, so a caller that already
+ * holds the tokens (the per-context cache) does not tokenize the same bytes a
+ * second time. `parseIniSections` is the thin wrapper for callers that hold text.
+ */
+const parseIniSectionsFromTokens = (
+  tokens: ReadonlyArray<ConfigToken>,
+): ReadonlyArray<IniSection> => {
   const sections: SectionBuilder[] = [];
   const orphan: SectionBuilder = { section: '', subsection: undefined, entries: [] };
   let current: SectionBuilder = orphan;
-  for (const token of tokenizeConfig(text, source)) {
+  for (const token of tokens) {
     if (token.kind === 'header') {
       current = { section: token.section, subsection: token.subsection, entries: [] };
       sections.push(current);
