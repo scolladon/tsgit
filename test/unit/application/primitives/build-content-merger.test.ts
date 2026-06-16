@@ -437,4 +437,51 @@ describe('buildContentMerger', () => {
       });
     });
   });
+
+  describe('Given the merger already ran once for a valid driver', () => {
+    describe('When the config is replaced with a valueless driver and a second path is merged', () => {
+      it('Then the second run reuses the once-per-op scan and never refuses (the latch holds)', async () => {
+        // Arrange — a valid driver copying %O onto %A; run one path to engage the latch
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async (req) => {
+            const [o, a] = req.command.split(' ');
+            await ctx.fs.write(a as string, await ctx.fs.read(o as string));
+            return 0;
+          }),
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[merge "custom"]\n\tdriver = %O %A\n',
+        );
+        const sut = buildContentMerger(ctx);
+        const firstPath = await mergeCtxFor(ctx, {
+          base: 'DRIVEN',
+          ours: 'OURS',
+          theirs: 'THEIRS',
+          path: 'a.txt',
+        });
+        await sut(firstPath, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Act — corrupt the config to a valueless driver, then merge a second path
+        // through the SAME merger. A non-latched scan would re-read this and refuse.
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "custom"]\n\tdriver\n');
+        const secondPath = await mergeCtxFor(ctx, {
+          base: 'DRIVEN',
+          ours: 'OURS2',
+          theirs: 'THEIRS2',
+          path: 'b.txt',
+        });
+        let caught: unknown;
+        try {
+          await sut(secondPath, undefined, new Uint8Array(0), new Uint8Array(0));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the latch held: the second run never re-scanned, so it did not refuse
+        expect(caught).toBeUndefined();
+      });
+    });
+  });
 });

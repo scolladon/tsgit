@@ -289,4 +289,28 @@ describe('commands/submodule', () => {
       });
     });
   });
+
+  describe('Given a repo with a valueless submodule url (an excluded family)', () => {
+    describe('When submoduleList runs', () => {
+      it('Then it does not refuse with CONFIG_MISSING_VALUE — git tolerates a valueless submodule url', async () => {
+        // Arrange
+        const { ctx } = await seedRepoWithHead(undefined, []);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[submodule "sub"]\n\turl\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        let result: Awaited<ReturnType<typeof submoduleList>> | undefined;
+        try {
+          result = await submoduleList(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the excluded family is NOT guarded; the command resolves
+        expect(caught).toBeUndefined();
+        expect(result?.entries).toEqual([]);
+      });
+    });
+  });
 });
