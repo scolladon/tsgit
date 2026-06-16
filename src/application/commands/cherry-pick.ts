@@ -29,7 +29,6 @@ import { createCommit } from '../primitives/create-commit.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
-  assertRepository,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -51,6 +50,7 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, requireSymbolicHead, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 import {
   clearSequencer,
@@ -62,7 +62,6 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './internal/sequencer-state.js';
-import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { revParse } from './rev-parse.js';
 
 export interface CherryPickRunInput {
@@ -417,8 +416,7 @@ export const cherryPickRun = async (
   ctx: Context,
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'cherry-pick');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -519,8 +517,7 @@ export const cherryPickContinue = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'cherry-pick --continue');
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -570,8 +567,7 @@ export const cherryPickSkip = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'cherry-pick --skip');
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -602,8 +598,7 @@ export const cherryPickSkip = async (
  * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
  */
 export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   await assertNotBare(ctx, 'cherry-pick --abort');
   const source = await readCherryPickHead(ctx);
   const seqHead = await readSequencerHead(ctx);

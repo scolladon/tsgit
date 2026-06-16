@@ -36,17 +36,14 @@ import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { withDefaults } from './internal/network-pipeline.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertCommandPreamble } from './internal/repo-state.js';
 import {
   advertisesFilter,
   discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
 } from './internal/upload-pack-client.js';
-import {
-  assertNoValuelessConfig,
-  assertNoValuelessCoreConfig,
-} from './internal/valueless-config-guard.js';
+import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 export interface FetchOptions {
   readonly remote?: string;
@@ -78,8 +75,7 @@ const FETCH_NEGOTIATE_OP = 'fetch:negotiate';
 const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 
 export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
-  await assertRepository(ctx);
-  await assertNoValuelessCoreConfig(ctx);
+  await assertCommandPreamble(ctx);
   const remoteName = opts.remote ?? 'origin';
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
