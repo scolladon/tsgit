@@ -23,6 +23,7 @@ import {
   rewriteDefaultFetchRefspecs,
   validateRemoteName,
 } from './internal/remote-config.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 const FORBIDDEN_URL_CHARS = /[\n\r\0]/;
 
@@ -116,6 +117,7 @@ const toRemoteInfo = (
 
 export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const config = await readConfig(ctx);
   if (config.remote === undefined) return { remotes: [] };
   const remotes: RemoteInfo[] = [];
@@ -131,6 +133,7 @@ export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
 
 export const remoteAdd = async (ctx: Context, input: RemoteAddInput): Promise<RemoteAddResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   validateRemoteName(input.name);
   assertUrlSafe(input.url);
   const config = await readConfig(ctx);
@@ -171,6 +174,7 @@ export const remoteRemove = async (
   input: RemoteRemoveInput,
 ): Promise<RemoteRemoveResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   validateRemoteName(input.name);
   const config = await readConfig(ctx);
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
@@ -234,6 +238,7 @@ export const remoteRename = async (
   input: RemoteRenameInput,
 ): Promise<RemoteRenameResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   validateRemoteName(input.from);
   validateRemoteName(input.to);
   if (input.from === input.to) {
@@ -304,6 +309,7 @@ export const remoteSetUrl = async (
   input: RemoteSetUrlInput,
 ): Promise<RemoteSetUrlResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   validateRemoteName(input.name);
   assertUrlSafe(input.url);
   const config = await readConfig(ctx);
@@ -327,6 +333,7 @@ export const remoteShow = async (
   input: RemoteShowInput,
 ): Promise<RemoteShowResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   validateRemoteName(input.name);
   const config = await readConfig(ctx);
   const entry = config.remote?.get(input.name);

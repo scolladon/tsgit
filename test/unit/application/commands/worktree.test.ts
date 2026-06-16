@@ -81,6 +81,33 @@ describe('worktreeList', () => {
       });
     });
   });
+
+  describe('Given a repo with a valueless core.excludesFile', () => {
+    describe('When worktreeList runs', () => {
+      it('Then it throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await worktreeList(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.excludesfile');
+        expect(data.line).toBe(2);
+      });
+    });
+  });
 });
 
 describe('worktreeAdd', () => {

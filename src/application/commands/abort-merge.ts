@@ -6,6 +6,7 @@ import { updateRef } from '../primitives/update-ref.js';
 import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-state.js';
 import { assertNotBare, assertRepository, readHeadRaw } from './internal/repo-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface MergeAbortResult {
   /** The commit `ORIG_HEAD` recorded; HEAD now points at this id. */
@@ -28,6 +29,7 @@ export interface MergeAbortResult {
  */
 export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'merge --abort');
   const mergeHead = await readMergeHead(ctx);
   // Load-bearing under the ADR-027 write order: `merge`'s conflict path

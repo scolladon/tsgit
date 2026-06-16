@@ -806,6 +806,65 @@ describe('pull', () => {
     });
   });
 
+  describe('Given a valueless core.excludesFile', () => {
+    describe('When pull', () => {
+      it('Then throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+        // Arrange — the core guard precedes the branch guard, so a valueless
+        // core path-like refuses even with a fully tracking branch config.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; key?: string; line?: number } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data?.key).toBe('core.excludesfile');
+        expect(data?.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a valued [core] section and a valueless branch.<cur>.merge', () => {
+    describe('When pull', () => {
+      it('Then throws CONFIG_MISSING_VALUE for branch.main.merge (core guard does not shadow branch)', async () => {
+        // Arrange — core is present-but-valued (the guard returns normally); the
+        // later branch guard must still fire on the valueless merge key.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\texcludesFile = /tmp/ignore\n[branch "main"]\n\tmerge\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — branch.* is reported, NOT core.*; proves order repo→core→…→branch.
+        const data = (caught as { data?: { code?: string; key?: string; line?: number } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data?.key).toBe('branch.main.merge');
+        expect(data?.line).toBe(4);
+      });
+    });
+  });
+
   describe('Given a distinct committer', () => {
     describe('When pull over a true merge', () => {
       it('Then forwards the committer to the merge commit', async () => {

@@ -20,6 +20,7 @@ import { looseObjectPath } from '../primitives/path-layout.js';
 import { withDefaults } from './internal/network-pipeline.js';
 import { assertRepository } from './internal/repo-state.js';
 import { discoverRefs, selectFetchCapabilities } from './internal/upload-pack-client.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface FetchMissingOptions {
   /** Object ids to fetch. Ones already present locally are skipped. */
@@ -80,6 +81,7 @@ const fetchMissingInternal = async (
   oids: ReadonlyArray<ObjectId>,
 ): Promise<FetchMissingOutcome> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const config = await readConfig(ctx);
   const remoteName = config.extensions?.partialClone;
   if (remoteName === undefined) return { kind: 'no-promisor' };

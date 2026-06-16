@@ -47,6 +47,7 @@ import { getRefStore } from '../primitives/ref-store.js';
 import { branchCreate } from './branch.js';
 import { assertRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { status } from './status.js';
 
 export type { WorktreeEntry };
@@ -64,6 +65,7 @@ export interface WorktreeListResult {
  */
 export const worktreeList = async (ctx: Context): Promise<WorktreeListResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   return { entries: await listWorktrees(ctx) };
 };
 
@@ -206,6 +208,7 @@ export const worktreeAdd = async (
   opts: WorktreeAddOptions,
 ): Promise<WorktreeAddResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   if (opts.path === '') throw worktreePathExists('');
   const worktreePath = resolveWorktreePath(ctx.cwd, opts.path) as FilePath;
   // Defence in depth: the admin id is the path basename, joined onto
@@ -295,6 +298,7 @@ export const worktreeMove = async (
   opts: WorktreeMoveOptions = {},
 ): Promise<WorktreeMoveResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const fromPath = resolveWorktreePath(ctx.cwd, from) as FilePath;
   const toPath = resolveWorktreePath(ctx.cwd, to) as FilePath;
   const entry = await resolveLinked(ctx, fromPath, 'move');
@@ -328,6 +332,7 @@ export const worktreeRemove = async (
   opts: WorktreeRemoveOptions = {},
 ): Promise<WorktreeRemoveResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const worktreePath = resolveWorktreePath(ctx.cwd, path) as FilePath;
   const entry = await resolveLinked(ctx, worktreePath, 'remove');
   assertUnlocked(entry, opts.force === true);

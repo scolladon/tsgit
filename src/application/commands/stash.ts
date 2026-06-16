@@ -62,6 +62,7 @@ import {
   untrackedMessage,
   wipMessage,
 } from './internal/stash-message.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface StashPushInput {
   readonly message?: string;
@@ -187,6 +188,7 @@ export const stashPush = async (
   opts: StashPushInput = {},
 ): Promise<StashPushResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'stash');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -275,6 +277,7 @@ export interface StashListResult {
 /** List the stash stack, newest-first (`stash@{0}` first). */
 export const stashList = async (ctx: Context): Promise<StashListResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   return { entries: await readStashStack(ctx) };
 };
 
@@ -288,6 +291,7 @@ export const stashDrop = async (
   input: StashDropInput = {},
 ): Promise<StashDropResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'stash drop');
   return dropStashEntry(ctx, input.index ?? 0);
 };
@@ -413,6 +417,7 @@ export const stashApply = async (
   input: StashApplyInput = {},
 ): Promise<StashApplyResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'stash apply');
   await assertNoPendingOperation(ctx);
   const w = await resolveStashEntry(ctx, input.index ?? 0);

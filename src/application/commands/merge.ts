@@ -61,6 +61,7 @@ import {
   assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface MergeRunInput {
   readonly rev: string;
@@ -148,6 +149,7 @@ const computeMerge = async (
   internal: MergeInternalOptions,
 ): Promise<MergeResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'merge');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);

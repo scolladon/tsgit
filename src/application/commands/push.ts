@@ -48,7 +48,10 @@ import { withDefaults } from './internal/network-pipeline.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
 import { assertRepository, readHeadRaw } from './internal/repo-state.js';
-import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
+import {
+  assertNoValuelessConfig,
+  assertNoValuelessCoreConfig,
+} from './internal/valueless-config-guard.js';
 
 export interface PushOptions {
   readonly remote?: string;
@@ -87,6 +90,7 @@ const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band
 
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
     const remoteName = opts.remote ?? 'origin';

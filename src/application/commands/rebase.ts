@@ -66,6 +66,7 @@ import {
   writeRebaseStop,
 } from './internal/rebase-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 const HEAD = 'HEAD' as RefName;
 /** `post-rewrite`'s command-name argument when fired from a rebase. */
@@ -438,6 +439,7 @@ const replayFrom = async (
 
 export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<RebaseResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -513,6 +515,7 @@ const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
  */
 export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'rebase --continue');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
@@ -556,6 +559,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
 /** Drop the conflicted commit (hard-reset to the last good pick) and replay the rest. */
 export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'rebase --skip');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
@@ -582,6 +586,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
  */
 export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'rebase --abort');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');

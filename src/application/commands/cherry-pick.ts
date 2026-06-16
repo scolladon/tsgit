@@ -62,6 +62,7 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './internal/sequencer-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { revParse } from './rev-parse.js';
 
 export interface CherryPickRunInput {
@@ -417,6 +418,7 @@ export const cherryPickRun = async (
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'cherry-pick');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -518,6 +520,7 @@ export const cherryPickContinue = async (
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'cherry-pick --continue');
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -568,6 +571,7 @@ export const cherryPickSkip = async (
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'cherry-pick --skip');
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -599,6 +603,7 @@ export const cherryPickSkip = async (
  */
 export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'cherry-pick --abort');
   const source = await readCherryPickHead(ctx);
   const seqHead = await readSequencerHead(ctx);

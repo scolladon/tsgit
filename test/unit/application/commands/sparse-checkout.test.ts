@@ -160,6 +160,26 @@ describe('sparseCheckout command', () => {
         });
       });
     });
+
+    describe('Given a valueless core.excludesFile', () => {
+      describe('When sparseCheckout list', () => {
+        it('Then throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+
+          // Act
+          const err = await expectError(() => sparseCheckoutList(ctx));
+
+          // Assert — each field individually (mutation-resistant)
+          const data = err.data as { code: string; key: string; line: number };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
   });
 
   describe('list', () => {

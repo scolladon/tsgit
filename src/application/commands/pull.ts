@@ -21,7 +21,10 @@ import {
   assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
-import { assertNoValuelessInSection } from './internal/valueless-config-guard.js';
+import {
+  assertNoValuelessCoreConfig,
+  assertNoValuelessInSection,
+} from './internal/valueless-config-guard.js';
 import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
 
 const HEADS_PREFIX = 'refs/heads/';
@@ -91,6 +94,7 @@ const resolveUpstream = async (
 
 export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'pull');
   await assertNoPendingOperation(ctx);
   await assertNoValuelessInSection(ctx, 'branch', ['merge', 'remote']);

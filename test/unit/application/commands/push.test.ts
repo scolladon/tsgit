@@ -22,6 +22,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
+import { clone } from '../../../../src/application/commands/clone.js';
 import { push } from '../../../../src/application/commands/push.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -40,6 +41,11 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
+import {
+  buildDiscoveryBody,
+  buildUploadPackResponseBody,
+} from '../../../fixtures/transport/builders.js';
+import { buildSyntheticPack, type EntrySpec } from '../primitives/pack-fixture.js';
 import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -1905,6 +1911,82 @@ describe('push — hooks', () => {
 
         // Assert
         expect(sut.pushedRefs).toHaveLength(1);
+      });
+    });
+  });
+});
+
+describe('push — valueless core path-like refusal', () => {
+  describe('Given a repo with a valueless core.excludesFile', () => {
+    describe('When push runs', () => {
+      it('Then throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+        // Arrange — the core guard fires before any remote resolution.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await push(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.excludesfile');
+        expect(data.line).toBe(2);
+      });
+    });
+  });
+});
+
+describe('clone — exempt from the core path-like refusal', () => {
+  describe('Given a fresh target and a server advertising a single ref', () => {
+    describe('When clone runs', () => {
+      it('Then it completes and does NOT raise CONFIG_MISSING_VALUE', async () => {
+        // Arrange — clone creates the repo, so there is no pre-existing config
+        // to validate; it must carry no core guard.
+        const ctx = createMemoryContext();
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('x\n') },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const blobId = built.ids[0];
+        if (blobId === undefined) throw new Error('expected one entry');
+        const discoveryBody = buildDiscoveryBody({
+          service: 'git-upload-pack',
+          capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+        });
+        const packResponseBody = buildUploadPackResponseBody({
+          packBytes: built.packBytes,
+          sideBand: true,
+          shallow: [],
+        });
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => ({
+            statusCode: 200,
+            headers: { 'content-type': 'application/x-git-upload-pack-result' },
+            body: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(
+                  (req.url.includes('/info/refs') ? discoveryBody : packResponseBody).slice(),
+                );
+                controller.close();
+              },
+            }),
+          }),
+        };
+
+        // Act
+        const sut = await clone({ ...ctx, transport }, { url: 'https://remote.example/r.git' });
+
+        // Assert — clone proceeds normally; no config-value refusal is raised.
+        expect(sut.head).toBe('refs/heads/main');
       });
     });
   });

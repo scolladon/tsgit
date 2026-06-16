@@ -43,7 +43,10 @@ import {
   selectFetchCapabilities,
   uniqueRefOids,
 } from './internal/upload-pack-client.js';
-import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
+import {
+  assertNoValuelessConfig,
+  assertNoValuelessCoreConfig,
+} from './internal/valueless-config-guard.js';
 
 export interface FetchOptions {
   readonly remote?: string;
@@ -76,6 +79,7 @@ const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 
 export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   const remoteName = opts.remote ?? 'origin';
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 

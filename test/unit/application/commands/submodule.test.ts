@@ -264,4 +264,29 @@ describe('commands/submodule', () => {
       });
     });
   });
+
+  describe('Given a repo with a valueless core.excludesFile', () => {
+    describe('When submoduleList runs', () => {
+      it('Then it throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
+        // Arrange
+        const { ctx } = await seedRepoWithHead(undefined, []);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await submoduleList(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('core.excludesfile');
+        expect(data.line).toBe(2);
+      });
+    });
+  });
 });

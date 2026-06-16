@@ -33,6 +33,7 @@ import {
   assertNotBare,
   assertRepository,
 } from './internal/repo-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 
 export interface SparseCheckoutListResult {
   readonly cone: boolean;
@@ -68,6 +69,7 @@ export interface SparseCheckoutDisableInput {
 /** Sparse checkout needs a worktree and a quiet repo — gate every verb. */
 const assertSparseReady = async (ctx: Context): Promise<void> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'sparse-checkout');
   await assertNoPendingOperation(ctx);
 };

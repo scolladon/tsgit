@@ -64,6 +64,7 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './internal/sequencer-state.js';
+import { assertNoValuelessCoreConfig } from './internal/valueless-config-guard.js';
 import { revParse } from './rev-parse.js';
 
 export interface RevertRunInput {
@@ -405,6 +406,7 @@ const runNoCommit = async (ctx: Context, todo: ReadonlyArray<ObjectId>): Promise
 
 export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<RevertResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'revert');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -484,6 +486,7 @@ const finaliseInProgressRevert = async (
  */
 export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'revert --continue');
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -530,6 +533,7 @@ export interface RevertAbortResult {
  */
 export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'revert --skip');
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -556,6 +560,7 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
  */
 export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
   await assertRepository(ctx);
+  await assertNoValuelessCoreConfig(ctx);
   await assertNotBare(ctx, 'revert --abort');
   const source = await readRevertHead(ctx);
   const seqHead = await readSequencerHead(ctx);
