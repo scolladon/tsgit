@@ -14,7 +14,7 @@ The empirical pinning (design `remaining-valueless-refusal.md`, git 2.54.0) spli
 2. git dies but tsgit's consumer collapses the valueless case to a **benign fallback** with no refusal (`merge.*.driver`/`name` → built-in `text`; `core` path-likes → silent miss). Adding faithfulness here means *introducing a refusal tsgit lacks today*.
 3. git does **not** die (`submodule.*.url`/`update`) — nothing to be faithful to.
 
-The design recommended faithful-minimal (only category 1; defer category 2). The user chose the opposite: maximise faithfulness.
+The design recommended faithful-minimal (only category 1; defer category 2). The user chose the opposite: maximal faithfulness.
 
 ## Decision
 
