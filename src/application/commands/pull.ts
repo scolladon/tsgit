@@ -21,6 +21,7 @@ import {
   assertRepository,
   readHeadRaw,
 } from './internal/repo-state.js';
+import { assertNoValuelessInSection } from './internal/valueless-config-guard.js';
 import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
 
 const HEADS_PREFIX = 'refs/heads/';
@@ -92,6 +93,7 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
   await assertRepository(ctx);
   await assertNotBare(ctx, 'pull');
   await assertNoPendingOperation(ctx);
+  await assertNoValuelessInSection(ctx, 'branch', ['merge', 'remote']);
 
   const head = await readHeadRaw(ctx);
   const currentBranch = head.kind === 'symbolic' ? shortBranchName(head.target) : undefined;

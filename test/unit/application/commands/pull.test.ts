@@ -598,6 +598,214 @@ describe('pull', () => {
     });
   });
 
+  describe('Given a valueless branch.<cur>.merge', () => {
+    describe('When pull with no arguments', () => {
+      it('Then throws CONFIG_MISSING_VALUE for branch.main.merge', async () => {
+        // Arrange — merge present-but-valueless under the current branch.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\turl = https://remote.example/r.git\n[branch "main"]\n\tmerge\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant).
+        const data = (caught as { data?: { code?: string; key?: string; line?: number } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data?.key).toBe('branch.main.merge');
+        expect(data?.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given a valueless branch.<cur>.remote with a valued merge', () => {
+    describe('When pull', () => {
+      it('Then throws CONFIG_MISSING_VALUE for branch.main.remote', async () => {
+        // Arrange — remote valueless (line 4), merge valued (line 5).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[branch "main"]\n\tremote\n\tmerge = refs/heads/main\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; key?: string; line?: number } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data?.key).toBe('branch.main.remote');
+        expect(data?.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a valueless branch.other.merge while on main with no [branch "main"]', () => {
+    describe('When pull', () => {
+      it('Then throws CONFIG_MISSING_VALUE for branch.other.merge (all subsections scanned)', async () => {
+        // Arrange — the valueless key is under a section for a branch we are not on.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[branch "other"]\n\tremote = origin\n\tmerge\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — proves the scan is subsection-agnostic, not current-branch-only.
+        const data = (caught as { data?: { code?: string; key?: string; line?: number } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data?.key).toBe('branch.other.merge');
+        expect(data?.line).toBe(3);
+      });
+    });
+  });
+
+  describe('Given two valueless branch sections', () => {
+    describe('When pull', () => {
+      it('Then throws CONFIG_MISSING_VALUE for the earlier-line key branch.zzz.merge', async () => {
+        // Arrange — [branch "zzz"] merge (line 2) before [branch "main"] merge (line 4).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[branch "zzz"]\n\tmerge\n[branch "main"]\n\tmerge\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — first valueless by file line wins, regardless of which branch we are on.
+        const data = (caught as { data?: { code?: string; key?: string; line?: number } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data?.key).toBe('branch.zzz.merge');
+        expect(data?.line).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a valueless branch.<cur>.merge and a remote that would fail on network', () => {
+    describe('When pull', () => {
+      it('Then throws CONFIG_MISSING_VALUE before any fetch is issued', async () => {
+        // Arrange — the remote URL is configured; a recorder proves fetch is never reached.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\turl = https://remote.example/r.git\n[branch "main"]\n\tmerge\n',
+        );
+        const { transport, requests } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the config die fires, not a network error, and fetch was not reached.
+        const data = (caught as { data?: { code?: string } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(requests).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a valueless branch.<cur>.merge with HEAD detached', () => {
+    describe('When pull origin main', () => {
+      it('Then throws CONFIG_MISSING_VALUE (eager even detached with explicit args)', async () => {
+        // Arrange — detach HEAD onto the commit oid; explicit remote + ref supplied.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const a = await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${a}\n`);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\turl = https://remote.example/r.git\n[branch "main"]\n\tmerge\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport), { remote: 'origin', ref: 'main' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the guard runs regardless of opts.ref / current branch.
+        const data = (caught as { data?: { code?: string; key?: string } })?.data;
+        expect(data?.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data?.key).toBe('branch.main.merge');
+      });
+    });
+  });
+
+  describe('Given an absent [branch "<cur>"] section', () => {
+    describe('When pull', () => {
+      it('Then throws NO_UPSTREAM_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+        // Arrange — origin URL only; no branch.main section at all.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\turl = https://remote.example/r.git\n',
+        );
+        const { transport } = buildPullRemote([], await emptyPack(ctx));
+
+        // Act
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — absent stays today's behaviour, the guard returns normally.
+        const data = (caught as { data?: { code?: string } })?.data;
+        expect(data?.code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(data?.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+
   describe('Given a distinct committer', () => {
     describe('When pull over a true merge', () => {
       it('Then forwards the committer to the merge commit', async () => {

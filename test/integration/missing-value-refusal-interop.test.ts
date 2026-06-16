@@ -747,4 +747,228 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
       });
     });
   });
+
+  /**
+   * A fixture controlling line numbers. The valueless `merge` for the current
+   * branch lands at line 4; git's `pull` dies on it before any network contact.
+   * Line 1: [core]
+   * Line 2: \trepositoryformatversion = 0
+   * Line 3: [branch "main"]
+   * Line 4: \tmerge            <- valueless
+   */
+  const VALUELESS_BRANCH_MERGE_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "main"]\n\tmerge\n';
+  const VALUELESS_BRANCH_MERGE_LINE = 4;
+
+  describe('Given a config with a valueless branch.main.merge on the current branch', () => {
+    describe('When git pull is run', () => {
+      it('Then git refuses with exit 128 reporting branch.main.merge before any network', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_MERGE_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.main.merge'");
+        expect(g.stderr).toContain("bad config variable 'branch.main.merge'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_BRANCH_MERGE_LINE}`);
+      });
+    });
+
+    describe('When tsgit pull is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key branch.main.merge and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_MERGE_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.main.merge');
+        expect(data.line).toBe(VALUELESS_BRANCH_MERGE_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+
+    describe("When reconstructing git's two pull lines from tsgit structured fields", () => {
+      it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_MERGE_FIXTURE);
+
+        // Act — run both git and tsgit against the same repo
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+        const repo = await openRepository({ cwd: ours });
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        const gitLines = g.stderr.split('\n').filter((l) => l.length > 0);
+        const errorLine = gitLines.find((l) => l.startsWith('error:')) ?? '';
+        const fatalLine = gitLines.find((l) => l.startsWith('fatal:')) ?? '';
+
+        expect(errorLine).toBe(`error: missing value for '${data.key}'`);
+
+        const normalizedSource = '.git/config';
+        const tsgitFatalLine = `fatal: bad config variable '${data.key}' in file '${normalizedSource}' at line ${data.line}`;
+        const normalizedFatalLine = fatalLine.replace(
+          /in file '[^']+'/,
+          `in file '${normalizedSource}'`,
+        );
+        expect(normalizedFatalLine).toBe(tsgitFatalLine);
+      });
+    });
+  });
+
+  /**
+   * A valueless `merge` under a branch we are NOT on (`other`), with no
+   * `[branch "main"]` at all. git's `pull` scans EVERY `[branch *]` section, so
+   * it still dies — reporting `branch.other.merge` at line 5.
+   * Line 1: [core]
+   * Line 2: \trepositoryformatversion = 0
+   * Line 3: [branch "other"]
+   * Line 4: \tremote = origin
+   * Line 5: \tmerge            <- valueless
+   */
+  const VALUELESS_BRANCH_OTHER_MERGE_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "other"]\n\tremote = origin\n\tmerge\n';
+  const VALUELESS_BRANCH_OTHER_MERGE_LINE = 5;
+
+  describe('Given a config with a valueless branch.other.merge while on main', () => {
+    describe('When git pull is run', () => {
+      it('Then git refuses reporting branch.other.merge (all branch sections scanned)', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_OTHER_MERGE_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.other.merge'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_BRANCH_OTHER_MERGE_LINE}`);
+      });
+    });
+
+    describe('When tsgit pull is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key branch.other.merge and correct line', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), VALUELESS_BRANCH_OTHER_MERGE_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.other.merge');
+        expect(data.line).toBe(VALUELESS_BRANCH_OTHER_MERGE_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  /**
+   * Two valueless branch sections — `[branch "zzz"]` merge (line 4) before
+   * `[branch "main"]` merge (line 6). git reports the FIRST by file line (zzz),
+   * proving the scan is file-order across ALL subsections, not current-branch.
+   * Line 3: [branch "zzz"]
+   * Line 4: \tmerge            <- valueless (earlier)
+   * Line 5: [branch "main"]
+   * Line 6: \tmerge            <- valueless
+   */
+  const TWO_VALUELESS_BRANCH_SECTIONS_FIXTURE =
+    '[core]\n\trepositoryformatversion = 0\n[branch "zzz"]\n\tmerge\n[branch "main"]\n\tmerge\n';
+  const FIRST_VALUELESS_BRANCH_LINE = 4;
+
+  describe('Given a config with two valueless branch sections, zzz earlier than main', () => {
+    describe('When git pull is run', () => {
+      it('Then git refuses reporting the earlier key branch.zzz.merge', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), TWO_VALUELESS_BRANCH_SECTIONS_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'branch.zzz.merge'");
+        expect(g.stderr).toContain(`at line ${FIRST_VALUELESS_BRANCH_LINE}`);
+      });
+    });
+
+    describe('When tsgit pull is run', () => {
+      it('Then throws CONFIG_MISSING_VALUE reporting the earlier key branch.zzz.merge', async () => {
+        // Arrange
+        initRepo(ours);
+        await writeFile(path.join(ours, '.git', 'config'), TWO_VALUELESS_BRANCH_SECTIONS_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.pull({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('branch.zzz.merge');
+        expect(data.line).toBe(FIRST_VALUELESS_BRANCH_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
 });
