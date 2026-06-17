@@ -35,7 +35,7 @@ slices (the manifest's explicit instruction). The authoritative partition (verif
 - **Slice 3** sweeps the **20 gpgsign-only files** — uniform, low-risk pure deletions,
   one atomic commit.
 
-Rejected alternatives: one mega-slice of all 25 files (no risk isolation, unbisectable);
+Rejected alternatives: one mega-slice of all 25 files (no risk isolation, not bisectable);
 splitting Slice 3 further into Form-A-only / Form-B-only (Form A vs Form B is a
 mechanical edit detail, not a risk boundary — three uniform pure-deletion slices would
 not each earn a lifecycle).
