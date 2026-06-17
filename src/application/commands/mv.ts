@@ -24,7 +24,8 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { joinPath as joinWorkPath } from '../primitives/internal/join-working-tree-path.js';
+import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -174,7 +175,10 @@ const buildPlan = async (
   const planned: PlanItem[] = [];
   const skipped: MvSkipped[] = [];
   for (const source of sources) {
-    const target = mode.kind === 'rename' ? mode.target : joinPath(mode.destDir, basename(source));
+    const target =
+      mode.kind === 'rename'
+        ? mode.target
+        : (joinPathSegment(mode.destDir, basename(source)) as FilePath);
     const verdict = await validateMove(ctx, byPath, source, target, opts);
     if ('skip' in verdict) {
       if (opts.skipErrors === true) {
@@ -325,12 +329,10 @@ const refusal = (reason: MvSkipReason, source: FilePath, target: FilePath): Tsgi
   }
 };
 
-const joinPath = (dir: FilePath, leaf: string): FilePath => `${dir}/${leaf}` as FilePath;
-
 const stripTrailingSlash = (path: string): string =>
   path.endsWith('/') ? path.slice(0, -1) : path;
 
-const workPath = (ctx: Context, path: FilePath): string => joinWorkPath(ctx.layout.workDir, path);
+const workPath = (ctx: Context, path: FilePath): string => joinPath(ctx.layout.workDir, path);
 
 const lstatOrUndefined = async (
   ctx: Context,

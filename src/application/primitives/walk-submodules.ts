@@ -12,6 +12,7 @@ import {
   type Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { joinPathSegment } from './internal/join-path-segment.js';
 import { deriveSubmoduleContext } from './internal/submodule-context.js';
 import { type GitmodulesRow, parseGitmodules } from './parse-gitmodules.js';
 import { readBlob } from './read-blob.js';
@@ -63,7 +64,7 @@ async function* walkInTree(
   // Stryker disable next-line ObjectLiteral: equivalent — `walkTree`'s `recursive` option defaults to `true` when omitted (see `walk-tree.ts`), so `{}` and `{ recursive: true }` produce identical traversals.
   for await (const entry of walkTree(ctx, tree, { recursive: true })) {
     if (entry.mode !== FILE_MODE.GITLINK) continue;
-    const fullPath = joinPath(pathPrefix, entry.path) as FilePath;
+    const fullPath = joinPathSegment(pathPrefix, entry.path) as FilePath;
     const row = rows.get(entry.path);
     yield buildEntry(row, entry.path, entry.id, fullPath, depth, parent);
     if (!recursive) continue;
@@ -102,9 +103,6 @@ const buildEntry = (
   ...(row?.branch !== undefined ? { branch: row.branch } : {}),
   ...(parent !== undefined ? { parent } : {}),
 });
-
-const joinPath = (prefix: string, leaf: string): string =>
-  prefix === '' ? leaf : `${prefix}/${leaf}`;
 
 const readGitmodules = async (
   ctx: Context,
