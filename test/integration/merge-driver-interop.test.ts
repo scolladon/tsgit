@@ -70,7 +70,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
   const commitBoth = async (message: string, paths: ReadonlyArray<string>): Promise<void> => {
     runGit(['-C', pair.peer, 'add', ...paths]);
     await repo.add(paths);
-    runGit(['-C', pair.peer, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message], {
+    runGit(['-C', pair.peer, 'commit', '-q', '-m', message], {
       env: COMMIT_ENV,
     });
     await repo.commit({ message, author: AUTHOR, committer: AUTHOR });
@@ -121,12 +121,9 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
         await setupDiverged('data.txt merge=custom\n', 'cp %B %A');
 
         // Act
-        runGit(
-          ['-C', pair.peer, '-c', 'commit.gpgsign=false', 'merge', '--no-ff', '-m', 'm', 'theirs'],
-          {
-            env: COMMIT_ENV,
-          },
-        );
+        runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
         const result = await repo.merge.run({
           rev: 'theirs',
           message: 'm',
@@ -203,12 +200,9 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
         await commitBoth('ours', ['file.txt']);
 
         // Act
-        runGit(
-          ['-C', pair.peer, '-c', 'commit.gpgsign=false', 'merge', '--no-ff', '-m', 'm', 'theirs'],
-          {
-            env: COMMIT_ENV,
-          },
-        );
+        runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
         const result = await repo.merge.run({
           rev: 'theirs',
           message: 'm',
@@ -241,12 +235,9 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
         await commitBoth('ours', ['file.txt']);
 
         // Act
-        runGit(
-          ['-C', pair.peer, '-c', 'commit.gpgsign=false', 'merge', '--no-ff', '-m', 'm', 'theirs'],
-          {
-            env: COMMIT_ENV,
-          },
-        );
+        runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
         const result = await repo.merge.run({
           rev: 'theirs',
           message: 'm',

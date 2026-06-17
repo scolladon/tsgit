@@ -59,7 +59,6 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
     runGit(['init', '-q', '-b', 'main', pair.peer]);
     git(pair.peer, 'config', 'user.name', 'Ada');
     git(pair.peer, 'config', 'user.email', 'ada@example.com');
-    git(pair.peer, 'config', 'commit.gpgsign', 'false');
     repo = await openRepository({ cwd: pair.ours });
     await repo.init();
   });

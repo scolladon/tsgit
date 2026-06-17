@@ -78,7 +78,6 @@ describe.skipIf(!GIT_AVAILABLE)('whatchanged interop', () => {
   beforeAll(async () => {
     dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-whatchanged-')));
     runGit(['init', '-q', '-b', 'main', dir]);
-    git(dir, 'config', 'commit.gpgsign', 'false');
 
     const commit = async (epoch: number, message: string): Promise<void> => {
       git(dir, 'add', '-A');

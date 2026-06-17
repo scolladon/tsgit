@@ -48,11 +48,10 @@ const AUTHOR = {
 /** Fixed author/committer date so the preserved-author line is byte-comparable across tools. */
 const FIXED_DATE = '1700000000 +0000';
 
-/** Configure a git repo deterministically (identity + no signing). */
+/** Configure a git repo deterministically (identity). */
 const configGit = (dir: string): void => {
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
-  git(dir, 'config', 'commit.gpgsign', 'false');
 };
 
 /** Write a working-tree file synchronously (no git env involved). */

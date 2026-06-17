@@ -80,7 +80,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
   };
 
   const commitBothStaged = async (message: string): Promise<void> => {
-    runGit(['-C', pair.peer, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message], {
+    runGit(['-C', pair.peer, 'commit', '-q', '-m', message], {
       env: COMMIT_ENV,
     });
     await repo.commit({ message, author: AUTHOR, committer: AUTHOR });
@@ -109,10 +109,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
   };
 
   const mergeBoth = async (rev: string, message: string): Promise<void> => {
-    runGit(
-      ['-C', pair.peer, '-c', 'commit.gpgsign=false', 'merge', '--no-ff', '-m', message, rev],
-      { env: COMMIT_ENV },
-    );
+    runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', message, rev], { env: COMMIT_ENV });
     await repo.merge.run({ rev, message, author: AUTHOR, committer: AUTHOR });
   };
 

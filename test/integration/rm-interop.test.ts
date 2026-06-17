@@ -69,10 +69,7 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
     await writeFile(path.join(pair.peer, name), content);
     await writeFile(path.join(pair.ours, name), content);
     runGit(['-C', pair.peer, 'add', name]);
-    // Signing OFF so the peer commit needs no GPG key, even if `commit.gpgsign`
-    // is enabled globally (this seed's SHA is not compared, but the commit must
-    // still succeed everywhere the suite runs).
-    runGit(['-C', pair.peer, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed'], {
+    runGit(['-C', pair.peer, 'commit', '-q', '-m', 'seed'], {
       env: COMMIT_ENV,
     });
     await repo.add([name]);

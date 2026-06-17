@@ -55,7 +55,7 @@ const pinnedEnv = (): NodeJS.ProcessEnv => ({
 /** Commit the working tree of `repo` via git with a fully pinned identity. */
 const commitPinned = (repo: string, message: string): void => {
   runGit(['-C', repo, 'add', '-A']);
-  runGit(['-C', repo, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message], {
+  runGit(['-C', repo, 'commit', '-q', '-m', message], {
     env: pinnedEnv(),
   });
 };
@@ -301,7 +301,7 @@ describe.skipIf(!GIT_AVAILABLE)('hook coverage interop', () => {
         git(pair.ours, 'add', '-A');
 
         // Act
-        runGit(['-C', pair.peer, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'original'], {
+        runGit(['-C', pair.peer, 'commit', '-q', '-m', 'original'], {
           env: pinnedEnv(),
         });
         await commit(createNodeContext({ workDir: pair.ours }), {
