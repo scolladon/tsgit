@@ -880,17 +880,7 @@ const scanQuotedHeaderPrefix = (
 };
 
 interface MutableParsedConfig {
-  core?: {
-    bare?: boolean;
-    excludesFile?: string;
-    attributesFile?: string;
-    logAllRefUpdates?: boolean | 'always';
-    hooksPath?: string;
-    sparseCheckout?: boolean;
-    sparseCheckoutCone?: boolean;
-    looseCompression?: number;
-    looseCompressionFromLoose?: boolean;
-  };
+  core?: MutableCore;
   user?: { name?: string; email?: string };
   remote?: Map<
     string,
@@ -1156,21 +1146,7 @@ const mergeExtensions = (
  * writer of `acc.core` and always writes a defined value, so a defined `core`
  * always yields a non-empty object.
  */
-const finalizeCore = (
-  core:
-    | {
-        bare?: boolean;
-        excludesFile?: string;
-        attributesFile?: string;
-        logAllRefUpdates?: boolean | 'always';
-        hooksPath?: string;
-        sparseCheckout?: boolean;
-        sparseCheckoutCone?: boolean;
-        looseCompression?: number;
-        looseCompressionFromLoose?: boolean;
-      }
-    | undefined,
-): ParsedConfig['core'] => {
+const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   if (core === undefined) return undefined;
   // looseCompressionFromLoose is transient (precedence flag) — not projected to ParsedConfig
   return {
