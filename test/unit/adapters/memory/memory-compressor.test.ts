@@ -168,6 +168,26 @@ describe('MemoryCompressor', () => {
       });
     });
 
+    describe('Given deflate called with an explicit level', () => {
+      describe('When level=9 is passed', () => {
+        it('Then output round-trips correctly and equals deflate with no level (level ignored)', async () => {
+          // Arrange — MemoryCompressor uses Web CompressionStream which has no level;
+          // the _level param is accepted to satisfy the port but silently ignored.
+          const sut = new MemoryCompressor();
+          const data = new TextEncoder().encode('memory compressor ignores level');
+
+          // Act
+          const withLevel = await sut.deflate(data, 9);
+          const withoutLevel = await sut.deflate(data);
+
+          // Assert — both round-trip to original; output is identical (level ignored)
+          const inflatedWith = await sut.inflate(withLevel);
+          expect(inflatedWith).toEqual(data);
+          expect(withLevel).toEqual(withoutLevel);
+        });
+      });
+    });
+
     describe('Given non-Error thrown during deflate', () => {
       describe('When failing', () => {
         it('Then reason falls back to String(err)', async () => {

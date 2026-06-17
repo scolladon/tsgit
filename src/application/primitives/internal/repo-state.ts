@@ -1,4 +1,9 @@
-import { operationInProgress } from '../../../domain/commands/error.js';
+import {
+  configBadNumericValue,
+  configBadZlibLevel,
+  configMissingValue,
+  operationInProgress,
+} from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import { bareRepository, notARepository } from '../../../domain/index.js';
 import { type ObjectId, RefName } from '../../../domain/objects/index.js';
@@ -6,8 +11,11 @@ import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
 import { parseLooseRef } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readConfig } from '../config-read.js';
-import { assertNoValuelessConfig } from './valueless-config-guard.js';
+import {
+  findFirstInvalidCompression,
+  findFirstValuelessEntry,
+  readConfig,
+} from '../config-read.js';
 
 const HEAD_REF = RefName.from('HEAD');
 
@@ -30,27 +38,51 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   return root as FilePath;
 };
 
+const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile'];
+
 /**
  * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) is
- * present-but-valueless, mirroring git's eager `git_default_config` validation
- * which dies on the whole operational surface — including config-free
- * ref-listing — before the command does its work. `hookspath` is NOT in this
- * broad pair: it dies on a narrower surface (work-doing commands only). No-op
- * for a valued or absent `[core]` section.
+ * present-but-valueless, or when a compression key (`loosecompression`/
+ * `compression`) is present with any invalid value (valueless, bad integer,
+ * or integer outside zlib's `-1..9`), mirroring git's eager
+ * `git_default_config` validation which dies on the whole operational surface.
+ * `hookspath` is NOT in this broad set: it dies on a narrower surface.
+ *
+ * Cross-class ordering: run both finders in parallel, compare their file-line
+ * positions, and throw the LOWER-line entry's shape — string shape
+ * (`CONFIG_MISSING_VALUE`, with `line`) or compression shape
+ * (`CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL`). No-op for a valid
+ * or absent `[core]` section.
  */
-export const assertNoValuelessCorePaths = async (ctx: Context): Promise<void> => {
-  await assertNoValuelessConfig(ctx, 'core', undefined, ['excludesfile', 'attributesfile']);
+export const assertCoreConfigValid = async (ctx: Context): Promise<void> => {
+  const [str, comp] = await Promise.all([
+    findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
+    findFirstInvalidCompression(ctx),
+  ]);
+  // equivalent-mutant: the string entry and the compression entry are distinct config keys, each on
+  // its own config-file line, so `str.line === comp.line` can never occur — `<` and `<=` are
+  // indistinguishable.
+  if (str !== undefined && (comp === undefined || str.line < comp.line)) {
+    throw configMissingValue(str.key, str.source, str.line);
+  }
+  if (comp !== undefined) {
+    if (comp.failure.kind === 'numeric') {
+      throw configBadNumericValue(comp.key, comp.source, comp.failure.value, comp.failure.reason);
+    }
+    throw configBadZlibLevel(comp.failure.level);
+  }
 };
 
 /**
  * The operational entry point: confirm a real repository (HEAD exists) AND that
- * no `[core]` path-like is valueless, then return the repo root. Operational
- * commands take this; the config porcelain stays on the bare `assertRepository`
- * so it survives a valueless `[core]` path-like (git's split).
+ * the `[core]` section passes full validation, then return the repo root.
+ * Operational commands take this; the config porcelain stays on the bare
+ * `assertRepository` so it survives a valueless or invalid `[core]` entry
+ * (git's split).
  */
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
   const root = await assertRepository(ctx);
-  await assertNoValuelessCorePaths(ctx);
+  await assertCoreConfigValid(ctx);
   return root;
 };
 

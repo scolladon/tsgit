@@ -6,8 +6,12 @@ export interface InflateStreamResult {
 }
 
 export interface Compressor {
-  /** Deflate (compress) data using zlib deflate format (RFC 1950). */
-  readonly deflate: (data: Uint8Array) => Promise<Uint8Array>;
+  /**
+   * Deflate (compress) data using zlib deflate format (RFC 1950).
+   * `level` (when given and in zlib's -1..9 domain) tunes the compression
+   * level; adapters that cannot set a level accept and ignore it.
+   */
+  readonly deflate: (data: Uint8Array, level?: number) => Promise<Uint8Array>;
 
   /** Inflate (decompress) zlib-compressed data. */
   readonly inflate: (data: Uint8Array) => Promise<Uint8Array>;

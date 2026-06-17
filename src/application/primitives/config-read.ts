@@ -16,6 +16,7 @@ export interface ParsedConfig {
     readonly hooksPath?: string;
     readonly sparseCheckout?: boolean;
     readonly sparseCheckoutCone?: boolean;
+    readonly looseCompression?: number;
   };
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
@@ -203,6 +204,81 @@ export const findFirstValuelessInSection = async (
         ? `${loweredSection}.${loweredKey}`
         : `${loweredSection}.${subsection}.${loweredKey}`;
     return { key: qualifiedKey, source: path, line: token.startLine + 1 };
+  }
+  return undefined;
+};
+
+/** Minimum valid zlib compression level (synonym for the implementation default). */
+export const ZLIB_MIN_LEVEL = -1;
+/** Maximum valid zlib compression level. */
+export const ZLIB_MAX_LEVEL = 9;
+
+/** The discriminated failure from a compression-key validation scan. */
+type CompressionFailure =
+  | {
+      readonly kind: 'numeric';
+      readonly value: string;
+      readonly reason: 'invalid unit' | 'out of range';
+    }
+  | { readonly kind: 'zlib'; readonly level: number };
+
+/** One invalid compression entry returned by `findFirstInvalidCompression`. */
+export interface InvalidCompressionEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly line: number;
+  readonly failure: CompressionFailure;
+}
+
+const COMPRESSION_KEYS: ReadonlySet<string> = new Set(['loosecompression', 'compression']);
+
+/**
+ * Cold-path detection: walk the cached `[core]` (subsectionless) tokens in
+ * file order and return the FIRST entry whose key is `loosecompression` or
+ * `compression` that fails full compression validation (valueless, invalid
+ * integer, or integer outside zlib's `-1..9`). Returns `undefined` when all
+ * compression keys are absent or valid. Runs ONLY on a command's refusal path.
+ */
+export const findFirstInvalidCompression = async (
+  ctx: Context,
+): Promise<InvalidCompressionEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!COMPRESSION_KEYS.has(loweredKey)) continue;
+    const qualifiedKey = `core.${loweredKey}`;
+    const line = token.startLine + 1;
+    if (token.value === null) {
+      return {
+        key: qualifiedKey,
+        source: path,
+        line,
+        failure: { kind: 'numeric', value: '', reason: 'invalid unit' },
+      };
+    }
+    const parsed = parseGitInt(token.value);
+    if (!parsed.ok) {
+      return {
+        key: qualifiedKey,
+        source: path,
+        line,
+        failure: { kind: 'numeric', value: token.value, reason: parsed.reason },
+      };
+    }
+    if (parsed.value < ZLIB_MIN_LEVEL || parsed.value > ZLIB_MAX_LEVEL) {
+      return {
+        key: qualifiedKey,
+        source: path,
+        line,
+        failure: { kind: 'zlib', level: parsed.value },
+      };
+    }
   }
   return undefined;
 };
@@ -879,15 +955,7 @@ const scanQuotedHeaderPrefix = (
 };
 
 interface MutableParsedConfig {
-  core?: {
-    bare?: boolean;
-    excludesFile?: string;
-    attributesFile?: string;
-    logAllRefUpdates?: boolean | 'always';
-    hooksPath?: string;
-    sparseCheckout?: boolean;
-    sparseCheckoutCone?: boolean;
-  };
+  core?: MutableCore;
   user?: { name?: string; email?: string };
   remote?: Map<
     string,
@@ -939,6 +1007,31 @@ type MutableCore = {
   hooksPath?: string;
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
+  looseCompression?: number;
+  /** Transient: true when looseCompression was set via loosecompression key (not compression).
+   *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
+  looseCompressionFromLoose?: boolean;
+};
+
+/**
+ * Apply core.loosecompression / core.compression with order-independent precedence.
+ * loosecompression always wins; compression sets only when loosecompression was never seen.
+ * valued-but-invalid int merges as absent (lenient; eager gate handles the valueless case).
+ */
+const applyLooseCompressionEntry = (
+  core: MutableCore,
+  lowered: string,
+  value: string,
+): MutableCore | undefined => {
+  const r = parseGitInt(value);
+  if (!r.ok) return undefined;
+  if (lowered === 'loosecompression') {
+    // loosecompression always wins — overrides any prior compression-derived value
+    return { ...core, looseCompression: r.value, looseCompressionFromLoose: true };
+  }
+  // compression: set only if loosecompression has not already claimed the field
+  if (core.looseCompressionFromLoose === true) return undefined;
+  return { ...core, looseCompression: r.value };
 };
 
 /**
@@ -957,11 +1050,14 @@ const applyCoreEntry = (
   if (lowered === 'sparsecheckout') return { ...core, sparseCheckout: parseGitBoolean(value) };
   if (lowered === 'sparsecheckoutcone')
     return { ...core, sparseCheckoutCone: parseGitBoolean(value) };
-  // String-typed fields skip null (valueless key treated as absent).
+  // String-typed and int-typed fields skip null (valueless key treated as absent).
   if (value === null) return undefined;
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
   if (lowered === 'attributesfile') return { ...core, attributesFile: value };
   if (lowered === 'hookspath') return { ...core, hooksPath: value };
+  if (lowered === 'loosecompression' || lowered === 'compression') {
+    return applyLooseCompressionEntry(core, lowered, value);
+  }
   return undefined;
 };
 
@@ -1125,20 +1221,9 @@ const mergeExtensions = (
  * writer of `acc.core` and always writes a defined value, so a defined `core`
  * always yields a non-empty object.
  */
-const finalizeCore = (
-  core:
-    | {
-        bare?: boolean;
-        excludesFile?: string;
-        attributesFile?: string;
-        logAllRefUpdates?: boolean | 'always';
-        hooksPath?: string;
-        sparseCheckout?: boolean;
-        sparseCheckoutCone?: boolean;
-      }
-    | undefined,
-): ParsedConfig['core'] => {
+const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   if (core === undefined) return undefined;
+  // looseCompressionFromLoose is transient (precedence flag) — not projected to ParsedConfig
   return {
     ...(core.bare !== undefined ? { bare: core.bare } : {}),
     ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
@@ -1149,6 +1234,7 @@ const finalizeCore = (
     ...(core.sparseCheckoutCone !== undefined
       ? { sparseCheckoutCone: core.sparseCheckoutCone }
       : {}),
+    ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
   };
 };
 
@@ -1162,6 +1248,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       hooksPath?: string;
       sparseCheckout?: boolean;
       sparseCheckoutCone?: boolean;
+      looseCompression?: number;
     };
     user?: { name: string; email: string };
     remote?: ReadonlyMap<
@@ -1207,3 +1294,89 @@ const TRUE_VALUES = new Set(['true', 'yes', 'on', '1']);
 // NULL) maps to `true` — `git_config_bool(NULL) == 1`.
 const parseGitBoolean = (value: string | null): boolean =>
   value === null || TRUE_VALUES.has(value.toLowerCase());
+
+type GitIntResult =
+  | { readonly ok: true; readonly value: number }
+  | { readonly ok: false; readonly reason: 'invalid unit' | 'out of range' };
+
+// git config --type=int uses strtoimax (int64_t on all modern platforms).
+// Pinned against git 2.54.0: values outside this range yield "out of range".
+const GIT_INT_MAX = BigInt('9223372036854775807');
+const GIT_INT_MIN = BigInt('-9223372036854775808');
+
+// Unit multipliers accepted by git_parse_signed (k/K/m/M/g/G = ×1024^n).
+// t/T are NOT accepted by git 2.54.0 (pinned empirically).
+const UNIT_SCALE: ReadonlyMap<string, bigint> = new Map([
+  ['k', BigInt(1024)],
+  ['K', BigInt(1024)],
+  ['m', BigInt(1024) * BigInt(1024)],
+  ['M', BigInt(1024) * BigInt(1024)],
+  ['g', BigInt(1024) * BigInt(1024) * BigInt(1024)],
+  ['G', BigInt(1024) * BigInt(1024) * BigInt(1024)],
+]);
+
+// No in-range git integer needs this many significant digits (octal int64 max is 22
+// digits). A longer significant run is always out of range — and capping it before
+// BigInt bounds the parse work, so a hostile config value cannot stall the parser.
+const MAX_SIGNIFICANT_DIGITS = 32;
+
+// Classify the digit run at the start of `body` (sign already stripped) the way
+// strtoimax base-0 does: `0x`/`0X` → hex, a leading `0` → octal (greedy over 0-7,
+// stopping at the first non-octal digit), otherwise decimal. Returns the consumed
+// token and its radix, or null when no digit run starts here.
+const matchDigits = (
+  body: string,
+): { readonly token: string; readonly radix: 8 | 10 | 16 } | null => {
+  // equivalent-mutant: dropping the `^` anchor cannot change the verdict — a `0x`/digit run
+  // found past position 0 leaves the preceding chars as the unit suffix, which is never a valid
+  // unit, so the result is `invalid unit` either way (exhaustively checked over all len-≤4 inputs).
+  const hex = /^0[xX][0-9a-fA-F]+/.exec(body);
+  if (hex !== null) return { token: hex[0], radix: 16 };
+  if (body[0] === '0') return { token: (/^0[0-7]*/.exec(body) as RegExpExecArray)[0], radix: 8 };
+  const dec = /^[0-9]+/.exec(body);
+  return dec === null ? null : { token: dec[0], radix: 10 };
+};
+
+// Convert a classified digit token to its magnitude, or null when it has more than
+// MAX_SIGNIFICANT_DIGITS significant digits (always out of range). Leading zeros are
+// stripped first, so a long all-zeros run is the value 0, not an out-of-range reject.
+const magnitudeOf = (token: string, radix: 8 | 10 | 16): bigint | null => {
+  // Strip the radix marker (`0x` = 2 chars, octal `0` = 1 char, decimal = none),
+  // then the leading zeros, leaving the significant digits.
+  // equivalent-mutant: for the octal branch, replacing `token.slice(1)` with `token` (or dropping
+  // the `radix === 8` arm so it falls through to `token`) keeps the leading marker `0`, which the
+  // next line's `replace(/^0+/, '')` strips anyway — `significant` is identical.
+  const bare = radix === 16 ? token.slice(2) : radix === 8 ? token.slice(1) : token;
+  const significant = bare.replace(/^0+/, '');
+  // equivalent-mutant: a significant run of ≥32 digits (any radix ≤16) always exceeds int64, so the
+  // final range check returns `out of range` regardless of this early cap — dropping the guard or
+  // shifting `>` to `>=` leaves the verdict unchanged (the cap only bounds BigInt work, not output).
+  if (significant.length > MAX_SIGNIFICANT_DIGITS) return null;
+  if (significant === '') return BigInt(0);
+  const prefix = radix === 16 ? '0x' : radix === 8 ? '0o' : '';
+  return BigInt(`${prefix}${significant}`);
+};
+
+// Total pure function: mirrors git's strtoimax base-0 grammar (decimal, `0x` hex,
+// leading-`0` octal, sign, single k/m/g unit ×1024^n). Returns ok+value on success,
+// or not-ok+reason on failure — never throws.
+export const parseGitInt = (value: string | null): GitIntResult => {
+  // Trim leading ASCII whitespace (git's behaviour), then strip one optional sign.
+  const trimmed = (value ?? '').replace(/^[ \t]+/, '');
+  const signed = trimmed[0] === '+' || trimmed[0] === '-';
+  const body = signed ? trimmed.slice(1) : trimmed;
+
+  const digits = matchDigits(body);
+  if (digits === null) return { ok: false, reason: 'invalid unit' };
+
+  const unit = body.slice(digits.token.length);
+  const multiplier = unit === '' ? BigInt(1) : UNIT_SCALE.get(unit);
+  if (multiplier === undefined) return { ok: false, reason: 'invalid unit' };
+
+  const magnitude = magnitudeOf(digits.token, digits.radix);
+  if (magnitude === null) return { ok: false, reason: 'out of range' };
+
+  const result = (trimmed[0] === '-' ? -magnitude : magnitude) * multiplier;
+  if (result < GIT_INT_MIN || result > GIT_INT_MAX) return { ok: false, reason: 'out of range' };
+  return { ok: true, value: Number(result) };
+};

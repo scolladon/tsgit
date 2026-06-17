@@ -15,7 +15,10 @@ export class MemoryCompressor implements Compressor {
     }
   }
 
-  deflate = async (data: Uint8Array): Promise<Uint8Array> => {
+  deflate = async (data: Uint8Array, _level?: number): Promise<Uint8Array> => {
+    // Web CompressionStream exposes no level param; loose disk bytes are
+    // outside the faithfulness contract (equivalence-under-readback), so the
+    // level is accepted to satisfy the port and silently ignored.
     try {
       return await runTransform(data, new CompressionStream('deflate'));
     } catch (err) {

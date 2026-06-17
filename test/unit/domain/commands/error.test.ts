@@ -11,6 +11,8 @@ import {
   cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
+  configBadNumericValue,
+  configBadZlibLevel,
   configKeyInvalid,
   configMissingValue,
   configMultipleValues,
@@ -1110,6 +1112,105 @@ describe('domain commands error — config factory data', () => {
       });
     });
   });
+
+  describe('Given the configBadNumericValue helper', () => {
+    describe("When called with key='core.loosecompression', source='/abs/.git/config', value='', reason='invalid unit'", () => {
+      it('Then data carries code, key, source, value, and reason individually', () => {
+        // Arrange + Act
+        const sut = configBadNumericValue(
+          'core.loosecompression',
+          '/abs/.git/config',
+          '',
+          'invalid unit',
+        );
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
+        expect(data.key).toBe('core.loosecompression');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.value).toBe('');
+        expect(data.reason).toBe('invalid unit');
+      });
+    });
+
+    describe("When called with key='core.loosecompression', source='/abs/.git/config', value='2147483648', reason='out of range'", () => {
+      it('Then data carries code, key, source, value, and reason individually', () => {
+        // Arrange + Act
+        const sut = configBadNumericValue(
+          'core.loosecompression',
+          '/abs/.git/config',
+          '2147483648',
+          'out of range',
+        );
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
+        expect(data.key).toBe('core.loosecompression');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.value).toBe('2147483648');
+        expect(data.reason).toBe('out of range');
+      });
+    });
+
+    describe('When called with a value containing a control byte', () => {
+      it('Then data.value is sanitized for display', () => {
+        // Arrange + Act
+        const sut = configBadNumericValue(
+          'core.loosecompression',
+          '/abs/.git/config',
+          '\x01bad',
+          'invalid unit',
+        );
+
+        // Assert — control bytes are escaped so the rendered error cannot be injected
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
+        expect(data.value).toBe('\\x01bad');
+      });
+    });
+  });
+
+  describe('Given the configBadZlibLevel helper', () => {
+    describe('When called with level=99', () => {
+      it('Then data.code is CONFIG_BAD_ZLIB_LEVEL', () => {
+        // Arrange + Act
+        const sut = configBadZlibLevel(99);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+      });
+
+      it('Then data.level is 99', () => {
+        // Arrange + Act
+        const sut = configBadZlibLevel(99);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+        if (data.code !== 'CONFIG_BAD_ZLIB_LEVEL') return;
+        expect(data.level).toBe(99);
+      });
+    });
+
+    describe('When called with a negative level=-2', () => {
+      it('Then data.level is -2', () => {
+        // Arrange + Act
+        const sut = configBadZlibLevel(-2);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+        if (data.code !== 'CONFIG_BAD_ZLIB_LEVEL') return;
+        expect(data.level).toBe(-2);
+      });
+    });
+  });
 });
 
 describe('domain commands error — extractDetail message formatting', () => {
@@ -1346,6 +1447,34 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },
       "CONFIG_MISSING_VALUE: missing value for 'user.name' in file '/repo/.git/config' at line 2",
+    ],
+    [
+      {
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.loosecompression',
+        source: '/repo/.git/config',
+        value: '',
+        reason: 'invalid unit',
+      },
+      "CONFIG_BAD_NUMERIC_VALUE: bad numeric config value '' for 'core.loosecompression' in file /repo/.git/config: invalid unit",
+    ],
+    [
+      {
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.loosecompression',
+        source: '/repo/.git/config',
+        value: '2147483648',
+        reason: 'out of range',
+      },
+      "CONFIG_BAD_NUMERIC_VALUE: bad numeric config value '2147483648' for 'core.loosecompression' in file /repo/.git/config: out of range",
+    ],
+    [
+      { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },
+      'CONFIG_BAD_ZLIB_LEVEL: bad zlib compression level 99',
+    ],
+    [
+      { code: 'CONFIG_BAD_ZLIB_LEVEL', level: -2 },
+      'CONFIG_BAD_ZLIB_LEVEL: bad zlib compression level -2',
     ],
   ];
 

@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import {
   __resetConfigCacheForTests,
   type ConfigToken,
+  findFirstInvalidCompression,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   type IniSection,
@@ -1504,6 +1505,150 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(sut.core).toEqual({ sparseCheckout: true, sparseCheckoutCone: false });
+      });
+    });
+  });
+
+  describe('Given [core] loosecompression = 9', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.looseCompression is 9', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(9);
+      });
+    });
+  });
+
+  describe('Given [core] loosecompression = 1k', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.looseCompression is 1024 (unit multiplier wired)', async () => {
+        // Arrange — proves parseGitInt is wired, not a raw parseInt
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 1k\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(1024);
+      });
+    });
+  });
+
+  describe('Given [core] with loosecompression=1 before compression=9', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is 1 (loosecompression wins regardless of order)', async () => {
+        // Arrange — loosecompression appears first; compression must not override
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 1\n  compression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(1);
+      });
+    });
+  });
+
+  describe('Given [core] with compression=9 before loosecompression=1', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is 1 (loosecompression wins regardless of order)', async () => {
+        // Arrange — compression appears first; loosecompression must still win
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  compression = 9\n  loosecompression = 1\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(1);
+      });
+    });
+  });
+
+  describe('Given [core] compression = 9 with no loosecompression', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is 9 (compression fallback)', async () => {
+        // Arrange — only compression key present; it is the fallback
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  compression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(9);
+      });
+    });
+  });
+
+  describe('Given [core] with no int compression key', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.looseCompression is absent', async () => {
+        // Arrange — no loosecompression or compression key
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [core] with valueless loosecompression (loosecompression with no =)', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is absent and no exception is thrown', async () => {
+        // Arrange — valueless merges as absent; porcelain survival (refusal is Slice 3)
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tloosecompression\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — field absent, no throw
+        expect(sut.core?.looseCompression).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [core] loosecompression = abc (invalid int value)', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is absent and no exception is thrown (lenient)', async () => {
+        // Arrange — valued-but-invalid merges as absent (lenient, out of scope)
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = abc\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — field absent, no throw
+        expect(sut.core?.looseCompression).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given only loosecompression = 9 in [core]', () => {
+    describe('When readConfig', () => {
+      it('Then core is emitted with just that field', async () => {
+        // Arrange — guards the finalizeCore arm for looseCompression in isolation
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core).toEqual({ looseCompression: 9 });
       });
     });
   });
@@ -5072,6 +5217,243 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       it('Then any other char after the key refuses', () => {
         // Arrange + Act + Assert — isolates the catch-all parse-error branch
         assertParseConfigRefuses('[a]\n\tk: v\n', 2);
+      });
+    });
+  });
+
+  describe('findFirstInvalidCompression', () => {
+    describe('Given no [core] section', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Bob\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.loosecompression is absent', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 5 (valid)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression = 5\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.loosecompression is valueless (null value)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns numeric failure with value empty string and reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.key).toBe('core.loosecompression');
+          expect(result?.failure.kind).toBe('numeric');
+          if (result?.failure.kind === 'numeric') {
+            expect(result.failure.value).toBe('');
+            expect(result.failure.reason).toBe('invalid unit');
+          }
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = abc (invalid unit)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns numeric failure with value abc and reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tloosecompression = abc\n',
+          );
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.key).toBe('core.loosecompression');
+          expect(result?.failure.kind).toBe('numeric');
+          if (result?.failure.kind === 'numeric') {
+            expect(result.failure.value).toBe('abc');
+            expect(result.failure.reason).toBe('invalid unit');
+          }
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 999999999999999999999999 (out of range)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns numeric failure with reason out of range', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tloosecompression = 999999999999999999999999\n',
+          );
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.failure.kind).toBe('numeric');
+          if (result?.failure.kind === 'numeric') {
+            expect(result.failure.reason).toBe('out of range');
+          }
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 99 (valid int, outside zlib range)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns zlib failure with level 99', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tloosecompression = 99\n',
+          );
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.failure.kind).toBe('zlib');
+          if (result?.failure.kind === 'zlib') {
+            expect(result.failure.level).toBe(99);
+          }
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = -2 (valid int, below zlib min)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns zlib failure with level -2', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tloosecompression = -2\n',
+          );
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.failure.kind).toBe('zlib');
+          if (result?.failure.kind === 'zlib') {
+            expect(result.failure.level).toBe(-2);
+          }
+        });
+      });
+    });
+
+    describe('Given core.compression = abc (invalid unit)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns numeric failure with key core.compression', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = abc\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.key).toBe('core.compression');
+          expect(result?.failure.kind).toBe('numeric');
+          if (result?.failure.kind === 'numeric') {
+            expect(result.failure.value).toBe('abc');
+            expect(result.failure.reason).toBe('invalid unit');
+          }
+        });
+      });
+    });
+
+    describe('Given loosecompression = abc (line 2) before compression = abc (line 3)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns the loosecompression entry (first failing by line)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tloosecompression = abc\n\tcompression = abc\n',
+          );
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.loosecompression');
+        });
+      });
+    });
+
+    describe('Given compression = abc (line 2) before loosecompression = abc (line 3)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns the compression entry (first failing by line)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tcompression = abc\n\tloosecompression = abc\n',
+          );
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.compression');
+        });
       });
     });
   });

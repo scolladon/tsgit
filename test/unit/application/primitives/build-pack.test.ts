@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildPack } from '../../../../src/application/primitives/build-pack.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
@@ -212,6 +213,39 @@ describe('buildPack', () => {
         const expectedTrailer = await ctx.hash.hash(body);
         expect(sut.bytes.subarray(sut.bytes.length - TRAILER_BYTES)).toEqual(expectedTrailer);
         expect(sut.sha).toBe(bytesToHex(expectedTrailer));
+      });
+    });
+  });
+
+  describe('Given core.loosecompression=9 in the repo config', () => {
+    describe('When buildPack is called', () => {
+      it('Then deflate is called with no level argument (pack path does not use loose compression level)', async () => {
+        // Arrange — git's pack path uses pack.compression, not core.loosecompression.
+        // Setting core.loosecompression must NOT flow through to build-pack's deflate call.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression = 9\n');
+        __resetConfigCacheForTests();
+        const deflateLevels: Array<number | undefined> = [];
+        const wrappedCtx = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            deflate: async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
+              deflateLevels.push(level);
+              return ctx.compressor.deflate(data, level);
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([88]), id: '' as ObjectId };
+        const blobId = await writeObject(wrappedCtx, blob);
+        // Reset capture before the pack call so we only see build-pack's deflate calls
+        deflateLevels.length = 0;
+
+        // Act
+        await buildPack(wrappedCtx, { oids: [blobId] });
+
+        // Assert — build-pack calls deflate without a level (pack.compression key governs pack)
+        expect(deflateLevels.every((l) => l === undefined)).toBe(true);
       });
     });
   });
