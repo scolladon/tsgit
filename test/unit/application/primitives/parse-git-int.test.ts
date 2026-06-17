@@ -78,6 +78,37 @@ describe('parseGitInt', () => {
         expect(result.value).toBe(5);
       });
     });
+
+    describe('When parsing "  5" (multiple leading spaces)', () => {
+      it('Then returns ok with value 5 (all leading whitespace stripped, not just one)', () => {
+        // Arrange — pins the `+` quantifier on the leading-whitespace trim: a
+        // single-char trim would leave " 5", yielding invalid unit.
+        const sut = parseGitInt;
+
+        // Act
+        const result = sut('  5');
+
+        // Assert
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.value).toBe(5);
+      });
+    });
+
+    describe('When parsing "\t\t5" (multiple leading tabs)', () => {
+      it('Then returns ok with value 5 (all leading whitespace stripped, not just one)', () => {
+        // Arrange — same `+`-quantifier probe for the tab class.
+        const sut = parseGitInt;
+
+        // Act
+        const result = sut('\t\t5');
+
+        // Assert
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.value).toBe(5);
+      });
+    });
   });
 
   describe('Given hexadecimal values', () => {

@@ -311,6 +311,68 @@ describe('writeObject', () => {
     });
   });
 
+  describe('Given core.loosecompression=-1 (zlib default sentinel) in the repo config', () => {
+    describe('When writeObject is called', () => {
+      it('Then deflate is called with level=-1 (the inclusive lower bound is honoured)', async () => {
+        // Arrange — -1 IS the lower bound of zlib's -1..9 domain; the guard's
+        // `>= ZLIB_MIN_LEVEL` must include it. A `> ZLIB_MIN_LEVEL` mutant would
+        // drop -1 to the default (undefined) path.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression = -1\n');
+        __resetConfigCacheForTests();
+        const deflateCapture: Array<number | undefined> = [];
+        const wrappedCtx = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            deflate: async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
+              deflateCapture.push(level);
+              return ctx.compressor.deflate(data, level);
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([58]), id: '' as ObjectId };
+
+        // Act
+        await writeObject(wrappedCtx, blob);
+
+        // Assert — the inclusive lower bound forwards -1 verbatim
+        expect(deflateCapture[0]).toBe(-1);
+      });
+    });
+  });
+
+  describe('Given core.loosecompression=-2 (below zlib domain) in the repo config', () => {
+    describe('When writeObject is called', () => {
+      it('Then deflate is called with no level argument (lower-bound guard falls back to default)', async () => {
+        // Arrange — -2 is below zlib's -1..9 domain; the guard's lower bound must
+        // reject it. Dropping the lower bound (mutating `>= ZLIB_MIN_LEVEL` to a
+        // constant true) would forward -2 to deflateSync, which throws.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression = -2\n');
+        __resetConfigCacheForTests();
+        const deflateCapture: Array<number | undefined> = [];
+        const wrappedCtx = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            deflate: async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
+              deflateCapture.push(level);
+              return ctx.compressor.deflate(data, level);
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([59]), id: '' as ObjectId };
+
+        // Act — must not crash
+        await writeObject(wrappedCtx, blob);
+
+        // Assert — below-domain level not forwarded; deflate called without level
+        expect(deflateCapture[0]).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given the signal aborts between serialize and writeExclusive', () => {
     describe('When writeObject is called', () => {
       it('Then throws OPERATION_ABORTED (not silently writes)', async () => {
