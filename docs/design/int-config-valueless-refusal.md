@@ -5,7 +5,7 @@
 > the int-typed valueless refusal on top — a NEW error code distinct from `CONFIG_MISSING_VALUE`,
 > reconstructing git's single-line `fatal: bad numeric config value '' for '<key>' in file <F>: invalid unit`
 > (half 2).
-> Status: self-reviewed ×3 → draft (decision candidates open for the ADR phase)
+> Status: accepted (decisions locked — see Decisions (resolved) below + ADRs 353–354)
 
 ## Context
 
@@ -212,7 +212,7 @@ gate cannot reuse the operational-vs-porcelain split; and its valid path needs a
 version-validation gate plus the `Expected git repo version` error. Larger, less reuse, sharper new
 surface. (See decision 1.)
 
-### Recommended design shape (subject to decision 1 — candidate A)
+### Design shape (resolved — candidate A)
 
 **Half 1 — prerequisite (int key + parser).** Add a new application primitive
 `parseGitInt(value: string | null): number` (a sibling of `parseGitBoolean`, same file
@@ -292,9 +292,24 @@ The designer NEVER decides these; the user does, in the ADR phase.
 | 5 | **Backlog / ADR split for the bundled prerequisite** | **(a)** One ADR covering both halves (key choice + error shape), 24.9s checks off, NO new backlog entry. **(b)** Two ADRs — one for the prerequisite (int key + parser + honouring, decisions 1/3/4), one for the refusal (error shape, decision 2) — 24.9s checks off, prerequisite recorded as a sub-bullet. **(c)** Split into two backlog entries: a new prerequisite entry + 24.9s (the refusal), each its own PR. | **(b)** | The two halves are genuinely separable load-bearing decisions (the consuming-site choice is independent of the error shape), matching how 24.9l split detection (ADR-327) / error shape (ADR-328) / scope (ADR-329) into distinct ADRs — the house style. (a) under-records a real architectural decision (the FIRST int-typed config surface + a port change). (c) over-fragments delivery: the user explicitly chose to BUNDLE them in one change, so two PRs contradicts the brief. Recommend (b): two ADRs, one PR, 24.9s closes. **User decides the split.** |
 | 6 | **Cross-class file-line ordering mechanism** (implementation-shape; only for candidate 1=A's eager gate) | **(a)** A new union-aware finder that scans `[core]` once and returns the first valueless entry plus which key-CLASS it is (string vs int), so the gate throws the matching shape. **(b)** Reuse `findFirstValuelessEntry` per class, compare the two results' `line`, throw the lower-line one's shape (tie impossible — distinct lines). **(c)** Accept a documented divergence: fixed string-then-int order (always reports the string key when both co-exist). | **(b)** | git reports the earlier-by-file-line `[core]` key across both classes (pinned: order A → string, order B → int). (b) reproduces this with ZERO new primitive — two existing finder calls + a `line` compare — and stays mutation-test-friendly. (a) is cleaner conceptually but adds a new finder paralleling the proven one for a rare co-existence case. (c) is a real refusal-condition divergence the prime directive forbids (order B would report the wrong key) — only acceptable if the co-existence case is judged impossible, which it is not. Recommend (b). **User decides (or ratifies the impl-shape in the plan).** |
 
+## Decisions (resolved)
+
+Locked in the ADR phase (ADRs 353 prerequisite / 354 refusal). The candidate table above is the historical record; these are what ships:
+
+| # | Choice | Resolved |
+|---|---|---|
+| 1 | Int key + site | **A** — `core.loosecompression` (fallback `core.compression`), consumed at loose-object write. |
+| 2 | Error code | **a** — `CONFIG_BAD_NUMERIC_VALUE { key, source, value, reason }`; render `bad numeric config value '<value>' for '<key>' in file <source>: <reason>` (unquoted file, no `at line`). |
+| 3 | Honour level | **b** — honour on every adapter that *can*; under the zero-dep invariant that is `NodeCompressor` (`deflateSync({level})`), memory/browser accept + ignore (Web `CompressionStream` has no level). |
+| 4 | Parser scope | **b** — complete faithful int parser (`invalid unit` + `out of range`); defer only the consumer-specific `bad zlib compression level` (0–9) range-check. |
+| 5 | ADR/PR split | **b** — two ADRs (353, 354), one PR; 24.9s closes; prerequisite a sub-bullet. |
+| 6 | Cross-class ordering | **b** — two `findFirstValuelessEntry` calls + `line` compare; throw the lower-line entry's shape. |
+
+**Deferred-refusal safety guard (load-bearing, from ADR-353).** Because the level is honoured (3=b) while the zlib `0–9` range-check is deferred (4=b), a valid 32-bit int outside zlib's `-1..9` domain (e.g. `core.loosecompression=99`) must NOT reach `deflateSync` raw — Node throws `ERR_OUT_OF_RANGE` (empirically: levels `0→7801`, `9→78da`, `-1→789c`; `10`/`99`/`-2` throw). The honouring site applies the level only when it is in `-1..9`, else falls back to the adapter default — never crashes. This is a **documented under-refusal**: git dies on `loosecompression=99`; tsgit treats it as the default level. The faithful death is the deferred `bad zlib compression level` follow-up.
+
 ## Consuming-site map (verified against worktree source)
 
-For the recommended candidate A. Each `file:symbol` confirmed in this worktree.
+For the resolved candidate A. Each `file:symbol` confirmed in this worktree.
 
 - **Half-1 parse + field:**
   - `src/application/primitives/config-read.ts` — `ParsedConfig.core` (interface ~L10) gains
@@ -304,13 +319,15 @@ For the recommended candidate A. Each `file:symbol` confirmed in this worktree.
     branch (NON-null → `parseGitInt`).
   - `reports/api.json` — regenerated for the new public `ParsedConfig.core.looseCompression` field
     (prepush `check:doc-typedoc` gate — see project memory "api.json prepush gate").
-- **Half-1 valid-path honouring (if candidate 3 honours the level):**
+- **Half-1 valid-path honouring (decision 3=b — honoured):**
   - `src/ports/compressor.ts` — `deflate: (data, level?) => Promise<Uint8Array>`.
   - `src/adapters/node/node-compressor.ts` L28 — `deflateSync(data, { level })`.
   - `src/adapters/memory/memory-compressor.ts` L18 / `src/adapters/browser/browser-compressor.ts` L13 —
     accept + ignore `level` (CompressionStream has no level; documented).
   - `src/application/primitives/write-object.ts` L35 — read `config.core?.looseCompression`, pass to
-    `deflate`. **Only this site.** `build-pack.ts` L56 also calls `deflate`, but git's PACK path uses
+    `deflate` ONLY when it is in zlib's valid domain (`-1..9`), else omit (adapter default) — the
+    deferred-refusal safety guard (never crash on an out-of-zlib-range valid int; see Decisions
+    (resolved)). **Only this site.** `build-pack.ts` L56 also calls `deflate`, but git's PACK path uses
     `pack.compression` (a DIFFERENT key), NOT `core.loosecompression` — so build-pack stays on the
     no-level `deflate` (passing the loose level there would be UNfaithful). Pack-level int keys are out of
     scope.
@@ -414,10 +431,9 @@ The refusal WIRING (guard placement, eager gate) is NOT a property target — it
 
 ## TDD slices
 
-Ordered so each slice is green on its own and lands as one atomic conventional commit. Slice count and
-exact shape depend on the ADR outcomes; the order below assumes the recommendations (candidate
-1=A / 2=a / 3=a-honour / 4=b-scope / 6=b-ordering). The planner expands each with its full pre-chewed
-context block.
+Ordered so each slice is green on its own and lands as one atomic conventional commit. Decisions are
+locked (1=A / 2=a / 3=b-honour / 4=b-scope / 5=b-split / 6=b-ordering); the four slices below are the
+shipping set. The planner expands each with its full pre-chewed context block.
 
 1. **`feat(config): faithful git int parser`** — add `parseGitInt` to `config-read.ts` + the
    `CONFIG_BAD_NUMERIC_VALUE` error variant/factory (`domain/commands/error.ts`) and render arm
@@ -440,18 +456,21 @@ context block.
    existing eager gate `repo-state.ts` L41–L55; `assertNoValuelessConfig`/`findFirstValuelessEntry`;
    interop structure in `missing-value-refusal-interop.test.ts`.
    Green: refusal fires on the pinned surface in file-line order, porcelain survives.
-4. **`feat(config): honour core.loosecompression at loose-object write`** *(only if candidate 3 honours
-   the valid level)* — widen the `Compressor` port `deflate(data, level?)`, NodeCompressor honours,
-   memory/browser accept+ignore, `write-object.ts` passes `config.core?.looseCompression` (build-pack
-   stays no-level). Unit + the valid-path interop pin (header `78da`, equivalence-under-readback). Context:
+4. **`feat(config): honour core.loosecompression at loose-object write`** — widen the `Compressor` port
+   `deflate(data, level?)`, NodeCompressor honours via `deflateSync({level})`, memory/browser accept+ignore
+   (decision 3=b). `write-object.ts` passes `config.core?.looseCompression` **only when it is in zlib's
+   `-1..9` domain**, else omits it (deferred-refusal safety guard — Node `deflateSync` throws
+   `ERR_OUT_OF_RANGE` otherwise; build-pack stays no-level). Unit (in-range level threads; out-of-range
+   valid int does NOT crash and falls back to default — the documented under-refusal; memory/browser
+   accept+ignore) + the valid-path interop pin (header `78da` on Node, equivalence-under-readback). Context:
    compressor.ts L9, node-compressor.ts L28, memory/browser compressors, write-object.ts L35.
-   Green: valid level honoured on Node; readback parity preserved everywhere.
+   Green: valid in-range level honoured on Node; out-of-range valid int safe (default); readback parity
+   preserved everywhere.
 
-(If candidate 4 = (a), slice 1's parser ships only the `invalid unit` branch; if (c), an extra slice adds
-the `bad zlib compression level` range-check + third reason. If candidate 3 = (c) no-honour, slice 4 is
-dropped (the field is parsed but unconsumed — note this fails requirement 2). If candidate 1 = B, slices
-2–4 are replaced by a repo-open version-read gate + `Expected git repo version` validation — a different
-slice set the planner derives from the B pins.)
+Slice 1's parser ships the COMPLETE generic int parser (`invalid unit` + `out of range`) per decision
+4=b; the consumer-specific `bad zlib compression level` (0–9) range-check + its `bad zlib compression
+level` reason are the deferred follow-up (NOT a slice here). No slice is conditional — decisions are
+locked (1=A / 2=a / 3=b / 4=b / 5=b / 6=b).
 
 ## Out of scope
 
