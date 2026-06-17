@@ -162,9 +162,10 @@ range-check.
 | `1kb` / `1.5` | `invalid unit` (exit 128) | multi-char/decimal rejected |
 | `` (valueless) | `invalid unit` (exit 128) | NULL read as `""` |
 
-Faithful int parser spec: strtoimax base 0 over the trimmed-leading value, then at most one trailing
-k/K/m/M/g/G applying ×1024^n; any other trailing byte, or no digits consumed (incl. empty), → `invalid
-unit`; magnitude exceeding the signed 32-bit `int` range after scaling → `out of range`.
+Faithful int parser spec: strtoimax base 0 over the trimmed-leading value (decimal, `0x` hex, leading-`0`
+octal), then at most one trailing k/K/m/M/g/G applying ×1024^n (`t`/`T` is NOT accepted by git 2.54.0);
+any other trailing byte, or no digits consumed (incl. empty), → `invalid unit`; magnitude exceeding the
+signed 64-bit `strtoimax` range after scaling → `out of range`.
 
 #### Eager-broad death breadth for `core.loosecompression` (pinned, HEAD intact)
 
