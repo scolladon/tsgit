@@ -68,23 +68,11 @@ const commitBothWays = async (message: string): Promise<CommitComparison> => {
     await repo.init();
     await repo.add(['a.txt']);
 
-    // Act — peer via canonical git (signing off, whitespace cleanup pinned),
+    // Act — peer via canonical git (whitespace cleanup pinned),
     // ours via the porcelain.
-    runGit(
-      [
-        '-C',
-        peer,
-        '-c',
-        'commit.gpgsign=false',
-        '-c',
-        'commit.cleanup=whitespace',
-        'commit',
-        '-q',
-        '-m',
-        message,
-      ],
-      { env: COMMIT_ENV },
-    );
+    runGit(['-C', peer, '-c', 'commit.cleanup=whitespace', 'commit', '-q', '-m', message], {
+      env: COMMIT_ENV,
+    });
     const peerId = runGit(['-C', peer, 'rev-parse', 'HEAD']).trim();
     const oursResult = await repo.commit({ message, author: AUTHOR, committer: AUTHOR });
 

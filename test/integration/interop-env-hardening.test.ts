@@ -1,15 +1,17 @@
 /**
  * Regression tripwire for the interop spawn env. Proves that `git` spawned
- * through the shared helper reads NO ambient config across all three vectors
- * the helper closes — the developer's global `~/.gitconfig`, system config,
- * and the XDG config root.
+ * through the shared helper reads NO ambient config across the vectors the
+ * helper closes — the developer's global `~/.gitconfig`, system config, the
+ * XDG config root, and any inherited `GIT_*` runner state.
  *
  * Each vector is guarded independently so dropping any one of the helper's
- * isolation keys (`HOME`, `GIT_CONFIG_NOSYSTEM`, `XDG_CONFIG_HOME`) trips a
- * test. Behaviour probes assert ABSENCE, never a specific leaked value (a
- * leaked value only ever passes on one author's machine); the system probe
- * injects its own config so it proves the closure on any machine, not only
- * one that happens to carry an ambient system setting.
+ * isolation moves trips a test: the config-discovery keys (`HOME`,
+ * `GIT_CONFIG_NOSYSTEM`, `XDG_CONFIG_HOME`) and the `GIT_*`-scrub that leaves
+ * exactly the two deliberately re-added keys in the spawn env. Behaviour
+ * probes assert ABSENCE, never a specific leaked value (a leaked value only
+ * ever passes on one author's machine); the system probe injects its own
+ * config so it proves the closure on any machine, not only one that happens to
+ * carry an ambient system setting.
  */
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -88,6 +90,21 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
 
         // Assert
         expect(env.XDG_CONFIG_HOME).toBe(path.join(env.HOME as string, '.config'));
+      });
+    });
+
+    describe('When inspecting the spawn env GIT_* keys', () => {
+      it('Then only the two deliberate GIT_* keys survive and the ceiling guard is os.tmpdir()', () => {
+        // Arrange
+        const sut = runGitEnv;
+
+        // Act
+        const env = sut();
+
+        // Assert
+        const gitKeys = Object.keys(env).filter((k) => k.startsWith('GIT_'));
+        expect(gitKeys.sort()).toEqual(['GIT_CEILING_DIRECTORIES', 'GIT_CONFIG_NOSYSTEM']);
+        expect(env.GIT_CEILING_DIRECTORIES).toBe(os.tmpdir());
       });
     });
   });

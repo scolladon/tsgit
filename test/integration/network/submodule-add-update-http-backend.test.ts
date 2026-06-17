@@ -113,7 +113,7 @@ describe.skipIf(SKIP)('submodule add/update — interop over git-http-backend', 
     execFileSync('git', ['init', '-q', '-b', 'main', dir], { env: ENV });
     execFileSync('bash', ['-c', `echo root > "${dir}/README"`], { env: ENV });
     git(dir, 'add', 'README');
-    git(dir, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'super c1');
+    git(dir, 'commit', '-qm', 'super c1');
   };
 
   it('Given two superprojects, When add runs (git file:// vs tsgit http), Then the absorbed layout + gitlink match', async () => {
@@ -124,7 +124,7 @@ describe.skipIf(SKIP)('submodule add/update — interop over git-http-backend', 
     initSuper(tsSuper);
 
     // Act — git over file://, tsgit over http (same objects either way)
-    git(gitSuper, '-c', 'commit.gpgsign=false', 'submodule', 'add', `file://${SOURCE_GIT}`, 'lib');
+    git(gitSuper, 'submodule', 'add', `file://${SOURCE_GIT}`, 'lib');
     const repo = await openSuper(tsSuper);
     const result = await repo.submodule.add({ url: subUrl, path: 'lib' });
     await repo.dispose();
@@ -157,7 +157,7 @@ describe.skipIf(SKIP)('submodule add/update — interop over git-http-backend', 
     );
     git(canon, 'add', '.gitmodules');
     git(canon, 'update-index', '--add', '--cacheinfo', `160000,${subHead},lib`);
-    git(canon, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'pin lib');
+    git(canon, 'commit', '-qm', 'pin lib');
     const tsClone = path.join(root, 'clone-ts');
     git(root, 'clone', '-q', canon, tsClone);
 

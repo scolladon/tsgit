@@ -110,7 +110,6 @@ describe.skipIf(!GIT_AVAILABLE)('shortlog interop', () => {
   beforeAll(async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-shortlog-'));
     git(dir, 'init', '-q', '-b', 'main');
-    git(dir, 'config', 'commit.gpgsign', 'false');
     await commitAs(dir, 'r', 'ann root', ANN);
     git(dir, 'checkout', '-q', '-b', 'side');
     await commitAs(dir, 's1', '[PATCH] bob patch', BOB);

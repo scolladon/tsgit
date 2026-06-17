@@ -57,7 +57,6 @@ const baseRepo = async (slug: string): Promise<{ dir: string; ctx: Context }> =>
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.name', 'A U Thor');
   git(dir, 'config', 'user.email', 'author@example.com');
-  git(dir, 'config', 'commit.gpgsign', 'false');
   await writeFile(path.join(dir, 'a.txt'), 'a\n');
   await writeFile(path.join(dir, 'b.txt'), 'b\n');
   git(dir, 'add', '-A');
@@ -83,7 +82,6 @@ const conflictRepo = async (slug: string): Promise<{ dir: string; ctx: Context }
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.name', 'A U Thor');
   git(dir, 'config', 'user.email', 'author@example.com');
-  git(dir, 'config', 'commit.gpgsign', 'false');
   await writeFile(path.join(dir, 'both-mod.txt'), 'base\n');
   await writeFile(path.join(dir, 'them-del.txt'), 'base\n');
   await writeFile(path.join(dir, 'us-del.txt'), 'base\n');

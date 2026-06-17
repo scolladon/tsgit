@@ -65,7 +65,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       runGit(['init', '-q', '-b', 'main', pair.peer]);
       runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
       runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
-      runGit(['-C', pair.peer, 'config', 'commit.gpgsign', 'false']);
       repo = await openRepository({ cwd: pair.ours });
       await repo.init();
     });
@@ -96,16 +95,10 @@ describe.skipIf(!GIT_AVAILABLE)(
       symlinkSync(target, path.join(pair.peer, rel));
 
     const peerMergeConflict = (branch: string): ReturnType<typeof tryRunGit> =>
-      tryRunGit(
-        ['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'merge', '--no-ff', '-m', 'm', branch],
-        { env: COMMIT_ENV },
-      );
+      tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', branch], { env: COMMIT_ENV });
 
     const peerMergeClean = (branch: string): void =>
-      void runGit(
-        ['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'merge', '--no-ff', '-m', 'm', branch],
-        { env: COMMIT_ENV },
-      );
+      void runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', branch], { env: COMMIT_ENV });
 
     // ── tsgit helpers ────────────────────────────────────────────────────────
 
@@ -867,16 +860,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           const abbrev = featureOid.slice(0, 7);
           // Peer cherry-pick with conflict
           const peerResult = tryRunGit(
-            [
-              '-C',
-              pair.peer,
-              '-c',
-              'merge.conflictStyle=merge',
-              '-c',
-              'core.editor=true',
-              'cherry-pick',
-              featureOid,
-            ],
+            ['-C', pair.peer, '-c', 'core.editor=true', 'cherry-pick', featureOid],
             { env: COMMIT_ENV },
           );
 
@@ -1354,17 +1338,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           peerCommit('change symlink target');
           // Peer revert commit A
           const peerResult = tryRunGit(
-            [
-              '-C',
-              pair.peer,
-              '-c',
-              'merge.conflictStyle=merge',
-              '-c',
-              'core.editor=true',
-              'revert',
-              '--no-commit',
-              commitA,
-            ],
+            ['-C', pair.peer, '-c', 'core.editor=true', 'revert', '--no-commit', commitA],
             { env: COMMIT_ENV },
           );
 

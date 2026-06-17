@@ -81,23 +81,10 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
     for (const file of files) await writeBoth(file);
     const paths = files.map((file) => file.path);
     runGit(['-C', pair.peer, 'add', ...paths]);
-    // Signing OFF + whitespace cleanup so the peer commit id matches tsgit's
-    // (a globally-enabled `commit.gpgsign` would otherwise diverge the SHA).
-    runGit(
-      [
-        '-C',
-        pair.peer,
-        '-c',
-        'commit.gpgsign=false',
-        '-c',
-        'commit.cleanup=whitespace',
-        'commit',
-        '-q',
-        '-m',
-        message,
-      ],
-      { env: COMMIT_ENV },
-    );
+    // whitespace cleanup so the peer commit id matches tsgit's
+    runGit(['-C', pair.peer, '-c', 'commit.cleanup=whitespace', 'commit', '-q', '-m', message], {
+      env: COMMIT_ENV,
+    });
     await repo.add(paths);
     const { id } = await repo.commit({ message, author: AUTHOR, committer: AUTHOR });
     return id;

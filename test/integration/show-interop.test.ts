@@ -62,7 +62,6 @@ const buildRepo = async (dir: string): Promise<Built> => {
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.name', 'A U Thor');
   git(dir, 'config', 'user.email', 'author@example.com');
-  git(dir, 'config', 'commit.gpgsign', 'false');
   // git with pinned author/committer dates (date-sensitive verbs only).
   const dated = (epoch: number, ...args: string[]): string =>
     runGit(['-C', dir, ...args], { env: dateEnv(epoch) });

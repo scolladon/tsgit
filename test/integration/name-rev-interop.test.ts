@@ -63,7 +63,6 @@ const makeRepo = async (slug: string): Promise<string> => {
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.name', 'A U Thor');
   git(dir, 'config', 'user.email', 'author@example.com');
-  git(dir, 'config', 'commit.gpgsign', 'false');
   return dir;
 };
 

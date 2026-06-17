@@ -71,7 +71,7 @@ describe.skipIf(!GIT_AVAILABLE)('conflict-marker size + label interop', () => {
   const commitBoth = async (message: string, paths: ReadonlyArray<string>): Promise<void> => {
     runGit(['-C', pair.peer, 'add', ...paths]);
     await repo.add(paths);
-    runGit(['-C', pair.peer, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message], {
+    runGit(['-C', pair.peer, 'commit', '-q', '-m', message], {
       env: COMMIT_ENV,
     });
     await repo.commit({ message, author: AUTHOR, committer: AUTHOR });
@@ -113,21 +113,8 @@ describe.skipIf(!GIT_AVAILABLE)('conflict-marker size + label interop', () => {
         // Arrange
         await divergeBranch('data.txt conflict-marker-size=15\n');
 
-        // Act — pin the peer to git's default 2-way style (host global may pick diff3).
-        tryRunGit(
-          [
-            '-C',
-            pair.peer,
-            '-c',
-            'merge.conflictStyle=merge',
-            'merge',
-            '--no-ff',
-            '-m',
-            'm',
-            'feature',
-          ],
-          { env: COMMIT_ENV },
-        );
+        // Act
+        tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'feature'], { env: COMMIT_ENV });
         const result = await repo.merge.run({ rev: 'feature', message: 'm', author: AUTHOR });
 
         // Assert
@@ -171,7 +158,7 @@ describe.skipIf(!GIT_AVAILABLE)('conflict-marker size + label interop', () => {
         const feat = git(pair.peer, 'rev-parse', 'feature').trim();
 
         // Act
-        tryRunGit(['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'cherry-pick', 'feature'], {
+        tryRunGit(['-C', pair.peer, 'cherry-pick', 'feature'], {
           env: COMMIT_ENV,
         });
         await repo.cherryPick.run({ commits: ['feature'] });
@@ -198,20 +185,9 @@ describe.skipIf(!GIT_AVAILABLE)('conflict-marker size + label interop', () => {
         const c2 = git(pair.peer, 'rev-parse', 'HEAD~1').trim();
 
         // Act
-        tryRunGit(
-          [
-            '-C',
-            pair.peer,
-            '-c',
-            'core.editor=true',
-            '-c',
-            'merge.conflictStyle=merge',
-            'revert',
-            '--no-edit',
-            c2,
-          ],
-          { env: COMMIT_ENV },
-        );
+        tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'revert', '--no-edit', c2], {
+          env: COMMIT_ENV,
+        });
         await repo.revert.run({ commits: [c2] });
 
         // Assert
@@ -232,7 +208,7 @@ describe.skipIf(!GIT_AVAILABLE)('conflict-marker size + label interop', () => {
         await checkoutBoth('feature');
 
         // Act
-        tryRunGit(['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'rebase', 'main'], {
+        tryRunGit(['-C', pair.peer, 'rebase', 'main'], {
           env: COMMIT_ENV,
         });
         await repo.rebase.run({ upstream: 'main' });
@@ -260,7 +236,7 @@ describe.skipIf(!GIT_AVAILABLE)('conflict-marker size + label interop', () => {
         await reopen();
 
         // Act
-        tryRunGit(['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'stash', 'apply'], {
+        tryRunGit(['-C', pair.peer, 'stash', 'apply'], {
           env: COMMIT_ENV,
         });
         await repo.stash.apply();

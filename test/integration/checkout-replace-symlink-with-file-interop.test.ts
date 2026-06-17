@@ -108,7 +108,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       runGit(['init', '-q', '-b', 'main', pair.peer]);
       runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
       runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
-      runGit(['-C', pair.peer, 'config', 'commit.gpgsign', 'false']);
       runGit(['-C', pair.peer, 'config', 'core.symlinks', 'true']);
       repo = await openRepository({ cwd: pair.ours });
       await repo.init();

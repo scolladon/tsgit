@@ -39,7 +39,6 @@ const FIXED_DATE = '1700000000 +0000';
 const configGit = (dir: string): void => {
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
-  git(dir, 'config', 'commit.gpgsign', 'false');
 };
 
 const gitCommit = (dir: string, message: string): void => {
