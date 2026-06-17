@@ -8,6 +8,7 @@ import {
   validateWorkingTreePath,
 } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
+import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 
 export { isForbiddenGitComponent };
 
@@ -21,7 +22,7 @@ export { isForbiddenGitComponent };
  */
 export const validatePath = validateWorkingTreePath;
 
-const repoPath = (ctx: Context, path: FilePath): string => `${ctx.layout.workDir}/${path}`;
+const repoPath = (ctx: Context, path: FilePath): string => joinPath(ctx.layout.workDir, path);
 
 /**
  * Materialize a blob into the working tree at `path` with the given mode.

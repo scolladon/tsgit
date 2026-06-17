@@ -24,6 +24,7 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { joinPath as joinWorkPath } from '../primitives/internal/join-working-tree-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -329,7 +330,7 @@ const joinPath = (dir: FilePath, leaf: string): FilePath => `${dir}/${leaf}` as 
 const stripTrailingSlash = (path: string): string =>
   path.endsWith('/') ? path.slice(0, -1) : path;
 
-const workPath = (ctx: Context, path: FilePath): string => `${ctx.layout.workDir}/${path}`;
+const workPath = (ctx: Context, path: FilePath): string => joinWorkPath(ctx.layout.workDir, path);
 
 const lstatOrUndefined = async (
   ctx: Context,
