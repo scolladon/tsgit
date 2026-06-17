@@ -59,7 +59,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       runGit(['init', '-q', '-b', 'main', pair.peer]);
       runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
       runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
-      runGit(['-C', pair.peer, 'config', 'commit.gpgsign', 'false']);
       repo = await openRepository({ cwd: pair.ours });
       await repo.init();
     });
@@ -92,21 +91,11 @@ describe.skipIf(!GIT_AVAILABLE)(
     const peerSymlink = (target: string, rel: string): void =>
       symlinkSync(target, path.join(pair.peer, rel));
 
-    /**
-     * Run a conflicting merge on the peer with the style pinned to `merge`
-     * (the machine's global config may use `diff3`).
-     */
     const peerMergeConflict = (branch: string): ReturnType<typeof tryRunGit> =>
-      tryRunGit(
-        ['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'merge', '--no-ff', '-m', 'm', branch],
-        { env: COMMIT_ENV },
-      );
+      tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', branch], { env: COMMIT_ENV });
 
     const peerMergeClean = (branch: string): void =>
-      void runGit(
-        ['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'merge', '--no-ff', '-m', 'm', branch],
-        { env: COMMIT_ENV },
-      );
+      void runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', branch], { env: COMMIT_ENV });
 
     // ── tsgit helpers ───────────────────────────────────────────────────────
 

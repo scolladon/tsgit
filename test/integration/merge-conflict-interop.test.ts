@@ -75,7 +75,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — per-region conflict materiali
   const commitBoth = async (message: string, paths: ReadonlyArray<string>): Promise<void> => {
     runGit(['-C', pair.peer, 'add', ...paths]);
     await repo.add(paths);
-    runGit(['-C', pair.peer, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message], {
+    runGit(['-C', pair.peer, 'commit', '-q', '-m', message], {
       env: COMMIT_ENV,
     });
     await repo.commit({ message, author: AUTHOR, committer: AUTHOR });
@@ -112,14 +112,12 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — per-region conflict materiali
 
   /**
    * Run the (conflicting) merge on both tools; both leave markers in the worktree.
-   * The peer is pinned to git's default `merge.conflictStyle` (the host's global may
-   * select a `diff3`-style variant); tsgit implements that 2-way default.
+   * tsgit implements git's default 2-way `merge.conflictStyle`.
    */
   const mergeBothConflict = async (): Promise<void> => {
-    const peerMerge = tryRunGit(
-      ['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'merge', '--no-ff', '-m', 'm', 'theirs'],
-      { env: COMMIT_ENV },
-    );
+    const peerMerge = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+      env: COMMIT_ENV,
+    });
     const result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
     expect(peerMerge.ok).toBe(false);
     expect(result.kind).toBe('conflict');

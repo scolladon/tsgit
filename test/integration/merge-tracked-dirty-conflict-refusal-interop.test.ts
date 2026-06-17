@@ -105,7 +105,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     const commitBoth = async (message: string, paths: ReadonlyArray<string>): Promise<void> => {
       runGit(['-C', pair.peer, 'add', ...paths]);
       await repo.add(paths);
-      runGit(['-C', pair.peer, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message], {
+      runGit(['-C', pair.peer, 'commit', '-q', '-m', message], {
         env: COMMIT_ENV,
       });
       await repo.commit({ message, author: AUTHOR, committer: AUTHOR });
@@ -131,20 +131,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       readFile(path.join(dir, rel), 'utf8');
 
     const peerMerge = (): ReturnType<typeof tryRunGit> =>
-      tryRunGit(
-        [
-          '-C',
-          pair.peer,
-          '-c',
-          'merge.conflictStyle=merge',
-          'merge',
-          '--no-ff',
-          '-m',
-          'm',
-          'theirs',
-        ],
-        { env: COMMIT_ENV },
-      );
+      tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], { env: COMMIT_ENV });
 
     const headOf = (dir: string): string => runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
 
