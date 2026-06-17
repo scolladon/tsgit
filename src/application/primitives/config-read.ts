@@ -1264,42 +1264,59 @@ const UNIT_SCALE: ReadonlyMap<string, bigint> = new Map([
   ['G', BigInt(1024) * BigInt(1024) * BigInt(1024)],
 ]);
 
-const scaleUnit = (scaled: bigint, unit: string): GitIntResult => {
-  const multiplier = UNIT_SCALE.get(unit);
-  if (multiplier === undefined) return { ok: false, reason: 'invalid unit' };
-  const result = scaled * multiplier;
-  if (result < GIT_INT_MIN || result > GIT_INT_MAX) return { ok: false, reason: 'out of range' };
-  return { ok: true, value: Number(result) };
+// No in-range git integer needs this many significant digits (octal int64 max is 22
+// digits). A longer significant run is always out of range — and capping it before
+// BigInt bounds the parse work, so a hostile config value cannot stall the parser.
+const MAX_SIGNIFICANT_DIGITS = 32;
+
+// Classify the digit run at the start of `body` (sign already stripped) the way
+// strtoimax base-0 does: `0x`/`0X` → hex, a leading `0` → octal (greedy over 0-7,
+// stopping at the first non-octal digit), otherwise decimal. Returns the consumed
+// token and its radix, or null when no digit run starts here.
+const matchDigits = (
+  body: string,
+): { readonly token: string; readonly radix: 8 | 10 | 16 } | null => {
+  const hex = /^0[xX][0-9a-fA-F]+/.exec(body);
+  if (hex !== null) return { token: hex[0], radix: 16 };
+  if (body[0] === '0') return { token: (/^0[0-7]*/.exec(body) as RegExpExecArray)[0], radix: 8 };
+  const dec = /^[0-9]+/.exec(body);
+  return dec === null ? null : { token: dec[0], radix: 10 };
 };
 
-// Total pure function: mirrors git's strtoimax base-0 grammar.
-// Returns ok+value on success, or not-ok+reason on failure — never throws.
+// Convert a classified digit token to its magnitude, or null when it has more than
+// MAX_SIGNIFICANT_DIGITS significant digits (always out of range). Leading zeros are
+// stripped first, so a long all-zeros run is the value 0, not an out-of-range reject.
+const magnitudeOf = (token: string, radix: 8 | 10 | 16): bigint | null => {
+  // Strip the radix marker (`0x` = 2 chars, octal `0` = 1 char, decimal = none),
+  // then the leading zeros, leaving the significant digits.
+  const bare = radix === 16 ? token.slice(2) : radix === 8 ? token.slice(1) : token;
+  const significant = bare.replace(/^0+/, '');
+  if (significant.length > MAX_SIGNIFICANT_DIGITS) return null;
+  if (significant === '') return BigInt(0);
+  const prefix = radix === 16 ? '0x' : radix === 8 ? '0o' : '';
+  return BigInt(`${prefix}${significant}`);
+};
+
+// Total pure function: mirrors git's strtoimax base-0 grammar (decimal, `0x` hex,
+// leading-`0` octal, sign, single k/m/g unit ×1024^n). Returns ok+value on success,
+// or not-ok+reason on failure — never throws.
 export const parseGitInt = (value: string | null): GitIntResult => {
-  const raw = value ?? '';
-  // Trim leading ASCII whitespace (git's behaviour).
-  const trimmed = raw.replace(/^[ \t]+/, '');
-  if (trimmed === '') return { ok: false, reason: 'invalid unit' };
+  // Trim leading ASCII whitespace (git's behaviour), then strip one optional sign.
+  const trimmed = (value ?? '').replace(/^[ \t]+/, '');
+  const signed = trimmed[0] === '+' || trimmed[0] === '-';
+  const body = signed ? trimmed.slice(1) : trimmed;
 
-  // Match: optional sign, then decimal or 0x-hex digits, then optional unit.
-  const match = /^([+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+))([a-zA-Z]?)(.*)$/u.exec(trimmed);
-  if (match === null) return { ok: false, reason: 'invalid unit' };
+  const digits = matchDigits(body);
+  if (digits === null) return { ok: false, reason: 'invalid unit' };
 
-  const digits = match[1] ?? '';
-  const unit = match[2] ?? '';
-  const trailing = match[3] ?? '';
-  if (trailing !== '') return { ok: false, reason: 'invalid unit' };
+  const unit = body.slice(digits.token.length);
+  const multiplier = unit === '' ? BigInt(1) : UNIT_SCALE.get(unit);
+  if (multiplier === undefined) return { ok: false, reason: 'invalid unit' };
 
-  let base: bigint;
-  try {
-    base = BigInt(digits);
-  } catch {
-    return { ok: false, reason: 'invalid unit' };
-  }
+  const magnitude = magnitudeOf(digits.token, digits.radix);
+  if (magnitude === null) return { ok: false, reason: 'out of range' };
 
-  if (unit === '') {
-    if (base < GIT_INT_MIN || base > GIT_INT_MAX) return { ok: false, reason: 'out of range' };
-    return { ok: true, value: Number(base) };
-  }
-
-  return scaleUnit(base, unit);
+  const result = (trimmed[0] === '-' ? -magnitude : magnitude) * multiplier;
+  if (result < GIT_INT_MIN || result > GIT_INT_MAX) return { ok: false, reason: 'out of range' };
+  return { ok: true, value: Number(result) };
 };

@@ -449,4 +449,113 @@ describe('parseGitInt', () => {
       });
     });
   });
+
+  describe('Given octal (leading-zero, base-0) values (pinned against git 2.54.0)', () => {
+    describe('When parsing "010" (octal eight)', () => {
+      it('Then returns ok with value 8', () => {
+        // Arrange
+        const sut = parseGitInt;
+
+        // Act
+        const result = sut('010');
+
+        // Assert
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.value).toBe(8);
+      });
+    });
+
+    describe('When parsing "017" (octal fifteen)', () => {
+      it('Then returns ok with value 15', () => {
+        // Arrange
+        const sut = parseGitInt;
+
+        // Act
+        const result = sut('017');
+
+        // Assert
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.value).toBe(15);
+      });
+    });
+
+    describe('When parsing "08" (8 is not an octal digit)', () => {
+      it('Then returns not-ok with reason invalid unit', () => {
+        // Arrange
+        const sut = parseGitInt;
+
+        // Act
+        const result = sut('08');
+
+        // Assert — strtoimax reads octal "0", leaving "8" as a non-unit suffix
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.reason).toBe('invalid unit');
+      });
+    });
+
+    describe('When parsing "0" (zero)', () => {
+      it('Then returns ok with value 0', () => {
+        // Arrange
+        const sut = parseGitInt;
+
+        // Act
+        const result = sut('0');
+
+        // Assert
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.value).toBe(0);
+      });
+    });
+
+    describe('When parsing "-010" (negative octal)', () => {
+      it('Then returns ok with value -8', () => {
+        // Arrange
+        const sut = parseGitInt;
+
+        // Act
+        const result = sut('-010');
+
+        // Assert
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.value).toBe(-8);
+      });
+    });
+  });
+
+  describe('Given pathological leading zeros and oversized magnitudes', () => {
+    describe('When parsing a long all-zeros run (octal zero, not out of range)', () => {
+      it('Then returns ok with value 0 without stalling', () => {
+        // Arrange
+        const sut = parseGitInt;
+
+        // Act — git reads "0…0" as the value 0; the parser must not treat length as magnitude
+        const result = sut('0'.repeat(100000));
+
+        // Assert
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.value).toBe(0);
+      });
+    });
+
+    describe('When parsing a million-digit number (significant length far past int64)', () => {
+      it('Then returns not-ok with reason out of range without stalling', () => {
+        // Arrange
+        const sut = parseGitInt;
+
+        // Act — capped before BigInt so a hostile config value cannot stall the parser
+        const result = sut('9'.repeat(1000000));
+
+        // Assert — git also rejects this magnitude as out of range
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.reason).toBe('out of range');
+      });
+    });
+  });
 });
