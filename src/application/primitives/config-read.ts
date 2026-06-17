@@ -1207,3 +1207,63 @@ const TRUE_VALUES = new Set(['true', 'yes', 'on', '1']);
 // NULL) maps to `true` — `git_config_bool(NULL) == 1`.
 const parseGitBoolean = (value: string | null): boolean =>
   value === null || TRUE_VALUES.has(value.toLowerCase());
+
+type GitIntResult =
+  | { readonly ok: true; readonly value: number }
+  | { readonly ok: false; readonly reason: 'invalid unit' | 'out of range' };
+
+// git config --type=int uses strtoimax (int64_t on all modern platforms).
+// Pinned against git 2.54.0: values outside this range yield "out of range".
+const GIT_INT_MAX = BigInt('9223372036854775807');
+const GIT_INT_MIN = BigInt('-9223372036854775808');
+
+// Unit multipliers accepted by git_parse_signed (k/K/m/M/g/G = ×1024^n).
+// t/T are NOT accepted by git 2.54.0 (pinned empirically).
+const UNIT_SCALE: ReadonlyMap<string, bigint> = new Map([
+  ['k', BigInt(1024)],
+  ['K', BigInt(1024)],
+  ['m', BigInt(1024) * BigInt(1024)],
+  ['M', BigInt(1024) * BigInt(1024)],
+  ['g', BigInt(1024) * BigInt(1024) * BigInt(1024)],
+  ['G', BigInt(1024) * BigInt(1024) * BigInt(1024)],
+]);
+
+const scaleUnit = (scaled: bigint, unit: string): GitIntResult => {
+  const multiplier = UNIT_SCALE.get(unit);
+  if (multiplier === undefined) return { ok: false, reason: 'invalid unit' };
+  const result = scaled * multiplier;
+  if (result < GIT_INT_MIN || result > GIT_INT_MAX) return { ok: false, reason: 'out of range' };
+  return { ok: true, value: Number(result) };
+};
+
+// Total pure function: mirrors git's strtoimax base-0 grammar.
+// Returns ok+value on success, or not-ok+reason on failure — never throws.
+export const parseGitInt = (value: string | null): GitIntResult => {
+  const raw = value ?? '';
+  // Trim leading ASCII whitespace (git's behaviour).
+  const trimmed = raw.replace(/^[ \t]+/, '');
+  if (trimmed === '') return { ok: false, reason: 'invalid unit' };
+
+  // Match: optional sign, then decimal or 0x-hex digits, then optional unit.
+  const match = /^([+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+))([a-zA-Z]?)(.*)$/u.exec(trimmed);
+  if (match === null) return { ok: false, reason: 'invalid unit' };
+
+  const digits = match[1] ?? '';
+  const unit = match[2] ?? '';
+  const trailing = match[3] ?? '';
+  if (trailing !== '') return { ok: false, reason: 'invalid unit' };
+
+  let base: bigint;
+  try {
+    base = BigInt(digits);
+  } catch {
+    return { ok: false, reason: 'invalid unit' };
+  }
+
+  if (unit === '') {
+    if (base < GIT_INT_MIN || base > GIT_INT_MAX) return { ok: false, reason: 'out of range' };
+    return { ok: true, value: Number(base) };
+  }
+
+  return scaleUnit(base, unit);
+};

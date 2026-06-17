@@ -11,6 +11,7 @@ import {
   cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
+  configBadNumericValue,
   configKeyInvalid,
   configMissingValue,
   configMultipleValues,
@@ -1110,6 +1111,50 @@ describe('domain commands error — config factory data', () => {
       });
     });
   });
+
+  describe('Given the configBadNumericValue helper', () => {
+    describe("When called with key='core.loosecompression', source='/abs/.git/config', value='', reason='invalid unit'", () => {
+      it('Then data carries code, key, source, value, and reason individually', () => {
+        // Arrange + Act
+        const sut = configBadNumericValue(
+          'core.loosecompression',
+          '/abs/.git/config',
+          '',
+          'invalid unit',
+        );
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
+        expect(data.key).toBe('core.loosecompression');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.value).toBe('');
+        expect(data.reason).toBe('invalid unit');
+      });
+    });
+
+    describe("When called with key='core.loosecompression', source='/abs/.git/config', value='2147483648', reason='out of range'", () => {
+      it('Then data carries code, key, source, value, and reason individually', () => {
+        // Arrange + Act
+        const sut = configBadNumericValue(
+          'core.loosecompression',
+          '/abs/.git/config',
+          '2147483648',
+          'out of range',
+        );
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
+        expect(data.key).toBe('core.loosecompression');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.value).toBe('2147483648');
+        expect(data.reason).toBe('out of range');
+      });
+    });
+  });
 });
 
 describe('domain commands error — extractDetail message formatting', () => {
@@ -1346,6 +1391,26 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },
       "CONFIG_MISSING_VALUE: missing value for 'user.name' in file '/repo/.git/config' at line 2",
+    ],
+    [
+      {
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.loosecompression',
+        source: '/repo/.git/config',
+        value: '',
+        reason: 'invalid unit',
+      },
+      "CONFIG_BAD_NUMERIC_VALUE: bad numeric config value '' for 'core.loosecompression' in file /repo/.git/config: invalid unit",
+    ],
+    [
+      {
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.loosecompression',
+        source: '/repo/.git/config',
+        value: '2147483648',
+        reason: 'out of range',
+      },
+      "CONFIG_BAD_NUMERIC_VALUE: bad numeric config value '2147483648' for 'core.loosecompression' in file /repo/.git/config: out of range",
     ],
   ];
 

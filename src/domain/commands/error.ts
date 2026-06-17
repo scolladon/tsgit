@@ -134,6 +134,13 @@ export type CommandError =
       readonly line: number;
     }
   | {
+      readonly code: 'CONFIG_BAD_NUMERIC_VALUE';
+      readonly key: string;
+      readonly source: string;
+      readonly value: string;
+      readonly reason: 'invalid unit' | 'out of range';
+    }
+  | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
       readonly key: string;
       readonly count: number;
@@ -464,6 +471,20 @@ export const configParseError = (
  */
 export const configMissingValue = (key: string, source: string, line: number): TsgitError =>
   new TsgitError({ code: 'CONFIG_MISSING_VALUE', key, source, line });
+
+/**
+ * An int-typed config key is present but its value cannot be parsed as a valid
+ * git integer. `key` is the fully-qualified config key, `source` is the file path,
+ * `value` is the raw read string (`''` for valueless), and `reason` is either
+ * `'invalid unit'` (trailing garbage, no digits, empty) or `'out of range'`
+ * (magnitude exceeds the signed 64-bit int range after scaling).
+ */
+export const configBadNumericValue = (
+  key: string,
+  source: string,
+  value: string,
+  reason: 'invalid unit' | 'out of range',
+): TsgitError => new TsgitError({ code: 'CONFIG_BAD_NUMERIC_VALUE', key, source, value, reason });
 
 /**
  * A write operation was refused because the config file contains a malformed

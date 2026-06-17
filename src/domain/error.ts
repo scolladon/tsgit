@@ -392,6 +392,8 @@ function extractDetail(data: TsgitErrorData): string {
         : `bad config line ${data.line} in file ${data.source}`;
     case 'CONFIG_MISSING_VALUE':
       return `missing value for '${data.key}' in file '${data.source}' at line ${data.line}`;
+    case 'CONFIG_BAD_NUMERIC_VALUE':
+      return `bad numeric config value '${data.value}' for '${data.key}' in file ${data.source}: ${data.reason}`;
     case 'CONFIG_INVALID_FILE':
       return `invalid section name '${data.sectionName}' in config file ${data.source}`;
     case 'CONFIG_MULTIPLE_VALUES':
