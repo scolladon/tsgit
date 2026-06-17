@@ -338,3 +338,300 @@ End-state after this change: **exactly one** working-tree-write `joinPath`, in i
   (`apply-changeset.ts`) is repointed onto the new module directly, so no indirection is introduced.
 - **New empirical git pins** — not needed; no git behaviour changes (the harmlessness proof + unchanged green suites
   discharge faithfulness).
+
+## Scope expansion (in-PR): the remaining joinPath copies
+
+> The sections above closed the working-tree-write `joinPath` north star (family A) — the four collapsing-join sites now
+> share `primitives/internal/join-working-tree-path.ts`. This appended section extends the same de-duplication, in the
+> same PR, to the join copies that were explicitly listed as out-of-scope above. It is **user-approved** and additive:
+> the sections above are unchanged and remain the authority for the already-landed work. Same constraints as the
+> original change — behaviour-preserving internal refactor, no new git surface, no public-API change, no on-disk-state
+> change. The faithfulness obligation stays the **inverse**: prove every touched site is observationally byte-identical.
+
+### Two distinct join families — do not conflate them
+
+There are **two** different "join" operations in the application layer, with different inputs, outputs and semantics.
+The expansion keeps them **separately named** so they are never confused:
+
+| Family | What it joins | Output | Fed to | Helper after this PR |
+|---|---|---|---|---|
+| **A — working-tree-write** | `workDir` (absolute) + index-relative `FilePath` | absolute disk path (`string`) | **only** FS ops (`write`/`read`/`lstat`/`rename`/`exists`/`rm`) | `joinPath` in `primitives/internal/join-working-tree-path.ts` (COLLAPSING) — landed above |
+| **B — path-segment** | a repo-relative `prefix` + a `leaf`/`name` | repo-relative `FilePath` | tree-walk / index keys / further joins (NOT FS as an absolute) | NEW shared helper (NOT named `joinPath` — see D-FAMB-MODULE) |
+
+Family A collapses a trailing `/` (so `workDir//rel` → `workDir/rel`). Family B instead **guards the empty prefix**
+(`prefix === '' ? leaf : `${prefix}/${leaf}``) so a root-level entry yields `leaf`, not `/leaf`. They are genuinely
+different joins; after this PR family A's helper is `joinPath`, and family B's shared helper carries a **distinct** name
+so the two are not conflated at a glance.
+
+This expansion has **two parts**:
+
+- **Part 1** — fold the **5th family-A copy** (`repoPath` in `commands/internal/working-tree.ts`) into the unified
+  family-A `joinPath`. It was missed by the family-A sweep above purely because it is named `repoPath`, not `joinPath`.
+- **Part 2** — unify the **three family-B copies** (`walk-submodules.ts`, `walk-working-tree.ts`, `mv.ts`, each a local
+  `joinPath`) into one shared family-B helper under `primitives/internal/`.
+
+### Part 1 — the 5th family-A copy: `repoPath`
+
+`commands/internal/working-tree.ts:24` defines a **non-collapsing** copy of the exact family-A join:
+
+```
+const repoPath = (ctx: Context, path: FilePath): string => `${ctx.layout.workDir}/${path}`;   // NON-collapsing
+```
+
+It differs from the unified family-A `joinPath` (`join-working-tree-path.ts:9`,
+`workDir.endsWith('/') ? `${workDir}${path}` : `${workDir}/${path}``) **only** in the trailing-slash collapse — exactly
+the difference the family-A harmlessness proof above already discharged.
+
+#### Verified importer / call-site set (Part 1)
+
+`find_referencing_symbols` on `repoPath` (`commands/internal/working-tree.ts`) returns **5 references, all in-file, all
+pure FS**, and **no external importer** (`repoPath` is not exported):
+
+| Site | Code | Consumer |
+|---|---|---|
+| L49 | `const dst = repoPath(ctx, path);` (`materializeFile`) | `ctx.fs.write` / `ctx.fs.openWithNoFollow` / `ctx.fs.chmod` |
+| L81 | `return ctx.fs.read(repoPath(ctx, path));` (`readFile`) | `ctx.fs.read` |
+| L91 | `const full = repoPath(ctx, path);` (`removeFile`) | `ctx.fs.lstat` then `ctx.fs.rm` |
+| L123 | `await moveNode(ctx, repoPath(ctx, from), repoPath(ctx, to));` (`renameInWorkingTree`) ×2 | `moveNode` → `ctx.fs.lstat`/`readdir`/`mkdir`/`rename`/`rmRecursive` |
+
+Every consumer is a pure FS operation; **none** is a matcher, an index key, or any verdict-bearing comparison. (Note:
+`moveNode`'s own recursion at `working-tree.ts:130` uses a bare `` `${fromAbs}/${child.name}` `` to descend — that joins
+two **already-absolute** path fragments, not workDir-onto-relative, so it is neither family A nor family B and is left
+untouched.)
+
+#### Harmlessness proof (Part 1) — identical to the family-A proof above
+
+The same two-pronged argument the sections above pinned for the sparse/inline copies applies verbatim to `repoPath`:
+
+1. **Output feeds only FS, never a verdict.** All 5 sites feed `ctx.fs.*` (table above). Routing through the COLLAPSING
+   `joinPath` cannot alter any observable outcome that is not a disk path, and disk paths are `//`-normalised (next
+   point).
+2. **`//` and `/` resolve to the same file under every adapter.** Memory FS routes every op through `normalizePath`,
+   which skips empty segments (`adapters/memory/memory-file-system.ts:508-509`); Node FS routes through `node:path`,
+   which collapses redundant separators. Pinned empirically in a throwaway on this machine:
+   `fs.existsSync(cwd + '/d//f') === true` for an existing `d/f`.
+3. **The diverging input is unreachable in production.** The two helpers diverge **only** when `workDir` ends with `/`.
+   No production adapter produces that: node `workDir = nodePath.resolve(options.workDir)`
+   (`adapters/node/node-adapter.ts:40`) strips trailing slashes (pinned: `path.resolve('/a/b/') === '/a/b'`);
+   memory/browser use the slash-free constants `DEFAULT_WORK_DIR` / `ROOT_WORK_DIR`.
+
+So for every real input the unified `joinPath` produces the byte-identical string `repoPath` does, and even the
+unreachable trailing-slash case resolves to the same file. **Harmless — observationally byte-identical** (no SHA / ref /
+reflog / state-file / refusal / structured-output change, no working-tree path difference).
+
+### Part 2 — the family-B path-segment join: three copies
+
+Three local `joinPath` definitions join a repo-relative prefix to a leaf, producing a repo-relative `FilePath`:
+
+| Copy | Definition | Empty-prefix guard? | Call site |
+|---|---|---|---|
+| `walk-submodules.ts:106` | `(prefix: string, leaf: string): string => prefix === '' ? leaf : `${prefix}/${leaf}`` | **yes** | L66 `joinPath(pathPrefix, entry.path) as FilePath` |
+| `walk-working-tree.ts:108` | `(prefix: string, name: string): FilePath => (prefix === '' ? name : `${prefix}/${name}`) as FilePath` | **yes** | L87 `joinPath(prefix, entry.name)` |
+| `mv.ts:327` | `(dir: FilePath, leaf: string): FilePath => `${dir}/${leaf}` as FilePath` | **no** | L176 `joinPath(mode.destDir, basename(source))` |
+
+They differ in exactly two cosmetic ways:
+
+1. **Return type / cast placement.** `walk-submodules` returns `string` and the call site casts `as FilePath`; the
+   other two return `FilePath` (cast *inside* the helper). `FilePath` is a branded `string`, assignable to `string`.
+2. **`mv`'s first param is typed `FilePath`** (not `string`). `FilePath` is assignable to `string`, so a
+   `string`-typed parameter accepts it.
+
+And in one **substantive** way: **`mv` has no empty-prefix guard.** The reconciliation question is whether folding `mv`
+onto a **guarded** shared helper changes `mv`'s behaviour — i.e. whether `mv`'s `dir` can ever be empty (in which case
+the guard's `leaf` branch would diverge from `mv`'s current `${dir}/${leaf}` = `/leaf`).
+
+#### Harmlessness proof (Part 2) — `mv`'s `destDir` is provably never empty and never leading-slash
+
+The guard is a **no-op for `mv`**: its `dir` (`mode.destDir`) is always a non-empty, non-leading-slash `FilePath`, so
+the guarded shared helper always takes the **else** branch — byte-identical to `mv`'s current `${dir}/${leaf}`. Proof
+chain, every link pinned to source:
+
+- `mv.ts:103` — `const destNoSlash = validatePath(stripTrailingSlash(destination));`
+- `mv.ts:34` — `validatePath` is imported from `commands/internal/working-tree.ts`, where (`working-tree.ts:22`)
+  `export const validatePath = validateWorkingTreePath;`
+- `domain/working-tree-path.ts:28-33` — `validateWorkingTreePath` **rejects** `input === ''` (L30, throws
+  `PATHSPEC_OUTSIDE_REPO`) **and** `input.startsWith('/')` (L33). So any value returned by `validatePath` is non-empty
+  and has no leading `/`.
+- `mv.ts:151` — `destDir` is assigned **only** here: `return { kind: 'into-dir', destDir: destNoSlash };`. There is no
+  other producer of `destDir`. Therefore `mode.destDir` is always `destNoSlash`, hence always non-empty / non-slash.
+- `mv.ts:176` — the family-B join `joinPath(mode.destDir, basename(source))` runs **only** when `mode.kind !== 'rename'`,
+  i.e. `mode.kind === 'into-dir'`, the only mode carrying `destDir`.
+
+So for `mv`, `prefix === ''` is **structurally unreachable**: the guard's true-branch can never fire, and the else-branch
+`${dir}/${leaf}` is exactly `mv`'s current join. Folding `mv` onto the guarded helper is **behaviour-preserving**.
+
+The other two callers (`walk-submodules`, `walk-working-tree`) **already carry the identical guard**, so for them the
+shared helper is the same function they call today — trivially behaviour-preserving.
+
+Faithfulness cross-check (Part 2, pinned in a throwaway with scrubbed `GIT_*`): real `git mv a.txt dir` yields
+`dir/a.txt` (single separator, basename kept) — exactly what `joinPath(destDir, basename(source))` produces via the
+else-branch. No git observable behaviour changes.
+
+#### The reconciled shared family-B helper
+
+A single `string`-returning helper with the guard fits all three callers:
+
+```ts
+import type { FilePath } from '../../../domain/objects/index.js';
+
+/**
+ * Join a repo-relative path segment onto a repo-relative prefix, guarding the
+ * empty prefix so a root-level segment yields the bare leaf (never a leading
+ * `/`). The single definition shared by the tree walkers and `mv`'s into-dir
+ * target build. NOT the same join as the working-tree-write `joinPath`.
+ */
+export const <name> = (prefix: string, leaf: string): string =>
+  prefix === '' ? leaf : `${prefix}/${leaf}`;
+```
+
+(Parameter typed `string` — accepts `mv`'s `FilePath` `dir` by assignability and the walkers' `string` prefixes.)
+Each call site casts `as FilePath` where it already does:
+
+- `walk-submodules.ts:66` — `<name>(pathPrefix, entry.path) as FilePath` — cast already present, unchanged.
+- `walk-working-tree.ts:87` — currently `const path = joinPath(prefix, entry.name);` consumed as `FilePath`; becomes
+  `const path = <name>(prefix, entry.name) as FilePath;` (the cast moves from inside the deleted helper to the call
+  site — net byte-identical value, no behaviour change).
+- `mv.ts:176` — `<name>(mode.destDir, basename(source)) as FilePath` (cast moves to the call site, same as above).
+
+`<name>` is resolved by **D-FAMB-MODULE** below.
+
+### Decision candidates (scope expansion)
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why |
+|---|---|---|---|---|
+| **D-REPOPATH — fold the 5th family-A copy** | `repoPath` (`working-tree.ts:24`) is a non-collapsing family-A join with 5 in-file call sites. How to route it through the unified `joinPath`. | **(a)** Keep a thin local wrapper: `const repoPath = (ctx: Context, path: FilePath): string => joinPath(ctx.layout.workDir, path);` — the 5 call sites stay verbatim; the join logic lives only in `joinPath`. **(b)** Delete `repoPath`; inline `joinPath(ctx.layout.workDir, path)` at all 5 sites — no wrapper indirection, 5 call-site edits. | **(a)** — thin local wrapper | Both satisfy "exactly ONE join definition" (the join lives only in `joinPath` either way). (a) is the smaller, lower-risk diff (one import + one one-line wrapper body change; 5 call sites untouched), keeps the readable `repoPath(ctx, path)` shape at every site (the `ctx`→`ctx.layout.workDir` projection is real local sugar — without it each site repeats `ctx.layout.workDir`), and matches the family-A precedent of de-duplicating the *definition* without churning callers. (b) trades 5 call-site edits and the loss of the `ctx`-projection sugar for removing one trivial wrapper — net negative on diff size and readability with no correctness gain. **This is a load-bearing choice — the user decides.** |
+| **D-FAMB-MODULE — home + name of the shared family-B helper** | The family-B helper must be importable by **both** `primitives/` (`walk-*`) **and** `commands/` (`mv`), so it lives in `primitives/internal/` (the `commands → primitives` direction is legal and already crossed). The open choice is the file name + symbol name. | **(a)** `join-tree-path.ts` exporting `joinTreePath`. **(b)** `join-path-segment.ts` exporting `joinPathSegment`. **(c)** `append-path-segment.ts` exporting `appendPathSegment`. | **(b)** — `join-path-segment.ts` / `joinPathSegment` | All three live in `primitives/internal/` (importable by both layers; same precedent the family-A module set). The name MUST be distinct from family A's `joinPath` so the two joins are never conflated. (b) is the clearest: "join a path **segment**" names exactly what differs from family A (it joins a *segment* onto a prefix, not a workDir onto a relative path) and reads unambiguously at every call site (`joinPathSegment(prefix, leaf)`). (a) `joinTreePath` risks confusion with `read-tree`/`walk-tree`/`write-tree` (it is not a git *tree* object operation — it is plain path-segment concatenation). (c) `appendPathSegment` is accurate and equally distinct, but (b) is preferred because `join*` mirrors the established `joinPath` vocabulary (one verb for both joins) while the `*Segment` suffix supplies the distinguishing qualifier — so (b) keeps the family relationship visible *and* the distinction sharp, where (c) drops the shared verb. **This is a load-bearing choice — the user decides the name.** |
+
+Neither D-REPOPATH nor D-FAMB-MODULE is pre-decided; both are surfaced for the user. The design records recommendations
+only — the choice is the user's.
+
+### Requirements (scope expansion)
+
+When this expansion ships, in addition to the family-A requirements above:
+
+1. **`repoPath` no longer defines its own join.** Per D-REPOPATH (a): `repoPath` becomes a thin wrapper over the unified
+   family-A `joinPath`; the only family-A join *logic* lives in `join-working-tree-path.ts`. (Or per (b): `repoPath` is
+   deleted and all 5 sites call `joinPath` directly.)
+2. **Exactly one family-B path-segment join definition**, in `primitives/internal/<D-FAMB-MODULE module>`, imported by
+   `walk-submodules.ts`, `walk-working-tree.ts`, and `mv.ts`. The three local `joinPath` definitions are gone.
+3. **The family-A and family-B helpers carry distinct names** (`joinPath` vs the D-FAMB-MODULE name) — the two joins are
+   never conflated.
+4. **Behaviour is unchanged** under cone AND non-cone, memory AND node: same files materialised/read/removed/renamed
+   (Part 1); same submodule walk paths, working-tree walk paths, and `mv` index+tree readback (Part 2). No SHA / ref /
+   reflog / state-file / refusal / structured-output change; no public surface / option / `api.json` change
+   (ADR-249/226 unaffected).
+5. The existing suites stay green **unchanged** (they are the regression authority); touched code keeps its coverage
+   posture and **0 surviving mutants** — including the new family-B helper (Stryker mutates all `src`).
+
+### Test strategy (scope expansion)
+
+Behaviour-preserving → the **existing** suites are the regression authority and must stay green **unchanged**. Coverage
+gates `domain`/`adapters` only; Stryker mutates **all** `src` against unit tests — so both helpers' mutants must die.
+
+- **Part 1 — `repoPath` fold.** No dedicated test. `repoPath` is application-layer (outside the coverage denominator),
+  and the unified `joinPath` it now delegates to is already mutation-covered by the family-A sections above (non-slash
+  branch by `write-working-tree-file.test.ts`, slash branch by `apply-sparse-checkout.test.ts:376-398`). The 5
+  `repoPath` call sites stay exercised by the existing `working-tree`-driven suites: read
+  `test/unit/application/commands/internal/working-tree.test.ts` to confirm `materializeFile` / `readFile` /
+  `removeFile` / `renameInWorkingTree` are each driven (they are — `working-tree.test.ts` is the home suite), plus the
+  `mv` suite drives `renameInWorkingTree` end-to-end. The wrapper body itself (per D-REPOPATH (a)) is a single delegating
+  call; its only mutant — swapping the delegation — is killed by any `working-tree` test that asserts a written/read
+  path, which the suite already does.
+- **Part 2 — the family-B helper has a REAL guard branch** (`prefix === ''`), so **both** branches must be exercised or
+  a `ConditionalExpression` / `StringLiteral` mutant survives. Verified the existing suites already cover both, across
+  the three callers (so transitive coverage suffices — **no dedicated helper test needed**, mirroring the family-A D4
+  resolution):
+  - **Empty-prefix TRUE branch** (`prefix === ''` → returns `leaf`):
+    - `walk-working-tree.test.ts` — root files `a.txt` / `b.txt` (`expect(sut.sort()).toEqual(['a.txt','b.txt'])`,
+      ~L65) are produced with `prefix === ''`.
+    - `walk-submodules.test.ts` — top-level gitlinks `orphan` / `foo` / `gitlink` / `vendor/foo` (depth 0,
+      `pathPrefix === ''`) — e.g. the recursive test asserts the depth-0 entry `path: 'vendor/foo'` (L527).
+  - **Non-empty branch** (`${prefix}/${leaf}`):
+    - `walk-working-tree.test.ts` — nested `a/b/c.txt` / `a/d.txt` (`expect(sut.sort()).toEqual(['a/b/c.txt','a/d.txt',
+      'e.txt'])`, ~L84) join a non-empty `prefix`.
+    - `walk-submodules.test.ts` — the recursive "nested submodule with absorbed gitdir" test asserts the depth-1 child
+      `path: 'vendor/foo/nested/bar'` (L534), built with `pathPrefix === 'vendor/foo'` (non-empty).
+    - `mv.test.ts` — into-dir moves assert `to: 'dir/a.txt'` (L101, L119-120) and `to: 'dest/src/f.txt'` (L180), each
+      from `joinPath(mode.destDir, basename(source))` with a non-empty `destDir`.
+  - **`StringLiteral` / template mutants** on `${prefix}/${leaf}` (e.g. dropping the `/`, swapping operands) are killed
+    by the exact-string `toEqual` assertions above (`'a/b/c.txt'`, `'vendor/foo/nested/bar'`, `'dir/a.txt'`).
+
+  **Recommendation:** ship Part 2 with **no dedicated helper test** — both branches and the template are killed
+  transitively by the three callers' existing suites (Stryker resolves mutants through the import graph, not file
+  co-location). **Safety net:** if the scoped mutation run surfaces a survivor on the new family-B module, add a targeted
+  two-case `<D-FAMB-MODULE module>.test.ts` (empty-prefix → `leaf`; non-empty → `prefix/leaf`) in that slice. This is
+  the expectation's fallback, not the plan.
+- **No new interop pin** — no new git behaviour; the two empirical throwaway pins above (git-mv basename; node
+  double-slash) are confirmations of *existing* behaviour, recorded for the proof, not a new parity matrix.
+
+**Property tests — DO NOT APPLY.** Both helpers are single-line string concatenations behind I/O orchestration, not a
+parser / matcher / round-trip pair / counting invariant (the property-test lenses do not fit; the family-A section
+reached the same conclusion for `joinPath`).
+
+### Slicing hint for the planner (scope expansion)
+
+Two atomic, build-safe slices. Each must be self-consistent **per file** — a local helper may be deleted only in the
+same commit that removes its last in-file reference (build integrity). They are independent of each other and of the
+family-A slices above; order is free, but Part 1 (one file) is the smaller warm-up.
+
+**Slice C — fold the 5th family-A copy (`repoPath`).** *(Part 1)*
+- Pre-chewed context (all in `src/application/commands/internal/working-tree.ts`):
+  - Per **D-REPOPATH (a)** (recommended): change the body of `repoPath` (**L24**) to
+    `const repoPath = (ctx: Context, path: FilePath): string => joinPath(ctx.layout.workDir, path);` and ADD
+    `import { joinPath } from '../../primitives/internal/join-working-tree-path.js';` (the `commands/internal →
+    primitives/internal` import direction is legal and already used by sibling `commands/internal` files). Call sites
+    L49 / L81 / L91 / L123 (×2) stay verbatim.
+  - (If the user picks **D-REPOPATH (b)**: delete `repoPath` (L24) and replace each of the 5 call sites with
+    `joinPath(ctx.layout.workDir, …)`, adding the same import — all in one commit for build integrity.)
+  - UNCHANGED (verify, do not edit): `moveNode`'s `` `${fromAbs}/${child.name}` `` (L130) — joins two absolute fragments,
+    neither family A nor B; out of scope.
+- Regression guard tests (run, expect green unchanged): `test/unit/application/commands/internal/working-tree.test.ts`
+  (the home suite — drives `materializeFile` / `readFile` / `removeFile` / `renameInWorkingTree`);
+  `test/unit/application/commands/mv.test.ts` (drives `renameInWorkingTree` end-to-end).
+- TDD note: behaviour-preserving — no *new failing* test; correctness gate is "all suites green + `npm run validate`
+  clean + 0 new mutants".
+- Gate: `npm run validate` green; scoped mutation on `working-tree.ts` shows 0 new survivors (the deleted non-collapsing
+  branch *reduces* surface).
+
+**Slice D — extract the family-B helper, route the three callers.** *(Part 2)*
+- Pre-chewed context:
+  - **NEW file** `src/application/primitives/internal/<D-FAMB-MODULE module>` (recommended `join-path-segment.ts`):
+    export the guarded helper `(prefix: string, leaf: string): string => prefix === '' ? leaf : `${prefix}/${leaf}``
+    (recommended name `joinPathSegment`) + doc-comment; `import type { FilePath } from '../../../domain/objects/index.js';`
+    only if the doc-comment references it (the body itself needs no import — params/return are `string`). Keep names
+    distinct from family A's `joinPath`.
+  - Edit `src/application/primitives/walk-submodules.ts`: DELETE the local `joinPath` (**L106-107**); ADD
+    `import { <name> } from './internal/<module>.js';` (sibling `primitives/` → `primitives/internal/`); change the call
+    site **L66** to `<name>(pathPrefix, entry.path) as FilePath` (cast already present).
+  - Edit `src/application/primitives/walk-working-tree.ts`: DELETE the local `joinPath` (**L108-109**); ADD the same
+    import; change call site **L87** from `const path = joinPath(prefix, entry.name);` to
+    `const path = <name>(prefix, entry.name) as FilePath;` (cast moves from the deleted helper to the call site — same
+    value). UNCHANGED: `directoryPath` (L105-106) and the bare lstat join `` `${config.ctx.layout.workDir}/${path}` ``
+    (L101) — those are workDir joins, not family B; leave them (they are outside this expansion's two parts).
+  - Edit `src/application/commands/mv.ts`: DELETE the local `joinPath` (**L327**); ADD
+    `import { <name> } from '../primitives/internal/<module>.js';` (alongside the existing `../primitives/*` imports);
+    change call site **L176** to `<name>(mode.destDir, basename(source)) as FilePath`. UNCHANGED: `workPath` (L332,
+    a family-A workDir join in this file — NOT this expansion's scope) and `repath` (L311, a `slice`-based reparent).
+  - Each file's helper-delete + call-site-edit must land in the **same commit** (build integrity — deleting a referenced
+    local breaks the file mid-slice otherwise).
+- Regression guard tests (run, expect green unchanged): `test/unit/application/primitives/walk-submodules.test.ts`
+  (root + recursive depth-1 path assertions — both guard branches), `test/unit/application/primitives/walk-working-tree.test.ts`
+  (root + nested path assertions — both branches), `test/unit/application/commands/mv.test.ts` (into-dir moves — non-empty
+  branch + exact `to:` strings); plus the `mv` interop suite if present.
+- TDD note: behaviour-preserving; the existing assertions already exercise both guard branches and the template (see Test
+  strategy).
+- Gate: `npm run validate` green; scoped mutation on the new module + the three touched files shows 0 new survivors. If a
+  survivor appears on the new module, add the two-case targeted test (safety net) in this slice.
+
+### Out of scope (scope expansion)
+
+- **Family A's already-landed work** — `join-working-tree-path.ts`, `write-working-tree-file.ts`,
+  `apply-sparse-checkout.ts`, `apply-changeset.ts` are NOT re-touched, except that `working-tree.ts` (Part 1) *imports*
+  the family-A `joinPath` from `join-working-tree-path.ts` — an import add, not a re-touch of the module's contents.
+- **`mv.ts`'s `workPath` (L332)** and **`walk-working-tree.ts`'s bare lstat join (L101) / `directoryPath` (L105-106)** —
+  these are family-A workDir-onto-relative joins, not the family-B path-segment join this expansion unifies. They are a
+  separate (already-landed or not-in-this-PR) concern; untouched here to keep scope bounded.
+- **`moveNode`'s absolute-fragment join (`working-tree.ts:130`)** — joins two already-absolute fragments; neither family;
+  untouched.
+- **Any behaviour change, public surface, option, or on-disk-state change** — none. Pure internal de-duplication;
+  `api.json`, command surfaces, refusal conditions, reflogs, structured output untouched (ADR-249/226 unaffected).
