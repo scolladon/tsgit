@@ -1,4 +1,8 @@
-import { operationInProgress } from '../../../domain/commands/error.js';
+import {
+  configBadNumericValue,
+  configMissingValue,
+  operationInProgress,
+} from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import { bareRepository, notARepository } from '../../../domain/index.js';
 import { type ObjectId, RefName } from '../../../domain/objects/index.js';
@@ -6,8 +10,7 @@ import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
 import { parseLooseRef } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readConfig } from '../config-read.js';
-import { assertNoValuelessConfig } from './valueless-config-guard.js';
+import { findFirstValuelessEntry, readConfig } from '../config-read.js';
 
 const HEAD_REF = RefName.from('HEAD');
 
@@ -30,16 +33,32 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   return root as FilePath;
 };
 
+const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile'];
+const CORE_INT_KEYS: ReadonlyArray<string> = ['loosecompression', 'compression'];
+
 /**
- * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) is
- * present-but-valueless, mirroring git's eager `git_default_config` validation
- * which dies on the whole operational surface — including config-free
- * ref-listing — before the command does its work. `hookspath` is NOT in this
- * broad pair: it dies on a narrower surface (work-doing commands only). No-op
- * for a valued or absent `[core]` section.
+ * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) or int key
+ * (`loosecompression`/`compression`) is present-but-valueless, mirroring git's
+ * eager `git_default_config` validation which dies on the whole operational
+ * surface. `hookspath` is NOT in this broad set: it dies on a narrower surface.
+ *
+ * Cross-class ordering (decision 6=b): run one `findFirstValuelessEntry` per key
+ * class, compare their file-line positions, and throw the LOWER-line entry's
+ * shape — string shape (`CONFIG_MISSING_VALUE`, with `line`) or int shape
+ * (`CONFIG_BAD_NUMERIC_VALUE`, without `line`). No-op for a valued or absent
+ * `[core]` section.
  */
 export const assertNoValuelessCorePaths = async (ctx: Context): Promise<void> => {
-  await assertNoValuelessConfig(ctx, 'core', undefined, ['excludesfile', 'attributesfile']);
+  const [str, num] = await Promise.all([
+    findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
+    findFirstValuelessEntry(ctx, 'core', undefined, CORE_INT_KEYS),
+  ]);
+  if (str !== undefined && (num === undefined || str.line < num.line)) {
+    throw configMissingValue(str.key, str.source, str.line);
+  }
+  if (num !== undefined) {
+    throw configBadNumericValue(num.key, num.source, '', 'invalid unit');
+  }
 };
 
 /**

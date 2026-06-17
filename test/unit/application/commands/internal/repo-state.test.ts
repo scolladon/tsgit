@@ -655,5 +655,164 @@ describe('internal/repo-state', () => {
         });
       });
     });
+
+    describe('Given a valueless core.loosecompression alone', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.loosecompression', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — each field individually (mutation-resistant)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a valueless core.compression alone', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tcompression\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — each field individually (mutation-resistant)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.compression');
+          expect(data.value).toBe('');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a valued core.loosecompression', () => {
+      describe('When called', () => {
+        it('Then resolves without throw', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 9\n');
+
+          // Act + Assert — must not throw
+          await assertOperationalRepository(ctx);
+        });
+      });
+    });
+
+    describe('Given no int keys in core', () => {
+      describe('When called', () => {
+        it('Then resolves without throw (absent int keys)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\trepositoryformatversion = 0\n');
+
+          // Act + Assert — must not throw
+          await assertOperationalRepository(ctx);
+        });
+      });
+    });
+
+    describe('Given a config with string key (excludesfile) earlier than int key (loosecompression)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE for core.excludesfile (string shape, with line)', async () => {
+          // Arrange — line 2 = excludesfile, line 3 = loosecompression
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\texcludesfile\n\tloosecompression\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — string shape wins (earlier line)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given a config with int key (loosecompression) earlier than string key (excludesfile)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.loosecompression (int shape, no line)', async () => {
+          // Arrange — line 2 = loosecompression, line 3 = excludesfile
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression\n\texcludesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — int shape wins (earlier line)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a valueless core.loosecompression (the porcelain bypass for int keys)', () => {
+      describe('When bare assertRepository is called', () => {
+        it('Then returns the repo root without throwing (config porcelain survives)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression\n');
+
+          // Act
+          const sut = await assertRepository(ctx);
+
+          // Assert
+          expect(sut).toBe(ctx.layout.workDir);
+        });
+      });
+    });
   });
 });
+
+interface BadNumericData {
+  readonly code: string;
+  readonly key: string;
+  readonly value: string;
+  readonly reason: string;
+}
