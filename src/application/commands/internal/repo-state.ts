@@ -7,7 +7,6 @@ export {
   assertCoreConfigValid,
   assertNoPendingOperation,
   assertNotBare,
-  assertNoValuelessCorePaths,
   assertOperationalRepository,
   assertRepository,
   isBare,

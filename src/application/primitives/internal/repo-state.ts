@@ -71,12 +71,6 @@ export const assertCoreConfigValid = async (ctx: Context): Promise<void> => {
 };
 
 /**
- * Alias kept for backward compatibility — delegates to `assertCoreConfigValid`.
- * New callers should prefer `assertCoreConfigValid`.
- */
-export const assertNoValuelessCorePaths = assertCoreConfigValid;
-
-/**
  * The operational entry point: confirm a real repository (HEAD exists) AND that
  * the `[core]` section passes full validation, then return the repo root.
  * Operational commands take this; the config porcelain stays on the bare

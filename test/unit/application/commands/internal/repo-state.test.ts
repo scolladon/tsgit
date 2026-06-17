@@ -4,7 +4,6 @@ import {
   assertCoreConfigValid,
   assertNoPendingOperation,
   assertNotBare,
-  assertNoValuelessCorePaths,
   assertOperationalRepository,
   assertRepository,
   isBare,
@@ -409,7 +408,7 @@ describe('internal/repo-state', () => {
     });
   });
 
-  describe('assertNoValuelessCorePaths', () => {
+  describe('assertCoreConfigValid (string path-likes)', () => {
     describe('Given a config with a valueless core.excludesfile', () => {
       describe('When called', () => {
         it('Then throws CONFIG_MISSING_VALUE for core.excludesfile', async () => {
@@ -421,7 +420,7 @@ describe('internal/repo-state', () => {
           // Act
           let caught: unknown;
           try {
-            await assertNoValuelessCorePaths(ctx);
+            await assertCoreConfigValid(ctx);
           } catch (err) {
             caught = err;
           }
@@ -448,7 +447,7 @@ describe('internal/repo-state', () => {
           // Act
           let caught: unknown;
           try {
-            await assertNoValuelessCorePaths(ctx);
+            await assertCoreConfigValid(ctx);
           } catch (err) {
             caught = err;
           }
@@ -476,7 +475,7 @@ describe('internal/repo-state', () => {
           );
 
           // Act + Assert — must not throw; hookspath is out of the broad gate.
-          await assertNoValuelessCorePaths(ctx);
+          await assertCoreConfigValid(ctx);
         });
       });
     });
