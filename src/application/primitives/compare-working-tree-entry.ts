@@ -20,6 +20,7 @@ import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/objects/file-mode.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { joinPath } from './internal/join-working-tree-path.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 
 export type WorkingTreeComparison =
@@ -56,7 +57,7 @@ export const compareWorkingTreeDelta = async (
   ctx: Context,
   entry: IndexEntry,
 ): Promise<WorkingTreeDelta> => {
-  const absPath = `${ctx.layout.workDir}/${entry.path}`;
+  const absPath = joinPath(ctx.layout.workDir, entry.path);
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { status: 'absent' };
   const worktreeMode = deriveWorkingMode(stat);

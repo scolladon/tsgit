@@ -7,6 +7,7 @@ import {
   validateWorkingTreePath,
 } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
+import { joinPath as joinWorkTreePath } from './internal/join-working-tree-path.js';
 import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
 
 const DEFAULT_MAX_DEPTH = 4096;
@@ -98,12 +99,12 @@ async function* visitEntry(
   if (counter.value > config.maxEntries) {
     throw treeEntryLimitExceeded(counter.value, config.maxEntries);
   }
-  const stat = await config.ctx.fs.lstat(`${config.ctx.layout.workDir}/${path}`);
+  const stat = await config.ctx.fs.lstat(joinWorkTreePath(config.ctx.layout.workDir, path));
   yield { path, stat };
 }
 
 const directoryPath = (config: WalkConfig, prefix: string): string =>
-  prefix === '' ? config.ctx.layout.workDir : `${config.ctx.layout.workDir}/${prefix}`;
+  prefix === '' ? config.ctx.layout.workDir : joinWorkTreePath(config.ctx.layout.workDir, prefix);
 
 const joinPath = (prefix: string, name: string): FilePath =>
   (prefix === '' ? name : `${prefix}/${name}`) as FilePath;

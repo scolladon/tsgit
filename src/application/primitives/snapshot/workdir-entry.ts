@@ -3,6 +3,7 @@ import type { FileMode } from '../../../domain/objects/file-mode.js';
 import { ObjectId } from '../../../domain/objects/object-id.js';
 import type { WorkdirEntryRow, WorkdirStat } from '../../../domain/snapshot/index.js';
 import type { Context, FileStat } from '../../../ports/index.js';
+import { joinPath } from '../internal/join-working-tree-path.js';
 
 /**
  * Application-tier wrapper around `WorkdirEntryRow`. Inherits the sync
@@ -78,7 +79,7 @@ const liveStat = async (ctx: Context, absPath: string): Promise<WorkdirStat> => 
  * expect. Methods bind to `ctx` + the row's `path` via the workdir root.
  */
 export const createWorkdirEntry = (ctx: Context, row: WorkdirEntryRow): WorkdirEntry => {
-  const absPath = `${ctx.layout.workDir}/${row.path}`;
+  const absPath = joinPath(ctx.layout.workDir, row.path);
 
   const read = async (): Promise<Uint8Array> =>
     row.kind === 'symlink' ? readSymlinkBytes(ctx, absPath) : ctx.fs.read(absPath);

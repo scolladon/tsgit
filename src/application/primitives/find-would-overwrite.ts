@@ -20,6 +20,7 @@ import type { MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
+import { joinPath } from './internal/join-working-tree-path.js';
 
 export interface WouldOverwrite {
   readonly localChanges: ReadonlyArray<FilePath>;
@@ -73,7 +74,7 @@ export const changedPaths = (
 /** Whether an untracked path is present on disk (lstat — no follow). */
 const isUntrackedPresent = async (ctx: Context, path: FilePath): Promise<boolean> => {
   try {
-    await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+    await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
     return true;
   } catch {
     return false;
