@@ -1,19 +1,20 @@
-# Design — unify the third working-tree `joinPath` copy
+# Design — a dedicated module owns the one working-tree-write `joinPath`
 
 > Brief: 24.9p (ADR-340) consolidated the working-tree-write path join into ONE shared, trailing-slash-collapsing
 > `joinPath` in `primitives/internal/write-working-tree-file.ts`. `commands/internal/apply-sparse-checkout.ts` still
-> keeps its OWN private workdir-join helper that DELIBERATELY tolerates a doubled separator (no collapse). Route it
-> through the shared `joinPath` to reach the "exactly ONE `joinPath`" north star — but ONLY after confirming the
-> collapse difference is harmless for sparse-checkout. Optional / low-priority: a justified no-op is acceptable if the
-> divergence is load-bearing.
-> Status: draft → self-reviewed ×3 → ready for ADR conversation
+> keeps its OWN private workdir-join helper that DELIBERATELY tolerates a doubled separator (no collapse), and the same
+> shared file inlines a fourth non-collapsing copy in `removeWorkingTreeFile`. Reach the "exactly ONE `joinPath`" north
+> star — after confirming the collapse difference is harmless for sparse-checkout.
+> Status: draft → self-reviewed ×3 → ADR conversation done → **revised against ADR-357** → ready for the planner.
+> Decision: ADR-357 chose to **extract** the helper into its own dedicated module and **fold the fourth copy now** (see
+> Decision candidates — D1/D2 DECIDED).
 > Scope: behaviour-preserving internal refactor — no new git surface, no public-API change, no on-disk-state change.
 
 ## Context
 
 `applySparseCheckout` (`src/application/commands/internal/apply-sparse-checkout.ts`) re-shapes the working tree to a
 `SparseMatcher`. To probe each entry's on-disk presence it joins the entry's index-relative path onto the workdir
-with a **private** helper (L59):
+with a **private** helper (doc-comment L54-58, helper L59):
 
 ```
 const joinPath = (workdir: string, rel: FilePath): string => `${workdir}/${rel}`;   // NON-collapsing
@@ -32,10 +33,13 @@ export const joinPath = (workDir: string, path: FilePath): string =>
   workDir.endsWith('/') ? `${workDir}${path}` : `${workDir}/${path}`;            // COLLAPSING
 ```
 
-It is already imported cross-file by the sibling primitive `apply-changeset.ts` (L29; used L93, L157). So today there
-are **two** workdir-join variants for the working-tree-write surface — the shared collapsing one and the sparse
-non-collapsing copy — plus a **third inline non-collapsing copy** in the same shared file: `removeWorkingTreeFile`
-(L96) bypasses the helper with bare `` `${ctx.layout.workDir}/${path}` ``.
+This shared helper has **exactly one external importer**: `apply-changeset.ts` imports it cross-file (L29; used L93,
+L157). `find_referencing_symbols` on `joinPath` confirms the full reference set — the two in-file callers
+(`writeWorkingTreeFile` L65, `writeWorkingTreeEntry` L82) plus `apply-changeset.ts` — and **no barrel/index re-export**
+(`internal/` has no `index.ts`; siblings import each other directly). So today there are **two** workdir-join variants
+for the working-tree-write surface — the shared collapsing one and the sparse non-collapsing copy — plus a **third
+inline non-collapsing copy** in the same shared file: `removeWorkingTreeFile` (L95-98, inline join at L96) bypasses the
+helper with bare `` `${ctx.layout.workDir}/${path}` ``.
 
 > **Pre-chewed-context correction (recorded per the verify-independently mandate).** The brief framed the shared
 > `joinPath` as living in `apply-changeset.ts`. It does NOT: 24.9p/ADR-340 already **moved** it into
@@ -58,9 +62,11 @@ non-collapsing copy — plus a **third inline non-collapsing copy** in the same 
 - **Hexagonal dependency rule:** `commands → primitives` is legal. `apply-sparse-checkout` (commands/internal)
   already imports from `primitives/` (`apply-changeset`, `read-index`), and several `commands/internal` peers already
   import from `primitives/internal/` (`repo-state.ts`, `index-update.ts`, `build-ignore-evaluator.ts`). Importing the
-  shared `joinPath` from `primitives/internal/write-working-tree-file.ts` is therefore legal with precedent.
-- **CLAUDE.md coding style:** DRY, small single-purpose functions, no duplicated logic in touched code. The change
-  *removes* a helper definition; it adds no surface.
+  shared `joinPath` from the new `primitives/internal/join-working-tree-path.ts` is therefore legal with precedent —
+  the same `commands/internal → primitives/internal` direction it already crosses for `index-update.ts`.
+- **CLAUDE.md coding style:** DRY, small single-purpose functions, no duplicated logic in touched code; "many small
+  files > few large files". The change collapses three duplicate definitions to one and gives the single survivor a
+  self-naming home file; it adds no surface.
 
 ## The harmlessness proof (the precondition the brief mandates)
 
@@ -123,128 +129,212 @@ behaviour-preserving refactor; the existing sparse-checkout unit + interop suite
 
 When this ships:
 
-1. `apply-sparse-checkout.ts` has **no** private `joinPath`; it uses the shared collapsing `joinPath` exported from
-   `primitives/internal/write-working-tree-file.ts`. (The "exactly ONE working-tree-write `joinPath`" north star is
-   met for the sparse path.)
-2. The sparse-checkout behaviour is **unchanged**: same files materialised / removed / retained, same index
-   skip-worktree bits, same `status` truthfulness — under cone AND non-cone, on memory AND node.
-3. No public surface / option change; `api.json`, command surfaces, and ADR-249 untouched.
-4. The existing sparse-checkout unit + interop suites stay green **unchanged** (they are the behaviour-preservation
-   guard), and touched code keeps 100% line/branch coverage + 0 surviving mutants.
+1. There is **exactly one** working-tree-write `joinPath` definition, and it lives in its own dedicated module
+   `src/application/primitives/internal/join-working-tree-path.ts`. The three former definition/inline sites
+   (`apply-sparse-checkout.ts`'s private copy, the in-file definition in `write-working-tree-file.ts`, and
+   `removeWorkingTreeFile`'s inline `` `${ctx.layout.workDir}/${path}` ``) are gone; every working-tree-write join site
+   — `write-working-tree-file.ts` (`writeWorkingTreeFile` / `writeWorkingTreeEntry` / `removeWorkingTreeFile`),
+   `apply-changeset.ts`, and `apply-sparse-checkout.ts` — imports the shared collapsing `joinPath` from the new module.
+   (The "exactly ONE working-tree-write `joinPath`" north star ADR-340 opened is closed.)
+2. `write-working-tree-file.ts` does **not** re-export `joinPath` — no indirection; its sole external consumer
+   (`apply-changeset.ts`) is repointed onto the new module directly. (Confirmed: `apply-changeset.ts` is the only
+   external importer and no barrel re-exports it.)
+3. The sparse-checkout and merge/stash behaviour is **unchanged**: same files materialised / removed / retained, same
+   index skip-worktree bits, same `status` truthfulness — under cone AND non-cone, on memory AND node.
+4. No public surface / option change; `api.json`, command surfaces, refusal conditions, reflogs, and ADR-249 untouched.
+5. The existing sparse-checkout unit + interop suites and the helper-home + merge/stash suites stay green **unchanged**
+   (they are the behaviour-preservation guard), and touched code keeps 100% line/branch coverage + 0 surviving
+   mutants — including the relocated `joinPath` (Stryker mutates the new file; see Test strategy).
 
 ## Design
 
-The change is a **one-helper deletion + one import**:
+ADR-357 fixes the shape: the single `joinPath` moves into its **own dedicated module**, and **all four** former join
+sites converge on it now (the fourth — `removeWorkingTreeFile`'s inline — folded in this change). The verbatim symbol
+moves; no logic changes.
 
-- Delete the private `joinPath` (`apply-sparse-checkout.ts:59`) and its now-redundant doubled-separator comment.
-- Import `joinPath` from `../../primitives/internal/write-working-tree-file.js` (legal per the dependency rule; same
-  module `apply-changeset.ts` already imports it from).
-- The two call sites (L84, L140) are **unchanged** — `joinPath(workdir, entry.path)` now resolves to the shared
-  collapsing helper. Signatures are identical (`(workDir: string, path: FilePath) => string` vs the sparse copy's
-  `(workdir: string, rel: FilePath) => string` — same shape, `FilePath` arg), so no call-site edit is needed.
+### The new module — `src/application/primitives/internal/join-working-tree-path.ts`
 
-Net source delta: **−1 helper definition, −1 comment, +1 named import**. No logic moves. The collapsing branch the
-shared helper carries is the only behavioural difference, and it is provably unreachable-or-equivalent (above).
+Holds the collapsing helper *verbatim* (the exact body moved out of `write-working-tree-file.ts:35`), plus its
+doc-comment. It depends only on the `FilePath` brand:
 
-The optional sweep of the **fourth** copy (`removeWorkingTreeFile`'s inline `` `${ctx.layout.workDir}/${path}` ``) is
-weighed in D2 — it belongs to the *same file* and the *same north star*, but is a distinct one-line edit; surfaced as
-a decision, not silently folded in.
+```ts
+import type { FilePath } from '../../../domain/objects/index.js';
+
+/**
+ * Join a working-tree-relative path onto the work directory, collapsing a
+ * trailing slash so the result is byte-identical regardless of how `workDir`
+ * is configured. The single definition shared by every working-tree-write
+ * join site (the file writers/remover, changeset application, sparse-checkout).
+ */
+export const joinPath = (workDir: string, path: FilePath): string =>
+  workDir.endsWith('/') ? `${workDir}${path}` : `${workDir}/${path}`;
+```
+
+The `FilePath` import path is `../../../domain/objects/index.js` — the same specifier `write-working-tree-file.ts`
+already uses for `FilePath` (verified: `write-working-tree-file.ts:9` imports `FilePath` from there). The new file
+sits beside its peers in `primitives/internal/`, which has **no** `index.ts` barrel — siblings import each other by
+direct path (the established convention; `internal/` is excluded from Stryker's `!src/**/index.ts` ignore precisely
+because it has none).
+
+### `write-working-tree-file.ts` — delete the definition, import the symbol, fold the fourth copy
+
+- **Delete** the local `joinPath` definition and its doc-comment (L30-36).
+- **Add** `import { joinPath } from './join-working-tree-path.js';` (sibling, same directory).
+- **Fold** `removeWorkingTreeFile` (L95-98): replace the inline `` `${ctx.layout.workDir}/${path}` `` (L96) with
+  `joinPath(ctx.layout.workDir, path)` — the canonical helper its own file had been bypassing.
+- The two existing in-file callers — `writeWorkingTreeFile` (L65) and `writeWorkingTreeEntry` (L82) — already call
+  `joinPath(ctx.layout.workDir, …)` and are **unchanged** (they now resolve to the imported symbol).
+- `write-working-tree-file.ts` does **not** re-export `joinPath` — no indirection. (Its only external `joinPath`
+  consumer, `apply-changeset.ts`, is repointed below; nothing else needs it.)
+
+### `apply-changeset.ts` — repoint the existing import
+
+Today L29 is `import { joinPath, rmIfExists, writeWorkingTreeEntry } from './internal/write-working-tree-file.js';`.
+Split it: keep `rmIfExists` / `writeWorkingTreeEntry` coming from `write-working-tree-file.js`, and import `joinPath`
+from the new sibling module:
+
+```ts
+import { rmIfExists, writeWorkingTreeEntry } from './internal/write-working-tree-file.js';
+import { joinPath } from './internal/join-working-tree-path.js';
+```
+
+Call sites L93/L157 (`joinPath(workdir, entry.path)`) are **unchanged**.
+
+### `apply-sparse-checkout.ts` — delete the private copy, import the shared symbol
+
+- **Delete** the private `joinPath` (doc-comment L54-58, helper L59).
+- **Add** `import { joinPath } from '../../primitives/internal/join-working-tree-path.js';` (alongside the existing
+  `../../primitives/*` imports, ~L16-18).
+- Call sites L84/L140 (`joinPath(workdir, entry.path)`) are **unchanged**. Signatures match
+  (`(workDir: string, path: FilePath) => string` vs the sparse copy's `(workdir, rel: FilePath)` — same shape,
+  `FilePath` arg), so no call-site edit is needed.
+
+### Net delta
+
+| File | Change |
+|---|---|
+| `join-working-tree-path.ts` (NEW) | `+` the moved `joinPath` + doc-comment + one `FilePath` type-import |
+| `write-working-tree-file.ts` | `−` definition + doc-comment; `+` import; fold `removeWorkingTreeFile` (one line) |
+| `apply-changeset.ts` | repoint `joinPath` to the new module (split one import line into two) |
+| `apply-sparse-checkout.ts` | `−` private copy + comment; `+` import |
+
+Four files touched, no logic moves — the symbol body is byte-identical to today's shared helper. The collapsing
+branch is the only behavioural difference from the two deleted non-collapsing copies, and it is provably
+unreachable-or-equivalent (harmlessness proof above).
 
 ## Decision candidates
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
+| # | Choice | Alternatives (≤3) | Outcome | Why |
 |---|---|---|---|---|
-| **D1 — where the unified `joinPath` lives** | The sparse path needs the one shared collapsing join; which module owns it. | **(a)** Import the existing shared `joinPath` from `primitives/internal/write-working-tree-file.ts` into `apply-sparse-checkout.ts` as-is (minimal: −1 helper, +1 import). **(b)** Extract `joinPath` into a new tiny module (e.g. `primitives/internal/join-working-tree-path.ts`) that BOTH `write-working-tree-file.ts` and `apply-sparse-checkout.ts` import — cleaner cohesion (a path util imported from a file named "write-working-tree-file" reads awkward). **(c)** No-op — keep the private copy if the divergence is load-bearing. | **(a)** | Harmlessness is proven (above), so **(c)** is ruled out — the divergence is not load-bearing. Between (a) and (b): the shared helper is **already** imported cross-file from `write-working-tree-file.ts` by `apply-changeset.ts`, so (a) follows the *established* precedent and is the truly minimal diff (matches "diff-minded, not full-file rewrites"). (b) is *cohesively* nicer but moves a symbol other code already depends on, churning `write-working-tree-file.ts` + `apply-changeset.ts`'s import for a naming nicety — disproportionate for a one-helper item, and it widens the blast radius beyond the sparse file the brief scoped. If the file-name awkwardness is judged worth fixing, (b) is a clean follow-up of its own, not a rider on this refactor. **Recommend (a); flag (b) as an optional cohesion follow-up for the user to weigh.** |
-| **D2 — fold `removeWorkingTreeFile`'s inline 4th copy?** | `removeWorkingTreeFile` (`write-working-tree-file.ts:96`) inlines a non-collapsing `` `${ctx.layout.workDir}/${path}` `` instead of calling the shared `joinPath` in its own file. | **(a)** Fold it into the shared `joinPath` in THIS PR (trivial one-liner, same file, same north star, same harmlessness proof — `removeWorkingTreeFile` only feeds `rmIfExists` → `ctx.fs.lstat`/`rm`, pure FS, never a matcher; callers `merge.ts`/`apply-merge-to-worktree.ts`/`stash.ts` all pass `ctx.layout.workDir`). **(b)** Leave it; record a follow-up backlog note. **(c)** Leave it, no follow-up (truly out of the item's title — "the third sparse copy"). | **(a) — but the user decides** | It is genuinely trivial and in-scope-adjacent: same file, same `joinPath`, the identical "north star" of "one join", and the same harmlessness argument applies verbatim (`removeWorkingTreeFile`'s path also only reaches pure FS ops via `rmIfExists`, and both adapters `//`-normalise). Folding it makes the shared file *self-consistent* (no copy bypassing its own helper). Counter-argument: the item's title scopes "the third copy" (sparse); adding the fourth widens the diff and the per-file mutation/coverage surface (`removeWorkingTreeFile` has its own unit tests at `write-working-tree-file.test.ts:357,373`). Per the discuss-follow-ups-first rule this is a three-way user call (do it now / record follow-up / drop). **Recommend (a)** — the cost is one line and one already-covered call site, and leaving a known 4th copy in the *same file as the canonical helper* is the more surprising end-state. Defer to the user. |
-| **D3 — test strategy for a behaviour-preserving refactor** | What proves the refactor preserves behaviour, and whether any NEW test is warranted. | **(a)** No new test — lean entirely on the existing `apply-sparse-checkout.test.ts` (unit) + `sparse-checkout.test.ts` / `sparse-checkout-file-interop.test.ts` / `sparse-reset-merge.test.ts` (integration/interop) as the regression authority; they stay green unchanged. **(b)** (a) PLUS keep/repurpose the existing trailing-slash unit test as the explicit collapsing-branch guard. **(c)** (a) PLUS a brand-new unit test asserting sparse-checkout works when `workDir` ends in `/`. | **(b)** | The existing unit test at `apply-sparse-checkout.test.ts:376-398` — "Given a workdir path that ends with a slash … Then working-tree paths still resolve" — already hand-constructs a trailing-slash `Context` and its comment says it "exercises the `joinPath` slash branch". Today, against the *non-collapsing* sparse copy, that test passes only because the adapter normalises `//` (the copy has no slash branch). **After** routing to the shared *collapsing* helper, this same test becomes the genuine branch-coverage + mutation-kill test for `workDir.endsWith('/') === true`; every other test in the file (non-slash workDir) covers the `=== false` branch. So **both** branches of the shared `joinPath` get covered with **no new test** — the existing test was evidently written in anticipation of this unification. **(b)** = recommendation: explicitly retain that test (do not delete it as "now redundant"); it is the load-bearing guard for the surviving collapse branch. **(c)** would duplicate it. **Mutation implication:** removing the dead non-collapsing branch *reduces* the mutation surface in the sparse file (one fewer string-concat to mutate); the collapse branch's mutants are killed by the existing slash + non-slash tests in `write-working-tree-file.test.ts` (the helper's home) AND the sparse trailing-slash test. No new mutation risk is introduced; if anything the surviving-mutant budget improves. |
+| **D1 — where the unified `joinPath` lives** | The sparse path needs the one shared collapsing join; which module owns it. | **(a)** Import the existing shared `joinPath` from `primitives/internal/write-working-tree-file.ts` as-is. **(b)** Extract `joinPath` into a new dedicated module (`primitives/internal/join-working-tree-path.ts`) that every working-tree-write join site imports. **(c)** No-op — keep the private copy. | **DECIDED → (b)** (ADR-357) | The user chose extraction over import-as-is, against the prior draft's recommendation of (a). Harmlessness being proven rules out (c). The dedicated module gives the path util a self-naming home rather than cementing it as a member of a file named for working-tree *writing*; a future call site has one obvious place to import from. Cost — repointing the two existing importers' import lines — is accepted as a naming-correctness improvement (pure import churn, no logic moves). Folded into the Design above as settled. |
+| **D2 — fold `removeWorkingTreeFile`'s inline 4th copy?** | `removeWorkingTreeFile` (`write-working-tree-file.ts:96`) inlines a non-collapsing `` `${ctx.layout.workDir}/${path}` `` instead of calling the shared `joinPath`. | **(a)** Fold it now (one-liner, same file, same north star, same harmlessness proof). **(b)** Leave it; record a follow-up. **(c)** Leave it, no follow-up. | **DECIDED → (a)** (ADR-357) | The user chose to fold the fourth copy in this change. Identical harmlessness argument (`removeWorkingTreeFile`'s path only reaches `rmIfExists` → `lstat`/`rm`, pure FS, never a matcher; both adapters `//`-normalise; `ctx.layout.workDir` never ends in `/`); already-covered call site (`write-working-tree-file.test.ts:357,373`). After the fold the canonical helper's own file no longer bypasses it — internally self-consistent. Folded into the Design above as settled. |
+| **D4 — does the new standalone module get its own unit test?** | Extracting `joinPath` into a file with no co-located test raises a *new* question: where do its mutants get killed? | **(a)** No dedicated test — the moved `joinPath` stays covered transitively by the existing tests that already exercise both branches across the import graph: `write-working-tree-file.test.ts` (non-slash `workDir` via the writers) + `apply-sparse-checkout.test.ts:376-398` (trailing-slash). **(b)** Add a dedicated `join-working-tree-path.test.ts` asserting both branches (slash + non-slash) directly. **(c)** (a) now, add a dedicated test only if the scoped mutation gate surfaces a survivor. | **RESOLVED → (a)** (test-strategy detail; not user-facing) | This is a genuinely-new sub-question the extraction raises, but it is a test-strategy detail, so it is resolved here, not deferred. Three verified facts decide it: **(1)** the moved `joinPath` is byte-identical code — relocating a symbol does not change which tests cover it, since Stryker resolves mutants through the import graph, not file co-location. **(2)** Both branches are already exercised: `write-working-tree-file.test.ts` only ever uses the non-slash `DEFAULT_WORK_DIR = '/repo'` (kills the `endsWith==false` arm and the `${workDir}/${path}` template mutant); `apply-sparse-checkout.test.ts:392` hand-builds a trailing-slash `Context` (kills the `endsWith==true` arm and the `${workDir}${path}` template mutant). After the move these tests drive the *same* symbol through `import`. **(3)** application-layer files are outside the line-coverage denominator (coverage gates domain/adapters only), but Stryker mutates **all** `src` including the new file (`mutate: ["src/**/*.ts", "!src/**/index.ts", …]`) — so the mutants must be killed, and per (1)+(2) they are, by the two existing tests. A dedicated test would duplicate that coverage for zero new kills (DRY / "no contrived tests"). **(b)** is rejected as redundant; **(c)** is the safety net the slice gate already encodes — if the scoped mutation run shows a survivor on the new file, the plan adds the targeted test then. Net: ship with no dedicated test; the slice gate empirically confirms it. |
 
-No load-bearing choice is decided here. D1 and D3 carry a recommendation the ADR conversation can ratify; D2 is the
-three-way follow-up call (do-now / follow-up / drop) for the user.
+D1 and D2 are DECIDED by ADR-357 and folded into the design as settled. D4 is a resolved test-strategy detail (not a
+user decision). No remaining load-bearing choice is left open for the user.
 
 ## Test strategy
 
 Behaviour-preserving refactor → the **existing** suites are the regression authority; they must stay green
-**unchanged** (changing them would mask a regression):
+**unchanged** (changing them would mask a regression). **No new test file** — including for the new module (D4):
 
-- **Unit — `test/unit/application/commands/internal/apply-sparse-checkout.test.ts`.** The full partition / changeset
-  / skip-worktree / retained-dirty coverage, including the trailing-slash `Context` test (L376-398) that becomes the
-  explicit collapsing-branch guard (D3). 100% line/branch on the touched file is preserved: deleting the private
-  helper removes its lines from the coverage denominator; the shared helper's branches are covered by this file's
-  slash + non-slash tests and by the helper's own unit suite.
-- **Integration / interop — `test/integration/sparse-checkout.test.ts` (multi-adapter parity, drives the real
-  command surface through memory; final `describe.skipIf` cross-checks index + pattern file against canonical
-  `git`), `sparse-checkout-file-interop.test.ts`, `sparse-reset-merge.test.ts`.** These build the same graph and
-  assert observable state (files on disk, skip-worktree flags, committed tree path set, `status` cleanliness). If the
-  unification changed any sparse on-disk/index outcome, one of these goes red — that is the behaviour-preservation
-  gate.
-- **Helper home — `test/unit/application/primitives/internal/write-working-tree-file.test.ts`** already exercises the
-  shared `joinPath`'s slash + non-slash branches (via `writeWorkingTreeFile` / `writeWorkingTreeEntry`); unchanged.
+- **New module — `join-working-tree-path.ts`: no dedicated test (D4 → (a)).** The relocated `joinPath` is
+  byte-identical code; its mutants are killed transitively across the import graph (Stryker resolves mutants by import,
+  not co-location), and it WILL be mutated (`mutate: ["src/**/*.ts", …]` includes it). Both branches are covered:
+  - `endsWith('/') === false` (and the `${workDir}/${path}` template) — by every writer test in
+    `write-working-tree-file.test.ts`, which uses the non-slash `DEFAULT_WORK_DIR = '/repo'`;
+  - `endsWith('/') === true` (and the `${workDir}${path}` template) — by `apply-sparse-checkout.test.ts:376-398`, which
+    hand-builds a trailing-slash `Context`.
+- **Unit — `test/unit/application/commands/internal/apply-sparse-checkout.test.ts`.** The full partition / changeset /
+  skip-worktree / retained-dirty coverage, **including the trailing-slash `Context` test (L376-398)** — RETAIN it: it
+  is the load-bearing guard for the collapse branch of the relocated `joinPath`. Deleting the private sparse helper
+  removes its line from the (application-layer, non-gated) coverage view; behaviour is unchanged.
+- **Helper home — `test/unit/application/primitives/internal/write-working-tree-file.test.ts`** drives the relocated
+  `joinPath`'s non-slash branch via `writeWorkingTreeFile` / `writeWorkingTreeEntry`, and covers the folded
+  `removeWorkingTreeFile` (L355-385: file-gone + no-op-on-absent); unchanged.
+- **`apply-changeset.ts` repoint** — covered unchanged by `test/unit/application/primitives/apply-changeset.test.ts`
+  (it imports the same `joinPath`, now from the new module; the import edit is invisible to its behaviour tests).
+- **Integration / interop — `test/integration/sparse-checkout.test.ts` (multi-adapter parity, drives the real command
+  surface through memory; final `describe.skipIf` cross-checks index + pattern file against canonical `git`),
+  `sparse-checkout-file-interop.test.ts`, `sparse-reset-merge.test.ts`** guard the sparse path; the **merge / stash
+  interop suites** guard the folded `removeWorkingTreeFile` (its callers are `merge.ts` / `apply-merge-to-worktree.ts`
+  / `stash.ts`, all passing `ctx.layout.workDir`). If the unification changed any on-disk/index outcome, one goes red —
+  the behaviour-preservation gate.
 
 **No new interop pin** — there is no new git behaviour. The faithfulness obligation is discharged by the harmlessness
-proof + the unchanged green suites, not by a fresh `git`-probe matrix (running one would be theatre: nothing in
-git's observable behaviour changes).
+proof + the unchanged green suites, not by a fresh `git`-probe matrix (running one would be theatre: nothing in git's
+observable behaviour changes).
 
-**Property tests — DO NOT APPLY.** `joinPath` is a single-line string concat behind an I/O orchestration command, not
-a parser / matcher / round-trip pair / counting invariant (CLAUDE.md: "I/O wrappers, command facades belong in
+**Property tests — DO NOT APPLY.** `joinPath` is a single-line string concat behind I/O orchestration, not a
+parser / matcher / round-trip pair / counting invariant (CLAUDE.md: "I/O wrappers, command facades belong in
 integration / parity tests, not property tests").
-
-**If D2 = (a):** the `removeWorkingTreeFile` fold is covered by its existing unit tests
-(`write-working-tree-file.test.ts:357,373` — file-gone + no-op-on-absent) plus the merge / stash interop suites; the
-collapse branch is already covered by the helper's slash/non-slash unit tests. No new test needed.
 
 ## Slicing hint for the planner
 
-This is small enough for **one** atomic slice; split only if D2 is taken (then two):
+Two slices, each independently green. Slice 1 establishes the module and keeps the helper's home + `apply-changeset`
+green; slice 2 repoints the sparse command. They could merge into one atomic commit, but splitting keeps each diff
+single-purpose and lets the planner gate the helper-home move separately from the command repoint — recommended split.
 
-**Slice 1 — unify the sparse `joinPath` onto the shared collapsing helper (the whole item).**
+**Slice 1 — extract the module, repoint the helper's home + `apply-changeset`, fold the fourth copy.**
 - Pre-chewed context:
-  - File to edit: `src/application/commands/internal/apply-sparse-checkout.ts`.
-  - Delete the private `joinPath` const + its comment at **L54-59** (the doc-comment L54-58 and the helper L59).
-  - Add to the import block (alongside the existing `../../primitives/*` imports, ~L16-18):
-    `import { joinPath } from '../../primitives/internal/write-working-tree-file.js';`
-  - Call sites that now resolve to the shared helper (UNCHANGED — verify, do not edit): L84
-    `const absPath = joinPath(workdir, entry.path);` and L140
-    `await ctx.fs.exists(joinPath(workdir, entry.path))`.
-  - Shared helper being imported: `joinPath` at `src/application/primitives/internal/write-working-tree-file.ts:35`,
-    signature `(workDir: string, path: FilePath): string`.
+  - **NEW file** `src/application/primitives/internal/join-working-tree-path.ts`: export `joinPath` verbatim — body
+    `workDir.endsWith('/') ? `${workDir}${path}` : `${workDir}/${path}``, signature `(workDir: string, path: FilePath): string`
+    — plus its doc-comment; `import type { FilePath } from '../../../domain/objects/index.js';` (same specifier
+    `write-working-tree-file.ts:9` uses).
+  - Edit `src/application/primitives/internal/write-working-tree-file.ts`:
+    - DELETE the local `joinPath` definition + doc-comment (**L30-36**).
+    - ADD `import { joinPath } from './join-working-tree-path.js';` (sibling).
+    - FOLD `removeWorkingTreeFile` (**L95-98**): replace inline `` `${ctx.layout.workDir}/${path}` `` (L96) with
+      `joinPath(ctx.layout.workDir, path)`.
+    - UNCHANGED (verify, do not edit): `writeWorkingTreeFile` (L65), `writeWorkingTreeEntry` (L82) call sites; do NOT
+      re-export `joinPath`.
+  - Edit `src/application/primitives/apply-changeset.ts`: split L29 — keep
+    `import { rmIfExists, writeWorkingTreeEntry } from './internal/write-working-tree-file.js';`, ADD
+    `import { joinPath } from './internal/join-working-tree-path.js';`. Call sites L93/L157 UNCHANGED.
   - Regression guard tests (run, expect green unchanged): unit
-    `test/unit/application/commands/internal/apply-sparse-checkout.test.ts` (esp. the trailing-slash test L376-398,
-    which now guards the collapse branch); integration `test/integration/sparse-checkout.test.ts`,
-    `sparse-checkout-file-interop.test.ts`, `sparse-reset-merge.test.ts`.
-- TDD note: behaviour-preserving, so RED is not a *new failing* test — the existing suite is GREEN before and after;
-  the slice's correctness gate is "all existing suites still green + `npm run validate` clean + 0 new surviving
-  mutants on the touched file". The trailing-slash unit test is the assertion that the *collapsing* branch is now
-  the live code path (it already passes; after the edit it exercises the real `endsWith('/')` branch).
-- Gate: `npm run validate` green; `npm run test:mutation` scoped to `apply-sparse-checkout.ts` shows 0 new survivors
-  (the deleted branch *reduces* surface).
+    `test/unit/application/primitives/internal/write-working-tree-file.test.ts` (writer slash/non-slash branches +
+    `removeWorkingTreeFile` L355-385), `test/unit/application/primitives/apply-changeset.test.ts`; interop merge / stash
+    suites (guard the folded `removeWorkingTreeFile`).
+- TDD note: behaviour-preserving — RED is not a *new failing* test; the existing suites are GREEN before and after. The
+  correctness gate is "all suites still green + `npm run validate` clean + 0 new mutants". The relocated `joinPath`'s
+  non-slash branch is killed here by the writer tests; its slash branch is killed in slice 2 by the sparse test.
+- Gate: `npm run validate` green; `npm run test:mutation` scoped to `write-working-tree-file.ts` +
+  `join-working-tree-path.ts` shows 0 new survivors (the deleted non-collapsing inline *reduces* surface).
 
-**Slice 2 (only if D2 = (a)) — fold `removeWorkingTreeFile`'s inline join onto the shared `joinPath`.**
+**Slice 2 — repoint the sparse command onto the shared module.**
 - Pre-chewed context:
-  - File: `src/application/primitives/internal/write-working-tree-file.ts`.
-  - Edit `removeWorkingTreeFile` (**L95-98**): replace the inline `` `${ctx.layout.workDir}/${path}` `` (L96) with
-    `joinPath(ctx.layout.workDir, path)` (the helper is in the same module — no import).
-  - Regression guard: `test/unit/application/primitives/internal/write-working-tree-file.test.ts` (`removeWorkingTreeFile`
-    tests at L357 file-gone / L373 no-op-on-absent) + merge/stash interop (`merge.ts`, `apply-merge-to-worktree.ts`,
-    `stash.ts` are the callers).
-  - Harmlessness: identical to the sparse case — `removeWorkingTreeFile`'s path only feeds `rmIfExists` →
-    `ctx.fs.lstat`/`rm` (pure FS), never a matcher; both adapters `//`-normalise; `ctx.layout.workDir` never ends
-    with `/`.
-- Gate: `npm run validate` green; behaviour-preserving (collapse branch unreachable in practice, equivalent when
-  reached).
+  - File: `src/application/commands/internal/apply-sparse-checkout.ts`.
+  - DELETE the private `joinPath` (doc-comment **L54-58**, helper **L59**).
+  - ADD `import { joinPath } from '../../primitives/internal/join-working-tree-path.js';` (alongside the existing
+    `../../primitives/*` imports, ~L16-18).
+  - UNCHANGED (verify, do not edit): call sites L84 `const absPath = joinPath(workdir, entry.path);` and L140
+    `await ctx.fs.exists(joinPath(workdir, entry.path))`.
+  - Regression guard tests: unit `test/unit/application/commands/internal/apply-sparse-checkout.test.ts` (esp. the
+    trailing-slash test **L376-398**, which now guards the relocated helper's collapse branch); integration
+    `test/integration/sparse-checkout.test.ts`, `sparse-checkout-file-interop.test.ts`, `sparse-reset-merge.test.ts`.
+- TDD note: behaviour-preserving; the trailing-slash unit test already passes and after the edit exercises the real
+  `endsWith('/') === true` branch of the *shared* helper (against the deleted non-collapsing copy it only passed via
+  adapter `//`-normalisation).
+- Gate: `npm run validate` green; `npm run test:mutation` scoped to `apply-sparse-checkout.ts` +
+  `join-working-tree-path.ts` shows 0 new survivors (the deleted private branch *reduces* surface; the slash branch of
+  the relocated helper is now killed by the trailing-slash test).
 
-Each slice gates on the full `npm run validate`; both lean on the named existing suites as the
-behaviour-preservation guard.
+Each slice gates on the full `npm run validate`; both lean on the named existing suites as the behaviour-preservation
+guard. Per D4, **no new test file** is added — if a scoped mutation run surfaces a survivor on `join-working-tree-path.ts`,
+add the targeted test in that slice (the safety net, not the expectation).
 
 ## Out of scope
+
+End-state after this change: **exactly one** working-tree-write `joinPath`, in its own named module
+`primitives/internal/join-working-tree-path.ts`, imported by all four former sites; the sparse private copy and the
+`removeWorkingTreeFile` inline are both deleted. Out of scope:
 
 - **`walk-submodules.ts:106` / `walk-working-tree.ts:108` / `mv.ts:327` `joinPath` definitions** — a *different* join
   (path-segment → repo-relative `FilePath` for tree-walk prefixing), not the workdir-onto-relative absolute-path join.
   Not part of the "one working-tree-write `joinPath`" north star; untouched.
-- **`removeWorkingTreeFile`'s inline copy** — IN scope only if D2 resolves to (a); otherwise a recorded follow-up
-  (D2 (b)) or dropped (D2 (c)). The user decides.
-- **Extracting `joinPath` to its own module (D1 (b))** — an optional cohesion follow-up, not taken under the
-  recommendation (a); flagged for the user.
 - **Any public surface / option / on-disk-state change** — none. This is a pure internal de-duplication; `api.json`,
   command surfaces, refusal conditions, reflogs, and structured output are untouched (ADR-249/226 unaffected).
+- **A re-export of `joinPath` from `write-working-tree-file.ts`** — explicitly NOT done; the one external importer
+  (`apply-changeset.ts`) is repointed onto the new module directly, so no indirection is introduced.
 - **New empirical git pins** — not needed; no git behaviour changes (the harmlessness proof + unchanged green suites
   discharge faithfulness).
