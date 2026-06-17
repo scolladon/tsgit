@@ -12,6 +12,7 @@ import {
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
   configBadNumericValue,
+  configBadZlibLevel,
   configKeyInvalid,
   configMissingValue,
   configMultipleValues,
@@ -1173,6 +1174,43 @@ describe('domain commands error — config factory data', () => {
       });
     });
   });
+
+  describe('Given the configBadZlibLevel helper', () => {
+    describe('When called with level=99', () => {
+      it('Then data.code is CONFIG_BAD_ZLIB_LEVEL', () => {
+        // Arrange + Act
+        const sut = configBadZlibLevel(99);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+      });
+
+      it('Then data.level is 99', () => {
+        // Arrange + Act
+        const sut = configBadZlibLevel(99);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+        if (data.code !== 'CONFIG_BAD_ZLIB_LEVEL') return;
+        expect(data.level).toBe(99);
+      });
+    });
+
+    describe('When called with a negative level=-2', () => {
+      it('Then data.level is -2', () => {
+        // Arrange + Act
+        const sut = configBadZlibLevel(-2);
+
+        // Assert
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+        if (data.code !== 'CONFIG_BAD_ZLIB_LEVEL') return;
+        expect(data.level).toBe(-2);
+      });
+    });
+  });
 });
 
 describe('domain commands error — extractDetail message formatting', () => {
@@ -1429,6 +1467,14 @@ describe('domain commands error — extractDetail message formatting', () => {
         reason: 'out of range',
       },
       "CONFIG_BAD_NUMERIC_VALUE: bad numeric config value '2147483648' for 'core.loosecompression' in file /repo/.git/config: out of range",
+    ],
+    [
+      { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },
+      'CONFIG_BAD_ZLIB_LEVEL: bad zlib compression level 99',
+    ],
+    [
+      { code: 'CONFIG_BAD_ZLIB_LEVEL', level: -2 },
+      'CONFIG_BAD_ZLIB_LEVEL: bad zlib compression level -2',
     ],
   ];
 

@@ -140,6 +140,7 @@ export type CommandError =
       readonly value: string;
       readonly reason: 'invalid unit' | 'out of range';
     }
+  | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
       readonly key: string;
@@ -492,6 +493,14 @@ export const configBadNumericValue = (
     value: sanitizeForDisplay(value),
     reason,
   });
+
+/**
+ * An int-typed zlib-level config key (`core.compression` / `core.loosecompression`)
+ * is present and parses as a valid integer but falls outside zlib's accepted range
+ * of `-1..9`. No key or file is embedded — git prints only the bare level value.
+ */
+export const configBadZlibLevel = (level: number): TsgitError =>
+  new TsgitError({ code: 'CONFIG_BAD_ZLIB_LEVEL', level });
 
 /**
  * A write operation was refused because the config file contains a malformed
