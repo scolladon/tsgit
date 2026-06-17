@@ -59,6 +59,9 @@ export const assertCoreConfigValid = async (ctx: Context): Promise<void> => {
     findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
     findFirstInvalidCompression(ctx),
   ]);
+  // equivalent-mutant: the string entry and the compression entry are distinct config keys, each on
+  // its own config-file line, so `str.line === comp.line` can never occur — `<` and `<=` are
+  // indistinguishable.
   if (str !== undefined && (comp === undefined || str.line < comp.line)) {
     throw configMissingValue(str.key, str.source, str.line);
   }

@@ -1327,6 +1327,9 @@ const MAX_SIGNIFICANT_DIGITS = 32;
 const matchDigits = (
   body: string,
 ): { readonly token: string; readonly radix: 8 | 10 | 16 } | null => {
+  // equivalent-mutant: dropping the `^` anchor cannot change the verdict — a `0x`/digit run
+  // found past position 0 leaves the preceding chars as the unit suffix, which is never a valid
+  // unit, so the result is `invalid unit` either way (exhaustively checked over all len-≤4 inputs).
   const hex = /^0[xX][0-9a-fA-F]+/.exec(body);
   if (hex !== null) return { token: hex[0], radix: 16 };
   if (body[0] === '0') return { token: (/^0[0-7]*/.exec(body) as RegExpExecArray)[0], radix: 8 };
@@ -1340,8 +1343,14 @@ const matchDigits = (
 const magnitudeOf = (token: string, radix: 8 | 10 | 16): bigint | null => {
   // Strip the radix marker (`0x` = 2 chars, octal `0` = 1 char, decimal = none),
   // then the leading zeros, leaving the significant digits.
+  // equivalent-mutant: for the octal branch, replacing `token.slice(1)` with `token` (or dropping
+  // the `radix === 8` arm so it falls through to `token`) keeps the leading marker `0`, which the
+  // next line's `replace(/^0+/, '')` strips anyway — `significant` is identical.
   const bare = radix === 16 ? token.slice(2) : radix === 8 ? token.slice(1) : token;
   const significant = bare.replace(/^0+/, '');
+  // equivalent-mutant: a significant run of ≥32 digits (any radix ≤16) always exceeds int64, so the
+  // final range check returns `out of range` regardless of this early cap — dropping the guard or
+  // shifting `>` to `>=` leaves the verdict unchanged (the cap only bounds BigInt work, not output).
   if (significant.length > MAX_SIGNIFICANT_DIGITS) return null;
   if (significant === '') return BigInt(0);
   const prefix = radix === 16 ? '0x' : radix === 8 ? '0o' : '';
