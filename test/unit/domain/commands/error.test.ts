@@ -1154,6 +1154,24 @@ describe('domain commands error — config factory data', () => {
         expect(data.reason).toBe('out of range');
       });
     });
+
+    describe('When called with a value containing a control byte', () => {
+      it('Then data.value is sanitized for display', () => {
+        // Arrange + Act
+        const sut = configBadNumericValue(
+          'core.loosecompression',
+          '/abs/.git/config',
+          '\x01bad',
+          'invalid unit',
+        );
+
+        // Assert — control bytes are escaped so the rendered error cannot be injected
+        const data = sut.data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
+        expect(data.value).toBe('\\x01bad');
+      });
+    });
   });
 });
 

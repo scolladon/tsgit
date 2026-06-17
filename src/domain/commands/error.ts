@@ -484,7 +484,14 @@ export const configBadNumericValue = (
   source: string,
   value: string,
   reason: 'invalid unit' | 'out of range',
-): TsgitError => new TsgitError({ code: 'CONFIG_BAD_NUMERIC_VALUE', key, source, value, reason });
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_BAD_NUMERIC_VALUE',
+    key,
+    source,
+    value: sanitizeForDisplay(value),
+    reason,
+  });
 
 /**
  * A write operation was refused because the config file contains a malformed
