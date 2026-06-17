@@ -7,6 +7,7 @@ Accepted (2026-06-17)
 - **Design:** `docs/design/int-config-valueless-refusal.md`
 - **Refines:** ADR-329 (closes the deferred int-typed refusal); **parallels** ADR-328 (the string `CONFIG_MISSING_VALUE` shape), ADR-327 (the cold-path detection enabler), ADR-346 (the eager-broad `[core]` gate)
 - **Depends on:** ADR-353 (the int key this refuses on)
+- **Extended by:** ADR-355 — eager FULL validation of the compression keys (valued-invalid + the bare `bad zlib compression level` shape), extending the two-class line compare below to "first failing `[core]` entry wins"
 
 ## Context
 

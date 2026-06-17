@@ -6,6 +6,7 @@ Accepted (2026-06-17)
 
 - **Design:** `docs/design/int-config-valueless-refusal.md`
 - **Refines:** ADR-329 (which recorded int-typed parity as *blocked* on an int key existing), ADR-315 (D4 — valueless fields merge as absent)
+- **Partly superseded by:** ADR-355 — the deferred valued-invalid / zlib-range refusal (the "deferred-refusal safety guard" below) is now in scope; the value is refused, not silently defaulted
 
 ## Context
 
