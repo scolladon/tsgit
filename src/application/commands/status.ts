@@ -18,6 +18,7 @@ import {
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -311,6 +312,6 @@ const buildUnmergedEntries = (
 
 /** The conflicted file's on-disk git mode, or `undefined` when it is absent. */
 const readWorktreeMode = async (ctx: Context, path: FilePath): Promise<FileMode | undefined> => {
-  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
+  const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
   return stat === undefined ? undefined : deriveWorkingMode(stat);
 };
