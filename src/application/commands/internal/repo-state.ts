@@ -4,6 +4,7 @@
  * import from the primitives location.
  */
 export {
+  assertCoreConfigValid,
   assertNoPendingOperation,
   assertNotBare,
   assertNoValuelessCorePaths,

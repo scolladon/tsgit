@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  assertCoreConfigValid,
   assertNoPendingOperation,
   assertNotBare,
   assertNoValuelessCorePaths,
@@ -808,6 +809,375 @@ describe('internal/repo-state', () => {
       });
     });
   });
+
+  describe('assertCoreConfigValid', () => {
+    describe('Given core.loosecompression = abc (invalid unit)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE with key, value abc, reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = abc\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.compression = abc (invalid unit)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE with key core.compression, value abc, reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tcompression = abc\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.compression');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 999999999999999999999999 (out of range)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason out of range', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 999999999999999999999999\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.reason).toBe('out of range');
+        });
+      });
+    });
+
+    describe('Given core.compression = 999999999999999999999999 (out of range)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason out of range for compression', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tcompression = 999999999999999999999999\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.compression');
+          expect(data.reason).toBe('out of range');
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 99 (valid int, outside zlib -1..9)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_ZLIB_LEVEL with level 99', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 99\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadZlibData;
+          expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+          expect(data.level).toBe(99);
+        });
+      });
+    });
+
+    describe('Given core.compression = 99 (valid int, outside zlib -1..9)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_ZLIB_LEVEL with level 99 for compression', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tcompression = 99\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadZlibData;
+          expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+          expect(data.level).toBe(99);
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = -2 (valid int, below zlib min -1)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_ZLIB_LEVEL with level -2', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = -2\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadZlibData;
+          expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+          expect(data.level).toBe(-2);
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 10 (valid int, above zlib max 9)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_ZLIB_LEVEL with level 10', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 10\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadZlibData;
+          expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+          expect(data.level).toBe(10);
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 9 (valid zlib max)', () => {
+      describe('When called', () => {
+        it('Then resolves without throw', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 9\n');
+
+          // Act + Assert — must not throw
+          await assertCoreConfigValid(ctx);
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 0 (valid zlib level)', () => {
+      describe('When called', () => {
+        it('Then resolves without throw', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 0\n');
+
+          // Act + Assert — must not throw
+          await assertCoreConfigValid(ctx);
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = -1 (valid zlib default)', () => {
+      describe('When called', () => {
+        it('Then resolves without throw', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = -1\n');
+
+          // Act + Assert — must not throw
+          await assertCoreConfigValid(ctx);
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = 1 (valid) and core.compression = 99 (bad zlib)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_ZLIB_LEVEL for compression=99 (two-key independence)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 1\n\tcompression = 99\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadZlibData;
+          expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+          expect(data.level).toBe(99);
+        });
+      });
+    });
+
+    describe('Given core.excludesfile valueless (line 2) and core.loosecompression = abc (line 3)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_MISSING_VALUE for excludesfile (string class wins, earlier line)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\texcludesfile\n\tloosecompression = abc\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as MissingValueData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+          expect(data.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = abc (line 2) and core.excludesfile valueless (line 3)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for loosecompression (compression class wins, earlier line)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = abc\n\texcludesfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.loosecompression valueless (still invalid — numeric shape)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE with value empty string and reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertCoreConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given config with only valued valid compression keys', () => {
+      describe('When configList and configGet are called (porcelain bypass)', () => {
+        it('Then assertCoreConfigValid passes (no throw)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = 5\n');
+
+          // Act + Assert — must not throw
+          await assertCoreConfigValid(ctx);
+        });
+      });
+    });
+  });
 });
 
 interface BadNumericData {
@@ -815,4 +1185,9 @@ interface BadNumericData {
   readonly key: string;
   readonly value: string;
   readonly reason: string;
+}
+
+interface BadZlibData {
+  readonly code: string;
+  readonly level: number;
 }

@@ -2622,6 +2622,236 @@ describe.skipIf(!GIT_AVAILABLE)(
         }, 60_000);
       });
     });
+
+    /**
+     * Valued-invalid compression keys: `abc` / over-int64 / bad-zlib-level.
+     * Each pinned against git 2.54.0 in a mktemp throwaway.
+     *
+     * Line layout:
+     *   Line 1: [core]
+     *   Line 2: \tloosecompression = <value>
+     */
+    interface CompressionNumericData {
+      readonly code: string;
+      readonly key: string;
+      readonly value: string;
+      readonly reason: string;
+      readonly source: string;
+    }
+
+    interface CompressionZlibData {
+      readonly code: string;
+      readonly level: number;
+    }
+
+    describe('Given core.loosecompression = abc (invalid unit)', () => {
+      describe('When git status and tsgit status run', () => {
+        it('Then git refuses with bad numeric config value abc and tsgit throws CONFIG_BAD_NUMERIC_VALUE', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), '[core]\n\tloosecompression = abc\n');
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git shape
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain("bad numeric config value 'abc'");
+          expect(g.stderr).toContain("for 'core.loosecompression'");
+          expect(g.stderr).toContain(': invalid unit');
+          // Assert — tsgit shape
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CompressionNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+          expect(data.source).toMatch(/\/config$/);
+        }, 60_000);
+      });
+    });
+
+    describe('Given core.compression = abc (invalid unit, independence)', () => {
+      describe('When git status and tsgit status run', () => {
+        it('Then git refuses and tsgit throws CONFIG_BAD_NUMERIC_VALUE for core.compression', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), '[core]\n\tcompression = abc\n');
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git shape
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain("bad numeric config value 'abc'");
+          expect(g.stderr).toContain("for 'core.compression'");
+          // Assert — tsgit shape
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CompressionNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.compression');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+        }, 60_000);
+      });
+    });
+
+    describe('Given core.loosecompression = 999999999999999999999999 (out of range)', () => {
+      describe('When git status and tsgit status run', () => {
+        it('Then git refuses with out of range and tsgit throws CONFIG_BAD_NUMERIC_VALUE reason out of range', async () => {
+          // Arrange
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\tloosecompression = 999999999999999999999999\n',
+          );
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git shape
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain(': out of range');
+          // Assert — tsgit shape
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CompressionNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.reason).toBe('out of range');
+        }, 60_000);
+      });
+    });
+
+    describe('Given core.loosecompression = 99 (valid int, outside zlib range -1..9)', () => {
+      describe('When git status and tsgit status run', () => {
+        it('Then git refuses with bare bad zlib compression level 99 (no key/file) and tsgit throws CONFIG_BAD_ZLIB_LEVEL', async () => {
+          // Arrange
+          await writeFile(path.join(ours, '.git', 'config'), '[core]\n\tloosecompression = 99\n');
+
+          // Act
+          const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+          const repo = await openRepository({ cwd: ours });
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git: bare fatal with no key/file token
+          expect(g.ok).toBe(false);
+          expect(g.stderr).toContain('bad zlib compression level 99');
+          expect(g.stderr).not.toMatch(/for '/);
+          // Assert — tsgit shape
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CompressionZlibData;
+          expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+          expect(data.level).toBe(99);
+        }, 60_000);
+      });
+    });
+
+    describe('Given core.loosecompression = 1 (valid) and core.compression = 99 (bad zlib)', () => {
+      describe('When tsgit status runs', () => {
+        it('Then throws CONFIG_BAD_ZLIB_LEVEL for compression=99 (two-key independence, each validated independently)', async () => {
+          // Arrange
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\tloosecompression = 1\n\tcompression = 99\n',
+          );
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CompressionZlibData;
+          expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
+          expect(data.level).toBe(99);
+        }, 60_000);
+      });
+    });
+
+    describe('Given core.excludesfile valueless (line 2) and core.loosecompression = abc (line 3) — cross-class string earlier', () => {
+      describe('When tsgit status runs', () => {
+        it('Then throws CONFIG_MISSING_VALUE for excludesfile (string class at lower line wins)', async () => {
+          // Arrange — string valueless at line 2, compression invalid at line 3
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\texcludesfile\n\tloosecompression = abc\n',
+          );
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CoreData;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('core.excludesfile');
+          expect(data.line).toBe(VALUELESS_INT_LINE);
+        }, 60_000);
+      });
+    });
+
+    describe('Given core.loosecompression = abc (line 2) and core.excludesfile valueless (line 3) — cross-class compression earlier', () => {
+      describe('When tsgit status runs', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for loosecompression (compression class at lower line wins)', async () => {
+          // Arrange — compression invalid at line 2, string valueless at line 3
+          await writeFile(
+            path.join(ours, '.git', 'config'),
+            '[core]\n\tloosecompression = abc\n\texcludesfile\n',
+          );
+          const repo = await openRepository({ cwd: ours });
+
+          // Act
+          let caught: unknown;
+          try {
+            await repo.status();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as CompressionNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+        }, 60_000);
+      });
+    });
   },
 );
 

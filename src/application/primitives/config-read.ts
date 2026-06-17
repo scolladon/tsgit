@@ -208,6 +208,81 @@ export const findFirstValuelessInSection = async (
   return undefined;
 };
 
+/** Minimum valid zlib compression level (synonym for the implementation default). */
+export const ZLIB_MIN_LEVEL = -1;
+/** Maximum valid zlib compression level. */
+export const ZLIB_MAX_LEVEL = 9;
+
+/** The discriminated failure from a compression-key validation scan. */
+type CompressionFailure =
+  | {
+      readonly kind: 'numeric';
+      readonly value: string;
+      readonly reason: 'invalid unit' | 'out of range';
+    }
+  | { readonly kind: 'zlib'; readonly level: number };
+
+/** One invalid compression entry returned by `findFirstInvalidCompression`. */
+export interface InvalidCompressionEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly line: number;
+  readonly failure: CompressionFailure;
+}
+
+const COMPRESSION_KEYS: ReadonlySet<string> = new Set(['loosecompression', 'compression']);
+
+/**
+ * Cold-path detection: walk the cached `[core]` (subsectionless) tokens in
+ * file order and return the FIRST entry whose key is `loosecompression` or
+ * `compression` that fails full compression validation (valueless, invalid
+ * integer, or integer outside zlib's `-1..9`). Returns `undefined` when all
+ * compression keys are absent or valid. Runs ONLY on a command's refusal path.
+ */
+export const findFirstInvalidCompression = async (
+  ctx: Context,
+): Promise<InvalidCompressionEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!COMPRESSION_KEYS.has(loweredKey)) continue;
+    const qualifiedKey = `core.${loweredKey}`;
+    const line = token.startLine + 1;
+    if (token.value === null) {
+      return {
+        key: qualifiedKey,
+        source: path,
+        line,
+        failure: { kind: 'numeric', value: '', reason: 'invalid unit' },
+      };
+    }
+    const parsed = parseGitInt(token.value);
+    if (!parsed.ok) {
+      return {
+        key: qualifiedKey,
+        source: path,
+        line,
+        failure: { kind: 'numeric', value: token.value, reason: parsed.reason },
+      };
+    }
+    if (parsed.value < ZLIB_MIN_LEVEL || parsed.value > ZLIB_MAX_LEVEL) {
+      return {
+        key: qualifiedKey,
+        source: path,
+        line,
+        failure: { kind: 'zlib', level: parsed.value },
+      };
+    }
+  }
+  return undefined;
+};
+
 /**
  * One `[section "subsection"]` block of a git-config-format INI file: the
  * section name, an optional quoted subsection, and its key/value entries.

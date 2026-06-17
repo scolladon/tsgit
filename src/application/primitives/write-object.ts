@@ -13,15 +13,10 @@ import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch } from '../../domain/objects/error.js';
 import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from './config-read.js';
+import { readConfig, ZLIB_MAX_LEVEL, ZLIB_MIN_LEVEL } from './config-read.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import { looseObjectPath, objectsDir } from './path-layout.js';
 import { hasDeclaredId } from './validators.js';
-
-/** zlib minimum valid compression level (synonym for the implementation default). */
-const ZLIB_MIN_LEVEL = -1;
-/** zlib maximum valid compression level. */
-const ZLIB_MAX_LEVEL = 9;
 
 export async function writeObject(ctx: Context, object: GitObject): Promise<ObjectId> {
   if (ctx.signal?.aborted) throw operationAborted();
