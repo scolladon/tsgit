@@ -800,7 +800,11 @@
     "urlless",
     "subupd",
     "fixturepath",
-    "joinpath"
+    "joinpath",
+    "formalised",
+    "unaliased",
+    "lstatted",
+    "famb"
   ],
   "ignorePaths": [
     "node_modules",
