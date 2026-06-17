@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -218,6 +219,94 @@ describe('writeObject', () => {
         // Assert — the 2-char prefix directory exists; the full-id directory does not.
         expect(await ctx.fs.exists(`/repo/.git/objects/${id.slice(0, 2)}`)).toBe(true);
         expect(await ctx.fs.exists(`/repo/.git/objects/${id}`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given core.loosecompression=9 in the repo config', () => {
+    describe('When writeObject is called', () => {
+      it('Then deflate is called with level=9', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        // Write a config file with loosecompression=9 into the memory FS
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression = 9\n');
+        __resetConfigCacheForTests();
+        const deflateCapture: number[] = [];
+        const wrappedCtx = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            deflate: async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
+              deflateCapture.push(level as number);
+              return ctx.compressor.deflate(data, level);
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([55]), id: '' as ObjectId };
+
+        // Act
+        await writeObject(wrappedCtx, blob);
+
+        // Assert — deflate received the level from config
+        expect(deflateCapture[0]).toBe(9);
+      });
+    });
+  });
+
+  describe('Given no core.loosecompression in the repo config', () => {
+    describe('When writeObject is called', () => {
+      it('Then deflate is called with no level argument (undefined)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        __resetConfigCacheForTests();
+        const deflateCapture: Array<number | undefined> = [];
+        const wrappedCtx = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            deflate: async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
+              deflateCapture.push(level);
+              return ctx.compressor.deflate(data, level);
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([56]), id: '' as ObjectId };
+
+        // Act
+        await writeObject(wrappedCtx, blob);
+
+        // Assert — no level was passed (the default path)
+        expect(deflateCapture[0]).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given core.loosecompression=99 (out of zlib domain) in the repo config', () => {
+    describe('When writeObject is called', () => {
+      it('Then deflate is called with no level argument (safety guard falls back to default)', async () => {
+        // Arrange — 99 is a valid 32-bit int but outside zlib's -1..9 domain;
+        // the guard must NOT pass it to deflateSync which would throw ERR_OUT_OF_RANGE.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression = 99\n');
+        __resetConfigCacheForTests();
+        const deflateCapture: Array<number | undefined> = [];
+        const wrappedCtx = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            deflate: async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
+              deflateCapture.push(level);
+              return ctx.compressor.deflate(data, level);
+            },
+          },
+        };
+        const blob: Blob = { type: 'blob', content: new Uint8Array([57]), id: '' as ObjectId };
+
+        // Act — must not crash
+        await writeObject(wrappedCtx, blob);
+
+        // Assert — out-of-range level not forwarded; deflate called without level
+        expect(deflateCapture[0]).toBeUndefined();
       });
     });
   });

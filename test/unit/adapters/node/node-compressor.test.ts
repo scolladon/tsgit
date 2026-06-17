@@ -294,6 +294,68 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given deflate with an explicit compression level', () => {
+      describe('When level=9 (maximum compression)', () => {
+        it('Then the output starts with zlib header 0x78 0xda', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello zlib level 9');
+
+          // Act
+          const result = await sut.deflate(data, 9);
+
+          // Assert — zlib level-9 header is always 78 da
+          expect(result[0]).toBe(0x78);
+          expect(result[1]).toBe(0xda);
+        });
+      });
+
+      describe('When level=0 (no compression / store)', () => {
+        it('Then the output starts with zlib header 0x78 0x01', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello zlib level 0');
+
+          // Act
+          const result = await sut.deflate(data, 0);
+
+          // Assert — zlib level-0 header is always 78 01
+          expect(result[0]).toBe(0x78);
+          expect(result[1]).toBe(0x01);
+        });
+      });
+
+      describe('When level=-1 (zlib default, same as 6)', () => {
+        it('Then the output starts with zlib header 0x78 0x9c', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello zlib level -1');
+
+          // Act
+          const result = await sut.deflate(data, -1);
+
+          // Assert — zlib default level header is 78 9c
+          expect(result[0]).toBe(0x78);
+          expect(result[1]).toBe(0x9c);
+        });
+      });
+
+      describe('When no level is given (adapter default)', () => {
+        it('Then the output starts with zlib header 0x78 0x9c (Node default level 6)', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello zlib no level');
+
+          // Act
+          const result = await sut.deflate(data);
+
+          // Assert — Node default (level 6) header is 78 9c
+          expect(result[0]).toBe(0x78);
+          expect(result[1]).toBe(0x9c);
+        });
+      });
+    });
+
     describe('Given corrupt stream piped through createInflateStream', () => {
       describe('When awaiting pipeTo completion', () => {
         it('Then the promise rejects (does not hang)', async () => {

@@ -25,9 +25,9 @@ export class NodeCompressor implements Compressor {
     this.maxInflatedBytes = options?.maxInflatedBytes ?? MAX_INFLATED_OBJECT_BYTES;
   }
 
-  deflate = async (data: Uint8Array): Promise<Uint8Array> => {
+  deflate = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
-      return new Uint8Array(deflateSync(data));
+      return new Uint8Array(level === undefined ? deflateSync(data) : deflateSync(data, { level }));
     } catch (err) {
       throw compressFailed(describeError(err));
     }

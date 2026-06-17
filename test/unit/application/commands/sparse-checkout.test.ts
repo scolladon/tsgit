@@ -8,6 +8,7 @@ import {
   sparseCheckoutReapply,
   sparseCheckoutSet,
 } from '../../../../src/application/commands/sparse-checkout.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import {
@@ -73,11 +74,15 @@ const readSparseFile = (ctx: Context): Promise<string> =>
   ctx.fs.readUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`);
 
 /** Overwrite `.git/config` to flip sparse on directly (no pattern file written). */
-const enableSparse = (ctx: Context, cone: boolean): Promise<void> =>
-  ctx.fs.writeUtf8(
+const enableSparse = async (ctx: Context, cone: boolean): Promise<void> => {
+  await ctx.fs.writeUtf8(
     `${ctx.layout.gitDir}/config`,
     `[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = ${cone}\n`,
   );
+  // Invalidate the config cache so subsequent readConfig calls reflect the new file;
+  // writeObject now reads config as a side effect and primes the cache before this write.
+  invalidateConfigCache(ctx);
+};
 
 /**
  * An initialised repo seeded with three tracked files across two directories,

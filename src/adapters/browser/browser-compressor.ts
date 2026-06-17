@@ -10,7 +10,10 @@ import type { Compressor, InflateStreamResult } from '../../ports/compressor.js'
 const BROWSER_STREAM_INFLATE_MAX_INPUT = 64 * 1024;
 
 export class BrowserCompressor implements Compressor {
-  async deflate(data: Uint8Array): Promise<Uint8Array> {
+  async deflate(data: Uint8Array, _level?: number): Promise<Uint8Array> {
+    // Web CompressionStream exposes no level param; loose disk bytes are
+    // outside the faithfulness contract (equivalence-under-readback), so the
+    // level is accepted to satisfy the port and silently ignored.
     try {
       const stream = new Blob([data as BlobPart])
         .stream()
