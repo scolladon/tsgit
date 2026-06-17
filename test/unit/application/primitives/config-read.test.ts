@@ -1508,6 +1508,150 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given [core] loosecompression = 9', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.looseCompression is 9', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(9);
+      });
+    });
+  });
+
+  describe('Given [core] loosecompression = 1k', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.looseCompression is 1024 (unit multiplier wired)', async () => {
+        // Arrange — proves parseGitInt is wired, not a raw parseInt
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 1k\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(1024);
+      });
+    });
+  });
+
+  describe('Given [core] with loosecompression=1 before compression=9', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is 1 (loosecompression wins regardless of order)', async () => {
+        // Arrange — loosecompression appears first; compression must not override
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 1\n  compression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(1);
+      });
+    });
+  });
+
+  describe('Given [core] with compression=9 before loosecompression=1', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is 1 (loosecompression wins regardless of order)', async () => {
+        // Arrange — compression appears first; loosecompression must still win
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  compression = 9\n  loosecompression = 1\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(1);
+      });
+    });
+  });
+
+  describe('Given [core] compression = 9 with no loosecompression', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is 9 (compression fallback)', async () => {
+        // Arrange — only compression key present; it is the fallback
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  compression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBe(9);
+      });
+    });
+  });
+
+  describe('Given [core] with no int compression key', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.looseCompression is absent', async () => {
+        // Arrange — no loosecompression or compression key
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core?.looseCompression).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [core] with valueless loosecompression (loosecompression with no =)', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is absent and no exception is thrown', async () => {
+        // Arrange — valueless merges as absent; porcelain survival (refusal is Slice 3)
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tloosecompression\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — field absent, no throw
+        expect(sut.core?.looseCompression).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [core] loosecompression = abc (invalid int value)', () => {
+    describe('When readConfig', () => {
+      it('Then looseCompression is absent and no exception is thrown (lenient)', async () => {
+        // Arrange — valued-but-invalid merges as absent (lenient, out of scope)
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = abc\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — field absent, no throw
+        expect(sut.core?.looseCompression).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given only loosecompression = 9 in [core]', () => {
+    describe('When readConfig', () => {
+      it('Then core is emitted with just that field', async () => {
+        // Arrange — guards the finalizeCore arm for looseCompression in isolation
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  loosecompression = 9\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.core).toEqual({ looseCompression: 9 });
+      });
+    });
+  });
+
   describe('Given a cached config and invalidateConfigCache for that context', () => {
     describe('When readConfig is called again', () => {
       it('Then the file is re-read', async () => {

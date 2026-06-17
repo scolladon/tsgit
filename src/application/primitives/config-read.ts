@@ -16,6 +16,7 @@ export interface ParsedConfig {
     readonly hooksPath?: string;
     readonly sparseCheckout?: boolean;
     readonly sparseCheckoutCone?: boolean;
+    readonly looseCompression?: number;
   };
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
@@ -887,6 +888,8 @@ interface MutableParsedConfig {
     hooksPath?: string;
     sparseCheckout?: boolean;
     sparseCheckoutCone?: boolean;
+    looseCompression?: number;
+    looseCompressionFromLoose?: boolean;
   };
   user?: { name?: string; email?: string };
   remote?: Map<
@@ -939,6 +942,31 @@ type MutableCore = {
   hooksPath?: string;
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
+  looseCompression?: number;
+  /** Transient: true when looseCompression was set via loosecompression key (not compression).
+   *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
+  looseCompressionFromLoose?: boolean;
+};
+
+/**
+ * Apply core.loosecompression / core.compression with order-independent precedence.
+ * loosecompression always wins; compression sets only when loosecompression was never seen.
+ * valued-but-invalid int merges as absent (lenient; eager gate handles the valueless case).
+ */
+const applyLooseCompressionEntry = (
+  core: MutableCore,
+  lowered: string,
+  value: string,
+): MutableCore | undefined => {
+  const r = parseGitInt(value);
+  if (!r.ok) return undefined;
+  if (lowered === 'loosecompression') {
+    // loosecompression always wins — overrides any prior compression-derived value
+    return { ...core, looseCompression: r.value, looseCompressionFromLoose: true };
+  }
+  // compression: set only if loosecompression has not already claimed the field
+  if (core.looseCompressionFromLoose === true) return undefined;
+  return { ...core, looseCompression: r.value };
 };
 
 /**
@@ -957,11 +985,14 @@ const applyCoreEntry = (
   if (lowered === 'sparsecheckout') return { ...core, sparseCheckout: parseGitBoolean(value) };
   if (lowered === 'sparsecheckoutcone')
     return { ...core, sparseCheckoutCone: parseGitBoolean(value) };
-  // String-typed fields skip null (valueless key treated as absent).
+  // String-typed and int-typed fields skip null (valueless key treated as absent).
   if (value === null) return undefined;
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
   if (lowered === 'attributesfile') return { ...core, attributesFile: value };
   if (lowered === 'hookspath') return { ...core, hooksPath: value };
+  if (lowered === 'loosecompression' || lowered === 'compression') {
+    return applyLooseCompressionEntry(core, lowered, value);
+  }
   return undefined;
 };
 
@@ -1135,10 +1166,13 @@ const finalizeCore = (
         hooksPath?: string;
         sparseCheckout?: boolean;
         sparseCheckoutCone?: boolean;
+        looseCompression?: number;
+        looseCompressionFromLoose?: boolean;
       }
     | undefined,
 ): ParsedConfig['core'] => {
   if (core === undefined) return undefined;
+  // looseCompressionFromLoose is transient (precedence flag) — not projected to ParsedConfig
   return {
     ...(core.bare !== undefined ? { bare: core.bare } : {}),
     ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
@@ -1149,6 +1183,7 @@ const finalizeCore = (
     ...(core.sparseCheckoutCone !== undefined
       ? { sparseCheckoutCone: core.sparseCheckoutCone }
       : {}),
+    ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
   };
 };
 
@@ -1162,6 +1197,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       hooksPath?: string;
       sparseCheckout?: boolean;
       sparseCheckoutCone?: boolean;
+      looseCompression?: number;
     };
     user?: { name: string; email: string };
     remote?: ReadonlyMap<
