@@ -302,11 +302,11 @@ Locked in the ADR phase (ADRs 353 prerequisite / 354 refusal). The candidate tab
 | 1 | Int key + site | **A** — `core.loosecompression` (fallback `core.compression`), consumed at loose-object write. |
 | 2 | Error code | **a** — `CONFIG_BAD_NUMERIC_VALUE { key, source, value, reason }`; render `bad numeric config value '<value>' for '<key>' in file <source>: <reason>` (unquoted file, no `at line`). |
 | 3 | Honour level | **b** — honour on every adapter that *can*; under the zero-dep invariant that is `NodeCompressor` (`deflateSync({level})`), memory/browser accept + ignore (Web `CompressionStream` has no level). |
-| 4 | Parser scope | **b** — complete faithful int parser (`invalid unit` + `out of range`); defer only the consumer-specific `bad zlib compression level` (0–9) range-check. |
+| 4 | Parser scope | **c** (scope expanded during synthesis — ADR-355) — full git parity: `parseGitInt` is the complete parser (`invalid unit` + `out of range`) AND the consumer-specific `bad zlib compression level` (`-1..9`) range-check is enforced eagerly via a new `CONFIG_BAD_ZLIB_LEVEL` code. (Originally **b** — defer the zlib check — reversed by the user.) |
 | 5 | ADR/PR split | **b** — two ADRs (353, 354), one PR; 24.9s closes; prerequisite a sub-bullet. |
 | 6 | Cross-class ordering | **b** — two `findFirstValuelessEntry` calls + `line` compare; throw the lower-line entry's shape. |
 
-**Deferred-refusal safety guard (load-bearing, from ADR-353).** Because the level is honoured (3=b) while the zlib `0–9` range-check is deferred (4=b), a valid 32-bit int outside zlib's `-1..9` domain (e.g. `core.loosecompression=99`) must NOT reach `deflateSync` raw — Node throws `ERR_OUT_OF_RANGE` (empirically: levels `0→7801`, `9→78da`, `-1→789c`; `10`/`99`/`-2` throw). The honouring site applies the level only when it is in `-1..9`, else falls back to the adapter default — never crashes. This is a **documented under-refusal**: git dies on `loosecompression=99`; tsgit treats it as the default level. The faithful death is the deferred `bad zlib compression level` follow-up.
+**Zlib-range validation (load-bearing, ADR-355 — supersedes the original deferred-refusal guard).** A valid int outside zlib's `-1..9` domain (e.g. `core.loosecompression=99`) is now **refused eagerly** with `CONFIG_BAD_ZLIB_LEVEL { level }` (git's bare `fatal: bad zlib compression level <N>`) on every operational command, matching git's `git_default_config`. `write-object`'s honour guard (apply only when `-1..9`, else adapter default — Node `deflateSync` throws `ERR_OUT_OF_RANGE` otherwise; empirically `0→7801`, `9→78da`, `-1→789c`) remains as a defensive fallback for any non-operational direct-primitive write that bypasses the eager gate. The earlier "documented under-refusal" (silently defaulting `=99`) is closed.
 
 ## Consuming-site map (verified against worktree source)
 
@@ -468,17 +468,38 @@ shipping set. The planner expands each with its full pre-chewed context block.
    Green: valid in-range level honoured on Node; out-of-range valid int safe (default); readback parity
    preserved everywhere.
 
-Slice 1's parser ships the COMPLETE generic int parser (`invalid unit` + `out of range`) per decision
-4=b; the consumer-specific `bad zlib compression level` (0–9) range-check + its `bad zlib compression
-level` reason are the deferred follow-up (NOT a slice here). No slice is conditional — decisions are
-locked (1=A / 2=a / 3=b / 4=b / 5=b / 6=b).
+Slice 1's parser ships the COMPLETE generic int parser (`invalid unit` + `out of range`) per decision 4.
+
+### Expansion slices (decision 4 → full parity, ADR-355 — added during synthesis)
+
+git pins (git 2.54.0, mktemp): `abc`/`1.5`/`5x` → `bad numeric config value '<v>' … invalid unit`;
+`999…` (over int64) → `… out of range`; `10`/`99`/`100`/`-2` → bare `bad zlib compression level <N>`;
+`-1`/`0`/`9` → valid. Both compression keys validated independently, eagerly, first-failing-`[core]`-entry
+by file line (string path-likes interleaved).
+
+5. **`feat(config): add CONFIG_BAD_ZLIB_LEVEL error`** — new domain `CommandError` variant
+   `CONFIG_BAD_ZLIB_LEVEL { code, level: number }` + factory `configBadZlibLevel(level)` in
+   `domain/commands/error.ts`; render arm `bad zlib compression level ${level}` (bare — NO key/file) in
+   `domain/error.ts`; exhaustiveness case in `test/unit/domain/exhaustiveness.ts`; regenerate
+   `reports/api.json`. Unit tests on factory + render. Context: mirror `configBadNumericValue` (Slice 1)
+   but with only `{ level }`. Green: error compiles + renders standalone.
+6. **`feat(config): eagerly validate core compression keys`** — generalise the eager `[core]` gate
+   (`repo-state.ts`) from valueless-only to git's FULL validation: a new finder that walks `[core]`
+   compression entries in file order and returns the first failure (valueless `''` / unparseable / over
+   int64 → numeric shape via `parseGitInt`; valid int outside `-1..9` → zlib shape), compared by line
+   against the string path-likes' first valueless (existing `findFirstValuelessEntry`), throwing the
+   lower-line entry's shape. Shared `-1..9` zlib bound between the gate and `write-object`. Unit (each
+   failure class isolated; two-key independence; cross-class both orders incl. bad-zlib vs string) +
+   interop pins (valued-invalid value/reason, out-of-range, bad-zlib bare line, two-key, cross-class
+   orders) vs real git. Context: Slice 3's gate + `parseGitInt` + the new error. Green: every git shape
+   reproduced on the operational surface; porcelain still survives.
 
 ## Out of scope
 
-- **Valued-but-invalid int refusal** — `abc`/`99`/`2147483648` (the `out of range` and `bad zlib
-  compression level` shapes) are scoped by candidate 4; under the recommendation (b) the parser handles
-  `out of range` but the key-specific `bad zlib compression level` zlib-range check is a documented
-  follow-up (it is a consumer-specific validation, not int parsing).
+- **Valued-but-invalid int refusal** — NOW IN SCOPE (decision 4 expanded to full parity, ADR-355):
+  `abc`/`1.5`/`5x` → `CONFIG_BAD_NUMERIC_VALUE` (value, `invalid unit`); over-int64 → (value, `out of
+  range`); a valid int outside `-1..9` (`10`/`99`/`-2`/`100`) → `CONFIG_BAD_ZLIB_LEVEL { level }`. All
+  validated eagerly per git's `git_default_config`. See the expansion slices below.
 - **Honouring the level on the memory/browser adapters** — `CompressionStream('deflate')` has no level
   parameter; those adapters accept-and-ignore, consistent with the existing equivalence-under-readback
   contract for loose objects. Byte-level parity across all adapters is not a faithfulness requirement
