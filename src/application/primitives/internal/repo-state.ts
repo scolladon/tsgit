@@ -42,8 +42,8 @@ const CORE_INT_KEYS: ReadonlyArray<string> = ['loosecompression', 'compression']
  * eager `git_default_config` validation which dies on the whole operational
  * surface. `hookspath` is NOT in this broad set: it dies on a narrower surface.
  *
- * Cross-class ordering (decision 6=b): run one `findFirstValuelessEntry` per key
- * class, compare their file-line positions, and throw the LOWER-line entry's
+ * Cross-class ordering: run one `findFirstValuelessEntry` per key class, compare
+ * their file-line positions, and throw the LOWER-line entry's
  * shape — string shape (`CONFIG_MISSING_VALUE`, with `line`) or int shape
  * (`CONFIG_BAD_NUMERIC_VALUE`, without `line`). No-op for a valued or absent
  * `[core]` section.
