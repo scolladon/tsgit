@@ -72,4 +72,5 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
 export type { AdapterSet } from './adapter-detect.js';
 export { detectRuntime, isBrowser, isNode } from './adapter-detect.js';
 export { consoleProgress, noopProgress, type ProgressReporter } from './progress.js';
+export * from './public-types.js';
 export type { OpenRepositoryOptions, Repository } from './repository.js';
