@@ -3,6 +3,7 @@ import type { HookName } from '../../domain/hooks/index.js';
 import type { Context, RepositoryLayout } from '../../ports/context.js';
 import type { HookRequest, HookResult } from '../../ports/hook-runner.js';
 import { readConfig } from './config-read.js';
+import { joinPath } from './internal/join-working-tree-path.js';
 import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 
 const HOOKS_SUBDIR = 'hooks';
@@ -38,7 +39,7 @@ export const resolveHooksDir = (
     return layout.homeDir === undefined ? fallback : `${layout.homeDir}/${hooksPath.slice(2)}`;
   }
   if (isAbsolutePath(hooksPath)) return hooksPath;
-  return `${layout.workDir}/${hooksPath}`;
+  return joinPath(layout.workDir, hooksPath);
 };
 
 /** Optional arguments and stdin a caller threads into a hook invocation. */

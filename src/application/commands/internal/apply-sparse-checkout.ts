@@ -15,6 +15,7 @@ import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
 import { applyChangeset, isWorkingTreeDirty } from '../../primitives/apply-changeset.js';
 import type { Changeset, ChangesetEntry } from '../../primitives/compute-changeset.js';
+import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { acquireIndexLock } from './index-update.js';
 
@@ -50,13 +51,6 @@ interface Partitioned {
   /** Out-of-pattern entries with uncommitted edits — retained, left on disk. */
   readonly retained: ReadonlyArray<IndexEntry>;
 }
-
-/**
- * Join a working-tree-relative path onto the workdir. A doubled separator
- * (when `workdir` already ends with `/`) is harmless — node and memory FS
- * both normalise `//`, the same property `read-gitignore` relies on.
- */
-const joinPath = (workdir: string, rel: FilePath): string => `${workdir}/${rel}`;
 
 const isIncluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher === undefined ? true : matcher(path);

@@ -25,8 +25,9 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
+import { joinPath } from './internal/join-working-tree-path.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import { joinPath, rmIfExists, writeWorkingTreeEntry } from './internal/write-working-tree-file.js';
+import { rmIfExists, writeWorkingTreeEntry } from './internal/write-working-tree-file.js';
 import { readBlob } from './read-blob.js';
 
 export interface ApplyChangesetOpts {

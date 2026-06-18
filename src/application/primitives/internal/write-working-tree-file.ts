@@ -8,6 +8,7 @@
  */
 import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { joinPath } from './join-working-tree-path.js';
 
 const decoder = new TextDecoder();
 
@@ -26,14 +27,6 @@ export const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> 
     .catch(() => false);
   if (exists) await ctx.fs.rm(fullPath);
 };
-
-/**
- * Join a working-tree-relative path onto the work directory, collapsing a
- * trailing slash so the result is byte-identical regardless of how `workDir`
- * is configured (the single definition shared with `apply-changeset`).
- */
-export const joinPath = (workDir: string, path: FilePath): string =>
-  workDir.endsWith('/') ? `${workDir}${path}` : `${workDir}/${path}`;
 
 /**
  * Low-level regular-file writer and the single owner of the
@@ -93,6 +86,6 @@ export const writeWorkingTreeEntry = async (
 };
 
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
-  const fullPath = `${ctx.layout.workDir}/${path}`;
+  const fullPath = joinPath(ctx.layout.workDir, path);
   await rmIfExists(ctx, fullPath);
 };

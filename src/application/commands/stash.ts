@@ -24,6 +24,7 @@ import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entr
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
@@ -117,7 +118,7 @@ const hashFileAt = async (
   path: FilePath,
   stat: FileStat,
 ): Promise<{ readonly id: ObjectId; readonly mode: ReturnType<typeof deriveWorkingMode> }> => {
-  const abs = `${ctx.layout.workDir}/${path}`;
+  const abs = joinPath(ctx.layout.workDir, path);
   const content = stat.isSymbolicLink
     ? new TextEncoder().encode(await ctx.fs.readlink(abs))
     : await ctx.fs.read(abs);
@@ -155,7 +156,7 @@ const projectWorkingTree = async (
       continue;
     }
     dirty = true;
-    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${entry.path}`);
+    const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, entry.path));
     const { id, mode } = await hashFileAt(ctx, entry.path, stat);
     entries.push(stage0Entry(entry.path, id, mode));
   }
@@ -363,7 +364,7 @@ const untrackedOverwrites = async (
   const flat = await flattenTree(ctx, uTree);
   const clobbered: FilePath[] = [];
   for (const path of flat.entries.keys()) {
-    if (await ctx.fs.exists(`${ctx.layout.workDir}/${path}`)) clobbered.push(path);
+    if (await ctx.fs.exists(joinPath(ctx.layout.workDir, path))) clobbered.push(path);
   }
   return clobbered;
 };

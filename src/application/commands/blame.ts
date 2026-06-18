@@ -24,6 +24,7 @@ import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -170,7 +171,7 @@ const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> =>
 
 /** Read the working-tree file's bytes (symlink → its target); absent → refuse like git's `Cannot lstat`. */
 const readWorkingFile = async (ctx: Context, path: FilePath): Promise<Uint8Array> => {
-  const absPath = `${ctx.layout.workDir}/${path}`;
+  const absPath = joinPath(ctx.layout.workDir, path);
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) throw worktreeFileAbsent(path);
   return stat.isSymbolicLink

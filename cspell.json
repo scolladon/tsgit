@@ -799,7 +799,12 @@
     "mysub",
     "urlless",
     "subupd",
-    "fixturepath"
+    "fixturepath",
+    "joinpath",
+    "formalised",
+    "unaliased",
+    "lstatted",
+    "famb"
   ],
   "ignorePaths": [
     "node_modules",

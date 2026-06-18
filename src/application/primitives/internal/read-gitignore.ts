@@ -5,6 +5,7 @@ import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import { MAX_GITIGNORE_BYTES } from '../types.js';
+import { joinPath } from './join-working-tree-path.js';
 import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
 
 /**
@@ -16,9 +17,7 @@ export const readGitignore = async (
   ctx: Context,
   dir: FilePath | '',
 ): Promise<IgnoreRuleset | undefined> => {
-  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — the false branch yields `${workDir}//.gitignore`; node + memory FS path normalisation collapse the empty segment, so the file resolves to the identical location.
-  const path =
-    dir === '' ? `${ctx.layout.workDir}/.gitignore` : `${ctx.layout.workDir}/${dir}/.gitignore`;
+  const path = joinPath(ctx.layout.workDir, dir === '' ? '.gitignore' : `${dir}/.gitignore`);
   return loadAndParse(ctx, path);
 };
 

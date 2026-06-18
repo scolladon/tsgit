@@ -18,6 +18,7 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -126,7 +127,7 @@ const allLiteralsAreFiles = async (
 ): Promise<boolean> => {
   if (literals.length === 0) return false;
   for (const path of literals) {
-    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
+    const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
     if (stat === undefined) return false;
     if (stat.isDirectory && !stat.isSymbolicLink) return false;
   }
@@ -309,7 +310,7 @@ const readExistingEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, 
 };
 
 const stageOne = async (ctx: Context, path: FilePath): Promise<IndexEntry | 'missing'> => {
-  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`).catch(() => undefined);
+  const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
   if (stat === undefined) return 'missing';
   return stageFromStat(ctx, path, stat);
 };
@@ -325,7 +326,7 @@ const stageFromStat = async (
   // read through `ctx.fs.read` (which follows symlinks), break the mode
   // classification, or trip an opaque adapter error. Abort the whole add
   // on any type flip.
-  const fresh = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+  const fresh = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
   if (
     fresh.isSymbolicLink !== stat.isSymbolicLink ||
     fresh.isDirectory !== stat.isDirectory ||
@@ -354,7 +355,9 @@ const readContent = async (
   stat: Awaited<ReturnType<Context['fs']['lstat']>>,
 ): Promise<Uint8Array> => {
   if (stat.isSymbolicLink) {
-    const bytes = new TextEncoder().encode(await ctx.fs.readlink(`${ctx.layout.workDir}/${path}`));
+    const bytes = new TextEncoder().encode(
+      await ctx.fs.readlink(joinPath(ctx.layout.workDir, path)),
+    );
     // Defence against an FS adapter that mis-reports symlink target length:
     // lstat reports the target byte length as `stat.size`, but a hostile
     // adapter could return an arbitrarily long string from readlink.

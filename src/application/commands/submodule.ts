@@ -32,6 +32,7 @@ import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
+import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   deriveSubmoduleCloneContext,
   deriveSubmoduleContext,
@@ -87,7 +88,7 @@ const isActionableRow = (row: GitmodulesRow): row is PathedRow =>
 
 /** Parse the working-tree `.gitmodules`; absent file ⇒ no submodules. */
 const readWorktreeGitmodules = async (ctx: Context): Promise<ReadonlyArray<GitmodulesRow>> => {
-  const path = `${ctx.layout.workDir}/${GITMODULES_FILE}`;
+  const path = joinPath(ctx.layout.workDir, GITMODULES_FILE);
   if (!(await ctx.fs.exists(path))) return [];
   const stat = await ctx.fs.stat(path);
   if (stat.size > MAX_GITMODULES_BYTES) {
@@ -357,7 +358,7 @@ const assertSubmoduleClean = async (ctx: Context, name: string, path: FilePath):
 
 /** Clear a submodule working-tree directory's contents, keeping the empty dir. */
 const clearWorktree = async (ctx: Context, path: FilePath): Promise<boolean> => {
-  const dir = `${ctx.layout.workDir}/${path}`;
+  const dir = joinPath(ctx.layout.workDir, path);
   if (!(await ctx.fs.exists(dir))) return false;
   if ((await ctx.fs.readdir(dir)).length === 0) return false;
   await ctx.fs.rmRecursive(dir);
@@ -501,7 +502,7 @@ const writeGitmodulesEntry = async (
   rawUrl: string,
   branch: string | undefined,
 ): Promise<Uint8Array> => {
-  const file = `${ctx.layout.workDir}/${GITMODULES_FILE}`;
+  const file = joinPath(ctx.layout.workDir, GITMODULES_FILE);
   const existing = (await ctx.fs.exists(file)) ? await ctx.fs.readUtf8(file) : '';
   const ordered = [setSubmoduleOp(name, 'path', path), setSubmoduleOp(name, 'url', rawUrl)];
   if (branch !== undefined) ordered.push(setSubmoduleOp(name, 'branch', branch));
@@ -530,12 +531,12 @@ const stageSubmodule = async (
   try {
     const index = await readIndex(ctx);
     const entries = new Map<string, IndexEntry>(index.entries.map((e) => [e.path, e]));
-    const gitlinkStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+    const gitlinkStat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
     entries.set(
       path,
       indexEntryFromStat(gitlinkStat, FILE_MODE.GITLINK, subHead, path as FilePath),
     );
-    const gitmodulesStat = await ctx.fs.lstat(`${ctx.layout.workDir}/${GITMODULES_FILE}`);
+    const gitmodulesStat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, GITMODULES_FILE));
     entries.set(
       GITMODULES_FILE,
       indexEntryFromStat(
@@ -568,7 +569,10 @@ const cloneSubmoduleInto = async (
   await updateConfigOperations(child, [
     { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
   ]);
-  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}/.git`, `${submoduleGitfile(name, path)}\n`);
+  await ctx.fs.writeUtf8(
+    joinPath(ctx.layout.workDir, `${path}/.git`),
+    `${submoduleGitfile(name, path)}\n`,
+  );
 };
 
 /** The short branch name HEAD points at, or `''` when detached. */
