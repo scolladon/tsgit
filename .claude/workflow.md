@@ -1,5 +1,5 @@
 ---
-backlog: docs/BACKLOG.md
+backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/serena.md
 gates:
@@ -17,10 +17,10 @@ pr: { creator: session, pre-pr-gate: "npm outdated" }
 scripts: { pre-teardown: .claude/workflow/serena-prune.sh }
 ---
 
-# tsgit — forge declination
+# tsgit — craft declination
 
-This manifest customizes the [forge workflow](https://github.com/scolladon) for tsgit.
-Run it with `/forge:run <backlog-id | file | description>`. Triggers "apply the
+This manifest customizes the [craft workflow](https://github.com/scolladon) for tsgit.
+Run it with `/craft:run <backlog-id | file | description>`. Triggers "apply the
 workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow).
 
 ## Why these policies
