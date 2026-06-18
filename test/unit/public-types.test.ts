@@ -57,7 +57,7 @@ describe('public type surface', () => {
   describe('Given branded ids exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then ObjectId, RefName, FilePath are never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<ObjectId>().not.toBeNever();
         expectTypeOf<RefName>().not.toBeNever();
         expectTypeOf<FilePath>().not.toBeNever();
@@ -68,7 +68,7 @@ describe('public type surface', () => {
   describe('Given diff shapes exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then TreeDiff and StatTreeDiff are never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<TreeDiff>().not.toBeNever();
         expectTypeOf<StatTreeDiff>().not.toBeNever();
       });
@@ -78,7 +78,7 @@ describe('public type surface', () => {
   describe('Given port types exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then RepositoryConfig and Context are never-free with expected fields', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<RepositoryConfig>().not.toBeNever();
         expectTypeOf<Context>().not.toBeNever();
         expectTypeOf<RepositoryConfig>().toHaveProperty('user');
@@ -89,7 +89,7 @@ describe('public type surface', () => {
   describe('Given orphan types exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then MergeBaseOptions and Pathspec are never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<MergeBaseOptions>().not.toBeNever();
         expectTypeOf<Pathspec>().not.toBeNever();
       });
@@ -99,7 +99,7 @@ describe('public type surface', () => {
   describe('Given namespace types exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then BranchNamespace is never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<BranchNamespace>().not.toBeNever();
       });
     });
@@ -108,7 +108,7 @@ describe('public type surface', () => {
   describe('Given snapshot types exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then SnapshotFactory and SnapshotOptions are never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<SnapshotFactory>().not.toBeNever();
         expectTypeOf<SnapshotOptions>().not.toBeNever();
       });
@@ -118,7 +118,7 @@ describe('public type surface', () => {
   describe('Given command result types exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then StatusResult is never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<StatusResult>().not.toBeNever();
       });
     });
@@ -127,7 +127,7 @@ describe('public type surface', () => {
   describe('Given edge-matrix (ii): entry-owned names from index.node', () => {
     describe('When type-checked', () => {
       it('Then Repository and OpenRepositoryOptions resolve without TS2308', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<Repository>().not.toBeNever();
         expectTypeOf<OpenRepositoryOptions>().not.toBeNever();
       });
@@ -137,7 +137,7 @@ describe('public type surface', () => {
   describe('Given representative types exported from index.browser', () => {
     describe('When type-checked', () => {
       it('Then the cross-section of types is never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<ObjectIdBrowser>().not.toBeNever();
         expectTypeOf<RefNameBrowser>().not.toBeNever();
         expectTypeOf<FilePathBrowser>().not.toBeNever();
@@ -153,7 +153,7 @@ describe('public type surface', () => {
   describe('Given representative types exported from index.default', () => {
     describe('When type-checked', () => {
       it('Then the cross-section of types is never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<ObjectIdDefault>().not.toBeNever();
         expectTypeOf<RefNameDefault>().not.toBeNever();
         expectTypeOf<FilePathDefault>().not.toBeNever();
@@ -169,7 +169,7 @@ describe('public type surface', () => {
   describe('Given representative types exported from index.ts (core/module surface)', () => {
     describe('When type-checked', () => {
       it('Then the cross-section of types is never-free', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<ObjectIdCore>().not.toBeNever();
         expectTypeOf<RefNameCore>().not.toBeNever();
         expectTypeOf<FilePathCore>().not.toBeNever();
@@ -185,7 +185,7 @@ describe('public type surface', () => {
   describe('Given edge-matrix (iii): index.ts and index.node.ts export the same TreeDiff', () => {
     describe('When type-checked', () => {
       it('Then TreeDiff from both surfaces is mutually assignable', () => {
-        // Assert
+        // Arrange + Assert
         expectTypeOf<TreeDiffCore>().toEqualTypeOf<TreeDiff>();
       });
     });
