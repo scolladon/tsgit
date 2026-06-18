@@ -77,7 +77,7 @@ Legend for **In barrel today**: `cmds` = `src/application/commands/index.ts`; `p
 | `RepositoryConfig`, `AuthorIdentity`, `AuthStrategy`, `RepositoryLayout`, `CreateContextParts` | `src/ports/context.ts` | ports, core | no |
 | `Logger` | `src/ports/logger.ts` | ports, core | no |
 | `HookRunner`, `HookRequest`, `HookResult` | `src/ports/hook-runner.ts` | ports, core | no |
-| `CommandRunner` | `src/ports/command-runner.ts` | ports, core | no |
+| `CommandRunner` | `src/ports/command-runner.ts` | none (orphan — audit error caught in review) | no |
 | `HookName` | `src/domain/hooks/…` | ports, core | no |
 | `PromisorRemote`, `PromisorFetchOutcome` | `src/ports/promisor.ts` | ports, core | no |
 | `HashConfig` | `src/domain/objects/hash-config.ts` | domain | no |
@@ -128,7 +128,7 @@ All of `src/application/commands/index.ts` is transitively reachable through `Re
 | `TreeEntryRow`, `IndexEntryRow`, `WorkdirEntryRow`, `WorkdirStat`, `IndexCachedStat`, `IndexFlags`, `SnapshotKind` | `src/domain/snapshot/*` | domain | no |
 | `Pathspec` | `src/domain/pathspec/index.ts` | **none** (orphan) | no |
 
-**Orphans confirmed (referenced by a facade-reachable public signature, re-exported by NO barrel):** `MergeBaseOptions`, `Pathspec`. These are the only types that need a *new* barrel re-export at their declaring tier in addition to being surfaced at the entry; every other type already lives in some barrel and only needs to be threaded to the runtime entries. Decision 2 governs whether the inclusion bar reaches these (the recommendation says yes — they are facade-reachable).
+**Orphans confirmed (referenced by a facade-reachable public signature, re-exported by NO barrel):** `MergeBaseOptions`, `Pathspec`, and — caught in the review phase, not this initial audit — `CommandRunner` (named by `OpenRepositoryOptions.command`, but absent from the ports barrel). These three need a *new* barrel re-export at their declaring tier in addition to being surfaced at the entry (`CommandRunner` and `MergeBaseOptions` were added to their barrels; `Pathspec` already rode its declaring-tier barrel); every other type already lives in some barrel and only needs to be threaded to the runtime entries. Decision 2 governs whether the inclusion bar reaches these (the recommendation says yes — they are facade-reachable).
 
 > Brief vs reality: the brief's example `PatchResult` **does not exist** in the codebase. The patch machinery is `PatchFile` / `PatchOptions` / `OutputHunk` / `BodyLine` / `PatchPathPrefix` in `src/domain/diff/patch-serializer.ts`, and `show`'s result carries `patch?: D` where `D` is `TreeDiff` | `StatTreeDiff` (no distinct `PatchResult`). The patch-serializer types are **not** facade-reachable (the facade returns structured diff, not a rendered patch — consistent with ADR-249), so they are out of scope under the recommended inclusion bar. Treated as an illustrative "…" placeholder, not a literal requirement.
 
