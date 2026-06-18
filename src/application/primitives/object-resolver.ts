@@ -196,6 +196,7 @@ async function collectDeltaChain(
   for (;;) {
     checkAborted(ctx);
     const nextOffset = nextOffsetForEntry(table, currentHit.offset);
+    // equivalent-mutant: `>=` differs only at nextOffset===packFileSize; nextOffsetForEntry always returns ≤ trailerStart = packFileSize − digestLength (≥20) < packFileSize, so this branch is unreachable
     if (nextOffset > table.packFileSize) {
       throw invalidPackIndex('next offset exceeds pack file size: corrupt index');
     }

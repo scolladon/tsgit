@@ -82,6 +82,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
     // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
     const trailerStart = packFileSize - ctx.hashConfig.digestLength;
+    // equivalent-mutant: `<= 0` differs only at trailerStart===0; a parseable pack has ≥ 12-byte header + digestLength trailer so packFileSize ≥ digestLength+12, trailerStart ≥ 12 > 0 is unreachable
     if (trailerStart < 0) {
       throw invalidPackIndex('pack file too small to contain a trailer');
     }
@@ -109,6 +110,7 @@ function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
 export function nextOffsetForEntry(table: PackOffsetTable, offset: number): number {
   const { sortedOffsets, trailerStart } = table;
   const rank = bisectLeft(sortedOffsets, offset);
+  // equivalent-mutant: both `rank > len` and dropping `rank >= len` are equivalent — at rank===len, sortedOffsets[len] is undefined which !== any valid offset number, so the same throw fires either way
   if (rank >= sortedOffsets.length || sortedOffsets[rank] !== offset) {
     throw invalidPackIndex('offset not in pack index: corrupt index');
   }
