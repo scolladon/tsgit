@@ -716,7 +716,7 @@ describe('object-resolver', () => {
 
           // Assert — exact slice length = trailerStart - entryOffset
           expect(result.type).toBe('blob');
-          expect(readSliceSpy.mock.calls.length).toBeGreaterThan(0);
+          expect(readSliceSpy.mock.calls.length).toBe(1);
           const [, , sliceLength] = readSliceSpy.mock.calls[0]!;
           expect(sliceLength).toBe(expectedSliceLength);
         });

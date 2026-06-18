@@ -336,9 +336,10 @@ describe('RegisteredPack.offsetTable — negative trailerStart guard', () => {
         const pack = packs[0]!;
 
         // Act / Assert
+        const sut = pack.offsetTable;
         let caught: unknown;
         try {
-          await pack.offsetTable();
+          await sut();
         } catch (error) {
           caught = error;
         }
