@@ -665,7 +665,7 @@ describe('object-resolver', () => {
           // The argument must be a Uint8Array subarray (not a zero-offset view of the full chunk).
           const arg = calls.at(-1)![0] as Uint8Array;
           expect(arg).toBeInstanceOf(Uint8Array);
-          // The deflated content is decompressible — round-trip sanity check.
+          // The deflated content round-trips back to the original — sanity check.
           const decompressed = await ctx.compressor.inflate(arg);
           expect(decompressed).toEqual(content);
         });
