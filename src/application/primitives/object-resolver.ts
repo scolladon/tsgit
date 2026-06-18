@@ -12,7 +12,7 @@ import {
   serializeObject,
 } from '../../domain/objects/index.js';
 import { MAX_DELTA_CHAIN_DEPTH } from '../../domain/storage/delta.js';
-import { deltaChainTooDeep } from '../../domain/storage/error.js';
+import { deltaChainTooDeep, invalidPackIndex } from '../../domain/storage/error.js';
 import {
   applyDelta,
   type LruCache,
@@ -22,10 +22,8 @@ import {
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import type { PackLookupHit, PackRegistry } from './pack-registry.js';
+import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
 import { commonGitDir, looseObjectPath } from './path-layout.js';
-
-const PACK_SLICE_HINT = 1 << 16;
 
 export async function resolveObject(
   ctx: Context,
@@ -95,7 +93,7 @@ function enforceCachedCap(id: ObjectId, cached: Uint8Array, maxBytes: number | u
  * Pre-inflate cap for pack base entries — fires at ANY depth, not just
  * `depth === 0`. The cap exists to bound memory: when the chain walker
  * reaches a base entry whose declared inflated size exceeds the cap, the
- * subsequent `streamInflate` materialises a buffer larger than the
+ * subsequent `inflate` materialises a buffer larger than the
  * contract permits regardless of whether the final delta-applied result
  * shrinks below the cap.
  */
@@ -194,13 +192,22 @@ async function collectDeltaChain(
 
   for (;;) {
     checkAborted(ctx);
-    const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(ctx, currentHit);
+    const table = await currentHit.pack.offsetTable();
+    const nextOffset = nextOffsetForEntry(table, currentHit.offset);
+    if (nextOffset > table.packFileSize) {
+      throw invalidPackIndex('next offset exceeds pack file size: corrupt index');
+    }
+    const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(
+      ctx,
+      currentHit,
+      nextOffset,
+    );
     if (isBase(header)) {
       enforcePackBaseCap(targetId, header.size, maxBytes);
-      const inflated = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
+      const inflated = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
       return {
         deltas,
-        baseContent: inflated.output,
+        baseContent: inflated,
         baseType: header.type,
       };
     }
@@ -208,7 +215,7 @@ async function collectDeltaChain(
     if (depth > MAX_DELTA_CHAIN_DEPTH) {
       throw deltaChainTooDeep(depth);
     }
-    const { output: instructions } = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
+    const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
@@ -310,11 +317,15 @@ function isBase(h: PackEntryHeader): h is PackEntryHeader & { type: 1 | 2 | 3 | 
 async function readEntryHeaderWithChunk(
   ctx: Context,
   hit: PackLookupHit,
+  nextOffset: number,
 ): Promise<{ header: PackEntryHeader; chunk: Uint8Array; headerEndInChunk: number }> {
-  // Read a generous slice at the entry offset; header parse and the zlib stream
-  // both live inside this chunk so a single read covers both. REF_DELTA base-id
-  // length follows the active hash algorithm (SHA-1 = 20 bytes, SHA-256 = 32).
-  const chunk = await ctx.fs.readSlice(hit.pack.packPath, hit.offset, PACK_SLICE_HINT);
+  const sliceLength = nextOffset - hit.offset;
+  if (sliceLength <= 0) {
+    throw invalidPackIndex('slice length ≤ 0: next offset not beyond entry offset');
+  }
+  // Read exactly the bytes belonging to this entry: [entryOffset, nextOffset).
+  // REF_DELTA base-id length follows the active hash algorithm (SHA-1=20, SHA-256=32).
+  const chunk = await ctx.fs.readSlice(hit.pack.packPath, hit.offset, sliceLength);
   const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
   // parsePackEntryHeader was invoked with offset=0, so dataOffset is already
   // the position within the chunk where the zlib stream starts.
