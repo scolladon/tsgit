@@ -7,12 +7,12 @@ gates:
   phase: "npm run validate"
   review-batch: "npm run check:spelling"
 phases:
-  design:    { context: .claude/workflow/faithfulness.md }
-  plan:      { context: .claude/workflow/surface-gates.md }
-  implement: { context: [.claude/workflow/surface-gates.md, .claude/workflow/faithfulness.md] }
-  review:    { context: .claude/workflow/surface-gates.md }
-  mutation:  { override: .claude/workflow/mutation.md }
-  merge:     { merge-flags: "--admin", non-blocking-jobs: [mutation, benchmark-compare] }
+  design:         { context: .claude/workflow/faithfulness.md }
+  planning:       { context: .claude/workflow/surface-gates.md }
+  implementation: { context: [.claude/workflow/surface-gates.md, .claude/workflow/faithfulness.md] }
+  review:         { context: .claude/workflow/surface-gates.md }
+  validation:     { override: .claude/workflow/mutation.md }
+  integrate:      { merge-flags: "--admin", non-blocking-jobs: [mutation, benchmark-compare] }
 pr: { creator: session, pre-pr-gate: "npm outdated" }
 scripts: { pre-teardown: .claude/workflow/serena-prune.sh }
 ---

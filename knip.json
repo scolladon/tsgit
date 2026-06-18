@@ -5,6 +5,7 @@
     "src/index.default.ts",
     "src/index.node.ts",
     "src/index.browser.ts",
+    "src/public-types.ts",
     "src/repository.ts",
     "src/adapter-detect.ts",
     "src/dispose-adapters.ts",
