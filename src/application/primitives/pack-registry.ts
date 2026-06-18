@@ -4,16 +4,29 @@
  */
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackIndex } from '../../domain/storage/error.js';
-import { lookupPackIndex, type PackIndex, parsePackIndex } from '../../domain/storage/index.js';
+import {
+  entryOffsets,
+  lookupPackIndex,
+  type PackIndex,
+  parsePackIndex,
+} from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
+
+export interface PackOffsetTable {
+  readonly sortedOffsets: ReadonlyArray<number>;
+  readonly packFileSize: number;
+  readonly trailerStart: number;
+}
 
 export interface RegisteredPack {
   readonly name: string;
   readonly index: PackIndex;
   readonly packPath: string;
   readonly idxPath: string;
+  /** Lazily-built, cached sorted entry offsets + trailer bound for this pack. */
+  readonly offsetTable: () => Promise<PackOffsetTable>;
 }
 
 export interface PackLookupHit {
@@ -57,7 +70,36 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const idxBytes = await readBoundedIdx(ctx, idxPath);
   const index = parsePackIndex(idxBytes);
   const name = entryName.slice(0, -'.idx'.length);
-  return { name, index, packPath: `${dir}/${name}.pack`, idxPath };
+  const packPath = `${dir}/${name}.pack`;
+
+  let cachedTable: PackOffsetTable | undefined;
+  const offsetTable = async (): Promise<PackOffsetTable> => {
+    if (cachedTable !== undefined) return cachedTable;
+    const stat = await ctx.fs.stat(packPath);
+    const packFileSize = stat.size;
+    const raw = entryOffsets(index);
+    const sortedOffsets = [...raw].sort((a, b) => a - b);
+    // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
+    // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
+    const trailerStart = packFileSize - ctx.hashConfig.digestLength;
+    cachedTable = { sortedOffsets, packFileSize, trailerStart };
+    return cachedTable;
+  };
+
+  return { name, index, packPath, idxPath, offsetTable };
+}
+
+export function nextOffsetForEntry(table: PackOffsetTable, offset: number): number {
+  const { sortedOffsets, trailerStart } = table;
+  const rank = sortedOffsets.indexOf(offset);
+  if (rank === -1) {
+    throw invalidPackIndex('offset not in pack index: corrupt index');
+  }
+  const nextOffset = sortedOffsets[rank + 1];
+  if (nextOffset === undefined) {
+    return trailerStart;
+  }
+  return nextOffset;
 }
 
 export function createPackRegistry(ctx: Context): PackRegistry {

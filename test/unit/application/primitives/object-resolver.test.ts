@@ -70,11 +70,21 @@ async function stubRegistry(
   const lookup = async (id: ObjectId): Promise<PackLookupHit | undefined> => {
     const match = hits.find((h) => h.id === id);
     if (match === undefined) return undefined;
+    const packPath = match.packPath;
     const pack: RegisteredPack = {
       name: 'stub',
       index: fillerIndex,
-      packPath: match.packPath,
-      idxPath: `${match.packPath}.idx`,
+      packPath,
+      idxPath: `${packPath}.idx`,
+      offsetTable: async () => {
+        const stat = await ctx.fs.stat(packPath);
+        const packFileSize = stat.size;
+        return {
+          sortedOffsets: [match.offset],
+          packFileSize,
+          trailerStart: packFileSize - 20,
+        };
+      },
     };
     return { pack, offset: match.offset };
   };

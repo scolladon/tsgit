@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { createPackRegistry } from '../../../../src/application/primitives/pack-registry.js';
+import {
+  createPackRegistry,
+  nextOffsetForEntry,
+  type PackOffsetTable,
+} from '../../../../src/application/primitives/pack-registry.js';
 import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { DirEntry, FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
+import { writeSyntheticPack } from './pack-fixture.js';
 
 const dirEntry = (name: string): DirEntry => ({
   name,
@@ -216,6 +222,159 @@ describe('pack-registry', () => {
         // buffer reaches `parsePackIndex`, which throws INVALID_PACK_INDEX with a
         // DIFFERENT reason (bad magic). Pinning the exact reason kills both.
         expect(data?.reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
+      });
+    });
+  });
+});
+
+describe('nextOffsetForEntry', () => {
+  describe('Given a table with sortedOffsets=[100, 500, 900], packFileSize=1000, trailerStart=980', () => {
+    const table: PackOffsetTable = {
+      sortedOffsets: [100, 500, 900],
+      packFileSize: 1000,
+      trailerStart: 980,
+    };
+
+    describe('When nextOffsetForEntry is called with offset=100 (non-last)', () => {
+      it('Then returns 500', () => {
+        // Arrange
+        const sut = nextOffsetForEntry;
+        // Act
+        const result = sut(table, 100);
+        // Assert
+        expect(result).toBe(500);
+      });
+    });
+
+    describe('When nextOffsetForEntry is called with offset=500 (middle)', () => {
+      it('Then returns 900', () => {
+        // Arrange
+        const sut = nextOffsetForEntry;
+        // Act
+        const result = sut(table, 500);
+        // Assert
+        expect(result).toBe(900);
+      });
+    });
+
+    describe('When nextOffsetForEntry is called with offset=900 (last)', () => {
+      it('Then returns trailerStart = 980', () => {
+        // Arrange
+        const sut = nextOffsetForEntry;
+        // Act
+        const result = sut(table, 900);
+        // Assert
+        expect(result).toBe(980);
+      });
+    });
+
+    describe('When nextOffsetForEntry is called with offset=200 (not in sortedOffsets)', () => {
+      it('Then throws INVALID_PACK_INDEX with reason containing "offset not in pack index"', () => {
+        // Arrange
+        const sut = nextOffsetForEntry;
+        // Act / Assert
+        try {
+          sut(table, 200);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACK_INDEX');
+          if (data.code === 'INVALID_PACK_INDEX') {
+            expect(data.reason).toContain('offset not in pack index');
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a table with a single sortedOffset=[400], packFileSize=500, trailerStart=480', () => {
+    describe('When nextOffsetForEntry is called with offset=400 (single element, both first and last)', () => {
+      it('Then returns trailerStart = 480', () => {
+        // Arrange
+        const table: PackOffsetTable = {
+          sortedOffsets: [400],
+          packFileSize: 500,
+          trailerStart: 480,
+        };
+        const sut = nextOffsetForEntry;
+        // Act
+        const result = sut(table, 400);
+        // Assert
+        expect(result).toBe(480);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable', () => {
+  describe('Given a pack with 2 base entries', () => {
+    describe('When offsetTable() is called twice', () => {
+      it('Then ctx.fs.stat is called exactly once (lazy cache)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([10, 20, 30]);
+        const content2 = new Uint8Array([40, 50, 60, 70]);
+        await writeSyntheticPack(ctx, 'two-entry', [
+          { kind: 'base', type: 'blob', content: content1 },
+          { kind: 'base', type: 'blob', content: content2 },
+        ]);
+        const registry = createPackRegistry(ctx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+
+        // Replace pack's offsetTable with one that uses a stat-counting fs,
+        // but only after all() has already finished (so we don't count loadPack's stat).
+        let statCallCount = 0;
+        const countingCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              statCallCount += 1;
+              return ctx.fs.stat(path);
+            },
+          },
+        };
+        const registry2 = createPackRegistry(countingCtx);
+        const packs2 = await registry2.all();
+        const pack2 = packs2[0]!;
+        // Stat was called during loadPack (for readBoundedIdx); reset the counter.
+        statCallCount = 0;
+        const sut = pack2.offsetTable;
+
+        // Act — call twice; only the first should hit stat
+        await sut();
+        await sut();
+
+        // Assert — stat called exactly once across both offsetTable() calls
+        expect(statCallCount).toBe(1);
+        // Verify the pack reference is the same as what we loaded
+        expect(pack.name).toBe(pack2.name);
+      });
+    });
+
+    describe('When offsetTable() is called', () => {
+      it('Then sortedOffsets contains both entry offsets in ascending order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([10, 20, 30]);
+        const content2 = new Uint8Array([40, 50, 60, 70]);
+        await writeSyntheticPack(ctx, 'sorted-offsets', [
+          { kind: 'base', type: 'blob', content: content1 },
+          { kind: 'base', type: 'blob', content: content2 },
+        ]);
+        const registry = createPackRegistry(ctx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+        const sut = pack.offsetTable;
+
+        // Act
+        const result = await sut();
+
+        // Assert — two entries, offsets are in ascending order, both > 0
+        expect(result.sortedOffsets).toHaveLength(2);
+        expect(result.sortedOffsets[0]!).toBeGreaterThan(0);
+        expect(result.sortedOffsets[1]!).toBeGreaterThan(result.sortedOffsets[0]!);
       });
     });
   });
