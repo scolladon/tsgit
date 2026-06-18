@@ -82,6 +82,9 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
     // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
     const trailerStart = packFileSize - ctx.hashConfig.digestLength;
+    if (trailerStart < 0) {
+      throw invalidPackIndex('pack file too small to contain a trailer');
+    }
     cachedTable = { sortedOffsets, packFileSize, trailerStart };
     return cachedTable;
   };
@@ -89,17 +92,30 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   return { name, index, packPath, idxPath, offsetTable };
 }
 
+function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((arr[mid] as number) < value) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
 export function nextOffsetForEntry(table: PackOffsetTable, offset: number): number {
   const { sortedOffsets, trailerStart } = table;
-  const rank = sortedOffsets.indexOf(offset);
-  if (rank === -1) {
+  const rank = bisectLeft(sortedOffsets, offset);
+  if (rank >= sortedOffsets.length || sortedOffsets[rank] !== offset) {
     throw invalidPackIndex('offset not in pack index: corrupt index');
   }
-  const nextOffset = sortedOffsets[rank + 1];
-  if (nextOffset === undefined) {
+  if (rank === sortedOffsets.length - 1) {
     return trailerStart;
   }
-  return nextOffset;
+  return sortedOffsets[rank + 1] as number;
 }
 
 export function createPackRegistry(ctx: Context): PackRegistry {

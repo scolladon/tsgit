@@ -306,6 +306,51 @@ describe('nextOffsetForEntry', () => {
   });
 });
 
+describe('RegisteredPack.offsetTable — negative trailerStart guard', () => {
+  describe('Given a pack file whose size is smaller than the digest length', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then throws INVALID_PACK_INDEX with reason containing "pack file too small"', async () => {
+        // Arrange — stat returns size=10 (< digestLength=20), so trailerStart = 10 - 20 = -10.
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([1, 2, 3]);
+        await writeSyntheticPack(ctx, 'tiny-pack', [
+          { kind: 'base', type: 'blob', content: content1 },
+        ]);
+        const tinySize = 10; // less than digestLength (20 for SHA-1)
+        const wrappedCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              const real = await ctx.fs.stat(path);
+              // Only override the .pack file stat, not .idx
+              if (path.endsWith('.pack')) {
+                return { ...real, size: tinySize };
+              }
+              return real;
+            },
+          },
+        };
+        const registry = createPackRegistry(wrappedCtx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+
+        // Act / Assert
+        let caught: unknown;
+        try {
+          await pack.offsetTable();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeDefined();
+        const data = (caught as { data?: { code?: string; reason?: string } }).data;
+        expect(data?.code).toBe('INVALID_PACK_INDEX');
+        expect(data?.reason).toContain('pack file too small');
+      });
+    });
+  });
+});
+
 describe('RegisteredPack.offsetTable', () => {
   describe('Given a pack with 2 base entries', () => {
     describe('When offsetTable() is called twice', () => {
