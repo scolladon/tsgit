@@ -801,3 +801,28 @@ appears).
 - **Any behaviour change, public surface, option, or on-disk-state change** — none. Pure internal de-duplication +
   signature widening; `api.json`, command surfaces, refusal conditions, reflogs, structured output untouched
   (ADR-249/226 unaffected).
+
+## Erratum — the browser workDir is `/`, not slash-free (corrected post-integration)
+
+The harmlessness proof above (Argument 3, and the expansion's restatement) claimed the trailing-slash divergence is
+"unreachable in production" because "memory/browser use slash-free constants". That is **factually wrong for the
+browser adapter**: `browser-adapter.ts` sets `ROOT_WORK_DIR = '/'`, which **does** end with a slash. So for the
+browser, the collapsing `joinPath('/', p)` yields `/p` where the old non-collapsing inline yielded `//p` — the
+divergence **is** reachable there. (Only the node adapter's `path.resolve` workDir and the memory adapter's
+`DEFAULT_WORK_DIR = '/repo'` are genuinely slash-free.)
+
+The harmlessness **conclusion still holds for every FS-only site**, but for a *different* reason than stated: the OPFS
+adapter's `splitPath` strips all leading slashes (`browser-file-system.ts:208`, `path.replace(/^\/+/, '')`), so `/p`
+and `//p` resolve to the identical handle — the same `//`-normalisation the memory/node adapters provide. Every swept
+site whose join output feeds only `ctx.fs.*` is therefore byte-equivalent on the browser too.
+
+The **one exception** is a site whose output feeds a *slash-structure-dependent* computation rather than a direct FS
+op: `moveNode` (`commands/internal/working-tree.ts`) does `mkdir(dirname(toAbs))`, and the repo-relative `dirname`
+returns `''` for a root-level absolute path (`/c.txt` → `''`, a deliberately-pinned contract — `error.test.ts:776`).
+The old `//c.txt` form masked this (`dirname('//c.txt') === '/'`, a harmless `mkdir('/')` no-op); the collapsed `/c.txt`
+exposed it, so a top-level `mv`/rename on the browser passed an **empty** path to `mkdir`, which the fs validator
+rejects (`PATHSPEC_OUTSIDE_REPO`). Caught by the browser e2e (`mv` + `whatchanged` parity scenarios — `whatchanged`'s
+fixture does a top-level `repo.mv`). **Fix:** `moveNode` skips the parent `mkdir` when `dirname(toAbs) === ''` (the
+target sits at the work-tree root, which always exists) — restoring the pre-collapse no-op; behaviour-identical for
+node/memory (where the parent is never empty). The empty-parent branch is structurally not unit-reproducible (the
+memory adapter rejects `rootDir = '/'`, `memory-file-system.ts:175`); the browser e2e is its regression guard.
