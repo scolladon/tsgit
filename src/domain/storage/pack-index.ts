@@ -106,6 +106,14 @@ function readOffset(index: PackIndex, i: number): number {
   return raw;
 }
 
+export function entryOffsets(index: PackIndex): ReadonlyArray<number> {
+  const offsets: number[] = [];
+  for (let i = 0; i < index.objectCount; i += 1) {
+    offsets.push(readOffset(index, i));
+  }
+  return offsets;
+}
+
 export function lookupPackIndex(index: PackIndex, id: ObjectId): number | undefined {
   const targetBytes = hexToBytes(id);
   const firstByte = targetBytes[0]!;
