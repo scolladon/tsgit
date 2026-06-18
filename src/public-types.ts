@@ -2,13 +2,13 @@
 // runtime entries and by index.ts so both the `exports`-resolved surface and the
 // `module`/`types`-resolved surface expose the identical type set.
 
-// Section E: command result/option/namespace types (all *Options/*Result/*Input/*Info/*Entry/*Namespace)
-// Section D: diff change types re-exported by commands barrel
+// command result/option/namespace types (all *Options/*Result/*Input/*Info/*Entry/*Namespace);
+// the diff change types also ride this barrel — see the diff barrel below.
 export type * from './application/commands/index.js';
-// Section F: primitive param/return types (*Options/*Input/*Entry from primitives/types.js)
+// primitive param/return types (*Options/*Input/*Entry from primitives/types.js).
 // Values (readObject, writeObject, mergeBase, …) are dropped by export type *.
 export type * from './application/primitives/index.js';
-// Section H (snapshot family): no snapshot/index.ts barrel — enumerate the same files as index.ts.
+// snapshot family: no snapshot/index.ts barrel — enumerate the same files as index.ts.
 // Explicit named re-exports WIN over the domain/objects and domain/git-index wildcards for the
 // duplicate names TreeEntry and IndexEntry (explicit beats wildcard — semantics probed clean).
 export type { IndexEntry } from './application/primitives/snapshot/index-entry.js';
@@ -25,14 +25,14 @@ export type { StashSnapshot } from './application/primitives/snapshot/stash-snap
 export type { TreeEntry } from './application/primitives/snapshot/tree-entry.js';
 export type { WorkdirEntry } from './application/primitives/snapshot/workdir-entry.js';
 export type { WorkdirSnapshotOptions } from './application/primitives/snapshot/workdir-snapshot.js';
-// Section D (full): diff types including ConflictKind, LineDiff, LineHunk, RenameDetectOptions,
+// diff types including ConflictKind, LineDiff, LineHunk, RenameDetectOptions,
 // ModeKind, FlatTree, GroupedIndex, and patch-serializer types.
 // Diff change types (TreeDiff etc.) appear in both commands and domain/diff barrels but trace
 // to the SAME original declarations — benign dedupe, no TS2308.
 export type * from './domain/diff/index.js';
-// Section G: git index types (GitIndex, IndexEntry, IndexEntryFlags, IndexExtension, StatData)
+// git index types (GitIndex, IndexEntry, IndexEntryFlags, IndexExtension, StatData)
 export type * from './domain/git-index/index.js';
-// Section G: git object union (GitObject, Blob, Commit, Tree, Tag, AuthorIdentity domain variant, …)
+// git object union (GitObject, Blob, Commit, Tree, Tag, AuthorIdentity domain variant, …)
 // export type * from a mixed barrel drops all value exports (parseCommitContent etc.).
 // The object-id.ts re-export inside this barrel surfaces ObjectId/RefName/FilePath as types only
 // via export type *; the value constructors are re-added explicitly below.
@@ -40,9 +40,9 @@ export type * from './domain/objects/index.js';
 // Orphan: Pathspec declared in domain/pathspec but in no aggregating barrel.
 // Its declaring-tier barrel (domain/pathspec/index.ts) already exports it.
 export type { Pathspec } from './domain/pathspec/index.js';
-// Section H (partial): domain snapshot row types (SnapshotKind, TreeEntryRow, IndexEntryRow, …)
+// domain snapshot row types (SnapshotKind, TreeEntryRow, IndexEntryRow, …)
 export type * from './domain/snapshot/index.js';
-// Sections A/B: port types (Context, FileSystem, RepositoryConfig, Logger, …)
+// port types (Context, FileSystem, RepositoryConfig, CommandRunner, Logger, …)
 // Values (createContext, noopLogger, wrapLoggerSanitizer) are dropped by export type *.
 export type * from './ports/index.js';
 
@@ -63,6 +63,10 @@ export type { AuthorIdentity } from './domain/objects/author-identity.js';
 // the merged type. Sourced from object-id.ts directly (not the domain/objects barrel) to keep
 // this surgical. No conflict with the domain/objects wildcard — both trace to the same declaration.
 export { FilePath, ObjectId, RefName } from './domain/objects/object-id.js';
+// The port-tier {name,email} identity (the OpenRepositoryOptions.config.user shape) is a distinct
+// type from the domain authorship above; expose it under an unambiguous name so config.user is
+// nameable without RepositoryConfig['user'] indexed-access.
+export type { AuthorIdentity as ConfigUserIdentity } from './ports/context.js';
 // WalkIgnorePredicate: ports/snapshot-resolvers.ts vs application/primitives/types.ts.
 // Pick the ports one — it is the predicate carried by WorkdirEnumOptions and Context resolvers.
 export type { WalkIgnorePredicate } from './ports/snapshot-resolvers.js';

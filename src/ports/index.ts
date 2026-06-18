@@ -1,4 +1,5 @@
 export type { HookName } from '../domain/hooks/index.js';
+export type { CommandRunner } from './command-runner.js';
 export type { Compressor } from './compressor.js';
 export type {
   AuthorIdentity,
