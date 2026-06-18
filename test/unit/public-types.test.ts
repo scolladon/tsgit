@@ -31,9 +31,14 @@ import type {
   TreeDiff as TreeDiffCore,
 } from '../../src/index.js';
 import type {
+  AuthorIdentity,
   BranchNamespace,
+  CommandRunner,
+  Commit,
+  ConfigUserIdentity,
   Context,
   FilePath,
+  FileSystem,
   MergeBaseOptions,
   ObjectId,
   OpenRepositoryOptions,
@@ -96,6 +101,44 @@ describe('public type surface', () => {
     });
   });
 
+  describe('Given the CommandRunner port type exported from index.node', () => {
+    describe('When type-checked', () => {
+      it('Then CommandRunner is never-free', () => {
+        // Arrange + Assert
+        expectTypeOf<CommandRunner>().not.toBeNever();
+      });
+    });
+  });
+
+  describe('Given a deep port-closure type exported from index.node', () => {
+    describe('When type-checked', () => {
+      it('Then FileSystem is never-free', () => {
+        // Arrange + Assert
+        expectTypeOf<FileSystem>().not.toBeNever();
+      });
+    });
+  });
+
+  describe('Given a git-object-union type exported from index.node', () => {
+    describe('When type-checked', () => {
+      it('Then Commit is never-free', () => {
+        // Arrange + Assert
+        expectTypeOf<Commit>().not.toBeNever();
+      });
+    });
+  });
+
+  describe('Given both author-identity shapes exported from index.node', () => {
+    describe('When type-checked', () => {
+      it('Then AuthorIdentity is the commit/tag identity and ConfigUserIdentity the distinct config-user shape', () => {
+        // Arrange + Assert
+        expectTypeOf<AuthorIdentity>().toHaveProperty('timestamp');
+        expectTypeOf<ConfigUserIdentity>().toHaveProperty('email');
+        expectTypeOf<ConfigUserIdentity>().not.toEqualTypeOf<AuthorIdentity>();
+      });
+    });
+  });
+
   describe('Given namespace types exported from index.node', () => {
     describe('When type-checked', () => {
       it('Then BranchNamespace is never-free', () => {
@@ -126,10 +169,11 @@ describe('public type surface', () => {
 
   describe('Given edge-matrix (ii): entry-owned names from index.node', () => {
     describe('When type-checked', () => {
-      it('Then Repository and OpenRepositoryOptions resolve without TS2308', () => {
+      it('Then Repository and OpenRepositoryOptions resolve to their entry-owned declarations', () => {
         // Arrange + Assert
-        expectTypeOf<Repository>().not.toBeNever();
-        expectTypeOf<OpenRepositoryOptions>().not.toBeNever();
+        expectTypeOf<Repository>().toHaveProperty('status');
+        expectTypeOf<Repository>().toHaveProperty('commit');
+        expectTypeOf<OpenRepositoryOptions>().toHaveProperty('fs');
       });
     });
   });
@@ -182,11 +226,18 @@ describe('public type surface', () => {
     });
   });
 
-  describe('Given edge-matrix (iii): index.ts and index.node.ts export the same TreeDiff', () => {
+  describe('Given edge-matrix (iii): index.ts and index.node export the facade type set', () => {
     describe('When type-checked', () => {
-      it('Then TreeDiff from both surfaces is mutually assignable', () => {
+      it('Then the cross-section is identical across both resolution surfaces', () => {
         // Arrange + Assert
         expectTypeOf<TreeDiffCore>().toEqualTypeOf<TreeDiff>();
+        expectTypeOf<ObjectIdCore>().toEqualTypeOf<ObjectId>();
+        expectTypeOf<RefNameCore>().toEqualTypeOf<RefName>();
+        expectTypeOf<FilePathCore>().toEqualTypeOf<FilePath>();
+        expectTypeOf<RepositoryConfigCore>().toEqualTypeOf<RepositoryConfig>();
+        expectTypeOf<MergeBaseOptionsCore>().toEqualTypeOf<MergeBaseOptions>();
+        expectTypeOf<PathspecCore>().toEqualTypeOf<Pathspec>();
+        expectTypeOf<SnapshotOptionsCore>().toEqualTypeOf<SnapshotOptions>();
       });
     });
   });
