@@ -723,6 +723,50 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given a corrupt table where a non-last entry next offset equals packFileSize exactly', () => {
+      describe('When resolveObject is called', () => {
+        it('Then the entry is still read — the guard rejects only strictly-greater next offsets', async () => {
+          // Arrange — a real single-entry pack, but a stubbed table where the entry
+          // is non-last and its next offset === packFileSize (a corrupt .idx whose
+          // extra offset sits exactly at the entry's end). The `>` guard must let
+          // `nextOffset === packFileSize` through, so the read proceeds and recovers
+          // the blob from [entryOffset, nextOffset).
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('next-offset-equals-pack-file-size');
+          const ids = await writeSyntheticPack(ctx, 'eq-boundary', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const id = ids[0] as ObjectId;
+          const realPack = (await createPackRegistry(ctx).all())[0]!;
+          const realTable = await realPack.offsetTable();
+          const entryOffset = realTable.sortedOffsets[0]!;
+          const boundary = realTable.trailerStart; // the entry's real end
+          const pack: RegisteredPack = {
+            ...realPack,
+            offsetTable: async () => ({
+              sortedOffsets: [entryOffset, boundary],
+              packFileSize: boundary,
+              trailerStart: boundary - ctx.hashConfig.digestLength,
+            }),
+          };
+          const registry: PackRegistry = {
+            all: async () => [pack],
+            refresh: () => undefined,
+            lookup: async (lookupId) =>
+              lookupId === id ? { pack, offset: entryOffset } : undefined,
+          };
+          const sut = resolveObject;
+
+          // Act
+          const result = await sut(ctx, registry, id, false);
+
+          // Assert — read proceeds at the === boundary; blob recovered intact
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(content);
+        });
+      });
+    });
+
     describe('Given a pack where nextOffset equals offset (corrupt index: slice length ≤ 0)', () => {
       describe('When resolveObject is called', () => {
         it('Then throws INVALID_PACK_INDEX with slice length reason', async () => {
