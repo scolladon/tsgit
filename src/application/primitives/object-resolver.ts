@@ -316,6 +316,14 @@ function isBase(h: PackEntryHeader): h is PackEntryHeader & { type: 1 | 2 | 3 | 
   );
 }
 
+/**
+ * Reads the exact byte slice [entryOffset, nextOffset) from the pack file and
+ * parses the entry header. The slice is bounded by the on-disk pack file size,
+ * so the allocation is proportional to the compressed member, not the inflated
+ * output. No per-object size cap is applied here because the inflated output is
+ * capped separately by the compressor's `maxOutputLength` — adding a second cap
+ * would create a lower ceiling than the caller's contract permits.
+ */
 async function readEntryHeaderWithChunk(
   ctx: Context,
   hit: PackLookupHit,

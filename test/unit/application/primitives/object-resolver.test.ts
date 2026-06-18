@@ -661,7 +661,7 @@ describe('object-resolver', () => {
           // Since there is no loose file for this id, the only inflate call is from
           // the pack read path.
           const calls = inflateSpy.mock.calls;
-          expect(calls.length).toBeGreaterThan(0);
+          expect(calls.length).toBe(1);
           // The argument must be a Uint8Array subarray (not a zero-offset view of the full chunk).
           const arg = calls.at(-1)![0] as Uint8Array;
           expect(arg).toBeInstanceOf(Uint8Array);
@@ -704,19 +704,21 @@ describe('object-resolver', () => {
           const id = ids[0] as ObjectId;
           const sut = resolveObject;
           const registry = createPackRegistry(ctx);
+          // Compute expected slice length from the real offset table before the act.
+          const packs = await registry.all();
+          const table = await packs[0]!.offsetTable();
+          const entryOffset = table.sortedOffsets[0]!;
+          const expectedSliceLength = table.trailerStart - entryOffset;
           const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
 
           // Act
           const result = await sut(ctx, registry, id, false);
 
-          // Assert — slice length = trailerStart - entryOffset = (packSize - 20) - 12
+          // Assert — exact slice length = trailerStart - entryOffset
           expect(result.type).toBe('blob');
           expect(readSliceSpy.mock.calls.length).toBeGreaterThan(0);
-          // The readSlice call for the pack must not use PACK_SLICE_HINT (1<<16 = 65536).
-          // For a small single-entry pack the correct slice is far smaller than 65536.
           const [, , sliceLength] = readSliceSpy.mock.calls[0]!;
-          expect(sliceLength).toBeLessThan(65536);
-          expect(sliceLength).toBeGreaterThan(0);
+          expect(sliceLength).toBe(expectedSliceLength);
         });
       });
     });
@@ -755,6 +757,64 @@ describe('object-resolver', () => {
               sortedOffsets: [entryOffset],
               packFileSize: entryOffset + 5,
               trailerStart: entryOffset + 5 - 20, // = entryOffset - 15 → next is trailerStart < entryOffset
+            }),
+          };
+          const registry: PackRegistry = {
+            all: async () => [],
+            refresh: () => undefined,
+            lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+          };
+          const sut = resolveObject;
+
+          // Act / Assert
+          try {
+            await sut(ctx, registry, targetId, false);
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_PACK_INDEX');
+            if (data.code !== 'INVALID_PACK_INDEX') {
+              expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+            }
+            expect(data.reason).toContain('slice length');
+          }
+        });
+      });
+    });
+
+    describe('Given a pack where nextOffset exactly equals offset (corrupt index: slice length === 0)', () => {
+      describe('When resolveObject is called', () => {
+        it('Then throws INVALID_PACK_INDEX with slice length reason', async () => {
+          // Arrange — single-entry pack where packFileSize = entryOffset + digestLength (20),
+          // so trailerStart = packFileSize - 20 = entryOffset. For a single entry,
+          // nextOffsetForEntry returns trailerStart = entryOffset, giving sliceLength = 0.
+          // This exercises the exact zero boundary of the `sliceLength <= 0` guard,
+          // killing the `< 0` mutant that would pass sliceLength=0 through.
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('zero-slice');
+          const deflated = await ctx.compressor.deflate(content);
+          const entry = new Uint8Array([
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, content.length),
+            ...deflated,
+          ]);
+          const packPath = await writeRawSingleEntryPack(ctx, 'zero-slice', entry);
+          const entryOffset = 12; // pack header is 12 bytes
+          const digestLength = 20; // SHA-1
+          const targetId = 'z'.repeat(40) as ObjectId;
+          // packFileSize = entryOffset + digestLength → trailerStart = entryOffset → sliceLength = 0
+          const filler = await buildSyntheticPack(ctx, [
+            { kind: 'base', type: 'blob', content: ENC.encode('filler') },
+          ]);
+          const fillerIndex = parsePackIndex(filler.idxBytes);
+          const pack: RegisteredPack = {
+            name: 'stub-zero-slice',
+            index: fillerIndex,
+            packPath,
+            idxPath: `${packPath}.idx`,
+            offsetTable: async () => ({
+              sortedOffsets: [entryOffset],
+              packFileSize: entryOffset + digestLength,
+              trailerStart: entryOffset, // = entryOffset + digestLength - digestLength
             }),
           };
           const registry: PackRegistry = {
@@ -848,6 +908,13 @@ describe('object-resolver', () => {
           const deltaId = ids[1] as ObjectId;
           const sut = resolveObject;
           const registry = createPackRegistry(ctx);
+          // Compute expected slice lengths from the real offset table before resolveObject runs.
+          const packs = await registry.all();
+          const table = await packs[0]!.offsetTable();
+          const [off0, off1] = table.sortedOffsets as [number, number];
+          // delta entry (off1) is resolved first, then base (off0).
+          const expectedDeltaSlice = table.trailerStart - off1!;
+          const expectedBaseSlice = off1! - off0!;
           const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
           const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
 
@@ -859,12 +926,12 @@ describe('object-resolver', () => {
           expect((result as Blob).content).toEqual(targetContent);
           // streamInflate must never be called
           expect(streamInflateSpy.mock.calls.length).toBe(0);
-          // Each of the 2 chain steps called readSlice with exact (small) length.
+          // Each of the 2 chain steps called readSlice with exact lengths.
           expect(readSliceSpy.mock.calls.length).toBe(2);
-          for (const [, , sliceLength] of readSliceSpy.mock.calls) {
-            expect(sliceLength).toBeLessThan(65536);
-            expect(sliceLength).toBeGreaterThan(0);
-          }
+          // First call: delta entry (tip of chain, resolved first)
+          expect(readSliceSpy.mock.calls[0]![2]).toBe(expectedDeltaSlice);
+          // Second call: base entry
+          expect(readSliceSpy.mock.calls[1]![2]).toBe(expectedBaseSlice);
         });
       });
     });
