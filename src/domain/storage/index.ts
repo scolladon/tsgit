@@ -38,7 +38,7 @@ export {
 
 // Pack index
 export type { PackIndex } from './pack-index.js';
-export { findByPrefix, lookupPackIndex, parsePackIndex } from './pack-index.js';
+export { entryOffsets, findByPrefix, lookupPackIndex, parsePackIndex } from './pack-index.js';
 
 // Pack writer
 export type {

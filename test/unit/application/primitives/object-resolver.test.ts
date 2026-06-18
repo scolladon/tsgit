@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { resolveObject } from '../../../../src/application/primitives/object-resolver.js';
 import {
   createPackRegistry,
@@ -70,11 +70,21 @@ async function stubRegistry(
   const lookup = async (id: ObjectId): Promise<PackLookupHit | undefined> => {
     const match = hits.find((h) => h.id === id);
     if (match === undefined) return undefined;
+    const packPath = match.packPath;
     const pack: RegisteredPack = {
       name: 'stub',
       index: fillerIndex,
-      packPath: match.packPath,
-      idxPath: `${match.packPath}.idx`,
+      packPath,
+      idxPath: `${packPath}.idx`,
+      offsetTable: async () => {
+        const stat = await ctx.fs.stat(packPath);
+        const packFileSize = stat.size;
+        return {
+          sortedOffsets: [match.offset],
+          packFileSize,
+          trailerStart: packFileSize - 20,
+        };
+      },
     };
     return { pack, offset: match.offset };
   };
@@ -623,6 +633,354 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('exact-slice reads', () => {
+    describe('Given a 2-entry pack where the first entry is a base blob', () => {
+      describe('When resolveObject is called on the first entry', () => {
+        it('Then inflate is called with exactly chunk.subarray(headerEndInChunk)', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('exact-slice inflate argument');
+          const ids = await writeSyntheticPack(ctx, 'exact-inflate-arg', [
+            { kind: 'base', type: 'blob', content },
+            { kind: 'base', type: 'blob', content: ENC.encode('second entry') },
+          ]);
+          const firstId = ids[0] as ObjectId;
+          const sut = resolveObject;
+          const registry = createPackRegistry(ctx);
+          const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+
+          // Act
+          const result = await sut(ctx, registry, firstId, false);
+
+          // Assert — the call to inflate on the pack path uses subarray; find the
+          // pack-path call (loose inflate also calls inflate; pack read is NOT the
+          // first call since there's no loose file)
+          expect(result.type).toBe('blob');
+          // Find the call whose argument is NOT a small loose-style compressed buffer.
+          // The pack inflate call receives chunk.subarray(headerEndInChunk).
+          // Since there is no loose file for this id, the only inflate call is from
+          // the pack read path.
+          const calls = inflateSpy.mock.calls;
+          expect(calls.length).toBe(1);
+          // The argument must be a Uint8Array subarray (not a zero-offset view of the full chunk).
+          const arg = calls.at(-1)![0] as Uint8Array;
+          expect(arg).toBeInstanceOf(Uint8Array);
+          // The deflated content round-trips back to the original — sanity check.
+          const decompressed = await ctx.compressor.inflate(arg);
+          expect(decompressed).toEqual(content);
+        });
+
+        it('Then streamInflate is never called on this path', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('no-stream-inflate');
+          const ids = await writeSyntheticPack(ctx, 'no-stream-inflate', [
+            { kind: 'base', type: 'blob', content },
+            { kind: 'base', type: 'blob', content: ENC.encode('second') },
+          ]);
+          const firstId = ids[0] as ObjectId;
+          const sut = resolveObject;
+          const registry = createPackRegistry(ctx);
+          const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
+
+          // Act
+          await sut(ctx, registry, firstId, false);
+
+          // Assert — streamInflate must never be called anywhere in the resolve path
+          expect(streamInflateSpy.mock.calls.length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a single-entry pack with a base blob', () => {
+      describe('When resolveObject is called', () => {
+        it('Then the slice is [entryOffset, trailerStart) i.e. packFileSize − digestLength', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('single-entry trailer-bound');
+          const ids = await writeSyntheticPack(ctx, 'single-trailer', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const id = ids[0] as ObjectId;
+          const sut = resolveObject;
+          const registry = createPackRegistry(ctx);
+          // Compute expected slice length from the real offset table before the act.
+          const packs = await registry.all();
+          const table = await packs[0]!.offsetTable();
+          const entryOffset = table.sortedOffsets[0]!;
+          const expectedSliceLength = table.trailerStart - entryOffset;
+          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+
+          // Act
+          const result = await sut(ctx, registry, id, false);
+
+          // Assert — exact slice length = trailerStart - entryOffset
+          expect(result.type).toBe('blob');
+          expect(readSliceSpy.mock.calls.length).toBe(1);
+          const [, , sliceLength] = readSliceSpy.mock.calls[0]!;
+          expect(sliceLength).toBe(expectedSliceLength);
+        });
+      });
+    });
+
+    describe('Given a corrupt table where a non-last entry next offset equals packFileSize exactly', () => {
+      describe('When resolveObject is called', () => {
+        it('Then the entry is still read — the guard rejects only strictly-greater next offsets', async () => {
+          // Arrange — a real single-entry pack, but a stubbed table where the entry
+          // is non-last and its next offset === packFileSize (a corrupt .idx whose
+          // extra offset sits exactly at the entry's end). The `>` guard must let
+          // `nextOffset === packFileSize` through, so the read proceeds and recovers
+          // the blob from [entryOffset, nextOffset).
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('next-offset-equals-pack-file-size');
+          const ids = await writeSyntheticPack(ctx, 'eq-boundary', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const id = ids[0] as ObjectId;
+          const realPack = (await createPackRegistry(ctx).all())[0]!;
+          const realTable = await realPack.offsetTable();
+          const entryOffset = realTable.sortedOffsets[0]!;
+          const boundary = realTable.trailerStart; // the entry's real end
+          const pack: RegisteredPack = {
+            ...realPack,
+            offsetTable: async () => ({
+              sortedOffsets: [entryOffset, boundary],
+              packFileSize: boundary,
+              trailerStart: boundary - ctx.hashConfig.digestLength,
+            }),
+          };
+          const registry: PackRegistry = {
+            all: async () => [pack],
+            refresh: () => undefined,
+            lookup: async (lookupId) =>
+              lookupId === id ? { pack, offset: entryOffset } : undefined,
+          };
+          const sut = resolveObject;
+
+          // Act
+          const result = await sut(ctx, registry, id, false);
+
+          // Assert — read proceeds at the === boundary; blob recovered intact
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(content);
+        });
+      });
+    });
+
+    describe('Given a pack where nextOffset equals offset (corrupt index: slice length ≤ 0)', () => {
+      describe('When resolveObject is called', () => {
+        it('Then throws INVALID_PACK_INDEX with slice length reason', async () => {
+          // Arrange — manufacture a stub registry where offsetTable returns
+          // sortedOffsets=[offset] and packFileSize=offset (so trailerStart=offset-20,
+          // which means nextOffsetForEntry returns trailerStart = offset-20 < offset →
+          // sliceLength ≤ 0 guard fires). Actually: for a single entry, nextOffset
+          // = trailerStart = packFileSize - 20. We set packFileSize = offset + 5 so
+          // trailerStart = offset + 5 - 20 = offset - 15 < offset → sliceLength ≤ 0.
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('corrupt-slice');
+          const deflated = await ctx.compressor.deflate(content);
+          const entry = new Uint8Array([
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, content.length),
+            ...deflated,
+          ]);
+          const packPath = await writeRawSingleEntryPack(ctx, 'corrupt-slice', entry);
+          const entryOffset = 12; // pack header is 12 bytes
+          const targetId = 'c'.repeat(40) as ObjectId;
+          // Use a stub registry that returns a table with packFileSize=entryOffset+5
+          // so trailerStart = entryOffset + 5 - 20 = entryOffset - 15 → next < offset.
+          const filler = await buildSyntheticPack(ctx, [
+            { kind: 'base', type: 'blob', content: ENC.encode('filler') },
+          ]);
+          const fillerIndex = parsePackIndex(filler.idxBytes);
+          const pack: RegisteredPack = {
+            name: 'stub-corrupt-slice',
+            index: fillerIndex,
+            packPath,
+            idxPath: `${packPath}.idx`,
+            offsetTable: async () => ({
+              sortedOffsets: [entryOffset],
+              packFileSize: entryOffset + 5,
+              trailerStart: entryOffset + 5 - 20, // = entryOffset - 15 → next is trailerStart < entryOffset
+            }),
+          };
+          const registry: PackRegistry = {
+            all: async () => [],
+            refresh: () => undefined,
+            lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+          };
+          const sut = resolveObject;
+
+          // Act / Assert
+          try {
+            await sut(ctx, registry, targetId, false);
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_PACK_INDEX');
+            if (data.code !== 'INVALID_PACK_INDEX') {
+              expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+            }
+            expect(data.reason).toContain('slice length');
+          }
+        });
+      });
+    });
+
+    describe('Given a pack where nextOffset exactly equals offset (corrupt index: slice length === 0)', () => {
+      describe('When resolveObject is called', () => {
+        it('Then throws INVALID_PACK_INDEX with slice length reason', async () => {
+          // Arrange — single-entry pack where packFileSize = entryOffset + digestLength (20),
+          // so trailerStart = packFileSize - 20 = entryOffset. For a single entry,
+          // nextOffsetForEntry returns trailerStart = entryOffset, giving sliceLength = 0.
+          // This exercises the exact zero boundary of the `sliceLength <= 0` guard,
+          // killing the `< 0` mutant that would pass sliceLength=0 through.
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('zero-slice');
+          const deflated = await ctx.compressor.deflate(content);
+          const entry = new Uint8Array([
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, content.length),
+            ...deflated,
+          ]);
+          const packPath = await writeRawSingleEntryPack(ctx, 'zero-slice', entry);
+          const entryOffset = 12; // pack header is 12 bytes
+          const digestLength = 20; // SHA-1
+          const targetId = 'z'.repeat(40) as ObjectId;
+          // packFileSize = entryOffset + digestLength → trailerStart = entryOffset → sliceLength = 0
+          const filler = await buildSyntheticPack(ctx, [
+            { kind: 'base', type: 'blob', content: ENC.encode('filler') },
+          ]);
+          const fillerIndex = parsePackIndex(filler.idxBytes);
+          const pack: RegisteredPack = {
+            name: 'stub-zero-slice',
+            index: fillerIndex,
+            packPath,
+            idxPath: `${packPath}.idx`,
+            offsetTable: async () => ({
+              sortedOffsets: [entryOffset],
+              packFileSize: entryOffset + digestLength,
+              trailerStart: entryOffset, // = entryOffset + digestLength - digestLength
+            }),
+          };
+          const registry: PackRegistry = {
+            all: async () => [],
+            refresh: () => undefined,
+            lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+          };
+          const sut = resolveObject;
+
+          // Act / Assert
+          try {
+            await sut(ctx, registry, targetId, false);
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_PACK_INDEX');
+            if (data.code !== 'INVALID_PACK_INDEX') {
+              expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+            }
+            expect(data.reason).toContain('slice length');
+          }
+        });
+      });
+    });
+
+    describe('Given a pack where nextOffset > packFileSize (corrupt index)', () => {
+      describe('When resolveObject is called', () => {
+        it('Then throws INVALID_PACK_INDEX with next offset exceeds reason', async () => {
+          // Arrange — manufacture a stub registry where offsetTable returns
+          // sortedOffsets=[offset, offset+1000] and packFileSize=offset+500, so
+          // nextOffsetForEntry returns offset+1000 > packFileSize=offset+500.
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('corrupt-next-exceeds');
+          const deflated = await ctx.compressor.deflate(content);
+          const entry = new Uint8Array([
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, content.length),
+            ...deflated,
+          ]);
+          const packPath = await writeRawSingleEntryPack(ctx, 'corrupt-next-exceeds', entry);
+          const entryOffset = 12;
+          const targetId = 'e'.repeat(40) as ObjectId;
+          const filler = await buildSyntheticPack(ctx, [
+            { kind: 'base', type: 'blob', content: ENC.encode('filler') },
+          ]);
+          const fillerIndex = parsePackIndex(filler.idxBytes);
+          const pack: RegisteredPack = {
+            name: 'stub-corrupt-exceeds',
+            index: fillerIndex,
+            packPath,
+            idxPath: `${packPath}.idx`,
+            offsetTable: async () => ({
+              sortedOffsets: [entryOffset, entryOffset + 1000],
+              packFileSize: entryOffset + 500,
+              trailerStart: entryOffset + 500 - 20,
+            }),
+          };
+          const registry: PackRegistry = {
+            all: async () => [],
+            refresh: () => undefined,
+            lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+          };
+          const sut = resolveObject;
+
+          // Act / Assert
+          try {
+            await sut(ctx, registry, targetId, false);
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_PACK_INDEX');
+            if (data.code !== 'INVALID_PACK_INDEX') {
+              expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+            }
+            expect(data.reason).toContain('next offset exceeds pack file size');
+          }
+        });
+      });
+    });
+
+    describe('Given a 2-entry pack with an OFS_DELTA entry', () => {
+      describe('When resolveObject is called on the delta entry', () => {
+        it('Then each chain step reads its own exact slice and the delta reconstructs correctly', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const baseContent = ENC.encode('ofs-exact-base');
+          const targetContent = ENC.encode('ofs-exact-target-different');
+          const ids = await writeSyntheticPack(ctx, 'ofs-exact-slice', [
+            { kind: 'base', type: 'blob', content: baseContent },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent },
+          ]);
+          const deltaId = ids[1] as ObjectId;
+          const sut = resolveObject;
+          const registry = createPackRegistry(ctx);
+          // Compute expected slice lengths from the real offset table before resolveObject runs.
+          const packs = await registry.all();
+          const table = await packs[0]!.offsetTable();
+          const [off0, off1] = table.sortedOffsets as [number, number];
+          // delta entry (off1) is resolved first, then base (off0).
+          const expectedDeltaSlice = table.trailerStart - off1!;
+          const expectedBaseSlice = off1! - off0!;
+          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+          const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
+
+          // Act
+          const result = await sut(ctx, registry, deltaId, false);
+
+          // Assert — correct content reconstruction
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(targetContent);
+          // streamInflate must never be called
+          expect(streamInflateSpy.mock.calls.length).toBe(0);
+          // Each of the 2 chain steps called readSlice with exact lengths.
+          expect(readSliceSpy.mock.calls.length).toBe(2);
+          // First call: delta entry (tip of chain, resolved first)
+          expect(readSliceSpy.mock.calls[0]![2]).toBe(expectedDeltaSlice);
+          // Second call: base entry
+          expect(readSliceSpy.mock.calls[1]![2]).toBe(expectedBaseSlice);
+        });
+      });
+    });
+  });
+
   describe('Given a REF_DELTA whose cached base bytes lack a NUL but contain a valid-looking type prefix', () => {
     describe('When resolveObject is called', () => {
       it('Then splitHeader throws OBJECT_NOT_FOUND (not a downstream delta error)', async () => {
@@ -885,12 +1243,12 @@ describe('object-resolver', () => {
 
     describe('Given an OFS_DELTA whose base distance lands exactly on offset 0', () => {
       describe('When resolveObject runs', () => {
-        it('Then the chain walks into the pack magic and throws INVALID_PACK_ENTRY (kills the nextOffset<0 equality operator)', async () => {
+        it('Then the chain proceeds past the negative guard and throws INVALID_PACK_INDEX (kills the nextOffset<0 equality operator)', async () => {
           // Arrange — a single OFS_DELTA at offset 12 with base distance 12, so
           // `nextOffset = 12 - 12 = 0`. With `nextOffset < 0` the guard is false
-          // → the walker continues to offset 0 and parses the `PACK` magic as an
-          // entry header → reserved type 5 → INVALID_PACK_ENTRY. The `<=` mutant
-          // makes `0 <= 0` true → it throws OBJECT_NOT_FOUND instead.
+          // → the walker continues with offset 0 → nextOffsetForEntry cannot find 0
+          // in sortedOffsets → INVALID_PACK_INDEX. The `<=` mutant makes `0 <= 0`
+          // true → throws OBJECT_NOT_FOUND before reaching nextOffsetForEntry.
           const ctx = await buildSeededContext();
           const deltaBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
           const entry = new Uint8Array([
@@ -902,16 +1260,17 @@ describe('object-resolver', () => {
           const targetId = 'a'.repeat(40) as ObjectId;
           const registry = await stubRegistry(ctx, [{ id: targetId, packPath, offset: 12 }]);
 
-          // Act / Assert — current code reaches offset 0 and rejects the magic.
+          // Act / Assert — walker does not short-circuit at 0; nextOffsetForEntry
+          // rejects offset 0 as absent from the sorted index.
           try {
             await resolveObject(ctx, registry, targetId, false);
             // Assert
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
-            expect(data.code).toBe('INVALID_PACK_ENTRY');
-            if (data.code !== 'INVALID_PACK_ENTRY') {
-              expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+            expect(data.code).toBe('INVALID_PACK_INDEX');
+            if (data.code !== 'INVALID_PACK_INDEX') {
+              expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
             }
           }
         });

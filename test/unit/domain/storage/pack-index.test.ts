@@ -3,11 +3,17 @@ import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
+  entryOffsets,
   findByPrefix,
   lookupPackIndex,
   parsePackIndex,
 } from '../../../../src/domain/storage/pack-index.js';
 import { arbObjectId, buildTestIndex, type TestIndexEntry } from './arbitraries.js';
+
+// Property test skipped: entryOffsets is a thin loop whose only invariant is
+// result.length === index.objectCount. A property oracle would tautologically
+// re-implement the SUT loop (iterate readOffset for all i), making it a
+// tautology rather than an independent property proof.
 
 function makeEntry(id: string, offset: number, crc32 = 0): TestIndexEntry {
   return { id: id as ObjectId, offset, crc32 };
@@ -460,6 +466,69 @@ describe('pack-index', () => {
           // Assert
           expect(sut).toHaveLength(1);
           expect(sut[0]).toBe(fullId);
+        });
+      });
+    });
+  });
+
+  describe('entryOffsets', () => {
+    describe('Given a pack index with 0 entries', () => {
+      describe('When entryOffsets is called', () => {
+        it('Then returns an empty array', () => {
+          // Arrange
+          const index = parsePackIndex(buildTestIndex([]));
+          const sut = entryOffsets;
+
+          // Act
+          const result = sut(index);
+
+          // Assert
+          expect(result).toEqual([]);
+          expect(result.length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a pack index with 3 entries at known offsets', () => {
+      describe('When entryOffsets is called', () => {
+        it('Then returns all 3 offsets in index order', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            makeEntry('aa' + '00'.repeat(19), 100),
+            makeEntry('bb' + '00'.repeat(19), 200),
+            makeEntry('cc' + '00'.repeat(19), 300),
+          ];
+          const index = parsePackIndex(buildTestIndex(entries));
+          const sut = entryOffsets;
+
+          // Act
+          const result = sut(index);
+
+          // Assert
+          expect(result.length).toBe(3);
+          expect(result[0]).toBe(100);
+          expect(result[1]).toBe(200);
+          expect(result[2]).toBe(300);
+        });
+      });
+    });
+
+    describe('Given a pack index with 1 entry whose small-offset slot has MSB set (large-offset table)', () => {
+      describe('When entryOffsets is called', () => {
+        it('Then returns the large offset value correctly', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            { id: '00'.repeat(20) as ObjectId, offset: 0x200000000, crc32: 0 },
+          ];
+          const index = parsePackIndex(buildTestIndex(entries));
+          const sut = entryOffsets;
+
+          // Act
+          const result = sut(index);
+
+          // Assert
+          expect(result.length).toBe(1);
+          expect(result[0]).toBe(0x200000000);
         });
       });
     });
