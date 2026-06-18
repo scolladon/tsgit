@@ -5,7 +5,7 @@
 > ~140 KB random-bytes blob → `git gc` → `repo.primitives.readBlob(id)` throws
 > `DECOMPRESS_FAILED: unexpected end of file`. Boundary confirmed empirically at
 > 65,365 OK / 67,618 FAIL (matching the 65536-byte hard cap exactly).
-> Status: draft → self-reviewed ×3 → ready for ADR conversation
+> Status: draft → self-reviewed ×3 → ADRs 359/360/361 ratified → revised
 
 ## Context
 
@@ -19,11 +19,19 @@ remaining in the 64 KiB slice. The resolver never retries with a larger slice,
 so `streamInflate` receives a truncated mid-stream buffer and Node's zlib
 `createInflate` emits `error: unexpected end of file`.
 
-The pack-index format (v1 and v2) stores per-entry offsets and CRC32s but
-**not** compressed sizes. The next entry's offset is the only way to derive the
-compressed length of a given entry, and it requires a second index lookup whose
-complexity grows with multi-pack repos. Any fix must cope with the compressed
-length being unknown a priori.
+Two structural facts shape the fix (confirmed empirically; recorded in ADR-359):
+
+- The pack-index stores per-entry **offsets** but **not** compressed sizes. A
+  single entry's compressed length is not known a priori.
+- `InflateStreamResult.bytesConsumed` is consumed in exactly **one** call site:
+  `fetch-pack.ts:inflateAllEntries` (sequential walk of a received in-memory
+  pack during indexing). `object-resolver` reads a single object via the index,
+  which already knows the entry's offset, and **discards** `bytesConsumed`.
+  The whole-buffer `inflate(data)` is size-unbounded on **all three** adapters
+  (Node: `inflateSync` up to 2 GiB cap; browser/memory: `DecompressionStream`
+  over the whole buffer). Only `streamInflate` carries the O(n²)
+  progressive-prefix scan and its 64 KiB cap, and only because it must locate a
+  member boundary inside a buffer that has trailing bytes from later entries.
 
 ## Empirical root-cause confirmation
 
@@ -73,314 +81,351 @@ PASS  test/integration/probe-loose-blob.test.ts > Loose blob >64KB probe
 ```
 
 **Conclusion on the "both paths fail" backlog claim:** the loose path works
-correctly today. Only the packed path is broken. The 13k-entry-tree repro from
-the backlog likely triggers the packed path after `git gc` auto-packs (or the
-repo already had a packed large tree); the loose path is unaffected. This design
-scopes the fix to the packed path only.
+correctly today. Only the packed path is broken. This design scopes the fix
+to the packed path only.
 
-### Node `bytesWritten` contract — CONFIRMED CORRECT
+## Approach (decided: ADR-359)
 
-`NodeCompressor.streamInflate` uses `inflate.bytesWritten` to report
-`bytesConsumed`. The concern is whether this count is accurate when the input
-slice contains trailing bytes from subsequent pack entries (which any fix that
-provides a larger slice or the full pack tail would introduce).
+Replace the 64 KiB fixed-read guess with **exact-slice reads via the next-entry
+offset**. The fix is grounded in a structural property of the v2 pack-index
+format: it stores every entry's offset, and git packs have no inter-entry
+padding. The exact byte range for entry `i` is therefore `[offset_i, offset_{i+1})`,
+with the last (highest-offset) entry bounded by `packFileSize − digestLength`
+(the pack trailer start).
 
-Empirical probe with 143051-byte compressed payload followed by 1000 trailing
-bytes from a "next entry":
+`object-resolver` computes the exact range, reads exactly that slice, and
+inflates via the size-unbounded whole-buffer `ctx.compressor.inflate`. The
+64 KiB ceiling lifts on Node, browser, and memory alike with no inflate
+rewrite. `PACK_SLICE_HINT` is deleted (ADR-360) because no first-read hint
+remains.
 
-```
-compressed size:  143051 bytes
-bytesWritten:     143051   ← matches compressed size exactly
-trailing bytes:   1000     ← not counted
-```
+Three alternative strategies were weighed in the original decision candidates
+and are retained as historical record at the bottom of this document; all three
+are now superseded by the ADR decision and are not open for re-litigation.
 
-Node's `createInflate` stops at the zlib stream terminator. `bytesWritten` is
-the number of compressed-input bytes the decoder fully consumed as part of the
-single zlib member — trailing bytes are buffered internally but not reported as
-consumed. The `bytesConsumed` output from `streamInflate` is therefore correct
-regardless of how many trailing bytes follow the zlib stream in the slice, which
-is the load-bearing property for pack-chain offset arithmetic downstream.
+### Per-pack sorted-offset table
 
-The fix is safe: providing a larger slice (or reading to EOF) does not corrupt
-`bytesConsumed`.
+To derive `nextOffset` for any entry efficiently, each `RegisteredPack` lazily
+builds and caches a sorted array of all entry offsets. The array is constructed
+once per `RegisteredPack` lifetime using `readOffset(index, i)` for
+`i ∈ [0, objectCount)`, sorted numerically. For a given entry at `offset`, the
+next offset is `sortedOffsets[rank + 1]` where `rank` is the position of
+`offset` in the sorted array; the last entry has no successor and its bound is
+`packFileSize − digestLength`.
 
-## Approach
+The pack file size is obtained via `ctx.fs.stat(packPath).size` at table-build
+time and cached alongside the sorted offset array. This is one additional
+`stat` call per pack per process lifetime (the table is built on first use and
+held in the `RegisteredPack` cache that already outlives individual object
+lookups).
 
-`readEntryHeaderWithChunk` is the single call site that imposes the 64 KiB
-ceiling. The fix must ensure the slice it passes to `streamInflate` always
-contains the complete zlib member. Three candidate strategies are weighed in the
-decision-candidates section; the recommended strategy is **grow-and-retry** (a).
+### Large-offset (>2 GiB) packs
 
-### Recommended fix: grow-and-retry in `readEntryHeaderWithChunk`
+`readOffset(index, i)` already reads the large-offset table for entries whose
+small-offset slot has the MSB set (see `pack-index.ts:91`). The sorted-offset
+table build must call `readOffset(index, i)` for all `i` — it may not read the
+small-offset table directly — so large-offset entries are correctly included.
+The sorted array is of type `number[]`; JavaScript `number` represents integers
+exactly up to `2^53 − 1`, which covers all plausible pack file sizes. The
+existing `readOffset` already enforces this (`high > 0x1fffff` throws
+`invalidPackIndex`).
 
-`readEntryHeaderWithChunk` reads `PACK_SLICE_HINT` (= 65536) bytes as the
-initial slice. If `streamInflate` returns successfully, nothing changes — the
-common case (small objects, delta instructions) is unchanged. If the slice is
-too short, `streamInflate` throws `DECOMPRESS_FAILED`. On that signal,
-`readEntryHeaderWithChunk` re-reads from the same entry offset with a doubled
-length, retrying until the stream is complete or the file is exhausted.
+### Corrupt index edge cases
 
-The doubling bound is the pack file size less the entry offset. Because both the
-node and memory `readSlice` implementations already clamp the returned slice to
-the actual file length (`min(offset + length, fileSize)`), the retry loop
-naturally terminates when it reaches EOF: the slice stops growing even though
-the requested length keeps doubling. The `DECOMPRESS_FAILED` on truncation is
-thus the loop's termination signal — it retries only when the underlying cause
-was truncation, not a genuinely corrupt stream.
+If the sorted offset table contains a `nextOffset <= offset` (e.g., a
+duplicate or out-of-order entry in a corrupt index), the read length would be
+zero or negative. The resolver must detect this and throw
+`invalidPackIndex('next-offset ≤ current offset: corrupt index')` rather than
+issuing a zero-byte read or looping. Similarly, if `nextOffset > packFileSize`,
+the slice request would exceed the file; the resolver throws the same error.
 
-```typescript
-// object-resolver.ts — readEntryHeaderWithChunk (revised)
-async function readEntryHeaderWithChunk(
-  ctx: Context,
-  hit: PackLookupHit,
-): Promise<{ header: PackEntryHeader; chunk: Uint8Array; headerEndInChunk: number }> {
-  let sliceLength = PACK_SLICE_HINT;
-  for (;;) {
-    const chunk = await ctx.fs.readSlice(hit.pack.packPath, hit.offset, sliceLength);
-    const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
-    try {
-      return { header, chunk, headerEndInChunk: header.dataOffset };
-    } catch {
-      // Not reachable here — parsePackEntryHeader throws synchronously.
-      // The grow-and-retry loop is driven by the caller (collectDeltaChain)
-      // catching DECOMPRESS_FAILED from streamInflate, not here.
-    }
-    // If the chunk is already at EOF (chunk.length < sliceLength), there
-    // is no more data to give — re-throw from the caller's side.
-    if (chunk.length < sliceLength) break;
-    sliceLength *= 2;
-  }
-}
-```
+### Single-entry pack
 
-Wait — `parsePackEntryHeader` itself does not throw on a truncated slice; it
-only throws if bytes required for the header are missing. The growth signal is
-therefore not in `readEntryHeaderWithChunk` itself but in the
-`streamInflate`calls in `collectDeltaChain`. The cleaner factoring: separate
-the header parse from the zlib stream read. The function returns the header and
-the chunk; the caller (`collectDeltaChain`) calls `streamInflate(chunk, ...)`;
-if that throws `DECOMPRESS_FAILED` and the chunk was smaller than the file (not
-yet at EOF), the caller retries with a larger chunk.
+When `objectCount === 1`, the sorted array has one element, the entry is the
+last, and its bound is `packFileSize − digestLength`. This is the normal
+last-entry path.
 
-The revised shape passes the grow-and-retry responsibility to
-`collectDeltaChain`:
+### OFS_DELTA and REF_DELTA chain entries
 
-```typescript
-// object-resolver.ts — readEntryHeaderWithChunk (unchanged signature, revised body)
-async function readEntryHeaderWithChunk(
-  ctx: Context,
-  hit: PackLookupHit,
-  sliceLength: number,                         // starts at PACK_SLICE_HINT; callers pass it
-): Promise<{ header: PackEntryHeader; chunk: Uint8Array; headerEndInChunk: number }> {
-  const chunk = await ctx.fs.readSlice(hit.pack.packPath, hit.offset, sliceLength);
-  const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
-  return { header, chunk, headerEndInChunk: header.dataOffset };
-}
-```
+Each entry in the delta chain — whether a base entry (BLOB, COMMIT, TREE, TAG)
+or a delta entry (OFS_DELTA, REF_DELTA) — is itself a pack entry with its own
+offset and its own exact slice. `collectDeltaChain` calls
+`readEntryHeaderWithChunk` at every step of the chain; the function now derives
+`[offset, nextOffset)` at each call. OFS_DELTA entries step `currentHit` by
+`currentHit.offset − header.baseDistance`; REF_DELTA entries resolve the base
+via `resolveBaseForRefDelta`. Both paths arrive at a new `currentHit` before
+the next loop iteration, so each iteration gets its own exact slice.
 
-`collectDeltaChain` retries on `DECOMPRESS_FAILED` with a doubled length:
-
-```typescript
-for (;;) {          // outer retry loop
-  let sliceLength = PACK_SLICE_HINT;
-  for (;;) {        // inner entry loop
-    const { header, chunk, headerEndInChunk } =
-      await readEntryHeaderWithChunk(ctx, currentHit, sliceLength);
-    if (isBase(header)) {
-      enforcePackBaseCap(targetId, header.size, maxBytes);
-      let inflated: InflateStreamResult;
-      try {
-        inflated = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
-      } catch (err) {
-        if (isDecompressFailed(err) && chunk.length >= sliceLength) {
-          sliceLength *= 2;
-          continue;  // retry with doubled slice
-        }
-        throw;
-      }
-      return { deltas, baseContent: inflated.output, baseType: header.type };
-    }
-    // ... delta path, same pattern ...
-  }
-}
-```
-
-Where `isDecompressFailed` checks `err.data?.code === 'DECOMPRESS_FAILED'`.
-
-The loop terminates because:
-1. On success: `streamInflate` returns without throwing.
-2. On true truncation: `chunk.length < sliceLength` means the adapter returned
-   fewer bytes than requested (EOF reached) — re-throw rather than loop.
-3. On corrupt data: `streamInflate` throws `DECOMPRESS_FAILED` but the chunk IS
-   at `sliceLength` — yet the next doubled slice will also fail (the data is
-   corrupt, not truncated). To avoid infinite growth on corrupt packs, a
-   maximum retry count (e.g. 8 doublings = 8 MiB slice cap) is the safety
-   valve; any object legitimately needing >8 MiB compressed is already
-   exceptional.
-
-**Maximum slice:** `PACK_SLICE_HINT << MAX_DOUBLINGS = 65536 << 8 = 16 MiB`.
-Beyond that, the loop re-throws the last `DECOMPRESS_FAILED`. Objects whose
-compressed representation exceeds 16 MiB are pathological; git itself imposes
-no such cap but realistic objects (even binaries) stay under this. If needed,
-the constant can be raised.
-
-**Memory note:** the grow-and-retry approach only buffers one slice at a time.
-The slice is released between retries. The peak allocation per entry read is the
-final sufficient slice (which equals the compressed size plus the entry offset
-within the slice — bounded by the existing `MAX_INFLATED_OBJECT_BYTES = 2 GiB`
-pre-inflate cap on the inflated output, not the slice itself).
-
-### `PACK_SLICE_HINT` — keep as first-read hint
-
-`PACK_SLICE_HINT = 1 << 16` is retained as the first-attempt slice size. It is
-the right starting point: the header is at most ~40 bytes (a varint + 32-byte
-SHA-256 digest for `REF_DELTA`); small objects (the majority of pack entries)
-fit; only large objects trigger retries. Removing it entirely (i.e., starting at
-the full file size) saves at most one read for large objects but wastes memory
-for every small object.
-
-### `fetch-pack.ts` — no change required
+### `fetch-pack.ts` — unchanged
 
 `inflateAllEntries` passes the entire in-memory `packBytes` buffer to
 `streamInflate`. It never uses `readSlice`. No truncation is possible. No
-change.
+change. `streamInflate` and its `bytesConsumed` contract remain intact on the
+`fetch-pack` path.
 
-### Cross-adapter parity
+### Cross-adapter notes (reads require no adapter changes)
 
-The `bytesConsumed` contract (`src/ports/compressor.ts`) is:
+`ctx.compressor.inflate(data)` is size-unbounded on all three adapters:
 
-> The number of input bytes consumed, counted from `offset`.
+- **Node:** `inflateSync(data, { maxOutputLength: 2 GiB })` — confirmed in
+  `NodeCompressor.inflate`.
+- **Browser:** `BrowserCompressor.inflate` pipes through `DecompressionStream`
+  over the full buffer — no size cap.
+- **Memory:** `MemoryCompressor.inflate` pipes through `DecompressionStream`
+  via `runTransform` — no size cap.
 
-`NodeCompressor.streamInflate` already honours this (empirically confirmed
-above). The grow-and-retry fix is entirely in `object-resolver.ts`, which is
-adapter-agnostic. Neither `BrowserCompressor` nor `MemoryCompressor` is touched
-by this change.
+`streamInflate` retains its 64 KiB cap on browser and memory adapters
+(`BROWSER_STREAM_INFLATE_MAX_INPUT`, `MEMORY_STREAM_INFLATE_MAX_INPUT`); this
+cap is no longer exercised by the `object-resolver` read path. It remains in
+force on the `fetch-pack` path (which keeps `streamInflate`).
 
-However, both the browser and memory adapters have an existing 64 KiB input cap
-on `streamInflate` (`BROWSER_STREAM_INFLATE_MAX_INPUT = MEMORY_STREAM_INFLATE_MAX_INPUT = 64 * 1024`).
-This is an intentional guard: their O(n²) progressive-prefix scan is impractical
-beyond small test-sized packs. The fix does not change their contract — the
-object-resolver retry loop would hit their cap, get a `DECOMPRESS_FAILED`, and
-interpret it as "corrupt stream" rather than "truncated slice" on the final
-retry (when `chunk.length === sliceLength` but both adapters refused to process
-the large input). To prevent misinterpretation:
+### Open decision: fetch-pack large-entry inflate (deferred to review time)
 
-- The retry-termination condition checks `chunk.length < sliceLength` (physical
-  EOF), not the error type. An adapter cap error fires when `chunk.length ===
-  sliceLength` (the adapter received a full slice but refused it). The loop
-  would double again, and the next `readSlice` would return the same capped
-  result, loop forever.
-- **Resolution:** the retry grows until either (a) success or (b) physical EOF
-  (`chunk.length < sliceLength`). An adapter that refuses a large input but is
-  not at EOF needs to be distinguished. The correct guard: track whether the
-  most-recent read actually returned a *new, larger* slice vs the previous one.
-  If `chunk.length === previous chunk.length` (no growth), re-throw — the
-  adapter is not able to provide more.
+`fetch-pack` (browser clone / indexing of a received pack containing a
+>64 KiB-compressed entry) still uses `streamInflate` + `bytesConsumed` and
+keeps the browser/memory 64 KiB cap. Lifting **that** requires the Option-4
+streaming decoder — a zero-dependency pure-JS streaming zlib decoder that
+reports consumed bytes accurately. This is a large, perf-critical, byte-exact
+subproject, far beyond a targeted read fix.
 
-In practice: `MemoryCompressor.streamInflate` is used only in unit tests with
-small synthetic packs. The unit tests for the grow-and-retry path use a spy over
-`NodeCompressor.streamInflate` (or a fake `InflateStreamResult`), not
-`MemoryCompressor`, so the adapter cap is never exercised in the retry context.
-The browser and memory adapter caps remain as explicitly documented "production
-= Node" guards.
-
-**Flagged warning for user decision (scope):** The 64 KiB cap in
-`MemoryCompressor` and `BrowserCompressor` is documented as intentional (O(n²)
-progressive-prefix scan). For the browser OPFS use case to ever support large
-objects in pack files, `BrowserCompressor.streamInflate` would need a different
-implementation (e.g., using `DecompressionStream` in a truly streaming fashion
-once the platform supports consumed-byte reporting). This is a separate,
-larger change; the user must decide whether it belongs in this PR or is a
-flagged follow-up. It does NOT block the fix: the browser adapter explicitly
-documents that it does not support production-sized packs. Raising this now so
-the user can decide; this design marks it as **in scope only if the user
-confirms** (i.e., it is not silently deferred — see scope directive).
+**This is not silently deferred.** At review time, once the Option-3 diff size
+is known, the decision is: **fold in the streaming decoder** (same PR) vs.
+**emit a loud written call-out** in the design and PR description that the
+fetch-pack path remains capped. No silent follow-up ticket.
 
 ## Slices
 
-### Slice 1 — `readEntryHeaderWithChunk` grow-and-retry
+### Slice 1 — domain helper: `entryOffsets` on `pack-index.ts`
+
+**Why a domain helper:** `readOffset(index, i)` in `pack-index.ts` is
+module-internal (not exported, line 91). The application layer needs to build
+the sorted offset table from all `objectCount` offsets. The cleanest seam is
+an exported domain function that returns all offsets in index order — the
+application layer sorts them once and caches the result. Exporting `readOffset`
+directly would expose a raw per-index-position accessor whose callers must know
+the large-offset contract; wrapping it in `entryOffsets` hides that complexity
+and keeps the port seam clean.
+
+**Files:**
+- `src/domain/storage/pack-index.ts`
+
+**Current state:**
+- `readOffset(index, i)` — module-internal, line 91; handles the large-offset
+  table (MSB check, 8-byte read). Returns a JavaScript `number`.
+- `PackIndex.objectCount` — exported on the interface, line 13.
+- `lookupPackIndex(index, id)` — the only current exported function that calls
+  `readOffset`.
+
+**Change:**
+Add a new exported function:
+```typescript
+export function entryOffsets(index: PackIndex): ReadonlyArray<number>
+```
+It iterates `i ∈ [0, index.objectCount)`, calls `readOffset(index, i)` for
+each, and returns the results as a plain array. The sorting and the
+`packFileSize − digestLength` boundary are application-layer concerns, not
+domain concerns.
+
+**Edge cases:**
+- `objectCount === 0`: returns an empty array (valid; an empty pack has no
+  entries to read).
+- Large-offset entries: covered by the existing `readOffset` implementation.
+
+### Slice 2 — application helper: per-pack offset table in `pack-registry.ts`
+
+**Files:**
+- `src/application/primitives/pack-registry.ts`
+
+**Current state:**
+- `RegisteredPack` interface: `{ name, index, packPath, idxPath }` (lines 12–17)
+- `PackLookupHit`: `{ pack: RegisteredPack, offset: number }` (lines 19–22)
+- `createPackRegistry(ctx)`: builds and caches `RegisteredPack[]` (lines 63–99)
+
+**Change:**
+Extend `RegisteredPack` with a lazily-built, cached offset table:
+
+```typescript
+export interface RegisteredPack {
+  readonly name: string;
+  readonly index: PackIndex;
+  readonly packPath: string;
+  readonly idxPath: string;
+  /** Lazily-built, cached sorted entry offsets + trailer bound for this pack. */
+  readonly offsetTable: () => Promise<PackOffsetTable>;
+}
+
+export interface PackOffsetTable {
+  /** Entry offsets sorted ascending. */
+  readonly sortedOffsets: ReadonlyArray<number>;
+  /** Pack file size (from stat). */
+  readonly packFileSize: number;
+  /** Trailer start = packFileSize − digestLength. */
+  readonly trailerStart: number;
+}
+```
+
+`offsetTable()` is a lazy initializer: on first call it runs
+`ctx.fs.stat(pack.packPath)` to get `packFileSize`, calls `entryOffsets(pack.index)`
+to get the raw offsets, sorts them numerically, and caches the result. Subsequent
+calls return the cached value directly (no `stat` or sort again).
+
+**Why lazy:** the pack may be looked up but an object lookup might miss it (the
+target id is in a different pack). Building the offset table eagerly for every
+pack on registry scan would pay the `stat` + `entryOffsets` cost even for packs
+that are never used for a read in the session.
+
+**Lookup helper to add:**
+```typescript
+export function nextOffsetForEntry(
+  table: PackOffsetTable,
+  offset: number,
+  digestLength: number,
+): number
+```
+Returns the next entry's offset (lower bound in `sortedOffsets` after `offset`),
+or `table.trailerStart` for the last entry. Throws `invalidPackIndex` if
+`offset` is not in `sortedOffsets` (corrupt or inconsistent index).
+
+**Fixtures to extend:**
+- `test/unit/application/primitives/pack-fixture.ts` — add a helper to write a
+  two-entry synthetic pack so unit tests of the offset table can verify the
+  non-last-entry path.
+
+### Slice 3 — `object-resolver.ts`: exact-slice read, delete `PACK_SLICE_HINT`
 
 **Files:**
 - `src/application/primitives/object-resolver.ts`
 
-**Current signatures / constants:**
-- `const PACK_SLICE_HINT = 1 << 16;` (line 28)
-- `async function readEntryHeaderWithChunk(ctx, hit)` → returns `{ header, chunk, headerEndInChunk }` (line 310–322)
-- `collectDeltaChain(ctx, registry, hit, targetId, maxBytes)` — the consumer
-  calling `readEntryHeaderWithChunk` at lines 197, then `streamInflate` at lines
-  200 and 211.
+**Current state:**
+- `const PACK_SLICE_HINT = 1 << 16;` — line 28, to be deleted (ADR-360)
+- `readEntryHeaderWithChunk(ctx, hit)` — lines 310–322; currently reads
+  `PACK_SLICE_HINT` bytes, parses the header, returns `{ header, chunk, headerEndInChunk }`
+- `collectDeltaChain(ctx, registry, hit, targetId, maxBytes)` — lines 184–235;
+  calls `readEntryHeaderWithChunk` at line 197, then calls `streamInflate` at
+  lines 200 and 211 — these two `streamInflate` calls switch to `inflate`
 
 **Changes:**
-1. Add `const MAX_SLICE_DOUBLINGS = 8;` (giving a max slice of 16 MiB).
-2. Extend `readEntryHeaderWithChunk` to accept `sliceLength: number`.
-3. In `collectDeltaChain`, wrap the `readEntryHeaderWithChunk` +
-   `streamInflate` calls in a grow-and-retry loop as described above.
 
-**Helper to add:**
+1. Delete `PACK_SLICE_HINT` (line 28).
+
+2. Change `readEntryHeaderWithChunk` signature to accept the exact slice:
 ```typescript
-function isDecompressFailed(err: unknown): boolean {
-  return (
-    err instanceof TsgitError &&
-    (err.data as { code?: string }).code === 'DECOMPRESS_FAILED'
-  );
-}
+async function readEntryHeaderWithChunk(
+  ctx: Context,
+  hit: PackLookupHit,
+  nextOffset: number,           // exclusive end of this entry's exact byte range
+): Promise<{ header: PackEntryHeader; chunk: Uint8Array; headerEndInChunk: number }>
+```
+Inside, derive `sliceLength = nextOffset - hit.offset` (throw `invalidPackIndex`
+if `sliceLength <= 0`), then `readSlice(hit.pack.packPath, hit.offset, sliceLength)`.
+Parse the header. Return `{ header, chunk, headerEndInChunk: header.dataOffset }`.
+
+3. In `collectDeltaChain`, before calling `readEntryHeaderWithChunk`, resolve
+`nextOffset` from the pack's offset table:
+```typescript
+const table = await currentHit.pack.offsetTable();
+const nextOffset = nextOffsetForEntry(table, currentHit.offset, ctx.hashConfig.digestLength);
 ```
 
-**Fixtures to extend:**
-- `test/unit/application/primitives/pack-fixture.ts` — no change needed;
-  `buildSyntheticPack` already supports base + delta entries.
+4. Replace both `ctx.compressor.streamInflate(chunk, headerEndInChunk)` calls
+(lines 200 and 211) with `ctx.compressor.inflate(chunk.subarray(headerEndInChunk))`.
+`streamInflate` is no longer needed on this path; `inflate` is size-unbounded
+on all adapters.
 
-### Slice 2 — unit tests in `object-resolver.test.ts`
+5. Update the return shape from the base branch accordingly:
+```typescript
+// was:   const inflated = await ctx.compressor.streamInflate(chunk, headerEndInChunk);
+//        return { ..., baseContent: inflated.output, ... }
+// now:
+const baseContent = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
+return { deltas, baseContent, baseType: header.type };
+```
+
+**Corrupt-index guard already addressed in Slice 2** (`nextOffsetForEntry` throws
+`invalidPackIndex` for an offset not in the sorted table or a next-offset beyond
+the file). The resolver propagates this error without catching it.
+
+### Slice 4 — unit tests
 
 **Files:**
 - `test/unit/application/primitives/object-resolver.test.ts`
+- `test/unit/domain/storage/pack-index.test.ts` (extend for `entryOffsets`)
+- `test/unit/application/primitives/pack-registry.test.ts` (extend for
+  `offsetTable` + `nextOffsetForEntry`)
 
 **Context:**
-- `buildSeededContext` is in `test/unit/application/primitives/fixtures.ts`.
-- `buildSyntheticPack`, `writeSyntheticPack`, `EntrySpec` are in
-  `test/unit/application/primitives/pack-fixture.ts`.
-- `stubRegistry` is defined locally in `object-resolver.test.ts` (lines 57–82).
-- The memory compressor's 64 KiB cap means unit tests must use small synthetic
-  blobs for the normal path and a spy/fake for the grow-and-retry path.
+- `buildSeededContext` — `test/unit/application/primitives/fixtures.ts`
+- `buildSyntheticPack`, `writeSyntheticPack`, `EntrySpec` —
+  `test/unit/application/primitives/pack-fixture.ts`
+- `stubRegistry` — defined locally in `object-resolver.test.ts` (lines 57–82)
 
-**New test cases (GWT/AAA/sut convention):**
-
+**New test cases for `pack-index.test.ts` (GWT/AAA/sut):**
 ```
-Given a packed base blob whose compressed stream spans exactly PACK_SLICE_HINT bytes
-  When resolveObject is called
-  Then returns the blob (boundary at the slice edge — no retry needed)
+Given a pack index with N entries
+  When entryOffsets is called
+  Then returns N offsets matching readOffset(index, i) for all i
 
-Given a packed base blob whose compressed stream exceeds PACK_SLICE_HINT by 1 byte
-  When resolveObject is called
-  Then retries once with a doubled slice and returns the blob
-
-Given a packed OFS-delta whose instructions exceed PACK_SLICE_HINT bytes
-  When resolveObject is called
-  Then retries and resolves the delta chain correctly
-
-Given a packed entry whose compressed stream exceeds the maximum retry cap (MAX_SLICE_DOUBLINGS doublings)
-  When resolveObject is called
-  Then throws DECOMPRESS_FAILED (corrupt or pathologically large stream)
-
-Given a packed entry where the streamInflate spy confirms the first call receives PACK_SLICE_HINT bytes
-  and the second call receives 2 * PACK_SLICE_HINT bytes
-  When resolveObject resolves after one retry
-  Then the spy call sequence proves exactly one retry occurred
+Given a pack index with one entry using the large-offset table
+  When entryOffsets is called
+  Then returns the large offset correctly
 ```
 
-The "exceeds slice by 1 byte" test requires a spy over `ctx.compressor.streamInflate`
-that (a) returns `DECOMPRESS_FAILED` when called with a slice shorter than the
-full compressed length, and (b) returns the real result when called with a
-sufficient slice. This is testable via `MemoryCompressor` or a stub that records
-call lengths.
+**New test cases for `pack-registry.test.ts`:**
+```
+Given a registered pack and its offset table
+  When nextOffsetForEntry is called with a non-last offset
+  Then returns the next entry's offset
 
-**Mutation-resistant patterns to apply:**
-- Assert `bytesConsumed` value in the spy (kills a mutant that mis-reports
-  the consumed count).
-- Use separate tests for base-entry retry and delta-entry retry (kills a mutant
-  that handles only one branch).
+Given a registered pack and its offset table
+  When nextOffsetForEntry is called with the last (highest) offset
+  Then returns trailerStart (packFileSize − digestLength)
 
-### Slice 3 — interop test: large packed blob + large packed tree
+Given a registered pack and its offset table
+  When nextOffsetForEntry is called with an offset not in the table
+  Then throws invalidPackIndex
+
+Given offsetTable() is called twice on the same RegisteredPack
+  When the stat+sort work is done
+  Then it is executed exactly once (lazy cache invariant)
+```
+
+**New test cases for `object-resolver.test.ts`:**
+```
+Given a packed base blob whose compressed stream fits in its exact slice
+  When resolveObject is called
+  Then inflate is called once with exactly chunk.subarray(headerEndInChunk)
+  Then the correct content is returned
+
+Given a packed base blob larger than 64 KiB
+  When resolveObject is called
+  Then inflate is called with the full compressed member
+  Then no streamInflate is called on this path
+
+Given a packed OFS-delta entry
+  When resolveObject is called
+  Then each entry in the chain reads its own exact slice
+  Then the delta chain resolves correctly
+
+Given a corrupt index where nextOffset ≤ offset
+  When resolveObject is called
+  Then throws invalidPackIndex (not an infinite loop or corrupt read)
+
+Given a single-entry pack
+  When resolveObject is called
+  Then the entry's slice is [offset, packFileSize − digestLength)
+```
+
+**Mutation-resistant patterns:**
+- Assert that `ctx.compressor.inflate` is called with the exact expected bytes
+  (kills mutants that pass the wrong subarray offset).
+- Assert that `ctx.compressor.streamInflate` is NOT called on the
+  `object-resolver` path after this change (kills mutants that fall back to
+  the old path).
+- Use try/catch + direct `.data` assertions for `invalidPackIndex` checks
+  (not bare `toThrow(ErrorClass)`).
+- Separate test for base-entry and each delta-type entry.
+
+### Slice 5 — interop test: large packed blob + two-blob next-offset fixture
 
 **Files:**
 - `test/integration/large-object-pack-interop.test.ts` (new file)
@@ -388,120 +433,208 @@ call lengths.
 **Shape:** twin-repo pattern from `interop-helpers.ts` (`makePeerPair`,
 `initBothRepos`, `runGit`, `GIT_AVAILABLE`).
 
-**Fixtures:**
+**Fixtures (ADR-361):**
 
 | # | Setup | Test | Asserts |
 |---|---|---|---|
 | **P1** | commit 140 KB random-bytes blob in peer repo; `git gc` to pack it; copy `.git/objects/pack/*` into ours | `readBlob(ours, blobId)` | `blob.content.length === 140000`; content byte-identical to peer's `git cat-file -p` output |
-| **P2** | same pack, read via `resolveObject` with `verifyHash: true` | succeeds (no `OBJECT_HASH_MISMATCH`) | hash-verified round-trip |
-| **P3** | pack with two adjacent large blobs (to exercise offset arithmetic post-retry: `bytesConsumed` must be exact or the second entry's read offset is wrong) | read both blobs | both content byte-identical to peer |
+| **P2** | same pack, read via `resolveObject` with `verifyHash: true` | succeeds | no `OBJECT_HASH_MISMATCH` |
+| **P3** | pack with two adjacent large blobs (140 KB + 80 KB, both >64 KiB compressed) to exercise the **next-offset boundary for a NON-last large entry**; the first blob's exact slice ends at the second blob's offset | read both blobs | both content byte-identical to `git cat-file -p` |
 | **P4** | loose 140 KB blob (same blob, no gc) | `readBlob(ours, blobId)` | succeeds (regression guard: loose path must not break) |
 
-**How to place the pack in `ours`:** use `git clone --local` or copy the pack
-files directly into `ours/.git/objects/pack/` and run `git fsck --strict` on
-`ours` to verify the pack is accepted before tsgit reads it.
+**P3 rationale (ADR-361):** a single-blob pack only reads the last entry
+(bounded by the pack trailer) and never exercises the `[offset, nextOffset)`
+path for a non-last entry. Two adjacent large entries are required to prove the
+sorted-offset table correctly identifies a non-last boundary and that the read
+slice ends exactly at the second entry's start. An off-by-one or mis-sorted
+table silently hands `inflate` a truncated or over-read member without raising
+an error.
 
-**Scrubbed-env discipline:** all `git` calls via `runGit` (SAFE_ENV).
+**How to place the pack in `ours`:** copy pack files directly into
+`ours/.git/objects/pack/` after `git gc` creates them in the peer; run
+`git fsck --strict` on `ours` to verify pack acceptance before tsgit reads it.
+
+**Scrubbed-env discipline:** all `git` calls via `runGit` (`SAFE_ENV`).
 `GIT_CONFIG_NOSYSTEM=1`, `HOME=ISOLATED_HOME`. `commit.gpgsign=false` via
-`git -C dir config commit.gpgsign false`.
-
-**Size choice:** 140 000 bytes random data → compressed ≈ 143 000 bytes, well
-above the 65 536-byte cap. Two distinct blobs (140 000 and 80 000 bytes, both
->64 KiB compressed) for P3, placed in the same pack in offset order, to stress
-the `bytesConsumed` offset arithmetic.
-
-## `PACK_SLICE_HINT` keep-vs-remove decision
-
-The constant is retained as the first-read hint (Decision candidate 2). See that
-section for alternatives.
+`git -C dir config commit.gpgsign false`. Two distinct seeds for the random
+blobs in P3 to ensure they produce different object ids.
 
 ## Decision candidates
 
+### Decided (ADR-359/360/361)
+
+| # | Decision | Chosen | ADR |
+|---|---|---|---|
+| **1 — Fix strategy** | How to ensure the slice passed to inflate contains the complete zlib member | **Exact-slice via next-entry offset** — derive `[offset, nextOffset)` from the pack index; read exactly that slice; inflate via the size-unbounded `inflate`. No grow-and-retry, no read-to-EOF. | ADR-359 |
+| **2 — `PACK_SLICE_HINT`** | Keep as first-read hint or remove | **Remove** — with exact-slice reads there is no first-read hint step; the constant's only consumer is replaced. | ADR-360 |
+| **3 — Two-blob interop fixture (P3)** | Include or skip | **Include** — pins next-offset boundary arithmetic on a real pack/filesystem; the only failure mode that silently mis-reads objects. | ADR-361 |
+
+### Open decision (deferred to review time)
+
+| # | Decision | Status |
+|---|---|---|
+| **4 — `fetch-pack` large-entry inflate** | Whether to fold in the Option-4 streaming decoder (lifting the browser/memory `streamInflate` 64 KiB cap for received packs) in the same PR. | **Deferred to review time** — decide fold-in vs. loud written call-out once the Option-3 diff size is known. Not a silent follow-up. |
+
+### New decision candidate surfaced by this revision
+
 | # | Choice | Alternatives | Recommendation | Why |
 |---|---|---|---|---|
-| **1 — Fix strategy for `readEntryHeaderWithChunk`** (ADR-359) | How to ensure the slice passed to `streamInflate` always contains the complete zlib member, given that the compressed length is unknown a priori. | **(a) Grow-and-retry:** start at `PACK_SLICE_HINT`; on `DECOMPRESS_FAILED` + not-at-EOF, double the slice and retry (bounded by `MAX_SLICE_DOUBLINGS = 8`; max slice 16 MiB). **(b) Read-to-EOF-from-offset:** a single `readSlice(path, offset, fileSize - offset)` providing the full pack tail from the entry. **(c) True streaming from the pack file:** open the pack file and feed bytes incrementally into `createInflateStream()` until the zlib member terminates, tracking consumed input via `bytesWritten`. | **(a) Grow-and-retry** | (a) is the smallest changeset: one retry loop in `collectDeltaChain`, no new port surface, no change to `readEntryHeaderWithChunk`'s signature contract, no fileSize stat. Small objects (<64 KiB compressed, the common case) pay zero extra cost; large objects pay O(log(compressed\_size/64KiB)) extra reads — at most 2 reads for objects up to 4 MiB compressed, 3 reads up to 16 MiB. (b) is simpler to implement but buffers `fileSize - offset` bytes per entry for the first entry near the pack start — a 2 GB pack with a large object at offset 132 buffers ~2 GB. This collides with the existing `MAX_INFLATED_OBJECT_BYTES = 2 GiB` memory contract in a non-obvious way (compressed >> inflated for binary objects). (c) is the most faithful to the "streaming inflate" performance priority but requires a new read-loop over an open `FileHandle`, a changed `Compressor` port contract for incremental chunk feeding, and significant implementation surface — the blast radius exceeds the scope of a targeted bug fix. |
-| **2 — `PACK_SLICE_HINT`: keep as first-read hint vs remove** (ADR-360) | Whether to retain `PACK_SLICE_HINT = 1 << 16` as the first-read slice or replace it with a different initial size. | **(a) Keep at 65536:** most pack entries (commits, trees, small blobs) compress to well under 64 KiB; the first read succeeds with no retry for the common case. **(b) Raise to 512 KiB or 1 MiB:** reduces retries for medium-sized objects (100–512 KiB compressed) at the cost of reading more bytes upfront for every pack entry, even tiny ones. **(c) Remove the constant, start at `fileSize - offset`:** eliminates retries entirely at the cost of the memory concern described in candidate 1(b). | **(a) Keep at 65536** | The 64 KiB first-read is empirically the right trade-off: it covers commits (typically < 1 KiB), tree objects (typically < 10 KiB), small blobs, and all delta instructions (git limits delta chains so individual instruction sets are small). Large blobs are uncommon enough that paying one extra read for them is the right local-optimum. Raising to 512 KiB would wastefully buffer ~500 KiB for every small object read — a significant regression for hot paths like `log` and `status` that read many small pack entries. |
-| **3 — Interop fixture scope: two-blob offset test (P3)** (ADR-361) | Whether to include a two-large-blob pack interop test (P3) that specifically validates `bytesConsumed` offset arithmetic after a retry. | **(a) Include P3:** creates a pack with two adjacent large blobs (≥64 KiB compressed each); reads both; asserts byte-identical content. Kills a mutant where `bytesConsumed` is mis-computed after a retry, silently misaligning the next entry's offset. **(b) Skip P3, cover by a unit spy:** the unit test (slice 2) already asserts the `bytesConsumed` value via a spy; P3 duplicates that with a real pack at integration level. **(c) Defer P3 to a follow-up:** ship P1/P2/P4 now; add P3 later. | **(a) Include P3** | The offset-arithmetic correctness (bytesConsumed accuracy post-retry) is the highest-risk correctness property of the fix — a mis-reported `bytesConsumed` silently reads the wrong object for every subsequent entry without any error. The unit spy confirms the spy returns the right number; P3 confirms that `object-resolver.ts` threads it correctly into the offset calculation in a real pack on a real file system. The test is small (one extra `randomBytes` fixture generation and one extra `readBlob` call) and the two-blob scenario is not reachable from P1/P2 alone. Deferring (c) accepts a residual correctness gap until a follow-up that may never ship. |
+| **5 — Domain-helper seam for per-entry offsets** | Where to place the logic that iterates all pack offsets. | **(a) Export `entryOffsets(index)` from `pack-index.ts`:** domain function returns raw offsets in index order; application layer sorts and caches. **(b) Export raw `readOffset(index, i)` from `pack-index.ts`:** application layer calls it in a loop. **(c) Build the sorted table directly in `pack-registry.ts` by duplicating the large-offset read logic.** | **(a) `entryOffsets`** | (a) keeps the large-offset table contract (MSB check, high/low word read) inside the domain, where it already lives in `readOffset`. Exposing raw `readOffset` (b) pushes the large-offset contract knowledge to the application layer. Duplicating the logic (c) violates DRY and drifts from the domain's `readOffset` implementation. `entryOffsets` is a minimal seam: one loop, one export, no new contract surface. |
 
 ## Test strategy
 
 Mutation-resistant per project conventions:
-- `DECOMPRESS_FAILED` assertions: try/catch + `.data.code`, not bare
-  `toThrow(TsgitError)`.
-- Retry-count assertions: spy on `ctx.compressor.streamInflate`; assert exact
-  call count (1 = no retry, 2 = one retry). Kills a mutant that retries on
-  every call regardless of truncation.
-- `bytesConsumed` exact-value assertions in spy.
+- `invalidPackIndex` assertions: try/catch + `.data` assertions, not bare
+  `toThrow(ErrorClass)`.
+- `inflate` call-argument assertions via spy (kills mutants that pass wrong
+  subarray offset).
+- Explicit negative assertion that `streamInflate` is not called on the
+  `object-resolver` path (kills a mutant that falls back to the old code path).
+- Separate tests for base-entry, OFS_DELTA, and REF_DELTA paths (kills
+  mutants that handle only one entry type).
+- `nextOffsetForEntry` boundary assertions: separate tests for last entry vs.
+  non-last entry (kills off-by-one mutants in the sorted array lookup).
 
-### Unit tests (`object-resolver.test.ts` — extend)
+### Unit tests
 
-- Base blob fitting in `PACK_SLICE_HINT`: succeeds on first call, spy count = 1.
-- Base blob overflowing by 1 byte: first call returns `DECOMPRESS_FAILED`, second call succeeds, spy count = 2, content correct.
-- OFS-delta whose instructions overflow: same spy pattern, chain resolves.
-- Corrupt entry (DECOMPRESS_FAILED regardless of slice size): throws after `MAX_SLICE_DOUBLINGS` retries, not infinite loop.
-- REF_DELTA whose base is a large packed entry: base grows-and-retries, delta applies, result correct.
+- `pack-index.test.ts` — `entryOffsets` for standard + large-offset entries.
+- `pack-registry.test.ts` — `offsetTable` laziness; `nextOffsetForEntry` for
+  last entry, non-last entry, offset-not-in-table.
+- `object-resolver.test.ts` — exact-slice base blob (small); large base blob;
+  OFS_DELTA chain; REF_DELTA chain; corrupt-index (nextOffset ≤ offset);
+  single-entry pack.
 
 ### Integration tests (`large-object-pack-interop.test.ts` — new)
 
-- P1: single 140 KB random blob, packed, read via `readBlob` → byte-identical to `git cat-file -p`.
+- P1: single 140 KB random blob, packed, read via `readBlob` → byte-identical.
 - P2: same, with `verifyHash: true` — no `OBJECT_HASH_MISMATCH`.
-- P3: two adjacent large blobs in same pack → both read correctly (offset arithmetic stress test).
+- P3: two adjacent large blobs in same pack → both read correctly (next-offset
+  boundary for the non-last entry).
 - P4: 140 KB loose blob (no gc) → `readBlob` succeeds (regression guard).
 
 ## Non-goals
 
-- Fixing `BrowserCompressor.streamInflate` to handle production-sized packs:
-  requires a different streaming approach and is a separate change (see
-  flagged warning above).
-- Adding a streaming (non-buffering) inflate path to `object-resolver.ts`:
-  that is Decision candidate 1(c), explicitly deferred as out of scope here.
 - Changing the `InflateStreamResult` port interface.
-- Changing `fetch-pack.ts`: it already passes the full in-memory buffer.
-- Exposing a `compressedSize` field in the pack-index domain model to avoid the
-  grow-and-retry: the v2 pack-index format does not store compressed size per
-  entry, and adding a pre-read pass to derive it from adjacent offsets is more
-  complex than the retry loop.
+- Changing `fetch-pack.ts` or its `streamInflate` usage (see open decision 4).
+- Adding a streaming (non-buffering) inflate path to `object-resolver.ts`:
+  that is Option 4 in ADR-359, explicitly deferred.
+- Changing `BrowserCompressor.streamInflate` or `MemoryCompressor.streamInflate`:
+  these are unchanged; their 64 KiB cap is no longer reachable from the
+  `object-resolver` read path.
+- Exposing `compressedSize` in the pack-index domain model: the v2 format does
+  not store it per entry.
 
 ## Self-review log
 
-### Pass 1 → Pass 2
+### Pass 1 (original draft) → Pass 2
 
 - Initial draft had grow-and-retry logic inside `readEntryHeaderWithChunk`
-  itself, catching and re-throwing from inside that function. Refined: the
-  `streamInflate` calls live in `collectDeltaChain`, not in
-  `readEntryHeaderWithChunk`, so the retry loop must wrap the caller's
-  `streamInflate` call, not the slice read. The function signature change
-  (`sliceLength` param) is the minimal surface.
-- Added the "growth termination" invariant — distinguishing physical EOF from
-  adapter cap from corrupt data. Without this the loop could grow forever
-  against a non-truncation error.
-- Confirmed empirically that `bytesWritten` is correct for large random payloads
-  with trailing bytes; added that to the context section.
+  itself. Refined: the `streamInflate` calls live in `collectDeltaChain`, so
+  the retry loop wraps the caller's `streamInflate` call.
+- Added the growth-termination invariant distinguishing physical EOF from
+  adapter cap from corrupt data.
+- Confirmed empirically that `bytesWritten` is correct for large random
+  payloads with trailing bytes.
 
-### Pass 2 → Pass 3
+### Pass 2 → Pass 3 (original)
 
-- Added the cross-adapter parity section with the explicit flagged warning for
-  the browser/memory 64 KiB `streamInflate` cap — the fix is self-contained in
-  the node path, but the interaction (retry loop + adapter cap = potential
-  infinite growth) needed explicit addressing.
-- Added P3 (two-blob offset test) to the interop fixture design. Without it,
-  `bytesConsumed` accuracy post-retry is only proven at the spy level, not at
-  the file-system level.
-- Clarified the `isDecompressFailed` helper requirement — the retry condition
-  requires distinguishing `DECOMPRESS_FAILED` from other error codes
-  (`OBJECT_NOT_FOUND`, `FILE_NOT_FOUND`, etc.) to avoid masking unrelated errors.
-- Decision candidate table reformatted to include ADR numbers (359–361).
+- Added the cross-adapter parity section with the flagged warning for the
+  browser/memory 64 KiB `streamInflate` cap.
+- Added P3 (two-blob offset test) to the interop fixture design.
+- Clarified the `isDecompressFailed` helper requirement.
+- Decision candidate table reformatted to include ADR numbers.
 
-### Pass 3 → final
+### Pass 3 → final (original)
 
-- Confirmed the loose-path repro from the backlog brief. Static analysis shows
-  `tryLoose` uses `ctx.fs.read` (unbounded) + `NodeCompressor.inflate`
-  (`inflateSync` with 2 GiB cap). Verified empirically. Scoping statement
-  updated to match.
-- `MAX_SLICE_DOUBLINGS = 8` choice justified: 65536 × 2^8 = 16777216 = 16 MiB.
-  Objects whose compressed representation exceeds 16 MiB would be genuine
-  outliers (a 16 MiB compressed object implies the original is likely >16 MiB
-  uncompressed for binary data, i.e., a very large asset). Git itself places no
-  hard cap here but `MAX_INFLATED_OBJECT_BYTES = 2 GiB` already enforces an
-  upper bound on what the inflate path can accept; the 16 MiB slice cap is
-  strictly below that and can be raised trivially if a legitimate need arises.
+- Confirmed the loose-path repro from the backlog brief. Scoping statement
+  updated.
+- `MAX_SLICE_DOUBLINGS = 8` choice justified.
+
+### Revision pass (post-ADR ratification: ADRs 359/360/361 accepted)
+
+The ADR conversation ratified Option 3 (exact-slice via next-entry offset),
+replacing Option 1 (grow-and-retry) as the decided approach. This revision
+rewrites the design from the ground up to describe the decided approach only.
+
+Key changes from the grow-and-retry design:
+
+- **Context section:** added the two structural facts from ADR-359 that motivate
+  Option 3; retained the empirical probes unchanged (root cause is the same).
+- **Approach section:** replaced the grow-and-retry narrative with exact-slice
+  reads; described the per-pack sorted-offset table, the `packFileSize − digestLength`
+  trailer bound, large-offset pack handling, corrupt-index guard, single-entry
+  pack, and delta-chain entry handling.
+- **Cross-adapter notes:** updated to confirm `inflate` is size-unbounded on all
+  three adapters (reads need no adapter changes); noted that `streamInflate` caps
+  are untouched and no longer reachable from the `object-resolver` path.
+- **Open fetch-pack decision:** surfaced explicitly as "deferred to review time
+  — not a silent follow-up" (per ADR-359 scope boundary).
+- **Slices:** all five slices redesigned for Option 3 (domain helper, registry
+  offset table, resolver rewrite, unit tests, interop tests); pre-chewed context
+  blocks updated with exact file paths and current signatures.
+- **P3 interop rationale:** updated from "bytesConsumed after retry" (grow-and-retry
+  framing) to "next-offset boundary correctness for a NON-last large entry"
+  (exact-slice framing), per ADR-361.
+- **Decision candidates:** table split into decided (1–3) and open (4); new
+  decision candidate 5 (domain-helper seam for `entryOffsets`) surfaced with
+  recommendation (a).
+- **Non-goals:** removed the grow-and-retry-specific non-goals; added the
+  fetch-pack non-goal with the pointer to open decision 4.
+
+### Self-review pass 1 (post-revision)
+
+- Verified `readOffset` at line 91 is not exported in `pack-index.ts`; the
+  `entryOffsets` helper is the correct minimal export. Confirmed by reading
+  the file.
+- Verified `RegisteredPack` has no `offsetTable` field today; the extension is
+  additive.
+- Verified `inflate` is confirmed size-unbounded on all three adapters by reading
+  `node-compressor.ts:39`, `browser-compressor.ts:27`, and
+  `memory-compressor.ts:29`.
+- Checked that `fetch-pack.ts:335-336` is the only call site for `streamInflate`
+  + `bytesConsumed` after the resolver change; confirmed by grep.
+- Confirmed `ctx.hashConfig.digestLength` is the correct field (not
+  `ctx.hash.digestLength`) from `context.ts:102` and `hash-config.ts:2`.
+- Open decision 4 language aligned with ADR-359's exact wording ("deferred to
+  review time — not filed as a silent follow-up").
+
+### Self-review pass 2 (post-revision)
+
+- Unstated assumption surfaced: `nextOffsetForEntry` must binary-search (or
+  binary-lookup) the sorted array to find `offset`'s rank, not do a linear
+  scan. For very large packs (millions of entries) a linear scan would be
+  O(n) per object lookup. The design now states "lower bound in `sortedOffsets`
+  after `offset`" which implies a binary search; this is the correct
+  implementation signal.
+- Corrupt-index guard: a `nextOffset > packFileSize` (not just `> trailerStart`)
+  is also corrupt — the slice would read beyond the file. The Slice 2 guard
+  description updated to throw on both `nextOffset <= offset` and
+  `nextOffset > packFileSize`.
+- Checked that the lazy-table design in Slice 2 correctly describes that
+  `offsetTable()` is a closure over `ctx.fs.stat` — which requires `ctx` to be
+  in scope when the table is built. Since `RegisteredPack` is constructed inside
+  `loadPack(ctx, ...)`, capturing `ctx` in the closure is correct and safe
+  (the registry is per-Context already).
+- P3 blob sizes confirmed adequate: 140 KB and 80 KB random-bytes are both
+  well above 65536 bytes compressed for incompressible data.
+
+### Self-review pass 3 (post-revision)
+
+- Edge case completeness check against the required list:
+  - Last/highest-offset entry → `trailerStart` bound — covered in Slice 2 and
+    Slice 3.
+  - Single-entry pack → is a last entry, same path — covered.
+  - Large-offset (>2 GiB) packs → `entryOffsets` calls `readOffset` which
+    handles the large-offset table — covered in Slice 1.
+  - Multi-pack repos → sorted offsets are per `RegisteredPack` (already
+    per-pack in the registry) — noted in approach.
+  - OFS_DELTA / REF_DELTA chain entries — each step derives its own exact slice
+    — covered in approach and Slice 3.
+  - Corrupt index: `nextOffset <= offset` or `nextOffset > packFileSize` →
+    `invalidPackIndex` — covered in Slice 2 with unit test in Slice 4.
+- No contradictions found between the slice pre-chewed contexts and the actual
+  source files (verified against current `object-resolver.ts:310–322`,
+  `pack-registry.ts:12–17`, `pack-index.ts:91`).
+- Fetch-pack open decision: confirmed it is stated as "deferred to review time"
+  with an explicit "not a silent follow-up" — no information lost.
+- Self-review converged. No further contradictions or unstated assumptions.
