@@ -136,6 +136,10 @@ const moveNode = async (ctx: Context, fromAbs: string, toAbs: string): Promise<v
     await ctx.fs.rmRecursive(fromAbs);
     return;
   }
-  await ctx.fs.mkdir(dirname(toAbs));
+  // A root-level target (parent is the work-tree root, which always exists)
+  // yields an empty `dirname`; skip the mkdir rather than create an empty path
+  // the fs validator rejects. Non-root parents are created as before.
+  const parentDir = dirname(toAbs);
+  if (parentDir !== '') await ctx.fs.mkdir(parentDir);
   await ctx.fs.rename(fromAbs, toAbs);
 };
