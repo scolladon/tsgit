@@ -189,10 +189,12 @@ async function collectDeltaChain(
   const deltas: DeltaStep[] = [];
   let currentHit: PackLookupHit = hit;
   let depth = 0;
+  // OFS_DELTA always stays on the same pack; REF_DELTA and base entries return
+  // before the next iteration, so hit.pack is invariant for the whole loop.
+  const table = await hit.pack.offsetTable();
 
   for (;;) {
     checkAborted(ctx);
-    const table = await currentHit.pack.offsetTable();
     const nextOffset = nextOffsetForEntry(table, currentHit.offset);
     if (nextOffset > table.packFileSize) {
       throw invalidPackIndex('next offset exceeds pack file size: corrupt index');
@@ -219,12 +221,12 @@ async function collectDeltaChain(
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
-      const nextOffset = currentHit.offset - header.baseDistance;
-      if (nextOffset < 0) {
+      const baseOffset = currentHit.offset - header.baseDistance;
+      if (baseOffset < 0) {
         throw objectNotFound(targetId);
       }
       deltas.push({ instructions, resolvedBaseId: undefined });
-      currentHit = { pack: currentHit.pack, offset: nextOffset };
+      currentHit = { pack: currentHit.pack, offset: baseOffset };
       continue;
     }
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {
