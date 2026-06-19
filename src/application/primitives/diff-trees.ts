@@ -6,6 +6,7 @@ import {
   type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
+import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import type { Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
@@ -41,12 +42,32 @@ export async function diffTrees(
       : domainDiffTrees(treeA, treeB);
   const diff =
     options?.detectRenames === true
-      ? await detectSimilarityRenames(ctx, rawDiff, options.renameOptions)
+      ? await detectSimilarityRenames(
+          ctx,
+          rawDiff,
+          await buildRenameOptions(ctx, treeA, options.renameOptions),
+        )
       : rawDiff;
   if (options?.withStat === true) {
     return attachStats(ctx, diff);
   }
   return diff;
+}
+
+/**
+ * Thread rename options through, adding the flat preimage map when copies:'harder'
+ * is active. The preimage is built from treeA via flattenTree (same walk used by
+ * the recursive diff path) and passed so the primitive can widen copy sources to
+ * all tree-A paths without a second tree read.
+ */
+async function buildRenameOptions(
+  ctx: Context,
+  treeA: Tree | undefined,
+  renameOptions: RenameDetectOptions | undefined,
+): Promise<RenameDetectOptions | undefined> {
+  if (renameOptions?.copies !== 'harder' || treeA === undefined) return renameOptions;
+  const flat = await flattenTree(ctx, treeA);
+  return { ...renameOptions, preimage: flat.entries };
 }
 
 /**

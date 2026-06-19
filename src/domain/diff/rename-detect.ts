@@ -1,6 +1,7 @@
-import type { ObjectId } from '../objects/index.js';
+import type { FilePath, ObjectId } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
+import type { FlatTreeEntry } from './flat-tree.js';
 import { sortByPath } from './path-compare.js';
 import { MAX_SCORE } from './similarity.js';
 
@@ -10,6 +11,9 @@ export interface RenameDetectOptions {
   readonly threshold?: number;
   readonly copies?: 'off' | 'on' | 'harder';
   readonly copyThreshold?: number;
+  /** Flat preimage map (path → {id, mode}) for all tree-A paths. Used by copies:'harder'
+   * to widen the copy-source set to unchanged files. Threaded from diffTrees. */
+  readonly preimage?: ReadonlyMap<FilePath, FlatTreeEntry>;
 }
 
 const DEFAULT_LIMIT = 1000;

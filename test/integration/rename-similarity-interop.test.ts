@@ -1093,4 +1093,341 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await pair.dispose();
     }
   });
+
+  it('Given a copy from an UNCHANGED source (matrix #C2), When tsgit runs copies:"harder", Then C-score matches git; plain -C does NOT detect it', async () => {
+    // Arrange — matrix #C2: source file is UNCHANGED in the diff. Plain -C misses it.
+    // --find-copies-harder includes all preimage paths as copy sources.
+    const pair = await makePeerPair('rename-similarity-c2');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      // orig.txt is UNCHANGED between commit 1 and commit 2
+      const origContent = tenLineContent('orig');
+      // new.txt is similar to orig.txt (1 line different) but entirely new
+      const newContent = tenLineContent('orig', 0, 'COPY');
+
+      await writePeerFile(pair.peer, 'orig.txt', origContent);
+      runGit(['-C', pair.peer, 'add', 'orig.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+
+      await writePeerFile(pair.peer, 'new.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'new.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      // Probe real git under plain -C (should NOT detect copy from unchanged)
+      const livePlainC = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Probe real git under --find-copies-harder (SHOULD detect copy from unchanged)
+      const liveHarder = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--find-copies-harder',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: plain -C must NOT report a copy from unchanged source
+      expect(livePlainC).not.toMatch(/^C\d+\t/m);
+      expect(livePlainC).toMatch(/^A\tnew\.txt$/m);
+
+      // Sanity: harder MUST report a copy — assert the fixture triggers it unconditionally
+      expect(liveHarder).toMatch(/^C\d+\torig\.txt\tnew\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'orig.txt', origContent);
+      await add(ctx, ['orig.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'new.txt', newContent);
+      await add(ctx, ['new.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — plain -C: should NOT detect copy from unchanged
+      const treeDiffPlainC = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'on' },
+      });
+      // Act — harder: SHOULD detect copy from unchanged
+      const treeDiffHarder = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'harder' },
+      });
+
+      const sutPlainC = reconstructNameStatus(treeDiffPlainC.changes);
+      const sutHarder = reconstructNameStatus(treeDiffHarder.changes);
+
+      // Assert — plain -C: no copy (unchanged excluded)
+      expect(treeDiffPlainC.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+      expect(treeDiffPlainC.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+      expect(sutPlainC).toBe(livePlainC);
+
+      // Assert — harder: copy detected, C-score matches live git
+      const copies = treeDiffHarder.changes.filter((c) => c.type === 'copy');
+      expect(copies).toHaveLength(1);
+      const sutHarderLines = sutHarder.split('\n').sort().join('\n');
+      const liveHarderLines = liveHarder.split('\n').sort().join('\n');
+      expect(sutHarderLines).toBe(liveHarderLines);
+
+      // Pin goldens
+      const goldenPlainC = 'copy-similarity-c2-plain-c-name-status';
+      const goldenHarder = 'copy-similarity-c2-harder-name-status';
+      try {
+        const golden = await loadGolden(goldenPlainC);
+        expect(sutPlainC).toBe(golden);
+      } catch {
+        await saveGolden(goldenPlainC, livePlainC);
+      }
+      try {
+        const golden = await loadGolden(goldenHarder);
+        expect(sutHarderLines).toBe(golden.split('\n').sort().join('\n'));
+      } catch {
+        await saveGolden(goldenHarder, liveHarder);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a deleted source and an unchanged source both matching dst (matrix #C3), When tsgit runs copies:"harder", Then rename wins and no copy is emitted', async () => {
+    // Arrange — matrix #C3: del-src is deleted (rename candidate); keep-src is unchanged
+    // (copy candidate under harder). Both are similar to new.txt.
+    // The greedy sort puts rename ahead of copy at equal score → rename wins.
+    const pair = await makePeerPair('rename-similarity-c3');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      // del-src.txt and keep-src.txt have very similar content
+      const srcContent = tenLineContent('source');
+      // keep-src stays unchanged; del-src is deleted; new.txt is similar to both
+      const newContent = tenLineContent('source', 0, 'CHANGED');
+
+      await writePeerFile(pair.peer, 'del-src.txt', srcContent);
+      await writePeerFile(pair.peer, 'keep-src.txt', srcContent);
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+
+      runGit(['-C', pair.peer, 'rm', '-q', 'del-src.txt'], { env: gitDeterministicEnv() });
+      await writePeerFile(pair.peer, 'new.txt', newContent);
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveHarder = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--find-copies-harder',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: rename must win — git emits R<n> del-src.txt new.txt, NO copy for keep-src
+      expect(liveHarder).toMatch(/^R\d+\tdel-src\.txt\tnew\.txt$/m);
+      expect(liveHarder).not.toMatch(/^C\d+\t/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'del-src.txt', srcContent);
+      await writeCtxFile(ctx, 'keep-src.txt', srcContent);
+      await add(ctx, ['del-src.txt', 'keep-src.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await rm(ctx, ['del-src.txt']);
+      await writeCtxFile(ctx, 'new.txt', newContent);
+      await add(ctx, ['new.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'harder' },
+      });
+      const sut = reconstructNameStatus(treeDiff.changes);
+
+      // Assert — rename wins; no copy
+      const renames = treeDiff.changes.filter((c) => c.type === 'rename');
+      const copies = treeDiff.changes.filter((c) => c.type === 'copy');
+      expect(renames).toHaveLength(1);
+      expect(copies).toHaveLength(0);
+
+      const sutLines = sut.split('\n').sort().join('\n');
+      const liveLines = liveHarder.split('\n').sort().join('\n');
+      expect(sutLines).toBe(liveLines);
+
+      // Pin golden
+      const goldenName = 'copy-similarity-c3-harder-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutLines).toBe(golden.split('\n').sort().join('\n'));
+      } catch {
+        await saveGolden(goldenName, liveHarder);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a fixture that crosses the limit only under --find-copies-harder, When tsgit runs with limit=2, Then harder falls back to plain -C source set matching git', async () => {
+    // Arrange — 1 add (add-dst.txt), 1 unchanged good-src.txt similar to add-dst.txt,
+    // and 4 filler unchanged files. No modifies/deletes.
+    //
+    // Under plain -C (copies:'on'): no copy sources (no modified files) → add stays as A
+    // Under harder without limit: copies good-src.txt → add-dst.txt (C087)
+    // Under harder with limit=2: num_src=5 (all preimage), num_create=1 → 1*5=5 > 4
+    //   → falls back to 'on' sources (none) → add stays as A (matches plain -C)
+    const pair = await makePeerPair('rename-similarity-over-limit-harder');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      const goodSrcContent = tenLineContent('src');
+      // add-dst is similar to goodSrc (1 line different)
+      const addDstContent = tenLineContent('src', 0, 'COPY');
+
+      // 4 filler unchanged files (unique content, different from src/dst)
+      const fillerContents = Array.from({ length: 4 }, (_, i) =>
+        Array.from(
+          { length: 10 },
+          (__, j) =>
+            `filler${i} content line ${String(j).padStart(2, '0')}: unrelated unique content here\n`,
+        ).join(''),
+      );
+
+      await writePeerFile(pair.peer, 'good-src.txt', goodSrcContent);
+      for (let i = 0; i < 4; i++) {
+        await writePeerFile(pair.peer, `filler${i}.txt`, fillerContents[i] as string);
+      }
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+
+      await writePeerFile(pair.peer, 'add-dst.txt', addDstContent);
+      runGit(['-C', pair.peer, 'add', 'add-dst.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      // Probe real git: harder without limit should find copy (C087)
+      const liveHarderNoLimit = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--find-copies-harder',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Probe real git: harder with limit=2 should NOT find the harder copy (fallback)
+      const liveHarderL2 = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--find-copies-harder',
+        '-l2',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      )
+        .split('\n')
+        .filter((l) => !l.startsWith('warning:'))
+        .join('\n')
+        .trim();
+
+      // Sanity: harder without limit must detect the copy from the unchanged good-src.txt
+      expect(liveHarderNoLimit).toMatch(/^C\d+\tgood-src\.txt\tadd-dst\.txt$/m);
+
+      // Sanity: harder with limit=2 must NOT detect it (fallback to plain -C, no modified sources)
+      expect(liveHarderL2).not.toMatch(/^C\d+\t/m);
+      expect(liveHarderL2).toMatch(/^A\tadd-dst\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'good-src.txt', goodSrcContent);
+      for (let i = 0; i < 4; i++) {
+        await writeCtxFile(ctx, `filler${i}.txt`, fillerContents[i] as string);
+      }
+      await add(ctx, ['good-src.txt', 'filler0.txt', 'filler1.txt', 'filler2.txt', 'filler3.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'add-dst.txt', addDstContent);
+      await add(ctx, ['add-dst.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — harder without limit: should find copy
+      const treeDiffHarderNoLimit = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'harder' },
+      });
+      // Act — harder with limit=2: should fall back, no copy
+      const treeDiffHarderL2 = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'harder', limit: 2 },
+      });
+
+      const sutHarderNoLimit = reconstructNameStatus(treeDiffHarderNoLimit.changes);
+      const sutHarderL2 = reconstructNameStatus(treeDiffHarderL2.changes);
+
+      // Assert — harder without limit: copy detected, matches git
+      const copiesNoLimit = treeDiffHarderNoLimit.changes.filter((c) => c.type === 'copy');
+      expect(copiesNoLimit).toHaveLength(1);
+      expect(sutHarderNoLimit.split('\n').sort().join('\n')).toBe(
+        liveHarderNoLimit.split('\n').sort().join('\n'),
+      );
+
+      // Assert — harder with limit=2: fallback, add stays as A, matches git
+      const copiesL2 = treeDiffHarderL2.changes.filter((c) => c.type === 'copy');
+      expect(copiesL2).toHaveLength(0);
+      const addsL2 = treeDiffHarderL2.changes.filter((c) => c.type === 'add');
+      expect(addsL2).toHaveLength(1);
+      expect(sutHarderL2.split('\n').sort().join('\n')).toBe(
+        liveHarderL2.split('\n').sort().join('\n'),
+      );
+
+      // Pin goldens
+      const goldenNoLimit = 'copy-similarity-harder-no-limit-name-status';
+      const goldenL2 = 'copy-similarity-harder-l2-name-status';
+      try {
+        const golden = await loadGolden(goldenNoLimit);
+        expect(sutHarderNoLimit.split('\n').sort().join('\n')).toBe(
+          golden.split('\n').sort().join('\n'),
+        );
+      } catch {
+        await saveGolden(goldenNoLimit, liveHarderNoLimit);
+      }
+      try {
+        const golden = await loadGolden(goldenL2);
+        expect(sutHarderL2.split('\n').sort().join('\n')).toBe(
+          golden.split('\n').sort().join('\n'),
+        );
+      } catch {
+        await saveGolden(goldenL2, liveHarderL2);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
 });

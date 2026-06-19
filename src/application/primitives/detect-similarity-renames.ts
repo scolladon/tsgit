@@ -7,6 +7,7 @@ import type {
   RenameChange,
   TreeDiff,
 } from '../../domain/diff/diff-change.js';
+import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
@@ -76,6 +77,23 @@ function buildCopySourcesForOn(
     if (change.type === 'modify' || change.type === 'type-change') {
       sources.push({ oldPath: change.path, oldId: change.oldId, oldMode: change.oldMode });
     }
+  }
+  return sources;
+}
+
+/**
+ * Build the copy source set for `copies: 'harder'` (--find-copies-harder):
+ * ALL paths in the preimage tree (tree A), unchanged included.
+ * When the harder source count would push num_create * num_src over the limit,
+ * git falls back to only the 'on' (changed-files) source set — this function
+ * always returns the FULL harder set; the caller applies the limit fallback.
+ */
+function buildCopySourcesForHarder(
+  preimage: ReadonlyMap<FilePath, FlatTreeEntry>,
+): ReadonlyArray<CopySource> {
+  const sources: CopySource[] = [];
+  for (const [path, entry] of preimage) {
+    sources.push({ oldPath: path, oldId: entry.id, oldMode: entry.mode });
   }
   return sources;
 }
@@ -252,6 +270,8 @@ interface InexactPassOptions {
   readonly threshold: number;
   readonly copyThreshold: number;
   readonly copies: 'off' | 'on' | 'harder';
+  /** Effective copy sources resolved by the caller (after limit-fallback applied). */
+  readonly copySources: ReadonlyArray<CopySource>;
 }
 
 interface InexactPassResult {
@@ -265,8 +285,7 @@ async function runInexactPass(
   ctx: Context,
   opts: InexactPassOptions,
 ): Promise<InexactPassResult | null> {
-  const { adds, deletes, other, threshold, copyThreshold, copies } = opts;
-  const copySources = copies !== 'off' ? buildCopySourcesForOn(deletes, other) : [];
+  const { adds, deletes, threshold, copyThreshold, copies, copySources } = opts;
 
   if (deletes.length === 0 && copySources.length === 0) return null;
 
@@ -301,12 +320,45 @@ async function runInexactPass(
 }
 
 /**
+ * Resolve effective copy sources for the inexact pass.
+ *
+ * For copies:'harder', the full preimage set is used unless num_create * num_src_harder
+ * exceeds the limit^2 — in that case git falls back to the 'on' source set (only
+ * modified-file preimages) and warns "only found copies from modified paths due to
+ * too many files". We replicate the fallback without the warning.
+ */
+function resolveCopySources(
+  copies: 'off' | 'on' | 'harder',
+  adds: ReadonlyArray<AddChange>,
+  deletes: ReadonlyArray<DeleteChange>,
+  other: ReadonlyArray<DiffChange>,
+  preimage: ReadonlyMap<FilePath, FlatTreeEntry> | undefined,
+  limit: number,
+): ReadonlyArray<CopySource> {
+  if (copies === 'off') return [];
+  if (copies === 'on') return buildCopySourcesForOn(deletes, other);
+
+  // copies === 'harder'
+  const harderSources =
+    preimage !== undefined
+      ? buildCopySourcesForHarder(preimage)
+      : buildCopySourcesForOn(deletes, other);
+
+  // When harder source count causes limit breach, fall back to 'on' sources (git's fallback).
+  const isHarderOverLimit = limit !== 0 && adds.length * harderSources.length > limit * limit;
+  return isHarderOverLimit ? buildCopySourcesForOn(deletes, other) : harderSources;
+}
+
+/**
  * Detect inexact (content-similarity) renames and optionally copies.
  *
  * Algorithm:
  * 1. Run the pure exact `detectRenames` first (R100, never limited).
  * 2. Partition leftovers into unpaired adds (destinations) and unpaired deletes (sources).
- * 3. Apply the rename-limit guard: if num_create * num_src > limit, skip inexact pass.
+ * 3. Apply the rename-limit guard: if num_create * num_src > limit^2, skip inexact pass.
+ *    For copies:'harder', num_src includes ALL preimage paths; if this causes the limit
+ *    to be exceeded, fall back to copies:'on' sources (git's "only found copies from
+ *    modified paths" fallback) rather than skipping the pass entirely.
  * 4. Hydrate blob bytes for all candidates via a bounded concurrency pool.
  * 5. Build scored triples for renames (deletes vs adds) and optionally copies.
  *    At equal score, rename sorts AHEAD of copy (matrix #C3 tiebreak).
@@ -323,6 +375,7 @@ export async function detectSimilarityRenames(
   const copyThreshold = options?.copyThreshold ?? threshold;
   const limit = options?.limit ?? DEFAULT_LIMIT;
   const copies = options?.copies ?? 'off';
+  const preimage = options?.preimage;
 
   // Run the exact pass with an unlimited ceiling so it never bails on the quadratic
   // guard — the per-id fan-out cap still applies via maxSameIdDeletes. The rename-limit
@@ -334,9 +387,12 @@ export async function detectSimilarityRenames(
   const hasCopyWork = copies !== 'off' && adds.length > 0;
   if (!hasRenameWork && !hasCopyWork) return exactResult;
 
-  // Git's check: num_destinations * num_sources > rename_limit * rename_limit
+  // Git's rename-only limit: skip the whole inexact pass when rename candidates alone exceed it.
   const isOverLimit = limit !== 0 && adds.length * deletes.length > limit * limit;
   if (isOverLimit) return exactResult;
+
+  // Resolve copy sources; applies harder-limit fallback when needed.
+  const copySources = resolveCopySources(copies, adds, deletes, other, preimage, limit);
 
   const passResult = await runInexactPass(ctx, {
     adds,
@@ -345,6 +401,7 @@ export async function detectSimilarityRenames(
     threshold,
     copyThreshold,
     copies,
+    copySources,
   });
 
   if (passResult === null) return exactResult;

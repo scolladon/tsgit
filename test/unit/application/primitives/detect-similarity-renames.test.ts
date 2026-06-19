@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { detectSimilarityRenames } from '../../../../src/application/primitives/detect-similarity-renames.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TreeDiff } from '../../../../src/domain/diff/diff-change.js';
+import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import { DEFAULT_RENAME_THRESHOLD, MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -640,6 +641,193 @@ describe('detectSimilarityRenames', () => {
         // The modify should still be present (not consumed — rename won the dst)
         const modifies = result.changes.filter((c) => c.type === 'modify');
         expect(modifies).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given copies: "harder" and an UNCHANGED file that is similar to an add', () => {
+    describe('When detectSimilarityRenames is called with preimage', () => {
+      it('Then the unchanged file IS a copy source and the add folds into a copy', async () => {
+        // Arrange — an unchanged file (present in preimage but absent from the diff changes)
+        // must appear as a copy source under copies: 'harder'.
+        // Under copies: 'on' the unchanged file would NOT be a copy source.
+        const ctx = await buildSeededContext();
+        const unchangedContent = tenLines(0);
+        const dstContent = tenLines(0).replace('X line 0\n', 'COPY DST line 0\n');
+        const unchangedId = await writeBlob(ctx, unchangedContent);
+        const dstId = await writeBlob(ctx, dstContent);
+        // The preimage map contains the unchanged file (simulates what diff-trees passes)
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['unchanged.txt' as FilePath, { id: unchangedId, mode: FILE_MODE.REGULAR }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — copies: 'on' should NOT detect (unchanged not a source)
+        const resultOn = await detectSimilarityRenames(ctx, diff, { copies: 'on', preimage });
+        // Act — copies: 'harder' SHOULD detect (unchanged IS a source under harder)
+        const resultHarder = await detectSimilarityRenames(ctx, diff, {
+          copies: 'harder',
+          preimage,
+        });
+
+        // Assert — 'on': no copy (unchanged excluded)
+        expect(resultOn.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(resultOn.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+
+        // Assert — 'harder': copy detected from unchanged source
+        const copiesHarder = resultHarder.changes.filter((c) => c.type === 'copy');
+        expect(copiesHarder).toHaveLength(1);
+        if (copiesHarder[0]?.type === 'copy') {
+          expect(copiesHarder[0].oldPath).toBe('unchanged.txt');
+          expect(copiesHarder[0].newPath).toBe('copied.txt');
+        }
+        // No add remains (consumed by the copy)
+        expect(resultHarder.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given copies: "harder" with limit that is exceeded only under harder (many preimage paths)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then limit is exceeded only under harder and falls back to copies:"on" source set', async () => {
+        // Arrange — 1 add, 1 modified file (copy source under plain -C), 4 unchanged files
+        // (added to preimage, not in diff changes).
+        // Under copies:'on': num_src=1(modify), num_create=1 -> 1*1=1 <= limit^2(4) -> runs, finds copy
+        // Under copies:'harder': num_src=5(1modify+4unchanged), num_create=1 -> 1*5=5 > 4 -> falls back to 'on' sources
+        // After fallback: same result as 'on' (copy from modify still found)
+        const ctx = await buildSeededContext();
+        const modOldId = await writeBlob(ctx, tenLines(0));
+        const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED line 0\n'));
+        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'COPY DST line 0\n'));
+        // 4 unchanged files in preimage; each has unique content so they don't pair
+        const unchanged1Id = await writeBlob(
+          ctx,
+          'unchanged1 unique content aaa bbb ccc\n'.repeat(5),
+        );
+        const unchanged2Id = await writeBlob(
+          ctx,
+          'unchanged2 unique content ddd eee fff\n'.repeat(5),
+        );
+        const unchanged3Id = await writeBlob(
+          ctx,
+          'unchanged3 unique content ggg hhh iii\n'.repeat(5),
+        );
+        const unchanged4Id = await writeBlob(
+          ctx,
+          'unchanged4 unique content jjj kkk lll\n'.repeat(5),
+        );
+
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          // The modify preimage is also in the preimage map
+          ['mod-src.txt' as FilePath, { id: modOldId, mode: FILE_MODE.REGULAR }],
+          ['unchanged1.txt' as FilePath, { id: unchanged1Id, mode: FILE_MODE.REGULAR }],
+          ['unchanged2.txt' as FilePath, { id: unchanged2Id, mode: FILE_MODE.REGULAR }],
+          ['unchanged3.txt' as FilePath, { id: unchanged3Id, mode: FILE_MODE.REGULAR }],
+          ['unchanged4.txt' as FilePath, { id: unchanged4Id, mode: FILE_MODE.REGULAR }],
+        ]);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'mod-src.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'add-dst.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — limit=2 (limit^2=4); harder with 5 preimage paths -> 1*5=5 > 4 -> falls back to 'on'
+        const resultHarder = await detectSimilarityRenames(ctx, diff, {
+          copies: 'harder',
+          limit: 2,
+          preimage,
+        });
+        const resultOn = await detectSimilarityRenames(ctx, diff, {
+          copies: 'on',
+          limit: 2,
+          preimage,
+        });
+
+        // Assert — under harder with limit exceeded: result same as 'on' (fallback)
+        // Both should find the copy from modified source (mod-src.txt preimage is still a source after fallback)
+        const copiesHarder = resultHarder.changes.filter((c) => c.type === 'copy');
+        const copiesOn = resultOn.changes.filter((c) => c.type === 'copy');
+        expect(copiesHarder).toHaveLength(copiesOn.length);
+
+        // The modify survives in both cases
+        expect(resultHarder.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
+        expect(resultOn.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given copies: "harder" with a delete and an unchanged file both matching the same dst', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then rename wins over copy at equal score (matrix #C3 precedence)', async () => {
+        // Arrange — del-src (deleted) and keep-src (unchanged in preimage) both have similar
+        // content to new-dst. At equal score, rename sorts AHEAD of copy.
+        const ctx = await buildSeededContext();
+        const sharedContent = tenLines(0);
+        // Destination is similar to both sources
+        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'CHANGED line 0\n'));
+        const delId = await writeBlob(ctx, sharedContent); // rename candidate
+        const keepId = await writeBlob(ctx, sharedContent); // copy candidate (unchanged)
+
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['del-src.txt' as FilePath, { id: delId, mode: FILE_MODE.REGULAR }],
+          ['keep-src.txt' as FilePath, { id: keepId, mode: FILE_MODE.REGULAR }],
+        ]);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'del-src.txt' as FilePath,
+              oldId: delId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'new-dst.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — copies:'harder' so keep-src.txt (unchanged) is also a copy source
+        const result = await detectSimilarityRenames(ctx, diff, {
+          copies: 'harder',
+          preimage,
+        });
+
+        // Assert — rename wins (del-src.txt → new-dst.txt); no copy for keep-src.txt → new-dst.txt
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(renames).toHaveLength(1);
+        expect(copies).toHaveLength(0);
+        if (renames[0]?.type === 'rename') {
+          expect(renames[0].oldPath).toBe('del-src.txt');
+          expect(renames[0].newPath).toBe('new-dst.txt');
+        }
       });
     });
   });

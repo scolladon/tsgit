@@ -484,6 +484,59 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given copies:"harder" and a file unchanged in treeA whose preimage is similar to an added file in treeB', () => {
+    describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"harder"}', () => {
+      it('Then the add folds into a copy from the unchanged source (preimage threading works end-to-end)', async () => {
+        // Arrange — treeA has one file (unchanged, not appearing in diff changes).
+        // treeB adds a new file similar to treeA's file.
+        // Under copies:'on': no copy (unchanged is not a modified-file source).
+        // Under copies:'harder': copy IS detected (unchanged file enters the source set via preimage threading).
+        const ctx = await buildSeededContext();
+        // Build a 10-line blob
+        const lines = Array.from({ length: 10 }, (_, i) => `line ${i}: shared content\n`).join('');
+        const unchangedId = await blob(ctx, lines);
+        const dstLines = lines.replace(
+          'line 0: shared content\n',
+          'COPY DST line 0: shared content\n',
+        );
+        const dstId = await blob(ctx, dstLines);
+
+        const treeA = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
+        ]);
+        const treeB = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId }, // unchanged
+          { name: 'copy.txt', mode: FILE_MODE.REGULAR, id: dstId }, // new, similar to orig
+        ]);
+
+        // Act — without copies:'harder': should not detect copy (unchanged excluded)
+        const sutOn = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'on' },
+        });
+        // Act — with copies:'harder': should detect copy from unchanged source
+        const sutHarder = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert — copies:'on': no copy, add stays as A
+        expect(sutOn.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(sutOn.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+
+        // Assert — copies:'harder': copy detected from unchanged source
+        const copies = sutHarder.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('orig.txt');
+          expect(copies[0].newPath).toBe('copy.txt');
+        }
+        // The orig.txt itself is NOT in the diff (unchanged)
+        expect(sutHarder.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
   describe('Given withStat is omitted and a one-line blob added', () => {
     describe('When diffTrees is called', () => {
       it('Then the change carries no count fields (tree-level only)', async () => {
