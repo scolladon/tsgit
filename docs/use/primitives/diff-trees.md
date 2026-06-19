@@ -8,20 +8,25 @@ Compare two tree-ids; return a structured `TreeDiff`. Optional rename detection 
 repo.primitives.diffTrees(
   a: ObjectId,
   b: ObjectId | undefined,
-  options?: { detectRenames?: boolean; recursive?: boolean },
+  options?: {
+    detectRenames?: boolean;
+    renameOptions?: RenameDetectOptions; // threshold, copies, copyThreshold, breakRewrites
+    recursive?: boolean;
+  },
 ): Promise<TreeDiff>;
 
 interface TreeDiff {
-  readonly added: ReadonlyArray<TreeDiffEntry>;
-  readonly deleted: ReadonlyArray<TreeDiffEntry>;
-  readonly modified: ReadonlyArray<TreeDiffEntry>;
-  readonly renamed: ReadonlyArray<{ from: TreeDiffEntry; to: TreeDiffEntry }>;
+  readonly changes: ReadonlyArray<DiffChange>;
 }
 ```
 
+`renameOptions` threads through to the detection engine unchanged. See
+[`diff`](../commands/diff.md) for the full `RenameDetectOptions` knob reference
+(`threshold`, `copies`, `copyThreshold`, `breakRewrites`).
+
 `b` may be `undefined`, interpreted as the empty tree (every entry under `a` shows as added).
 
-With `recursive: true`, both trees are flattened to full-path blob entries before classification, so a changed sub-directory surfaces as per-file changes (`src/foo.ts`) rather than a single `src` tree-entry change. This is the mode the Tier-1 patch path (`diff({ format: 'patch' })`, `show`) builds on.
+With `recursive: true`, both trees are flattened to full-path blob entries before classification, so a changed sub-directory surfaces as per-file changes (`src/foo.ts`) rather than a single `src` tree-entry change. This is the mode the Tier-1 `diff` and `show` commands build on.
 
 ## Example
 
@@ -29,7 +34,7 @@ With `recursive: true`, both trees are flattened to full-path blob entries befor
 const a = (await repo.primitives.readTree('HEAD~1')).id;
 const b = (await repo.primitives.readTree('HEAD')).id;
 const diff = await repo.primitives.diffTrees(a, b, { detectRenames: true });
-console.log(diff.added.length, diff.deleted.length, diff.modified.length, diff.renamed.length);
+console.log(diff.changes.length);
 ```
 
 ## See also

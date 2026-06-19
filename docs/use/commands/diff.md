@@ -11,9 +11,20 @@ interface DiffOptions {
   readonly from?: string;          // tree-ish, full rev grammar; default 'HEAD'
   readonly to?: string;            // tree-ish, full rev grammar; default empty tree
   readonly detectRenames?: boolean;
+  readonly renameOptions?: RenameDetectOptions;  // fine-tune detection; only used when detectRenames is true
   readonly recursive?: boolean;    // recurse into sub-trees (`git diff-tree -r`); default false
   readonly withStat?: boolean;     // attach per-file { added, deleted, binary } counts
 }
+
+// RenameDetectOptions knobs:
+//   threshold?:      numeric 0..MAX_SCORE rename similarity gate (default 50%); callers map
+//                    git's -M50% / -M50 / -M0.5 forms to this number.
+//   copies?:         'off' (default) | 'on' (detect copies from modified sources, -C) |
+//                    'harder' (widen copy sources to all preimage paths, -C -C)
+//   copyThreshold?:  numeric 0..MAX_SCORE copy similarity gate; defaults to threshold.
+//   breakRewrites?:  { score: number; merge: number } | false (default false, -B off)
+//                    score: dissimilarity gate to attempt a break; merge: gate to keep broken.
+//                    A merge value of 0 maps to the default keep-broken gate (60%).
 
 interface TreeDiff {
   readonly changes: ReadonlyArray<DiffChange>;
@@ -38,6 +49,9 @@ const incoming = await repo.diff({ from: 'main', to: 'feature/x' });
 // so `HEAD~1` / `HEAD^` / annotated tags resolve to their tree.
 const withRenames = await repo.diff({ from: 'HEAD~1', detectRenames: true });
 
+// Detect renames and copies from modified sources, using default thresholds.
+const withCopies = await repo.diff({ detectRenames: true, renameOptions: { copies: 'on' } });
+
 // Recurse into sub-directories (`git diff-tree -r`): a change under `src/`
 // shows as per-file `DiffChange`s, not one `src` tree-entry change.
 const perFile = await repo.diff({ from: 'HEAD~1', recursive: true });
@@ -55,7 +69,13 @@ for (const c of stat.changes) console.log(c.added, c.deleted, c.binary, c);
 
 ## Data guarantees
 
-- The `DiffChange` union covers add, delete, modify, rename, and type-change.
+- The `DiffChange` union covers add, delete, modify, rename, copy, and type-change.
+- A `rename` or `copy` change carries `oldId`/`newId`/`oldMode`/`newMode` (both
+  sides of the pairing) and a `similarity` score (`SimilarityScore` with `score`
+  in `0..MAX_SCORE` and `maxScore === MAX_SCORE`).
+- A `modify` may carry a `broken` dissimilarity datum (`SimilarityScore` where
+  `score = MAX_SCORE − similarity`) when `-B` break detection kept the modify broken
+  rather than folding it into a rename.
 - `withStat` reads blob contents and runs a line diff per file; without it the
   diff is purely tree-level (no blob reads).
 - A unified patch reconstructed from the `TreeDiff` matches `git diff
