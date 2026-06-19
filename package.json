@@ -731,7 +731,7 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.3",
     "@biomejs/biome": "2.5.0",
-    "@cloudflare/vitest-pool-workers": "0.16.17",
+    "@cloudflare/vitest-pool-workers": "0.16.18",
     "@cloudflare/workers-types": "4.20260619.1",
     "@commitlint/cli": "21.0.2",
     "@commitlint/config-conventional": "21.0.2",
@@ -755,7 +755,7 @@
     "knip": "6.17.1",
     "lint-staged": "17.0.7",
     "minimatch": "10.2.5",
-    "rollup": "4.62.1",
+    "rollup": "4.62.2",
     "rollup-plugin-dts": "6.4.1",
     "rollup-plugin-visualizer": "7.0.1",
     "size-limit": "12.1.0",
@@ -763,6 +763,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.9",
     "wireit": "0.14.12",
-    "wrangler": "4.102.0"
+    "wrangler": "4.103.0"
   }
 }
