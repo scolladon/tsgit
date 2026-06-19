@@ -3,6 +3,12 @@ import type { FileMode, ObjectId, Tree, TreeEntry } from '../../../../src/domain
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { arbObjectId } from '../objects/arbitraries.js';
 
+export function arbBlobBytes(): fc.Arbitrary<Uint8Array> {
+  return fc
+    .array(fc.integer({ min: 0x20, max: 0x7e }), { minLength: 1, maxLength: 256 })
+    .map((codes) => new Uint8Array(codes));
+}
+
 const NON_DIR_MODES: ReadonlyArray<FileMode> = [
   FILE_MODE.REGULAR,
   FILE_MODE.EXECUTABLE,

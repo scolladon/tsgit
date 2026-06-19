@@ -64,6 +64,17 @@ export { comparePaths, sortByPath } from './path-compare.js';
 export type { RenameDetectOptions } from './rename-detect.js';
 export { detectRenames } from './rename-detect.js';
 
+// Similarity scoring
+export type { SimilarityScore } from './similarity.js';
+export {
+  DEFAULT_BREAK_SCORE,
+  DEFAULT_MERGE_SCORE,
+  DEFAULT_RENAME_THRESHOLD,
+  estimateSimilarity,
+  MAX_SCORE,
+  toSimilarityPercent,
+} from './similarity.js';
+
 // Per-file stat counts (withStat)
 export type { StatDiffChange, StatFields, StatTreeDiff } from './stat-fields.js';
 export { computeStatFields } from './stat-fields.js';
