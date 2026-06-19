@@ -8,6 +8,7 @@ import type {
 } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
 import { diffLines, isBinary, type LineHunk, splitLines } from './line-diff.js';
+import { toSimilarityPercent } from './similarity.js';
 
 export interface PatchFile {
   readonly change: DiffChange;
@@ -498,7 +499,7 @@ function renderModifyOrTypeChangeBlock(
 function renderRenameBlock(change: RenameChange, prefix: PatchPathPrefix): string[] {
   return [
     diffGitHeader(change.oldPath, change.newPath, prefix),
-    'similarity index 100%',
+    `similarity index ${toSimilarityPercent(change.similarity.score)}%`,
     `rename from ${change.oldPath}`,
     `rename to ${change.newPath}`,
   ];

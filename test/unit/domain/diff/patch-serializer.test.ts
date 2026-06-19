@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PatchFile } from '../../../../src/domain/diff/patch-serializer.js';
 import { renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -84,8 +85,11 @@ const renameFile = (oldPath: string, newPath: string): PatchFile => ({
     type: 'rename',
     oldPath: oldPath as FilePath,
     newPath: newPath as FilePath,
-    id: OID_A,
-    mode: FILE_MODE.REGULAR,
+    oldId: OID_A,
+    newId: OID_A,
+    oldMode: FILE_MODE.REGULAR,
+    newMode: FILE_MODE.REGULAR,
+    similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
   },
 });
 

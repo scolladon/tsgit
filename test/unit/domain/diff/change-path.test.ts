@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { primaryPath } from '../../../../src/domain/diff/change-path.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -56,8 +57,11 @@ describe('primaryPath — per-variant sort key', () => {
           type: 'rename' as const,
           oldPath: 'src' as FilePath,
           newPath: 'dest' as FilePath,
-          id: ID_A,
-          mode: MODE,
+          oldId: ID_A,
+          newId: ID_A,
+          oldMode: MODE,
+          newMode: MODE,
+          similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
         };
 
         // Act

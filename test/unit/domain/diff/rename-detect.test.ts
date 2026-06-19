@@ -6,6 +6,7 @@ import type {
   TreeDiff,
 } from '../../../../src/domain/diff/diff-change.js';
 import { detectRenames } from '../../../../src/domain/diff/rename-detect.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -58,10 +59,19 @@ describe('detectRenames', () => {
             type: 'rename',
             oldPath: 'old.txt',
             newPath: 'new.txt',
-            id: ID_A,
-            mode: FILE_MODE.REGULAR,
+            oldId: ID_A,
+            newId: ID_A,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
           },
         ]);
+        // Exact pair: oldId === newId, similarity.score === MAX_SCORE
+        const rename = result.changes[0];
+        if (rename?.type === 'rename') {
+          expect(rename.oldId).toBe(rename.newId);
+          expect(rename.similarity.score).toBe(MAX_SCORE);
+        }
       });
     });
   });
@@ -252,8 +262,11 @@ describe('detectRenames', () => {
             type: 'rename',
             oldPath: 'old.txt',
             newPath: 'new.txt',
-            id: ID_A,
-            mode: FILE_MODE.REGULAR,
+            oldId: ID_A,
+            newId: ID_A,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
           },
         ]);
       });

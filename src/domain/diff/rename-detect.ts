@@ -2,6 +2,7 @@ import type { ObjectId } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
 import { sortByPath } from './path-compare.js';
+import { MAX_SCORE } from './similarity.js';
 
 export interface RenameDetectOptions {
   readonly limit?: number;
@@ -60,8 +61,11 @@ function tryFoldAdd(
       type: 'rename',
       oldPath: del.oldPath,
       newPath: add.newPath,
-      id: add.newId,
-      mode: add.newMode,
+      oldId: del.oldId,
+      newId: add.newId,
+      oldMode: del.oldMode,
+      newMode: add.newMode,
+      similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
     },
     consumedDelete: del,
   };

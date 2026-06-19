@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
@@ -296,8 +297,11 @@ describe('diffTrees', () => {
             type: 'rename',
             oldPath: 'a/old.txt',
             newPath: 'b/new.txt',
-            id: blobId,
-            mode: FILE_MODE.REGULAR,
+            oldId: blobId,
+            newId: blobId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
           },
         ]);
       });

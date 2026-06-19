@@ -13,6 +13,7 @@ import type {
   RenameChange,
   TypeChangeChange,
 } from '../../../../src/domain/diff/index.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -95,8 +96,11 @@ describe('materialisePatchFiles', () => {
             type: 'rename',
             oldPath: 'c.txt' as FilePath,
             newPath: 'd.txt' as FilePath,
-            id: renameOid,
-            mode: FILE_MODE.REGULAR,
+            oldId: renameOid,
+            newId: renameOid,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
           },
         ];
 

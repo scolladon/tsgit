@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DiffChange, PatchFile } from '../../../../src/domain/diff/index.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   type CommitPatchInput,
@@ -163,8 +164,11 @@ describe('renderRangePatch', () => {
         type: 'rename',
         oldPath: path('old.txt'),
         newPath: path('new.txt'),
-        id: oid('a'),
-        mode: FILE_MODE.REGULAR,
+        oldId: oid('a'),
+        newId: oid('a'),
+        oldMode: FILE_MODE.REGULAR,
+        newMode: FILE_MODE.REGULAR,
+        similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
       };
       const input = baseInput({ files: [{ change }] });
 

@@ -1,4 +1,5 @@
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
+import type { SimilarityScore } from './similarity.js';
 
 export type DiffChangeType = 'add' | 'delete' | 'modify' | 'rename' | 'type-change';
 
@@ -29,8 +30,11 @@ export interface RenameChange {
   readonly type: 'rename';
   readonly oldPath: FilePath;
   readonly newPath: FilePath;
-  readonly id: ObjectId;
-  readonly mode: FileMode;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly oldMode: FileMode;
+  readonly newMode: FileMode;
+  readonly similarity: SimilarityScore;
 }
 
 export interface TypeChangeChange {

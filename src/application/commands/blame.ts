@@ -336,7 +336,7 @@ const renamedSource = async (
   });
   for (const change of diff.changes) {
     if (change.type === 'rename' && change.newPath === path) {
-      return { sourcePath: change.oldPath, blobId: change.id };
+      return { sourcePath: change.oldPath, blobId: change.oldId };
     }
   }
   return undefined;

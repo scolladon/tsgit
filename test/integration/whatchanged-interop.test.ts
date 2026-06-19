@@ -63,7 +63,7 @@ const rawLine = (c: DiffChange): string => {
     case 'type-change':
       return `:${c.oldMode} ${c.newMode} ${c.oldId} ${c.newId} T\t${c.path}`;
     case 'rename':
-      return `:${c.mode} ${c.mode} ${c.id} ${c.id} R100\t${c.oldPath}\t${c.newPath}`;
+      return `:${c.oldMode} ${c.newMode} ${c.oldId} ${c.newId} R100\t${c.oldPath}\t${c.newPath}`;
   }
 };
 
