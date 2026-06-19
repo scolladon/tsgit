@@ -1725,4 +1725,69 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  describe('Given a broken modify where only the new content is binary', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files differ (single binary side is sufficient)', () => {
+        // Arrange — old side is text, new side contains NUL → isBinary(new) is true.
+        // The || guard at line 510 fires on the binary side alone; && would miss it.
+        const textOld = utf8.encode('plain text\n');
+        const binaryNew = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'image.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent: textOld,
+          newContent: binaryNew,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — binary new side triggers the binary path even when old is text
+        expect(sut).toContain('Binary files a/image.png and b/image.png differ');
+        // No hunk markers should appear (binary path returns early)
+        expect(sut).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a sub-100% rename change where only the new content is binary', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files differ (single binary side is sufficient)', () => {
+        // Arrange — old side is text, new side contains NUL → isBinary(new) is true.
+        // The || guard fires on the binary side alone; && would miss it (old is not binary).
+        const textOld = utf8.encode('plain text file\n');
+        const binaryNew = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'readme.txt' as FilePath,
+            newPath: 'logo.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 0, maxScore: MAX_SCORE },
+          },
+          oldContent: textOld,
+          newContent: binaryNew,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — binary new side triggers the binary path even when old is text
+        expect(sut).toContain('Binary files a/readme.txt and b/logo.png differ');
+        // No hunk markers should appear (binary path returns early)
+        expect(sut).not.toContain('@@');
+      });
+    });
+  });
 });
