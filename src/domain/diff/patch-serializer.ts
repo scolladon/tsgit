@@ -142,17 +142,18 @@ export interface OutputHunk {
   readonly body: ReadonlyArray<BodyLine>;
 }
 
-function commonEditsFrom(hunk: LineHunk, oldLines: ReadonlyArray<string>): Edit[] {
+function commonEditsFrom(hunk: LineHunk, newLines: ReadonlyArray<string>): Edit[] {
   const edits: Edit[] = [];
   for (let i = hunk.oursStart; i < hunk.oursEnd; i++) {
-    // LineHunk indices are produced by buildHunks against the same line array,
-    // so oldLines[i] is always defined; the non-null assertion mirrors
-    // `line-diff.ts`'s own conventions.
+    // A context line is emitted from the post-image: identical to the pre-image
+    // for a byte-exact match, but the new-side bytes when the match is only
+    // whitespace-equal under a line-key mode (git emits context from the new side).
+    const newIndex = hunk.theirsStart + (i - hunk.oursStart);
     edits.push({
       kind: 'context',
       oldIndex: i,
-      newIndex: hunk.theirsStart + (i - hunk.oursStart),
-      text: oldLines[i]!,
+      newIndex,
+      text: newLines[newIndex]!,
     });
   }
   return edits;
@@ -189,7 +190,7 @@ function editsFromHunk(
   oldLines: ReadonlyArray<string>,
   newLines: ReadonlyArray<string>,
 ): Edit[] {
-  if (hunk.kind === 'common') return commonEditsFrom(hunk, oldLines);
+  if (hunk.kind === 'common') return commonEditsFrom(hunk, newLines);
   if (hunk.kind === 'ours-only') return deleteEditsFrom(hunk, oldLines);
   return insertEditsFrom(hunk, newLines);
 }

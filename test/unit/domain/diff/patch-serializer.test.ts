@@ -1793,7 +1793,7 @@ describe('patch-serializer', () => {
 
   describe('Given a lineKey patch option', () => {
     describe('When renderPatch is called with mode:all on a file with a ws-only and a real change (#M1)', () => {
-      it('Then renders the ws-only line as context (old bytes) and the real change as delete/insert', () => {
+      it('Then renders the ws-only line as context with the post-image bytes and the real change as delete/insert', () => {
         // Arrange — ws-only line:  "  ws" → "    ws" (only whitespace change)
         // real line: "real" → "REAL" (content change)
         const file = modifyFile('f.txt', '  ws\nreal\n', '    ws\nREAL\n');
@@ -1801,9 +1801,9 @@ describe('patch-serializer', () => {
         // Act
         const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
 
-        // Assert — ws-only line is context (space prefix) with OLD bytes "  ws";
-        // context lines carry the old-side bytes (git-faithful);
-        // real line appears as delete/insert pair.
+        // Assert — the ws-only line is context (single-space prefix) carrying the
+        // NEW-side bytes "    ws" (git emits context from the post-image);
+        // the real line appears as a delete/insert pair.
         expect(sut).toBe(
           [
             'diff --git a/f.txt b/f.txt',
@@ -1811,12 +1811,27 @@ describe('patch-serializer', () => {
             '--- a/f.txt',
             '+++ b/f.txt',
             '@@ -1,2 +1,2 @@',
-            '   ws',
+            '     ws',
             '-real',
             '+REAL',
             '',
           ].join('\n'),
         );
+      });
+    });
+
+    describe('When renderPatch is called with mode:all on a tab-vs-space ws-only context line', () => {
+      it('Then the context line carries the post-image spaces, not the pre-image tabs', () => {
+        // Arrange — old has two tabs, new has four spaces before "ws"; equal under
+        // mode:all, so the line is context. The bytes disambiguate which side wins.
+        const file = modifyFile('t.txt', '\t\tws\nreal\n', '    ws\nREAL\n');
+
+        // Act
+        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert — context line is the new-side "    ws" (4 spaces), never "\t\tws".
+        expect(sut).toContain('\n     ws\n');
+        expect(sut).not.toContain('\t\tws');
       });
     });
 
