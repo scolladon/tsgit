@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
@@ -282,6 +283,169 @@ describe('similarity', () => {
 
         // Assert
         expect(result).toBe(0);
+      });
+    });
+  });
+
+  describe('countSpanhashChanges', () => {
+    describe('Given both src and dst are empty, When countSpanhashChanges is called', () => {
+      it('Then srcCopied is 0 and literalAdded is 0', () => {
+        // Arrange
+        const src = new Uint8Array(0);
+        const dst = new Uint8Array(0);
+
+        // Act
+        const result = countSpanhashChanges(src, dst);
+
+        // Assert
+        expect(result.srcCopied).toBe(0);
+        expect(result.literalAdded).toBe(0);
+      });
+    });
+
+    describe('Given src is empty and dst is non-empty, When countSpanhashChanges is called', () => {
+      it('Then srcCopied is 0 and literalAdded equals dstSize', () => {
+        // Arrange
+        const src = new Uint8Array(0);
+        const dst = enc.encode('hello world\n');
+
+        // Act
+        const result = countSpanhashChanges(src, dst);
+
+        // Assert
+        expect(result.srcCopied).toBe(0);
+        expect(result.literalAdded).toBe(dst.length);
+      });
+    });
+
+    describe('Given src is non-empty and dst is empty, When countSpanhashChanges is called', () => {
+      it('Then srcCopied is 0 and literalAdded is 0', () => {
+        // Arrange
+        const src = enc.encode('hello world\n');
+        const dst = new Uint8Array(0);
+
+        // Act
+        const result = countSpanhashChanges(src, dst);
+
+        // Assert
+        expect(result.srcCopied).toBe(0);
+        expect(result.literalAdded).toBe(0);
+      });
+    });
+
+    describe('Given src and dst are identical, When countSpanhashChanges is called', () => {
+      it('Then srcCopied equals srcSize and literalAdded is 0', () => {
+        // Arrange
+        const content = enc.encode('shared content alpha beta gamma\n'.repeat(5));
+        const src = content;
+        const dst = content;
+
+        // Act
+        const result = countSpanhashChanges(src, dst);
+
+        // Assert
+        expect(result.srcCopied).toBe(src.length);
+        expect(result.literalAdded).toBe(0);
+      });
+    });
+
+    describe('Given src and dst are fully disjoint, When countSpanhashChanges is called', () => {
+      it('Then srcCopied is 0 and literalAdded equals dstSize', () => {
+        // Arrange — XOR complement guarantees no shared chunk hashes
+        const base = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
+        const flipped = new Uint8Array(base.map((b) => b ^ 0xff));
+        const src = new Uint8Array([...base, ...base, ...base, 0x0a]);
+        const dst = new Uint8Array([...flipped, ...flipped, ...flipped, 0x0a]);
+
+        // Act
+        const result = countSpanhashChanges(src, dst);
+
+        // Assert
+        expect(result.srcCopied).toBe(0);
+        expect(result.literalAdded).toBe(dst.length);
+      });
+    });
+
+    describe('Given the pinned B2 fixture (total=20 lines, shared=7), When countSpanhashChanges is called', () => {
+      it('Then srcCopied=497 and merge_score yields git-faithful M065', () => {
+        // Arrange — breakContent('old',20,7) vs breakContent('new',20,7)
+        // Verified against real git 2.54.0: `git diff -B --name-status` → M065
+        // merge_score = (srcSize - srcCopied) * MAX_SCORE / srcSize
+        //             = (1420 - 497) * 60000 / 1420 = 923 * 60000 / 1420 = 39000 → 65%
+        const makeBreakContent = (
+          kind: 'old' | 'new',
+          total: number,
+          shared: number,
+        ): Uint8Array => {
+          const lines: string[] = [];
+          for (let i = 0; i < total; i++) {
+            if (kind === 'old' || i < shared) {
+              lines.push(
+                `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\n`,
+              );
+            } else {
+              lines.push(
+                `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\n`,
+              );
+            }
+          }
+          return enc.encode(lines.join(''));
+        };
+        const src = makeBreakContent('old', 20, 7);
+        const dst = makeBreakContent('new', 20, 7);
+        const srcSize = src.length;
+
+        // Act
+        const sut = countSpanhashChanges(src, dst);
+
+        // Assert — exact srcCopied to kill arithmetic mutants
+        expect(sut.srcCopied).toBe(497);
+        expect(sut.literalAdded).toBe(dst.length - 497);
+
+        // Assert — merge_score reproduces git's M065
+        const mergeScore = Math.trunc(((srcSize - sut.srcCopied) * MAX_SCORE) / srcSize);
+        expect(Math.trunc((mergeScore * 100) / MAX_SCORE)).toBe(65);
+      });
+    });
+
+    describe('Given the pinned B5 fixture (total=50 lines, shared=20), When countSpanhashChanges is called', () => {
+      it('Then srcCopied=1420 and merge_score yields git-faithful M060', () => {
+        // Arrange — breakContent('old',50,20) vs breakContent('new',50,20)
+        // Verified against real git 2.54.0: `git diff -B --name-status` → M060
+        // merge_score = (3550 - 1420) * 60000 / 3550 = 2130 * 60000 / 3550 = 36000 → 60%
+        const makeBreakContent = (
+          kind: 'old' | 'new',
+          total: number,
+          shared: number,
+        ): Uint8Array => {
+          const lines: string[] = [];
+          for (let i = 0; i < total; i++) {
+            if (kind === 'old' || i < shared) {
+              lines.push(
+                `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\n`,
+              );
+            } else {
+              lines.push(
+                `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\n`,
+              );
+            }
+          }
+          return enc.encode(lines.join(''));
+        };
+        const src = makeBreakContent('old', 50, 20);
+        const dst = makeBreakContent('new', 50, 20);
+        const srcSize = src.length;
+
+        // Act
+        const sut = countSpanhashChanges(src, dst);
+
+        // Assert — exact srcCopied to kill arithmetic mutants
+        expect(sut.srcCopied).toBe(1420);
+        expect(sut.literalAdded).toBe(dst.length - 1420);
+
+        // Assert — merge_score reproduces git's M060
+        const mergeScore = Math.trunc(((srcSize - sut.srcCopied) * MAX_SCORE) / srcSize);
+        expect(Math.trunc((mergeScore * 100) / MAX_SCORE)).toBe(60);
       });
     });
   });

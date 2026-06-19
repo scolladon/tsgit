@@ -92,6 +92,48 @@ function countSrcCopied(srcMap: Map<number, number>, dstMap: Map<number, number>
 }
 
 /**
+ * Raw change counts from git's `diffcore_count_changes` in `diffcore-delta.c`.
+ *
+ * - `srcCopied`: bytes of `src` whose chunk hash also appears in `dst`
+ *   (min(src_cnt, dst_cnt) per hash bucket, summed). This is the "shared"
+ *   byte count used by both similarity and break scoring.
+ * - `literalAdded`: bytes of `dst` not accounted for by `src`
+ *   (`dstSize − srcCopied`). Together with `srcCopied`, callers can derive
+ *   git's break-attempt gate and merge-score without a second blob scan.
+ */
+export interface SpanhashChangeCounts {
+  readonly srcCopied: number;
+  readonly literalAdded: number;
+}
+
+/**
+ * Return git's raw `diffcore_count_changes` outputs for a (src, dst) blob pair.
+ * These are the load-bearing counts for break scoring (not similarity scoring):
+ *
+ *   merge_score  = (srcSize − srcCopied) * MAX_SCORE / srcSize   (denominator = srcSize)
+ *   break_score  = min(srcSize + dstSize − 2*srcCopied, maxSize) * MAX_SCORE / maxSize
+ *
+ * Special cases mirror `estimateSimilarity`:
+ * - Both empty → srcCopied = 0, literalAdded = 0
+ * - src empty  → srcCopied = 0, literalAdded = dstSize
+ * - dst empty  → srcCopied = 0, literalAdded = 0
+ */
+export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): SpanhashChangeCounts {
+  const srcSize = src.length;
+  const dstSize = dst.length;
+
+  if (srcSize === 0 || dstSize === 0) {
+    return { srcCopied: 0, literalAdded: dstSize };
+  }
+
+  const srcMap = buildChunkMap(src);
+  const dstMap = buildChunkMap(dst);
+  const srcCopied = countSrcCopied(srcMap, dstMap);
+
+  return { srcCopied, literalAdded: dstSize - srcCopied };
+}
+
+/**
  * Estimate the similarity between two byte blobs using git's spanhash algorithm.
  * Returns a raw score in 0..MAX_SCORE.
  *
