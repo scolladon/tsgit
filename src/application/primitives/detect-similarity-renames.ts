@@ -103,14 +103,19 @@ function buildCopySourcesForHarder(
   return sources;
 }
 
-type ScoredKind = 'rename' | 'copy';
-
-interface ScoredTriple {
-  readonly kind: ScoredKind;
-  readonly src: DeleteChange | CopySource;
-  readonly add: AddChange;
-  readonly score: number;
-}
+type ScoredTriple =
+  | {
+      readonly kind: 'rename';
+      readonly src: DeleteChange;
+      readonly add: AddChange;
+      readonly score: number;
+    }
+  | {
+      readonly kind: 'copy';
+      readonly src: CopySource;
+      readonly add: AddChange;
+      readonly score: number;
+    };
 
 /**
  * Maximum candidates retained per destination, matching git's NUM_CANDIDATE_PER_DST.
@@ -131,14 +136,16 @@ function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): void {
     return;
   }
   // Find the slot with the minimum score.
+  // slots is always full (length === NUM_CANDIDATE_PER_DST) here; each element is defined.
   let minIdx = 0;
   for (let i = 1; i < slots.length; i++) {
-    if ((slots[i] as ScoredTriple).score < (slots[minIdx] as ScoredTriple).score) {
-      minIdx = i;
-    }
+    const cur = slots[i];
+    const min = slots[minIdx];
+    if (cur !== undefined && min !== undefined && cur.score < min.score) minIdx = i;
   }
   // Replace only when strictly better (not equal).
-  if (candidate.score > (slots[minIdx] as ScoredTriple).score) {
+  const minSlot = slots[minIdx];
+  if (minSlot !== undefined && candidate.score > minSlot.score) {
     slots[minIdx] = candidate;
   }
 }
@@ -315,26 +322,23 @@ function greedySelect(triples: ReadonlyArray<ScoredTriple>): ReadonlyArray<Greed
     if (usedAdds.has(triple.add)) continue;
 
     if (triple.kind === 'rename') {
-      const del = triple.src as DeleteChange;
-      if (usedDeletes.has(del)) continue;
-      usedDeletes.add(del);
+      // Discriminated union: triple.src is DeleteChange here — no cast needed.
+      if (usedDeletes.has(triple.src)) continue;
+      usedDeletes.add(triple.src);
       usedAdds.add(triple.add);
       matches.push({
         kind: 'rename',
-        change: buildRenameChange(del, triple.add, triple.score),
-        del,
+        change: buildRenameChange(triple.src, triple.add, triple.score),
+        del: triple.src,
         add: triple.add,
       });
     } else {
-      // Copy: only consumed if the add is not yet consumed.
-      // The copy source is NOT consumed (retained in result set).
-      // Check if the copy src is actually a delete — if so, it must not be consumed
-      // as a delete already (but copy sources are CopySource, not DeleteChange).
+      // Copy: only the add is consumed; the copy source is NOT consumed (retained in result set).
+      // Discriminated union: triple.src is CopySource here — no cast needed.
       usedAdds.add(triple.add);
-      const src = triple.src as CopySource;
       matches.push({
         kind: 'copy',
-        change: buildCopyChange(src, triple.add, triple.score),
+        change: buildCopyChange(triple.src, triple.add, triple.score),
         add: triple.add,
       });
     }
