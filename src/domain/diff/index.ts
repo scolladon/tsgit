@@ -34,7 +34,7 @@ export {
 } from './index-diff.js';
 
 // Line diff
-export type { LineDiff, LineHunk } from './line-diff.js';
+export type { LineDiff, LineDiffOptions, LineHunk } from './line-diff.js';
 export {
   BINARY_DETECTION_BYTES,
   diffLines,

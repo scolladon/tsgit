@@ -1,4 +1,5 @@
 import { bytesEqual } from '../objects/encoding.js';
+import { type LineKey, linesEqualUnder } from './whitespace.js';
 
 export interface LineHunk {
   readonly kind: 'common' | 'ours-only' | 'theirs-only';
@@ -6,6 +7,10 @@ export interface LineHunk {
   readonly oursEnd: number;
   readonly theirsStart: number;
   readonly theirsEnd: number;
+}
+
+export interface LineDiffOptions {
+  readonly lineKey?: LineKey;
 }
 
 export interface LineDiff {
@@ -88,6 +93,8 @@ function chooseDown(v: ReadonlyArray<number>, offset: number, d: number, k: numb
   return k === -d || v[k - 1 + offset]! < v[k + 1 + offset]!;
 }
 
+type LineEq = (a: Uint8Array, b: Uint8Array) => boolean;
+
 function advanceSnake(
   oursLines: ReadonlyArray<Uint8Array>,
   theirsLines: ReadonlyArray<Uint8Array>,
@@ -95,15 +102,12 @@ function advanceSnake(
   offset: number,
   d: number,
   k: number,
+  eq: LineEq,
 ): { readonly x: number; readonly y: number } {
   const down = chooseDown(v, offset, d, k);
   let x = down ? v[k + 1 + offset]! : v[k - 1 + offset]! + 1;
   let y = x - k;
-  while (
-    x < oursLines.length &&
-    y < theirsLines.length &&
-    bytesEqual(oursLines[x]!, theirsLines[y]!)
-  ) {
+  while (x < oursLines.length && y < theirsLines.length && eq(oursLines[x]!, theirsLines[y]!)) {
     x++;
     y++;
   }
@@ -113,6 +117,7 @@ function advanceSnake(
 function computeMyersTrace(
   oursLines: ReadonlyArray<Uint8Array>,
   theirsLines: ReadonlyArray<Uint8Array>,
+  eq: LineEq,
 ): MyersResult | undefined {
   const M = oursLines.length;
   const N = theirsLines.length;
@@ -145,7 +150,7 @@ function computeMyersTrace(
     for (let k = -d; k <= d; k += 2) {
       iterations++;
       if (iterations > iterationBudget) return undefined;
-      const snake = advanceSnake(oursLines, theirsLines, v, offset, d, k);
+      const snake = advanceSnake(oursLines, theirsLines, v, offset, d, k, eq);
       v[k + offset] = snake.x;
       if (snake.x >= M && snake.y >= N) {
         return { trace, totalD: d };
@@ -252,7 +257,14 @@ function wholeFileFallback(
   return { hunks, oursLines, theirsLines, degraded: true };
 }
 
-export function diffLines(ours: Uint8Array, theirs: Uint8Array): LineDiff {
+export function diffLines(
+  ours: Uint8Array,
+  theirs: Uint8Array,
+  options?: LineDiffOptions,
+): LineDiff {
+  const lineKey = options?.lineKey;
+  const eq: LineEq = lineKey ? (a, b) => linesEqualUnder(a, b, lineKey) : bytesEqual;
+
   const oursLines = splitLines(ours);
   const theirsLines = splitLines(theirs);
   const M = oursLines.length;
@@ -267,7 +279,7 @@ export function diffLines(ours: Uint8Array, theirs: Uint8Array): LineDiff {
     };
   }
 
-  const myers = computeMyersTrace(oursLines, theirsLines);
+  const myers = computeMyersTrace(oursLines, theirsLines, eq);
   if (myers === undefined) {
     return wholeFileFallback(oursLines, theirsLines);
   }

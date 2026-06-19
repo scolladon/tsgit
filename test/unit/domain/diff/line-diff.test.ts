@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import type { LineDiffOptions } from '../../../../src/domain/diff/line-diff.js';
 import {
   BINARY_DETECTION_BYTES,
   diffLines,
@@ -710,6 +711,60 @@ describe('line-diff — diffLines', () => {
           { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: M, oursEnd: M, theirsStart: 0, theirsEnd: N },
         ]);
+      });
+    });
+  });
+});
+
+describe('line-diff — diffLines lineKey option', () => {
+  describe('Given a lineKey option', () => {
+    describe('When the file has a whitespace-only changed line and a real changed line, mode all', () => {
+      it('Then the ws-only line is common, real line stays as ours-only/theirs-only, raw bytes preserved', () => {
+        // Arrange
+        const sut = diffLines;
+        const ours = enc('  ws\nreal\n');
+        const theirs = enc('    ws\nREAL\n');
+        const options: LineDiffOptions = { lineKey: { mode: 'all', ignoreCrAtEol: false } };
+
+        // Act
+        const result = sut(ours, theirs, options);
+
+        // Assert — ws-only line (indices 0) is common; real line (indices 1) is ours-only/theirs-only
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
+          { kind: 'common', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
+          { kind: 'ours-only', oursStart: 1, oursEnd: 2, theirsStart: 1, theirsEnd: 1 },
+          { kind: 'theirs-only', oursStart: 2, oursEnd: 2, theirsStart: 1, theirsEnd: 2 },
+        ]);
+        // Raw original bytes are preserved in the returned arrays (Requirement 3)
+        expect(bytesEqual(result.oursLines[0]!, enc('  ws\n'))).toBe(true);
+        expect(bytesEqual(result.theirsLines[0]!, enc('    ws\n'))).toBe(true);
+      });
+    });
+
+    describe('When diffLines called with no options, empty options, and mode:none — all on a whitespace-different fixture', () => {
+      it('Then all three call forms produce identical hunks (default regression guard)', () => {
+        // Arrange
+        const sut = diffLines;
+        const ours = enc('  ws\nreal\n');
+        const theirs = enc('    ws\nreal\n');
+
+        // Act
+        const resultNoOpts = sut(ours, theirs);
+        const resultEmptyOpts = sut(ours, theirs, {});
+        const resultNoneKey = sut(ours, theirs, {
+          lineKey: { mode: 'none', ignoreCrAtEol: false },
+        });
+
+        // Assert — all three are byte-identical in structure
+        expect(resultEmptyOpts.hunks).toEqual(resultNoOpts.hunks);
+        expect(resultNoneKey.hunks).toEqual(resultNoOpts.hunks);
+        expect(resultEmptyOpts.degraded).toBe(resultNoOpts.degraded);
+        expect(resultNoneKey.degraded).toBe(resultNoOpts.degraded);
+        // Under no normalization, the ws-only line change is visible
+        expect(
+          resultNoOpts.hunks.some((h) => h.kind === 'ours-only' || h.kind === 'theirs-only'),
+        ).toBe(true);
       });
     });
   });
