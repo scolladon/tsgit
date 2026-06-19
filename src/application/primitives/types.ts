@@ -200,6 +200,23 @@ export interface DiffTreesOptions {
    * line diff), so the result is a `StatTreeDiff`.
    */
   readonly withStat?: boolean;
+  /**
+   * Whitespace normalization mode applied to line equality during diff. Mirrors
+   * git's `-w` (`'all'`), `-b` (`'change'`), and `--ignore-space-at-eol`
+   * (`'at-eol'`). Absent means exact byte comparison.
+   */
+  readonly ignoreWhitespace?: 'all' | 'change' | 'at-eol';
+  /**
+   * When true, a trailing CR immediately before the line terminator is ignored
+   * during line comparison. Mirrors git's `--ignore-cr-at-eol`.
+   */
+  readonly ignoreCrAtEol?: boolean;
+  /**
+   * When true, change groups consisting solely of blank lines are omitted from
+   * line counts and treated as no-change for the drop pass. Mirrors git's
+   * `--ignore-blank-lines`.
+   */
+  readonly ignoreBlankLines?: boolean;
 }
 
 /**

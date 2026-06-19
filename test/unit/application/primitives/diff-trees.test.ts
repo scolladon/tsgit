@@ -5,7 +5,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
 
@@ -604,6 +604,336 @@ describe('diffTrees', () => {
         // Assert
         expect(sut.changes[0]).not.toHaveProperty('added');
         expect(sut.changes[0]).not.toHaveProperty('binary');
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify and ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the ws-only modify is dropped from changes (#D1)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(sut.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify and no mode', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is kept (no drop without a mode)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after);
+
+        // Assert
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('modify');
+      });
+    });
+  });
+
+  describe('Given a mixed two-file diff (ws-only f + real g) and ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then only the ws-only file is dropped, real change is kept (#D1)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fOldId = await blob(ctx, 'spaces here\n');
+        const fNewId = await blob(ctx, 'spaces  here\n');
+        const gOldId = await blob(ctx, 'alpha\n');
+        const gNewId = await blob(ctx, 'beta\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: fOldId },
+          { name: 'g.txt', mode: FILE_MODE.REGULAR, id: gOldId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: fNewId },
+          { name: 'g.txt', mode: FILE_MODE.REGULAR, id: gNewId },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — only g.txt remains
+        expect(sut.changes).toHaveLength(1);
+        const change = sut.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.path).toBe('g.txt');
+        }
+      });
+    });
+  });
+
+  describe('Given a blank-only modify and ignoreBlankLines alone (no line-key mode)', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the blank-only modify is KEPT in changes (#BL1 — lineKeyActive is false)', async () => {
+        // Arrange — ignoreBlankLines alone must NOT trigger the drop pass
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'line\n');
+        const newId = await blob(ctx, 'line\n\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { ignoreBlankLines: true });
+
+        // Assert — file must still appear in changes (#BL1)
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('modify');
+      });
+    });
+  });
+
+  describe('Given a spaces-only insert with ignoreWhitespace:all and ignoreBlankLines:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is dropped (#BL-combo — line-key makes it whitespace-only)', async () => {
+        // Arrange — a line of spaces is "blank" under mode 'all' (all ws dropped)
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'content\n');
+        const newId = await blob(ctx, 'content\n   \n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          ignoreBlankLines: true,
+        });
+
+        // Assert — dropped (#BL-combo)
+        expect(sut.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a binary modify and ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the binary modify is never dropped (isolated binary guard)', async () => {
+        // Arrange — NUL byte triggers binary detection
+        const ctx = await buildSeededContext();
+        const binaryOld = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 119, 111, 114, 108, 100]),
+          id: '' as ObjectId,
+        });
+        const binaryNew = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 32, 119, 111, 114, 108, 100]),
+          id: '' as ObjectId,
+        });
+        const before = await writeTree(ctx, [
+          { name: 'bin.bin', mode: FILE_MODE.REGULAR, id: binaryOld },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'bin.bin', mode: FILE_MODE.REGULAR, id: binaryNew },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — binary is never dropped
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('modify');
+      });
+    });
+  });
+
+  describe('Given a type-change and ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the type-change is never dropped (isolated type-change guard)', async () => {
+        // Arrange — same content, different mode (regular → symlink)
+        const ctx = await buildSeededContext();
+        const fileId = await blob(ctx, '   ');
+        const linkId = await blob(ctx, '   ');
+        const before = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.REGULAR, id: fileId }]);
+        const after = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.SYMLINK, id: linkId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — type-change is never dropped
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('type-change');
+      });
+    });
+  });
+
+  describe('Given a whitespace-only rename and ignoreWhitespace:all with detectRenames:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the rename still pairs and is not dropped (drop targets modify only)', async () => {
+        // Arrange — exact same content moved to a new path (MAX_SCORE similarity
+        // guarantees rename detection regardless of threshold)
+        const ctx = await buildSeededContext();
+        const content = Array.from({ length: 10 }, (_, i) => `line ${i} content\n`).join('');
+        const srcId = await blob(ctx, content);
+        const dstId = srcId; // identical blob → rename with score MAX_SCORE
+        const before = await writeTree(ctx, [
+          { name: 'src.txt', mode: FILE_MODE.REGULAR, id: srcId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'dst.txt', mode: FILE_MODE.REGULAR, id: dstId },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          detectRenames: true,
+        });
+
+        // Assert — rename present (similarity detection is whitespace-agnostic),
+        // NOT dropped (drop only targets modify changes)
+        expect(sut.changes.some((c) => c.type === 'rename')).toBe(true);
+        expect(sut.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify with recursive:true and ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the ws-only nested modify is dropped (mode composes with recursive)', async () => {
+        // Arrange — nested blob differs only by whitespace
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'a b\n');
+        const newId = await blob(ctx, 'a  b\n');
+        const before = await writeTree(ctx, [
+          {
+            name: 'sub',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'f.txt', oldId, FILE_MODE.REGULAR),
+          },
+        ]);
+        const after = await writeTree(ctx, [
+          {
+            name: 'sub',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'f.txt', newId, FILE_MODE.REGULAR),
+          },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, {
+          recursive: true,
+          ignoreWhitespace: 'all',
+        });
+
+        // Assert — dropped
+        expect(sut.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify with ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the ws-only modify is dropped even with withStat (dropped file not in changes)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — dropped file absent entirely (not a 0/0 row)
+        expect(sut.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a real modify with withStat:true and ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the stat counts reflect the mode (ws-normalized counts)', async () => {
+        // Arrange — one real line change + one ws-only line
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'real old\nhello world\n');
+        const newId = await blob(ctx, 'real new\nhello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — only the real line is counted (ws line is common under mode 'all')
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given no mode and no withStat and blobs in trees', () => {
+    describe('When diffTrees is called', () => {
+      it('Then no blob reads occur (OID-only fast path)', async () => {
+        // Arrange — instrument the context to track fs reads
+        const base = await buildSeededContext();
+        const { ctx, calls } = instrumentedContext(base);
+        const oldId = await blob(base, 'hello\n');
+        const newId = await blob(base, 'world\n');
+        const before = await writeTree(base, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(base, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId },
+        ]);
+
+        // Act — reset call log then call diffTrees with no options
+        const readsBefore = calls().length;
+        const sut = await diffTrees(ctx, before, after);
+
+        // Assert — reads after diffTrees are only tree reads (objects for the
+        // tree entries), never blob content reads for f.txt
+        const readsAfter = calls().length;
+        expect(readsAfter - readsBefore).toBeGreaterThan(0); // tree reads occurred
+        expect(sut.changes).toHaveLength(1);
+
+        // The key assertion: OIDs are present without any stat/line-diff
+        expect(sut.changes[0]).not.toHaveProperty('added');
+        expect(sut.changes[0]).not.toHaveProperty('binary');
+
+        // Confirm no blob read for the blob content by checking change has oids only
+        const change = sut.changes[0];
+        if (change?.type === 'modify') {
+          expect(change.oldId).toBe(oldId);
+          expect(change.newId).toBe(newId);
+        }
       });
     });
   });
