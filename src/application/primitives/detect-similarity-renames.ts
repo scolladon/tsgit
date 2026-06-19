@@ -12,6 +12,7 @@ import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
+  countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
@@ -344,6 +345,31 @@ function resolveBreakGates(breakRewrites: { readonly score: number; readonly mer
   };
 }
 
+interface BreakScores {
+  readonly computedBreakScore: number;
+  readonly dissimilarity: number;
+}
+
+/**
+ * Compute git's break-attempt gate score and merge-score for a (src, dst) blob pair.
+ *
+ * break_score  = min(srcRemoved + literalAdded, maxSize) * MAX_SCORE / maxSize
+ * merge_score  = (srcSize - srcCopied) * MAX_SCORE / srcSize   (printed as M<n>)
+ *
+ * Both mirror `diffcore-break.c::score_diff` and `diffcore-break.c::merge_score`.
+ */
+function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
+  const srcSize = src.length;
+  const dstSize = dst.length;
+  const maxSize = Math.max(srcSize, dstSize);
+  const { srcCopied, literalAdded } = countSpanhashChanges(src, dst);
+  const srcRemoved = srcSize - srcCopied;
+  const rawBreakNum = Math.min(srcRemoved + literalAdded, maxSize);
+  const computedBreakScore = maxSize > 0 ? Math.trunc((rawBreakNum * MAX_SCORE) / maxSize) : 0;
+  const dissimilarity = srcSize > 0 ? Math.trunc((srcRemoved * MAX_SCORE) / srcSize) : 0;
+  return { computedBreakScore, dissimilarity };
+}
+
 /**
  * Attempt to break dissimilar modifies into synthetic delete+add pairs.
  * Returns the broken records and a new diff with those modifies replaced.
@@ -369,9 +395,8 @@ async function attemptBreaks(
   for (const mod of modifies) {
     const oldBytes = bytesById.get(mod.oldId) ?? new Uint8Array(0);
     const newBytes = bytesById.get(mod.newId) ?? new Uint8Array(0);
-    const similarity = estimateSimilarity(oldBytes, newBytes);
-    const dissimilarity = MAX_SCORE - similarity;
-    if (dissimilarity < breakScore) continue;
+    const { computedBreakScore, dissimilarity } = computeBreakScores(oldBytes, newBytes);
+    if (computedBreakScore < breakScore) continue;
 
     const del: DeleteChange = {
       type: 'delete',

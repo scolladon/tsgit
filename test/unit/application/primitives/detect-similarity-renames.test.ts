@@ -1086,6 +1086,108 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given the git-faithful B2 fixture (total=20, shared=7, merge_score=39000 → 65%)', () => {
+    describe('When detectSimilarityRenames is called with merge gate at 39000 (inclusive)', () => {
+      it('Then broken.score equals 39000 and the modify is kept broken', async () => {
+        // Arrange — breakContent('old',20,7) vs breakContent('new',20,7)
+        // Verified against real git 2.54.0: `git diff -B --name-status` → M065
+        // merge_score = (1420 - 497) * 60000 / 1420 = 39000 → 65%
+        const makeBreakContent = (kind: 'old' | 'new', total: number, shared: number): string => {
+          const lines: string[] = [];
+          for (let i = 0; i < total; i++) {
+            if (kind === 'old' || i < shared) {
+              lines.push(
+                `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\n`,
+              );
+            } else {
+              lines.push(
+                `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\n`,
+              );
+            }
+          }
+          return lines.join('');
+        };
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, makeBreakContent('old', 20, 7));
+        const newId = await writeBlob(ctx, makeBreakContent('new', 20, 7));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — gate at 39000 (exactly the merge_score): inclusive → kept broken
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: 39000 },
+        });
+
+        // Assert — kept broken; exact score pins git's merge_score
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeDefined();
+          expect(change.broken?.score).toBe(39000);
+          expect(change.broken?.maxScore).toBe(MAX_SCORE);
+        }
+      });
+    });
+
+    describe('When detectSimilarityRenames is called with merge gate at 39001 (exclusive)', () => {
+      it('Then the modify is re-merged to a plain modify', async () => {
+        // Arrange — same fixture; gate raised above merge_score → re-merge
+        const makeBreakContent = (kind: 'old' | 'new', total: number, shared: number): string => {
+          const lines: string[] = [];
+          for (let i = 0; i < total; i++) {
+            if (kind === 'old' || i < shared) {
+              lines.push(
+                `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\n`,
+              );
+            } else {
+              lines.push(
+                `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\n`,
+              );
+            }
+          }
+          return lines.join('');
+        };
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, makeBreakContent('old', 20, 7));
+        const newId = await writeBlob(ctx, makeBreakContent('new', 20, 7));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — gate at 39001 (just above merge_score 39000): 39000 < 39001 → re-merge
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: 39001 },
+        });
+
+        // Assert — re-merged: no broken datum
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+  });
+
   describe('Given breakRewrites and a dissimilar modify whose delete-half is consumed by a rename', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the add-half remains as an add (half consumed, half stays as-is)', async () => {
