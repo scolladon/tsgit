@@ -10,11 +10,14 @@ Accepted
 
 ## Context
 
-Under an active whitespace mode, git removes a file whose only change normalizes away
-**entirely** from the change-set: it is absent from `--name-status`, `--numstat`, and
-`--raw` (not shown as an empty modify). tsgit's `domainDiffTrees` classifies such an edit
-as a `modify` because the blob OIDs differ. A post-classification drop pass is therefore
-required, and its predicate is a load-bearing faithfulness choice.
+Under an active **line-key** whitespace mode (`-w` / `-b` / `--ignore-space-at-eol` /
+`--ignore-cr-at-eol`), git removes a file whose only change normalizes away **entirely**
+from the change-set: it is absent from `--name-status`, `--numstat`, and `--raw` (not shown
+as an empty modify). tsgit's `domainDiffTrees` classifies such an edit as a `modify`
+because the blob OIDs differ. A post-classification drop pass is therefore required, and
+its predicate is a load-bearing faithfulness choice. (Pinned against real git 2.54.0:
+`--ignore-blank-lines` alone is the exception — it suppresses hunks/numstat but keeps the
+file as `M` in name-status/raw, so it is NOT a drop trigger; see ADR-379.)
 
 ## Options considered
 
@@ -33,10 +36,13 @@ required, and its predicate is a load-bearing faithfulness choice.
 
 ## Decision
 
-When a whitespace mode is active, `diffTrees` runs a drop pass that removes a `modify`
-whose mode-normalized `diffLines` (with blank-line suppression applied) produces no
-changed hunks. Binary files and type-changes are never dropped (git keeps them; the line
-diff never runs for binaries). The normalized `diffLines` computed for the drop is reused
+When a **line-key** whitespace mode is active, `diffTrees` runs a drop pass that removes a
+`modify` whose mode-normalized `diffLines` produces no changed hunks. Binary files and
+type-changes are never dropped (git keeps them; the line diff never runs for binaries).
+`--ignore-blank-lines` alone does **not** trigger the drop — it only empties the hunks/stat
+of a file that stays in the change-set (ADR-379); the combined `--ignore-blank-lines` +
+line-key case drops because the line-key normalization makes the change whitespace-only
+(pinned in the design matrix). The normalized `diffLines` computed for the drop is reused
 by the stat/patch path when those are also requested — one line diff per file. With no
 mode active, the OID-only fast path is unchanged: zero new blob reads for a default diff.
 

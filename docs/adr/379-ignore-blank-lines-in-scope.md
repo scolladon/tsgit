@@ -27,19 +27,30 @@ or defer it.
 ## Decision
 
 All five modes ship in 24.14. `--ignore-blank-lines` is implemented as a
-**hunk-emission filter**, not a line-equality-key transform: after `diffLines` produces
-hunks (under any other active line-key normalization), a change group consisting solely
-of blank lines is suppressed. "Blank" means empty *after* the other active normalization
-is applied — so a spaces-only line is blank only when `ignoreWhitespace` also strips it.
-The filter feeds the file-drop predicate (ADR-380), patch emission, and stat counts
-identically.
+**hunk/numstat suppressor**, not a line-equality-key transform and **not** a file-drop:
+after `diffLines` produces hunks (under any other active line-key normalization), a change
+group consisting solely of blank lines is suppressed from patch emission and stat counts.
+"Blank" means empty *after* the other active normalization is applied — so a spaces-only
+line is blank only when `ignoreWhitespace` also strips it. The file itself stays in the
+change-set.
+
+Pinned against real git 2.54.0: a blank-only change under `--ignore-blank-lines` keeps the
+file as `M` in `--name-status` and `--raw` (dst OID shown), `--quiet` exits nonzero, but
+the patch body is empty and `--numstat` omits the row. git's change-set is deliberately
+**inconsistent across output modes** here (name-status/raw/quiet say "modified";
+patch/numstat say "nothing"), and tsgit reproduces it: the `modify` stays in
+`TreeDiff.changes`; only the emitted hunks and stat counts are suppressed.
 
 ## Consequences
 
 - Two hook points exist: line-key normalization (ADR-378 trio + CR) inside the Myers
   comparison, and blank-line suppression at emission. They compose: blank-definition
   reads the active line-key mode.
-- The file-drop predicate (ADR-380) computes "zero changed hunks" *after* blank-line
-  suppression, so a pure blank-line edit drops the file under `--ignore-blank-lines`.
+- `--ignore-blank-lines` **alone never drops a file** — the `modify` remains in
+  `TreeDiff.changes`. The file-drop predicate (ADR-380) stays gated on a *line-key* mode
+  rendering the change empty; blank suppression only empties the hunks/stat of a file that
+  remains present. The combined case (a line-key mode that turns the only inserted lines
+  blank, e.g. `--ignore-blank-lines -w` on a spaces-only insert) drops because the
+  line-key normalization makes the change whitespace-only — pinned in the design matrix.
 - The pinned matrix gains the blank-line rows (`BL1`, `BL2`, `BL-spaces`, `BL-combo`);
   `--ignore-blank-lines` leaves the §8 out-of-scope list.
