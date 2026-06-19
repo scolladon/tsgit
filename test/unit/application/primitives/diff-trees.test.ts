@@ -537,6 +537,63 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given copies:"on" with treeA present (buildPreimage should return undefined)', () => {
+    describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"on"}', () => {
+      it('Then no preimage is built and unchanged files are NOT copy sources (L70 ConditionalExpression "false")', async () => {
+        // Kills diff-trees.ts L70 [ConditionalExpression] "false":
+        // Mutant changes `renameOptions?.copies !== 'harder' || treeA === undefined` to `false`
+        // so buildPreimage always builds the preimage (even for copies:'on').
+        // Under copies:'on', buildPreimage returning a non-undefined preimage does NOT change
+        // which files are copy sources (detectSimilarityRenames ignores preimage for copies:'on').
+        // BUT: if treeA is undefined AND the mutant fires, flattenTree(ctx, undefined) would crash.
+        // So to kill this mutant we need: copies:'on' with treeA=undefined → buildPreimage is called
+        // → flattenTree(ctx, undefined) throws. We verify that no crash occurs.
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'file content\n');
+        // treeB only; no treeA (undefined)
+        const treeB = await writeTree(ctx, [
+          { name: 'file.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+
+        // Act — copies:'on', treeA=undefined: buildPreimage must return undefined (guard fires)
+        // With mutant "false": tries flattenTree(ctx, undefined) → crash
+        const sut = await diffTrees(ctx, undefined, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'on' },
+        });
+
+        // Assert — add detected, no crash
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('add');
+      });
+    });
+  });
+
+  describe('Given copies:"harder" but treeA is undefined (buildPreimage returns undefined)', () => {
+    describe('When diffTrees is called', () => {
+      it('Then buildPreimage returns undefined and no crash occurs (L70 treeA===undefined arm)', async () => {
+        // Kills diff-trees.ts L70 mutant: even for copies:'harder', if treeA is undefined,
+        // buildPreimage must return undefined (guard's second clause).
+        // Without the guard, flattenTree(ctx, undefined) would be called → crash.
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'content for harder test\n');
+        const treeB = await writeTree(ctx, [
+          { name: 'file.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+
+        // Act — copies:'harder' but treeA=undefined → preimage=undefined → no crash
+        const sut = await diffTrees(ctx, undefined, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert — add detected without crash
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('add');
+      });
+    });
+  });
+
   describe('Given withStat is omitted and a one-line blob added', () => {
     describe('When diffTrees is called', () => {
       it('Then the change carries no count fields (tree-level only)', async () => {
