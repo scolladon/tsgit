@@ -2338,17 +2338,33 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     }
   });
 
-  it('Given 5 delete sources (4 similar to dst-primary, 1 similar to dst-secondary), When tsgit runs rename detection, Then pairings match live git (NUM_CANDIDATE_PER_DST cap)', async () => {
-    // Arrange — 5 deletes + 2 adds.  The content design ensures src-aaa..src-ddd score ~91%
-    // with dst-primary and src-eee is the only viable candidate for dst-secondary (~91%).
-    // git's NUM_CANDIDATE_PER_DST=4 cap keeps only the first 4 alphabetical sources for
-    // dst-primary; src-eee (5th) is freed and pairs with dst-secondary.
-    // tsgit must produce the identical pairings via its per-dst top-4 cap implementation.
+  it('Given bridge-plus-S5 fixture with -M1% threshold, When tsgit runs rename detection, Then pairings match live git (NUM_CANDIDATE_PER_DST=4 cap is outcome-determining)', async () => {
+    // Arrange — 5 deletes + 6 adds with threshold=1% (600/60000).
     //
-    // Probed against git 2.54.0:
-    //   R089  src-aaa.txt → dst-primary.txt
-    //   R090  src-eee.txt → dst-secondary.txt
-    //   D  src-bbb.txt / src-ccc.txt / src-ddd.txt
+    // Without cap (=1000): s5.txt pairs with d1.txt (score 31% > d2's 15%), d2.txt UNMATCHED.
+    // With cap=4:          s5.txt pairs with d2.txt (score 15%),            d1.txt UNMATCHED.
+    //
+    // Content design (line-fraction similarity):
+    //   COMMON  = 20 lines shared by b1..b4, d1, d3..d6
+    //   EXTRAi  = 4 lines shared only by bi and d(i+2)  (bridge pair)
+    //   S5D1    = 10 lines shared only by s5 and d1
+    //   S5D2    = 2 lines shared only by s5 and d2
+    //
+    //   Spanhash scores: d1←bi≈65%, d3←b1≈96%, d1←s5≈31%, d2←s5≈15%
+    //
+    //   Cap mechanism: b1..b4 fill d1's 4 slots (each at 65%).
+    //     s5@31% is 5th and NOT strictly better → evicted from d1's matrix.
+    //     Bridge dests d3..d6 score 96% with bi → consumed by greedy before d1←bi.
+    //     d1 has no remaining viable candidates → d1 UNMATCHED.
+    //     s5 pairs with d2 (only option left above threshold).
+    //
+    // Probed against git 2.54.0 with -M1%:
+    //   R015  s5.txt → d2.txt
+    //   R096  b1.txt → d3.txt
+    //   R096  b2.txt → d4.txt
+    //   R096  b3.txt → d5.txt
+    //   R096  b4.txt → d6.txt
+    //   A     d1.txt
     const pair = await makePeerPair('rename-similarity-cap4-dst');
     try {
       runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
@@ -2356,28 +2372,35 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       const ctx = createMemoryContext();
       await init(ctx);
 
-      // 10 shared lines (common to every file in the src set)
-      const shared10 = Array.from(
-        { length: 10 },
-        (_, i) => `shared-${String(i + 1).padStart(2, '0')}: alpha beta gamma delta epsilon zeta\n`,
-      ).join('');
-      // 10 DISTINCT lines used only by src-eee and dst-secondary
-      const special10 = Array.from(
-        { length: 10 },
-        (_, i) =>
-          `special-${String(i + 1).padStart(2, '0')}: kappa lambda mu nu xi omicron pi rho\n`,
-      ).join('');
+      const makeBlock = (prefix: string, count: number): string =>
+        Array.from(
+          { length: count },
+          (_, i) =>
+            `${prefix}-${String(i + 1).padStart(2, '0')}: content alpha beta gamma delta epsilon zeta\n`,
+        ).join('');
+
+      const COMMON = makeBlock('common', 20);
+      const EXTRA1 = makeBlock('extra-B1', 4);
+      const EXTRA2 = makeBlock('extra-B2', 4);
+      const EXTRA3 = makeBlock('extra-B3', 4);
+      const EXTRA4 = makeBlock('extra-B4', 4);
+      const S5D1 = makeBlock('s5-d1', 10);
+      const S5D2 = makeBlock('s5-d2', 2);
 
       const srcFiles: Record<string, string> = {
-        'src-aaa.txt': `${shared10}SRC-AAA: unique to aaa\n`,
-        'src-bbb.txt': `${shared10}SRC-BBB: unique to bbb\n`,
-        'src-ccc.txt': `${shared10}SRC-CCC: unique to ccc\n`,
-        'src-ddd.txt': `${shared10}SRC-DDD: unique to ddd\n`,
-        'src-eee.txt': `${special10}SRC-EEE: unique to eee\n`,
+        'b1.txt': `${COMMON}${EXTRA1}unique-B1: marker only in B1 alpha beta gamma delta\n`,
+        'b2.txt': `${COMMON}${EXTRA2}unique-B2: marker only in B2 alpha beta gamma delta\n`,
+        'b3.txt': `${COMMON}${EXTRA3}unique-B3: marker only in B3 alpha beta gamma delta\n`,
+        'b4.txt': `${COMMON}${EXTRA4}unique-B4: marker only in B4 alpha beta gamma delta\n`,
+        's5.txt': `${S5D1}${S5D2}unique-S5: marker only in S5 alpha beta gamma delta\n`,
       };
       const dstFiles: Record<string, string> = {
-        'dst-primary.txt': `${shared10}UNIQUE-PRIMARY: marker for primary destination alpha\n`,
-        'dst-secondary.txt': `${special10}UNIQUE-SECONDARY: marker for secondary destination\n`,
+        'd1.txt': `${COMMON}${S5D1}unique-D1: marker only in D1 alpha beta gamma delta\n`,
+        'd2.txt': `${S5D2}unique-D2: marker only in D2 alpha beta gamma delta\n`,
+        'd3.txt': `${COMMON}${EXTRA1}unique-D3: marker only in D3 alpha beta gamma delta\n`,
+        'd4.txt': `${COMMON}${EXTRA2}unique-D4: marker only in D4 alpha beta gamma delta\n`,
+        'd5.txt': `${COMMON}${EXTRA3}unique-D5: marker only in D5 alpha beta gamma delta\n`,
+        'd6.txt': `${COMMON}${EXTRA4}unique-D6: marker only in D6 alpha beta gamma delta\n`,
       };
 
       for (const [name, content] of Object.entries(srcFiles)) {
@@ -2402,35 +2425,46 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await add(ctx, Object.keys(dstFiles));
       const c2 = await commit(ctx, { message: 'second', author });
 
+      // Use -M1% (threshold=1% of MAX_SCORE) to make the cap outcome-determining.
+      // At the default 50% threshold, d1←s5 (31%) and d2←s5 (15%) are both below
+      // the threshold and s5 would not appear in any rename matrix regardless of cap.
+      const threshold1pct = Math.trunc(60000 / 100); // 600 = 1% of MAX_SCORE
       const liveNameStatus = git(
         pair.peer,
         'diff',
         '--no-ext-diff',
         '--no-color',
-        '-M',
+        '-M1%',
         '--name-status',
         'HEAD~1',
         'HEAD',
       ).trim();
 
       // Act
-      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, detectRenames: true });
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { threshold: threshold1pct },
+      });
       const sut = reconstructNameStatus(treeDiff.changes);
 
-      // Unconditional: fixture MUST trigger rename detection (R-score lines at line start)
-      expect(liveNameStatus).toMatch(/^R\d+\tsrc-aaa\.txt\tdst-primary\.txt$/m);
-      expect(liveNameStatus).toMatch(/^R\d+\tsrc-eee\.txt\tdst-secondary\.txt$/m);
+      // Unconditional: live git MUST show the cap=4-determined pairing
+      expect(liveNameStatus).toMatch(/^R\d+\ts5\.txt\td2\.txt$/m);
+      expect(liveNameStatus).toMatch(/^A\td1\.txt$/m);
 
       // Assert — tsgit matches live git exactly
       const sutLines = sut.split('\n').sort().join('\n');
       const liveLines = liveNameStatus.split('\n').sort().join('\n');
       expect(sutLines).toBe(liveLines);
 
-      // Absolute counts: 2 renames, 3 orphan deletes
+      // Absolute counts: 5 renames (b1→d3, b2→d4, b3→d5, b4→d6, s5→d2), 1 unmatched add (d1)
       const renames = treeDiff.changes.filter((c) => c.type === 'rename');
-      expect(renames).toHaveLength(2);
-      const dels = treeDiff.changes.filter((c) => c.type === 'delete');
-      expect(dels).toHaveLength(3);
+      expect(renames).toHaveLength(5);
+      const unmatched = treeDiff.changes.filter((c) => c.type === 'add');
+      expect(unmatched).toHaveLength(1);
+      const d1Add = unmatched.find((a) => a.type === 'add' && a.newPath === 'd1.txt');
+      expect(d1Add).toBeDefined();
 
       // Pin golden
       const goldenName = 'rename-similarity-cap4-dst-name-status';

@@ -1302,126 +1302,167 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given 5 near-equal sources for dst-A and src-E as the only viable source for dst-B (NUM_CANDIDATE_PER_DST cap)', () => {
-    describe('When detectSimilarityRenames is called', () => {
-      it('Then src-E is freed by the per-destination top-4 cap and pairs with dst-B', async () => {
-        // Arrange — git caps candidates per destination at NUM_CANDIDATE_PER_DST=4.
-        // 5 delete sources (src-aaa..src-eee), 2 add destinations (dst-primary, dst-secondary).
+  describe('Given a bridge-plus-S5 fixture where the per-destination cap is outcome-determining (NUM_CANDIDATE_PER_DST=4)', () => {
+    describe('When detectSimilarityRenames is called with threshold 1% of MAX_SCORE', () => {
+      it('Then s5.txt pairs with d2.txt (cap evicts s5 from d1 matrix, making it available for d2)', async () => {
+        // Arrange — outcome-determining proof for NUM_CANDIDATE_PER_DST=4.
         //
-        // Content design (spanhash similarity):
-        //   shared-block: 10 common lines in EVERY file
-        //   dst-primary:   shared-block + "UNIQUE-PRIMARY …"
-        //   dst-secondary: shared-block + line-A + line-B + "UNIQUE-SECONDARY …"  (3 extra lines)
-        //   src-aaa..ddd:  shared-block + "UNIQUE-SRC-X …" → 10/11 ≈ 91% match with dst-primary
-        //   src-eee:       shared-block + line-A + line-B + "UNIQUE-SRC-E …"
-        //                    → 12/13 match with dst-secondary (high score)
-        //                    → 10/13 match with dst-primary  (lower score than src-aaa..ddd)
+        // Without cap (=1000): s5.txt pairs with d1.txt (score 31%), d2.txt UNMATCHED.
+        // With cap=4:          s5.txt pairs with d2.txt (score 15%), d1.txt UNMATCHED.
         //
-        // git processes: for each dst (outer), for each src (inner, in filename order).
-        // For dst-primary: src-aaa(91%), src-bbb(91%), src-ccc(91%), src-ddd(91%) fill the 4 slots.
-        //   src-eee scores ≈77% with dst-primary (10/13) — lower than the 4 already in the slots.
-        //   record_if_better drops src-eee from dst-primary's candidate list.
-        // For dst-secondary: src-eee scores ≈92% (12/13) — highest; src-aaa..ddd score ≈77%.
+        // Fixture design (threshold = 1% = Math.trunc(MAX_SCORE / 100) = 600):
         //
-        // Without the cap: ALL 5 are in dst-primary's matrix. Greedy sort at equal scores
-        //   for src-aaa..ddd vs dst-primary is undefined; src-eee might be consumed by
-        //   dst-primary first, leaving dst-secondary unmatched.
-        // With the cap: src-eee is excluded from dst-primary's matrix → pairs with dst-secondary.
+        //   COMMON   = 20 lines shared among b1..b4, d1, d3..d6
+        //   EXTRAi   = 4 lines shared only by bi and d(i+2)  (i = 1..4)
+        //   S5D1     = 10 lines shared only by s5 and d1
+        //   S5D2     = 2 lines shared only by s5 and d2
+        //
+        //   b1..b4   = COMMON + EXTRAi + unique-bi
+        //   s5       = S5D1 + S5D2 + unique-s5
+        //   d1       = COMMON + S5D1 + unique-d1   ← D1 (primary, unmatched with cap=4)
+        //   d2       = S5D2 + unique-d2            ← D2 (secondary, pairs with s5 with cap=4)
+        //   d3..d6   = COMMON + EXTRAi + unique-di ← bridge destinations (consume b1..b4)
+        //
+        // Spanhash scores (raw / MAX_SCORE = 60000):
+        //   d1 ← bi  : ~39007 (65%)   ← fills d1's 4 cap slots
+        //   d1 ← s5  : ~19148 (31%)   ← 5th-best for d1; evicted by cap=4
+        //   d2 ← s5  : ~9257  (15%)   ← only viable source for d2
+        //   d(i+2)←bi: ~57739 (96%)   ← bridge: scores HIGHER than d1←bi
+        //
+        // Greedy without cap: D3..D6 consume B1..B4 via their 96% triples.
+        //   D1←B1..B4 are then all skipped (sources already used).
+        //   D1←S5@31% processes — D1 is still free, S5 is still free → D1←S5 PAIRS.
+        //   D2←S5 is skipped (S5 consumed). D2 UNMATCHED.
+        //
+        // Greedy with cap=4: S5 is evicted from D1's 4-slot matrix (65% > 31%).
+        //   D3..D6 consume B1..B4; D1←B1..B4 all skipped.
+        //   No D1←S5 triple exists → D1 UNMATCHED.
+        //   D2←S5@15% processes → D2←S5 PAIRS.
+        //
+        // Pinned against git 2.54.0 with -M1%:
+        //   R096  b1.txt → d3.txt
+        //   R096  b2.txt → d4.txt
+        //   R096  b3.txt → d5.txt
+        //   R096  b4.txt → d6.txt
+        //   R015  s5.txt → d2.txt
+        //   A     d1.txt
         const ctx = await buildSeededContext();
+        const threshold1pct = Math.trunc(MAX_SCORE / 100);
 
-        const sharedBlock = Array.from(
-          { length: 10 },
-          (_, i) =>
-            `shared-${String(i + 1).padStart(2, '0')}: common content alpha beta gamma delta epsilon zeta\n`,
-        ).join('');
-        // Two extra lines that appear in both dst-secondary and src-eee (but NOT in dst-primary or src-aaa..ddd)
-        const extraLines =
-          'extra-line-A: kappa lambda mu nu xi omicron pi rho sigma tau\nextra-line-B: upsilon phi chi psi omega alpha beta gamma delta epsilon\n';
+        const makeBlock = (prefix: string, count: number): string =>
+          Array.from(
+            { length: count },
+            (_, i) =>
+              `${prefix}-${String(i + 1).padStart(2, '0')}: content alpha beta gamma delta epsilon zeta\n`,
+          ).join('');
 
-        const dstPrimaryId = await writeBlob(
-          ctx,
-          `${sharedBlock}UNIQUE-PRIMARY: marker for primary destination\n`,
-        );
-        const dstSecondaryId = await writeBlob(
-          ctx,
-          `${sharedBlock}${extraLines}UNIQUE-SECONDARY: marker for secondary destination\n`,
-        );
-        // src-E: scores HIGH with dst-secondary (shares shared-block + extraLines),
-        // scores LOWER with dst-primary (lacks extraLines in dst-primary).
-        const srcEId = await writeBlob(
-          ctx,
-          `${sharedBlock}${extraLines}UNIQUE-SRC-E: marker only in src-E\n`,
-        );
-        const srcAId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-A: marker only in src-A\n`);
-        const srcBId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-B: marker only in src-B\n`);
-        const srcCId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-C: marker only in src-C\n`);
-        const srcDId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-D: marker only in src-D\n`);
+        const COMMON = makeBlock('common', 20);
+        const EXTRA1 = makeBlock('extra-B1', 4);
+        const EXTRA2 = makeBlock('extra-B2', 4);
+        const EXTRA3 = makeBlock('extra-B3', 4);
+        const EXTRA4 = makeBlock('extra-B4', 4);
+        const S5D1 = makeBlock('s5-d1', 10);
+        const S5D2 = makeBlock('s5-d2', 2);
+
+        const [b1Id, b2Id, b3Id, b4Id, s5Id, d1Id, d2Id, d3Id, d4Id, d5Id, d6Id] =
+          await Promise.all([
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA1}unique-B1: marker only in B1 alpha beta gamma delta\n`,
+            ),
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA2}unique-B2: marker only in B2 alpha beta gamma delta\n`,
+            ),
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA3}unique-B3: marker only in B3 alpha beta gamma delta\n`,
+            ),
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA4}unique-B4: marker only in B4 alpha beta gamma delta\n`,
+            ),
+            writeBlob(ctx, `${S5D1}${S5D2}unique-S5: marker only in S5 alpha beta gamma delta\n`),
+            writeBlob(ctx, `${COMMON}${S5D1}unique-D1: marker only in D1 alpha beta gamma delta\n`),
+            writeBlob(ctx, `${S5D2}unique-D2: marker only in D2 alpha beta gamma delta\n`),
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA1}unique-D3: marker only in D3 alpha beta gamma delta\n`,
+            ),
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA2}unique-D4: marker only in D4 alpha beta gamma delta\n`,
+            ),
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA3}unique-D5: marker only in D5 alpha beta gamma delta\n`,
+            ),
+            writeBlob(
+              ctx,
+              `${COMMON}${EXTRA4}unique-D6: marker only in D6 alpha beta gamma delta\n`,
+            ),
+          ]);
 
         const diff: TreeDiff = {
           changes: [
-            // Filenames alphabetically ordered: src-aaa < src-bbb < src-ccc < src-ddd < src-eee
             {
               type: 'delete',
-              oldPath: 'src-aaa.txt' as FilePath,
-              oldId: srcAId,
+              oldPath: 'b1.txt' as FilePath,
+              oldId: b1Id,
               oldMode: FILE_MODE.REGULAR,
             },
             {
               type: 'delete',
-              oldPath: 'src-bbb.txt' as FilePath,
-              oldId: srcBId,
+              oldPath: 'b2.txt' as FilePath,
+              oldId: b2Id,
               oldMode: FILE_MODE.REGULAR,
             },
             {
               type: 'delete',
-              oldPath: 'src-ccc.txt' as FilePath,
-              oldId: srcCId,
+              oldPath: 'b3.txt' as FilePath,
+              oldId: b3Id,
               oldMode: FILE_MODE.REGULAR,
             },
             {
               type: 'delete',
-              oldPath: 'src-ddd.txt' as FilePath,
-              oldId: srcDId,
+              oldPath: 'b4.txt' as FilePath,
+              oldId: b4Id,
               oldMode: FILE_MODE.REGULAR,
             },
             {
               type: 'delete',
-              oldPath: 'src-eee.txt' as FilePath,
-              oldId: srcEId,
+              oldPath: 's5.txt' as FilePath,
+              oldId: s5Id,
               oldMode: FILE_MODE.REGULAR,
             },
-            {
-              type: 'add',
-              newPath: 'dst-primary.txt' as FilePath,
-              newId: dstPrimaryId,
-              newMode: FILE_MODE.REGULAR,
-            },
-            {
-              type: 'add',
-              newPath: 'dst-secondary.txt' as FilePath,
-              newId: dstSecondaryId,
-              newMode: FILE_MODE.REGULAR,
-            },
+            { type: 'add', newPath: 'd1.txt' as FilePath, newId: d1Id, newMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'd2.txt' as FilePath, newId: d2Id, newMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'd3.txt' as FilePath, newId: d3Id, newMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'd4.txt' as FilePath, newId: d4Id, newMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'd5.txt' as FilePath, newId: d5Id, newMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'd6.txt' as FilePath, newId: d6Id, newMode: FILE_MODE.REGULAR },
           ],
         };
         // Act
-        const sut = detectSimilarityRenames(ctx, diff);
+        const sut = detectSimilarityRenames(ctx, diff, { threshold: threshold1pct });
         const result = await sut;
         const renames = result.changes.filter((c) => c.type === 'rename');
-        const deletes = result.changes.filter((c) => c.type === 'delete');
-        // Assert — exactly 2 renames: one src→dst-primary, and src-eee→dst-secondary.
-        // The cap at 4 per destination ensures src-eee is dropped from dst-primary's
-        // candidate list (it scores lower than src-aaa..ddd there) and is free for dst-secondary.
-        expect(renames).toHaveLength(2);
-        const secondaryRename = renames.find(
-          (r) => r.type === 'rename' && r.newPath === 'dst-secondary.txt',
-        );
-        expect(secondaryRename).toBeDefined();
-        if (secondaryRename?.type === 'rename') {
-          expect(secondaryRename.oldPath).toBe('src-eee.txt');
+        const adds = result.changes.filter((c) => c.type === 'add');
+        // Assert — cap=4 evicts s5 from d1's matrix (b1..b4 fill 4 slots at 65% each,
+        // s5 at 31% is the 5th candidate and is dropped). The bridge destinations d3..d6
+        // consume b1..b4 before d1 can. d1 is left unmatched; s5 pairs with d2 (its only
+        // viable destination).
+        expect(renames).toHaveLength(5);
+        const s5Rename = renames.find((r) => r.type === 'rename' && r.oldPath === 's5.txt');
+        expect(s5Rename).toBeDefined();
+        if (s5Rename?.type === 'rename') {
+          // Without cap (=1000), s5 would pair with d1 (score 31% > d2's 15%).
+          // With cap=4, s5 is evicted from d1's matrix and pairs with d2 instead.
+          expect(s5Rename.newPath).toBe('d2.txt');
         }
-        // 3 orphan deletes (src-aaa/bbb/ccc/ddd minus the one that paired with dst-primary)
-        expect(deletes).toHaveLength(3);
+        // d1 must be left as an unmatched add (cap evicted its only remaining viable source)
+        const d1Add = adds.find((a) => a.type === 'add' && a.newPath === 'd1.txt');
+        expect(d1Add).toBeDefined();
       });
     });
   });
