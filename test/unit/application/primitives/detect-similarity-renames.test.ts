@@ -1901,8 +1901,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given copies:"off" with a modify and an add (buildAllTriples copies guard)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then no copy triples are built and the add remains when there are no delete sources', async () => {
-        // Kills L433 [ConditionalExpression] "true" (copies guard always fires → copy triples
-        // always built even when copies='off').
+        // Arrange — a copies:'off' diff so the copy-source guard must not build copy triples
         const ctx = await buildSeededContext();
         const modOldId = await writeBlob(ctx, tenLines(0));
         const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED\n'));
@@ -1945,9 +1944,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given no deletes and no copy sources (runInexactPass null guard)', () => {
     describe('When detectSimilarityRenames is called with copies:"off" and only adds', () => {
       it('Then the inexact pass returns null (early return when both empty)', async () => {
-        // Kills L446 [ConditionalExpression] "false" — guard never fires → hydrateAndFingerprint
-        // called with empty arrays → still returns correct result (no renames), but we can
-        // detect the path by asserting the add stays unpaired.
+        // Arrange — no deletes, copies:'off' so both the deletes and copy-sources arrays are empty
         const ctx = await buildSeededContext();
         const addId = await writeBlob(ctx, tenLines(0));
         const diff: TreeDiff = {
@@ -1979,13 +1976,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given a modify where both old and new blobs are empty (computeBreakScores zero-size)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
       it('Then computedBreakScore is 0 and dissimilarity is 0 (no NaN from division by zero)', async () => {
-        // Kills L513 [ConditionalExpression] "true" (maxSize>0 → always executes → 0/0=NaN),
-        //       L513 [EqualityOperator] "maxSize>=0" (always true → division by zero),
-        //       L514 [ConditionalExpression] "true" (srcSize>0 → always → 0/0=NaN),
-        //       L514 [EqualityOperator] "srcSize>=0" (always true → division by zero).
-        // An empty→empty modify: maxSize=0, srcSize=0; breakScore=0/0=NaN with mutants.
-        // With NaN: breakScore comparison fails; break attempt behavior is undefined.
-        // With correct guards: computedBreakScore=0, dissimilarity=0.
+        // Arrange — empty→empty modify so maxSize=0 and srcSize=0, exercising both size guards
         const ctx = await buildSeededContext();
         // Empty blobs: 0 bytes each
         const emptyId = await writeBlob(ctx, '');
@@ -2025,9 +2016,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given a modify where the source blob is empty but the destination is non-empty', () => {
     describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
       it('Then dissimilarity is 0 (srcSize=0 → guard protects division by zero)', async () => {
-        // Kills L514 [ConditionalExpression] "true" and L514 "srcSize>=0" when srcSize=0.
-        // With mutant: (0 * MAX_SCORE) / 0 = NaN → dissimilarity=NaN.
-        // With correct guard: srcSize>0 = false → dissimilarity = 0.
+        // Arrange — empty source blob but non-empty destination so srcSize=0 triggers the guard
         const ctx = await buildSeededContext();
         const emptyId = await writeBlob(ctx, '');
         const newId = await writeBlob(ctx, 'completely new content\n'.repeat(5));
@@ -2069,8 +2058,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given a diff with no modify changes (attemptBreaks early return on empty modifies)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the function returns immediately with no broken records (modifies.length===0 guard)', async () => {
-        // Kills L591 [ConditionalExpression] "false" — guard disabled → scoreModifies called
-        // with empty array → still correct but wasteful; we prove guard fires correctly.
+        // Arrange — delete+add only (no modifies) so the modifies.length===0 guard fires
         const ctx = await buildSeededContext();
         const delId = await writeBlob(ctx, tenLines(0));
         const addId = await writeBlob(ctx, tenLines(1));
@@ -2108,8 +2096,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given modifies that all score below the break-attempt gate (attemptBreaks guard on empty records)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then no synthetic halves are created (records.length===0 guard fires)', async () => {
-        // Kills L594 [ConditionalExpression] "false" — guard disabled → patchDiffWithBroken
-        // called with empty records → diff unchanged (same result) but the guard must fire.
+        // Arrange — very similar modify so dissimilarity stays below break threshold; records stays empty
         const ctx = await buildSeededContext();
         // Very similar modify: dissimilarity low → computedBreakScore < DEFAULT_BREAK_SCORE
         const similar1 = tenLines(0);
@@ -2150,20 +2137,9 @@ describe('detectSimilarityRenames', () => {
   describe('Given a broken modify whose add-half is consumed but delete-half remains (findPresentHalves add side)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the delete-half stays as a delete and no re-merge is emitted', async () => {
-        // Kills L628 [ConditionalExpression] "true" — syntheticAdds.has() always true for any add →
-        // presentAdds incorrectly includes REAL adds → remergeOrKeepBroken wrongly strips them.
-        // The test verifies the synthetic-set membership check protects real adds from being treated
-        // as present synthetic halves.
-        //
-        // Scenario: modify file.txt is broken → del-half (oldId=A) + add-half (newId=B).
-        // A separate real delete {other.txt, oldId=B} pairs with the add-half via exact rename
-        // (other.txt→file.txt), consuming the add-half. The del-half survives as a plain delete.
-        //
-        // With mutant L628 "true": syntheticAdds.has() always returns true for ANY add in changes,
-        // including the real rename-target.txt add (if present). But after the rename pass,
-        // the real add and the add-half are both consumed. So the mutant's effect manifests
-        // if there is a REAL (non-synthetic) add still present in changes that gets incorrectly
-        // marked as presentAdds → pair's addPresent=true → remerge incorrectly tries to strip it.
+        // Arrange — broken modify whose add-half is consumed by an exact rename; a real add
+        // remains so the synthetic-set membership check must protect it from being treated as
+        // a present synthetic half (add-half consumed, del-half survives as a plain delete)
         const ctx = await buildSeededContext();
         const contentA = 'aaa\nbbb\nccc\nddd\n'.repeat(10); // del-half content
         const contentB = 'xxx\nyyy\nzzz\nwww\n'.repeat(10); // add-half content (fully disjoint)
@@ -2172,7 +2148,7 @@ describe('detectSimilarityRenames', () => {
         const modNewId = await writeBlob(ctx, contentB);
         // A delete with the same content as add-half → pairs with add-half via exact rename
         const otherDelId = await writeBlob(ctx, contentB); // same SHA as modNewId
-        // A real add that is NOT a synthetic half — used to verify L628 doesn't misidentify it
+        // A real add that is NOT a synthetic half — must not be misidentified as a present half
         const realAddId = await writeBlob(ctx, 'real-add-content unique\n'.repeat(3));
 
         const diff: TreeDiff = {
@@ -2223,7 +2199,7 @@ describe('detectSimilarityRenames', () => {
         if (deletes[0]?.type === 'delete') {
           expect(deletes[0].oldPath).toBe('file.txt');
         }
-        // real add truly-new.txt must survive (not stripped by L628 mutant)
+        // real add truly-new.txt must survive (not misidentified as a present synthetic half)
         const adds = result.changes.filter((c) => c.type === 'add');
         expect(adds).toHaveLength(1);
         if (adds[0]?.type === 'add') {
@@ -2240,8 +2216,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given no broken records (remergeOrKeepBroken early return guard)', () => {
     describe('When detectSimilarityRenames is called without breakRewrites', () => {
       it('Then changes are returned unchanged without entering remerge logic (broken.length===0 guard)', async () => {
-        // Kills L646 [ConditionalExpression] "false" — guard disabled → full remerge traversal
-        // on empty broken array → same result but guard must fire.
+        // Arrange — no breakRewrites so broken is empty; the early-return guard must fire
         const ctx = await buildSeededContext();
         const srcContent = tenLines(0);
         const dstContent = tenLines(0).replace('X line 0\n', 'Y line 0\n');
@@ -2281,10 +2256,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given a broken modify where BOTH halves were consumed (remergeOrKeepBroken both-consumed path)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then neither half is re-merged and no extra modify appears (!delPresent && !addPresent guard)', async () => {
-        // Kills L655 variants: BooleanLiteral "addPresent" (makes condition !delPresent&&true,
-        // always continues), BooleanLiteral "delPresent" (!true&&!addPresent), ConditionalExpression
-        // "false" (guard never fires → both-consumed pair gets spurious reinsert),
-        // LogicalOperator "||" (!delPresent||!addPresent → also skips when only one is consumed).
+        // Arrange — fully disjoint modify so both halves are broken; each half is consumed by
+        // an exact rename partner so !delPresent && !addPresent must hold and skip re-merge
         const ctx = await buildSeededContext();
         const modOldContent = 'aaa\nbbb\nccc\n'.repeat(10);
         const modNewContent = 'xxx\nyyy\nzzz\n'.repeat(10); // fully disjoint → break
@@ -2342,9 +2315,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given a broken modify where BOTH halves remain unconsumed (remergeOrKeepBroken toStrip guard)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the halves are stripped and a plain or broken modify is re-emitted (toStrip.size===0 guard)', async () => {
-        // Kills L665 [ConditionalExpression] "false" — guard disabled → stripped always built →
-        // should still return same result (but we assert correctness).
-        // Also confirms the re-merge path.
+        // Arrange — fully disjoint modify so both halves survive with no rename candidates;
+        // toStrip is non-empty so the strip path runs and a broken modify is re-emitted
         const ctx = await buildSeededContext();
         // Fully disjoint content → break IS attempted and both halves survive (no rename candidates)
         const oldId = await writeBlob(ctx, 'aaa\nbbb\nccc\nddd\n'.repeat(5));
@@ -2388,8 +2360,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given copies:"off" (resolveCopySources copies==="off" guard)', () => {
     describe('When detectSimilarityRenames is called with an add and a modify', () => {
       it('Then copy sources are empty and the inexact pass finds no copies', async () => {
-        // Kills L686 [ConditionalExpression] "false" — guard disabled → falls through to
-        // copies==='on' branch → copy sources built → copy may be detected (wrong for copies:'off').
+        // Arrange — copies:'off' with a modify + add; the guard must return an empty source list
         const ctx = await buildSeededContext();
         const modOldId = await writeBlob(ctx, tenLines(0));
         const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED\n'));
@@ -2428,14 +2399,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given copies:"on" (resolveCopySources copies==="on" guard)', () => {
     describe('When detectSimilarityRenames is called with an add and a modify', () => {
       it('Then copy sources are built from modified files only and a copy is detected', async () => {
-        // Kills L687 [ConditionalExpression] "false" — guard disabled → falls through to
-        // copies==='harder' branch → tries to buildCopySourcesForHarder but preimage=undefined
-        // → falls back to buildCopySourcesForOn anyway (same result in that case).
-        // We need to distinguish: use a preimage and assert that copies:'on' does NOT use it.
-        // Under copies:'on', only modified preimages are copy sources.
-        // Under copies:'harder' without limit breach, ALL preimage paths are copy sources.
-        // If we have an unchanged file in the preimage that matches the add better than the
-        // modify's preimage, then copies:'on' must NOT pick it (falling through would → copies:'harder').
+        // Arrange — preimage with an unchanged file that matches the add better than the modify
+        // preimage; copies:'on' must exclude unchanged files while copies:'harder' includes them
         const ctx = await buildSeededContext();
         // Destination: similar to unchangedContent only (not to modOldContent)
         const unchangedContent = Array.from(
@@ -2579,8 +2544,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given a diff with only renames (no broken records, finalizeWithBroken guard)', () => {
     describe('When detectSimilarityRenames is called without breakRewrites', () => {
       it('Then finalizeWithBroken returns sorted changes directly (broken.length===0 guard)', async () => {
-        // Kills L737 [ConditionalExpression] "false" — guard disabled → remergeOrKeepBroken
-        // called with broken=[] → same result but guard must fire for empty-broken path.
+        // Arrange — delete+add pair with no breakRewrites so broken is empty; paths are
+        // deliberately out of alpha order to also verify sorting via the fast path
         const ctx = await buildSeededContext();
         const srcContent = tenLines(0);
         const dstContent = tenLines(0).replace('X line 0\n', 'Y line 0\n');
@@ -2622,15 +2587,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given breakRewrites with score===0 (runBreakPass zero-score maps to DEFAULT_BREAK_SCORE)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then score===0 uses DEFAULT_BREAK_SCORE not 0 (kills L751 ConditionalExpression "true")', async () => {
-        // L751: `breakRewrites.score !== 0 ? breakRewrites.score : DEFAULT_BREAK_SCORE`
-        // Mutant "true": always uses breakRewrites.score (even when 0) → breakScore=0.
-        // With breakScore=0, ALL modifies pass the breakScore check (computedBreakScore >= 0).
-        // With correct code: score=0 maps to DEFAULT_BREAK_SCORE (30000) so only highly
-        // dissimilar modifies are broken.
-        //
-        // Use a SIMILAR modify (similarity ~87%): computedBreakScore < DEFAULT_BREAK_SCORE (30000).
-        // With mutant (breakScore=0): computedBreakScore >= 0 → BROKEN → modify splits.
-        // With correct code (breakScore=DEFAULT_BREAK_SCORE): computedBreakScore < 30000 → NOT broken.
+        // Arrange — similar modify (one-line change) so computedBreakScore < DEFAULT_BREAK_SCORE;
+        // score:0 must map to DEFAULT_BREAK_SCORE so the modify is NOT broken
         const ctx = await buildSeededContext();
         const similar1 = tenLines(0);
         const similar2 = tenLines(0).replace('X line 0\n', 'Y line 0\n');
@@ -2671,11 +2629,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given 33 adds and 33 deletes with one exact pair (L809 {} mutant: exact-pass limit bypass)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then exact rename is found even when adds*deletes exceeds the default limit of 1000', async () => {
-        // L809 mutant: `detectRenames(workingDiff, {})` — exact pass receives {} → resolves
-        // limit to DEFAULT_LIMIT=1000. With 33 adds × 33 deletes = 1089 > 1000, the exact
-        // pass bails at line 92 (`if (adds*deletes > limit) return diff;`) → no exact renames.
-        // Correct code: `{ ...options, limit: MAX_SAFE_INTEGER }` → 1089 ≤ MAX_SAFE_INTEGER
-        // → exact pass runs → the one exact pair (same blob id) becomes a rename.
+        // Arrange — 33 adds × 33 deletes = 1089; one matching pair shares the same blob id;
+        // limit:1 (inexact) forces a scenario where the exact pass must use MAX_SAFE_INTEGER
         const ctx = await buildSeededContext();
         const exactId = await writeBlob(ctx, 'exact-match-content unique sha\n'.repeat(3));
         // 33 distinct adds and 33 distinct deletes; only add[0]/delete[0] share exactId
@@ -2758,9 +2713,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given no adds but some deletes (hasRenameWork guard: adds.length>0 required)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the inexact pass is skipped and delete remains (no adds → no work)', async () => {
-        // The "no deletes, copies:off" path exercises the L814 body path and confirms
-        // the add-only diff passes through unchanged in both the early-return and the
-        // fall-through (equivalent) branches.
+        // Arrange — delete-only diff (no adds) so adds.length=0 and hasRenameWork is false
         const ctx = await buildSeededContext();
         const delId = await writeBlob(ctx, tenLines(0));
         const diff: TreeDiff = {
@@ -2790,17 +2743,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given only adds but no deletes and copies:"off" (hasRenameWork and hasCopyWork guard)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then both work guards fire false and changes pass through unchanged', async () => {
-        // Kills: L813 ConditionalExpression "true" (hasCopyWork always true → inexact runs),
-        //        L813 EqualityOperator "adds.length>=0" (always true),
-        //        L813 LogicalOperator "||" (always hasCopyWork),
-        //        L812 EqualityOperator "deletes.length>=0" (always true).
-        // With mutants making hasRenameWork/hasCopyWork always true → inexact pass runs →
-        // hydrateAndFingerprint on empty arrays → no rename/copy found (same result) BUT
-        // the test that deletes.length>0 is specifically needed: with deletes.length>=0,
-        // hasRenameWork = (true && true) = true even with 0 deletes.
-        // Then numSrc = 0+0 = 0; isOverLimit = false; runInexactPass: deletes=0 copySources=0 → null.
-        // Result is same. These guards are pure short-circuits (equivalent in output but not in behavior).
-        // We need adds to make adds.length>0 and deletes.length=0 to distinguish the guard conditions.
+        // Arrange — add+modify with copies:'off' and no deletes so adds.length>0 but
+        // deletes.length=0; hasRenameWork=false and hasCopyWork=false → early return
         const ctx = await buildSeededContext();
         const addId = await writeBlob(ctx, tenLines(0));
         const modOldId = await writeBlob(ctx, tenLines(1));
@@ -2839,9 +2783,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given adds and copies:"on" but no deletes (hasCopyWork guard: copies!=="off")', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then hasCopyWork is true and the inexact pass is attempted for copies', async () => {
-        // Kills L813 [ConditionalExpression] "false" (hasCopyWork disabled → early return → no copy).
-        //       L813 LogicalOperator variant that kills copies!=='off' arm.
-        // With copies:'on' and an add, hasCopyWork must be TRUE even without deletes.
+        // Arrange — copies:'on' with an add and a modify but no deletes; hasCopyWork must be
+        // true even with deletes.length=0 so the inexact copy pass runs
         const ctx = await buildSeededContext();
         const modOldId = await writeBlob(ctx, tenLines(0));
         const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED\n'));
@@ -2879,20 +2822,8 @@ describe('detectSimilarityRenames', () => {
   describe('Given !hasRenameWork && !hasCopyWork resolves to false (L814 BlockStatement guard)', () => {
     describe('When detectSimilarityRenames is called with adds, deletes, and copies:"off"', () => {
       it('Then the early-return body runs only when both conditions are false (L814 body and guard)', async () => {
-        // Kills: L814 [BlockStatement] "{}" (body emptied → early return never happens →
-        //        inexact pass runs → rename found instead of early return),
-        //        L814 [ConditionalExpression] "false" (guard never fires → always runs inexact).
-        // With L814 BlockStatement "{}" mutant: `if (!hasRenameWork && !hasCopyWork) {}` →
-        // the function falls through to the inexact pass even when both are false.
-        // Test: only adds present (no deletes), copies:'off' → hasRenameWork=false, hasCopyWork=false
-        // → should return early with the add as-is. With mutant → runs inexact → same result here
-        // but the block being empty is the issue. Use an explicit test case that detects
-        // whether the early return body fires:
-        // Since the body is `return finalizeWithBroken(exactResult.changes, broken, mergeScore)`,
-        // if it doesn't fire, the code continues to resolveCopySources → runInexactPass → same result.
-        // So we can't distinguish empty-body from working-body purely on return value for this case.
-        // Instead, use adds.length>0 && deletes.length>0 (hasRenameWork=true) but test the
-        // L814 guard fires when the condition is false (add-only, copies:'off'):
+        // Arrange — add-only diff with copies:'off' so hasRenameWork=false and hasCopyWork=false;
+        // the early-return body must execute and return the add unchanged
         const ctx = await buildSeededContext();
         const addId = await writeBlob(ctx, tenLines(0));
         const diff: TreeDiff = {
@@ -2906,6 +2837,7 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
+        // Act — copies:'off', add-only diff → early return fires
         const result = await detectSimilarityRenames(ctx, diff, { copies: 'off' });
 
         // Assert — single add remains; the function returned early correctly
