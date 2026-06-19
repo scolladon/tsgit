@@ -2442,4 +2442,101 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await pair.dispose();
     }
   });
+
+  it('Given copies:"on" where copy sources alone push num_create*num_src over the limit, When tsgit detects copies with limit=2, Then inexact pass is skipped and add remains (git parity)', async () => {
+    // Arrange — 1 add + 5 modifies.  Under copies:'on' the modifies are copy sources
+    // (num_src=5), so num_create * num_src = 1 * 5 = 5 > limit² = 4.
+    // git skips the inexact pass and emits a warning; tsgit must also skip (no copy found).
+    //
+    // Probed against git 2.54.0 with -C -l 2:
+    //   A  dst.txt  [no copy]
+    //   M  src1.txt … M  src5.txt
+    const pair = await makePeerPair('rename-similarity-copy-limit-gate');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+
+      const sharedContent = Array.from(
+        { length: 10 },
+        (_, i) => `common-${String(i + 1).padStart(2, '0')}: shared text alpha beta gamma\n`,
+      ).join('');
+
+      const srcOriginals: Record<string, string> = {};
+      const srcModified: Record<string, string> = {};
+      for (let i = 0; i < 5; i++) {
+        srcOriginals[`src${i + 1}.txt`] = `${sharedContent}UNIQUE-SRC-${i}: source ${i} original\n`;
+        srcModified[`src${i + 1}.txt`] = `${sharedContent}UNIQUE-SRC-${i}: source ${i} modified\n`;
+      }
+      const dstContent = `${sharedContent}UNIQUE-DST: destination file\n`;
+
+      for (const [name, content] of Object.entries(srcOriginals)) {
+        await writePeerFile(pair.peer, name, content);
+        await writeCtxFile(ctx, name, content);
+      }
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await add(ctx, Object.keys(srcOriginals));
+      const c1 = await commit(ctx, { message: 'first', author });
+
+      for (const [name, content] of Object.entries(srcModified)) {
+        await writePeerFile(pair.peer, name, content);
+        await writeCtxFile(ctx, name, content);
+      }
+      await writePeerFile(pair.peer, 'dst.txt', dstContent);
+      await writeCtxFile(ctx, 'dst.txt', dstContent);
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+      await add(ctx, [...Object.keys(srcModified), 'dst.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '-l',
+        '2',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Act — copies:'on', limit=2 → 1*5=5 > 4 → inexact pass skipped → no copy
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'on', limit: 2 },
+      });
+      const sut = reconstructNameStatus(treeDiff.changes);
+
+      // Unconditional: fixture MUST confirm git shows no copy under the limit
+      expect(liveNameStatus).toMatch(/^A\tdst\.txt$/m);
+      expect(liveNameStatus).not.toMatch(/^C/m);
+
+      // Assert — tsgit matches live git: no copies, dst remains as add
+      const sutLines = sut.split('\n').sort().join('\n');
+      const liveLines = liveNameStatus.split('\n').sort().join('\n');
+      expect(sutLines).toBe(liveLines);
+
+      const copies = treeDiff.changes.filter((c) => c.type === 'copy');
+      expect(copies).toHaveLength(0);
+      const adds = treeDiff.changes.filter((c) => c.type === 'add');
+      expect(adds).toHaveLength(1);
+
+      // Pin golden
+      const goldenName = 'rename-similarity-copy-limit-gate-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutLines).toBe(golden.split('\n').sort().join('\n'));
+      } catch {
+        await saveGolden(goldenName, liveNameStatus);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
 });

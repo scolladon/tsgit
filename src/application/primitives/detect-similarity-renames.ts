@@ -663,14 +663,19 @@ export async function detectSimilarityRenames(
     return finalizeWithBroken(exactResult.changes, broken, mergeScore);
   }
 
-  // Git's rename-only limit: skip the whole inexact pass when rename candidates alone exceed it.
-  const isOverLimit = limit !== 0 && adds.length * deletes.length > limit * limit;
+  // Resolve copy sources first so their count is included in the limit gate.
+  // Under copies:'harder', resolveCopySources applies the harder→on fallback when
+  // harder sources alone would exceed the limit (git drops --find-copies-harder before
+  // skipping the pass entirely).
+  const copySources = resolveCopySources(copies, adds, deletes, other, preimage, limit);
+
+  // Git's combined limit: skip the whole inexact pass when num_create * num_src > limit²,
+  // where num_src counts BOTH rename sources (deletes) and copy sources.
+  const numSrc = deletes.length + copySources.length;
+  const isOverLimit = limit !== 0 && adds.length * numSrc > limit * limit;
   if (isOverLimit) {
     return finalizeWithBroken(exactResult.changes, broken, mergeScore);
   }
-
-  // Resolve copy sources; applies harder-limit fallback when needed.
-  const copySources = resolveCopySources(copies, adds, deletes, other, preimage, limit);
 
   const passResult = await runInexactPass(ctx, {
     adds,

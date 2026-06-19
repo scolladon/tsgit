@@ -1423,4 +1423,67 @@ describe('detectSimilarityRenames', () => {
       });
     });
   });
+
+  describe('Given copies:"on" where copy sources alone push num_create*num_src over the limit', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the inexact pass is skipped and no copy is detected (Fix 2: copy sources count in gate)', async () => {
+        // Arrange — 1 add (num_create=1), 0 deletes, 5 modifies (copy sources under copies:'on').
+        // limit=2 → limit²=4.
+        // Before fix: isOverLimit used adds * deletes = 1 * 0 = 0 ≤ 4 → pass RUNS → copy found.
+        // After fix:  numSrc = deletes + copySources = 0 + 5 = 5;
+        //             isOverLimit = 1 * 5 = 5 > 4 → pass SKIPPED → no copy.
+        const ctx = await buildSeededContext();
+        const sharedContent = Array.from(
+          { length: 10 },
+          (_, i) => `common line ${String(i + 1).padStart(2, '0')}: shared text alpha beta gamma\n`,
+        ).join('');
+        const dstId = await writeBlob(ctx, `${sharedContent}UNIQUE-DST: destination file\n`);
+        const modOldIds: ObjectId[] = [];
+        const modNewIds: ObjectId[] = [];
+        for (let i = 0; i < 5; i++) {
+          const oldId = await writeBlob(
+            ctx,
+            `${sharedContent}UNIQUE-SRC-${i}: source ${i} original\n`,
+          );
+          const newId = await writeBlob(
+            ctx,
+            `${sharedContent}UNIQUE-SRC-${i}: source ${i} modified\n`,
+          );
+          modOldIds.push(oldId);
+          modNewIds.push(newId);
+        }
+        const diff: TreeDiff = {
+          changes: [
+            ...Array.from({ length: 5 }, (_, i) => ({
+              type: 'modify' as const,
+              path: `src-${i}.txt` as FilePath,
+              oldId: modOldIds[i] as ObjectId,
+              newId: modNewIds[i] as ObjectId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            })),
+            {
+              type: 'add',
+              newPath: 'dst.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        // Act
+        const sut = detectSimilarityRenames(ctx, diff, { copies: 'on', limit: 2 });
+        const result = await sut;
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        const adds = result.changes.filter((c) => c.type === 'add');
+        // Assert — inexact pass skipped: no copies, dst remains as add
+        expect(copies).toHaveLength(0);
+        expect(adds).toHaveLength(1);
+        if (adds[0]?.type === 'add') {
+          expect(adds[0].newPath).toBe('dst.txt');
+        }
+        // All modifies survive unchanged
+        expect(result.changes.filter((c) => c.type === 'modify')).toHaveLength(5);
+      });
+    });
+  });
 });
