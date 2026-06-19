@@ -36,7 +36,10 @@ default 30000), `copies?: 'off'|'on'|'harder'` (default `'off'`), `copyThreshold
 (default = `threshold`), and `breakRewrites?: { score: number; merge: number } | false`
 (default `false`; `score` = `<n>` break-attempt gate default 30000, `merge` = `<m>`
 keep-broken gate default 36000, a `merge` of 0 maps to the 36000 default). `DiffOptions`
-and `RepositoryConfig` gain a `renameOptions?: RenameDetectOptions` pass-through.
+gains a `renameOptions?: RenameDetectOptions` pass-through (the live, consumed facade
+path). `RepositoryConfig` does **not** — its existing `detectRenames?` field is
+declared-but-unconsumed, so a `renameOptions?` there would be dead code; config-file-driven
+detection defaults are out of scope (deferred with the config→`diffTrees` plumbing they need).
 Defaults preserve today's behaviour (detection off unless requested).
 
 ## Consequences
@@ -46,3 +49,5 @@ Defaults preserve today's behaviour (detection off unless requested).
   (`-M50%`, `-M50`, `-M0.5`) are parsed to a score by the caller / a thin helper, never
   inside the data layer (ADR-249).
 - `--find-copies-harder` is the `copies: 'harder'` enum value (ADR-375).
+- The facade configuration surface is `DiffOptions.renameOptions` only; `RepositoryConfig`
+  is untouched (no dead field). Wiring config-driven defaults is a separate future change.
