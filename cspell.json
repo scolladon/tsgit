@@ -807,7 +807,13 @@
     "formalised",
     "unaliased",
     "lstatted",
-    "famb"
+    "famb",
+    "accum",
+    "HASHBASE",
+    "hashval",
+    "srcs",
+    "dels",
+    "Dels"
   ],
   "ignorePaths": [
     "node_modules",

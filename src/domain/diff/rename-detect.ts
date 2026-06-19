@@ -7,6 +7,7 @@ import { MAX_SCORE } from './similarity.js';
 export interface RenameDetectOptions {
   readonly limit?: number;
   readonly maxSameIdDeletes?: number;
+  readonly threshold?: number;
 }
 
 const DEFAULT_LIMIT = 1000;
@@ -55,7 +56,8 @@ function tryFoldAdd(
 ): { readonly rename: RenameChange; readonly consumedDelete: DeleteChange } | undefined {
   const matches = deletesByOldId.get(add.newId);
   if (matches === undefined || matches.length !== 1) return undefined;
-  const del = matches[0]!;
+  // length === 1 is guaranteed by the guard above; cast is safe.
+  const del = matches[0] as DeleteChange;
   return {
     rename: {
       type: 'rename',

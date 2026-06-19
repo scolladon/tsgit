@@ -308,6 +308,45 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given detectRenames=true and an edited-then-moved file (inexact rename)', () => {
+    describe('When diffTrees is called with a threshold', () => {
+      it('Then the add/delete pair surfaces as a sub-100% rename (not separate A/D)', async () => {
+        // Arrange — same blob with one line changed → moves to a new path.
+        // Before slice 3 this emits a separate delete+add; after the slice it emits a rename.
+        const ctx = await buildSeededContext();
+        const srcContent = Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join('');
+        const dstContent = srcContent.replace('line 0\n', 'changed line 0\n');
+        const srcId = await blob(ctx, srcContent);
+        const dstId = await blob(ctx, dstContent);
+        const before = await writeTree(ctx, [
+          { name: 'original.txt', mode: FILE_MODE.REGULAR, id: srcId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'moved.txt', mode: FILE_MODE.REGULAR, id: dstId },
+        ]);
+
+        // Act — with detectRenames and a low threshold
+        const sut = await diffTrees(ctx, before, after, {
+          detectRenames: true,
+          renameOptions: { threshold: 1 },
+        });
+
+        // Assert — one rename, not separate A + D
+        expect(sut.changes).toHaveLength(1);
+        const change = sut.changes[0];
+        expect(change?.type).toBe('rename');
+        if (change?.type === 'rename') {
+          expect(change.oldPath).toBe('original.txt');
+          expect(change.newPath).toBe('moved.txt');
+          expect(change.oldId).toBe(srcId);
+          expect(change.newId).toBe(dstId);
+          expect(change.similarity.score).toBeGreaterThan(0);
+          expect(change.similarity.score).toBeLessThan(MAX_SCORE);
+        }
+      });
+    });
+  });
+
   describe('Given recursive is absent (default) and a sub-directory changes', () => {
     describe('When diffTrees is called', () => {
       it('Then the sub-directory surfaces as a single tree-entry change (non-recursive)', async () => {

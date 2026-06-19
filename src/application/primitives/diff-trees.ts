@@ -1,7 +1,6 @@
 import {
   computeStatFields,
   type DiffChange,
-  detectRenames,
   diffTrees as domainDiffTrees,
   type StatDiffChange,
   type StatTreeDiff,
@@ -9,6 +8,7 @@ import {
 } from '../../domain/diff/index.js';
 import type { Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readTree } from './read-tree.js';
@@ -40,7 +40,9 @@ export async function diffTrees(
       ? await diffRecursive(ctx, treeA, treeB)
       : domainDiffTrees(treeA, treeB);
   const diff =
-    options?.detectRenames === true ? detectRenames(rawDiff, options.renameOptions) : rawDiff;
+    options?.detectRenames === true
+      ? await detectSimilarityRenames(ctx, rawDiff, options.renameOptions)
+      : rawDiff;
   if (options?.withStat === true) {
     return attachStats(ctx, diff);
   }

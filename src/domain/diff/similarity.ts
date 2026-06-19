@@ -1,6 +1,15 @@
 /**
  * Pure spanhash similarity scorer — git's diffcore-delta.c algorithm.
  * I/O-free; never imports platform adapters.
+ *
+ * Algorithm (mirrors git's `hash_chars` + `diffcore_count_changes`):
+ * 1. Split each blob into chunks delimited by LF or up to 64 bytes, whichever
+ *    comes first (same rule git applies for text vs binary).
+ * 2. Hash each chunk with git's two-accumulator rolling hash and store its byte
+ *    count in a hash-map keyed by `(accum1 + accum2 * 0x61) % HASHBASE`.
+ * 3. For each chunk hash present in BOTH src and dst, count min(src_cnt, dst_cnt)
+ *    bytes as "copied".
+ * 4. score = (src_copied * MAX_SCORE) / max(src_size, dst_size)
  */
 
 /** Raw score ceiling; mirrors git's MAX_SCORE = 60000. */
@@ -25,80 +34,61 @@ export interface SimilarityScore {
   readonly maxScore: number;
 }
 
-/**
- * Compute the 4-byte multiplicative hash used to build the spanhash table.
- * Matches git's hash function for 4-byte windows.
- */
-function hash4(data: Uint8Array, offset: number): number {
-  let h = 0;
-  for (let i = 0; i < 4; i++) {
-    h = (Math.imul(h, 0x4b9ace4d) + ((data[offset + i] ?? 0) & 0xff)) >>> 0;
-  }
-  return h;
-}
+/** Modulus used by git's spanhash hash function (prime between 2^16..2^17). */
+const HASHBASE = 107927;
+
+/** Max chunk size before forcing a hash boundary (git constant). */
+const MAX_CHUNK_LEN = 64;
 
 /**
- * Compute the smallest power of 2 >= min, with a floor of 256.
+ * Build a map from chunk-hash → total byte count for all chunks in `data`.
+ * Chunks are delimited by `\n` (LF) or every `MAX_CHUNK_LEN` bytes.
+ * Mirrors git's `hash_chars` in `diffcore-delta.c`.
  */
-function nextPow2(min: number): number {
-  let size = 256;
-  while (size < min) size <<= 1;
-  return size;
-}
+function buildChunkMap(data: Uint8Array): Map<number, number> {
+  const map = new Map<number, number>();
+  const size = data.length;
+  let accum1 = 0;
+  let accum2 = 0;
+  let n = 0;
 
-/**
- * Count how many dst bytes are covered by spans that appear in src,
- * using git's spanhash greedy forward-extension strategy.
- *
- * For each 4-byte window in dst, look up its hash in the table built from src.
- * On a match (same hash AND same 4 bytes), extend the span forward as long as
- * bytes agree, accumulating the matched byte count.
- */
-function countSrcCopied(src: Uint8Array, dst: Uint8Array): number {
-  const srcSize = src.length;
-  const dstSize = dst.length;
-  const mask = nextPow2(srcSize >> 2) - 1;
-
-  // Build table: hash slot → (srcOffset, 4 key bytes).
-  // Later positions overwrite earlier ones on collision (git's behaviour).
-  const table = new Array<readonly [number, number, number, number, number] | undefined>(
-    mask + 1,
-  ).fill(undefined);
-
-  for (let i = 0; i <= srcSize - 4; i++) {
-    const h = hash4(src, i) & mask;
-    table[h] = [i, src[i] ?? 0, src[i + 1] ?? 0, src[i + 2] ?? 0, src[i + 3] ?? 0];
-  }
-
-  let srcCopied = 0;
-  let j = 0;
-
-  while (j <= dstSize - 4) {
-    const h = hash4(dst, j) & mask;
-    const entry = table[h];
-
-    if (
-      entry !== undefined &&
-      entry[1] === dst[j] &&
-      entry[2] === dst[j + 1] &&
-      entry[3] === dst[j + 2] &&
-      entry[4] === dst[j + 3]
-    ) {
-      const matchStart = j;
-      let si = entry[0] + 4;
-      let dj = j + 4;
-      while (si < srcSize && dj < dstSize && src[si] === dst[dj]) {
-        si++;
-        dj++;
-      }
-      srcCopied += dj - matchStart;
-      j = dj;
-    } else {
-      j++;
+  for (let i = 0; i < size; i++) {
+    // The loop guard `i < size` ensures `data[i]` is always defined.
+    const c = data[i] as number;
+    const old1 = accum1;
+    accum1 = (((accum1 << 7) ^ (accum2 >>> 25)) + c) >>> 0;
+    accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
+    n++;
+    if (n >= MAX_CHUNK_LEN || c === 0x0a /* LF */) {
+      const hashval = (accum1 + Math.imul(accum2, 0x61)) % HASHBASE;
+      map.set(hashval, (map.get(hashval) ?? 0) + n);
+      n = 0;
+      accum1 = 0;
+      accum2 = 0;
     }
   }
+  if (n > 0) {
+    const hashval = (accum1 + Math.imul(accum2, 0x61)) % HASHBASE;
+    map.set(hashval, (map.get(hashval) ?? 0) + n);
+  }
 
-  return srcCopied;
+  return map;
+}
+
+/**
+ * Count how many bytes from `src` were "copied" to `dst`.
+ * For each chunk hash in src, takes min(src_cnt, dst_cnt) as copied bytes.
+ * Mirrors git's `diffcore_count_changes` in `diffcore-delta.c`.
+ */
+function countSrcCopied(srcMap: Map<number, number>, dstMap: Map<number, number>): number {
+  let copied = 0;
+  for (const [hashval, srcCnt] of srcMap) {
+    const dstCnt = dstMap.get(hashval) ?? 0;
+    if (dstCnt > 0) {
+      copied += Math.min(srcCnt, dstCnt);
+    }
+  }
+  return copied;
 }
 
 /**
@@ -107,9 +97,8 @@ function countSrcCopied(src: Uint8Array, dst: Uint8Array): number {
  *
  * Special cases:
  * - Both empty → MAX_SCORE (identical trivially)
- * - Identical content → MAX_SCORE
+ * - Identical content → MAX_SCORE (checked via reference equality for speed)
  * - One empty, other non-empty → 0
- * - Either blob shorter than 4 bytes (and not identical) → 0
  */
 export function estimateSimilarity(src: Uint8Array, dst: Uint8Array): number {
   const srcSize = src.length;
@@ -117,21 +106,13 @@ export function estimateSimilarity(src: Uint8Array, dst: Uint8Array): number {
   const maxSize = Math.max(srcSize, dstSize);
 
   if (maxSize === 0) return MAX_SCORE;
-  if (src === dst) return MAX_SCORE;
-  if (srcSize === dstSize) {
-    let identical = true;
-    for (let i = 0; i < srcSize; i++) {
-      if (src[i] !== dst[i]) {
-        identical = false;
-        break;
-      }
-    }
-    if (identical) return MAX_SCORE;
-  }
+  if (srcSize === 0 || dstSize === 0) return 0;
 
-  if (srcSize < 4 || dstSize < 4) return 0;
+  const srcMap = buildChunkMap(src);
+  const dstMap = buildChunkMap(dst);
+  const srcCopied = countSrcCopied(srcMap, dstMap);
 
-  return Math.floor((countSrcCopied(src, dst) * MAX_SCORE) / maxSize);
+  return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
 }
 
 /**
