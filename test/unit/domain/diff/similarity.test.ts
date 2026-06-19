@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildChunkMap,
   countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
   estimateSimilarity,
+  estimateSimilarityFromMaps,
   MAX_SCORE,
   toSimilarityPercent,
 } from '../../../../src/domain/diff/similarity.js';
@@ -446,6 +448,51 @@ describe('similarity', () => {
         // Assert — merge_score reproduces git's M060
         const mergeScore = Math.trunc(((srcSize - sut.srcCopied) * MAX_SCORE) / srcSize);
         expect(Math.trunc((mergeScore * 100) / MAX_SCORE)).toBe(60);
+      });
+    });
+  });
+
+  describe('estimateSimilarityFromMaps', () => {
+    describe('Given both empty maps with size 0, When estimateSimilarityFromMaps is called', () => {
+      it('Then returns MAX_SCORE (both blobs empty → trivially identical)', () => {
+        // Arrange
+        const emptyMap = new Map<number, number>();
+
+        // Act
+        const result = estimateSimilarityFromMaps(emptyMap, 0, emptyMap, 0);
+
+        // Assert
+        expect(result).toBe(MAX_SCORE);
+      });
+    });
+
+    describe('Given a non-empty src map and empty dst (size 0), When estimateSimilarityFromMaps is called', () => {
+      it('Then returns 0 (empty dst → no shared chunks)', () => {
+        // Arrange
+        const srcBytes = enc.encode('hello\n');
+        const srcMap = buildChunkMap(srcBytes);
+        const emptyMap = new Map<number, number>();
+
+        // Act
+        const result = estimateSimilarityFromMaps(srcMap, srcBytes.length, emptyMap, 0);
+
+        // Assert
+        expect(result).toBe(0);
+      });
+    });
+
+    describe('Given two identical blobs, When estimateSimilarityFromMaps is called with their precomputed maps', () => {
+      it('Then returns the same score as estimateSimilarity', () => {
+        // Arrange
+        const { src, dst } = makeR087Fixture();
+        const srcMap = buildChunkMap(src);
+        const dstMap = buildChunkMap(dst);
+
+        // Act
+        const sut = estimateSimilarityFromMaps(srcMap, src.length, dstMap, dst.length);
+
+        // Assert — must match the byte-level scorer exactly
+        expect(sut).toBe(estimateSimilarity(src, dst));
       });
     });
   });
