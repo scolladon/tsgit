@@ -1635,9 +1635,25 @@ describe('patch-serializer', () => {
         // Act
         const sut = renderPatch([file]);
 
-        // Assert — dissimilarity index 66% (truncated, not rounded)
-        expect(sut).toContain('dissimilarity index 66%');
-        expect(sut).toContain('index aaaaaaa..bbbbbbb 100644');
+        // Assert — full byte-equality: dissimilarity index 66% (truncated, not rounded),
+        // followed by the index line and the complete D/A hunk.
+        expect(sut).toBe(
+          [
+            'diff --git a/file.txt b/file.txt',
+            'dissimilarity index 66%',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/file.txt',
+            '+++ b/file.txt',
+            '@@ -1,3 +1,3 @@',
+            '-alpha',
+            '-beta',
+            '-gamma',
+            '+delta',
+            '+epsilon',
+            '+zeta',
+            '',
+          ].join('\n'),
+        );
       });
     });
   });
@@ -1665,9 +1681,16 @@ describe('patch-serializer', () => {
         // Act
         const sut = renderPatch([file]);
 
-        // Assert — dissimilarity index line precedes the binary diff block
-        expect(sut).toContain('dissimilarity index 100%');
-        expect(sut).toContain('Binary files');
+        // Assert — full byte-equality: dissimilarity line precedes binary block.
+        expect(sut).toBe(
+          [
+            'diff --git a/image.png b/image.png',
+            'dissimilarity index 100%',
+            'index aaaaaaa..bbbbbbb 100644',
+            'Binary files a/image.png and b/image.png differ',
+            '',
+          ].join('\n'),
+        );
       });
     });
   });
