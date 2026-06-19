@@ -1534,10 +1534,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     }
   });
 
-  it('Given a substantially-dissimilar rewrite (matrix #B2), When tsgit detects breaks with default -B, Then modify is kept broken and frozen golden pinned', async () => {
-    // Arrange — 20 lines old (all shared prefix), 7 shared in new → >60% dissimilarity in both
-    // git computes 65% dissimilarity; tsgit computes 69% (hash-based approximation differs).
-    // Both scorers agree the modify is KEPT BROKEN (>= 60% gate); the exact percentage diverges.
+  it('Given a substantially-dissimilar rewrite (matrix #B2), When tsgit detects breaks with default -B, Then M065 matches git byte-for-byte', async () => {
+    // Arrange — 20 lines old, 7 shared in new → 65% dissimilarity (git merge_score formula)
+    // Verified against real git 2.54.0: `git diff -B --name-status` → M065
     const pair = await makePeerPair('break-b2');
     try {
       runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
@@ -1562,8 +1561,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         'HEAD',
       ).trim();
 
-      // Sanity: git must report M<n> (kept broken, dissimilarity >= 60% default gate)
-      expect(liveNameStatus).toMatch(/^M\d{3}\tfile\.txt$/m);
+      // Sanity: git must report M065 (65% dissimilarity, kept broken >= 60% default gate)
+      expect(liveNameStatus).toBe('M065\tfile.txt');
 
       const ctx = createMemoryContext();
       await init(ctx);
@@ -1582,19 +1581,18 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
       });
 
-      // Assert — tsgit also keeps the modify broken (broken datum present)
-      const modifies = treeDiff.changes.filter((c) => c.type === 'modify');
-      expect(modifies).toHaveLength(1);
-      expect((modifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
-
-      // Pin tsgit's own golden (tsgit score differs from git; pin separately)
       const sutNameStatus = reconstructNameStatus(treeDiff.changes);
-      const goldenName = 'break-b2-tsgit-name-status';
+
+      // Assert — name-status matches live git byte-for-byte (M065)
+      expect(sutNameStatus).toBe(liveNameStatus);
+
+      // Pin git-derived golden
+      const goldenName = 'break-b2-name-status';
       try {
         const golden = await loadGolden(goldenName);
         expect(sutNameStatus).toBe(golden.trim());
       } catch {
-        await saveGolden(goldenName, sutNameStatus);
+        await saveGolden(goldenName, liveNameStatus);
       }
     } finally {
       await pair.dispose();
@@ -1660,11 +1658,10 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     }
   });
 
-  it('Given a boundary-dissimilar rewrite (matrix #B4), When tsgit merge gate is at/above dissimilarity, Then gate is inclusive (kept) vs exclusive (re-merged)', async () => {
-    // Arrange — 20 lines old (all shared prefix), 9 shared in new.
-    // tsgit spanhash score: 60% dissimilarity (36305 raw). git score: 55% (different algorithm).
-    // The gate is tested at tsgit's own score boundary (not git's): 36000 (60%) → kept, 36601 (61%) → re-merged.
-    // git boundary: -B/55% → kept (M055), -B/56% → re-merged (M) — both documented below.
+  it('Given a boundary-dissimilar rewrite (matrix #B4), When tsgit merge gate equals git merge_score, Then gate is inclusive (kept) vs exclusive (re-merged)', async () => {
+    // Arrange — 20 lines old, 9 shared in new.
+    // git merge_score = (1420-639)*60000/1420 = 33000 → 55%; verified: `git diff -B/55%` → M055, `-B/56%` → M.
+    // tsgit gate drives from git's raw score (33000): kept at 33000, re-merged at 33001.
     const pair = await makePeerPair('break-b4');
     try {
       runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
@@ -1678,7 +1675,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
       gitCommit(pair.peer, 'second');
 
-      // git boundary (inclusive gate at git's 55% score):
+      // Probe git's inclusive boundary at the merge_score percentage (55%)
       const liveKeptByGit = git(
         pair.peer,
         'diff',
@@ -1700,9 +1697,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         'HEAD',
       ).trim();
 
-      // Sanity: git inclusive gate — kept at 55% (55 >= 55), re-merged at 56% (55 < 56)
-      expect(liveKeptByGit).toMatch(/^M055\tfile\.txt$/m);
-      expect(liveMergedByGit).toMatch(/^M\tfile\.txt$/m);
+      // Sanity: git inclusive gate — kept at 55% (merge_score=33000 >= 33000), re-merged at 56%
+      expect(liveKeptByGit).toBe('M055\tfile.txt');
+      expect(liveMergedByGit).toBe('M\tfile.txt');
 
       const ctx = createMemoryContext();
       await init(ctx);
@@ -1713,26 +1710,31 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await add(ctx, ['file.txt']);
       const c2 = await commit(ctx, { message: 'second', author });
 
-      // Act — tsgit gate at DEFAULT_MERGE_SCORE (36000 = 60%): kept broken (tsgit score 36305 >= 36000)
+      // Act — tsgit gate at 33000 (git's exact merge_score): kept (33000 >= 33000, inclusive)
       const treeDiffKept = await diff(ctx, {
         from: c1.id,
         to: c2.id,
         detectRenames: true,
-        renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+        renameOptions: { breakRewrites: { score: 30000, merge: 33000 } },
       });
-      // Act — tsgit gate at 36601 (just above 36305 = 60.5%): re-merged
+      // Act — tsgit gate at 33001 (just above merge_score): re-merged
       const treeDiffMerged = await diff(ctx, {
         from: c1.id,
         to: c2.id,
         detectRenames: true,
-        renameOptions: { breakRewrites: { score: 30000, merge: 36601 } },
+        renameOptions: { breakRewrites: { score: 30000, merge: 33001 } },
       });
 
-      // Assert — tsgit: gate inclusive (kept at 60% ≤ score); re-merged when gate > score
+      // Assert — kept at exactly merge_score (inclusive gate); name-status matches git's -B/55%
+      const sutKept = reconstructNameStatus(treeDiffKept.changes);
+      expect(sutKept).toBe(liveKeptByGit);
       const keptModifies = treeDiffKept.changes.filter((c) => c.type === 'modify');
       expect(keptModifies).toHaveLength(1);
       expect((keptModifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
 
+      // Assert — re-merged at merge_score+1 (exclusive); name-status matches git's -B/56%
+      const sutMerged = reconstructNameStatus(treeDiffMerged.changes);
+      expect(sutMerged).toBe(liveMergedByGit);
       const mergedModifies = treeDiffMerged.changes.filter((c) => c.type === 'modify');
       expect(mergedModifies).toHaveLength(1);
       expect((mergedModifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
@@ -1802,10 +1804,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     }
   });
 
-  it('Given a 65%-dissimilar rewrite (matrix #B5), When tsgit uses default -B, Then modify kept broken; tsgit golden pinned', async () => {
-    // Arrange — 50 lines old (all shared prefix), 20 shared in new.
-    // tsgit spanhash score: 65% dissimilarity (>= 60% default gate → kept broken).
-    // git score: 60% dissimilarity (same decision; both algorithms keep broken at default -B).
+  it('Given a 60%-dissimilar rewrite (matrix #B5), When tsgit uses default -B, Then M060 matches git byte-for-byte', async () => {
+    // Arrange — 50 lines old, 20 shared in new.
+    // git merge_score = (3550-1420)*60000/3550 = 36000 → 60%; verified: default -B → M060.
     const pair = await makePeerPair('break-b5');
     try {
       runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
@@ -1829,9 +1830,22 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         'HEAD~1',
         'HEAD',
       ).trim();
+      // Probe git at -B/61% (above merge_score 60%) to confirm re-merge boundary
+      const liveOver = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B/61%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
 
-      // Sanity: git keeps broken at default gate (git score >= 60%)
-      expect(liveDefault).toMatch(/^M\d{3}\tfile\.txt$/m);
+      // Sanity: git reports M060 at default -B (merge_score=36000 >= DEFAULT_MERGE_SCORE=36000)
+      expect(liveDefault).toBe('M060\tfile.txt');
+      // Sanity: re-merged at 61% (merge_score 36000 < 36601)
+      expect(liveOver).toBe('M\tfile.txt');
 
       const ctx = createMemoryContext();
       await init(ctx);
@@ -1842,39 +1856,41 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await add(ctx, ['file.txt']);
       const c2 = await commit(ctx, { message: 'second', author });
 
-      // Act — default -B: merge gate = 36000 (60%); tsgit score ~65% >= 60% → kept
+      // Act — default -B gate: merge_score=36000 >= DEFAULT_MERGE_SCORE=36000 → kept
       const treeDiffDefault = await diff(ctx, {
         from: c1.id,
         to: c2.id,
         detectRenames: true,
         renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
       });
-      // Act — gate raised to 66% (39600); tsgit score ~65% < 66% → re-merged
+      // Act — gate at 36001 (just above merge_score): re-merged
       const treeDiffOver = await diff(ctx, {
         from: c1.id,
         to: c2.id,
         detectRenames: true,
-        renameOptions: { breakRewrites: { score: 30000, merge: 39601 } },
+        renameOptions: { breakRewrites: { score: 30000, merge: 36001 } },
       });
 
       const sutDefault = reconstructNameStatus(treeDiffDefault.changes);
 
-      // Assert — tsgit also keeps broken at default gate; gate raised above tsgit's score re-merges
+      // Assert — name-status matches live git byte-for-byte (M060)
+      expect(sutDefault).toBe(liveDefault);
       const defaultModifies = treeDiffDefault.changes.filter((c) => c.type === 'modify');
       expect(defaultModifies).toHaveLength(1);
       expect((defaultModifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
 
+      // Assert — re-merged at merge_score+1 (exclusive gate)
       const overModifies = treeDiffOver.changes.filter((c) => c.type === 'modify');
       expect(overModifies).toHaveLength(1);
       expect((overModifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
 
-      // Pin tsgit's golden
-      const goldenName = 'break-b5-tsgit-name-status';
+      // Pin git-derived golden
+      const goldenName = 'break-b5-name-status';
       try {
         const golden = await loadGolden(goldenName);
         expect(sutDefault).toBe(golden.trim());
       } catch {
-        await saveGolden(goldenName, sutDefault);
+        await saveGolden(goldenName, liveDefault);
       }
     } finally {
       await pair.dispose();
@@ -2197,14 +2213,14 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     }
   });
 
-  it('Given a 55%-dissimilar modify (git) / 60.5%-dissimilar (tsgit), When breakRewrites score/merge are swept, Then tsgit inclusive gate and merge:0 maps to DEFAULT_MERGE_SCORE (threshold #T4)', async () => {
+  it('Given a 55%-dissimilar modify, When breakRewrites score/merge are swept, Then tsgit matches git at default gate and gate boundaries are git-faithful (threshold #T4)', async () => {
     // Arrange — 20 lines old, 9 shared in new.
-    // git dissimilarity: 55% (M055 at -B/55%); tsgit spanhash: 36305 (≈60.5%).
-    // Probed: git -B/55% → M055 (kept); -B/56% → M (re-merged); -B50%/0 → M (default 60% gate).
-    // tsgit numeric boundaries: score=30000 (50% break-attempt gate).
-    //   merge=36305 → kept (36305 >= 36305, inclusive gate).
-    //   merge=36306 → re-merged (36305 < 36306).
-    //   merge=0 → maps to DEFAULT_MERGE_SCORE (36000); 36305 >= 36000 → KEPT (tsgit-only; git re-merges).
+    // git merge_score = (1420-639)*60000/1420 = 33000 → 55%
+    // Verified: git -B/55% → M055 (kept); -B/56% → M (re-merged); default -B → M (33000 < 36000).
+    // tsgit boundaries (driven from git's merge_score = 33000):
+    //   merge=33000 → kept (33000 >= 33000, inclusive gate) → M055 matches git -B/55%
+    //   merge=33001 → re-merged (33000 < 33001)             → M matches git -B/56%
+    //   merge=0 → DEFAULT_MERGE_SCORE (36000); 33000 < 36000 → re-merges → M matches git default -B
     const pair = await makePeerPair('threshold-t4');
     try {
       runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
@@ -2218,8 +2234,18 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
       gitCommit(pair.peer, 'second');
 
-      // Probe real git boundaries (git's own scorer gives 55% dissimilarity)
-      const liveGitKept = git(
+      // Probe real git at all relevant -B/<m>% values
+      const liveDefaultB = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+      const liveAt55 = git(
         pair.peer,
         'diff',
         '--no-ext-diff',
@@ -2229,7 +2255,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         'HEAD~1',
         'HEAD',
       ).trim();
-      const liveGitMerged = git(
+      const liveAt56 = git(
         pair.peer,
         'diff',
         '--no-ext-diff',
@@ -2240,9 +2266,10 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         'HEAD',
       ).trim();
 
-      // Sanity: git gate is inclusive at 55%, exclusive at 56%
-      expect(liveGitKept).toMatch(/^M055\tfile\.txt$/m);
-      expect(liveGitMerged).toMatch(/^M\tfile\.txt$/m);
+      // Sanity: git's merge_score=33000 (55%): kept at 55%, re-merged at 56%, re-merged at default
+      expect(liveAt55).toBe('M055\tfile.txt');
+      expect(liveAt56).toBe('M\tfile.txt');
+      expect(liveDefaultB).toBe('M\tfile.txt');
 
       const ctx = createMemoryContext();
       await init(ctx);
@@ -2253,21 +2280,21 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await add(ctx, ['file.txt']);
       const c2 = await commit(ctx, { message: 'second', author });
 
-      // Act — tsgit: score=30000 (50% break-attempt), merge=36305 (tsgit's exact dissimilarity: kept, inclusive)
+      // Act — gate at 33000 (exactly merge_score): inclusive → kept; name-status matches git -B/55%
       const treeDiffKept = await diff(ctx, {
         from: c1.id,
         to: c2.id,
         detectRenames: true,
-        renameOptions: { breakRewrites: { score: 30000, merge: 36305 } },
+        renameOptions: { breakRewrites: { score: 30000, merge: 33000 } },
       });
-      // Act — merge=36306 (just above tsgit's 36305): re-merged
+      // Act — gate at 33001 (just above merge_score): re-merged; name-status matches git -B/56%
       const treeDiffMerged = await diff(ctx, {
         from: c1.id,
         to: c2.id,
         detectRenames: true,
-        renameOptions: { breakRewrites: { score: 30000, merge: 36306 } },
+        renameOptions: { breakRewrites: { score: 30000, merge: 33001 } },
       });
-      // Act — merge:0 maps to DEFAULT_MERGE_SCORE (36000); tsgit score 36305 >= 36000 → KEPT
+      // Act — merge:0 → DEFAULT_MERGE_SCORE (36000); 33000 < 36000 → re-merges; matches git default -B
       const treeDiffMerge0 = await diff(ctx, {
         from: c1.id,
         to: c2.id,
@@ -2275,29 +2302,34 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         renameOptions: { breakRewrites: { score: 30000, merge: 0 } },
       });
 
-      // Assert — inclusive gate: kept at merge=36305
+      // Assert — inclusive gate: kept at 33000; M055 matches git -B/55%
+      const sutKept = reconstructNameStatus(treeDiffKept.changes);
+      expect(sutKept).toBe(liveAt55);
       const keptModifies = treeDiffKept.changes.filter((c) => c.type === 'modify');
       expect(keptModifies).toHaveLength(1);
       expect((keptModifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
 
-      // Assert — re-merged at merge=36306 (just above score)
+      // Assert — exclusive gate: re-merged at 33001; M matches git -B/56%
+      const sutMerged = reconstructNameStatus(treeDiffMerged.changes);
+      expect(sutMerged).toBe(liveAt56);
       const mergedModifies = treeDiffMerged.changes.filter((c) => c.type === 'modify');
       expect(mergedModifies).toHaveLength(1);
       expect((mergedModifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
 
-      // Assert — merge:0 → DEFAULT_MERGE_SCORE (36000); 36305 >= 36000 → KEPT BROKEN
+      // Assert — merge:0 → DEFAULT_MERGE_SCORE (36000); re-merges → M matches git default -B
+      const sutMerge0 = reconstructNameStatus(treeDiffMerge0.changes);
+      expect(sutMerge0).toBe(liveDefaultB);
       const merge0Modifies = treeDiffMerge0.changes.filter((c) => c.type === 'modify');
       expect(merge0Modifies).toHaveLength(1);
-      expect((merge0Modifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
+      expect((merge0Modifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
 
-      // Pin tsgit's golden (tsgit score differs from git; scores pinned separately)
-      const sutKeptNameStatus = reconstructNameStatus(treeDiffKept.changes);
+      // Pin git-derived golden for the inclusive-gate case (M055)
       const goldenName = 'threshold-t4-break-kept-name-status';
       try {
         const golden = await loadGolden(goldenName);
-        expect(sutKeptNameStatus).toBe(golden.trim());
+        expect(sutKept).toBe(golden.trim());
       } catch {
-        await saveGolden(goldenName, sutKeptNameStatus);
+        await saveGolden(goldenName, liveAt55);
       }
     } finally {
       await pair.dispose();
