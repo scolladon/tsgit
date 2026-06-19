@@ -201,4 +201,59 @@ describe('materialiseOne', () => {
       });
     });
   });
+
+  describe('Given a sub-100% rename change (score < MAX_SCORE)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then it loads both oldId and newId blobs in parallel', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const oldOid = await writeBlob(ctx, 'original content\n');
+        const newOid = await writeBlob(ctx, 'modified content\n');
+        const change: RenameChange = {
+          type: 'rename',
+          oldPath: 'src.txt' as FilePath,
+          newPath: 'dst.txt' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          similarity: { score: MAX_SCORE - 1, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — both sides loaded
+        expect(sut.oldContent).toEqual(utf8.encode('original content\n'));
+        expect(sut.newContent).toEqual(utf8.encode('modified content\n'));
+      });
+    });
+  });
+
+  describe('Given an R100 rename change (score === MAX_SCORE)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then it loads neither side (oldContent and newContent are undefined)', async () => {
+        // Arrange — pure rename: score === MAX_SCORE means no content needed
+        const ctx = createMemoryContext();
+        const oid = await writeBlob(ctx, 'same content\n');
+        const change: RenameChange = {
+          type: 'rename',
+          oldPath: 'src.txt' as FilePath,
+          newPath: 'dst.txt' as FilePath,
+          oldId: oid,
+          newId: oid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — no blob content loaded for a pure rename
+        expect(sut.oldContent).toBeUndefined();
+        expect(sut.newContent).toBeUndefined();
+      });
+    });
+  });
 });

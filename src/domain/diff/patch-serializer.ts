@@ -8,7 +8,7 @@ import type {
 } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
 import { diffLines, isBinary, type LineHunk, splitLines } from './line-diff.js';
-import { toSimilarityPercent } from './similarity.js';
+import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
 
 export interface PatchFile {
   readonly change: DiffChange;
@@ -496,13 +496,65 @@ function renderModifyOrTypeChangeBlock(
   return renderSameKindBlock(changeToCommon(change), prefix, oldBytes, newBytes, contextLines);
 }
 
-function renderRenameBlock(change: RenameChange, prefix: PatchPathPrefix): string[] {
-  return [
-    diffGitHeader(change.oldPath, change.newPath, prefix),
-    `similarity index ${toSimilarityPercent(change.similarity.score)}%`,
-    `rename from ${change.oldPath}`,
-    `rename to ${change.newPath}`,
-  ];
+function renameIndexLine(change: RenameChange): string {
+  const base = `index ${shortOid(change.oldId)}..${shortOid(change.newId)}`;
+  // Mode suffix is present ONLY when old and new modes are equal (matrix #4).
+  return change.oldMode === change.newMode ? `${base} ${change.newMode}` : base;
+}
+
+function renderRenameBody(
+  change: RenameChange,
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  const out: string[] = [];
+  out.push(renameIndexLine(change));
+  if (isBinary(oldBytes) || isBinary(newBytes)) {
+    out.push(
+      `Binary files ${prefix.old}${change.oldPath} and ${prefix.new}${change.newPath} differ`,
+    );
+    return out;
+  }
+  const hunks = computeHunks(oldBytes, newBytes, contextLines);
+  out.push(`--- ${prefix.old}${change.oldPath}`);
+  out.push(`+++ ${prefix.new}${change.newPath}`);
+  for (const hunk of hunks) {
+    out.push(formatHunkHeader(hunk.oldStart, hunk.oldLen, hunk.newStart, hunk.newLen));
+    for (const line of renderHunkBody(hunk.body)) out.push(line);
+  }
+  return out;
+}
+
+function renderRenameBlock(
+  change: RenameChange,
+  file: PatchFile,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  const out: string[] = [];
+  out.push(diffGitHeader(change.oldPath, change.newPath, prefix));
+  // Mode preamble PRECEDES the similarity line when modes differ (matrix #4).
+  if (change.oldMode !== change.newMode) {
+    out.push(`old mode ${change.oldMode}`);
+    out.push(`new mode ${change.newMode}`);
+  }
+  out.push(`similarity index ${toSimilarityPercent(change.similarity.score)}%`);
+  out.push(`rename from ${change.oldPath}`);
+  out.push(`rename to ${change.newPath}`);
+  // R100: stop here — no index line, no hunk (matrix #5, byte-identical to slice 2).
+  if (change.similarity.score === MAX_SCORE) return out;
+  for (const line of renderRenameBody(
+    change,
+    file.oldContent ?? new Uint8Array(0),
+    file.newContent ?? new Uint8Array(0),
+    prefix,
+    contextLines,
+  )) {
+    out.push(line);
+  }
+  return out;
 }
 
 function renderAddBinary(change: AddChange, prefix: PatchPathPrefix): string[] {
@@ -535,7 +587,7 @@ function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: numb
     if (isBinary(oldBytes)) return renderDeleteBinary(change, prefix);
     return renderDeleteBlock(change, file.oldContent, prefix);
   }
-  if (change.type === 'rename') return renderRenameBlock(change, prefix);
+  if (change.type === 'rename') return renderRenameBlock(change, file, prefix, contextLines);
   // `modify` and `type-change` share the same body shape (mode preamble +
   // optional content body); the discriminated union is exhaustive — no
   // fallthrough branch exists for the type system to flag.

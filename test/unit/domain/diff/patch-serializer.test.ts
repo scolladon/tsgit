@@ -1232,4 +1232,160 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  describe('Given a sub-100% rename change with text content (matrix #1 shape)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits similarity index + rename from/to + index line + hunk body', () => {
+        // Arrange — R087 shape: same-mode rename, old/new ids differ, score < MAX_SCORE
+        const oldContent = utf8.encode('line 00\nline 01\nline 02\n');
+        const newContent = utf8.encode('CHANGED\nline 01\nline 02\n');
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'original.txt' as FilePath,
+            newPath: 'moved.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 52200, maxScore: MAX_SCORE }, // toSimilarityPercent → 87
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — header + similarity index 87% + rename from/to + index (with mode) + hunk
+        expect(sut).toBe(
+          [
+            'diff --git a/original.txt b/moved.txt',
+            'similarity index 87%',
+            'rename from original.txt',
+            'rename to moved.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/original.txt',
+            '+++ b/moved.txt',
+            '@@ -1,3 +1,3 @@',
+            '-line 00',
+            '+CHANGED',
+            ' line 01',
+            ' line 02',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a mode-change + sub-100% rename (matrix #4)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits old mode / new mode BEFORE similarity index, and index line WITHOUT trailing mode', () => {
+        // Arrange — modes differ: preamble precedes similarity; index omits mode suffix
+        const oldContent = utf8.encode('#!/bin/sh\necho hi\n');
+        const newContent = utf8.encode('#!/bin/sh\necho hello\n');
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'run.sh' as FilePath,
+            newPath: 'run-new.sh' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.EXECUTABLE,
+            similarity: { score: 42600, maxScore: MAX_SCORE }, // toSimilarityPercent → 71
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — mode preamble BEFORE similarity; index line NO trailing mode
+        expect(sut).toBe(
+          [
+            'diff --git a/run.sh b/run-new.sh',
+            'old mode 100644',
+            'new mode 100755',
+            'similarity index 71%',
+            'rename from run.sh',
+            'rename to run-new.sh',
+            'index aaaaaaa..bbbbbbb',
+            '--- a/run.sh',
+            '+++ b/run-new.sh',
+            '@@ -1,2 +1,2 @@',
+            ' #!/bin/sh',
+            '-echo hi',
+            '+echo hello',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a pure R100 rename change (regression pin from slice 2)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits exactly 4 header lines with no index line and no hunk', () => {
+        // Arrange — score === MAX_SCORE: byte-identical to the slice 2 form
+        const file = renameFile('old/path.txt', 'new/path.txt');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — byte-identical to the pre-slice-4 output
+        expect(sut).toBe(
+          [
+            'diff --git a/old/path.txt b/new/path.txt',
+            'similarity index 100%',
+            'rename from old/path.txt',
+            'rename to new/path.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a sub-100% rename change with binary content', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits similarity + rename from/to + index + Binary files differ', () => {
+        // Arrange — binary bytes (contain NUL) trigger isBinary path
+        const binaryOld = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const binaryNew = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]);
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'logo.png' as FilePath,
+            newPath: 'icon.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 30000, maxScore: MAX_SCORE }, // toSimilarityPercent → 50
+          },
+          oldContent: binaryOld,
+          newContent: binaryNew,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — binary rename: index line present (same mode) + Binary files differ
+        expect(sut).toBe(
+          [
+            'diff --git a/logo.png b/icon.png',
+            'similarity index 50%',
+            'rename from logo.png',
+            'rename to icon.png',
+            'index aaaaaaa..bbbbbbb 100644',
+            'Binary files a/logo.png and b/icon.png differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
 });
