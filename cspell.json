@@ -814,6 +814,7 @@
     "srcs",
     "dels",
     "Dels",
+    "dests",
     "remerge",
     "Remerge",
     "remerged",
