@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PatchFile } from '../../../../src/domain/diff/patch-serializer.js';
-import { renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
+import { computeHunks, renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -1787,6 +1787,109 @@ describe('patch-serializer', () => {
         expect(sut).toContain('Binary files a/readme.txt and b/logo.png differ');
         // No hunk markers should appear (binary path returns early)
         expect(sut).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a lineKey patch option', () => {
+    describe('When renderPatch is called with mode:all on a file with a ws-only and a real change (#M1)', () => {
+      it('Then renders the ws-only line as context (old bytes) and the real change as delete/insert', () => {
+        // Arrange — ws-only line:  "  ws" → "    ws" (only whitespace change)
+        // real line: "real" → "REAL" (content change)
+        const file = modifyFile('f.txt', '  ws\nreal\n', '    ws\nREAL\n');
+
+        // Act
+        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert — ws-only line is context (space prefix) with OLD bytes "  ws";
+        // context lines carry the old-side bytes (git-faithful);
+        // real line appears as delete/insert pair.
+        expect(sut).toBe(
+          [
+            'diff --git a/f.txt b/f.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/f.txt',
+            '+++ b/f.txt',
+            '@@ -1,2 +1,2 @@',
+            '   ws',
+            '-real',
+            '+REAL',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+
+    describe('When computeHunks is called with 3 args (range-diff/patch-id compatibility)', () => {
+      it('Then returns byte-identical hunks to the no-options call', () => {
+        // Arrange — 3-arg call must compile unchanged and produce the same hunks
+        const oldBytes = utf8.encode('line1\nline2\n');
+        const newBytes = utf8.encode('line1\nchanged\n');
+
+        // Act
+        const sut = computeHunks(oldBytes, newBytes, 3);
+        const result = computeHunks(oldBytes, newBytes, 3, {});
+
+        // Assert — byte-identical results for both call forms
+        expect(sut).toEqual(result);
+      });
+    });
+
+    describe('When renderPatch is called with no options', () => {
+      it('Then produces output byte-identical to the default (regression guard)', () => {
+        // Arrange — a file with whitespace differences
+        const file = modifyFile('reg.txt', 'old  \n', 'new  \n');
+
+        // Act
+        const sut = renderPatch([file]);
+        const result = renderPatch([file], {});
+
+        // Assert — both call forms are identical
+        expect(sut).toBe(result);
+      });
+    });
+  });
+
+  describe('Given ignoreBlankLines', () => {
+    describe('When renderPatch is called on a blank-only modify (#BL1)', () => {
+      it('Then returns an empty document (no header, no hunk)', () => {
+        // Arrange — the only change is inserting a blank line (empty after any key)
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — #BL1: no diff --git header, empty document
+        expect(sut).toBe('');
+      });
+    });
+
+    describe('When renderPatch is called on a blank insert + real change (#BL2)', () => {
+      it('Then keeps the real change hunk and drops only the blank group', () => {
+        // Arrange — one blank line added AND a real line changed
+        const file = modifyFile('mixed.txt', 'a\nb\n', 'a\n\nB\n');
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — #BL2: diff --git header present, real change hunk emitted
+        expect(sut).toContain('diff --git');
+        expect(sut).toContain('-b');
+        expect(sut).toContain('+B');
+      });
+    });
+
+    describe('When renderPatch is called on a blank-only modify with no options', () => {
+      it('Then emits the full diff with the blank hunk (default unchanged)', () => {
+        // Arrange — default (no ignoreBlankLines) must emit the blank-line hunk
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — hunk is present (regression guard — ignoreBlankLines inactive)
+        expect(sut).toContain('diff --git');
+        expect(sut).toContain('@@');
       });
     });
   });
