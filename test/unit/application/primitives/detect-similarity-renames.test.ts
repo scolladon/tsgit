@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { detectSimilarityRenames } from '../../../../src/application/primitives/detect-similarity-renames.js';
+import {
+  detectSimilarityRenames,
+  isSizeRejected,
+  NUM_CANDIDATE_PER_DST,
+  recordIfBetter,
+  type ScoredTriple,
+} from '../../../../src/application/primitives/detect-similarity-renames.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { TreeDiff } from '../../../../src/domain/diff/diff-change.js';
+import type { AddChange, DeleteChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import {
   DEFAULT_BREAK_SCORE,
@@ -2958,6 +2964,168 @@ describe('detectSimilarityRenames', () => {
           );
         }
       });
+    });
+  });
+});
+
+const oidOf = (c: string): ObjectId => c.repeat(40) as ObjectId;
+const renameTriple = (score: number): ScoredTriple => ({
+  kind: 'rename',
+  src: {
+    type: 'delete',
+    oldPath: 'src.txt' as FilePath,
+    oldId: oidOf('a'),
+    oldMode: FILE_MODE.REGULAR,
+  } satisfies DeleteChange,
+  add: {
+    type: 'add',
+    newPath: 'dst.txt' as FilePath,
+    newId: oidOf('b'),
+    newMode: FILE_MODE.REGULAR,
+  } satisfies AddChange,
+  score,
+});
+
+describe('Given the per-destination candidate matrix helper recordIfBetter', () => {
+  describe('When the slot array is not yet full', () => {
+    it('Then the candidate is appended without eviction', () => {
+      // Arrange
+      const sut = recordIfBetter;
+      const slots: ScoredTriple[] = [renameTriple(50), renameTriple(40)];
+
+      // Act
+      sut(slots, renameTriple(10));
+
+      // Assert — below the cap every candidate is kept regardless of score
+      expect(slots.map((s) => s.score)).toEqual([50, 40, 10]);
+    });
+  });
+
+  describe('When the slot array is full and the candidate beats the minimum', () => {
+    it('Then it replaces exactly the minimum-scored slot', () => {
+      // Arrange — the minimum (10) sits at index 1 of four full slots
+      const sut = recordIfBetter;
+      const slots: ScoredTriple[] = [
+        renameTriple(50),
+        renameTriple(10),
+        renameTriple(30),
+        renameTriple(20),
+      ];
+
+      // Act
+      sut(slots, renameTriple(25));
+
+      // Assert — only the true minimum (index 1) is evicted
+      expect(slots.map((s) => s.score)).toEqual([50, 25, 30, 20]);
+    });
+  });
+
+  describe('When two slots tie for the minimum', () => {
+    it('Then the first minimum (lowest index) is the one evicted', () => {
+      // Arrange — two 10s at indices 0 and 2
+      const sut = recordIfBetter;
+      const slots: ScoredTriple[] = [
+        renameTriple(10),
+        renameTriple(30),
+        renameTriple(10),
+        renameTriple(20),
+      ];
+
+      // Act
+      sut(slots, renameTriple(25));
+
+      // Assert — strict `<` min-finding keeps the lower index, evicting index 0
+      expect(slots.map((s) => s.score)).toEqual([25, 30, 10, 20]);
+    });
+  });
+
+  describe('When the candidate ties the minimum exactly', () => {
+    it('Then the existing entry is kept (strictly-better replacement only)', () => {
+      // Arrange — the minimum (20) is a distinct object at index 1
+      const sut = recordIfBetter;
+      const original = renameTriple(20);
+      const slots: ScoredTriple[] = [
+        renameTriple(50),
+        original,
+        renameTriple(30),
+        renameTriple(40),
+      ];
+
+      // Act — a candidate equal to the minimum (a different object)
+      sut(slots, renameTriple(20));
+
+      // Assert — equal score does not displace; the original object is retained
+      expect(slots[1]).toBe(original);
+    });
+  });
+
+  describe('When the candidate is below the minimum', () => {
+    it('Then no slot is replaced', () => {
+      // Arrange — the minimum is 10
+      const sut = recordIfBetter;
+      const slots: ScoredTriple[] = [
+        renameTriple(50),
+        renameTriple(10),
+        renameTriple(30),
+        renameTriple(20),
+      ];
+
+      // Act
+      sut(slots, renameTriple(5));
+
+      // Assert
+      expect(slots.map((s) => s.score)).toEqual([50, 10, 30, 20]);
+    });
+  });
+
+  describe('When the cap constant is read', () => {
+    it('Then it is git NUM_CANDIDATE_PER_DST of 4', () => {
+      // Arrange / Act
+      const sut = NUM_CANDIDATE_PER_DST;
+
+      // Assert
+      expect(sut).toBe(4);
+    });
+  });
+});
+
+describe('Given the size prefilter isSizeRejected', () => {
+  describe('When the two sizes are too far apart to reach the threshold', () => {
+    it('Then the pair is rejected', () => {
+      // Arrange — a 10-byte vs 100-byte pair cannot be 50% similar
+      const sut = isSizeRejected;
+
+      // Act
+      const result = sut(10, 100, DEFAULT_RENAME_THRESHOLD);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('When the two sizes are close enough to possibly reach the threshold', () => {
+    it('Then the pair is not rejected', () => {
+      // Arrange — 90 vs 100 bytes can exceed 50% similarity
+      const sut = isSizeRejected;
+
+      // Act
+      const result = sut(90, 100, DEFAULT_RENAME_THRESHOLD);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('When the size delta sits exactly on the reachability boundary', () => {
+    it('Then the pair is not rejected (strict inequality, inclusive boundary survives)', () => {
+      // Arrange — max*(MAX-thr) equals (max-min)*MAX exactly: 2*30000 === 1*60000
+      const sut = isSizeRejected;
+
+      // Act
+      const result = sut(1, 2, DEFAULT_RENAME_THRESHOLD);
+
+      // Assert — the boundary is reachable, so the pair must be scored, not dropped
+      expect(result).toBe(false);
     });
   });
 });

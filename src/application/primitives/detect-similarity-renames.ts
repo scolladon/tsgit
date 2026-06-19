@@ -103,7 +103,8 @@ function buildCopySourcesForHarder(
   return sources;
 }
 
-type ScoredTriple =
+/** @internal — exported for direct unit testing of the matrix helpers. */
+export type ScoredTriple =
   | {
       readonly kind: 'rename';
       readonly src: DeleteChange;
@@ -123,14 +124,15 @@ type ScoredTriple =
  * when the slot array is full, a new entry replaces the current minimum only if
  * strictly better (score > min). Equal-score entries do not replace.
  */
-const NUM_CANDIDATE_PER_DST = 4;
+/** @internal — exported for direct unit testing. */
+export const NUM_CANDIDATE_PER_DST = 4;
 
 /**
  * Maintain the top-N candidates for one destination.
  * Mirrors git's record_if_better: a new score replaces the current minimum only
  * when strictly greater; equal scores do not displace an existing entry.
  */
-function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): void {
+export function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): void {
   if (slots.length < NUM_CANDIDATE_PER_DST) {
     slots.push(candidate);
     return;
@@ -181,7 +183,7 @@ function buildFingerprintMap(
  * Mirrors git's estimate_similarity early-reject:
  *   max * (MAX_SCORE − threshold) < (max − min) * MAX_SCORE
  */
-function isSizeRejected(sfSize: number, dfSize: number, threshold: number): boolean {
+export function isSizeRejected(sfSize: number, dfSize: number, threshold: number): boolean {
   const maxSize = Math.max(sfSize, dfSize);
   const minSize = Math.min(sfSize, dfSize);
   return maxSize * (MAX_SCORE - threshold) < (maxSize - minSize) * MAX_SCORE;
