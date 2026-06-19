@@ -47,9 +47,10 @@ interface WhatchangedEntry extends LogEntry {   // id, tree, parents, author, co
 - **First-parent diff.** Each entry's `changes` is the `TreeDiff` of the commit's
   tree against its first parent's tree; a root commit diffs against the empty
   tree (its full add-set). An empty commit yields `{ changes: [] }`.
-- **Rename detection is on** (git's `diff.renames` default): an exact rename
-  surfaces as one `rename` change, not a delete + add. This matches
-  [`show`](show.md) and diverges from [`diff`](diff.md)'s opt-in.
+- **Rename detection is on** (git's `diff.renames` default): a rename surfaces as
+  one `rename` change, not a delete + add — both exact (R100) and content-similarity
+  (git's default ≥50%) renames. This matches [`show`](show.md) and diverges from
+  [`diff`](diff.md)'s opt-in.
 - **Raw paths are recursive** — nested files surface as full-path changes, never
   a single sub-tree entry.
 - **`message` is the raw commit message** (with its trailing newline), identical
@@ -59,18 +60,22 @@ interface WhatchangedEntry extends LogEntry {   // id, tree, parents, author, co
 
   ```ts
   const ZERO_OID = '0'.repeat(40);
+  // similarity → git's two-digit-padded integer percent (R100, R087, C072, …)
+  const pct = (s) => String(Math.trunc((s.score * 100) / s.maxScore)).padStart(3, '0');
   const rawLine = (c) => {
     switch (c.type) {
       case 'add':    return `:000000 ${c.newMode} ${ZERO_OID} ${c.newId} A\t${c.newPath}`;
       case 'delete': return `:${c.oldMode} 000000 ${c.oldId} ${ZERO_OID} D\t${c.oldPath}`;
       case 'modify': return `:${c.oldMode} ${c.newMode} ${c.oldId} ${c.newId} M\t${c.path}`;
       case 'type-change': return `:${c.oldMode} ${c.newMode} ${c.oldId} ${c.newId} T\t${c.path}`;
-      case 'rename': return `:${c.mode} ${c.mode} ${c.id} ${c.id} R100\t${c.oldPath}\t${c.newPath}`;
+      case 'rename': return `:${c.oldMode} ${c.newMode} ${c.oldId} ${c.newId} R${pct(c.similarity)}\t${c.oldPath}\t${c.newPath}`;
+      case 'copy':   return `:${c.oldMode} ${c.newMode} ${c.oldId} ${c.newId} C${pct(c.similarity)}\t${c.oldPath}\t${c.newPath}`;
     }
   };
   ```
 
-  (tsgit detects exact renames only — git renders those as `R100`.)
+  (A `rename`/`copy` carries both sides plus a `similarity` score; R100 is the
+  exact-match special case where `similarity.score === maxScore`.)
 
 ## Examples
 
