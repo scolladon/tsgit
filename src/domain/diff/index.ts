@@ -82,3 +82,12 @@ export { computeStatFields } from './stat-fields.js';
 
 // Tree diff
 export { diffTrees } from './tree-diff.js';
+
+// Whitespace normalizer
+export type { LineKey, LineKeyFields, WhitespaceMode } from './whitespace.js';
+export {
+  lineKeyIsActive,
+  linesEqualUnder,
+  normalizeLine,
+  resolveLineKey,
+} from './whitespace.js';
