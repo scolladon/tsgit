@@ -8,6 +8,8 @@ export interface RenameDetectOptions {
   readonly limit?: number;
   readonly maxSameIdDeletes?: number;
   readonly threshold?: number;
+  readonly copies?: 'off' | 'on' | 'harder';
+  readonly copyThreshold?: number;
 }
 
 const DEFAULT_LIMIT = 1000;

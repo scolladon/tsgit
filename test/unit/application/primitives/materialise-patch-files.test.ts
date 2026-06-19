@@ -8,6 +8,7 @@ import {
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type {
   AddChange,
+  CopyChange,
   DeleteChange,
   ModifyChange,
   RenameChange,
@@ -251,6 +252,61 @@ describe('materialiseOne', () => {
         const sut = await materialiseOne(ctx, change);
 
         // Assert — no blob content loaded for a pure rename
+        expect(sut.oldContent).toBeUndefined();
+        expect(sut.newContent).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a sub-100% copy change (score < MAX_SCORE)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then it loads both oldId (source preimage) and newId (destination) blobs in parallel', async () => {
+        // Arrange — copy at < MAX_SCORE: source preimage + destination both needed for hunk
+        const ctx = createMemoryContext();
+        const oldOid = await writeBlob(ctx, 'source content\n');
+        const newOid = await writeBlob(ctx, 'copied content\n');
+        const change: CopyChange = {
+          type: 'copy',
+          oldPath: 'src.txt' as FilePath,
+          newPath: 'dst.txt' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          similarity: { score: MAX_SCORE - 1, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — both sides loaded
+        expect(sut.oldContent).toEqual(utf8.encode('source content\n'));
+        expect(sut.newContent).toEqual(utf8.encode('copied content\n'));
+      });
+    });
+  });
+
+  describe('Given an exact copy change (score === MAX_SCORE, matrix #C4)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then it loads neither side (oldContent and newContent are undefined)', async () => {
+        // Arrange — C100: content byte-identical, no content needed for the header-only patch
+        const ctx = createMemoryContext();
+        const oid = await writeBlob(ctx, 'same content\n');
+        const change: CopyChange = {
+          type: 'copy',
+          oldPath: 'src.txt' as FilePath,
+          newPath: 'dst.txt' as FilePath,
+          oldId: oid,
+          newId: oid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — no blob content loaded for an exact copy
         expect(sut.oldContent).toBeUndefined();
         expect(sut.newContent).toBeUndefined();
       });

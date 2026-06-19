@@ -245,7 +245,7 @@ describe('diffTrees', () => {
         const primaryKeys = sut.changes.map((c) => {
           if (c.type === 'add') return c.newPath;
           if (c.type === 'delete') return c.oldPath;
-          if (c.type === 'rename') return c.newPath;
+          if (c.type === 'rename' || c.type === 'copy') return c.newPath;
           return c.path;
         });
         expect(primaryKeys).toEqual(['a', 'a-', 'b', 'c']);

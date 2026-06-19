@@ -5,6 +5,7 @@ export { classifyUnmerged } from './classify-unmerged.js';
 // Types
 export type {
   AddChange,
+  CopyChange,
   DeleteChange,
   DiffChange,
   DiffChangeType,

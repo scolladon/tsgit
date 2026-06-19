@@ -419,6 +419,231 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given copies: "on" and a modify change alongside an add with similar content', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the modify source folds into a copy WITHOUT consuming the modify', async () => {
+        // Arrange — matrix #C1: a modified file acts as a copy source; the copy
+        // is emitted but the modify SURVIVES (source is retained, not consumed).
+        const ctx = await buildSeededContext();
+        const modOldId = await writeBlob(ctx, tenLines(0));
+        const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED line 0\n'));
+        // dst is similar to the modify's preimage (modOldId)
+        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'COPY DST line 0\n'));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'kept.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const sut = detectSimilarityRenames(ctx, diff, { copies: 'on' });
+        const result = await sut;
+
+        // Assert — modify still present AND copy was detected
+        const modifies = result.changes.filter((c) => c.type === 'modify');
+        expect(modifies).toHaveLength(1);
+        expect(modifies[0]).toMatchObject({ type: 'modify', path: 'kept.txt' });
+
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('kept.txt');
+          expect(copies[0].newPath).toBe('copied.txt');
+        }
+      });
+    });
+  });
+
+  describe('Given copies: "on" with an UNCHANGED source (matrix #C1b)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the unchanged file is NOT a copy source and the add remains as-is', async () => {
+        // Arrange — matrix #C1b: plain -C only uses preimage of CHANGED files
+        // An unchanged file is NOT a copy source under copies: "on".
+        // The add stays as an add (no copy detected).
+        const ctx = await buildSeededContext();
+        // The "unchanged" file is not in the diff at all — it's absent from TreeDiff
+        const unchangedContent = tenLines(0);
+        const dstId = await writeBlob(ctx, unchangedContent); // same bytes as an "unchanged" file
+        // No modify/delete in the diff for the "unchanged" source
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+
+        // Assert — no copy detected; add remains unchanged
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(0);
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given copies: "on" and a copy pair whose score is below copyThreshold', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the copy is NOT detected (add remains as add)', async () => {
+        // Arrange — use a very high threshold so the copy score falls below it
+        const ctx = await buildSeededContext();
+        const modOldId = await writeBlob(ctx, tenLines(0));
+        const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED line 0\n'));
+        // dst is similar to preimage but we set copyThreshold = MAX_SCORE so it won't match
+        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'COPY DST\n'));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'kept.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — copyThreshold = MAX_SCORE means ONLY identical blobs qualify (impossible for different content)
+        const result = await detectSimilarityRenames(ctx, diff, {
+          copies: 'on',
+          copyThreshold: MAX_SCORE,
+        });
+
+        // Assert — no copy detected
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(0);
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given copies: "off" (default)', () => {
+    describe('When detectSimilarityRenames is called with a modify and a similar add', () => {
+      it('Then no copy is detected and the add remains as-is', async () => {
+        // Arrange — copies: "off" (default) means no copy detection runs
+        const ctx = await buildSeededContext();
+        const modOldId = await writeBlob(ctx, tenLines(0));
+        const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED line 0\n'));
+        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'COPY DST\n'));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'kept.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — default options: copies not set (off)
+        const result = await detectSimilarityRenames(ctx, diff);
+
+        // Assert — no copy, add stays
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(0);
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given copies: "on" with both a rename candidate and a copy candidate for the same dst', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then rename sorts AHEAD of copy at equal score (rename wins)', async () => {
+        // Arrange — a delete (rename source) and a modify (copy source) both match the same add.
+        // Both should have identical content to dst, forcing equal scores;
+        // the greedy sort must put rename candidates BEFORE copy candidates.
+        const ctx = await buildSeededContext();
+        const sharedContent = tenLines(0);
+        // The add dst matches both the delete (rename candidate) and the modify's preimage (copy candidate)
+        const dstId = await writeBlob(ctx, sharedContent);
+        const delId = await writeBlob(ctx, sharedContent); // exact match → rename candidate (R100)
+        const modOldId = await writeBlob(ctx, sharedContent); // exact match → copy candidate
+        const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'MOD NEW\n'));
+
+        const diff: TreeDiff = {
+          changes: [
+            // rename candidate: a delete with identical content to dst
+            {
+              type: 'delete',
+              oldPath: 'del-src.txt' as FilePath,
+              oldId: delId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            // copy candidate: a modify whose preimage matches dst
+            {
+              type: 'modify',
+              path: 'mod-src.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            // the destination
+            {
+              type: 'add',
+              newPath: 'dst.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+
+        // Assert — the rename candidate wins (rename sorts before copy at equal score)
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(renames).toHaveLength(1);
+        expect(copies).toHaveLength(0); // copy candidate loses to the rename
+        if (renames[0]?.type === 'rename') {
+          expect(renames[0].newPath).toBe('dst.txt');
+          expect(renames[0].oldPath).toBe('del-src.txt');
+        }
+        // The modify should still be present (not consumed — rename won the dst)
+        const modifies = result.changes.filter((c) => c.type === 'modify');
+        expect(modifies).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a 5x5 near-equal scenario (greedy, not optimal)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then greedy selection produces 4 pairs and 1 orphan (matrix #7)', async () => {

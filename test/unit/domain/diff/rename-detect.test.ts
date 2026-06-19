@@ -15,7 +15,7 @@ function extractPaths(changes: ReadonlyArray<DiffChange>): Set<string> {
   for (const c of changes) {
     if (c.type === 'add') paths.add(c.newPath);
     else if (c.type === 'delete') paths.add(c.oldPath);
-    else if (c.type === 'rename') {
+    else if (c.type === 'rename' || c.type === 'copy') {
       paths.add(c.oldPath);
       paths.add(c.newPath);
     } else paths.add(c.path);
@@ -238,7 +238,7 @@ describe('detectRenames', () => {
         const keys = result.changes.map((c) => {
           if (c.type === 'add') return c.newPath;
           if (c.type === 'delete') return c.oldPath;
-          if (c.type === 'rename') return c.newPath;
+          if (c.type === 'rename' || c.type === 'copy') return c.newPath;
           return c.path;
         });
         expect(keys).toEqual(['x', 'y', 'z']);

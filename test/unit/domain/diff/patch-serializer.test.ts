@@ -1388,4 +1388,118 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  describe('Given a sub-100% copy change with text content (matrix #C1 shape)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits copy from/copy to instead of rename from/to, plus index line and hunk', () => {
+        // Arrange — C072 shape: same-mode copy, old/new ids differ, score < MAX_SCORE
+        const oldContent = utf8.encode('line 00\nline 01\nline 02\nline 03\n');
+        const newContent = utf8.encode('line 00\nline 01\nCHANGED\nline 03\n');
+        const file: PatchFile = {
+          change: {
+            type: 'copy',
+            oldPath: 'source.txt' as FilePath,
+            newPath: 'dest.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 43200, maxScore: MAX_SCORE }, // toSimilarityPercent → 72
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — header + similarity index 72% + copy from/to + index (with mode) + hunk
+        expect(sut).toBe(
+          [
+            'diff --git a/source.txt b/dest.txt',
+            'similarity index 72%',
+            'copy from source.txt',
+            'copy to dest.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/source.txt',
+            '+++ b/dest.txt',
+            '@@ -1,4 +1,4 @@',
+            ' line 00',
+            ' line 01',
+            '-line 02',
+            '+CHANGED',
+            ' line 03',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given an exact copy (score === MAX_SCORE, matrix #C4)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits only the header + similarity 100% + copy from/to (no index line, no hunk)', () => {
+        // Arrange — C100: content byte-identical
+        const file: PatchFile = {
+          change: {
+            type: 'copy',
+            oldPath: 'original.txt' as FilePath,
+            newPath: 'copied.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_A,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — C100: no index line, no hunk; 4 lines only (diff + similarity + from + to)
+        expect(sut).toBe(
+          [
+            'diff --git a/original.txt b/copied.txt',
+            'similarity index 100%',
+            'copy from original.txt',
+            'copy to copied.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a copy change with unsafe oldPath', () => {
+    describe('When renderPatch is called', () => {
+      it('Then throws INVALID_DIFF_INPUT', () => {
+        // Arrange — covers the copy branch of assertSafePaths
+        const file: PatchFile = {
+          change: {
+            type: 'copy',
+            oldPath: 'evil\nindex forged' as FilePath,
+            newPath: 'dest.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
 });

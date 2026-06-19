@@ -116,4 +116,28 @@ describe('primaryPath — per-variant sort key', () => {
       });
     });
   });
+
+  describe('Given CopyChange', () => {
+    describe('When primaryPath called', () => {
+      it('Then returns newPath', () => {
+        // Arrange
+        const change = {
+          type: 'copy' as const,
+          oldPath: 'src' as FilePath,
+          newPath: 'dst' as FilePath,
+          oldId: ID_A,
+          newId: ID_B,
+          oldMode: MODE,
+          newMode: MODE,
+          similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const sut = primaryPath(change);
+
+        // Assert
+        expect(sut).toBe('dst');
+      });
+    });
+  });
 });

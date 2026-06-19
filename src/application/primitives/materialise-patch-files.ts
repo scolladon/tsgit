@@ -50,7 +50,7 @@ export async function materialiseOne(ctx: Context, change: DiffChange): Promise<
     const blob = await readBlob(ctx, change.oldId);
     return { change, oldContent: blob.content };
   }
-  if (change.type === 'rename') {
+  if (change.type === 'rename' || change.type === 'copy') {
     if (change.similarity.score === MAX_SCORE) return { change };
     const [oldBlob, newBlob] = await Promise.all([
       readBlob(ctx, change.oldId),

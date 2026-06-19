@@ -1,7 +1,7 @@
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import type { SimilarityScore } from './similarity.js';
 
-export type DiffChangeType = 'add' | 'delete' | 'modify' | 'rename' | 'type-change';
+export type DiffChangeType = 'add' | 'delete' | 'modify' | 'rename' | 'type-change' | 'copy';
 
 export interface AddChange {
   readonly type: 'add';
@@ -46,7 +46,24 @@ export interface TypeChangeChange {
   readonly newMode: FileMode;
 }
 
-export type DiffChange = AddChange | DeleteChange | ModifyChange | RenameChange | TypeChangeChange;
+export interface CopyChange {
+  readonly type: 'copy';
+  readonly oldPath: FilePath;
+  readonly newPath: FilePath;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly oldMode: FileMode;
+  readonly newMode: FileMode;
+  readonly similarity: SimilarityScore;
+}
+
+export type DiffChange =
+  | AddChange
+  | DeleteChange
+  | ModifyChange
+  | RenameChange
+  | TypeChangeChange
+  | CopyChange;
 
 export interface TreeDiff {
   readonly changes: ReadonlyArray<DiffChange>;

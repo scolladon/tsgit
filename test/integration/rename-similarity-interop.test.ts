@@ -25,7 +25,7 @@ import { diff } from '../../src/application/commands/diff.js';
 import { init } from '../../src/application/commands/init.js';
 import { mv } from '../../src/application/commands/mv.js';
 import { rm } from '../../src/application/commands/rm.js';
-import type { RenameChange } from '../../src/domain/diff/diff-change.js';
+import type { CopyChange, RenameChange } from '../../src/domain/diff/diff-change.js';
 import { toSimilarityPercent } from '../../src/domain/diff/similarity.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { reconstructPatch } from './diff-reconstruct.js';
@@ -88,6 +88,10 @@ const reconstructNameStatus = (changes: ReadonlyArray<{ type: string }>): string
       if (change.type === 'rename') {
         const r = change as unknown as RenameChange;
         return `R${String(toSimilarityPercent(r.similarity.score)).padStart(3, '0')}\t${r.oldPath}\t${r.newPath}`;
+      }
+      if (change.type === 'copy') {
+        const c = change as unknown as CopyChange;
+        return `C${String(toSimilarityPercent(c.similarity.score)).padStart(3, '0')}\t${c.oldPath}\t${c.newPath}`;
       }
       if (change.type === 'add') {
         const a = change as unknown as { newPath: string };
@@ -828,6 +832,259 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
 
       // Pin golden
       const goldenName = 'rename-similarity-m10-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutLines).toBe(golden.split('\n').sort().join('\n'));
+      } catch {
+        await saveGolden(goldenName, liveNameStatus);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a copy from a MODIFIED source (matrix #C1), When tsgit detects copies with copies:"on", Then C-score matches git and source modify survives', async () => {
+    // Arrange — matrix #C1: source file is modified (M) AND its preimage is copied.
+    // Under plain -C, the modify's preimage acts as a copy source.
+    const pair = await makePeerPair('rename-similarity-c1');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      // Source file: 10 lines
+      const srcContent = tenLineContent('source');
+      // Modified version of source (1 line changed)
+      const modContent = tenLineContent('source', 0, 'MODIFIED');
+      // Copy destination: same as original source but 1 different line (high similarity to preimage)
+      const dstContent = tenLineContent('source', 9, 'COPY-DST');
+
+      await writePeerFile(pair.peer, 'source.txt', srcContent);
+      runGit(['-C', pair.peer, 'add', 'source.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+
+      await writePeerFile(pair.peer, 'source.txt', modContent);
+      await writePeerFile(pair.peer, 'dest.txt', dstContent);
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'source.txt', srcContent);
+      await add(ctx, ['source.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'source.txt', modContent);
+      await writeCtxFile(ctx, 'dest.txt', dstContent);
+      await add(ctx, ['source.txt', 'dest.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — copies: 'on' = -C
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'on' },
+      });
+      const sut = reconstructNameStatus(treeDiff.changes);
+
+      // Assert — copy detected; source modify still present
+      const copies = treeDiff.changes.filter((c) => c.type === 'copy');
+      const modifies = treeDiff.changes.filter((c) => c.type === 'modify');
+
+      // Only assert copy + modify parity if git detected it as a copy
+      if (liveNameStatus.includes('\tC')) {
+        expect(copies.length).toBeGreaterThanOrEqual(1);
+        expect(modifies).toHaveLength(1); // source modify survives
+
+        const sutLines = sut.split('\n').sort().join('\n');
+        const liveLines = liveNameStatus.split('\n').sort().join('\n');
+        expect(sutLines).toBe(liveLines);
+      }
+
+      // Pin golden (only when git detected a copy)
+      if (liveNameStatus.includes('\tC')) {
+        const goldenName = 'copy-similarity-c1-name-status';
+        try {
+          const golden = await loadGolden(goldenName);
+          const sLines = sut.split('\n').sort().join('\n');
+          expect(sLines).toBe(golden.split('\n').sort().join('\n'));
+        } catch {
+          await saveGolden(goldenName, liveNameStatus);
+        }
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given an UNCHANGED source under plain -C (matrix #C1b), When tsgit runs copies:"on", Then the add remains as add (not detected as copy)', async () => {
+    // Arrange — matrix #C1b: the potential copy source is UNCHANGED in the diff.
+    // Under plain -C (copies: 'on'), unchanged files are NOT copy sources.
+    // The add should remain as A (not C).
+    const pair = await makePeerPair('rename-similarity-c1b');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      // The "source" is unchanged: no modify/delete for it in commit 2
+      const unchangedContent = tenLineContent('unchanged');
+      // The "new" file has similar content to the unchanged source
+      const newContent = tenLineContent('unchanged', 0, 'NEW');
+
+      await writePeerFile(pair.peer, 'unchanged.txt', unchangedContent);
+      runGit(['-C', pair.peer, 'add', 'unchanged.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+
+      // Commit 2: only add new.txt (unchanged.txt stays unchanged)
+      await writePeerFile(pair.peer, 'new.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'new.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'unchanged.txt', unchangedContent);
+      await add(ctx, ['unchanged.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'new.txt', newContent);
+      await add(ctx, ['new.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — copies: 'on' = plain -C; unchanged file should NOT be a copy source
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'on' },
+      });
+      const sut = reconstructNameStatus(treeDiff.changes);
+
+      // Assert — no copy: unchanged source is not available under plain -C
+      const copies = treeDiff.changes.filter((c) => c.type === 'copy');
+      expect(copies).toHaveLength(0);
+
+      // The add stays as A
+      const adds = treeDiff.changes.filter((c) => c.type === 'add');
+      expect(adds).toHaveLength(1);
+
+      // Match live git — git also should NOT detect this as a copy under plain -C
+      const sutLines = sut.split('\n').sort().join('\n');
+      const liveLines = liveNameStatus.split('\n').sort().join('\n');
+      expect(sutLines).toBe(liveLines);
+
+      // Pin golden
+      const goldenName = 'copy-similarity-c1b-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutLines).toBe(golden.split('\n').sort().join('\n'));
+      } catch {
+        await saveGolden(goldenName, liveNameStatus);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given an exact copy (C100, matrix #C4), When tsgit detects copies, Then C100 patch has no index line and no hunk', async () => {
+    // Arrange — matrix #C4: content byte-identical; git reports C100.
+    // The patch should have no index line or hunk (header-only, like R100).
+    const pair = await makePeerPair('rename-similarity-c4');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      const content = tenLineContent('stable');
+
+      await writePeerFile(pair.peer, 'source.txt', content);
+      runGit(['-C', pair.peer, 'add', 'source.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+
+      // Commit 2: modify source and add an exact copy
+      const modContent = tenLineContent('stable', 0, 'MODIFIED');
+      await writePeerFile(pair.peer, 'source.txt', modContent);
+      await writePeerFile(pair.peer, 'copy.txt', content); // exact copy of old content
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const livePatch = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        'HEAD~1',
+        'HEAD',
+      );
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'source.txt', content);
+      await add(ctx, ['source.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'source.txt', modContent);
+      await writeCtxFile(ctx, 'copy.txt', content);
+      await add(ctx, ['source.txt', 'copy.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'on' },
+      });
+      const sut = await reconstructPatch(ctx, treeDiff);
+      const sutNameStatus = reconstructNameStatus(treeDiff.changes);
+
+      // Assert — name-status matches live git
+      const sutLines = sutNameStatus.split('\n').sort().join('\n');
+      const liveLines = liveNameStatus.split('\n').sort().join('\n');
+      expect(sutLines).toBe(liveLines);
+
+      // C100 copy: copy block has no index line and no hunk
+      if (liveNameStatus.includes('C100')) {
+        // Full patch parity is the primary assertion
+        expect(sut).toBe(livePatch);
+
+        // Extract the copy block (everything before the second 'diff --git' header)
+        const copyBlock = sut.split(/(?=^diff --git )/m)[0] ?? '';
+        expect(copyBlock).not.toMatch(/^index [0-9a-f]+\.\.[0-9a-f]+.*$/m);
+        expect(copyBlock).not.toMatch(/^@@/m);
+        expect(copyBlock).toContain('similarity index 100%');
+        expect(copyBlock).toContain('copy from source.txt');
+        expect(copyBlock).toContain('copy to copy.txt');
+      }
+
+      // Pin golden
+      const goldenName = 'copy-similarity-c4-name-status';
       try {
         const golden = await loadGolden(goldenName);
         expect(sutLines).toBe(golden.split('\n').sort().join('\n'));

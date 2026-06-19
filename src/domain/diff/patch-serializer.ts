@@ -1,5 +1,6 @@
 import type {
   AddChange,
+  CopyChange,
   DeleteChange,
   DiffChange,
   ModifyChange,
@@ -54,7 +55,7 @@ function rejectUnsafePathChars(label: string, value: string): void {
 function assertSafePaths(change: DiffChange, prefix: PatchPathPrefix): void {
   rejectUnsafePathChars('pathPrefix.old', prefix.old);
   rejectUnsafePathChars('pathPrefix.new', prefix.new);
-  if (change.type === 'rename') {
+  if (change.type === 'rename' || change.type === 'copy') {
     rejectUnsafePathChars('oldPath', change.oldPath);
     rejectUnsafePathChars('newPath', change.newPath);
     return;
@@ -496,21 +497,31 @@ function renderModifyOrTypeChangeBlock(
   return renderSameKindBlock(changeToCommon(change), prefix, oldBytes, newBytes, contextLines);
 }
 
-function renameIndexLine(change: RenameChange): string {
+interface TwoPathChange {
+  readonly oldPath: string;
+  readonly newPath: string;
+  readonly oldId: string;
+  readonly newId: string;
+  readonly oldMode: string;
+  readonly newMode: string;
+  readonly similarity: { readonly score: number };
+}
+
+function twoPathIndexLine(change: TwoPathChange): string {
   const base = `index ${shortOid(change.oldId)}..${shortOid(change.newId)}`;
   // Mode suffix is present ONLY when old and new modes are equal (matrix #4).
   return change.oldMode === change.newMode ? `${base} ${change.newMode}` : base;
 }
 
-function renderRenameBody(
-  change: RenameChange,
+function renderTwoPathBody(
+  change: TwoPathChange,
   oldBytes: Uint8Array,
   newBytes: Uint8Array,
   prefix: PatchPathPrefix,
   contextLines: number,
 ): string[] {
   const out: string[] = [];
-  out.push(renameIndexLine(change));
+  out.push(twoPathIndexLine(change));
   if (isBinary(oldBytes) || isBinary(newBytes)) {
     out.push(
       `Binary files ${prefix.old}${change.oldPath} and ${prefix.new}${change.newPath} differ`,
@@ -527,8 +538,9 @@ function renderRenameBody(
   return out;
 }
 
-function renderRenameBlock(
-  change: RenameChange,
+function renderTwoPathBlock(
+  change: TwoPathChange,
+  keyword: 'rename' | 'copy',
   file: PatchFile,
   prefix: PatchPathPrefix,
   contextLines: number,
@@ -541,11 +553,11 @@ function renderRenameBlock(
     out.push(`new mode ${change.newMode}`);
   }
   out.push(`similarity index ${toSimilarityPercent(change.similarity.score)}%`);
-  out.push(`rename from ${change.oldPath}`);
-  out.push(`rename to ${change.newPath}`);
-  // R100: stop here — no index line, no hunk (matrix #5, byte-identical to slice 2).
+  out.push(`${keyword} from ${change.oldPath}`);
+  out.push(`${keyword} to ${change.newPath}`);
+  // Exact (100%): stop here — no index line, no hunk (matrix #5 / #C4).
   if (change.similarity.score === MAX_SCORE) return out;
-  for (const line of renderRenameBody(
+  for (const line of renderTwoPathBody(
     change,
     file.oldContent ?? new Uint8Array(0),
     file.newContent ?? new Uint8Array(0),
@@ -555,6 +567,24 @@ function renderRenameBlock(
     out.push(line);
   }
   return out;
+}
+
+function renderRenameBlock(
+  change: RenameChange,
+  file: PatchFile,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  return renderTwoPathBlock(change, 'rename', file, prefix, contextLines);
+}
+
+function renderCopyBlock(
+  change: CopyChange,
+  file: PatchFile,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  return renderTwoPathBlock(change, 'copy', file, prefix, contextLines);
 }
 
 function renderAddBinary(change: AddChange, prefix: PatchPathPrefix): string[] {
@@ -588,6 +618,7 @@ function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: numb
     return renderDeleteBlock(change, file.oldContent, prefix);
   }
   if (change.type === 'rename') return renderRenameBlock(change, file, prefix, contextLines);
+  if (change.type === 'copy') return renderCopyBlock(change, file, prefix, contextLines);
   // `modify` and `type-change` share the same body shape (mode preamble +
   // optional content body); the discriminated union is exhaustive — no
   // fallthrough branch exists for the type system to flag.
