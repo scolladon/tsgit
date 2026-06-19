@@ -12,11 +12,12 @@ import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
+  buildChunkMap,
   countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
-  estimateSimilarity,
+  estimateSimilarityFromMaps,
   MAX_SCORE,
 } from '../../domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
@@ -142,28 +143,80 @@ function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): void {
   }
 }
 
+/** Precomputed spanhash fingerprint for one blob. */
+interface BlobFingerprint {
+  readonly chunkMap: Map<number, number>;
+  readonly size: number;
+}
+
+/**
+ * Build a fingerprint map keyed by ObjectId, hashing each unique id's bytes once.
+ * Blobs that share an id (e.g., the same content under two paths) are fingerprinted
+ * only once — this is free deduplication and the key optimisation for the matrix.
+ */
+function buildFingerprintMap(
+  ids: ReadonlyArray<ObjectId>,
+  bytesById: Map<ObjectId, Uint8Array>,
+): Map<ObjectId, BlobFingerprint> {
+  const fingerprints = new Map<ObjectId, BlobFingerprint>();
+  for (const id of ids) {
+    if (fingerprints.has(id)) continue;
+    const bytes = bytesById.get(id);
+    if (bytes === undefined) continue;
+    fingerprints.set(id, { chunkMap: buildChunkMap(bytes), size: bytes.length });
+  }
+  return fingerprints;
+}
+
+/**
+ * Git's size prefilter: returns true when the size delta alone makes it impossible
+ * to reach `threshold`, so the pair can be skipped before the expensive chunk scan.
+ * Mirrors git's estimate_similarity early-reject:
+ *   max * (MAX_SCORE − threshold) < (max − min) * MAX_SCORE
+ */
+function isSizeRejected(sfSize: number, dfSize: number, threshold: number): boolean {
+  const maxSize = Math.max(sfSize, dfSize);
+  const minSize = Math.min(sfSize, dfSize);
+  return maxSize * (MAX_SCORE - threshold) < (maxSize - minSize) * MAX_SCORE;
+}
+
+/** Score one (src, dst) fingerprint pair and record in slots if it meets the threshold. */
+function scoreAndRecord(
+  sf: BlobFingerprint,
+  df: BlobFingerprint,
+  threshold: number,
+  candidate: ScoredTriple,
+  slots: ScoredTriple[],
+): void {
+  if (isSizeRejected(sf.size, df.size, threshold)) return;
+  const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
+  if (score >= threshold) recordIfBetter(slots, { ...candidate, score });
+}
+
 /**
  * Build rename-candidate triples using git's dst-outer / src-inner iteration order
  * with a per-destination cap of NUM_CANDIDATE_PER_DST (= 4) top-scoring sources.
  * Mirrors diffcore-rename.c's record_if_better matrix construction.
+ *
+ * Accepts precomputed fingerprints so each blob is hashed at most once regardless
+ * of how many (src, dst) pairs reference it.
  */
 function buildRenameTriples(
   deletes: ReadonlyArray<DeleteChange>,
   adds: ReadonlyArray<AddChange>,
-  srcBytes: Map<ObjectId, Uint8Array>,
-  dstBytes: Map<ObjectId, Uint8Array>,
+  srcFingerprints: Map<ObjectId, BlobFingerprint>,
+  dstFingerprints: Map<ObjectId, BlobFingerprint>,
   threshold: number,
 ): ScoredTriple[] {
   const triples: ScoredTriple[] = [];
   for (const add of adds) {
-    const db = dstBytes.get(add.newId);
-    if (db === undefined) continue;
+    const df = dstFingerprints.get(add.newId);
+    if (df === undefined) continue;
     const slots: ScoredTriple[] = [];
     for (const del of deletes) {
-      const sb = srcBytes.get(del.oldId);
-      if (sb === undefined) continue;
-      const score = estimateSimilarity(sb, db);
-      if (score >= threshold) recordIfBetter(slots, { kind: 'rename', src: del, add, score });
+      const sf = srcFingerprints.get(del.oldId);
+      if (sf !== undefined)
+        scoreAndRecord(sf, df, threshold, { kind: 'rename', src: del, add, score: 0 }, slots);
     }
     for (const triple of slots) triples.push(triple);
   }
@@ -173,24 +226,25 @@ function buildRenameTriples(
 /**
  * Build copy-candidate triples using git's dst-outer / src-inner iteration order
  * with a per-destination cap of NUM_CANDIDATE_PER_DST (= 4) top-scoring sources.
+ *
+ * Accepts precomputed fingerprints so each blob is hashed at most once.
  */
 function buildCopyTriples(
   copySources: ReadonlyArray<CopySource>,
   adds: ReadonlyArray<AddChange>,
-  srcBytes: Map<ObjectId, Uint8Array>,
-  dstBytes: Map<ObjectId, Uint8Array>,
+  srcFingerprints: Map<ObjectId, BlobFingerprint>,
+  dstFingerprints: Map<ObjectId, BlobFingerprint>,
   copyThreshold: number,
 ): ScoredTriple[] {
   const triples: ScoredTriple[] = [];
   for (const add of adds) {
-    const db = dstBytes.get(add.newId);
-    if (db === undefined) continue;
+    const df = dstFingerprints.get(add.newId);
+    if (df === undefined) continue;
     const slots: ScoredTriple[] = [];
     for (const src of copySources) {
-      const sb = srcBytes.get(src.oldId);
-      if (sb === undefined) continue;
-      const score = estimateSimilarity(sb, db);
-      if (score >= copyThreshold) recordIfBetter(slots, { kind: 'copy', src, add, score });
+      const sf = srcFingerprints.get(src.oldId);
+      if (sf !== undefined)
+        scoreAndRecord(sf, df, copyThreshold, { kind: 'copy', src, add, score: 0 }, slots);
     }
     for (const triple of slots) triples.push(triple);
   }
@@ -252,10 +306,7 @@ function buildCopyChange(src: CopySource, add: AddChange, score: number): CopyCh
   };
 }
 
-function greedySelect(
-  triples: ReadonlyArray<ScoredTriple>,
-  deletes: ReadonlyArray<DeleteChange>,
-): ReadonlyArray<GreedyMatch> {
+function greedySelect(triples: ReadonlyArray<ScoredTriple>): ReadonlyArray<GreedyMatch> {
   const usedDeletes = new Set<DeleteChange>();
   const usedAdds = new Set<AddChange>();
   const matches: GreedyMatch[] = [];
@@ -289,9 +340,6 @@ function greedySelect(
     }
   }
 
-  // After greedy selection, unused deletes that were NOT consumed as rename sources
-  // remain available. We don't need to track them separately — the caller does.
-  void deletes; // referenced for type completeness
   return matches;
 }
 
@@ -346,17 +394,33 @@ async function runInexactPass(
     ),
   ]);
 
-  const srcBytes = new Map<ObjectId, Uint8Array>(srcEntries.map((e) => [e.id, e.bytes]));
-  const dstBytes = new Map<ObjectId, Uint8Array>(dstEntries.map((e) => [e.id, e.bytes]));
+  const srcBytesById = new Map<ObjectId, Uint8Array>(srcEntries.map((e) => [e.id, e.bytes]));
+  const dstBytesById = new Map<ObjectId, Uint8Array>(dstEntries.map((e) => [e.id, e.bytes]));
 
-  const renameTriples = buildRenameTriples(deletes, adds, srcBytes, dstBytes, threshold);
+  // Fingerprint each unique blob id once — avoids O(pairs) re-hashing and
+  // deduplicates blobs shared across multiple paths.
+  const srcFingerprints = buildFingerprintMap(allSrcIds, srcBytesById);
+  const dstFingerprints = buildFingerprintMap(
+    adds.map((a) => a.newId),
+    dstBytesById,
+  );
+
+  const renameTriples = buildRenameTriples(
+    deletes,
+    adds,
+    srcFingerprints,
+    dstFingerprints,
+    threshold,
+  );
   const copyTriples =
-    copies !== 'off' ? buildCopyTriples(copySources, adds, srcBytes, dstBytes, copyThreshold) : [];
+    copies !== 'off'
+      ? buildCopyTriples(copySources, adds, srcFingerprints, dstFingerprints, copyThreshold)
+      : [];
 
   const allTriples: ScoredTriple[] = [...renameTriples, ...copyTriples];
   sortTriples(allTriples);
 
-  const matches = greedySelect(allTriples, deletes);
+  const matches = greedySelect(allTriples);
   const renameMatches = matches.filter((m): m is RenameMatch => m.kind === 'rename');
   const copyMatches = matches.filter((m): m is CopyMatch => m.kind === 'copy');
   return {

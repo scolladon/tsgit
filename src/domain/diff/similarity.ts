@@ -158,6 +158,35 @@ export function estimateSimilarity(src: Uint8Array, dst: Uint8Array): number {
 }
 
 /**
+ * Score two blobs from their precomputed chunk maps and byte sizes.
+ * Avoids re-hashing bytes when a blob is scored against multiple partners.
+ *
+ * Special cases mirror `estimateSimilarity`:
+ * - maxSize === 0 → MAX_SCORE
+ * - either size === 0 → 0
+ */
+export function estimateSimilarityFromMaps(
+  srcMap: Map<number, number>,
+  srcSize: number,
+  dstMap: Map<number, number>,
+  dstSize: number,
+): number {
+  const maxSize = Math.max(srcSize, dstSize);
+  if (maxSize === 0) return MAX_SCORE;
+  if (srcSize === 0 || dstSize === 0) return 0;
+  const srcCopied = countSrcCopied(srcMap, dstMap);
+  return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
+}
+
+/**
+ * Build a spanhash chunk map for a byte array.
+ * Exported for use in the rename/copy matrix to fingerprint each blob once.
+ * Mirrors `buildChunkMap` (internal) — this is the public alias for callers
+ * that need to cache fingerprints across multiple pair comparisons.
+ */
+export { buildChunkMap };
+
+/**
  * Project a raw score to an integer percent, truncating (not rounding).
  * Mirrors git's `(int)(score * 100 / MAX_SCORE)`.
  */
