@@ -1,0 +1,13 @@
+diff --git a/original.txt b/moved.txt
+similarity index 90%
+rename from original.txt
+rename to moved.txt
+index 204859d..464f545 100644
+--- a/original.txt
++++ b/moved.txt
+@@ -1,4 +1,4 @@
+-original content line 00: this is the content
++CHANGED content line 00: this is the content
+ original content line 01: this is the content
+ original content line 02: this is the content
+ original content line 03: this is the content

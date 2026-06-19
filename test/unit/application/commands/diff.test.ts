@@ -443,4 +443,58 @@ describe('diff', () => {
       });
     });
   });
+
+  describe('Given a below-threshold rename pair and renameOptions.threshold set at the pair score', () => {
+    describe('When diff with detectRenames=true and threshold equal to the pair score', () => {
+      it('Then the pair folds into a rename (threshold is threaded to detectSimilarityRenames)', async () => {
+        // Arrange — content where src and dst share ~40% of bytes.
+        // Setting threshold:24000 (40%) means the pair qualifies; setting threshold:60000 means it does not.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const shared = Array.from(
+          { length: 37 },
+          (_, i) => `shared${String(i).padStart(5, '0')}aaaaaaaaaaaaaaaaaaaaaa\n`,
+        ).join('');
+        const srcUnique = Array.from(
+          { length: 57 },
+          (_, i) => `srcuu${String(i).padStart(5, '0')}ZZZZZZZZZZZZZZZZZZZZZZ\n`,
+        ).join('');
+        const dstUnique = Array.from(
+          { length: 57 },
+          (_, i) => `dstuu${String(i).padStart(5, '0')}YYYYYYYYYYYYYYYYYYYYYY\n`,
+        ).join('');
+        const srcContent = shared + srcUnique;
+        const dstContent = shared + dstUnique;
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src.txt`, srcContent);
+        await add(ctx, ['src.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await rm(ctx, ['src.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dst.txt`, dstContent);
+        await add(ctx, ['dst.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act — threshold:24000 (40% of MAX_SCORE): pair qualifies → rename
+        const sutLow = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          detectRenames: true,
+          renameOptions: { threshold: 24000 },
+        });
+        // Act — threshold:60000 (100%): pair does not qualify → A/D
+        const sutHigh = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          detectRenames: true,
+          renameOptions: { threshold: 60000 },
+        });
+
+        // Assert — low threshold: rename detected
+        expect(sutLow.changes.some((c) => c.type === 'rename')).toBe(true);
+        // Assert — high threshold: no rename
+        expect(sutHigh.changes.some((c) => c.type === 'rename')).toBe(false);
+        expect(sutHigh.changes.some((c) => c.type === 'add')).toBe(true);
+        expect(sutHigh.changes.some((c) => c.type === 'delete')).toBe(true);
+      });
+    });
+  });
 });

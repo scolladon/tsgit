@@ -1,6 +1,7 @@
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
+import type { SimilarityScore } from './similarity.js';
 
-export type DiffChangeType = 'add' | 'delete' | 'modify' | 'rename' | 'type-change';
+export type DiffChangeType = 'add' | 'delete' | 'modify' | 'rename' | 'type-change' | 'copy';
 
 export interface AddChange {
   readonly type: 'add';
@@ -23,14 +24,19 @@ export interface ModifyChange {
   readonly newId: ObjectId;
   readonly oldMode: FileMode;
   readonly newMode: FileMode;
+  /** Dissimilarity datum when -B kept this modify broken. score = MAX_SCORE − similarity. */
+  readonly broken?: SimilarityScore;
 }
 
 export interface RenameChange {
   readonly type: 'rename';
   readonly oldPath: FilePath;
   readonly newPath: FilePath;
-  readonly id: ObjectId;
-  readonly mode: FileMode;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly oldMode: FileMode;
+  readonly newMode: FileMode;
+  readonly similarity: SimilarityScore;
 }
 
 export interface TypeChangeChange {
@@ -42,7 +48,24 @@ export interface TypeChangeChange {
   readonly newMode: FileMode;
 }
 
-export type DiffChange = AddChange | DeleteChange | ModifyChange | RenameChange | TypeChangeChange;
+export interface CopyChange {
+  readonly type: 'copy';
+  readonly oldPath: FilePath;
+  readonly newPath: FilePath;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly oldMode: FileMode;
+  readonly newMode: FileMode;
+  readonly similarity: SimilarityScore;
+}
+
+export type DiffChange =
+  | AddChange
+  | DeleteChange
+  | ModifyChange
+  | RenameChange
+  | TypeChangeChange
+  | CopyChange;
 
 export interface TreeDiff {
   readonly changes: ReadonlyArray<DiffChange>;

@@ -1,4 +1,4 @@
-import type { StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
+import type { RenameDetectOptions, StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import type { DiffTreesOptions } from '../primitives/types.js';
@@ -10,6 +10,8 @@ export interface DiffOptions {
   readonly from?: string;
   readonly to?: string;
   readonly detectRenames?: boolean;
+  /** Fine-tune rename detection (limit, threshold). Only used when `detectRenames` is true. */
+  readonly renameOptions?: RenameDetectOptions;
   /**
    * Recurse into sub-directories (`git diff-tree -r`), surfacing nested blobs as
    * full-path changes instead of one change per top-level sub-tree. Default `false`.
@@ -35,6 +37,7 @@ export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDi
   const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
   const treeOptions: DiffTreesOptions = {
     ...(opts.detectRenames === true ? { detectRenames: true } : {}),
+    ...(opts.renameOptions !== undefined ? { renameOptions: opts.renameOptions } : {}),
     ...(opts.recursive === true ? { recursive: true } : {}),
     ...(opts.withStat === true ? { withStat: true } : {}),
   };

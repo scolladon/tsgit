@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DiffChange, PatchFile } from '../../../../src/domain/diff/index.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   type CommitPatchInput,
@@ -163,8 +164,11 @@ describe('renderRangePatch', () => {
         type: 'rename',
         oldPath: path('old.txt'),
         newPath: path('new.txt'),
-        id: oid('a'),
-        mode: FILE_MODE.REGULAR,
+        oldId: oid('a'),
+        newId: oid('a'),
+        oldMode: FILE_MODE.REGULAR,
+        newMode: FILE_MODE.REGULAR,
+        similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
       };
       const input = baseInput({ files: [{ change }] });
 
@@ -173,6 +177,30 @@ describe('renderRangePatch', () => {
 
       // Assert
       expect(result.diff).toBe(' ## old.txt => new.txt ##\n');
+    });
+  });
+
+  describe('Given a copy change, When rendered', () => {
+    it('Then fileHeader records old => new and displayName returns newPath', () => {
+      // Arrange — copy mirrors rename in the range-diff: path-only header, displayName = newPath
+      const sut = renderRangePatch;
+      const change: DiffChange = {
+        type: 'copy',
+        oldPath: path('src.txt'),
+        newPath: path('dst.txt'),
+        oldId: oid('a'),
+        newId: oid('b'),
+        oldMode: FILE_MODE.REGULAR,
+        newMode: FILE_MODE.REGULAR,
+        similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+      };
+      const input = baseInput({ files: [{ change }] });
+
+      // Act
+      const result = sut(input);
+
+      // Assert — header uses the path-pair format (like rename); no hunk since no content
+      expect(result.diff).toBe(' ## src.txt => dst.txt ##\n');
     });
   });
 

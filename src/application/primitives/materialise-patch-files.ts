@@ -1,4 +1,5 @@
 import type { DiffChange, PatchFile } from '../../domain/diff/index.js';
+import { MAX_SCORE } from '../../domain/diff/similarity.js';
 import type { Context } from '../../ports/context.js';
 import { readBlob } from './read-blob.js';
 
@@ -49,8 +50,13 @@ export async function materialiseOne(ctx: Context, change: DiffChange): Promise<
     const blob = await readBlob(ctx, change.oldId);
     return { change, oldContent: blob.content };
   }
-  if (change.type === 'rename') {
-    return { change };
+  if (change.type === 'rename' || change.type === 'copy') {
+    if (change.similarity.score === MAX_SCORE) return { change };
+    const [oldBlob, newBlob] = await Promise.all([
+      readBlob(ctx, change.oldId),
+      readBlob(ctx, change.newId),
+    ]);
+    return { change, oldContent: oldBlob.content, newContent: newBlob.content };
   }
   // modify or type-change — load both sides; short-circuit when ids match
   // (mode-only modify) to save one readBlob round-trip.

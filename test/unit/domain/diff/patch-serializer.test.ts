@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PatchFile } from '../../../../src/domain/diff/patch-serializer.js';
 import { renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -84,8 +85,11 @@ const renameFile = (oldPath: string, newPath: string): PatchFile => ({
     type: 'rename',
     oldPath: oldPath as FilePath,
     newPath: newPath as FilePath,
-    id: OID_A,
-    mode: FILE_MODE.REGULAR,
+    oldId: OID_A,
+    newId: OID_A,
+    oldMode: FILE_MODE.REGULAR,
+    newMode: FILE_MODE.REGULAR,
+    similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
   },
 });
 
@@ -1225,6 +1229,564 @@ describe('patch-serializer', () => {
             '',
           ].join('\n'),
         );
+      });
+    });
+  });
+
+  describe('Given a sub-100% rename change with text content (matrix #1 shape)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits similarity index + rename from/to + index line + hunk body', () => {
+        // Arrange — R087 shape: same-mode rename, old/new ids differ, score < MAX_SCORE
+        const oldContent = utf8.encode('line 00\nline 01\nline 02\n');
+        const newContent = utf8.encode('CHANGED\nline 01\nline 02\n');
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'original.txt' as FilePath,
+            newPath: 'moved.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 52200, maxScore: MAX_SCORE }, // toSimilarityPercent → 87
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — header + similarity index 87% + rename from/to + index (with mode) + hunk
+        expect(sut).toBe(
+          [
+            'diff --git a/original.txt b/moved.txt',
+            'similarity index 87%',
+            'rename from original.txt',
+            'rename to moved.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/original.txt',
+            '+++ b/moved.txt',
+            '@@ -1,3 +1,3 @@',
+            '-line 00',
+            '+CHANGED',
+            ' line 01',
+            ' line 02',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a sub-100% rename change whose hydrated content is absent', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits the header and index line with an empty body (no hunk)', () => {
+        // Arrange — a two-path change below MAX_SCORE with neither side hydrated;
+        // the serializer treats absent content as empty rather than throwing.
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'original.txt' as FilePath,
+            newPath: 'moved.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 52200, maxScore: MAX_SCORE },
+          },
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — header + index + the diff body markers, but no `@@` hunk
+        expect(sut).toBe(
+          [
+            'diff --git a/original.txt b/moved.txt',
+            'similarity index 87%',
+            'rename from original.txt',
+            'rename to moved.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/original.txt',
+            '+++ b/moved.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a mode-change + sub-100% rename (matrix #4)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits old mode / new mode BEFORE similarity index, and index line WITHOUT trailing mode', () => {
+        // Arrange — modes differ: preamble precedes similarity; index omits mode suffix
+        const oldContent = utf8.encode('#!/bin/sh\necho hi\n');
+        const newContent = utf8.encode('#!/bin/sh\necho hello\n');
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'run.sh' as FilePath,
+            newPath: 'run-new.sh' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.EXECUTABLE,
+            similarity: { score: 42600, maxScore: MAX_SCORE }, // toSimilarityPercent → 71
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — mode preamble BEFORE similarity; index line NO trailing mode
+        expect(sut).toBe(
+          [
+            'diff --git a/run.sh b/run-new.sh',
+            'old mode 100644',
+            'new mode 100755',
+            'similarity index 71%',
+            'rename from run.sh',
+            'rename to run-new.sh',
+            'index aaaaaaa..bbbbbbb',
+            '--- a/run.sh',
+            '+++ b/run-new.sh',
+            '@@ -1,2 +1,2 @@',
+            ' #!/bin/sh',
+            '-echo hi',
+            '+echo hello',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a pure R100 rename change (regression pin from slice 2)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits exactly 4 header lines with no index line and no hunk', () => {
+        // Arrange — score === MAX_SCORE: byte-identical to the slice 2 form
+        const file = renameFile('old/path.txt', 'new/path.txt');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — byte-identical to the pre-slice-4 output
+        expect(sut).toBe(
+          [
+            'diff --git a/old/path.txt b/new/path.txt',
+            'similarity index 100%',
+            'rename from old/path.txt',
+            'rename to new/path.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a sub-100% rename change with binary content', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits similarity + rename from/to + index + Binary files differ', () => {
+        // Arrange — binary bytes (contain NUL) trigger isBinary path
+        const binaryOld = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const binaryNew = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]);
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'logo.png' as FilePath,
+            newPath: 'icon.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 30000, maxScore: MAX_SCORE }, // toSimilarityPercent → 50
+          },
+          oldContent: binaryOld,
+          newContent: binaryNew,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — binary rename: index line present (same mode) + Binary files differ
+        expect(sut).toBe(
+          [
+            'diff --git a/logo.png b/icon.png',
+            'similarity index 50%',
+            'rename from logo.png',
+            'rename to icon.png',
+            'index aaaaaaa..bbbbbbb 100644',
+            'Binary files a/logo.png and b/icon.png differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a sub-100% copy change with text content (matrix #C1 shape)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits copy from/copy to instead of rename from/to, plus index line and hunk', () => {
+        // Arrange — C072 shape: same-mode copy, old/new ids differ, score < MAX_SCORE
+        const oldContent = utf8.encode('line 00\nline 01\nline 02\nline 03\n');
+        const newContent = utf8.encode('line 00\nline 01\nCHANGED\nline 03\n');
+        const file: PatchFile = {
+          change: {
+            type: 'copy',
+            oldPath: 'source.txt' as FilePath,
+            newPath: 'dest.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 43200, maxScore: MAX_SCORE }, // toSimilarityPercent → 72
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — header + similarity index 72% + copy from/to + index (with mode) + hunk
+        expect(sut).toBe(
+          [
+            'diff --git a/source.txt b/dest.txt',
+            'similarity index 72%',
+            'copy from source.txt',
+            'copy to dest.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/source.txt',
+            '+++ b/dest.txt',
+            '@@ -1,4 +1,4 @@',
+            ' line 00',
+            ' line 01',
+            '-line 02',
+            '+CHANGED',
+            ' line 03',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given an exact copy (score === MAX_SCORE, matrix #C4)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits only the header + similarity 100% + copy from/to (no index line, no hunk)', () => {
+        // Arrange — C100: content byte-identical
+        const file: PatchFile = {
+          change: {
+            type: 'copy',
+            oldPath: 'original.txt' as FilePath,
+            newPath: 'copied.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_A,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — C100: no index line, no hunk; 4 lines only (diff + similarity + from + to)
+        expect(sut).toBe(
+          [
+            'diff --git a/original.txt b/copied.txt',
+            'similarity index 100%',
+            'copy from original.txt',
+            'copy to copied.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a copy change with unsafe oldPath', () => {
+    describe('When renderPatch is called', () => {
+      it('Then throws INVALID_DIFF_INPUT', () => {
+        // Arrange — covers the copy branch of assertSafePaths
+        const file: PatchFile = {
+          change: {
+            type: 'copy',
+            oldPath: 'evil\nindex forged' as FilePath,
+            newPath: 'dest.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
+          'INVALID_DIFF_INPUT',
+        );
+      });
+    });
+  });
+
+  describe('Given a broken modify with fully-disjoint content (dissimilarity index 100%)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits dissimilarity index 100% + index line + full D/A hunk (matrix B1)', () => {
+        // Arrange — broken = { score: MAX_SCORE, maxScore: MAX_SCORE } (100% dissimilarity)
+        const oldContent = utf8.encode('old line 1\nold line 2\n');
+        const newContent = utf8.encode('new line A\nnew line B\n');
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'rewrite.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — dissimilarity index 100% replaces the normal index-predecessor;
+        // index line carries mode (same oldMode/newMode); full D/A hunk follows.
+        expect(sut).toBe(
+          [
+            'diff --git a/rewrite.txt b/rewrite.txt',
+            'dissimilarity index 100%',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/rewrite.txt',
+            '+++ b/rewrite.txt',
+            '@@ -1,2 +1,2 @@',
+            '-old line 1',
+            '-old line 2',
+            '+new line A',
+            '+new line B',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a non-broken modify (regression pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits the normal index line (no dissimilarity line) byte-identical to before', () => {
+        // Arrange — plain modify: no broken field; must be byte-identical to today
+        const file = modifyFile('foo.txt', 'old\n', 'new\n');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — no dissimilarity line; normal index line
+        expect(sut).not.toContain('dissimilarity index');
+        expect(sut).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a broken modify with a specific dissimilarity percent', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits dissimilarity index <p>% with the correct truncated percent', () => {
+        // Arrange — broken.score = 39600 → toSimilarityPercent(39600) = 66
+        const oldContent = utf8.encode('alpha\nbeta\ngamma\n');
+        const newContent = utf8.encode('delta\nepsilon\nzeta\n');
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'file.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: 39600, maxScore: MAX_SCORE }, // toSimilarityPercent(39600) = 66
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — full byte-equality: dissimilarity index 66% (truncated, not rounded),
+        // followed by the index line and the complete D/A hunk.
+        expect(sut).toBe(
+          [
+            'diff --git a/file.txt b/file.txt',
+            'dissimilarity index 66%',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/file.txt',
+            '+++ b/file.txt',
+            '@@ -1,3 +1,3 @@',
+            '-alpha',
+            '-beta',
+            '-gamma',
+            '+delta',
+            '+epsilon',
+            '+zeta',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a broken modify with binary content', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits dissimilarity index line followed by binary files differ', () => {
+        // Arrange — binary bytes contain NUL (0x00) which triggers isBinary path
+        const oldContent = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const newContent = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]);
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'image.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — full byte-equality: dissimilarity line precedes binary block.
+        expect(sut).toBe(
+          [
+            'diff --git a/image.png b/image.png',
+            'dissimilarity index 100%',
+            'index aaaaaaa..bbbbbbb 100644',
+            'Binary files a/image.png and b/image.png differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a broken modify whose mode also changed', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits index line without mode suffix (differing-mode branch)', () => {
+        // Arrange — oldMode ≠ newMode; index line omits the mode suffix
+        const oldContent = utf8.encode('alpha\n');
+        const newContent = utf8.encode('beta\n');
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'script.sh' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.EXECUTABLE,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — index line has no trailing mode when modes differ
+        expect(sut).toContain('dissimilarity index 100%');
+        // mode suffix absent: "index aaa..bbb" not "index aaa..bbb 100644"
+        expect(sut).toContain('index aaaaaaa..bbbbbbb\n');
+      });
+    });
+  });
+
+  describe('Given a broken modify where only the new content is binary', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files differ (single binary side is sufficient)', () => {
+        // Arrange — old side is text, new side contains NUL → isBinary(new) is true.
+        // The || guard at line 510 fires on the binary side alone; && would miss it.
+        const textOld = utf8.encode('plain text\n');
+        const binaryNew = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'image.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent: textOld,
+          newContent: binaryNew,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — binary new side triggers the binary path even when old is text
+        expect(sut).toContain('Binary files a/image.png and b/image.png differ');
+        // No hunk markers should appear (binary path returns early)
+        expect(sut).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a sub-100% rename change where only the new content is binary', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits Binary files differ (single binary side is sufficient)', () => {
+        // Arrange — old side is text, new side contains NUL → isBinary(new) is true.
+        // The || guard fires on the binary side alone; && would miss it (old is not binary).
+        const textOld = utf8.encode('plain text file\n');
+        const binaryNew = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'readme.txt' as FilePath,
+            newPath: 'logo.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 0, maxScore: MAX_SCORE },
+          },
+          oldContent: textOld,
+          newContent: binaryNew,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — binary new side triggers the binary path even when old is text
+        expect(sut).toContain('Binary files a/readme.txt and b/logo.png differ');
+        // No hunk markers should appear (binary path returns early)
+        expect(sut).not.toContain('@@');
       });
     });
   });

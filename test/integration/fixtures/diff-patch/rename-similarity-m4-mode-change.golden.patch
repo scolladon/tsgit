@@ -1,0 +1,19 @@
+diff --git a/run.sh b/run-new.sh
+old mode 100644
+new mode 100755
+similarity index 68%
+rename from run.sh
+rename to run-new.sh
+index 9e222ea..91c2ac5
+--- a/run.sh
++++ b/run-new.sh
+@@ -1,6 +1,6 @@
+-echo "script line 00"
+-echo "script line 01"
+-echo "script line 02"
++echo "modified line 00"
++echo "modified line 01"
++echo "modified line 02"
+ echo "script line 03"
+ echo "script line 04"
+ echo "script line 05"

@@ -74,11 +74,11 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   ([ADR-257](../../adr/257-blame-denormalized-per-line-records.md)).
 - **Merges:** a line is blamed to the parent it is unchanged from; only lines
   differing from **every** parent stay on the merge.
-- **Renames:** whole-file renames are followed by default — when the path is
-  absent in a parent, the file is located under its previous name and
-  `sourcePath` reflects it. Reuses exact-content rename detection, so a pure
-  `git mv` is followed; a rename-with-edit in one commit is not (treated as a
-  fresh introduction).
+- **Renames:** renames are followed by default — when the path is absent in a
+  parent, the file is located under its previous name and `sourcePath` reflects it.
+  Reuses the diff's content-similarity rename detection (git's default ≥50%), so a
+  pure `git mv` **and** a rename-with-edit in one commit are both followed, matching
+  `git blame`'s default rename following.
 - **`range` (`-L`):** restricts the reported lines to a 1-based inclusive window;
   `end` past the last line is clamped. A start below 1, a start past the last
   line, an inverted range, or a non-integer bound refuses (`INVALID_OPTION`).

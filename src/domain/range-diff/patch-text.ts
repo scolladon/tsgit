@@ -65,7 +65,8 @@ const renderHead = (input: CommitPatchInput): string => {
 const fileHeader = (change: DiffChange): string => {
   if (change.type === 'add') return `${change.newPath} (new)`;
   if (change.type === 'delete') return `${change.oldPath} (deleted)`;
-  if (change.type === 'rename') return `${change.oldPath} => ${change.newPath}`;
+  if (change.type === 'rename' || change.type === 'copy')
+    return `${change.oldPath} => ${change.newPath}`;
   return change.oldMode === change.newMode
     ? change.path
     : `${change.path} (mode change ${change.oldMode} => ${change.newMode})`;
@@ -74,7 +75,8 @@ const fileHeader = (change: DiffChange): string => {
 /** git's `current_filename`: the new name (old name for a deletion). */
 const displayName = (change: DiffChange): string => {
   if (change.type === 'delete') return change.oldPath;
-  if (change.type === 'add' || change.type === 'rename') return change.newPath;
+  if (change.type === 'add' || change.type === 'rename' || change.type === 'copy')
+    return change.newPath;
   return change.path;
 };
 

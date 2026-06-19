@@ -2,10 +2,23 @@ import type { ObjectId } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
 import { sortByPath } from './path-compare.js';
+import { MAX_SCORE } from './similarity.js';
 
 export interface RenameDetectOptions {
   readonly limit?: number;
   readonly maxSameIdDeletes?: number;
+  readonly threshold?: number;
+  readonly copies?: 'off' | 'on' | 'harder';
+  /** Per-copy threshold (0..MAX_SCORE). Defaults to `threshold` when absent. */
+  readonly copyThreshold?: number;
+  /**
+   * Break-rewrite detection (-B).
+   * score: dissimilarity gate (>= score → attempt break; default DEFAULT_BREAK_SCORE).
+   * merge: keep-broken gate (>= merge → emit broken modify; default DEFAULT_MERGE_SCORE).
+   * A merge value of 0 maps to DEFAULT_MERGE_SCORE.
+   * false (default) → no break detection.
+   */
+  readonly breakRewrites?: { readonly score: number; readonly merge: number } | false;
 }
 
 const DEFAULT_LIMIT = 1000;
@@ -54,14 +67,18 @@ function tryFoldAdd(
 ): { readonly rename: RenameChange; readonly consumedDelete: DeleteChange } | undefined {
   const matches = deletesByOldId.get(add.newId);
   if (matches === undefined || matches.length !== 1) return undefined;
-  const del = matches[0]!;
+  // length === 1 is guaranteed by the guard above; cast is safe.
+  const del = matches[0] as DeleteChange;
   return {
     rename: {
       type: 'rename',
       oldPath: del.oldPath,
       newPath: add.newPath,
-      id: add.newId,
-      mode: add.newMode,
+      oldId: del.oldId,
+      newId: add.newId,
+      oldMode: del.oldMode,
+      newMode: add.newMode,
+      similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
     },
     consumedDelete: del,
   };

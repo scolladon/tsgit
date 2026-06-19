@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
@@ -296,10 +297,52 @@ describe('diffTrees', () => {
             type: 'rename',
             oldPath: 'a/old.txt',
             newPath: 'b/new.txt',
-            id: blobId,
-            mode: FILE_MODE.REGULAR,
+            oldId: blobId,
+            newId: blobId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
           },
         ]);
+      });
+    });
+  });
+
+  describe('Given detectRenames=true and an edited-then-moved file (inexact rename)', () => {
+    describe('When diffTrees is called with a threshold', () => {
+      it('Then the add/delete pair surfaces as a sub-100% rename (not separate A/D)', async () => {
+        // Arrange — same blob with one line changed → moves to a new path.
+        // Before slice 3 this emits a separate delete+add; after the slice it emits a rename.
+        const ctx = await buildSeededContext();
+        const srcContent = Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join('');
+        const dstContent = srcContent.replace('line 0\n', 'changed line 0\n');
+        const srcId = await blob(ctx, srcContent);
+        const dstId = await blob(ctx, dstContent);
+        const before = await writeTree(ctx, [
+          { name: 'original.txt', mode: FILE_MODE.REGULAR, id: srcId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'moved.txt', mode: FILE_MODE.REGULAR, id: dstId },
+        ]);
+
+        // Act — with detectRenames and a low threshold
+        const sut = await diffTrees(ctx, before, after, {
+          detectRenames: true,
+          renameOptions: { threshold: 1 },
+        });
+
+        // Assert — one rename, not separate A + D
+        expect(sut.changes).toHaveLength(1);
+        const change = sut.changes[0];
+        expect(change?.type).toBe('rename');
+        if (change?.type === 'rename') {
+          expect(change.oldPath).toBe('original.txt');
+          expect(change.newPath).toBe('moved.txt');
+          expect(change.oldId).toBe(srcId);
+          expect(change.newId).toBe(dstId);
+          expect(change.similarity.score).toBeGreaterThan(0);
+          expect(change.similarity.score).toBeLessThan(MAX_SCORE);
+        }
       });
     });
   });
@@ -437,6 +480,108 @@ describe('diffTrees', () => {
           deleted: 1,
           binary: false,
         });
+      });
+    });
+  });
+
+  describe('Given copies:"harder" and a file unchanged in treeA whose preimage is similar to an added file in treeB', () => {
+    describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"harder"}', () => {
+      it('Then the add folds into a copy from the unchanged source (preimage threading works end-to-end)', async () => {
+        // Arrange — treeA has one file (unchanged, not appearing in diff changes).
+        // treeB adds a new file similar to treeA's file.
+        // Under copies:'on': no copy (unchanged is not a modified-file source).
+        // Under copies:'harder': copy IS detected (unchanged file enters the source set via preimage threading).
+        const ctx = await buildSeededContext();
+        // Build a 10-line blob
+        const lines = Array.from({ length: 10 }, (_, i) => `line ${i}: shared content\n`).join('');
+        const unchangedId = await blob(ctx, lines);
+        const dstLines = lines.replace(
+          'line 0: shared content\n',
+          'COPY DST line 0: shared content\n',
+        );
+        const dstId = await blob(ctx, dstLines);
+
+        const treeA = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
+        ]);
+        const treeB = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId }, // unchanged
+          { name: 'copy.txt', mode: FILE_MODE.REGULAR, id: dstId }, // new, similar to orig
+        ]);
+
+        // Act — without copies:'harder': should not detect copy (unchanged excluded)
+        const sutOn = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'on' },
+        });
+        // Act — with copies:'harder': should detect copy from unchanged source
+        const sutHarder = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert — copies:'on': no copy, add stays as A
+        expect(sutOn.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(sutOn.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+
+        // Assert — copies:'harder': copy detected from unchanged source
+        const copies = sutHarder.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('orig.txt');
+          expect(copies[0].newPath).toBe('copy.txt');
+        }
+        // The orig.txt itself is NOT in the diff (unchanged)
+        expect(sutHarder.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given copies:"on" with treeA present (buildPreimage should return undefined)', () => {
+    describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"on"}', () => {
+      it('Then no preimage is built and unchanged files are NOT copy sources (L70 ConditionalExpression "false")', async () => {
+        // Arrange — copies:'on' with treeA=undefined; the guard must short-circuit so
+        // flattenTree is never called with undefined (which would crash)
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'file content\n');
+        // treeB only; no treeA (undefined)
+        const treeB = await writeTree(ctx, [
+          { name: 'file.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+
+        // Act — copies:'on', treeA=undefined: buildPreimage must return undefined (guard fires)
+        const sut = await diffTrees(ctx, undefined, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'on' },
+        });
+
+        // Assert — add detected, no crash
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('add');
+      });
+    });
+  });
+
+  describe('Given copies:"harder" but treeA is undefined (buildPreimage returns undefined)', () => {
+    describe('When diffTrees is called', () => {
+      it('Then buildPreimage returns undefined and no crash occurs (L70 treeA===undefined arm)', async () => {
+        // Arrange — copies:'harder' but treeA=undefined; the treeA===undefined arm of the guard
+        // must prevent flattenTree from being called with undefined (which would crash)
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'content for harder test\n');
+        const treeB = await writeTree(ctx, [
+          { name: 'file.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+
+        // Act — copies:'harder' but treeA=undefined → preimage=undefined → no crash
+        const sut = await diffTrees(ctx, undefined, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert — add detected without crash
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('add');
       });
     });
   });

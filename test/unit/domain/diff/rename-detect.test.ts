@@ -6,6 +6,7 @@ import type {
   TreeDiff,
 } from '../../../../src/domain/diff/diff-change.js';
 import { detectRenames } from '../../../../src/domain/diff/rename-detect.js';
+import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -14,7 +15,7 @@ function extractPaths(changes: ReadonlyArray<DiffChange>): Set<string> {
   for (const c of changes) {
     if (c.type === 'add') paths.add(c.newPath);
     else if (c.type === 'delete') paths.add(c.oldPath);
-    else if (c.type === 'rename') {
+    else if (c.type === 'rename' || c.type === 'copy') {
       paths.add(c.oldPath);
       paths.add(c.newPath);
     } else paths.add(c.path);
@@ -58,10 +59,19 @@ describe('detectRenames', () => {
             type: 'rename',
             oldPath: 'old.txt',
             newPath: 'new.txt',
-            id: ID_A,
-            mode: FILE_MODE.REGULAR,
+            oldId: ID_A,
+            newId: ID_A,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
           },
         ]);
+        // Exact pair: oldId === newId, similarity.score === MAX_SCORE
+        const rename = result.changes[0];
+        if (rename?.type === 'rename') {
+          expect(rename.oldId).toBe(rename.newId);
+          expect(rename.similarity.score).toBe(MAX_SCORE);
+        }
       });
     });
   });
@@ -228,7 +238,7 @@ describe('detectRenames', () => {
         const keys = result.changes.map((c) => {
           if (c.type === 'add') return c.newPath;
           if (c.type === 'delete') return c.oldPath;
-          if (c.type === 'rename') return c.newPath;
+          if (c.type === 'rename' || c.type === 'copy') return c.newPath;
           return c.path;
         });
         expect(keys).toEqual(['x', 'y', 'z']);
@@ -252,8 +262,11 @@ describe('detectRenames', () => {
             type: 'rename',
             oldPath: 'old.txt',
             newPath: 'new.txt',
-            id: ID_A,
-            mode: FILE_MODE.REGULAR,
+            oldId: ID_A,
+            newId: ID_A,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
           },
         ]);
       });

@@ -1,5 +1,6 @@
 export type {
   AddChange,
+  CopyChange,
   DeleteChange,
   DiffChange,
   DiffChangeType,

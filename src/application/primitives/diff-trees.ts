@@ -1,14 +1,16 @@
+import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import {
   computeStatFields,
   type DiffChange,
-  detectRenames,
   diffTrees as domainDiffTrees,
   type StatDiffChange,
   type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
+import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import type { Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readTree } from './read-tree.js';
@@ -40,11 +42,34 @@ export async function diffTrees(
       ? await diffRecursive(ctx, treeA, treeB)
       : domainDiffTrees(treeA, treeB);
   const diff =
-    options?.detectRenames === true ? detectRenames(rawDiff, options.renameOptions) : rawDiff;
+    options?.detectRenames === true
+      ? await detectSimilarityRenames(
+          ctx,
+          rawDiff,
+          options.renameOptions,
+          await buildPreimage(ctx, treeA, options.renameOptions),
+        )
+      : rawDiff;
   if (options?.withStat === true) {
     return attachStats(ctx, diff);
   }
   return diff;
+}
+
+/**
+ * Build the flat preimage map for copies:'harder' — all tree-A paths as copy sources.
+ * Returns undefined when copies:'harder' is not active or treeA is absent.
+ * The preimage is passed as a separate argument to detectSimilarityRenames so it
+ * stays out of the public RenameDetectOptions surface.
+ */
+async function buildPreimage(
+  ctx: Context,
+  treeA: Tree | undefined,
+  renameOptions: RenameDetectOptions | undefined,
+): Promise<FlatTree['entries'] | undefined> {
+  if (renameOptions?.copies !== 'harder' || treeA === undefined) return undefined;
+  const flat = await flattenTree(ctx, treeA);
+  return flat.entries;
 }
 
 /**
