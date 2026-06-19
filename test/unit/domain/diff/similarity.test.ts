@@ -36,40 +36,55 @@ function makeR087Fixture(): { readonly src: Uint8Array; readonly dst: Uint8Array
 
 describe('similarity', () => {
   describe('MAX_SCORE', () => {
-    describe('Given the constant', () => {
+    describe('Given the constant, When read', () => {
       it('Then equals 60000', () => {
-        // Arrange / Act / Assert
-        expect(MAX_SCORE).toBe(60000);
+        // Arrange
+        const sut = MAX_SCORE;
+
+        // Act / Assert
+        expect(sut).toBe(60000);
       });
     });
   });
 
   describe('DEFAULT_RENAME_THRESHOLD', () => {
-    describe('Given the constant', () => {
+    describe('Given the constant, When read', () => {
       it('Then equals 30000 (50% of MAX_SCORE)', () => {
-        expect(DEFAULT_RENAME_THRESHOLD).toBe(30000);
+        // Arrange
+        const sut = DEFAULT_RENAME_THRESHOLD;
+
+        // Act / Assert
+        expect(sut).toBe(30000);
       });
     });
   });
 
   describe('DEFAULT_BREAK_SCORE', () => {
-    describe('Given the constant', () => {
+    describe('Given the constant, When read', () => {
       it('Then equals 30000 (50% of MAX_SCORE)', () => {
-        expect(DEFAULT_BREAK_SCORE).toBe(30000);
+        // Arrange
+        const sut = DEFAULT_BREAK_SCORE;
+
+        // Act / Assert
+        expect(sut).toBe(30000);
       });
     });
   });
 
   describe('DEFAULT_MERGE_SCORE', () => {
-    describe('Given the constant', () => {
+    describe('Given the constant, When read', () => {
       it('Then equals 36000 (60% of MAX_SCORE)', () => {
-        expect(DEFAULT_MERGE_SCORE).toBe(36000);
+        // Arrange
+        const sut = DEFAULT_MERGE_SCORE;
+
+        // Act / Assert
+        expect(sut).toBe(36000);
       });
     });
   });
 
   describe('toSimilarityPercent', () => {
-    describe('Given score MAX_SCORE', () => {
+    describe('Given score MAX_SCORE, When toSimilarityPercent is called', () => {
       it('Then returns 100', () => {
         // Arrange
         const score = MAX_SCORE;
@@ -82,7 +97,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given score 0', () => {
+    describe('Given score 0, When toSimilarityPercent is called', () => {
       it('Then returns 0', () => {
         // Arrange
         const score = 0;
@@ -95,7 +110,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given score 59999 (one below MAX_SCORE)', () => {
+    describe('Given score 59999 (one below MAX_SCORE), When toSimilarityPercent is called', () => {
       it('Then returns 99 (truncated, not rounded)', () => {
         // Arrange
         const score = 59999;
@@ -108,7 +123,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given score 52200 (the lower bound of 87%)', () => {
+    describe('Given score 52200 (the lower bound of 87%), When toSimilarityPercent is called', () => {
       it('Then returns 87 (truncated)', () => {
         // Arrange
         const score = 52200;
@@ -121,7 +136,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given score 52799 (the upper bound of 87%)', () => {
+    describe('Given score 52799 (the upper bound of 87%), When toSimilarityPercent is called', () => {
       it('Then returns 87 (truncated, not 88)', () => {
         // Arrange
         const score = 52799;
@@ -136,7 +151,7 @@ describe('similarity', () => {
   });
 
   describe('estimateSimilarity', () => {
-    describe('Given both src and dst are empty', () => {
+    describe('Given both src and dst are empty, When estimateSimilarity is called', () => {
       it('Then returns MAX_SCORE (both-empty guard)', () => {
         // Arrange
         const src = new Uint8Array(0);
@@ -150,7 +165,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given src is empty and dst is non-empty', () => {
+    describe('Given src is empty and dst is non-empty, When estimateSimilarity is called', () => {
       it('Then returns 0 (empty src contributes nothing)', () => {
         // Arrange
         const src = new Uint8Array(0);
@@ -164,7 +179,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given src is non-empty and dst is empty', () => {
+    describe('Given src is non-empty and dst is empty, When estimateSimilarity is called', () => {
       it('Then returns 0 (empty dst has no spans to match)', () => {
         // Arrange
         const src = enc.encode('hello world');
@@ -178,7 +193,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given src and dst are identical', () => {
+    describe('Given src and dst are identical, When estimateSimilarity is called', () => {
       it('Then returns MAX_SCORE', () => {
         // Arrange
         const content = enc.encode('hello world this is a test file\n'.repeat(5));
@@ -193,7 +208,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given src and dst are provably disjoint (no shared 4-byte windows)', () => {
+    describe('Given src and dst are provably disjoint (no shared 4-byte windows), When estimateSimilarity is called', () => {
       it('Then returns 0', () => {
         // Arrange — XOR complement guarantees no shared 4-grams
         const base = new Uint8Array(Array.from({ length: 256 }, (_, i) => i));
@@ -209,7 +224,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given the pinned 1-of-10-lines-changed fixture (git 2.54.0 → R087)', () => {
+    describe('Given the pinned 1-of-10-lines-changed fixture (git 2.54.0 → R087), When estimateSimilarity is called', () => {
       it('Then toSimilarityPercent(estimateSimilarity) returns exactly 87', () => {
         // Arrange — fixture verified against real git:
         // old.txt: 10 lines of 'abcdefghij'*5+'\n' (51 bytes each, 510 total)
@@ -241,7 +256,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given size-asymmetric blobs (src is 510 bytes, dst is 525 bytes)', () => {
+    describe('Given size-asymmetric blobs (src is 510 bytes, dst is 525 bytes), When estimateSimilarity is called', () => {
       it('Then score uses max(src_size, dst_size) as denominator', () => {
         // Arrange — verify the score denominator is 525 (max_size), not 510 (src_size)
         const { src, dst } = makeR087Fixture();
@@ -256,7 +271,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given dissimilarity identity (estimateSimilarity(x, x))', () => {
+    describe('Given dissimilarity identity (estimateSimilarity(x, x)), When estimateSimilarity is called', () => {
       it('Then MAX_SCORE minus the result is 0', () => {
         // Arrange
         const content = enc.encode(`${'abcdefghij'.repeat(10)}\n`);

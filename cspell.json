@@ -813,7 +813,15 @@
     "hashval",
     "srcs",
     "dels",
-    "Dels"
+    "Dels",
+    "remerge",
+    "Remerge",
+    "remerged",
+    "nbbbb",
+    "ncccc",
+    "ndddd",
+    "nwwww",
+    "nzzzz"
   ],
   "ignorePaths": [
     "node_modules",

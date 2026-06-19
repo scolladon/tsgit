@@ -3,7 +3,12 @@ import { detectSimilarityRenames } from '../../../../src/application/primitives/
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TreeDiff } from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
-import { DEFAULT_RENAME_THRESHOLD, MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import {
+  DEFAULT_BREAK_SCORE,
+  DEFAULT_MERGE_SCORE,
+  DEFAULT_RENAME_THRESHOLD,
+  MAX_SCORE,
+} from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
@@ -828,6 +833,320 @@ describe('detectSimilarityRenames', () => {
           expect(renames[0].oldPath).toBe('del-src.txt');
           expect(renames[0].newPath).toBe('new-dst.txt');
         }
+      });
+    });
+  });
+
+  describe('Given breakRewrites is false (default)', () => {
+    describe('When detectSimilarityRenames is called with a highly dissimilar modify', () => {
+      it('Then the modify passes through unchanged without a broken datum', async () => {
+        // Arrange — disjoint content: dissimilarity = MAX_SCORE (100%)
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const sut = detectSimilarityRenames(ctx, diff);
+        const result = await sut;
+
+        // Assert — no break: modify stays plain
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+  });
+
+  describe('Given breakRewrites with a dissimilar modify above the break-attempt gate', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the modify is split into a synthetic delete+add for the matrix', async () => {
+        // Arrange — fully disjoint content: dissimilarity = MAX_SCORE >= DEFAULT_BREAK_SCORE
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(10));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(10));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — use break score that is definitely exceeded (MAX_SCORE dissimilarity)
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — the modify is kept broken with a dissimilarity datum
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeDefined();
+          expect(change.broken?.score).toBe(MAX_SCORE);
+          expect(change.broken?.maxScore).toBe(MAX_SCORE);
+        }
+      });
+    });
+  });
+
+  describe('Given breakRewrites and dissimilarity exactly at the break-attempt gate', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then dissimilarity === score attempts the break (inclusive gate)', async () => {
+        // Arrange — fully disjoint content: dissimilarity = MAX_SCORE
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — set breakScore = MAX_SCORE so dissimilarity === score (inclusive: should attempt)
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: MAX_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — break was attempted and kept broken (dissimilarity >= mergeScore)
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeDefined();
+        }
+      });
+    });
+  });
+
+  describe('Given breakRewrites and dissimilarity exactly one below the break-attempt gate', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then dissimilarity === score - 1 does NOT attempt the break', async () => {
+        // Arrange — fully disjoint content: dissimilarity = MAX_SCORE
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — set breakScore = MAX_SCORE + 1 so dissimilarity < score (NOT attempted)
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: MAX_SCORE + 1, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — no break: modify stays plain
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+  });
+
+  describe('Given breakRewrites and dissimilarity exactly at the keep-broken gate', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then dissimilarity === mergeScore keeps broken (inclusive gate)', async () => {
+        // Arrange — fully disjoint: dissimilarity = MAX_SCORE; set mergeScore = MAX_SCORE
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — set mergeScore = MAX_SCORE so dissimilarity === mergeScore (inclusive: keep broken)
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: MAX_SCORE },
+        });
+
+        // Assert — kept broken at mergeScore boundary
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeDefined();
+          expect(change.broken?.score).toBe(MAX_SCORE);
+        }
+      });
+    });
+  });
+
+  describe('Given breakRewrites and dissimilarity exactly one below the keep-broken gate', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then dissimilarity at mergeScore - 1 re-merges to a plain modify', async () => {
+        // Arrange — use fully disjoint content (dissimilarity = MAX_SCORE = 60000) and set
+        // mergeScore to MAX_SCORE + 1 so that dissimilarity < mergeScore (re-merge path).
+        // Also set breakScore=1 so the break is definitely attempted.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — mergeScore = MAX_SCORE + 1 means dissimilarity (MAX_SCORE) < mergeScore → re-merge
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 1, merge: MAX_SCORE + 1 },
+        });
+
+        // Assert — re-merged: modify has no broken datum
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+  });
+
+  describe('Given breakRewrites with merge: 0 (maps to DEFAULT_MERGE_SCORE)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then merge:0 maps to DEFAULT_MERGE_SCORE (not zero) for the keep-broken gate', async () => {
+        // Arrange — fully disjoint content: dissimilarity = MAX_SCORE
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — merge:0 must map to DEFAULT_MERGE_SCORE (36000), not 0.
+        // dissimilarity = MAX_SCORE (60000) >= DEFAULT_MERGE_SCORE (36000) → keep broken.
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: 0 },
+        });
+
+        // Assert — kept broken; merge:0 did NOT map to "keep everything" nor "keep nothing"
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeDefined();
+          expect(change.broken?.score).toBe(MAX_SCORE);
+        }
+      });
+    });
+  });
+
+  describe('Given breakRewrites and a dissimilar modify whose delete-half is consumed by a rename', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the add-half remains as an add (half consumed, half stays as-is)', async () => {
+        // Arrange — the delete half of the broken modify is similar to an add elsewhere,
+        // so rename detection consumes the delete half. The add half stays as-is.
+        const ctx = await buildSeededContext();
+        const sharedContent = 'shared\ncontent\nfor\nrename\ntarget\n'.repeat(5);
+        const disjointContent = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(10);
+
+        // file.txt: old=sharedContent, new=disjointContent → dissimilarity ~MAX_SCORE → break
+        // The old half (sharedContent) will be renamed to rename-dst.txt
+        const modOldId = await writeBlob(ctx, sharedContent);
+        const modNewId = await writeBlob(ctx, disjointContent);
+        // rename destination: very similar to sharedContent
+        const renameDstId = await writeBlob(ctx, sharedContent);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'rename-dst.txt' as FilePath,
+              newId: renameDstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — delete half consumed as rename; add half stays as an add
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(renames).toHaveLength(1);
+        if (renames[0]?.type === 'rename') {
+          expect(renames[0].newPath).toBe('rename-dst.txt');
+          expect(renames[0].oldPath).toBe('file.txt');
+        }
+        // Add half of the broken modify stays as an add
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+        if (adds[0]?.type === 'add') {
+          expect(adds[0].newPath).toBe('file.txt');
+          expect(adds[0].newId).toBe(modNewId);
+        }
+        // No broken modify
+        const modifies = result.changes.filter((c) => c.type === 'modify');
+        expect(modifies).toHaveLength(0);
       });
     });
   });

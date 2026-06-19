@@ -24,6 +24,8 @@ export interface ModifyChange {
   readonly newId: ObjectId;
   readonly oldMode: FileMode;
   readonly newMode: FileMode;
+  /** Dissimilarity datum when -B kept this modify broken. score = MAX_SCORE − similarity. */
+  readonly broken?: SimilarityScore;
 }
 
 export interface RenameChange {

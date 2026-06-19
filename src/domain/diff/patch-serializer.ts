@@ -487,6 +487,35 @@ function renderSameKindBlock(
   return out;
 }
 
+/**
+ * Render the block for a broken modify (dissimilarity index <p>% in place of
+ * the normal index-line predecessor, then the index line and full D/A hunk).
+ * A broken modify is one where -B kept it as a modify with a dissimilarity datum.
+ */
+function renderBrokenModifyBlock(
+  change: ModifyChange & { readonly broken: NonNullable<ModifyChange['broken']> },
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+): string[] {
+  const broken = change.broken;
+  const common = changeToCommon(change);
+  const out: string[] = [];
+  out.push(diffGitHeader(common.path, common.path, prefix));
+  out.push(`dissimilarity index ${toSimilarityPercent(broken.score)}%`);
+  // Index line: with mode suffix when oldMode === newMode, without when they differ.
+  const base = `index ${shortOid(common.oldId)}..${shortOid(common.newId)}`;
+  out.push(common.oldMode === common.newMode ? `${base} ${common.newMode}` : base);
+  if (isBinary(oldBytes) || isBinary(newBytes)) {
+    for (const line of renderBinaryBody(common, prefix, oldBytes, newBytes)) out.push(line);
+    return out;
+  }
+  for (const line of renderTextBody(common, prefix, oldBytes, newBytes, contextLines))
+    out.push(line);
+  return out;
+}
+
 function renderModifyOrTypeChangeBlock(
   change: ModifyChange | TypeChangeChange,
   oldBytes: Uint8Array,
@@ -494,6 +523,15 @@ function renderModifyOrTypeChangeBlock(
   prefix: PatchPathPrefix,
   contextLines: number,
 ): string[] {
+  if (change.type === 'modify' && change.broken !== undefined) {
+    return renderBrokenModifyBlock(
+      change as ModifyChange & { readonly broken: NonNullable<ModifyChange['broken']> },
+      oldBytes,
+      newBytes,
+      prefix,
+      contextLines,
+    );
+  }
   return renderSameKindBlock(changeToCommon(change), prefix, oldBytes, newBytes, contextLines);
 }
 

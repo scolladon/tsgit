@@ -14,6 +14,14 @@ export interface RenameDetectOptions {
   /** Flat preimage map (path → {id, mode}) for all tree-A paths. Used by copies:'harder'
    * to widen the copy-source set to unchanged files. Threaded from diffTrees. */
   readonly preimage?: ReadonlyMap<FilePath, FlatTreeEntry>;
+  /**
+   * Break-rewrite detection (-B).
+   * score: dissimilarity gate (>= score → attempt break; default DEFAULT_BREAK_SCORE).
+   * merge: keep-broken gate (>= merge → emit broken modify; default DEFAULT_MERGE_SCORE).
+   * A merge value of 0 maps to DEFAULT_MERGE_SCORE.
+   * false (default) → no break detection.
+   */
+  readonly breakRewrites?: { readonly score: number; readonly merge: number } | false;
 }
 
 const DEFAULT_LIMIT = 1000;

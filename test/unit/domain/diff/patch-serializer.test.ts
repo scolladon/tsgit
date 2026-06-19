@@ -1502,4 +1502,166 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  describe('Given a broken modify with fully-disjoint content (dissimilarity index 100%)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits dissimilarity index 100% + index line + full D/A hunk (matrix B1)', () => {
+        // Arrange — broken = { score: MAX_SCORE, maxScore: MAX_SCORE } (100% dissimilarity)
+        const oldContent = utf8.encode('old line 1\nold line 2\n');
+        const newContent = utf8.encode('new line A\nnew line B\n');
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'rewrite.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — dissimilarity index 100% replaces the normal index-predecessor;
+        // index line carries mode (same oldMode/newMode); full D/A hunk follows.
+        expect(sut).toBe(
+          [
+            'diff --git a/rewrite.txt b/rewrite.txt',
+            'dissimilarity index 100%',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/rewrite.txt',
+            '+++ b/rewrite.txt',
+            '@@ -1,2 +1,2 @@',
+            '-old line 1',
+            '-old line 2',
+            '+new line A',
+            '+new line B',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a non-broken modify (regression pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits the normal index line (no dissimilarity line) byte-identical to before', () => {
+        // Arrange — plain modify: no broken field; must be byte-identical to today
+        const file = modifyFile('foo.txt', 'old\n', 'new\n');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — no dissimilarity line; normal index line
+        expect(sut).not.toContain('dissimilarity index');
+        expect(sut).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a broken modify with a specific dissimilarity percent', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits dissimilarity index <p>% with the correct truncated percent', () => {
+        // Arrange — broken.score = 39600 → toSimilarityPercent(39600) = 66
+        const oldContent = utf8.encode('alpha\nbeta\ngamma\n');
+        const newContent = utf8.encode('delta\nepsilon\nzeta\n');
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'file.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: 39600, maxScore: MAX_SCORE }, // toSimilarityPercent(39600) = 66
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — dissimilarity index 66% (truncated, not rounded)
+        expect(sut).toContain('dissimilarity index 66%');
+        expect(sut).toContain('index aaaaaaa..bbbbbbb 100644');
+      });
+    });
+  });
+
+  describe('Given a broken modify with binary content', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits dissimilarity index line followed by binary files differ', () => {
+        // Arrange — binary bytes contain NUL (0x00) which triggers isBinary path
+        const oldContent = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+        const newContent = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]);
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'image.png' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — dissimilarity index line precedes the binary diff block
+        expect(sut).toContain('dissimilarity index 100%');
+        expect(sut).toContain('Binary files');
+      });
+    });
+  });
+
+  describe('Given a broken modify whose mode also changed', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits index line without mode suffix (differing-mode branch)', () => {
+        // Arrange — oldMode ≠ newMode; index line omits the mode suffix
+        const oldContent = utf8.encode('alpha\n');
+        const newContent = utf8.encode('beta\n');
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'script.sh' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.EXECUTABLE,
+            broken: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent,
+          newContent,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — index line has no trailing mode when modes differ
+        expect(sut).toContain('dissimilarity index 100%');
+        // mode suffix absent: "index aaa..bbb" not "index aaa..bbb 100644"
+        expect(sut).toContain('index aaaaaaa..bbbbbbb\n');
+      });
+    });
+  });
 });

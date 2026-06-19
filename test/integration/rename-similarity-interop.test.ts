@@ -25,7 +25,7 @@ import { diff } from '../../src/application/commands/diff.js';
 import { init } from '../../src/application/commands/init.js';
 import { mv } from '../../src/application/commands/mv.js';
 import { rm } from '../../src/application/commands/rm.js';
-import type { CopyChange, RenameChange } from '../../src/domain/diff/diff-change.js';
+import type { CopyChange, ModifyChange, RenameChange } from '../../src/domain/diff/diff-change.js';
 import { toSimilarityPercent } from '../../src/domain/diff/similarity.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { reconstructPatch } from './diff-reconstruct.js';
@@ -102,7 +102,10 @@ const reconstructNameStatus = (changes: ReadonlyArray<{ type: string }>): string
         return `D\t${d.oldPath}`;
       }
       if (change.type === 'modify') {
-        const m = change as unknown as { path: string };
+        const m = change as unknown as ModifyChange;
+        if (m.broken !== undefined) {
+          return `M${String(toSimilarityPercent(m.broken.score)).padStart(3, '0')}\t${m.path}`;
+        }
         return `M\t${m.path}`;
       }
       return '';
@@ -117,6 +120,29 @@ const tenLineContent = (prefix: string, changed = -1, changedPrefix = 'CHANGED')
     i === changed
       ? `${changedPrefix} content line ${String(i).padStart(2, '0')}: this is the content\n`
       : `${prefix} content line ${String(i).padStart(2, '0')}: this is the content\n`,
+  ).join('');
+
+/**
+ * Build a file of `total` lines for break-rewrite fixtures.
+ *
+ * The OLD version contains `total` identical `line-NNN: shared…` lines.
+ * The NEW version keeps the first `shared` lines byte-for-byte identical to
+ * the old version and replaces the remaining `total - shared` lines with
+ * `different-NNN: COMPLETELY…` lines.
+ *
+ * Dissimilarity values are empirically pinned against real git (byte-level
+ * scorer, not line-count arithmetic):
+ *   total=20, shared=0  → 100% dissimilarity
+ *   total=20, shared=7  → 65%  dissimilarity
+ *   total=20, shared=10 → 50%  dissimilarity  (re-merged at default -B gate)
+ *   total=20, shared=9  → 55%  dissimilarity  (boundary for #B4)
+ *   total=50, shared=20 → 60%  dissimilarity  (boundary for #B5)
+ */
+const breakContent = (kind: 'old' | 'new', total: number, shared: number): string =>
+  Array.from({ length: total }, (_, i) =>
+    kind === 'old' || i < shared
+      ? `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\n`
+      : `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\n`,
   ).join('');
 
 describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git parity', () => {
@@ -1425,6 +1451,518 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         );
       } catch {
         await saveGolden(goldenL2, liveHarderL2);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a fully-disjoint rewrite (matrix #B1), When tsgit detects breaks with default -B, Then M100 matches git and frozen golden', async () => {
+    // Arrange — 20 lines old, 0 shared with new → 100% dissimilarity (>= 60% gate → kept broken)
+    const pair = await makePeerPair('break-b1');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+      const oldContent = breakContent('old', 20, 0);
+      const newContent = breakContent('new', 20, 0);
+
+      await writePeerFile(pair.peer, 'file.txt', oldContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+      const livePatch = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        'HEAD~1',
+        'HEAD',
+      );
+
+      // Sanity: git must report M100 for fully-disjoint rewrite
+      expect(liveNameStatus).toMatch(/^M100\tfile\.txt$/m);
+      expect(livePatch).toContain('dissimilarity index 100%');
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file.txt', oldContent);
+      await add(ctx, ['file.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file.txt', newContent);
+      await add(ctx, ['file.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+      });
+
+      const sutNameStatus = reconstructNameStatus(treeDiff.changes);
+      const sutPatch = await reconstructPatch(ctx, treeDiff);
+
+      // Assert — name-status matches git
+      expect(sutNameStatus).toBe(liveNameStatus);
+      // Assert — dissimilarity index line present
+      expect(sutPatch).toContain('dissimilarity index 100%');
+
+      // Pin golden
+      const goldenName = 'break-b1-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutNameStatus).toBe(golden.trim());
+      } catch {
+        await saveGolden(goldenName, liveNameStatus);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a substantially-dissimilar rewrite (matrix #B2), When tsgit detects breaks with default -B, Then modify is kept broken and frozen golden pinned', async () => {
+    // Arrange — 20 lines old (all shared prefix), 7 shared in new → >60% dissimilarity in both
+    // git computes 65% dissimilarity; tsgit computes 69% (hash-based approximation differs).
+    // Both scorers agree the modify is KEPT BROKEN (>= 60% gate); the exact percentage diverges.
+    const pair = await makePeerPair('break-b2');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+      const oldContent = breakContent('old', 20, 7);
+      const newContent = breakContent('new', 20, 7);
+
+      await writePeerFile(pair.peer, 'file.txt', oldContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git must report M<n> (kept broken, dissimilarity >= 60% default gate)
+      expect(liveNameStatus).toMatch(/^M\d{3}\tfile\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file.txt', oldContent);
+      await add(ctx, ['file.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file.txt', newContent);
+      await add(ctx, ['file.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+      });
+
+      // Assert — tsgit also keeps the modify broken (broken datum present)
+      const modifies = treeDiff.changes.filter((c) => c.type === 'modify');
+      expect(modifies).toHaveLength(1);
+      expect((modifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
+
+      // Pin tsgit's own golden (tsgit score differs from git; pin separately)
+      const sutNameStatus = reconstructNameStatus(treeDiff.changes);
+      const goldenName = 'break-b2-tsgit-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutNameStatus).toBe(golden.trim());
+      } catch {
+        await saveGolden(goldenName, sutNameStatus);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a mildly-dissimilar rewrite (matrix #B3), When tsgit detects breaks with default -B, Then re-merged to plain M (both tsgit and git)', async () => {
+    // Arrange — 20 lines old (all shared prefix), 10 shared in new → ~55% dissimilarity in tsgit,
+    // ~50% in git — both < 60% default merge gate → re-merged in both.
+    const pair = await makePeerPair('break-b3');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+      const oldContent = breakContent('old', 20, 10);
+      const newContent = breakContent('new', 20, 10);
+
+      await writePeerFile(pair.peer, 'file.txt', oldContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git must re-merge (dissimilarity < 60% default gate) → plain M
+      expect(liveNameStatus).toMatch(/^M\tfile\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file.txt', oldContent);
+      await add(ctx, ['file.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file.txt', newContent);
+      await add(ctx, ['file.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+      });
+
+      const sutNameStatus = reconstructNameStatus(treeDiff.changes);
+
+      // Assert — tsgit also re-merges: no broken datum, plain M name-status
+      const modifies = treeDiff.changes.filter((c) => c.type === 'modify');
+      expect(modifies).toHaveLength(1);
+      expect((modifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
+      expect(sutNameStatus).toBe(liveNameStatus);
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a boundary-dissimilar rewrite (matrix #B4), When tsgit merge gate is at/above dissimilarity, Then gate is inclusive (kept) vs exclusive (re-merged)', async () => {
+    // Arrange — 20 lines old (all shared prefix), 9 shared in new.
+    // tsgit spanhash score: 60% dissimilarity (36305 raw). git score: 55% (different algorithm).
+    // The gate is tested at tsgit's own score boundary (not git's): 36000 (60%) → kept, 36601 (61%) → re-merged.
+    // git boundary: -B/55% → kept (M055), -B/56% → re-merged (M) — both documented below.
+    const pair = await makePeerPair('break-b4');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+      const oldContent = breakContent('old', 20, 9);
+      const newContent = breakContent('new', 20, 9);
+
+      await writePeerFile(pair.peer, 'file.txt', oldContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      // git boundary (inclusive gate at git's 55% score):
+      const liveKeptByGit = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B/55%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+      const liveMergedByGit = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B/56%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git inclusive gate — kept at 55% (55 >= 55), re-merged at 56% (55 < 56)
+      expect(liveKeptByGit).toMatch(/^M055\tfile\.txt$/m);
+      expect(liveMergedByGit).toMatch(/^M\tfile\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file.txt', oldContent);
+      await add(ctx, ['file.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file.txt', newContent);
+      await add(ctx, ['file.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — tsgit gate at DEFAULT_MERGE_SCORE (36000 = 60%): kept broken (tsgit score 36305 >= 36000)
+      const treeDiffKept = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+      });
+      // Act — tsgit gate at 36601 (just above 36305 = 60.5%): re-merged
+      const treeDiffMerged = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36601 } },
+      });
+
+      // Assert — tsgit: gate inclusive (kept at 60% ≤ score); re-merged when gate > score
+      const keptModifies = treeDiffKept.changes.filter((c) => c.type === 'modify');
+      expect(keptModifies).toHaveLength(1);
+      expect((keptModifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
+
+      const mergedModifies = treeDiffMerged.changes.filter((c) => c.type === 'modify');
+      expect(mergedModifies).toHaveLength(1);
+      expect((mergedModifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a mildly-dissimilar rewrite and merge:0 (matrix #B4b), When tsgit uses merge:0, Then merge:0 maps to DEFAULT_MERGE_SCORE and re-merges', async () => {
+    // Arrange — 20 lines old (all shared prefix), 10 shared in new.
+    // tsgit spanhash score: ~55% dissimilarity (<60% = DEFAULT_MERGE_SCORE) → re-merges.
+    // git: ~50% dissimilarity → also re-merges at default -B. merge:0 must map to DEFAULT_MERGE_SCORE.
+    const pair = await makePeerPair('break-b4b');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+      const oldContent = breakContent('old', 20, 10);
+      const newContent = breakContent('new', 20, 10);
+
+      await writePeerFile(pair.peer, 'file.txt', oldContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      // git: default -B re-merges (dissimilarity < 60%)
+      const liveDefault = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git default -B re-merges this content
+      expect(liveDefault).toMatch(/^M\tfile\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file.txt', oldContent);
+      await add(ctx, ['file.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file.txt', newContent);
+      await add(ctx, ['file.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — merge:0 must map to DEFAULT_MERGE_SCORE (36000 = 60%); tsgit score ~55% < 60% → re-merges
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 0 } },
+      });
+
+      const sutNameStatus = reconstructNameStatus(treeDiff.changes);
+
+      // Assert — re-merged (tsgit dissimilarity 55% < DEFAULT_MERGE_SCORE 60%), no broken datum
+      const modifies = treeDiff.changes.filter((c) => c.type === 'modify');
+      expect(modifies).toHaveLength(1);
+      expect((modifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
+      expect(sutNameStatus).toBe(liveDefault);
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a 65%-dissimilar rewrite (matrix #B5), When tsgit uses default -B, Then modify kept broken; tsgit golden pinned', async () => {
+    // Arrange — 50 lines old (all shared prefix), 20 shared in new.
+    // tsgit spanhash score: 65% dissimilarity (>= 60% default gate → kept broken).
+    // git score: 60% dissimilarity (same decision; both algorithms keep broken at default -B).
+    const pair = await makePeerPair('break-b5');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+      const oldContent = breakContent('old', 50, 20);
+      const newContent = breakContent('new', 50, 20);
+
+      await writePeerFile(pair.peer, 'file.txt', oldContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveDefault = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git keeps broken at default gate (git score >= 60%)
+      expect(liveDefault).toMatch(/^M\d{3}\tfile\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file.txt', oldContent);
+      await add(ctx, ['file.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file.txt', newContent);
+      await add(ctx, ['file.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — default -B: merge gate = 36000 (60%); tsgit score ~65% >= 60% → kept
+      const treeDiffDefault = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+      });
+      // Act — gate raised to 66% (39600); tsgit score ~65% < 66% → re-merged
+      const treeDiffOver = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 39601 } },
+      });
+
+      const sutDefault = reconstructNameStatus(treeDiffDefault.changes);
+
+      // Assert — tsgit also keeps broken at default gate; gate raised above tsgit's score re-merges
+      const defaultModifies = treeDiffDefault.changes.filter((c) => c.type === 'modify');
+      expect(defaultModifies).toHaveLength(1);
+      expect((defaultModifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
+
+      const overModifies = treeDiffOver.changes.filter((c) => c.type === 'modify');
+      expect(overModifies).toHaveLength(1);
+      expect((overModifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
+
+      // Pin tsgit's golden
+      const goldenName = 'break-b5-tsgit-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutDefault).toBe(golden.trim());
+      } catch {
+        await saveGolden(goldenName, sutDefault);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a broken file plus an unrelated rename (matrix #B6), When tsgit detects breaks, Then M100 + R094 matches git', async () => {
+    // Arrange — file-a: 100% rewrite (breaks to M100); file-b deleted; file-c added ~= old file-b (R094)
+    // The break pass runs BEFORE rename detection — this pin proves the fixed ordering
+    const pair = await makePeerPair('break-b6');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      const oldA = breakContent('old', 20, 0);
+      const newA = breakContent('new', 20, 0);
+      const oldB = Array.from(
+        { length: 20 },
+        (_, i) =>
+          `line-${String(i).padStart(3, '0')}: content for file B, this will be renamed to C\n`,
+      ).join('');
+      const newC = Array.from({ length: 20 }, (_, i) =>
+        i === 0
+          ? `line-${String(i).padStart(3, '0')}: content for file C, derived from B (slight change)\n`
+          : `line-${String(i).padStart(3, '0')}: content for file B, this will be renamed to C\n`,
+      ).join('');
+
+      await writePeerFile(pair.peer, 'file-a.txt', oldA);
+      await writePeerFile(pair.peer, 'file-b.txt', oldB);
+      runGit(['-C', pair.peer, 'add', 'file-a.txt', 'file-b.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file-a.txt', newA);
+      await writePeerFile(pair.peer, 'file-c.txt', newC);
+      runGit(['-C', pair.peer, 'rm', '-q', 'file-b.txt'], { env: gitDeterministicEnv() });
+      runGit(['-C', pair.peer, 'add', 'file-a.txt', 'file-c.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B',
+        '-M',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: M100 for broken file-a + R094 for rename file-b→file-c
+      expect(liveNameStatus).toMatch(/^M100\tfile-a\.txt$/m);
+      expect(liveNameStatus).toMatch(/^R094\tfile-b\.txt\tfile-c\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file-a.txt', oldA);
+      await writeCtxFile(ctx, 'file-b.txt', oldB);
+      await add(ctx, ['file-a.txt', 'file-b.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file-a.txt', newA);
+      await writeCtxFile(ctx, 'file-c.txt', newC);
+      await add(ctx, ['file-a.txt', 'file-c.txt']);
+      await rm(ctx, ['file-b.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+      });
+
+      const sutNameStatus = reconstructNameStatus(treeDiff.changes);
+
+      // Assert — both M100 broken and R094 rename; name-status matches git
+      expect(sutNameStatus.split('\n').sort().join('\n')).toBe(
+        liveNameStatus.split('\n').sort().join('\n'),
+      );
+
+      // Pin golden
+      const goldenName = 'break-b6-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutNameStatus.split('\n').sort().join('\n')).toBe(
+          golden.split('\n').sort().join('\n'),
+        );
+      } catch {
+        await saveGolden(goldenName, liveNameStatus);
       }
     } finally {
       await pair.dispose();
