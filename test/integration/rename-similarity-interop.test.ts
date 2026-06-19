@@ -699,11 +699,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         'HEAD',
       ).trim();
 
-      // Git must have paired them as a rename for the format checks to apply
-      if (!liveNameStatus.startsWith('R')) {
-        // Content didn't reach the threshold; skip format assertions
-        return;
-      }
+      // The fixture content is fully determined (10 lines, 3 modified → ~71% similarity),
+      // so live git MUST pair them as a rename. Fail loudly if it does not — a missing
+      // rename indicates a fixture regression, not a test to skip silently.
+      // Note: tsgit end-to-end mode-change parity is intentionally unit-only (the memory
+      // adapter does not carry executable file bits); this test asserts git's PATCH FORMAT.
+      expect(liveNameStatus).toMatch(/^R\d+\t/m);
 
       // Assert structure: mode preamble BEFORE similarity line
       expect(livePatch).toContain('old mode');
@@ -1093,19 +1094,20 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       const liveLines = liveNameStatus.split('\n').sort().join('\n');
       expect(sutLines).toBe(liveLines);
 
-      // C100 copy: copy block has no index line and no hunk
-      if (liveNameStatus.includes('C100')) {
-        // Full patch parity is the primary assertion
-        expect(sut).toBe(livePatch);
+      // Fixture copies an identical file (same bytes), so git MUST emit C100.
+      // Assert unconditionally — a missing C100 means a fixture or tsgit regression.
+      expect(liveNameStatus).toContain('C100');
 
-        // Extract the copy block (everything before the second 'diff --git' header)
-        const copyBlock = sut.split(/(?=^diff --git )/m)[0] ?? '';
-        expect(copyBlock).not.toMatch(/^index [0-9a-f]+\.\.[0-9a-f]+.*$/m);
-        expect(copyBlock).not.toMatch(/^@@/m);
-        expect(copyBlock).toContain('similarity index 100%');
-        expect(copyBlock).toContain('copy from source.txt');
-        expect(copyBlock).toContain('copy to copy.txt');
-      }
+      // Full patch parity is the primary assertion — tsgit must match live git byte-for-byte.
+      expect(sut).toBe(livePatch);
+
+      // Structural assertions: C100 copy block has no index line and no hunk.
+      const copyBlock = sut.split(/(?=^diff --git )/m)[0] ?? '';
+      expect(copyBlock).not.toMatch(/^index [0-9a-f]+\.\.[0-9a-f]+.*$/m);
+      expect(copyBlock).not.toMatch(/^@@/m);
+      expect(copyBlock).toContain('similarity index 100%');
+      expect(copyBlock).toContain('copy from source.txt');
+      expect(copyBlock).toContain('copy to copy.txt');
 
       // Pin golden
       const goldenName = 'copy-similarity-c4-name-status';

@@ -169,9 +169,10 @@ describe('detectSimilarityRenames', () => {
         // First get the actual score
         const preliminary = await detectSimilarityRenames(ctx, diff);
         const prelimChange = preliminary.changes[0];
+        // Precondition: the pair must fold as a rename under the default threshold.
+        // A non-rename here means the test fixture is broken, not a boundary to skip.
         expect(prelimChange?.type).toBe('rename');
-        if (prelimChange?.type !== 'rename') return;
-        const actualScore = prelimChange.similarity.score;
+        const actualScore = (prelimChange as { similarity: { score: number } }).similarity.score;
 
         // Act — run with threshold == actualScore: should pair (inclusive)
         const result = await detectSimilarityRenames(ctx, diff, { threshold: actualScore });
@@ -209,9 +210,10 @@ describe('detectSimilarityRenames', () => {
         // Get the actual score first
         const preliminary = await detectSimilarityRenames(ctx, diff);
         const prelimChange = preliminary.changes[0];
+        // Precondition: the pair must fold as a rename under the default threshold.
+        // A non-rename here means the test fixture is broken, not a boundary to skip.
         expect(prelimChange?.type).toBe('rename');
-        if (prelimChange?.type !== 'rename') return;
-        const actualScore = prelimChange.similarity.score;
+        const actualScore = (prelimChange as { similarity: { score: number } }).similarity.score;
 
         // Act — run with threshold = score + 1: should NOT pair
         const result = await detectSimilarityRenames(ctx, diff, { threshold: actualScore + 1 });
