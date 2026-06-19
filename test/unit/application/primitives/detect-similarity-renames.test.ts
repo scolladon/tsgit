@@ -761,7 +761,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
-        // Act — limit=2 (limit^2=4); harder with 5 preimage paths -> 1*5=5 > 4 -> falls back to 'on'
+        // Act — limit=2 (limit^2=4):
+        //   harder: 1 add * 5 harder-sources = 5 > 4 → falls back to 'on' (1 copy source: modify preimage)
+        //           then: 1 add * 1 copy source = 1 ≤ 4 → inexact pass runs → FINDS copy
+        //   on:     1 add * 1 copy source = 1 ≤ 4 → inexact pass runs → FINDS copy
         const resultHarder = await detectSimilarityRenames(
           ctx,
           diff,
@@ -770,15 +773,18 @@ describe('detectSimilarityRenames', () => {
         );
         const resultOn = await detectSimilarityRenames(ctx, diff, { copies: 'on', limit: 2 });
 
-        // Assert — under harder with limit exceeded: result same as 'on' (fallback)
-        // Both should find the copy from modified source (mod-src.txt preimage is still a source after fallback)
+        // Assert absolute outcomes: harder falls back to 'on', both find exactly 1 copy
         const copiesHarder = resultHarder.changes.filter((c) => c.type === 'copy');
         const copiesOn = resultOn.changes.filter((c) => c.type === 'copy');
-        expect(copiesHarder).toHaveLength(copiesOn.length);
+        expect(copiesHarder).toHaveLength(1);
+        expect(copiesOn).toHaveLength(1);
 
         // The modify survives in both cases
         expect(resultHarder.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
         expect(resultOn.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
+        // The add is consumed by the copy in both cases
+        expect(resultHarder.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+        expect(resultOn.changes.filter((c) => c.type === 'add')).toHaveLength(0);
       });
     });
   });
@@ -1249,19 +1255,17 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a 5x5 near-equal scenario (greedy, not optimal)', () => {
+  describe('Given a 5x5 scenario with unambiguous per-pair best scores (matrix #8)', () => {
     describe('When detectSimilarityRenames is called', () => {
-      it('Then greedy selection produces 4 pairs and 1 orphan (matrix #7)', async () => {
-        // Arrange — 5 src and 5 dst blobs all near-equal to each other (high similarity).
-        // Greedy picks score-desc, so the first src ends up consuming a dst that multiple
-        // srcs could match, leaving 1 src and 1 dst unmatched (orphan).
-        // We construct 5 pairs where each pair is ~87% similar to each other.
-        // Greedy (not optimal) means 4 pair, 1 stays A/D.
+      it('Then all 5 pairs are detected as renames with no orphan', async () => {
+        // Arrange — 5 src-dst pairs; each src-i is most similar to dst-i because
+        // the "X line i" marker line in src-i maps to "Z line i" in dst-i, while
+        // cross-index pairs share only 8/10 lines (lower score). Greedy naturally
+        // picks src-i→dst-i for all 5 since same-index score dominates.
         const ctx = await buildSeededContext();
         const blobs: Array<{ srcId: ObjectId; dstId: ObjectId }> = [];
         for (let i = 0; i < 5; i++) {
           const srcContent = tenLines(i % 10);
-          // Make dst similar but slightly different
           const dstContent = srcContent.replace(`X line ${i % 10}\n`, `Z line ${i % 10}\n`);
           const srcId = await writeBlob(ctx, srcContent);
           const dstId = await writeBlob(ctx, dstContent);
@@ -1283,19 +1287,139 @@ describe('detectSimilarityRenames', () => {
         ];
         const diff: TreeDiff = { changes };
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const sut = detectSimilarityRenames(ctx, diff);
+        const result = await sut;
         const renames = result.changes.filter((c) => c.type === 'rename');
         const adds = result.changes.filter((c) => c.type === 'add');
         const deletes = result.changes.filter((c) => c.type === 'delete');
-        // Assert — greedy produces AT MOST 5 pairs; for near-equal content each src[i] pairs
-        // with dst[i] naturally (highest score is same-index pair). For near-equal non-degenerate
-        // content, all 5 should pair (each src[i] and dst[i] are most similar to each other).
-        // The "greedy not optimal" manifests when cross-index scores are equal to same-index scores.
-        // For our test data, each src[i] has highest similarity to dst[i], so all 5 pair.
-        // The matrix #7 requirement is tested in interop against real git.
-        expect(renames.length + adds.length).toBeGreaterThanOrEqual(4);
-        expect(renames.length).toBeGreaterThanOrEqual(4);
-        expect(renames.length + deletes.length).toBeGreaterThanOrEqual(4);
+        // Assert — all 5 pair because each src-i has the highest score with dst-i
+        expect(renames).toHaveLength(5);
+        expect(adds).toHaveLength(0);
+        expect(deletes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given 5 near-equal sources for dst-A and src-E as the only viable source for dst-B (NUM_CANDIDATE_PER_DST cap)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then src-E is freed by the per-destination top-4 cap and pairs with dst-B', async () => {
+        // Arrange — git caps candidates per destination at NUM_CANDIDATE_PER_DST=4.
+        // 5 delete sources (src-aaa..src-eee), 2 add destinations (dst-primary, dst-secondary).
+        //
+        // Content design (spanhash similarity):
+        //   shared-block: 10 common lines in EVERY file
+        //   dst-primary:   shared-block + "UNIQUE-PRIMARY …"
+        //   dst-secondary: shared-block + line-A + line-B + "UNIQUE-SECONDARY …"  (3 extra lines)
+        //   src-aaa..ddd:  shared-block + "UNIQUE-SRC-X …" → 10/11 ≈ 91% match with dst-primary
+        //   src-eee:       shared-block + line-A + line-B + "UNIQUE-SRC-E …"
+        //                    → 12/13 match with dst-secondary (high score)
+        //                    → 10/13 match with dst-primary  (lower score than src-aaa..ddd)
+        //
+        // git processes: for each dst (outer), for each src (inner, in filename order).
+        // For dst-primary: src-aaa(91%), src-bbb(91%), src-ccc(91%), src-ddd(91%) fill the 4 slots.
+        //   src-eee scores ≈77% with dst-primary (10/13) — lower than the 4 already in the slots.
+        //   record_if_better drops src-eee from dst-primary's candidate list.
+        // For dst-secondary: src-eee scores ≈92% (12/13) — highest; src-aaa..ddd score ≈77%.
+        //
+        // Without the cap: ALL 5 are in dst-primary's matrix. Greedy sort at equal scores
+        //   for src-aaa..ddd vs dst-primary is undefined; src-eee might be consumed by
+        //   dst-primary first, leaving dst-secondary unmatched.
+        // With the cap: src-eee is excluded from dst-primary's matrix → pairs with dst-secondary.
+        const ctx = await buildSeededContext();
+
+        const sharedBlock = Array.from(
+          { length: 10 },
+          (_, i) =>
+            `shared-${String(i + 1).padStart(2, '0')}: common content alpha beta gamma delta epsilon zeta\n`,
+        ).join('');
+        // Two extra lines that appear in both dst-secondary and src-eee (but NOT in dst-primary or src-aaa..ddd)
+        const extraLines =
+          'extra-line-A: kappa lambda mu nu xi omicron pi rho sigma tau\nextra-line-B: upsilon phi chi psi omega alpha beta gamma delta epsilon\n';
+
+        const dstPrimaryId = await writeBlob(
+          ctx,
+          `${sharedBlock}UNIQUE-PRIMARY: marker for primary destination\n`,
+        );
+        const dstSecondaryId = await writeBlob(
+          ctx,
+          `${sharedBlock}${extraLines}UNIQUE-SECONDARY: marker for secondary destination\n`,
+        );
+        // src-E: scores HIGH with dst-secondary (shares shared-block + extraLines),
+        // scores LOWER with dst-primary (lacks extraLines in dst-primary).
+        const srcEId = await writeBlob(
+          ctx,
+          `${sharedBlock}${extraLines}UNIQUE-SRC-E: marker only in src-E\n`,
+        );
+        const srcAId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-A: marker only in src-A\n`);
+        const srcBId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-B: marker only in src-B\n`);
+        const srcCId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-C: marker only in src-C\n`);
+        const srcDId = await writeBlob(ctx, `${sharedBlock}UNIQUE-SRC-D: marker only in src-D\n`);
+
+        const diff: TreeDiff = {
+          changes: [
+            // Filenames alphabetically ordered: src-aaa < src-bbb < src-ccc < src-ddd < src-eee
+            {
+              type: 'delete',
+              oldPath: 'src-aaa.txt' as FilePath,
+              oldId: srcAId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'src-bbb.txt' as FilePath,
+              oldId: srcBId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'src-ccc.txt' as FilePath,
+              oldId: srcCId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'src-ddd.txt' as FilePath,
+              oldId: srcDId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'src-eee.txt' as FilePath,
+              oldId: srcEId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'dst-primary.txt' as FilePath,
+              newId: dstPrimaryId,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'dst-secondary.txt' as FilePath,
+              newId: dstSecondaryId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        // Act
+        const sut = detectSimilarityRenames(ctx, diff);
+        const result = await sut;
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        const deletes = result.changes.filter((c) => c.type === 'delete');
+        // Assert — exactly 2 renames: one src→dst-primary, and src-eee→dst-secondary.
+        // The cap at 4 per destination ensures src-eee is dropped from dst-primary's
+        // candidate list (it scores lower than src-aaa..ddd there) and is free for dst-secondary.
+        expect(renames).toHaveLength(2);
+        const secondaryRename = renames.find(
+          (r) => r.type === 'rename' && r.newPath === 'dst-secondary.txt',
+        );
+        expect(secondaryRename).toBeDefined();
+        if (secondaryRename?.type === 'rename') {
+          expect(secondaryRename.oldPath).toBe('src-eee.txt');
+        }
+        // 3 orphan deletes (src-aaa/bbb/ccc/ddd minus the one that paired with dst-primary)
+        expect(deletes).toHaveLength(3);
       });
     });
   });

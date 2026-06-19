@@ -2335,4 +2335,111 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await pair.dispose();
     }
   });
+
+  it('Given 5 delete sources (4 similar to dst-primary, 1 similar to dst-secondary), When tsgit runs rename detection, Then pairings match live git (NUM_CANDIDATE_PER_DST cap)', async () => {
+    // Arrange — 5 deletes + 2 adds.  The content design ensures src-aaa..src-ddd score ~91%
+    // with dst-primary and src-eee is the only viable candidate for dst-secondary (~91%).
+    // git's NUM_CANDIDATE_PER_DST=4 cap keeps only the first 4 alphabetical sources for
+    // dst-primary; src-eee (5th) is freed and pairs with dst-secondary.
+    // tsgit must produce the identical pairings via its per-dst top-4 cap implementation.
+    //
+    // Probed against git 2.54.0:
+    //   R089  src-aaa.txt → dst-primary.txt
+    //   R090  src-eee.txt → dst-secondary.txt
+    //   D  src-bbb.txt / src-ccc.txt / src-ddd.txt
+    const pair = await makePeerPair('rename-similarity-cap4-dst');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+
+      // 10 shared lines (common to every file in the src set)
+      const shared10 = Array.from(
+        { length: 10 },
+        (_, i) => `shared-${String(i + 1).padStart(2, '0')}: alpha beta gamma delta epsilon zeta\n`,
+      ).join('');
+      // 10 DISTINCT lines used only by src-eee and dst-secondary
+      const special10 = Array.from(
+        { length: 10 },
+        (_, i) =>
+          `special-${String(i + 1).padStart(2, '0')}: kappa lambda mu nu xi omicron pi rho\n`,
+      ).join('');
+
+      const srcFiles: Record<string, string> = {
+        'src-aaa.txt': `${shared10}SRC-AAA: unique to aaa\n`,
+        'src-bbb.txt': `${shared10}SRC-BBB: unique to bbb\n`,
+        'src-ccc.txt': `${shared10}SRC-CCC: unique to ccc\n`,
+        'src-ddd.txt': `${shared10}SRC-DDD: unique to ddd\n`,
+        'src-eee.txt': `${special10}SRC-EEE: unique to eee\n`,
+      };
+      const dstFiles: Record<string, string> = {
+        'dst-primary.txt': `${shared10}UNIQUE-PRIMARY: marker for primary destination alpha\n`,
+        'dst-secondary.txt': `${special10}UNIQUE-SECONDARY: marker for secondary destination\n`,
+      };
+
+      for (const [name, content] of Object.entries(srcFiles)) {
+        await writePeerFile(pair.peer, name, content);
+        await writeCtxFile(ctx, name, content);
+      }
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await add(ctx, Object.keys(srcFiles));
+      const c1 = await commit(ctx, { message: 'first', author });
+
+      for (const name of Object.keys(srcFiles)) {
+        runGit(['-C', pair.peer, 'rm', '-q', name], { env: gitDeterministicEnv() });
+      }
+      for (const [name, content] of Object.entries(dstFiles)) {
+        await writePeerFile(pair.peer, name, content);
+        await writeCtxFile(ctx, name, content);
+      }
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+      await rm(ctx, Object.keys(srcFiles));
+      await add(ctx, Object.keys(dstFiles));
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      const liveNameStatus = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-M',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Act
+      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, detectRenames: true });
+      const sut = reconstructNameStatus(treeDiff.changes);
+
+      // Unconditional: fixture MUST trigger rename detection (R-score lines at line start)
+      expect(liveNameStatus).toMatch(/^R\d+\tsrc-aaa\.txt\tdst-primary\.txt$/m);
+      expect(liveNameStatus).toMatch(/^R\d+\tsrc-eee\.txt\tdst-secondary\.txt$/m);
+
+      // Assert — tsgit matches live git exactly
+      const sutLines = sut.split('\n').sort().join('\n');
+      const liveLines = liveNameStatus.split('\n').sort().join('\n');
+      expect(sutLines).toBe(liveLines);
+
+      // Absolute counts: 2 renames, 3 orphan deletes
+      const renames = treeDiff.changes.filter((c) => c.type === 'rename');
+      expect(renames).toHaveLength(2);
+      const dels = treeDiff.changes.filter((c) => c.type === 'delete');
+      expect(dels).toHaveLength(3);
+
+      // Pin golden
+      const goldenName = 'rename-similarity-cap4-dst-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutLines).toBe(golden.split('\n').sort().join('\n'));
+      } catch {
+        await saveGolden(goldenName, liveNameStatus);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
 });

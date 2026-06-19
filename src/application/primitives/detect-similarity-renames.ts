@@ -111,6 +111,42 @@ interface ScoredTriple {
   readonly score: number;
 }
 
+/**
+ * Maximum candidates retained per destination, matching git's NUM_CANDIDATE_PER_DST.
+ * git's record_if_better keeps only the top 4 scoring sources per destination;
+ * when the slot array is full, a new entry replaces the current minimum only if
+ * strictly better (score > min). Equal-score entries do not replace.
+ */
+const NUM_CANDIDATE_PER_DST = 4;
+
+/**
+ * Maintain the top-N candidates for one destination.
+ * Mirrors git's record_if_better: a new score replaces the current minimum only
+ * when strictly greater; equal scores do not displace an existing entry.
+ */
+function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): void {
+  if (slots.length < NUM_CANDIDATE_PER_DST) {
+    slots.push(candidate);
+    return;
+  }
+  // Find the slot with the minimum score.
+  let minIdx = 0;
+  for (let i = 1; i < slots.length; i++) {
+    if ((slots[i] as ScoredTriple).score < (slots[minIdx] as ScoredTriple).score) {
+      minIdx = i;
+    }
+  }
+  // Replace only when strictly better (not equal).
+  if (candidate.score > (slots[minIdx] as ScoredTriple).score) {
+    slots[minIdx] = candidate;
+  }
+}
+
+/**
+ * Build rename-candidate triples using git's dst-outer / src-inner iteration order
+ * with a per-destination cap of NUM_CANDIDATE_PER_DST (= 4) top-scoring sources.
+ * Mirrors diffcore-rename.c's record_if_better matrix construction.
+ */
 function buildRenameTriples(
   deletes: ReadonlyArray<DeleteChange>,
   adds: ReadonlyArray<AddChange>,
@@ -119,19 +155,25 @@ function buildRenameTriples(
   threshold: number,
 ): ScoredTriple[] {
   const triples: ScoredTriple[] = [];
-  for (const del of deletes) {
-    const sb = srcBytes.get(del.oldId);
-    if (sb === undefined) continue;
-    for (const add of adds) {
-      const db = dstBytes.get(add.newId);
-      if (db === undefined) continue;
+  for (const add of adds) {
+    const db = dstBytes.get(add.newId);
+    if (db === undefined) continue;
+    const slots: ScoredTriple[] = [];
+    for (const del of deletes) {
+      const sb = srcBytes.get(del.oldId);
+      if (sb === undefined) continue;
       const score = estimateSimilarity(sb, db);
-      if (score >= threshold) triples.push({ kind: 'rename', src: del, add, score });
+      if (score >= threshold) recordIfBetter(slots, { kind: 'rename', src: del, add, score });
     }
+    for (const triple of slots) triples.push(triple);
   }
   return triples;
 }
 
+/**
+ * Build copy-candidate triples using git's dst-outer / src-inner iteration order
+ * with a per-destination cap of NUM_CANDIDATE_PER_DST (= 4) top-scoring sources.
+ */
 function buildCopyTriples(
   copySources: ReadonlyArray<CopySource>,
   adds: ReadonlyArray<AddChange>,
@@ -140,15 +182,17 @@ function buildCopyTriples(
   copyThreshold: number,
 ): ScoredTriple[] {
   const triples: ScoredTriple[] = [];
-  for (const src of copySources) {
-    const sb = srcBytes.get(src.oldId);
-    if (sb === undefined) continue;
-    for (const add of adds) {
-      const db = dstBytes.get(add.newId);
-      if (db === undefined) continue;
+  for (const add of adds) {
+    const db = dstBytes.get(add.newId);
+    if (db === undefined) continue;
+    const slots: ScoredTriple[] = [];
+    for (const src of copySources) {
+      const sb = srcBytes.get(src.oldId);
+      if (sb === undefined) continue;
       const score = estimateSimilarity(sb, db);
-      if (score >= copyThreshold) triples.push({ kind: 'copy', src, add, score });
+      if (score >= copyThreshold) recordIfBetter(slots, { kind: 'copy', src, add, score });
     }
+    for (const triple of slots) triples.push(triple);
   }
   return triples;
 }

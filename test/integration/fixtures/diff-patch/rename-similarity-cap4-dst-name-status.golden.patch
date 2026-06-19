@@ -1,0 +1,5 @@
+R089	src-aaa.txt	dst-primary.txt
+R090	src-eee.txt	dst-secondary.txt
+D	src-bbb.txt
+D	src-ccc.txt
+D	src-ddd.txt
