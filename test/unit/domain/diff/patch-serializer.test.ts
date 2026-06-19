@@ -1279,6 +1279,44 @@ describe('patch-serializer', () => {
     });
   });
 
+  describe('Given a sub-100% rename change whose hydrated content is absent', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits the header and index line with an empty body (no hunk)', () => {
+        // Arrange — a two-path change below MAX_SCORE with neither side hydrated;
+        // the serializer treats absent content as empty rather than throwing.
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'original.txt' as FilePath,
+            newPath: 'moved.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 52200, maxScore: MAX_SCORE },
+          },
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — header + index + the diff body markers, but no `@@` hunk
+        expect(sut).toBe(
+          [
+            'diff --git a/original.txt b/moved.txt',
+            'similarity index 87%',
+            'rename from original.txt',
+            'rename to moved.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/original.txt',
+            '+++ b/moved.txt',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
   describe('Given a mode-change + sub-100% rename (matrix #4)', () => {
     describe('When renderPatch is called', () => {
       it('Then emits old mode / new mode BEFORE similarity index, and index line WITHOUT trailing mode', () => {
