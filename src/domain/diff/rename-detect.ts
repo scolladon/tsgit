@@ -1,7 +1,6 @@
-import type { FilePath, ObjectId } from '../objects/index.js';
+import type { ObjectId } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
-import type { FlatTreeEntry } from './flat-tree.js';
 import { sortByPath } from './path-compare.js';
 import { MAX_SCORE } from './similarity.js';
 
@@ -10,10 +9,8 @@ export interface RenameDetectOptions {
   readonly maxSameIdDeletes?: number;
   readonly threshold?: number;
   readonly copies?: 'off' | 'on' | 'harder';
+  /** Per-copy threshold (0..MAX_SCORE). Defaults to `threshold` when absent. */
   readonly copyThreshold?: number;
-  /** Flat preimage map (path → {id, mode}) for all tree-A paths. Used by copies:'harder'
-   * to widen the copy-source set to unchanged files. Threaded from diffTrees. */
-  readonly preimage?: ReadonlyMap<FilePath, FlatTreeEntry>;
   /**
    * Break-rewrite detection (-B).
    * score: dissimilarity gate (>= score → attempt break; default DEFAULT_BREAK_SCORE).

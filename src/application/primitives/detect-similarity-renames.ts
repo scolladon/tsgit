@@ -568,12 +568,12 @@ export async function detectSimilarityRenames(
   ctx: Context,
   diff: TreeDiff,
   options?: RenameDetectOptions,
+  preimage?: ReadonlyMap<FilePath, FlatTreeEntry>,
 ): Promise<TreeDiff> {
   const threshold = options?.threshold ?? DEFAULT_RENAME_THRESHOLD;
   const copyThreshold = options?.copyThreshold ?? threshold;
   const limit = options?.limit ?? DEFAULT_LIMIT;
   const copies = options?.copies ?? 'off';
-  const preimage = options?.preimage;
   const breakRewrites = options?.breakRewrites ?? false;
 
   // Break-attempt pass: runs BEFORE exact/inexact so halves feed the matrix.

@@ -1968,4 +1968,339 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       await pair.dispose();
     }
   });
+
+  it('Given a pair scoring R040, When threshold is 24000 (40%), Then tsgit detects the rename matching git -M40% and not matching -M41% (threshold #T1/#T2)', async () => {
+    // Arrange — content engineered to score exactly R040 by git's spanhash:
+    // 37 shared lines + 57 unique-src lines + 57 unique-dst lines (all 30 bytes each).
+    // Probed: git -M40% → R040; git -M41% → A/D.
+    // Threshold mapping: -M40% ≡ threshold:24000 (40%×60000); -M41% ≡ threshold:24600.
+    const pair = await makePeerPair('threshold-t1-t2');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      const shared = Array.from(
+        { length: 37 },
+        (_, i) => `shared${String(i).padStart(5, '0')}aaaaaaaaaaaaaaaaaaaaaa\n`,
+      ).join('');
+      const srcUnique = Array.from(
+        { length: 57 },
+        (_, i) => `srcuu${String(i).padStart(5, '0')}ZZZZZZZZZZZZZZZZZZZZZZ\n`,
+      ).join('');
+      const dstUnique = Array.from(
+        { length: 57 },
+        (_, i) => `dstuu${String(i).padStart(5, '0')}YYYYYYYYYYYYYYYYYYYYYY\n`,
+      ).join('');
+      const srcContent = shared + srcUnique;
+      const dstContent = shared + dstUnique;
+
+      await writePeerFile(pair.peer, 'src.txt', srcContent);
+      runGit(['-C', pair.peer, 'add', 'src.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      runGit(['-C', pair.peer, 'rm', '-q', 'src.txt'], { env: gitDeterministicEnv() });
+      await writePeerFile(pair.peer, 'dst.txt', dstContent);
+      runGit(['-C', pair.peer, 'add', 'dst.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      // Probe real git at 40% (pairs) and 41% (no pair)
+      const liveAt40 = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-M40%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+      const liveAt41 = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-M41%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git must report R040 at -M40% and A/D at -M41%
+      expect(liveAt40).toMatch(/^R040\tsrc\.txt\tdst\.txt$/m);
+      expect(liveAt41).not.toMatch(/^R\d+\t/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'src.txt', srcContent);
+      await add(ctx, ['src.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await rm(ctx, ['src.txt']);
+      await writeCtxFile(ctx, 'dst.txt', dstContent);
+      await add(ctx, ['dst.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — threshold:24000 = 40% of MAX_SCORE (60000)
+      const treeDiff40 = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { threshold: 24000 },
+      });
+      // Act — threshold:24600 = 41%: should NOT pair
+      const treeDiff41 = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { threshold: 24600 },
+      });
+
+      const sut40 = reconstructNameStatus(treeDiff40.changes);
+      const sut41 = reconstructNameStatus(treeDiff41.changes);
+
+      // Assert — at 40%: rename matches live git (R040)
+      expect(sut40).toBe(liveAt40);
+      // Assert — at 41%: A/D, no rename, matches live git
+      expect(sut41).toBe(liveAt41);
+      expect(treeDiff41.changes.map((c) => c.type)).not.toContain('rename');
+
+      // Pin goldens
+      try {
+        const golden40 = await loadGolden('threshold-t1-40pct-name-status');
+        expect(sut40).toBe(golden40);
+      } catch {
+        await saveGolden('threshold-t1-40pct-name-status', liveAt40);
+      }
+      try {
+        const golden41 = await loadGolden('threshold-t2-41pct-name-status');
+        expect(sut41).toBe(golden41);
+      } catch {
+        await saveGolden('threshold-t2-41pct-name-status', liveAt41);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a copy pair scoring C040, When copyThreshold is 24000 (40%), Then tsgit detects the copy matching git -C40%; at 24600 (41%) it does not (threshold #T3)', async () => {
+    // Arrange — same shared/unique byte ratio as T1/T2 (37+57 lines).
+    // source.txt is modified (preimage = original), copy.txt = new file with ~40% similarity
+    // to source.txt's preimage. Plain -C uses modified-file preimage as copy source.
+    // Probed: git -C40% → C040; git -C41% → A/M.
+    const pair = await makePeerPair('threshold-t3');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+
+      const shared = Array.from(
+        { length: 37 },
+        (_, i) => `shared${String(i).padStart(5, '0')}aaaaaaaaaaaaaaaaaaaaaa\n`,
+      ).join('');
+      const srcUnique = Array.from(
+        { length: 57 },
+        (_, i) => `srcuu${String(i).padStart(5, '0')}ZZZZZZZZZZZZZZZZZZZZZZ\n`,
+      ).join('');
+      const cpyUnique = Array.from(
+        { length: 57 },
+        (_, i) => `cpyuu${String(i).padStart(5, '0')}YYYYYYYYYYYYYYYYYYYYYY\n`,
+      ).join('');
+      const modUnique = Array.from(
+        { length: 57 },
+        (_, i) => `moduu${String(i).padStart(5, '0')}WWWWWWWWWWWWWWWWWWWWWW\n`,
+      ).join('');
+      const srcContent = shared + srcUnique; // preimage for source.txt
+      const modContent = shared + modUnique; // postimage for source.txt (modified)
+      const cpyContent = shared + cpyUnique; // copy.txt (~40% similar to srcContent preimage)
+
+      await writePeerFile(pair.peer, 'source.txt', srcContent);
+      runGit(['-C', pair.peer, 'add', 'source.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'source.txt', modContent);
+      await writePeerFile(pair.peer, 'copy.txt', cpyContent);
+      runGit(['-C', pair.peer, 'add', '-A'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      // Probe real git: -C40% (should detect C040) and -C41% (should not)
+      const liveAt40 = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C40%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+      const liveAt41 = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-C41%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git must detect C040 at -C40% and not at -C41%
+      expect(liveAt40).toMatch(/^C040\tsource\.txt\tcopy\.txt$/m);
+      expect(liveAt41).not.toMatch(/^C\d+\tsource\.txt\tcopy\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'source.txt', srcContent);
+      await add(ctx, ['source.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'source.txt', modContent);
+      await writeCtxFile(ctx, 'copy.txt', cpyContent);
+      await add(ctx, ['source.txt', 'copy.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — copyThreshold:24000 = 40% of MAX_SCORE
+      const treeDiff40 = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'on', copyThreshold: 24000 },
+      });
+      // Act — copyThreshold:24600 = 41%: should NOT copy
+      const treeDiff41 = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { copies: 'on', copyThreshold: 24600 },
+      });
+
+      const sut40 = reconstructNameStatus(treeDiff40.changes);
+      const sut41 = reconstructNameStatus(treeDiff41.changes);
+
+      // Assert — at 40%: copy detected, matches live git
+      const copies40 = treeDiff40.changes.filter((c) => c.type === 'copy');
+      expect(copies40).toHaveLength(1);
+      expect(sut40.split('\n').sort().join('\n')).toBe(liveAt40.split('\n').sort().join('\n'));
+
+      // Assert — at 41%: no copy
+      const copies41 = treeDiff41.changes.filter((c) => c.type === 'copy');
+      expect(copies41).toHaveLength(0);
+      expect(sut41.split('\n').sort().join('\n')).toBe(liveAt41.split('\n').sort().join('\n'));
+
+      // Pin goldens
+      for (const [name, live, sut] of [
+        ['threshold-t3-copy-40pct-name-status', liveAt40, sut40],
+        ['threshold-t3-copy-41pct-name-status', liveAt41, sut41],
+      ] as const) {
+        try {
+          const golden = await loadGolden(name);
+          expect(sut.split('\n').sort().join('\n')).toBe(golden.split('\n').sort().join('\n'));
+        } catch {
+          await saveGolden(name, live);
+        }
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
+
+  it('Given a 55%-dissimilar modify (git) / 60.5%-dissimilar (tsgit), When breakRewrites score/merge are swept, Then tsgit inclusive gate and merge:0 maps to DEFAULT_MERGE_SCORE (threshold #T4)', async () => {
+    // Arrange — 20 lines old, 9 shared in new.
+    // git dissimilarity: 55% (M055 at -B/55%); tsgit spanhash: 36305 (≈60.5%).
+    // Probed: git -B/55% → M055 (kept); -B/56% → M (re-merged); -B50%/0 → M (default 60% gate).
+    // tsgit numeric boundaries: score=30000 (50% break-attempt gate).
+    //   merge=36305 → kept (36305 >= 36305, inclusive gate).
+    //   merge=36306 → re-merged (36305 < 36306).
+    //   merge=0 → maps to DEFAULT_MERGE_SCORE (36000); 36305 >= 36000 → KEPT (tsgit-only; git re-merges).
+    const pair = await makePeerPair('threshold-t4');
+    try {
+      runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
+      const oldContent = breakContent('old', 20, 9);
+      const newContent = breakContent('new', 20, 9);
+
+      await writePeerFile(pair.peer, 'file.txt', oldContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'first');
+      await writePeerFile(pair.peer, 'file.txt', newContent);
+      runGit(['-C', pair.peer, 'add', 'file.txt'], { env: gitDeterministicEnv() });
+      gitCommit(pair.peer, 'second');
+
+      // Probe real git boundaries (git's own scorer gives 55% dissimilarity)
+      const liveGitKept = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B/55%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+      const liveGitMerged = git(
+        pair.peer,
+        'diff',
+        '--no-ext-diff',
+        '--no-color',
+        '-B/56%',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+
+      // Sanity: git gate is inclusive at 55%, exclusive at 56%
+      expect(liveGitKept).toMatch(/^M055\tfile\.txt$/m);
+      expect(liveGitMerged).toMatch(/^M\tfile\.txt$/m);
+
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await writeCtxFile(ctx, 'file.txt', oldContent);
+      await add(ctx, ['file.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await writeCtxFile(ctx, 'file.txt', newContent);
+      await add(ctx, ['file.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
+
+      // Act — tsgit: score=30000 (50% break-attempt), merge=36305 (tsgit's exact dissimilarity: kept, inclusive)
+      const treeDiffKept = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36305 } },
+      });
+      // Act — merge=36306 (just above tsgit's 36305): re-merged
+      const treeDiffMerged = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 36306 } },
+      });
+      // Act — merge:0 maps to DEFAULT_MERGE_SCORE (36000); tsgit score 36305 >= 36000 → KEPT
+      const treeDiffMerge0 = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        renameOptions: { breakRewrites: { score: 30000, merge: 0 } },
+      });
+
+      // Assert — inclusive gate: kept at merge=36305
+      const keptModifies = treeDiffKept.changes.filter((c) => c.type === 'modify');
+      expect(keptModifies).toHaveLength(1);
+      expect((keptModifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
+
+      // Assert — re-merged at merge=36306 (just above score)
+      const mergedModifies = treeDiffMerged.changes.filter((c) => c.type === 'modify');
+      expect(mergedModifies).toHaveLength(1);
+      expect((mergedModifies[0] as unknown as { broken?: unknown }).broken).toBeUndefined();
+
+      // Assert — merge:0 → DEFAULT_MERGE_SCORE (36000); 36305 >= 36000 → KEPT BROKEN
+      const merge0Modifies = treeDiffMerge0.changes.filter((c) => c.type === 'modify');
+      expect(merge0Modifies).toHaveLength(1);
+      expect((merge0Modifies[0] as unknown as { broken?: unknown }).broken).toBeDefined();
+
+      // Pin tsgit's golden (tsgit score differs from git; scores pinned separately)
+      const sutKeptNameStatus = reconstructNameStatus(treeDiffKept.changes);
+      const goldenName = 'threshold-t4-break-kept-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutKeptNameStatus).toBe(golden.trim());
+      } catch {
+        await saveGolden(goldenName, sutKeptNameStatus);
+      }
+    } finally {
+      await pair.dispose();
+    }
+  });
 });

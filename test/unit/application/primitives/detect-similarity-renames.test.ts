@@ -676,13 +676,15 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
-        // Act — copies: 'on' should NOT detect (unchanged not a source)
-        const resultOn = await detectSimilarityRenames(ctx, diff, { copies: 'on', preimage });
-        // Act — copies: 'harder' SHOULD detect (unchanged IS a source under harder)
-        const resultHarder = await detectSimilarityRenames(ctx, diff, {
-          copies: 'harder',
+        // Act — copies: 'on' should NOT detect (unchanged not a source); preimage not passed
+        const resultOn = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+        // Act — copies: 'harder' SHOULD detect (unchanged IS a source under harder); preimage passed positionally
+        const resultHarder = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder' },
           preimage,
-        });
+        );
 
         // Assert — 'on': no copy (unchanged excluded)
         expect(resultOn.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
@@ -760,16 +762,13 @@ describe('detectSimilarityRenames', () => {
         };
 
         // Act — limit=2 (limit^2=4); harder with 5 preimage paths -> 1*5=5 > 4 -> falls back to 'on'
-        const resultHarder = await detectSimilarityRenames(ctx, diff, {
-          copies: 'harder',
-          limit: 2,
+        const resultHarder = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', limit: 2 },
           preimage,
-        });
-        const resultOn = await detectSimilarityRenames(ctx, diff, {
-          copies: 'on',
-          limit: 2,
-          preimage,
-        });
+        );
+        const resultOn = await detectSimilarityRenames(ctx, diff, { copies: 'on', limit: 2 });
 
         // Assert — under harder with limit exceeded: result same as 'on' (fallback)
         // Both should find the copy from modified source (mod-src.txt preimage is still a source after fallback)
@@ -818,11 +817,8 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
-        // Act — copies:'harder' so keep-src.txt (unchanged) is also a copy source
-        const result = await detectSimilarityRenames(ctx, diff, {
-          copies: 'harder',
-          preimage,
-        });
+        // Act — copies:'harder' so keep-src.txt (unchanged) is also a copy source; preimage passed positionally
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'harder' }, preimage);
 
         // Assert — rename wins (del-src.txt → new-dst.txt); no copy for keep-src.txt → new-dst.txt
         const renames = result.changes.filter((c) => c.type === 'rename');
