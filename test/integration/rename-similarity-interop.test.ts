@@ -896,30 +896,28 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       });
       const sut = reconstructNameStatus(treeDiff.changes);
 
-      // Assert — copy detected; source modify still present
+      // Sanity — the fixture MUST trigger git's plain -C copy detection, else the
+      // test proves nothing. git emits the status letter at line start (`C077\t…`),
+      // never tab-prefixed.
+      expect(liveNameStatus).toMatch(/^C\d+\tsource\.txt\tdest\.txt$/m);
+
+      // Assert — tsgit detects the copy and the source modify survives, byte-equal to git
       const copies = treeDiff.changes.filter((c) => c.type === 'copy');
       const modifies = treeDiff.changes.filter((c) => c.type === 'modify');
+      expect(copies).toHaveLength(1);
+      expect(modifies).toHaveLength(1); // source modify survives
 
-      // Only assert copy + modify parity if git detected it as a copy
-      if (liveNameStatus.includes('\tC')) {
-        expect(copies.length).toBeGreaterThanOrEqual(1);
-        expect(modifies).toHaveLength(1); // source modify survives
+      const sutLines = sut.split('\n').sort().join('\n');
+      const liveLines = liveNameStatus.split('\n').sort().join('\n');
+      expect(sutLines).toBe(liveLines);
 
-        const sutLines = sut.split('\n').sort().join('\n');
-        const liveLines = liveNameStatus.split('\n').sort().join('\n');
-        expect(sutLines).toBe(liveLines);
-      }
-
-      // Pin golden (only when git detected a copy)
-      if (liveNameStatus.includes('\tC')) {
-        const goldenName = 'copy-similarity-c1-name-status';
-        try {
-          const golden = await loadGolden(goldenName);
-          const sLines = sut.split('\n').sort().join('\n');
-          expect(sLines).toBe(golden.split('\n').sort().join('\n'));
-        } catch {
-          await saveGolden(goldenName, liveNameStatus);
-        }
+      // Pin golden
+      const goldenName = 'copy-similarity-c1-name-status';
+      try {
+        const golden = await loadGolden(goldenName);
+        expect(sutLines).toBe(golden.split('\n').sort().join('\n'));
+      } catch {
+        await saveGolden(goldenName, liveNameStatus);
       }
     } finally {
       await pair.dispose();
