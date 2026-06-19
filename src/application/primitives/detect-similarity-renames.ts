@@ -381,15 +381,17 @@ interface InexactPassResult {
   readonly consumedAdds: ReadonlySet<AddChange>;
 }
 
-async function runInexactPass(
+interface FingerprintPair {
+  readonly srcFingerprints: Map<ObjectId, BlobFingerprint>;
+  readonly dstFingerprints: Map<ObjectId, BlobFingerprint>;
+}
+
+/** Hydrate blobs for all src and dst ids and build per-id fingerprint maps. */
+async function hydrateAndFingerprint(
   ctx: Context,
-  opts: InexactPassOptions,
-): Promise<InexactPassResult | null> {
-  const { adds, deletes, threshold, copyThreshold, copies, copySources } = opts;
-
-  if (deletes.length === 0 && copySources.length === 0) return null;
-
-  const allSrcIds = [...deletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
+  allSrcIds: ReadonlyArray<ObjectId>,
+  adds: ReadonlyArray<AddChange>,
+): Promise<FingerprintPair> {
   const [srcEntries, dstEntries] = await Promise.all([
     hydrateIds(ctx, allSrcIds),
     hydrateIds(
@@ -397,18 +399,29 @@ async function runInexactPass(
       adds.map((a) => a.newId),
     ),
   ]);
-
   const srcBytesById = new Map<ObjectId, Uint8Array>(srcEntries.map((e) => [e.id, e.bytes]));
   const dstBytesById = new Map<ObjectId, Uint8Array>(dstEntries.map((e) => [e.id, e.bytes]));
-
   // Fingerprint each unique blob id once — avoids O(pairs) re-hashing and
   // deduplicates blobs shared across multiple paths.
-  const srcFingerprints = buildFingerprintMap(allSrcIds, srcBytesById);
-  const dstFingerprints = buildFingerprintMap(
-    adds.map((a) => a.newId),
-    dstBytesById,
-  );
+  return {
+    srcFingerprints: buildFingerprintMap(allSrcIds, srcBytesById),
+    dstFingerprints: buildFingerprintMap(
+      adds.map((a) => a.newId),
+      dstBytesById,
+    ),
+  };
+}
 
+/** Build and sort all rename+copy triples for one inexact pass. */
+function buildAllTriples(
+  deletes: ReadonlyArray<DeleteChange>,
+  adds: ReadonlyArray<AddChange>,
+  copySources: ReadonlyArray<CopySource>,
+  copies: 'off' | 'on' | 'harder',
+  threshold: number,
+  copyThreshold: number,
+  { srcFingerprints, dstFingerprints }: FingerprintPair,
+): ScoredTriple[] {
   const renameTriples = buildRenameTriples(
     deletes,
     adds,
@@ -420,9 +433,29 @@ async function runInexactPass(
     copies !== 'off'
       ? buildCopyTriples(copySources, adds, srcFingerprints, dstFingerprints, copyThreshold)
       : [];
-
   const allTriples: ScoredTriple[] = [...renameTriples, ...copyTriples];
   sortTriples(allTriples);
+  return allTriples;
+}
+
+async function runInexactPass(
+  ctx: Context,
+  opts: InexactPassOptions,
+): Promise<InexactPassResult | null> {
+  const { adds, deletes, threshold, copyThreshold, copies, copySources } = opts;
+  if (deletes.length === 0 && copySources.length === 0) return null;
+
+  const allSrcIds = [...deletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
+  const fingerprintPair = await hydrateAndFingerprint(ctx, allSrcIds, adds);
+  const allTriples = buildAllTriples(
+    deletes,
+    adds,
+    copySources,
+    copies,
+    threshold,
+    copyThreshold,
+    fingerprintPair,
+  );
 
   const matches = greedySelect(allTriples);
   const renameMatches = matches.filter((m): m is RenameMatch => m.kind === 'rename');
@@ -489,27 +522,26 @@ function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
  * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
  * feed the rename/copy matrix.
  */
-async function attemptBreaks(
+/** Score all modifies and return those that exceed breakScore as broken records. */
+async function scoreModifies(
   ctx: Context,
-  diff: TreeDiff,
+  modifies: ReadonlyArray<ModifyChange>,
   breakScore: number,
-): Promise<{ readonly broken: ReadonlyArray<BrokenRecord>; readonly patchedDiff: TreeDiff }> {
-  const modifies = diff.changes.filter((c): c is ModifyChange => c.type === 'modify');
-  if (modifies.length === 0) return { broken: [], patchedDiff: diff };
-
+): Promise<{
+  readonly records: ReadonlyArray<BrokenRecord>;
+  readonly paths: ReadonlySet<FilePath>;
+}> {
   const modifyIds = modifies.flatMap((m) => [m.oldId, m.newId]);
   const entries = await hydrateIds(ctx, modifyIds);
   const bytesById = new Map<ObjectId, Uint8Array>(entries.map((e) => [e.id, e.bytes]));
 
-  const brokenRecords: BrokenRecord[] = [];
-  const brokenModifyPaths = new Set<FilePath>();
-
+  const records: BrokenRecord[] = [];
+  const paths = new Set<FilePath>();
   for (const mod of modifies) {
     const oldBytes = bytesById.get(mod.oldId) ?? new Uint8Array(0);
     const newBytes = bytesById.get(mod.newId) ?? new Uint8Array(0);
     const { computedBreakScore, dissimilarity } = computeBreakScores(oldBytes, newBytes);
     if (computedBreakScore < breakScore) continue;
-
     const del: DeleteChange = {
       type: 'delete',
       oldPath: mod.path,
@@ -522,26 +554,46 @@ async function attemptBreaks(
       newId: mod.newId,
       newMode: mod.newMode,
     };
-    brokenRecords.push({ original: mod, del, add, dissimilarity });
-    brokenModifyPaths.add(mod.path);
+    records.push({ original: mod, del, add, dissimilarity });
+    paths.add(mod.path);
   }
+  return { records, paths };
+}
 
-  if (brokenRecords.length === 0) return { broken: [], patchedDiff: diff };
-
-  // Replace broken modifies with their synthetic delete+add halves.
+/** Replace broken modifies in the change list with their synthetic delete+add halves. */
+function patchDiffWithBroken(
+  diff: TreeDiff,
+  records: ReadonlyArray<BrokenRecord>,
+  brokenPaths: ReadonlySet<FilePath>,
+): TreeDiff {
+  const byPath = new Map<FilePath, BrokenRecord>(records.map((r) => [r.original.path, r]));
   const patchedChanges: DiffChange[] = [];
   for (const change of diff.changes) {
-    if (change.type === 'modify' && brokenModifyPaths.has(change.path)) {
-      const record = brokenRecords.find((r) => r.original.path === change.path);
-      if (record !== undefined) {
-        patchedChanges.push(record.del, record.add);
-        continue;
-      }
+    const record =
+      change.type === 'modify' && brokenPaths.has(change.path)
+        ? byPath.get(change.path)
+        : undefined;
+    if (record !== undefined) {
+      patchedChanges.push(record.del, record.add);
+    } else {
+      patchedChanges.push(change);
     }
-    patchedChanges.push(change);
   }
+  return { changes: patchedChanges };
+}
 
-  return { broken: brokenRecords, patchedDiff: { changes: patchedChanges } };
+async function attemptBreaks(
+  ctx: Context,
+  diff: TreeDiff,
+  breakScore: number,
+): Promise<{ readonly broken: ReadonlyArray<BrokenRecord>; readonly patchedDiff: TreeDiff }> {
+  const modifies = diff.changes.filter((c): c is ModifyChange => c.type === 'modify');
+  if (modifies.length === 0) return { broken: [], patchedDiff: diff };
+
+  const { records, paths } = await scoreModifies(ctx, modifies, breakScore);
+  if (records.length === 0) return { broken: [], patchedDiff: diff };
+
+  return { broken: records, patchedDiff: patchDiffWithBroken(diff, records, paths) };
 }
 
 /**
@@ -701,44 +753,73 @@ async function runBreakPass(
   return { broken: attempt.broken, workingDiff: attempt.patchedDiff };
 }
 
+interface DetectOptions {
+  readonly threshold: number;
+  readonly copyThreshold: number;
+  readonly limit: number;
+  readonly copies: 'off' | 'on' | 'harder';
+  readonly breakRewrites: RenameDetectOptions['breakRewrites'];
+}
+
+/** Resolve all detection options from the public RenameDetectOptions with defaults. */
+function resolveDetectOptions(options: RenameDetectOptions | undefined): DetectOptions {
+  const threshold = options?.threshold ?? DEFAULT_RENAME_THRESHOLD;
+  return {
+    threshold,
+    copyThreshold: options?.copyThreshold ?? threshold,
+    limit: options?.limit ?? DEFAULT_LIMIT,
+    copies: options?.copies ?? 'off',
+    breakRewrites: options?.breakRewrites ?? false,
+  };
+}
+
+/** Assemble the change list from inexact-pass results and unconsumed leftovers. */
+function assemblePostPass(
+  adds: ReadonlyArray<AddChange>,
+  deletes: ReadonlyArray<DeleteChange>,
+  other: ReadonlyArray<DiffChange>,
+  passResult: InexactPassResult | null,
+): ReadonlyArray<DiffChange> {
+  const consumedDeletes = passResult?.consumedDeletes ?? new Set<DeleteChange>();
+  const consumedAdds = passResult?.consumedAdds ?? new Set<AddChange>();
+  const renames = passResult?.renames ?? [];
+  const copyChanges = passResult?.copyChanges ?? [];
+  return [
+    ...adds.filter((a) => !consumedAdds.has(a)),
+    ...deletes.filter((d) => !consumedDeletes.has(d)),
+    ...renames,
+    ...copyChanges,
+    ...other,
+  ];
+}
+
 export async function detectSimilarityRenames(
   ctx: Context,
   diff: TreeDiff,
   options?: RenameDetectOptions,
   preimage?: ReadonlyMap<FilePath, FlatTreeEntry>,
 ): Promise<TreeDiff> {
-  const threshold = options?.threshold ?? DEFAULT_RENAME_THRESHOLD;
-  const copyThreshold = options?.copyThreshold ?? threshold;
-  const limit = options?.limit ?? DEFAULT_LIMIT;
-  const copies = options?.copies ?? 'off';
-  const breakRewrites = options?.breakRewrites ?? false;
+  const { threshold, copyThreshold, limit, copies, breakRewrites } = resolveDetectOptions(options);
+  const mergeScore = resolveEffectiveMergeScore(breakRewrites);
 
   // Break-attempt pass: runs BEFORE exact/inexact so halves feed the matrix.
-  // The fixed order ensures break-then-rename is possible.
   const { broken, workingDiff } = await runBreakPass(ctx, diff, breakRewrites);
 
-  // Run the exact pass with an unlimited ceiling so it never bails on the quadratic
-  // guard — the per-id fan-out cap still applies via maxSameIdDeletes. The rename-limit
-  // guard governs the inexact pass only (git never limits exact pairing).
+  // Run the exact pass with an unlimited ceiling (rename-limit guard is inexact-only).
   const exactResult = detectRenames(workingDiff, { ...options, limit: Number.MAX_SAFE_INTEGER });
   const { adds, deletes, other } = partitionLeftovers(exactResult.changes);
 
   const hasRenameWork = adds.length > 0 && deletes.length > 0;
   const hasCopyWork = copies !== 'off' && adds.length > 0;
-  const mergeScore = resolveEffectiveMergeScore(breakRewrites);
-
   if (!hasRenameWork && !hasCopyWork) {
     return finalizeWithBroken(exactResult.changes, broken, mergeScore);
   }
 
-  // Resolve copy sources first so their count is included in the limit gate.
-  // Under copies:'harder', resolveCopySources applies the harder→on fallback when
-  // harder sources alone would exceed the limit (git drops --find-copies-harder before
-  // skipping the pass entirely).
+  // Resolve copy sources first so their count feeds the combined limit gate.
+  // Under copies:'harder', applies the harder→on fallback when harder sources alone exceed the limit.
   const copySources = resolveCopySources(copies, adds, deletes, other, preimage, limit);
 
-  // Git's combined limit: skip the whole inexact pass when num_create * num_src > limit²,
-  // where num_src counts BOTH rename sources (deletes) and copy sources.
+  // Git's combined limit: skip the whole inexact pass when num_create * num_src > limit².
   const numSrc = deletes.length + copySources.length;
   const isOverLimit = limit !== 0 && adds.length * numSrc > limit * limit;
   if (isOverLimit) {
@@ -755,18 +836,5 @@ export async function detectSimilarityRenames(
     copySources,
   });
 
-  const consumedDeletes = passResult?.consumedDeletes ?? new Set<DeleteChange>();
-  const consumedAdds = passResult?.consumedAdds ?? new Set<AddChange>();
-  const renames = passResult?.renames ?? [];
-  const copyChanges = passResult?.copyChanges ?? [];
-
-  const preRemerge: DiffChange[] = [
-    ...adds.filter((a) => !consumedAdds.has(a)),
-    ...deletes.filter((d) => !consumedDeletes.has(d)),
-    ...renames,
-    ...copyChanges,
-    ...other,
-  ];
-
-  return finalizeWithBroken(preRemerge, broken, mergeScore);
+  return finalizeWithBroken(assemblePostPass(adds, deletes, other, passResult), broken, mergeScore);
 }
