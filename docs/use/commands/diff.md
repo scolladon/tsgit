@@ -73,9 +73,10 @@ for (const c of stat.changes) console.log(c.added, c.deleted, c.binary, c);
 - A `rename` or `copy` change carries `oldId`/`newId`/`oldMode`/`newMode` (both
   sides of the pairing) and a `similarity` score (`SimilarityScore` with `score`
   in `0..MAX_SCORE` and `maxScore === MAX_SCORE`).
-- A `modify` may carry a `broken` dissimilarity datum (`SimilarityScore` where
-  `score = MAX_SCORE − similarity`) when `-B` break detection kept the modify broken
-  rather than folding it into a rename.
+- A `modify` may carry a `broken` dissimilarity datum (`SimilarityScore`) when `-B`
+  break detection kept the modify broken rather than folding it into a rename. The
+  `score` is git's break-detection dissimilarity (`merge_score`), which the caller
+  projects to the `M<n>` / `dissimilarity index <n>%` integer percent.
 - `withStat` reads blob contents and runs a line diff per file; without it the
   diff is purely tree-level (no blob reads).
 - A unified patch reconstructed from the `TreeDiff` matches `git diff
