@@ -19,6 +19,7 @@ function isWs(b: number): boolean {
 // Find the index of the LF terminator, or bytes.length if unterminated
 function lfIndex(bytes: Uint8Array): number {
   const last = bytes.length - 1;
+  // equivalent-mutant: `last >= 0` -> `true` — the guard is only false when bytes is empty (last === -1), and then bytes[-1] is undefined !== LF, so the condition is false either way and bytes.length (0) is returned.
   return last >= 0 && bytes[last] === LF ? last : bytes.length;
 }
 
@@ -53,6 +54,7 @@ function collapseRuns(bytes: Uint8Array): Uint8Array {
     }
   }
   // drop trailing space that was added for the trailing ws run
+  // equivalent-mutant: `out.length > 0` -> `true`/`>= 0` — the length guard only short-circuits when out is empty, and then out[-1] is undefined !== SPACE, so the second conjunct is false and the pop is skipped regardless.
   if (out.length > 0 && out[out.length - 1] === SPACE) {
     out.pop();
   }
@@ -64,12 +66,15 @@ function collapseRuns(bytes: Uint8Array): Uint8Array {
 function dropTrailingWs(bytes: Uint8Array): Uint8Array {
   const end = lfIndex(bytes);
   let wsStart = end;
+  // equivalent-mutant: `wsStart > 0` -> `true`/`>= 0` — the guard only stops the scan at wsStart === 0, and there bytes[-1] is undefined so isWs(undefined) is false and the loop stops at the same point regardless.
   while (wsStart > 0 && isWs(bytes[wsStart - 1] as number)) {
     wsStart--;
   }
+  // equivalent-mutant: this guard (and its `end !== bytes.length` / `&& true` variants) only chooses whether to return the original `bytes` object or fall through to build a byte-identical copy; both yield value-equal output.
   if (wsStart === end && end === bytes.length) return bytes; // nothing to drop
   const out = new Uint8Array(wsStart + (end < bytes.length ? 1 : 0));
   out.set(bytes.subarray(0, wsStart));
+  // equivalent-mutant: `end < bytes.length` -> `true`/`<=` — when unterminated, out has length wsStart, so out[wsStart] is an out-of-bounds typed-array write (a silent no-op); when terminated the byte must be written. Both reduce to the original behaviour.
   if (end < bytes.length) out[wsStart] = LF;
   return out;
 }
@@ -79,9 +84,11 @@ function dropTrailingCr(bytes: Uint8Array): Uint8Array {
   const end = lfIndex(bytes);
   // The CR must be immediately before the terminator (or at end of unterminated)
   const crPos = end - 1;
+  // equivalent-mutant: `crPos < 0` -> `false` — when crPos < 0 (empty content) bytes[-1] is undefined !== CR, so the second disjunct is true and bytes is still returned unchanged.
   if (crPos < 0 || bytes[crPos] !== CR) return bytes;
   const out = new Uint8Array(bytes.length - 1);
   out.set(bytes.subarray(0, crPos));
+  // equivalent-mutant: `end < bytes.length` -> `true`/`<=` — when unterminated, crPos === bytes.length - 1 === out.length, so out[crPos] is an out-of-bounds typed-array write (a silent no-op); when terminated the byte must be written. Both reduce to the original behaviour.
   if (end < bytes.length) out[crPos] = LF;
   return out;
 }

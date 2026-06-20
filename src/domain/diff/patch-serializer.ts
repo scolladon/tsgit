@@ -765,6 +765,7 @@ export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions
   }
   // When all file blocks are blank-suppressed, lines stays empty and we return ''.
   // Otherwise push the trailing '' separator and join.
+  // equivalent-mutant: `lines.length === 0` -> `false` — when lines is empty the fallthrough pushes one '' and joins, and [''].join('\n') === '' === [].join('\n'), so both branches return ''.
   if (lines.length === 0) return '';
   lines.push('');
   return lines.join('\n');

@@ -74,7 +74,9 @@ function statOptionsFor(
   lineKeyActive: boolean,
   ignoreBlankLines: boolean,
 ): StatFieldsOptions | undefined {
+  // equivalent-mutant: `if (lineKeyActive)` -> `if (true)` — when lineKeyActive is false the key is mode 'none' + no ignoreCrAtEol, so normalizeLine is the identity and computeStatFields treats { lineKey: <none> } identically to omitting lineKey; counts are unchanged.
   if (lineKeyActive) return { lineKey, ignoreBlankLines };
+  // equivalent-mutant: `if (ignoreBlankLines)` -> `if (true)` — reached only when lineKeyActive is false; with ignoreBlankLines false, { ignoreBlankLines: false } and undefined both yield lineKey undefined + blankKey undefined in computeStatFields, so counts are identical.
   if (ignoreBlankLines) return { ignoreBlankLines };
   return undefined;
 }
@@ -133,6 +135,7 @@ async function buildPreimage(
 }
 
 async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree | undefined> {
+  // equivalent-mutant: skipping this guard (`if (false)`) is equivalent — undefined input is not a string, so it falls through to `return input`, which is also undefined.
   if (input === undefined) return undefined;
   if (typeof input === 'string') {
     return readTree(ctx, input);
