@@ -129,17 +129,15 @@ async function streamFromBuffer(
   verifyHash: boolean,
   materialised: boolean,
 ): Promise<BlobStream> {
-  // fullBytes is loose-format: `<type> <size>\0<content>`
-  const nullPos = fullBytes.indexOf(0x00);
-  if (nullPos === -1) {
-    throw objectNotFound(id);
-  }
-  const { type } = parseHeader(fullBytes);
+  // fullBytes is loose-format: `<type> <size>\0<content>`. parseHeader owns the
+  // malformed-header error (a missing NUL throws invalidObjectHeader) and locates
+  // the content boundary, so no second manual scan is needed.
+  const { type, contentOffset } = parseHeader(fullBytes);
   if (type !== 'blob') {
     throw unexpectedObjectType('blob', type, id);
   }
-  const headerBytes = fullBytes.subarray(0, nullPos + 1);
-  const content = fullBytes.subarray(nullPos + 1);
+  const headerBytes = fullBytes.subarray(0, contentOffset);
+  const content = fullBytes.subarray(contentOffset);
 
   async function* gen(): AsyncIterable<Uint8Array> {
     const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
