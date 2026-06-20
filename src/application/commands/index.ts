@@ -102,6 +102,13 @@ export {
   type FetchMissingResult,
   fetchMissing,
 } from './fetch-missing.js';
+export {
+  type GrepLineHit,
+  type GrepOptions,
+  type GrepPathResult,
+  type GrepResult,
+  grep,
+} from './grep.js';
 export { type InitOptions, type InitResult, init } from './init.js';
 export { type BranchNamespace, bindBranchNamespace } from './internal/branch-namespace.js';
 export {

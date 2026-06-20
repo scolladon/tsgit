@@ -213,6 +213,7 @@ describe('openRepository — Repository binding integrity', () => {
             'dispose',
             'fetch',
             'fetchMissing',
+            'grep',
             'init',
             'log',
             'merge',
@@ -404,6 +405,22 @@ describe('openRepository — dispose state machine', () => {
         await sut.dispose();
         try {
           await sut.fetchMissing({ oids: [] });
+          // Assert
+          expect.unreachable();
+        } catch (err) {
+          const data = (err as TsgitError).data;
+          expect(data.code).toBe('REPOSITORY_DISPOSED');
+        }
+      });
+    });
+    describe('When grep is invoked', () => {
+      it('Then throws REPOSITORY_DISPOSED', async () => {
+        // Arrange
+        const sut = await open();
+
+        await sut.dispose();
+        try {
+          await sut.grep({ patterns: [{ fixed: 'hello' }] });
           // Assert
           expect.unreachable();
         } catch (err) {
@@ -685,6 +702,23 @@ describe('openRepository — round-trip via memory adapter', () => {
 
         // Assert
         expect(result).toEqual({ cone: false, patterns: [] });
+      });
+    });
+  });
+
+  describe('Given a fresh repo and an initialised working tree', () => {
+    describe('When grep is invoked', () => {
+      it('Then it delegates and returns an empty result for no matches', async () => {
+        // Arrange
+        const fallback = makeFallback();
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+        await sut.init();
+
+        // Act
+        const result = await sut.grep({ patterns: [{ fixed: 'hello' }] });
+
+        // Assert
+        expect(result).toEqual({ paths: [] });
       });
     });
   });
