@@ -14,6 +14,9 @@ interface DiffOptions {
   readonly renameOptions?: RenameDetectOptions;  // fine-tune detection; only used when detectRenames is true
   readonly recursive?: boolean;    // recurse into sub-trees (`git diff-tree -r`); default false
   readonly withStat?: boolean;     // attach per-file { added, deleted, binary } counts
+  readonly ignoreWhitespace?: 'all' | 'change' | 'at-eol';  // -w / -b / --ignore-space-at-eol
+  readonly ignoreCrAtEol?: boolean;                          // --ignore-cr-at-eol
+  readonly ignoreBlankLines?: boolean;                       // --ignore-blank-lines
 }
 
 // RenameDetectOptions knobs:
@@ -59,6 +62,15 @@ const perFile = await repo.diff({ from: 'HEAD~1', recursive: true });
 // Per-file line counts (the data half of --numstat).
 const stat = await repo.diff({ from: 'HEAD~1', withStat: true });
 for (const c of stat.changes) console.log(c.added, c.deleted, c.binary, c);
+
+// Ignore all whitespace differences (-w). A file whose only change is
+// whitespace drops from the change-set entirely.
+const noWs = await repo.diff({ from: 'HEAD~1', ignoreWhitespace: 'all' });
+
+// Ignore blank-line-only hunks. The file stays in the change-set (it is
+// present in name-status and nonzero under --quiet); only its hunks and
+// numstat row are suppressed.
+const noBlank = await repo.diff({ from: 'HEAD~1', ignoreBlankLines: true });
 ```
 
 ## Recursion
@@ -92,12 +104,60 @@ for (const c of stat.changes) console.log(c.added, c.deleted, c.binary, c);
 To produce a unified diff, render the `TreeDiff` with your own serializer
 (materialise the blob contents, then emit hunks).
 
+## Whitespace
+
+The three whitespace fields are **data modes**, not rendering knobs. They change
+which lines are considered equal during the line diff, which hunks exist, which
+files appear in the change-set, and the numstat counts — exactly as `git diff -w`
+/ `-b` / `--ignore-blank-lines` do. They do not affect any display string emitted
+by the library (there is none).
+
+**`ignoreWhitespace`** is a mutually exclusive enum that models git's three
+line-key modes:
+
+- `'all'` — ignore all space/tab bytes (`git diff -w`). Most aggressive; subsumes
+  `'change'` and `'at-eol'`.
+- `'change'` — ignore changes in the amount of whitespace, but not its presence
+  or absence (`git diff -b`).
+- `'at-eol'` — ignore trailing whitespace only (`git diff --ignore-space-at-eol`).
+
+`ignoreCrAtEol` and `ignoreBlankLines` are orthogonal booleans that combine
+freely with the enum and with each other.
+
+**File-drop under a line-key mode.** When `ignoreWhitespace` or `ignoreCrAtEol`
+is set, a file whose only change normalises away under that mode is dropped from
+`TreeDiff.changes` entirely — it disappears from name-status, numstat, and raw
+output, exactly as it does in `git diff -w --name-status`. A whitespace-only
+*rename* is not dropped: rename/copy/break similarity scoring is unaffected by
+whitespace modes (`-M -w` ≡ `-M`).
+
+**Blank-line suppression** (`ignoreBlankLines`) is a hunk/numstat suppressor, not
+a file-drop trigger. A file with only blank-line changes **stays** in
+`TreeDiff.changes` (present in name-status/raw, nonzero under `--quiet`); its
+hunks and numstat row are suppressed. The numstat omit rule is derivable from
+the shipped fields: omit the row when `added === 0 && deleted === 0 && !binary &&
+oldMode === newMode`.
+
+## Config defaults
+
+`RepositoryConfig` (passed to `openRepository`) now accepts
+`ignoreWhitespace`, `ignoreCrAtEol`, and `ignoreBlankLines` as programmatic
+facade-level defaults, alongside the existing `detectRenames`. Each field is
+resolved as: **per-call option `??` config default `??` built-in default**.
+
+These are tsgit's own defaults — not git's on-disk `.git/config` and explicitly
+not `core.whitespace` (which governs whitespace-error detection, a different
+feature).
+
 ## See also
 
 - Primitives: [`diffTrees`](../primitives/diff-trees.md),
   [`walkTree`](../primitives/walk-tree.md),
   [`resolveRef`](../primitives/resolve-ref.md)
 - Related commands: [`log`](log.md), [`show`](show.md), [`status`](status.md)
-- Design: `docs/design/cosmetic-output-sweep.md` · `docs/design/phase-20-3-diff-patch-format.md`
+- Design: `docs/design/cosmetic-output-sweep.md` · `docs/design/phase-20-3-diff-patch-format.md` · `docs/design/whitespace-diff-options.md`
 - ADRs: 251 (TreeDiff-only surface) · 252 (`withStat` counts) · 243 (recursive
-  tree diff) · 166–169 (the superseded patch-text format)
+  tree diff) · 166–169 (the superseded patch-text format) · 378 (whitespace
+  options flat enum) · 379 (`--ignore-blank-lines` in scope) · 380 (file-drop
+  via line diff) · 381 (whitespace threading and similarity invariant) · 382
+  (whitespace config default)

@@ -12,6 +12,9 @@ repo.primitives.diffTrees(
     detectRenames?: boolean;
     renameOptions?: RenameDetectOptions; // threshold, copies, copyThreshold, breakRewrites
     recursive?: boolean;
+    ignoreWhitespace?: 'all' | 'change' | 'at-eol';  // -w / -b / --ignore-space-at-eol
+    ignoreCrAtEol?: boolean;                          // --ignore-cr-at-eol
+    ignoreBlankLines?: boolean;                       // --ignore-blank-lines
   },
 ): Promise<TreeDiff>;
 
@@ -36,6 +39,15 @@ const b = (await repo.primitives.readTree('HEAD')).id;
 const diff = await repo.primitives.diffTrees(a, b, { detectRenames: true });
 console.log(diff.changes.length);
 ```
+
+## Whitespace
+
+The three whitespace options thread through identically to the Tier-1 `diff`
+command. The line-key drop pass (a file whose only change normalises away under
+`ignoreWhitespace`/`ignoreCrAtEol` is removed from `changes`) and blank-line
+suppression (`ignoreBlankLines` suppresses hunks/numstat but keeps the file in
+`changes`) are both applied here. See [`diff`](../commands/diff.md#whitespace)
+for the full behaviour and the numstat omit rule.
 
 ## See also
 
