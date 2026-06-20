@@ -1,24 +1,30 @@
 # Design — gitGrep pattern grammar
 
-> Brief: build a new Tier-1 `grep` command with a **faithful pattern grammar from
-> day one**. git grep's default is POSIX **Basic** Regular Expressions (BRE), with
-> `-E` (POSIX ERE), `-F` (fixed strings), and `-P` (PCRE) variants plus the
-> `grep.patternType` config. A naive "treat the pattern as `new RegExp(...)`" — the
-> trap a downstream consumer hit — is unfaithful for the default mode: JS `RegExp`
-> is its own dialect, far from BRE (in BRE `+ ? { } ( ) |` are literal unless
-> backslash-escaped). Decide the faithful grammar (translation vs interpreter vs
-> reduced v1) and the v1 command surface, all structured-data per ADR-249. Grammar
-> pinned empirically against real `git version 2.54.0`, not recalled.
-> Status: draft → self-reviewed ×3 → decision candidates open
+> Brief: build a new Tier-1 `grep` command. The original brief asked for a
+> **faithful POSIX BRE/ERE pattern grammar from day one**; the ratified decision
+> (ADR-395) instead **diverges the grammar to JavaScript `RegExp`** — a conscious
+> fork from the prime directive (ADR-226), scoped to the grammar dimension only. The
+> pattern **is** a JS `RegExp` (flags ride on it), with a fixed-string form for
+> literal search. There is **no POSIX BRE/ERE engine and no `patternType` enum in
+> v1**. Everything outside the grammar — targets, binary handling, line numbering,
+> structured output — stays byte-faithful to git and remains interop-pinned. The v1
+> command surface (targets / data flags / binary datum / context deferral) is fixed
+> by ADR-396, structured-data per ADR-249.
+> Status: revised against ADR-395 / ADR-396 → self-reviewed ×3 → decisions resolved
 
 ## Context
 
 There is **no `grep` command in tsgit today** — `git grep`, `git ls-files`, and any
 content-search surface are absent. Nothing in the codebase compiles a search
-pattern, so this design introduces both the command and the pattern engine.
+pattern, so this design introduces both the command and the matcher.
 Because nothing renders `path:line:text`, the command is greenfield with respect
 to ADR-249: it ships structured matches from the start, with zero rendering debt
 to sweep.
+
+The matcher itself is **not** a new engine — it is V8's `RegExp` (ADR-395). The
+design work is therefore (a) the byte-offset bridge from a UTF-16 `RegExp` to byte
+spans over a `Uint8Array` line, (b) the option/result shapes, and (c) the
+git-faithful target/binary/line-numbering half that stays interop-pinned.
 
 The feature reuses three established subsystems:
 
@@ -28,19 +34,15 @@ The feature reuses three established subsystems:
 `isBinary(bytes): boolean` with caps `BINARY_DETECTION_BYTES = 8000`,
 `MAX_LINE_BYTES = 65_536`, `MAX_LINES = 100_000`. Both are already re-exported from
 `src/domain/diff/index.ts`. git grep skips binary blobs by default; tsgit reuses
-`isBinary` for the same decision.
+`isBinary` for the same decision. These caps are also the **ReDoS ceiling** — see
+"ReDoS is the caller's concern" below.
 
-**The linear-matcher discipline (domain tier).** `src/domain/pathspec/compile-glob.ts`
-compiles a glob into a pure `GlobMatcher { test(path): boolean }` via a
-**backward dynamic program** over a boolean table — `O(tokenCount × pathLength)`,
-**no backtracking**, ReDoS-proof (ADR-077, `docs/design/compile-glob-redos.md`).
-It deliberately rejected a JS-`RegExp` backend. This is the model the pattern
-engine must imitate: compile once into a pure matcher, never let an adversarial
-pattern go super-linear. The new engine is content-matching (disjoint from
-path-matching) but follows the same shape and the same no-catastrophic-backtracking
-bar. The pathspec **path limiter** (`-- <path>`) reuses
+**The pathspec path limiter (application tier).** The `-- <path>` limiter reuses
 `src/application/commands/internal/resolve-pathspec.ts` (`resolvePathspec`, budget
-`MAX_PATHSPEC_PATTERN_BYTES = 256`) directly.
+`MAX_PATHSPEC_PATTERN_BYTES = 256`) directly. (The earlier design also cited
+`compile-glob` as the *content*-matcher ethos to imitate; with the grammar now
+delegated to `RegExp`, `compile-glob` is no longer a model for the content matcher
+— it remains only the engine behind the pathspec limiter.)
 
 **Target enumeration + blob reading (primitive tier).**
 `walkWorkingTree(ctx, options?): AsyncIterable<WalkWorkingTreeEntry>` (entry =
@@ -48,193 +50,225 @@ bar. The pathspec **path limiter** (`-- <path>`) reuses
 working-tree target; `walkTree(ctx, treeIdOrObject, options?):
 AsyncIterable<WalkTreeEntry>` (recursive, `{ path, id, mode }`) for a `<tree-ish>`;
 `readIndex(ctx): Promise<GitIndex>` for `--cached`; `readHeadTree(ctx):
-Promise<FlatTree | undefined>` for HEAD; `readBlob(ctx, id): Promise<Blob>`
-(`Blob.content: Uint8Array`) to load contents. The bounded-concurrency fan-out
-pattern (`MAX_CONCURRENT_BLOB_LOADS` worker pool) is established in
+Promise<FlatTree | undefined>` for HEAD; `readBlob(ctx, id, options?):
+Promise<Blob>` (`Blob.content: Uint8Array`) to load contents. All five are exported
+from `src/application/primitives/index.ts`. The bounded-concurrency fan-out pattern
+(`MAX_CONCURRENT_BLOB_LOADS` worker pool) is established in
 `src/application/primitives/materialise-patch-files.ts` and `range-diff.ts`.
 
 ### Constraining decisions (FIXED — not re-litigated here)
 
 | ADR / rule | Decision this design must implement |
 |---|---|
-| 226 / CLAUDE.md (prime directive) | Replicate git grep's observable **matching decisions** (which blob/line at which byte offset is a match, per dialect + flag) byte-for-byte; pin against real `git`, never recall. |
-| 249 (structured data, not cosmetics) | `grep` returns **structured matches** (path, line number, byte offsets, matched line bytes; counts are *derived* from `hits`, not a stored field), never a rendered `path:line:text` line. Options whose only job is to steer printed text (`-n`, `--color`, `-h`, `--heading`, `--null`, `-o` formatting) MUST NOT exist on the surface. The `Binary file X matches` text and the `--count`/`-l` *layout* are reconstructed by the caller from the data. |
-| 077 (linear glob matcher) | The matcher compiles to a linear, non-backtracking program; no input may make it super-linear; no npm regex dependency (zero-dependency hard constraint). |
-| 378 (flat options enum) | Mutually-exclusive modes are one flat string-literal union on the options interface, illegal combos unrepresentable. `patternType?: 'basic' \| 'extended' \| 'fixed'` is the analogue of `ignoreWhitespace?: 'all' \| 'change' \| 'at-eol'`. |
-| 382 (config default, wire both) | If a config default for pattern type is in scope, it lands on `RepositoryConfig` as a **programmatic facade default** (NOT git's on-disk `grep.patternType`) and resolves `opts.field ?? config?.field ?? builtin-default`. |
+| 395 (grammar diverges to JS `RegExp`) | The pattern **is** a JS `RegExp` for regex search, with a **fixed-string** form for literal search. **No** POSIX BRE/ERE engine, **no** `patternType` enum, **no** `ignoreCase` option (case-fold rides on the `RegExp`'s `i` flag). A conscious divergence from ADR-226, grammar dimension only; reversible by a future `patternType` enum if a consumer ever needs POSIX parity. |
+| 396 (v1 command surface) | Targets: working tree (default) + `--cached` + `<tree-ish>`. Data flags: whole-word `-w`, invert `-v`, multi-pattern OR. Case rides on the `RegExp`. Binary = a `binaryMatch` datum, line scan skipped. Context lines `-A`/`-B`/`-C` are **out of v1**. |
+| 226 / CLAUDE.md (prime directive) | Replicate git's observable behaviour byte-for-byte for the **non-grammar** half: which blob/line each target exposes, binary skip + `binaryMatch`, 1-based line numbering, structured output. Pin against real `git`, never recall. ADR-395 is the **only** sanctioned divergence and only for grammar. |
+| 249 (structured data, not cosmetics) | `grep` returns **structured matches** (path, 1-based line number, raw line bytes, byte-offset spans; counts/name-only *derived* from `hits`, not stored), never a rendered `path:line:text` line. Rendering-only options (`-n`, `--color`, `-h`, `--heading`, `--null`, `-o` formatting) MUST NOT exist on the surface. The `Binary file X matches` text and the `-c`/`-l` layout are reconstructed by the caller from the data. |
+| 077 (linear glob matcher) | Applies to the **pathspec limiter** (`resolvePathspec`/`compile-glob`), which stays linear and ReDoS-proof. It does **not** apply to the content matcher: the content `RegExp` is the caller's, and its complexity is the caller's concern (ADR-395). Zero-dependency hard constraint still holds — `RegExp` is a V8 builtin, no npm regex dependency. |
 
 ## Requirements
 
 What must be true when this ships:
 
-1. A pattern compiled in **basic** mode reproduces git's POSIX-BRE matching
-   decisions byte-for-byte: `+ ? { } ( ) |` are **literal** unless backslash-escaped;
-   `\( \)` group, `\{m,n\}` is an interval, `\+ \? \|` are operators; GNU
-   word-class/anchor extensions `\b \w \s \< \>` are active (pinned §"Grammar
-   matrix" #G1–#G18).
-2. **extended** mode reproduces git's POSIX-ERE decisions: `+ ? { } ( ) |` are
-   operators; `\+` is a literal plus; and — the load-bearing asymmetry — GNU
-   word extensions `\b \w \s \< \>` are **NOT** honoured (they degrade to the
-   literal letter / are ignored as anchors), unlike BRE (#G19–#G24).
-3. **fixed** mode treats the entire pattern as a literal byte substring — no
-   metacharacter is special (#G25–#G27).
-4. Pattern-type selection is a flat enum `patternType?: 'basic' | 'extended' |
-   'fixed'` defaulting to `'basic'` (git's default). Whether `'perl'` (`-P`) is in
-   v1 is **Decision D1**.
-5. `grep` searches a chosen target and returns **structured** matches per ADR-249:
+1. `grep` searches a chosen target and returns **structured** matches per ADR-249:
    for each path, the matching lines with their **line number (1-based)**, the
    **matched line bytes** (raw, with no trailing-LF normalization beyond what
-   `splitLines` keeps), and the **byte offset(s)** of the match within the line.
+   `splitLines` keeps), and the **byte offset(s)** of each match within the line.
    It never returns a rendered line.
-6. Search targets: working tree (default), `--cached` (index blobs), and a
-   `<tree-ish>` (commit-or-tree). Which of these ship in v1 is **Decision D2**.
-7. Binary blobs are **skipped from line-level matching by default** (git's
-   default); the structured result records that a binary blob *contained* a match
-   as a distinct datum (a `binaryMatch` flag on the path entry), so a caller can
+2. The search pattern is a **JavaScript `RegExp`** for regex search OR a
+   **fixed-string** form for literal substring search (ADR-395). A caller passing a
+   `RegExp` gets JS-`RegExp` semantics; the fixed form is a literal byte search with
+   no metacharacter meaning. Multiple patterns **OR-combine** (a line matches if any
+   pattern matches; #F4).
+3. Case-insensitivity, dotall, multiline, and unicode ride on the `RegExp`'s own
+   flags — they are **not** re-exposed as command options. There is **no**
+   `ignoreCase` option and **no** `patternType` enum (ADR-395).
+4. A match span is reported as **byte offsets** into the raw line `Uint8Array`
+   (0-based `start`, exclusive `end`), correct even though `RegExp` is a UTF-16
+   engine — pinned in "Byte-offset bridge" below (so `line.slice(start, end)` is the
+   matched bytes).
+5. Search targets: working tree (default), `--cached` (index blobs), and a
+   `<tree-ish>` (commit-or-tree) — all three in v1 (ADR-396, #T1–T4).
+6. Binary blobs are **skipped from line-level matching by default** (git's
+   default); a binary blob that *contained* a match is recorded as a distinct datum
+   (`binaryMatch: true` on the path entry, `hits` empty), so a caller can
    reconstruct git's `Binary file X matches` line without the library emitting it
-   (#G28).
-8. Core matching flags that are **data, not rendering** are honoured: `-i`
-   (case-insensitive), `-w` (whole-word), `-v` (invert — lines NOT matching),
-   multiple patterns (`-e` OR-combination). Their exact v1 set is **Decision D2**.
-9. Path limiting via pathspec (`-- <path>...`) reuses `resolvePathspec`.
-10. Invalid patterns fail with a structured `INVALID_OPTION`-class error carrying
-    the dialect and reason — never a silent mismatch or an uncaught throw. The
-    *condition* differs by dialect (a leading `*` is literal in BRE but a fatal
-    "repetition-operator operand invalid" in ERE, #G29).
-11. Every grammar + flag claim above is pinned by a cross-tool interop test
-    (`test/integration/grep-grammar-interop.test.ts`) reconstructing git grep's
-    behaviour from the structured fields (twin real-`git` vs tsgit + frozen golden).
+   (#B1).
+7. Data-not-rendering flags are honoured: **whole-word** (`-w`, gated at matcher
+   level so it works for both the `RegExp` and the fixed form), **invert** (`-v`,
+   lines NOT matching), and **multi-pattern OR** (`-e … -e …`). (ADR-396.)
+8. Path limiting via pathspec (`-- <path>...`) reuses `resolvePathspec`.
+9. The git-faithful half is pinned by a cross-tool interop test
+   (`test/integration/grep-interop.test.ts`) that reconstructs git grep's
+   **target/binary/line-numbering** decisions from the structured fields (twin
+   real-`git` vs tsgit + frozen golden). **Grammar is NOT pinned against `git
+   grep`** — the grammar is JS `RegExp`, and pinning V8 against V8 proves nothing
+   (ADR-395).
 
 ## Design
 
-### Layering — pure compiler + pure matcher + primitive orchestrator
+### Layering — pure matcher + primitive orchestrator
 
-Mirroring `compile-glob` (pure) + the diff primitives (I/O), the feature splits:
+The feature splits a pure matcher (no I/O) from an I/O orchestrator, mirroring the
+diff primitives:
 
 ```
 grep command (ctx, opts)                         ← application/commands/grep.ts
   │  resolve target (working tree | --cached | <tree-ish>)
   │  resolve pathspec limiter (resolvePathspec)
-  │  resolve patternType (opts ?? config ?? 'basic')
   │
-  ├─ compileGrepPattern(pattern, { type, ignoreCase, wholeWord })   ← domain/grep/compile-pattern.ts (PURE)
-  │     └─ returns GrepMatcher { matchLine(bytes): ReadonlyArray<MatchSpan> }
+  ├─ buildGrepMatcher(patterns, { wholeWord, invert })   ← domain/grep/matcher.ts (PURE)
+  │     └─ returns GrepMatcher { matchLine(bytes): LineVerdict }   // { returned, spans }
+  │        regex form  → regexp.exec / matchAll over the latin1 view, byte spans
+  │        fixed form  → Uint8Array byte scan (indexOf loop)
   │
   └─ for each enumerated blob (bounded pool):
         readBlob → isBinary?  yes → record binaryMatch datum (no line scan)
-                              no  → splitLines → matcher.matchLine per line → collect MatchHit
+                              no  → splitLines → matcher.matchLine per line → collect GrepLineHit
 ```
 
-- **Domain (pure, no I/O):** `src/domain/grep/compile-pattern.ts`. A
-  **dialect-specific compiler** turns the raw pattern into an internal matcher.
-  `compileGrepPattern(pattern: string, opts: GrepCompileOptions): GrepMatcher`.
-  `GrepMatcher.matchLine(line: Uint8Array): ReadonlyArray<MatchSpan>` reports the
-  byte spans matched within one line (empty array = no match). The whole-pattern
-  engine choice (translation-to-`RegExp` vs purpose-built interpreter vs reduced)
-  is **Decision D3** — that is the central grammar-faithfulness decision.
-- **Primitive / command (I/O orchestrator):** `src/application/commands/grep.ts`
+- **Domain (pure, no I/O):** `src/domain/grep/matcher.ts`. `buildGrepMatcher(patterns,
+  opts): GrepMatcher` builds a per-line matcher from the supplied patterns (each
+  either a `RegExp` or a fixed-string form) plus the matcher-level `wholeWord` /
+  `invert` gating. `GrepMatcher.matchLine(line: Uint8Array): LineVerdict` returns a
+  **verdict**, not a bare span array, because an empty span array is otherwise
+  ambiguous between "no match, drop the line" (non-invert) and "non-match, return the
+  line with no spans" (invert). The verdict is `{ returned: boolean; spans:
+  ReadonlyArray<MatchSpan> }`: non-invert ⇒ `returned = spans.length > 0`; invert ⇒
+  `returned = spans.length === 0` and the returned `spans` is empty. The command layer
+  keeps a hit iff `returned` is true and emits `verdict.spans` as the hit's spans.
+  There is **no** `compileGrepPattern` / dialect compiler — V8 owns the regex
+  compilation (ADR-395).
+- **Application / command (I/O orchestrator):** `src/application/commands/grep.ts`
   owns target resolution, the bounded blob-read pool, binary gating, and assembly
   of the structured `GrepResult`. It reuses the existing primitives listed in
   Context — no new I/O primitive is required (a `grep` is read-only enumeration +
   `readBlob`, both already available).
 
-### Pinned grammar matrix (the faithfulness core)
+### Byte-offset bridge — UTF-16 `RegExp` over a byte line (the one subtle correctness item)
 
-Real `git version 2.54.0`, scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, isolated
-`HOME`, signing off, throwaway `mktemp -d` repo. `git grep --no-color` over a
-fixture containing (one per line): `aaa`, `a+b`, `a+`, `ab`, `aXb`, `foo123bar`,
-`word boundary here`, `WORD here`, `a{2,3}`, `aaa{2,3}`, `(group)`, `a|b`, `alt1`,
-`x.y`, `xZy`, `star*lit`. **"≡ literal"** = the metachar matches only itself;
-**"operator"** = it has regex meaning.
+A JS `RegExp` indexes in **UTF-16 code units**; `MatchSpan` must report **byte
+offsets** into the raw line `Uint8Array` (requirement 4). For arbitrary UTF-8 content these
+two index spaces differ (a 3-byte `é`-class code point is 1–2 code units), so
+`regexp.exec(decodeUtf8(line)).index` is **not** a byte offset.
 
-| # | Pattern | Mode | git decision | Load-bearing fact |
-|---|---|---|---|---|
-| G1 | `a+` | basic | matches `a+b`, `a+` only | BRE `+` is **literal** — the JS-`RegExp` trap exactly |
-| G2 | `a\+` | basic | matches every line with ≥1 `a` | BRE `\+` is one-or-more (GNU) |
-| G3 | `a{2,3}` | basic | matches `a{2,3}` only | BRE `{ }` **literal** |
-| G4 | `a\{2,3\}` | basic | matches `aaa`, `aaa{2,3}` | BRE `\{m,n\}` is an interval |
-| G5 | `(group)` | basic | matches `(group)` only | BRE `( )` **literal** |
-| G6 | `\(group\)` | basic | matches `(group)` (as a capture of `group`) | BRE `\( \)` group |
-| G7 | `a|b` | basic | matches `a|b` only | BRE `|` **literal** |
-| G8 | `a\|b` | basic | matches every line with `a` or `b` | BRE `\|` alternation (GNU) |
-| G9 | `x.y` | basic | matches `x.y` AND `xZy` | BRE `.` is any-char (operator) |
-| G10 | `^aaa` | basic | matches `aaa`, `aaa{2,3}` | `^` anchor active |
-| G11 | `ab$` | basic | matches `ab` | `$` anchor active |
-| G12 | `*leading` | basic | matches `*leading star` | leading `*` is **literal** in BRE |
-| G13 | `[[:digit:]]` | basic | matches `foo123bar`, `a{2,3}`, `aaa{2,3}`, `alt1` | POSIX class supported |
-| G14 | `[[:alpha:]]\{3\}` | basic | matches all-alpha-run lines | POSIX class + interval compose |
-| G15 | `\bword\b` | basic | matches `word boundary here` | GNU `\b` word boundary in BRE |
-| G16 | `\<word\>` | basic | matches `word boundary here` | GNU `\< \>` word edges in BRE |
-| G17 | `\w\+` | basic | matches every line (each has a word char) | GNU `\w` word-class in BRE |
-| G18 | `word\sboundary` | basic | matches `word boundary here` | GNU `\s` whitespace-class in BRE |
-| G19 | `a+` | extended | matches every line with ≥1 `a` | ERE `+` is one-or-more |
-| G20 | `a{2,3}` | extended | matches `aaa`, `aaa{2,3}` | ERE `{ }` interval |
-| G21 | `(group)` | extended | matches `(group)` (capture) | ERE `( )` group |
-| G22 | `a|b` | extended | matches every line with `a` or `b` | ERE `|` alternation |
-| G23 | `a\+` | extended | matches `a+b`, `a+` only | ERE `\+` is a **literal** plus |
-| G24a | `\bword`, `\<word\>` | extended | **no match** | ERE does **NOT** honour GNU `\b`/`\<`/`\>` anchors |
-| G24b | `\w` on `abc_123` (no literal `w`) | extended | **no match** | ERE treats `\w` as **literal `w`**, not a word-class |
-| G24c | `word\sboundary` | extended | **no match** | ERE treats `\s` as literal `s`, not whitespace |
-| G25 | `a+` | fixed | matches `a+b`, `a+` | `-F` everything literal |
-| G26 | `x.y` | fixed | matches `x.y` only (not `xZy`) | `-F` dot literal |
-| G27 | `star*lit` | fixed | matches `star*lit` | `-F` star literal |
-| G28 | `binary` over a blob with a NUL byte | (any) | prints `Binary file b.bin matches`; line scan skipped | binary skipped by default; the *datum* is "blob matched", not a printed line |
-| G29 | `*leading` | extended | `fatal: '*leading': repetition-operator operand invalid` (exit 128) | invalid-pattern condition is **dialect-specific** (literal in BRE, fatal in ERE) |
+**Decision (D6, below): decode each line `latin1` (ISO-8859-1) before matching.**
+latin1 maps each byte 0x00–0xFF to exactly one UTF-16 code unit (`String.fromCharCode(b)`),
+so the decoded string has **one code unit per input byte** and `RegExp` indices are
+**byte offsets by construction** — no remapping table needed. The matcher decodes
+`line` to a latin1 string once, runs `regexp.exec`/`matchAll` (using the global
+flag for all spans on a line), and the `.index`/`.index + match[0].length` it
+returns are directly the byte `start`/`end`. The `line: Uint8Array` returned in the
+hit stays **raw bytes** — only the matcher's internal view is latin1; the caller
+decodes the bytes with whatever encoding it wants.
 
-**The load-bearing asymmetry (G15–G18 vs G24a–G24c).** git's default engine is
-glibc `regcomp`. In **BRE** (`REG_NEWLINE`, no `REG_EXTENDED`) the GNU extensions
-`\b \w \s \< \>` are honoured. In **ERE** (`REG_EXTENDED`) they are **not** — `\w`
-degrades to literal `w`, `\s` to literal `s`, `\b`/`\<`/`\>` match nothing. A
-faithful engine must therefore key `\b \w \s \< \>` handling on the dialect, not
-emit one mapping for both. JS `RegExp` would honour `\b \w \s` in *both* — so a
-single `RegExp` translation that maps these uniformly is unfaithful to ERE.
+Consequences and their handling:
 
-### Pinned target + flag matrix
+- **`.` / `\w` / `\s` / `\b` over multi-byte UTF-8.** Under latin1 each UTF-8
+  continuation byte is its own code unit, so `.` matches one *byte* of a multi-byte
+  sequence, not one code point, and `\w`/`\b` see raw bytes. This is **byte-oriented
+  matching** — the same model `git grep` uses (glibc `regexec` over bytes in a
+  non-UTF-8 locale) and the natural model for a byte-faithful content search.
+  Callers wanting code-point semantics over UTF-8 own that translation (consistent
+  with ADR-395 putting grammar in the caller's hands). Documented, not papered over.
+- **The `u` (unicode) `RegExp` flag is incompatible with the latin1-byte view** — a
+  `u`-flagged regex asserts code-point semantics the byte view cannot honour. The
+  command rejects a `u`-flagged pattern with a structured `INVALID_OPTION`-class
+  error (reason: "unicode flag unsupported over byte content"); this is a guarded,
+  pinned refusal, not a silent mis-match. (`i`, `m`, `s` ride through unchanged; `g`
+  and `y` are normalized by the internal clone below.)
+- **The matcher forces the `g` flag internally** for `matchAll`/repeated `exec`
+  (cloning the caller's `RegExp` with `flags + 'g'` and `'y'` stripped — sticky
+  anchoring would otherwise drop non-leftmost spans), so a non-global caller
+  `RegExp` still yields **all** spans on a line, and the caller's own object is never
+  mutated and its `lastIndex` is never read or written (immutability — never mutate
+  the caller's `RegExp`).
+
+### Matcher-level `-w` and `-v` (work for both forms)
+
+- **whole-word (`-w`)** gates a candidate span: a span at `[start, end)` survives
+  only if the byte before `start` is not a word byte and the byte at `end` is not a
+  word byte (git's `-w` is a boundary gate on the match, not a `\b` injection — and
+  `\b` would be inert in the fixed form anyway). Applied identically to regex-form
+  and fixed-form spans, so `-w` works for both (the ADR-396 requirement). Word-byte
+  class is git's `[A-Za-z0-9_]` over bytes.
+- **invert (`-v`)** flips the per-line verdict: a line is *returned* iff it has **no**
+  surviving span. An inverted hit carries the line with an **empty** `spans` array
+  (a returned line under `-v` is by definition a non-match). Multi-pattern OR is
+  computed *before* inversion — `-v` excludes lines matching **any** pattern.
+
+### Pinned target + binary + line-numbering matrix (the faithful half)
 
 `git grep` over a working tree with a staged-but-uncommitted change `staged_only`,
-a working-tree-only unstaged change `wt_only_unstaged`, plus the committed
-fixture.
+a working-tree-only unstaged change `wt_only_unstaged`, plus the committed fixture.
+Pinned against real `git version 2.54.0`, scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`,
+isolated `HOME`, signing off, throwaway `mktemp -d` repo. **These cells are
+grammar-independent** — they hold for any pattern, so a trivial literal pattern
+pins them.
 
 | # | Invocation | git decision | Load-bearing fact |
 |---|---|---|---|
-| T1 | (default) `wt_only_unstaged` | matches | default target = **working tree** (unstaged content visible) |
-| T2 | `--cached staged_only` | matches | `--cached` = **index** blobs (staged content) |
-| T3 | `--cached wt_only_unstaged` | no match | index does not carry the unstaged change |
-| T4 | `HEAD staged_only` | no match | `<tree-ish>` = committed tree only |
-| F1 | `-i word` | matches `word boundary here` AND `WORD here` | case-fold is a data decision |
-| F2 | `-w word` | matches `word boundary here` (whole word) | word-boundary gating, not substring |
-| F-w | `-w word` under basic / extended / fixed | matches the whole-word line in **all three** | `-w` gates at matcher level, NOT via `\b` injection (works where `\b` is inert) |
-| F3 | `-v aaa` | every line NOT containing `aaa` | invert is a per-line data decision |
-| F4 | `-e alt1 -e xZy` | union of both | multiple patterns OR-combine |
-| F5 | `-i -w WORD` | matches both `word`/`WORD` lines | flags compose |
-| C1 | `-c a` on `g.txt` | per-file integer count (`g.txt:12`) | count is structured data (matchCount per path) |
-| C2 | `-l aaa` | lists `g.txt` | name-only = membership data (path had ≥1 match) |
-| P1 | `grep.patternType extended` then `a+` | behaves as ERE | config selects the dialect |
+| T1 | (default) on `wt_only_unstaged` | matches | default target = **working tree** (unstaged content visible) |
+| T2 | `--cached` on `staged_only` | matches | `--cached` = **index** blobs (staged content) |
+| T3 | `--cached` on `wt_only_unstaged` | no match | index does not carry the unstaged change |
+| T4 | `HEAD` on `staged_only` | no match | `<tree-ish>` = committed tree only |
+| L1 | match on line 12 of a multi-line blob | reports line 12 | **1-based** line numbering |
+| M1 | one pattern hitting 3 of 5 enumerated paths | 3 path entries, ignore-walk order | multi-path enumeration + ordering |
+| B1 | a literal that occurs in a blob with a NUL byte | prints `Binary file b.bin matches`; line scan skipped | binary skipped by default; the *datum* is "blob matched", not a printed line |
 
-Counts (C1) and name-only (C2) are **derivable from the structured result** —
-`hits.length` (git's `-c` counts matching *lines*, one per line regardless of how
-many spans it carries) and `hits.length > 0` reconstruct `-c` and `-l` without the
-library shipping those as rendering modes (ADR-249, exactly as the whitespace
-design derives the numstat-omit rule rather than adding a `suppressed` flag). No
-`matchCount` field is added — it would be redundant denormalization of `hits`.
+`-c` (per-file count) and `-l` (name-only) are **derivable from the structured
+result** — `hits.length` (git's `-c` counts matching *lines*, one per line
+regardless of how many spans it carries) and `hits.length > 0` reconstruct `-c` and
+`-l` without the library shipping those as rendering modes (ADR-249, exactly as the
+whitespace design derives the numstat-omit rule rather than adding a `suppressed`
+flag). No `matchCount` field is added — it would be redundant denormalization of
+`hits`.
 
-### Option + result shapes (ADR-249)
+### Deliberate divergence — what we do NOT do, and why (ADR-395)
 
-The option surface is one flat interface (ADR-378 style). The exact target +
-flag membership is **Decision D2**; the shape below is the full-v1 (D2(a)) form,
-narrowed if D2(b)/(c) is chosen.
+This is the parity we **consciously decline**, recorded so the divergence is
+legible, not a spec we implement:
+
+- git grep's **default grammar is POSIX BRE** (`+ ? { } ( ) |` literal unless
+  backslash-escaped; `\( \)` group, `\{m,n\}` interval). We do **not** reproduce it —
+  the pattern is JS `RegExp`, where `/a+/` is one-or-more, not a literal `a+`. A
+  caller wanting BRE's "literal `a+`" must pass the fixed form or escape it as JS.
+- git's BRE/ERE carry a **load-bearing GNU-escape asymmetry** (`\b \w \s \< \>`
+  honoured in BRE, inert in ERE). We do **not** implement either side; JS `RegExp`
+  honours `\b \w \s` uniformly, and that is the documented behaviour.
+- `-P` / PCRE, `-E` / ERE, `-F`-as-a-dialect-toggle: there are **no dialects**. One
+  regex form (JS `RegExp`) + one literal form (fixed string). A future `patternType`
+  enum can add POSIX modes without breaking the v1 surface if a consumer ever needs
+  parity (ADR-395 "reversible by extension").
+
+The empirical BRE/ERE/fixed grammar matrix that the *original* design pinned (29
+rows of glibc `regcomp` behaviour) is **deleted** — it described an engine we are
+not building. It is preserved only in git history and in ADR-395's context section
+as the rationale for declining.
+
+### Option + result shapes (ADR-249 + ADR-395)
+
+One flat options interface (ADR-378 style). The pattern input type is the
+load-bearing sub-decision **D7** (below); the shape here uses the recommended
+`ReadonlyArray<RegExp | GrepFixedPattern>` form.
 
 ```ts
-export type GrepPatternType = 'basic' | 'extended' | 'fixed';  // + 'perl' iff D1(a) rejected
+/** A literal-substring pattern (git's -F). The bytes are searched verbatim;
+ *  no metacharacter is special. Distinct nominal shape so a caller cannot confuse
+ *  a literal string with a stringified regex. */
+export interface GrepFixedPattern {
+  readonly fixed: string;   // matched as UTF-8 bytes against the line
+}
+
+export type GrepPattern = RegExp | GrepFixedPattern;
 
 export interface GrepOptions {
-  /** Patterns to search for. ≥1 required; multiple OR-combine (git's `-e ... -e ...`, #F4). */
-  readonly patterns: ReadonlyArray<string>;
-  /** Dialect; default `'basic'` (git's default). Resolves opts ?? config ?? 'basic'. */
-  readonly patternType?: GrepPatternType;
-  /** Case-insensitive (`-i`, #F1). */
-  readonly ignoreCase?: boolean;
-  /** Whole-word gating (`-w`, #F2) — applied at matcher level in ALL dialects (pinned §F-w). */
+  /** Patterns to search for. ≥1 required; multiple OR-combine (git's `-e … -e …`, #F4).
+   *  A RegExp ⇒ JS-RegExp search; a GrepFixedPattern ⇒ literal byte search (ADR-395).
+   *  A `u`-flagged RegExp is rejected (byte-content incompatibility, see byte-offset bridge). */
+  readonly patterns: ReadonlyArray<GrepPattern>;
+  /** Whole-word gating (`-w`, #F2) — applied at the matcher level for BOTH the
+   *  RegExp and the fixed form (ADR-396). */
   readonly wholeWord?: boolean;
   /** Invert: return lines that do NOT match (`-v`, #F3). */
   readonly invert?: boolean;
@@ -245,14 +279,16 @@ export interface GrepOptions {
 }
 ```
 
-`-w` is gated at the matcher level (not by injecting `\b` into the pattern) so it
-works even in `extended`/`fixed` where `\b` is inert (pinned §F-w: `-w word`
-matches the whole-word line under basic, extended, AND fixed).
+**Removed vs the original design** (per ADR-395): `patternType` (no dialect enum)
+and `ignoreCase` (case-fold rides on the `RegExp`'s `i` flag — a caller writes
+`/word/i`, not `{ ignoreCase: true }`). The fixed form has no case option; a
+case-insensitive *literal* search is expressed as a `RegExp` of the escaped literal
+with `i`, which is the idiomatic JS way and keeps one source of truth for casing.
 
 ```ts
 export interface MatchSpan {
-  readonly start: number;   // byte offset of the match within the line (0-based)
-  readonly end: number;     // exclusive
+  readonly start: number;   // BYTE offset of the match within the line (0-based)
+  readonly end: number;     // exclusive BYTE offset
 }
 
 export interface GrepLineHit {
@@ -264,7 +300,7 @@ export interface GrepLineHit {
 export interface GrepPathResult {
   readonly path: FilePath;
   readonly hits: ReadonlyArray<GrepLineHit>;   // returned lines: matching lines, or non-matching lines under `invert`
-  readonly binaryMatch: boolean;        // blob is binary AND contained a match (#G28); hits stays empty
+  readonly binaryMatch: boolean;        // blob is binary AND contained a match (#B1); hits stays empty
 }
 
 export interface GrepResult {
@@ -272,38 +308,58 @@ export interface GrepResult {
 }
 ```
 
-The caller reconstructs every git rendering from these fields: `path:line:text`
-(join `path`, `lineNumber`, decode `line`); `-c` (`hits.length` or sum of
-`spans`); `-l` (`paths.map(p => p.path)`); `Binary file X matches` (`binaryMatch`);
-`-o` only-matching (slice `line` by each `MatchSpan`). The library emits **no**
-display string. `MatchSpan` positions also let a caller do `--color` highlighting
-it could not do from a pre-rendered line.
+The result shape is **unchanged** from the original design (ADR-396 leaves it
+intact). The caller reconstructs every git rendering from these fields:
+`path:line:text` (join `path`, `lineNumber`, decode `line`); `-c` (`hits.length`);
+`-l` (`paths.map(p => p.path)`); `Binary file X matches` (`binaryMatch`); `-o`
+only-matching (slice `line` by each `MatchSpan`). The library emits **no** display
+string. `MatchSpan` byte positions also let a caller do `--color` highlighting it
+could not do from a pre-rendered line.
 
-### Invalid-pattern semantics (#G29)
+### Invalid-input semantics
 
-`compileGrepPattern` validates per dialect and throws a structured error
-(`invalidOption('pattern', <dialect+reason>)`, the helper at
-`src/domain/commands/error.ts:381`) — never an uncaught engine throw, never a
-silent non-match. A leading `*` is accepted (literal) in `basic`/`fixed` but
-rejected in `extended` with git's "repetition-operator operand invalid" reason.
-The exact error condition per dialect is pinned in the interop test, not recalled.
+There is **no dialect-specific invalid-pattern condition** to pin (no BRE/ERE
+engine). The only structured refusals the command raises:
+
+- a `u`-flagged `RegExp` (byte-content incompatibility, above) →
+  `invalidOption('pattern', '<reason>')` (helper at
+  `src/domain/commands/error.ts:381`);
+- `patterns` empty → `invalidOption('patterns', 'at least one pattern required')`;
+- an unresolvable `target` treeish → the existing rev-resolution error from the
+  primitive layer (not grep-specific).
+
+A *malformed* regex never reaches the matcher — the caller constructs the `RegExp`,
+so `new RegExp('(')` throws in **their** code before `grep` is called. The library
+does not compile patterns, so there is no compile-error surface of its own beyond
+the `u`-flag guard.
+
+### ReDoS is the caller's concern (ADR-395), not a pattern fence
+
+The earlier design proposed a pattern-length/scan fence around a translated
+`RegExp`. With ADR-395 that fence is **removed**: the caller supplies their own
+`RegExp`, so its complexity (catastrophic backtracking, nested quantifiers) is
+**their** responsibility, exactly as it is for any JS code that calls
+`userRegexp.test(s)`. The library still bounds the **input it controls** via the
+existing diff caps — `MAX_LINE_BYTES = 65_536` (no single line exceeds this; longer
+content trips `isBinary` and is skipped) and `isBinary`/`BINARY_DETECTION_BYTES`
+(binary blobs are skipped wholesale). There is **no** grep-specific
+`MAX_PATTERN_BYTES`; the pathspec limiter keeps its own `MAX_PATHSPEC_PATTERN_BYTES
+= 256` (that is the *path* glob, still linear under ADR-077, unaffected).
 
 ### Tier-1 surface-gate checklist (the full set this command trips)
 
 1. `src/application/commands/grep.ts` — `grep(ctx, opts: GrepOptions): Promise<GrepResult>`.
 2. `src/application/commands/index.ts` — barrel re-export of `grep` + `GrepOptions`,
-   `GrepResult`, `GrepPathResult`, `GrepLineHit`, `MatchSpan`, `GrepPatternType`
-   (insert alphabetically near `range-diff` / before `init`).
+   `GrepResult`, `GrepPathResult`, `GrepLineHit`, `MatchSpan`, `GrepPattern`,
+   `GrepFixedPattern` (insert alphabetically near `range-diff` / before `init`).
 3. `src/repository.ts` — facade interface line
    `readonly grep: BindCtx<typeof commands.grep>;` (alphabetical, between `fetchMissing`
    and `init`) + the binding `grep: ((opts) => { guard(); return commands.grep(ctx, opts); }) as Repository['grep'],`
    (mirroring the `rangeDiff` binding at `src/repository.ts:532`).
-4. `src/index.ts` — already forwards `./application/commands/index.js` (line 3) and
-   `./public-types.js` (line 15); the new types re-export automatically. Confirm no
-   manual edit needed.
-5. `test/unit/repository/repository.test.ts:199` — add `'grep'` to the sorted
-   command-key-set assertion (currently 41 keys incl. non-command keys; insert
-   between `fetchMissing` and `init`).
+4. `src/index.ts` — already forwards `./application/commands/index.js` and
+   `./public-types.js`; the new types re-export automatically. Confirm no manual edit.
+5. `test/unit/repository/repository.test.ts:215` — add `'grep'` to the sorted
+   command-key-set assertion (insert between `'fetchMissing'` and `'init'`).
 6. `reports/api.json` — regenerate via `npm run check:doc-typedoc` (prepush gate;
    large typedoc-id diff is normal).
 7. `test/parity/scenarios/grep.scenario.ts` + register in
@@ -313,113 +369,147 @@ The exact error condition per dialect is pinned in the interop test, not recalle
 8. `README.md:46` — bump the Tier-1 count "38 Tier-1 commands" → "39".
 9. `.size-limit.json` / `npm run check:size` — confirm the added bundle weight is
    within budget (rebuild fresh; stale `.wireit` chunk inflation is a known false
-   positive — `rm -rf dist .wireit` before trusting a failure).
+   positive — `rm -rf dist .wireit` before trusting a failure). Bundle is *smaller*
+   than the original design's transpiler would have been — the matcher is essentially
+   `regexp.exec` + a byte scan.
 10. Doc-coverage page under `docs/use/commands/` (the doc-maintenance harness gates
     one page per Tier-1 command); authored in the docs phase.
+
+**Primitive reuse list (confirmed exported from `src/application/primitives/index.ts`):**
+`walkWorkingTree` (working-tree target), `walkTree` (`<tree-ish>` target),
+`readIndex` (`--cached`), `readHeadTree` (HEAD resolution), `readBlob` (contents).
+Domain reuse: `splitLines`, `isBinary` (from `src/domain/diff/index.ts`). No new I/O
+primitive.
 
 Recent end-to-end references to imitate: `range-diff`, `whatchanged`, `blame`.
 
 ## Decision candidates
 
-ADRs 226 / 249 / 077 / 378 / 382 fix the prime directive, structured-output rule,
-linear-matcher discipline, the flat-enum option style, and the config-default
-wiring. The choices below are the **new** load-bearing ones this feature
-introduces. ≤3 alternatives each, with a recommendation; the user ratifies in the
-ADR phase. **D3 and D2 are the two questions the brief flags as load-bearing.**
+ADR-395 (grammar diverges to JS `RegExp`) and ADR-396 (v1 surface) are **ratified
+and committed** — they resolve the five original load-bearing questions. Marked
+below. Two **new** sub-decisions surface from the divergence (the byte-offset bridge
+and the exact pattern-input type); both carry a recommendation for the user to
+ratify.
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| D1 | Is `-P` / PCRE (`patternType: 'perl'`) in v1? | (a) **defer** — ship `basic`/`extended`/`fixed`; `'perl'` documented as a future enum value (lookahead/backref/`\d` from §G need a real PCRE engine, which is a large zero-dependency build); (b) ship `'perl'` mapped directly to JS `RegExp` (closest dialect, but NOT byte-equal to PCRE — `\d`/Unicode/possessive differ); (c) ship a purpose-built PCRE subset | **(a)** | PCRE is the one dialect where JS `RegExp` is *tempting but wrong* (mapping `-P` to `RegExp` reintroduces the exact unfaithfulness the brief warns against, just for a different mode); the three POSIX dialects are the faithful, fully-pinnable v1; `'perl'` slots into the enum later without breaking the surface. (b) would ship a mode that fails its own interop test on `\d`/Unicode edge cases; (c) is a second engine for a non-default mode — disproportionate now. |
-| D2 | v1 command scope — targets + flags | (a) **full faithful v1, one PR**: working-tree + `--cached` + `<tree-ish>` targets; `basic`/`extended`/`fixed` dialects; `-i`/`-w`/`-v`/multi-`-e`; pathspec limiter; binary skip; `grep.patternType` facade config (ADR-382 wiring) — everything that is DATA, excluding only `-P` (D1) and rendering flags; (b) **tiered**: working-tree only + `basic`/`extended`/`fixed` + `-i`/`-w`/`-v` now, defer `--cached`/`<tree-ish>` + config; (c) **minimal**: working-tree + `basic`/`fixed` only, everything else deferred | **(a)** | the repo's working style lands a whole feature in one PR over follow-ups (auto-memory "discuss-follow-ups-first" default); the surface is large but cohesive — targets reuse existing primitives (`walkWorkingTree`/`readIndex`/`walkTree`), flags are per-line data decisions, and the grammar matrix already pins all three dialects, so deferring pieces would only fragment the interop suite. The one defensible deferral is `-P` (D1, its own engine). (b)/(c) split a coherent diffcore-style surface and leave the grammar half-pinned. |
-| D3 | **Grammar engine** — how to honour BRE/ERE/fixed byte-faithfully, zero-dependency | (a) **dialect-aware translation layer to JS `RegExp`**: per-dialect metachar tables (BRE: `+?{}()|` literal, `\+\?\{\}\(\)\|` operator; ERE: inverse) + POSIX-class expansion (`[[:digit:]]`→`[0-9]`, `[[:alpha:]]`→`[A-Za-z]`, …) + **dialect-gated** GNU `\b\w\s\<\>` mapping (mapped in BRE, passed through literal in ERE — the §G15–G24 asymmetry) + fixed via literal byte scan; (b) **purpose-built NFA/Thompson interpreter** over bytes, no `RegExp` at all (matches the `compile-glob` ethos most exactly, guarantees linearity, but is a large new engine); (c) **reduced v1**: fixed-string scan + ERE-via-`RegExp` only, BRE deferred (BRE is the *default* and hardest) | **(a)** | (a) reuses the JS engine for the heavy lifting while the **translation table** is what makes it faithful — it is a finite, fully-pinnable transformation (the §G matrix IS the table's test oracle), and the dialect-gated GNU-escape handling is exactly what a naive single-`RegExp` mapping gets wrong. It is zero-dependency. The ReDoS risk JS `RegExp` carries must be bounded (see note) — that is the cost. (b) is the purest fit for ADR-077 and removes ReDoS entirely, but is a from-scratch regex engine for three dialects — large, and most of its value (linearity) can be bought more cheaply (note). (c) defers the **default** dialect — unacceptable: a `grep` whose default mode is unimplemented is not faithful from day one, the brief's core requirement. |
-| D4 | Binary-blob match representation | (a) **`binaryMatch: boolean`** datum on the path entry, `hits` empty, line scan skipped (git default) — caller reconstructs `Binary file X matches`; (b) treat binary as text always (git's `-a`) and emit line hits; (c) omit binary blobs from the result entirely | **(a)** | #G28 pins git's default: a binary blob that matches is reported as a *blob-level* fact, not line hits; (a) ships that as structured data faithfully and lets a caller opt into `-a`-style text scanning later via a flag; (b) is git's non-default `-a`, wrong as the default; (c) loses the match signal (git's exit code is 0 — a match occurred). |
-| D5 | Context lines (`-A`/`-B`/`-C`) in v1? | (a) **out of v1**, documented candidate — *which* lines are data but the grey area needs its own pinning; (b) ship as a structured `context: { before, after }` on each hit (the line set is data, the rendered `--` separator is not); (c) ship and return rendered context blocks | **(a)** | context lines are a genuine ADR-249 grey area (the line *set* is data, the layout is rendering) and orthogonal to the grammar question this backlog item is scoped to; deferring keeps the v1 surface about *matching* and lets context get its own pinned design. (b) is the eventual faithful shape but expands scope past the brief; (c) violates ADR-249 outright. |
+| # | Choice | Status / resolution |
+|---|---|---|
+| D1 | `-P` / PCRE in v1? | **RESOLVED — N/A (ADR-395).** No dialects at all; the grammar is JS `RegExp`. PCRE-style features (lookahead, backref) come from `RegExp` for free where they overlap; there is no separate `'perl'` mode to ship or defer. A future `patternType` enum can add POSIX/PCRE modes if needed. |
+| D2 | v1 command scope — targets + flags | **RESOLVED (ADR-396).** Working-tree + `--cached` + `<tree-ish>` targets; `-w` / `-v` / multi-pattern OR data flags; pathspec limiter; binary skip + `binaryMatch`. Case rides on the `RegExp` (no `-i` option). Context lines out of v1. |
+| D3 | Grammar engine (BRE/ERE/fixed faithfulness) | **RESOLVED — superseded (ADR-395).** The translation-vs-interpreter-vs-reduced question is moot: the grammar **diverges to JS `RegExp`**, no POSIX engine is built. The matcher is `regexp.exec`/`matchAll` (regex form) + a `Uint8Array` byte scan (fixed form). |
+| D4 | Binary-blob match representation | **RESOLVED (ADR-396).** `binaryMatch: boolean` datum, `hits` empty, line scan skipped — git's default; caller reconstructs `Binary file X matches`. |
+| D5 | Context lines (`-A`/`-B`/`-C`) in v1? | **RESOLVED (ADR-396).** Out of v1; documented candidate for its own pinned design (overlapping-window merge is observable and earns separate pinning). |
+| **D6** | **Byte-offset bridge: how a UTF-16 `RegExp` yields BYTE spans over a `Uint8Array` line** | (a) **latin1-decode the line** (1 byte ↔ 1 code unit ⇒ `RegExp` indices ARE byte offsets); reject `u`-flag; `.` matches a byte (git-like byte matching). (b) UTF-8-decode + maintain a code-unit→byte offset map per line and remap every `.index`. (c) UTF-8-decode and report **code-unit** offsets, documenting that spans are not byte offsets. **Recommendation: (a)** — zero remapping, byte-faithful to git's byte-oriented `regexec`, simplest and fastest; the `u`-flag refusal is a small pinned guard. (b) is correct but adds a per-line offset table and remap cost for no faithfulness gain over (a). (c) violates requirement R4 (spans must be byte offsets so `line.slice(start,end)` is valid). |
+| **D7** | **Exact pattern-input type** | (a) **`ReadonlyArray<RegExp \| GrepFixedPattern>`** — a `RegExp` for regex, a `{ fixed: string }` nominal shape for literal; both forms first-class, OR-combined. (b) `RegExp`-only — force callers to escape literals into a `RegExp` themselves (drops the `-F` ergonomic; `RegExp.escape` is not universally available). (c) also accept a bare `string` as a third form — ambiguous (is `"a+"` literal or regex?), reintroducing exactly the confusion ADR-395 closes. **Recommendation: (a)** — matches ADR-395's "input is a `RegExp`, with a fixed-string form for literal search" verbatim; the nominal `{ fixed }` wrapper makes literal-vs-regex unambiguous at the type level (a caller cannot be silently misled). (b) is leaner but loses the literal ergonomic ADR-395 explicitly preserves. (c) is the ambiguity the divergence exists to kill. |
 
-**Note on D3 ReDoS bound.** If (a) is chosen, the JS-`RegExp` backend must be
-fenced like every other untrusted-pattern surface in the repo: cap raw pattern
-byte length (mirror `MAX_PATHSPEC_PATTERN_BYTES = 256`), cap the per-line scan, and
-cap total bytes scanned — so a pathological translated pattern cannot hang the
-event loop. This is the residual risk (b) would eliminate; the decision weighs
-"reuse a mature engine + bound it" against "write a guaranteed-linear engine." The
-user owns that trade-off.
+Both D6 and D7 are genuinely load-bearing (one is the single subtle correctness
+item; the other is the public option type), so they are surfaced for ratification
+rather than decided here. No other open decision remains — the grammar engine,
+targets, flags, binary, and context questions are all closed by the two ADRs.
 
 ## Test strategy
 
-**Unit — `src/domain/grep/compile-pattern.test.ts`** (pure compiler/matcher).
-Per-dialect truth tables drawn straight from the §G matrix:
-- basic: `+?{}()|` literal (#G1,G3,G5,G7), `\+\?\{\}\(\)\|` operators (#G2,G4,G6,G8),
-  `.` any-char (#G9), anchors (#G10,G11), leading-`*` literal (#G12), POSIX classes
-  (#G13,G14), GNU `\b\w\s\<\>` active (#G15–G18);
-- extended: `+?{}()|` operators (#G19–G22), `\+` literal (#G23), GNU escapes
-  **inactive** (#G24a–c) — isolated guard tests per escape, since the asymmetry is
-  the load-bearing bug a single mapping would introduce;
-- fixed: everything literal (#G25–G27);
-- flags: `-i` case-fold (#F1), `-w` whole-word (#F2,F5), `-v` invert (#F3);
-- invalid patterns: leading-`*` accepted in basic, rejected in extended (#G29) —
-  assert the structured error `.data.code` and reason, not just `toThrow`.
+The test suite **rebalances** to match the divergence: the interop test pins **only
+the git-faithful half**; grammar is proven by JS-`RegExp`-vs-invariant property and
+example tests, never against `git grep`.
 
-**Unit — `src/domain/grep/compile-pattern.properties.test.ts`** (`fast-check`,
-ADR-134–136). The compiler is a **total function over an algebraic grammar** (lens
-3) and the matcher is a **compositional matcher** (lens 2):
-- `compileGrepPattern(p, …)` over the ASCII-no-NUL safe subset returns a callable
-  matcher for every dialect (never throws on the safe subset — except the
-  documented dialect-specific invalid forms, which are excluded from the generator);
-- fixed-mode invariant: `matchLine` finds the pattern iff the pattern bytes are a
-  substring of the line (independent oracle = `Uint8Array.indexOf`, not a copy of
-  the SUT);
-- `-i` idempotence: matching under case-fold is invariant to re-casing the pattern.
-`numRuns` 100 (composition) / 200 (cheap fixed-mode round-trip). Examples stay
-(literal git semantics); the property proves the grammar.
+**Unit — `src/domain/grep/matcher.test.ts`** (pure matcher).
+- regex form: byte spans from `regexp.exec`/`matchAll` over a latin1 view (single
+  span, multiple spans on a line, no match);
+- byte-offset correctness over multi-byte UTF-8: `line.slice(span.start, span.end)`
+  equals the matched bytes even when earlier bytes were multi-byte (the load-bearing
+  D6 correctness item — isolated test);
+- `u`-flag refusal: a `u`-flagged `RegExp` throws the structured `INVALID_OPTION`
+  error — assert `.data.code` and reason, not just `toThrow`;
+- caller-`RegExp` immutability: a non-global caller `RegExp` yields all spans AND its
+  `lastIndex` is unchanged after `matchLine` (guards the internal `g`-flag clone);
+- fixed form: literal byte match incl. patterns containing regex metacharacters
+  (`a+`, `x.y`, `star*lit`) matched **literally** (no metachar meaning);
+- `-w` whole-word: boundary gating for both regex and fixed form, isolated tests for
+  the left-boundary and right-boundary guards independently (mutation-resistant
+  guard-clause discipline);
+- `-v` invert: a returned line carries empty `spans`; OR-then-invert order (a line
+  matching *any* pattern is excluded);
+- multi-pattern OR: union of single-pattern spans, de-duplicated/ordered.
+
+**Unit — `src/domain/grep/matcher.properties.test.ts`** (`fast-check`, ADR-134–136).
+The matcher is a **compositional matcher** (lens 2) and the fixed form is a
+substring searcher with an independent oracle (lens 2). Drop the original BRE/ERE
+GNU-escape-asymmetry properties (no dialects exist). Keep / add — all invariants
+that are **NOT** tautological against V8:
+- **fixed-mode substring invariant** (kept): `matchLine` finds the fixed pattern iff
+  its bytes are a substring of the line — independent oracle `Uint8Array.indexOf`,
+  not a copy of the SUT (lens 2). `numRuns` 200 (cheap).
+- **invert is the set-complement per line**: for any line + pattern set, the set of
+  lines returned under `invert` is exactly the lines with no surviving span under
+  non-invert (computed via the non-inverted matcher as the oracle — independent of
+  the invert code path). `numRuns` 100.
+- **multi-pattern OR is the union**: the span set for `[p, q]` equals the union of
+  the span sets for `[p]` and `[q]` (oracle = two single-pattern matchers). `numRuns`
+  100.
+- **`wholeWord` gating soundness**: every span surviving `-w` has a non-word byte (or
+  string edge) on both sides — verified directly against the line bytes, not against
+  the matcher's own gate. `numRuns` 100.
+- **byte-offset round-trip**: for any returned span, `line.slice(start, end)`
+  re-found by the same pattern (the span indexes back into the line correctly — the
+  D6 invariant). `numRuns` 100.
+
+These are real invariants, not V8-vs-V8 tautologies (none re-implements
+`regexp.exec` as the oracle). Per the repo's property-test rule, the fixed-form
+matcher is a matcher/decoder that **must** ship a `*.properties.test.ts` sibling —
+it does.
 
 **Unit — `src/application/commands/grep.test.ts`** (mocked enumeration + `readBlob`):
 target selection (working tree default / `--cached` / `<tree-ish>` — #T1–T4);
-binary blob → `binaryMatch: true`, `hits` empty, no line scan (#G28, D4); pathspec
-limiter scopes paths; multiple `-e` union (#F4); bounded-pool fan-out preserves
-path order; `patternType` resolves `opts ?? config ?? 'basic'` (ADR-382 precedence
-— isolated guard tests per rung: per-call present, config present, both absent).
+binary blob → `binaryMatch: true`, `hits` empty, no line scan (#B1, D4); pathspec
+limiter scopes paths; multiple patterns union (#F4); bounded-pool fan-out preserves
+path order (#M1); 1-based line numbering (#L1).
 
 **Unit — `test/unit/repository/repository.test.ts`**: `'grep'` present in the
 sorted command-key set.
 
-**Interop — `test/integration/grep-grammar-interop.test.ts`** (new, twin real-`git`
-vs tsgit + frozen golden, mirroring `diff-whitespace-interop` /
-`rename-similarity-interop`): build the §G fixture in real `git` and tsgit; for
-each dialect × pattern × flag cell, assert tsgit's structured `GrepResult`
-reconstructs git's decision:
-- **which paths/lines match** (the §G + §T matrix) — reconstruct `path:line` from
+**Interop — `test/integration/grep-interop.test.ts`** (renamed from
+`grep-grammar-interop.test.ts` — "grammar" is now a misnomer, since the interop test
+**does not** pin grammar). Twin real-`git` vs tsgit + frozen golden, mirroring
+`diff-whitespace-interop`. Pins **only the git-faithful half**:
+- **which paths/lines each target exposes** — working tree (#T1) vs `--cached`
+  (#T2,T3) vs `HEAD`/`<tree-ish>` (#T4), reconstructing `path:line` from
   `paths[].hits[].lineNumber`;
-- the **BRE/ERE GNU-escape asymmetry** (#G15–G18 match in basic, #G24a–c do NOT in
-  extended) — the single most important interop cell;
-- **`-c` / `-l` reconstruction** (#C1,C2) from `hits.length` / membership — pin that
-  the derivation matches git without a rendering mode;
-- **binary** (#G28) — `binaryMatch` reconstructs `Binary file X matches`;
-- **targets** (#T1–T4) — working tree vs `--cached` vs `HEAD`;
-- **invalid-pattern** (#G29) — dialect-specific error condition.
-Compute git goldens with signing OFF, scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`,
-isolated `HOME`, in a `mktemp -d` repo; pin `-c merge.conflictStyle` is N/A here.
-Skips when `git` is absent.
+- **binary** (#B1) — `binaryMatch` reconstructs `Binary file X matches` (exit 0);
+- **1-based line numbering** (#L1) and **multi-path enumeration order** (#M1);
+- **`-c` / `-l` reconstruction** (#C-derive) from `hits.length` / membership — pin
+  the derivation matches git without a rendering mode.
 
-**Parity — `test/parity/scenarios/grep.scenario.ts`**: a single basic-mode search
+It uses a **trivial literal pattern** for every cell (the cells are
+grammar-independent). It does **NOT** pin any regex grammar against `git grep` — the
+grammar is JS `RegExp`, and `git grep` runs glibc `regcomp`; comparing them would
+either fail (correctly, by divergence) or, for a literal, prove nothing about the
+grammar. Stated explicitly in the test header. Compute git goldens with signing
+OFF, scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, isolated `HOME`, in a `mktemp -d`
+repo. Skips when `git` is absent. (`-c merge.conflictStyle` is N/A here.)
+
+**Parity — `test/parity/scenarios/grep.scenario.ts`**: a single regex-form search
 over a seeded blob runs identically on Node, memory, and browser (cross-adapter
-only — parity does NOT prove faithfulness; the interop test does).
+only — parity does NOT prove faithfulness; the interop test pins the faithful half).
 
 ## Out of scope
 
-- **`-P` / PCRE** unless D1 chooses otherwise — its own engine, and the one dialect
-  where JS `RegExp` is unfaithful; slots into the `patternType` enum later.
-- **Context lines `-A`/`-B`/`-C`** (D5) — ADR-249 grey area, own pinned design.
+- **POSIX BRE/ERE dialects and the `patternType` enum** — the grammar is JS `RegExp`
+  (ADR-395). A future `patternType` enum can add faithful POSIX/PCRE modes without
+  breaking the v1 surface if a consumer needs git-grammar parity.
+- **`-i` / `ignoreCase` as a command option** — case-fold rides on the caller's
+  `RegExp` `i` flag (ADR-395); there is no command-level case option.
+- **`u` (unicode) `RegExp` flag** — incompatible with the latin1-byte view; rejected
+  with a structured error (D6). Code-point-semantic UTF-8 matching is the caller's
+  concern.
+- **Context lines `-A`/`-B`/`-C`** (ADR-396) — ADR-249 grey area, own pinned design.
 - **All rendering-only flags** — `-n`, `-h`/`-H`, `--heading`, `--color`,
   `--null`/`-z`, `-o` *formatting*, `--break`: their data (line numbers, offsets,
   match spans) ships in `GrepResult`; the *layout* is the caller's per ADR-249.
 - **`-a` (treat binary as text)** as a v1 flag — the default binary-skip + the
-  `binaryMatch` datum ship; an opt-in text-scan flag can follow (D4 keeps the door
-  open).
-- **`grep.patternType` read from on-disk `.git/config`** — the `RepositoryConfig`
-  key (if D2(a)/ADR-382) is a **programmatic facade default**, not git's on-disk
-  config; mapping `.git/config` → facade is a separate concern (same boundary the
-  whitespace design drew).
+  `binaryMatch` datum ship; an opt-in text-scan flag can follow (ADR-396 keeps the
+  door open).
 - **`--all-match`, `--and`/`--or`/`--not` boolean trees, `-f <file>`** pattern
-  composition — multi-pattern OR (`-e ... -e ...`) ships; the full boolean grammar
-  is a later expansion.
+  composition — multi-pattern OR ships; the full boolean grammar is a later
+  expansion.
 - **`git grep` over a `log` history walk / `--no-index`** — the per-blob matcher is
   reusable, but multi-commit / outside-repo search is not this command.
