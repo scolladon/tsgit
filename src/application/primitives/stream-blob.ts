@@ -1,5 +1,6 @@
 import { operationAborted } from '../../domain/error.js';
 import {
+  invalidObjectHeader,
   type ObjectType,
   objectHashMismatch,
   objectNotFound,
@@ -56,7 +57,7 @@ export async function streamBlob(
 
   if (isBase(header)) {
     if (header.type !== PACK_ENTRY_TYPE.BLOB) {
-      throw unexpectedObjectType('blob', packTypeName(header.type), id);
+      throw unexpectedObjectType('blob', packTypeName(header.type as 1 | 2 | 4), id);
     }
     return streamPackedBaseBlob(ctx, id, chunk.subarray(headerEndInChunk), header.size, verifyHash);
   }
@@ -66,14 +67,12 @@ export async function streamBlob(
   return streamFromBuffer(ctx, id, fullBytes, verifyHash, true);
 }
 
-function packTypeName(type: 1 | 2 | 3 | 4): ObjectType {
+function packTypeName(type: 1 | 2 | 4): ObjectType {
   switch (type) {
     case PACK_ENTRY_TYPE.COMMIT:
       return 'commit';
     case PACK_ENTRY_TYPE.TREE:
       return 'tree';
-    case PACK_ENTRY_TYPE.BLOB:
-      return 'blob';
     case PACK_ENTRY_TYPE.TAG:
       return 'tag';
   }
@@ -170,7 +169,7 @@ async function stripHeader(
   id: ObjectId,
   chunks: AsyncIterator<Uint8Array>,
   accum: Uint8Array,
-): Promise<HeaderStripped | undefined> {
+): Promise<HeaderStripped> {
   let buf = accum;
 
   for (;;) {
@@ -185,7 +184,7 @@ async function stripHeader(
 
     const next = await chunks.next();
     if (next.done === true) {
-      return undefined;
+      throw invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
     }
     buf = concat(buf, next.value);
   }
@@ -206,13 +205,10 @@ async function* yieldAndVerifyChunks(
 
   const firstChunk = await iter.next();
   if (firstChunk.done === true) {
-    return;
+    throw invalidObjectHeader(`inflate stream produced no output for object ${id}`);
   }
 
   const stripped = await stripHeader(id, iter, firstChunk.value);
-  if (stripped === undefined) {
-    return;
-  }
 
   hasher?.update(stripped.headerBytes);
 
