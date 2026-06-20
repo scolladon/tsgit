@@ -30,7 +30,7 @@ import { commit } from '../../src/application/commands/commit.js';
 import { diff } from '../../src/application/commands/diff.js';
 import { init } from '../../src/application/commands/init.js';
 import type { StatTreeDiff, TreeDiff } from '../../src/domain/diff/index.js';
-import { resolveLineKey } from '../../src/domain/diff/index.js';
+import { resolveLineKey, toSimilarityPercent } from '../../src/domain/diff/index.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
@@ -93,8 +93,10 @@ const nameStatusFrom = (treeDiff: TreeDiff | StatTreeDiff): string[] =>
     if (c.type === 'modify') return `M\t${c.path}`;
     if (c.type === 'add') return `A\t${c.newPath}`;
     if (c.type === 'delete') return `D\t${c.oldPath}`;
-    if (c.type === 'rename') return `R${c.similarity}\t${c.oldPath}\t${c.newPath}`;
-    if (c.type === 'copy') return `C${c.similarity}\t${c.oldPath}\t${c.newPath}`;
+    if (c.type === 'rename')
+      return `R${toSimilarityPercent(c.similarity.score)}\t${c.oldPath}\t${c.newPath}`;
+    if (c.type === 'copy')
+      return `C${toSimilarityPercent(c.similarity.score)}\t${c.oldPath}\t${c.newPath}`;
     return `T\t${c.path}`;
   });
 

@@ -38,7 +38,7 @@ describe('normalizeLine', () => {
       });
     });
 
-    describe('When the line has leading whitespace turning to none (B-none case under all)', () => {
+    describe('When leading whitespace amount differs (presence irrelevant under all)', () => {
       it('Then drops leading space so x and "  x" are equal keys', () => {
         // Arrange
         const sut = normalizeLine;

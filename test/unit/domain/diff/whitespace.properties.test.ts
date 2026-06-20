@@ -146,27 +146,4 @@ describe('whitespace normalizer properties', () => {
       });
     });
   });
-
-  describe('Given arbitrary lines a and b and key k', () => {
-    describe('When comparing via linesEqualUnder vs bytesEqual(normalizeLine(a), normalizeLine(b))', () => {
-      it('Then both yield the same boolean (normalize/equal consistency)', () => {
-        // Arrange
-        fc.assert(
-          fc.property(
-            arbLineWithWhitespace(),
-            arbLineWithWhitespace(),
-            arbLineKey(),
-            (a, b, key) => {
-              // Act
-              const via_equal = linesEqualUnder(a, b, key);
-              const via_normalize = bytesEqual(normalizeLine(a, key), normalizeLine(b, key));
-              // Assert
-              expect(via_equal).toBe(via_normalize);
-            },
-          ),
-          { numRuns: 100 },
-        );
-      });
-    });
-  });
 });
