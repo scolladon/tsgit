@@ -91,7 +91,18 @@ interface GrepResult {
 - **Matching is byte-oriented** (ADR-397): the line is viewed as Latin-1 so
   `RegExp` indices are byte offsets; `.` matches one byte, and a `u`-flagged
   `RegExp` is rejected (it asserts code-point semantics the byte view cannot
-  honour).
+  honour). A line is matched **without its trailing newline** (like git), so `$`
+  anchors at end-of-line; a `\r` before the LF is kept (CRLF: `$` sits after `\r`).
+- **Case-folding under the `i` flag is V8's Unicode folding**, not git's
+  byte/locale folding — high-byte case matches may differ from `git grep -i`.
+- **An empty fixed pattern `{ fixed: '' }` matches nothing**, whereas `git grep -F ''`
+  matches every line. The empty-pattern case is degenerate; the command rejects an
+  empty `patterns` array but treats an empty literal as a no-match.
+- **Binary-match presence inspects only the first 64 KiB** of a binary blob: a blob
+  whose only match lies beyond the first 64 KiB is not reported as `binaryMatch`. This
+  bounds the work a caller `RegExp` can do over an unbounded binary blob (the text path
+  is already bounded per line). Binary blobs are an incidental search target, so the
+  window is a deliberate safety bound.
 
 ## Examples
 

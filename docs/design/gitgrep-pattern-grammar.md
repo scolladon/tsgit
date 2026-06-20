@@ -355,9 +355,14 @@ The earlier design proposed a pattern-length/scan fence around a translated
 `RegExp`, so its complexity (catastrophic backtracking, nested quantifiers) is
 **their** responsibility, exactly as it is for any JS code that calls
 `userRegexp.test(s)`. The library still bounds the **input it controls** via the
-existing diff caps — `MAX_LINE_BYTES = 65_536` (no single line exceeds this; longer
-content trips `isBinary` and is skipped) and `isBinary`/`BINARY_DETECTION_BYTES`
-(binary blobs are skipped wholesale). There is **no** grep-specific
+existing diff caps — `MAX_LINE_BYTES = 65_536` (no single line handed to the regex
+exceeds this; longer content trips `isBinary` and skips the line scan) and
+`isBinary`/`BINARY_DETECTION_BYTES`. A binary blob is not line-scanned, but its
+**presence probe** (the boolean behind `binaryMatch`) is likewise bounded to the first
+`MAX_LINE_BYTES` of the blob, so no caller `RegExp` runs over an unbounded input on any
+path. Consequence: a binary blob whose only match lies beyond the first 64 KiB is not
+reported as `binaryMatch` — a documented, deliberate bound, since binary blobs are an
+incidental search target. There is **no** grep-specific
 `MAX_PATTERN_BYTES`; the pathspec limiter keeps its own `MAX_PATHSPEC_PATTERN_BYTES
 = 256` (that is the *path* glob, still linear under ADR-077, unaffected).
 
