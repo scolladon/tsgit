@@ -1,0 +1,144 @@
+import { invalidOption } from '../commands/error.js';
+
+export interface MatchSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface GrepFixedPattern {
+  readonly fixed: string;
+}
+
+export type GrepPattern = RegExp | GrepFixedPattern;
+
+export interface LineVerdict {
+  readonly returned: boolean;
+  readonly spans: ReadonlyArray<MatchSpan>;
+}
+
+export interface GrepMatcherOptions {
+  readonly wholeWord?: boolean;
+  readonly invert?: boolean;
+}
+
+export interface GrepMatcher {
+  matchLine(line: Uint8Array): LineVerdict;
+}
+
+const WORD_BYTE_MIN_UPPER = 0x41; // A
+const WORD_BYTE_MAX_UPPER = 0x5a; // Z
+const WORD_BYTE_MIN_LOWER = 0x61; // a
+const WORD_BYTE_MAX_LOWER = 0x7a; // z
+const WORD_BYTE_MIN_DIGIT = 0x30; // 0
+const WORD_BYTE_MAX_DIGIT = 0x39; // 9
+const WORD_BYTE_UNDERSCORE = 0x5f; // _
+
+function isWordByte(b: number): boolean {
+  return (
+    (b >= WORD_BYTE_MIN_UPPER && b <= WORD_BYTE_MAX_UPPER) ||
+    (b >= WORD_BYTE_MIN_LOWER && b <= WORD_BYTE_MAX_LOWER) ||
+    (b >= WORD_BYTE_MIN_DIGIT && b <= WORD_BYTE_MAX_DIGIT) ||
+    b === WORD_BYTE_UNDERSCORE
+  );
+}
+
+function latin1Decode(line: Uint8Array): string {
+  let s = '';
+  for (const b of line) s += String.fromCharCode(b);
+  return s;
+}
+
+function regexSpans(line: Uint8Array, clone: RegExp): ReadonlyArray<MatchSpan> {
+  const s = latin1Decode(line);
+  const spans: MatchSpan[] = [];
+  clone.lastIndex = 0;
+  let m = clone.exec(s);
+  while (m !== null) {
+    spans.push({ start: m.index, end: m.index + m[0].length });
+    if (m[0].length === 0) clone.lastIndex++;
+    m = clone.exec(s);
+  }
+  return spans;
+}
+
+function fixedSpans(line: Uint8Array, needle: Uint8Array): ReadonlyArray<MatchSpan> {
+  if (needle.length === 0) return [];
+  const spans: MatchSpan[] = [];
+  let from = 0;
+  outer: while (from <= line.length - needle.length) {
+    for (let j = 0; j < needle.length; j++) {
+      if (line[from + j] !== needle[j]) {
+        from++;
+        continue outer;
+      }
+    }
+    spans.push({ start: from, end: from + needle.length });
+    from += needle.length;
+  }
+  return spans;
+}
+
+function applyWholeWord(
+  spans: ReadonlyArray<MatchSpan>,
+  line: Uint8Array,
+): ReadonlyArray<MatchSpan> {
+  return spans.filter((span) => {
+    const leftByte = line[span.start - 1];
+    const rightByte = line[span.end];
+    const leftOk = span.start === 0 || leftByte === undefined || !isWordByte(leftByte);
+    const rightOk = span.end >= line.length || rightByte === undefined || !isWordByte(rightByte);
+    return leftOk && rightOk;
+  });
+}
+
+function unionSpans(allSpans: ReadonlyArray<ReadonlyArray<MatchSpan>>): ReadonlyArray<MatchSpan> {
+  const seen = new Set<string>();
+  const merged: MatchSpan[] = [];
+  for (const spans of allSpans) {
+    for (const s of spans) {
+      const key = `${s.start}:${s.end}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(s);
+      }
+    }
+  }
+  return merged.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+export function buildGrepMatcher(
+  patterns: ReadonlyArray<GrepPattern>,
+  options?: GrepMatcherOptions,
+): GrepMatcher {
+  const wholeWord = options?.wholeWord ?? false;
+  const invert = options?.invert ?? false;
+
+  const clones: Array<{ type: 'regex'; clone: RegExp } | { type: 'fixed'; needle: Uint8Array }> =
+    patterns.map((p) => {
+      if (p instanceof RegExp) {
+        if (p.flags.includes('u')) {
+          throw invalidOption('pattern', 'unicode flag unsupported over byte content');
+        }
+        const flags = p.flags.replace('y', '') + (p.flags.includes('g') ? '' : 'g');
+        return { type: 'regex', clone: new RegExp(p.source, flags) };
+      }
+      return { type: 'fixed', needle: new TextEncoder().encode(p.fixed) };
+    });
+
+  return {
+    matchLine(line: Uint8Array): LineVerdict {
+      const perPattern: ReadonlyArray<MatchSpan>[] = clones.map((entry) => {
+        const raw =
+          entry.type === 'regex' ? regexSpans(line, entry.clone) : fixedSpans(line, entry.needle);
+        return wholeWord ? applyWholeWord(raw, line) : raw;
+      });
+
+      const spans = unionSpans(perPattern);
+
+      if (invert) {
+        return { returned: spans.length === 0, spans: [] };
+      }
+      return { returned: spans.length > 0, spans };
+    },
+  };
+}

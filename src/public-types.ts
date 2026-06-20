@@ -32,6 +32,8 @@ export type { WorkdirSnapshotOptions } from './application/primitives/snapshot/w
 export type * from './domain/diff/index.js';
 // git index types (GitIndex, IndexEntry, IndexEntryFlags, IndexExtension, StatData)
 export type * from './domain/git-index/index.js';
+// grep matcher types (MatchSpan, GrepPattern, GrepFixedPattern, LineVerdict, GrepMatcher, GrepMatcherOptions)
+export type * from './domain/grep/index.js';
 // git object union (GitObject, Blob, Commit, Tree, Tag, AuthorIdentity domain variant, …)
 // export type * from a mixed barrel drops all value exports (parseCommitContent etc.).
 // The object-id.ts re-export inside this barrel surfaces ObjectId/RefName/FilePath as types only
