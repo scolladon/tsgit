@@ -257,6 +257,17 @@ describe('normalizeLine', () => {
       });
     });
 
+    describe('When a trailing CR ends unterminated content (no final LF)', () => {
+      it('Then drops the CR without appending an LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(line('a\r'), key);
+        // Assert
+        expect(result).toEqual(line('a'));
+      });
+    });
+
     describe('When no CR is present', () => {
       it('Then trailing space is preserved (ignoreCrAtEol does not touch spaces)', () => {
         // Arrange
@@ -426,7 +437,7 @@ describe('linesEqualUnder', () => {
 });
 
 describe('resolveLineKey', () => {
-  describe("When ignoreWhitespace is 'all'", () => {
+  describe("Given ignoreWhitespace is 'all', When resolveLineKey runs", () => {
     it("Then mode is 'all'", () => {
       // Arrange
       const sut = resolveLineKey;
@@ -437,7 +448,7 @@ describe('resolveLineKey', () => {
     });
   });
 
-  describe("When ignoreWhitespace is 'change'", () => {
+  describe("Given ignoreWhitespace is 'change', When resolveLineKey runs", () => {
     it("Then mode is 'change'", () => {
       // Arrange
       const sut = resolveLineKey;
@@ -448,7 +459,7 @@ describe('resolveLineKey', () => {
     });
   });
 
-  describe("When ignoreWhitespace is 'at-eol'", () => {
+  describe("Given ignoreWhitespace is 'at-eol', When resolveLineKey runs", () => {
     it("Then mode is 'at-eol'", () => {
       // Arrange
       const sut = resolveLineKey;
@@ -459,7 +470,7 @@ describe('resolveLineKey', () => {
     });
   });
 
-  describe('When ignoreWhitespace is absent', () => {
+  describe('Given ignoreWhitespace is absent, When resolveLineKey runs', () => {
     it("Then mode is 'none'", () => {
       // Arrange
       const sut = resolveLineKey;
@@ -470,7 +481,7 @@ describe('resolveLineKey', () => {
     });
   });
 
-  describe('When ignoreCrAtEol is true', () => {
+  describe('Given ignoreCrAtEol is true, When resolveLineKey runs', () => {
     it('Then ignoreCrAtEol is true on the key', () => {
       // Arrange
       const sut = resolveLineKey;
@@ -481,7 +492,7 @@ describe('resolveLineKey', () => {
     });
   });
 
-  describe('When ignoreCrAtEol is absent', () => {
+  describe('Given ignoreCrAtEol is absent, When resolveLineKey runs', () => {
     it('Then ignoreCrAtEol is false on the key', () => {
       // Arrange
       const sut = resolveLineKey;
@@ -492,7 +503,7 @@ describe('resolveLineKey', () => {
     });
   });
 
-  describe('When ignoreBlankLines is set', () => {
+  describe('Given ignoreBlankLines is set, When resolveLineKey runs', () => {
     it('Then ignoreBlankLines does NOT appear on the returned LineKey', () => {
       // Arrange
       const sut = resolveLineKey;
@@ -509,7 +520,7 @@ describe('lineKeyIsActive', () => {
   const modes: ReadonlyArray<WhitespaceMode> = ['all', 'change', 'at-eol', 'none'];
 
   for (const mode of modes) {
-    describe(`Given mode '${mode}' and ignoreCrAtEol false`, () => {
+    describe(`Given mode '${mode}' and ignoreCrAtEol false, When lineKeyIsActive runs`, () => {
       it(`Then ${mode !== 'none' ? 'returns true' : 'returns false'}`, () => {
         // Arrange
         const sut = lineKeyIsActive;
@@ -522,7 +533,7 @@ describe('lineKeyIsActive', () => {
     });
   }
 
-  describe("Given mode 'none' and ignoreCrAtEol true", () => {
+  describe("Given mode 'none' and ignoreCrAtEol true, When lineKeyIsActive runs", () => {
     it('Then returns true because ignoreCrAtEol alone activates the key', () => {
       // Arrange
       const sut = lineKeyIsActive;

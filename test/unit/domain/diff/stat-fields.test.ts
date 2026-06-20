@@ -301,4 +301,19 @@ describe('computeStatFields', () => {
       });
     });
   });
+
+  describe('Given an inserted unterminated last line with ignoreBlankLines true', () => {
+    describe('When computeStatFields is called', () => {
+      it('Then the non-blank unterminated line is counted (blank check handles missing LF)', () => {
+        // Arrange — the added last line "b" has no trailing newline
+        const old = enc('a\n');
+        const next = enc('a\nb');
+        // Act
+        const sut = computeStatFields;
+        const result = sut(old, next, { ignoreBlankLines: true });
+        // Assert — unterminated "b" is non-blank, so it is counted
+        expect(result).toEqual({ added: 1, deleted: 0, binary: false });
+      });
+    });
+  });
 });
