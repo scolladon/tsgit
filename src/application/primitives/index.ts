@@ -66,6 +66,8 @@ export {
 export { resolveRef } from './resolve-ref.js';
 export { type HookInput, runHook, runInformationalHook } from './run-hook.js';
 export { readShallow, updateShallow } from './shallow-file.js';
+export type { BlobStream, StreamBlobOptions } from './stream-blob.js';
+export { streamBlob } from './stream-blob.js';
 export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 export type * from './types.js';
 export type { ConfigEntry } from './update-config.js';
