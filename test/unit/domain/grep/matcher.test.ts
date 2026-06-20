@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildGrepMatcher, type MatchSpan } from '../../../../src/domain/grep/matcher.js';
+import { buildGrepMatcher } from '../../../../src/domain/grep/matcher.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -434,10 +434,10 @@ describe('buildGrepMatcher', () => {
 
         // Assert
         expect(result.returned).toBe(true);
-        expect(result.spans.length).toBeGreaterThanOrEqual(2);
-        // spans sorted by start
-        const starts = result.spans.map((s: MatchSpan) => s.start);
-        expect(starts).toEqual([...starts].sort((a, b) => a - b));
+        expect(result.spans).toEqual([
+          { start: 0, end: 3 },
+          { start: 8, end: 11 },
+        ]);
       });
     });
 
@@ -486,7 +486,41 @@ describe('buildGrepMatcher', () => {
 
         // Assert
         expect(result.returned).toBe(true);
-        expect(result.spans.length).toBeGreaterThanOrEqual(2);
+        expect(result.spans).toEqual([
+          { start: 0, end: 3 },
+          { start: 8, end: 11 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given an end-anchored regex /c$/ and a line with a trailing newline', () => {
+    describe('When matchLine is called', () => {
+      it('Then anchors at end-of-line (the trailing LF is not part of the content)', () => {
+        // Arrange
+        const sut = buildGrepMatcher([/c$/]);
+        const line = enc('abc\n');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert — git strips the LF before matching, so `$` matches after `c`
+        expect(result.returned).toBe(true);
+        expect(result.spans).toEqual([{ start: 2, end: 3 }]);
+      });
+    });
+
+    describe('When the line ends with CRLF', () => {
+      it('Then $ does NOT match (the carriage return is kept, like git)', () => {
+        // Arrange
+        const sut = buildGrepMatcher([/c$/]);
+        const line = enc('abc\r\n');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert — only the LF is stripped; the carriage return remains after c
+        expect(result.returned).toBe(false);
       });
     });
   });
@@ -501,9 +535,14 @@ describe('buildGrepMatcher', () => {
         // Act
         const result = sut.matchLine(line);
 
-        // Assert — empty matches at each position; the scan terminates (lastIndex advance)
+        // Assert — empty matches at positions 0..len; the lastIndex advance prevents looping
         expect(result.returned).toBe(true);
-        expect(result.spans.every((s: MatchSpan) => s.start === s.end)).toBe(true);
+        expect(result.spans).toEqual([
+          { start: 0, end: 0 },
+          { start: 1, end: 1 },
+          { start: 2, end: 2 },
+          { start: 3, end: 3 },
+        ]);
       });
     });
   });

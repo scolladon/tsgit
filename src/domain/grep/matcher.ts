@@ -106,6 +106,15 @@ function unionSpans(allSpans: ReadonlyArray<ReadonlyArray<MatchSpan>>): Readonly
   return merged.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
+// git matches each line WITHOUT its trailing newline — the line terminator is not part
+// of the searched content, so `$` anchors at end-of-line. splitLines keeps the LF, so
+// strip a single trailing LF for the match view. A `\r` before the LF is kept, matching
+// git (on CRLF lines `$` sits after the `\r`).
+function stripTrailingNewline(line: Uint8Array): Uint8Array {
+  const LF = 0x0a;
+  return line.length > 0 && line[line.length - 1] === LF ? line.subarray(0, line.length - 1) : line;
+}
+
 export function buildGrepMatcher(
   patterns: ReadonlyArray<GrepPattern>,
   options?: GrepMatcherOptions,
@@ -127,10 +136,13 @@ export function buildGrepMatcher(
 
   return {
     matchLine(line: Uint8Array): LineVerdict {
+      const content = stripTrailingNewline(line);
       const perPattern: ReadonlyArray<MatchSpan>[] = clones.map((entry) => {
         const raw =
-          entry.type === 'regex' ? regexSpans(line, entry.clone) : fixedSpans(line, entry.needle);
-        return wholeWord ? applyWholeWord(raw, line) : raw;
+          entry.type === 'regex'
+            ? regexSpans(content, entry.clone)
+            : fixedSpans(content, entry.needle);
+        return wholeWord ? applyWholeWord(raw, content) : raw;
       });
 
       const spans = unionSpans(perPattern);
