@@ -6,7 +6,7 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, Commit, ObjectId } from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
-import { writeSyntheticPack } from './pack-fixture.js';
+import { buildSyntheticPack, writeSyntheticPack } from './pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
 
@@ -472,29 +472,43 @@ describe('streamBlob', () => {
     });
   });
 
-  describe('Given a corrupted packed base blob, When drained to completion', () => {
-    it('Then throws objectHashMismatch at end-of-stream', async () => {
+  // Finding 1: corrupted PACK (not loose) — the packed route runs exclusively
+  // because no loose object for this id exists. The index maps the real id to
+  // an offset whose compressed payload inflates to different bytes, so the
+  // incremental hash built by yieldAndVerifyPackedBaseChunks never matches.
+  describe('Given a genuinely-packed blob whose pack payload inflates to different content, When drained to completion', () => {
+    it('Then throws objectHashMismatch via yieldAndVerifyPackedBaseChunks (readSlice called, loose path skipped)', async () => {
       // Arrange
-      const content = ENC.encode('packed blob content to corrupt');
-      const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'corrupt-pack', [
-        { kind: 'base', type: 'blob', content },
-      ]);
-      const id = ids[0] as ObjectId;
+      // Build two separate packs in the same ctx so we share fs / hash service.
+      // Pack A: "correct" content — its id goes into the idx.
+      // Pack B: "corrupt" content — its pack bytes replace the .pack file.
+      // Result: idx maps id-A to offset 12, but the .pack stores B's payload.
+      const ctxBase = await buildSeededContext();
+      const contentA = ENC.encode('correct blob content for pack corruption test');
+      const contentB = ENC.encode('DIFFERENT blob content that hashes to a different id');
 
-      // Corrupt: overwrite with content that hashes differently
-      const corruptBlob: Blob = {
-        type: 'blob',
-        content: ENC.encode('CORRUPTED packed content'),
-        id: '' as ObjectId,
-      };
-      // Write a loose object under the same id path (pointing to corrupt content)
-      const corruptBytes = new TextEncoder().encode(
-        `blob ${corruptBlob.content.length}\0${new TextDecoder().decode(corruptBlob.content)}`,
-      );
-      const compressed = await ctx.compressor.deflate(corruptBytes);
-      const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
-      await ctx.fs.write(loosePath, compressed);
+      const packA = await buildSyntheticPack(ctxBase, [
+        { kind: 'base', type: 'blob', content: contentA },
+      ]);
+      const packB = await buildSyntheticPack(ctxBase, [
+        { kind: 'base', type: 'blob', content: contentB },
+      ]);
+
+      // Write B's .pack bytes (valid zlib at offset 12, but wrong content)
+      // but A's .idx (which registers id-A at offset 12).
+      // No loose object for id-A → loose branch returns undefined → packed branch runs.
+      const packBase = `${ctxBase.layout.gitDir}/objects/pack/pack-corrupt-genuine`;
+      await ctxBase.fs.write(`${packBase}.pack`, packB.packBytes);
+      await ctxBase.fs.write(`${packBase}.idx`, packA.idxBytes);
+
+      const id = packA.ids[0] as ObjectId;
+
+      // Confirm no loose object shadows this id (it never existed in ctxBase as loose)
+      const loosePath = `${ctxBase.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+      expect(await ctxBase.fs.exists(loosePath)).toBe(false);
+
+      // Spy routing: readSlice IS called (packed path), loose read IS NOT.
+      const { ctx, calls } = instrumentedContext(ctxBase);
 
       // Act / Assert
       try {
@@ -505,29 +519,275 @@ describe('streamBlob', () => {
         expect(error).toBeInstanceOf(TsgitError);
         const data = (error as TsgitError).data;
         expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+        if (data.code === 'OBJECT_HASH_MISMATCH') {
+          expect(data.expected).toBe(id);
+          expect(data.actual).toBeDefined();
+          expect(data.actual).not.toBe(id);
+        }
+      }
+
+      // Pin routing: packed path was taken, not the loose path.
+      const log = calls();
+      expect(log.some((e) => e.method === 'readSlice')).toBe(true);
+      const looseObjectReadPattern = /\/objects\/[0-9a-f]{2}\//;
+      expect(
+        log.filter((e) => e.method === 'read').every((e) => !looseObjectReadPattern.test(e.path)),
+      ).toBe(true);
+    });
+  });
+
+  describe('Given a genuinely-packed blob whose pack payload is corrupt, When drained with verifyHash false', () => {
+    it('Then no objectHashMismatch is thrown (opt-out) and yields the wrong bytes without error', async () => {
+      // Arrange — same cross-pack trick: idx from A, .pack from B, no loose shadow.
+      const ctxBase = await buildSeededContext();
+      const contentA = ENC.encode('original content for no-verify test');
+      const contentB = ENC.encode('CORRUPT content for no-verify test');
+
+      const packA = await buildSyntheticPack(ctxBase, [
+        { kind: 'base', type: 'blob', content: contentA },
+      ]);
+      const packB = await buildSyntheticPack(ctxBase, [
+        { kind: 'base', type: 'blob', content: contentB },
+      ]);
+
+      const packBase = `${ctxBase.layout.gitDir}/objects/pack/pack-corrupt-no-verify`;
+      await ctxBase.fs.write(`${packBase}.pack`, packB.packBytes);
+      await ctxBase.fs.write(`${packBase}.idx`, packA.idxBytes);
+
+      const id = packA.ids[0] as ObjectId;
+
+      // Act / Assert — should not throw with verifyHash: false
+      const sut = await streamBlob(ctxBase, id, { verifyHash: false });
+      const result = await collect(sut);
+      // The wrong (B) bytes are yielded without error
+      expect(result).toEqual(contentB);
+    });
+  });
+
+  // Finding 2: header-strip across a chunk boundary
+  // stripHeader accumulates inflate chunks until the NUL byte is found.
+  // A real DecompressionStream always emits the tiny header in the first chunk,
+  // so this path is only exercised by driving a re-chunking inflate that
+  // emits 1–3 bytes per chunk, forcing the NUL to land in chunk ≥2.
+  //
+  // Implementation: override createInflateStream to return a TransformStream
+  // that collects all compressed input, inflates it via the real inflate(), then
+  // emits the inflated bytes 2 bytes at a time. This avoids complex stream
+  // chaining while deterministically driving the multi-chunk stripHeader loop.
+  function makeRechunkingInflateStream(
+    realInflate: (data: Uint8Array) => Promise<Uint8Array>,
+    chunkSize: number,
+  ): TransformStream<Uint8Array, Uint8Array> {
+    const inputChunks: Uint8Array[] = [];
+    return new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk) {
+        inputChunks.push(chunk);
+      },
+      async flush(controller) {
+        const totalLen = inputChunks.reduce((n, c) => n + c.length, 0);
+        const allInput = new Uint8Array(totalLen);
+        let pos = 0;
+        for (const c of inputChunks) {
+          allInput.set(c, pos);
+          pos += c.length;
+        }
+        const inflated = await realInflate(allInput);
+        let offset = 0;
+        while (offset < inflated.length) {
+          controller.enqueue(inflated.subarray(offset, offset + chunkSize));
+          offset += chunkSize;
+        }
+      },
+    });
+  }
+
+  describe('Given a loose blob and a re-chunking inflate (2 bytes/chunk), When drained', () => {
+    it('Then concatenated bytes equal readBlob content and no header bytes leak into content', async () => {
+      // Arrange
+      const content = ENC.encode('content for cross-chunk header strip test');
+      const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+      const baseCtx = await buildSeededContext({ objects: [blob] });
+      const id = await writeObject(baseCtx, blob);
+
+      // Override createInflateStream to emit 2-byte chunks, forcing the NUL
+      // byte of "blob <size>\0" to land in chunk ≥2 (header is >2 bytes).
+      const realCompressor = baseCtx.compressor;
+      let createInflateStreamCalled = false;
+      const ctx = {
+        ...baseCtx,
+        compressor: {
+          ...realCompressor,
+          createInflateStream: (): TransformStream<Uint8Array, Uint8Array> => {
+            createInflateStreamCalled = true;
+            return makeRechunkingInflateStream(realCompressor.inflate, 2);
+          },
+        },
+      };
+
+      // Act
+      const sut = await streamBlob(ctx as typeof baseCtx, id);
+      const result = await collect(sut);
+
+      // Assert
+      const oracle = await readBlob(baseCtx, id);
+      expect(result).toEqual(oracle.content);
+      // Header bytes must not bleed into the yielded content
+      const firstFive = result.subarray(0, 5);
+      expect(new TextDecoder().decode(firstFive)).not.toBe('blob ');
+      expect(createInflateStreamCalled).toBe(true);
+    });
+  });
+
+  describe('Given an empty loose blob and a re-chunking inflate (2 bytes/chunk), When drained', () => {
+    it('Then yields zero content bytes without error (header-only stream via multi-chunk stripHeader path)', async () => {
+      // Arrange — "blob 0\0" is 7 bytes; 2-byte chunks guarantee the NUL lands in chunk 4
+      const blob: Blob = { type: 'blob', content: new Uint8Array(0), id: '' as ObjectId };
+      const baseCtx = await buildSeededContext({ objects: [blob] });
+      const id = await writeObject(baseCtx, blob);
+
+      const realCompressor = baseCtx.compressor;
+      let createInflateStreamCalled = false;
+      const ctx = {
+        ...baseCtx,
+        compressor: {
+          ...realCompressor,
+          createInflateStream: (): TransformStream<Uint8Array, Uint8Array> => {
+            createInflateStreamCalled = true;
+            return makeRechunkingInflateStream(realCompressor.inflate, 2);
+          },
+        },
+      };
+
+      // Act
+      const sut = await streamBlob(ctx as typeof baseCtx, id);
+      const result = await collect(sut);
+
+      // Assert
+      expect(result).toEqual(new Uint8Array(0));
+      expect(createInflateStreamCalled).toBe(true);
+    });
+  });
+
+  // Finding 3: between-chunks abort is untested — two isolated tests so each
+  // between-chunks guard (loose path in yieldAndVerifyChunks; packed-base path
+  // in yieldAndVerifyPackedBaseChunks) must fail independently when deleted.
+
+  describe('Given a large loose blob and an abort signal fired mid-drain, When the iterator is advanced after abort', () => {
+    it('Then throws operationAborted on the next chunk (loose between-chunks guard)', async () => {
+      // Arrange — large blob guarantees multiple inflate chunks
+      const large = new Uint8Array(200 * 1024);
+      for (let i = 0; i < large.length; i += 1) {
+        large[i] = i % 251;
+      }
+      const blob: Blob = { type: 'blob', content: large, id: '' as ObjectId };
+      const controller = new AbortController();
+      const ctx = await buildSeededContext({ signal: controller.signal, objects: [blob] });
+      const id = await writeObject(ctx, blob);
+
+      // Act — drain one chunk, then abort, then advance to trigger the guard
+      const sut = await streamBlob(ctx, id);
+      const iter = sut[Symbol.asyncIterator]();
+
+      // Consume the first chunk (the guard fires BEFORE yielding each subsequent chunk)
+      const first = await iter.next();
+      expect(first.done).toBe(false);
+
+      // Abort between chunks
+      controller.abort();
+
+      // Assert — next advance must throw operationAborted
+      try {
+        await iter.next();
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OPERATION_ABORTED');
       }
     });
   });
 
-  describe('Given a corrupted packed blob with verifyHash false, When drained', () => {
-    it('Then no objectHashMismatch is thrown (opt-out for packed path)', async () => {
-      // Arrange — write a pack blob, then shadow it with a corrupt loose object
-      const content = ENC.encode('original packed content');
-      const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'corrupt-pack-no-verify', [
+  describe('Given a large packed-base blob and an abort signal fired mid-drain, When the iterator is advanced after abort', () => {
+    it('Then throws operationAborted on the next chunk (packed-base between-chunks guard)', async () => {
+      // Arrange — large blob guarantees multiple inflate chunks from the packed path
+      const large = new Uint8Array(200 * 1024);
+      for (let i = 0; i < large.length; i += 1) {
+        large[i] = i % 251;
+      }
+      const controller = new AbortController();
+      const baseCtx = await buildSeededContext();
+      const ids = await writeSyntheticPack(baseCtx, 'abort-packed', [
+        { kind: 'base', type: 'blob', content: large },
+      ]);
+      const id = ids[0] as ObjectId;
+
+      // Attach the abort signal to the context after building the pack
+      const ctx = { ...baseCtx, signal: controller.signal };
+
+      // Act — drain one chunk, abort, then advance
+      const sut = await streamBlob(ctx, id);
+      const iter = sut[Symbol.asyncIterator]();
+
+      const first = await iter.next();
+      expect(first.done).toBe(false);
+
+      controller.abort();
+
+      // Assert
+      try {
+        await iter.next();
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('OPERATION_ABORTED');
+      }
+    });
+  });
+
+  // LOW: spy that createInflateStream is invoked on loose and packed-base paths
+  describe('Given a loose blob, When drained', () => {
+    it('Then createInflateStream is invoked (pins the streaming inflate path, not whole-buffer inflate)', async () => {
+      // Arrange
+      const blob: Blob = {
+        type: 'blob',
+        content: ENC.encode('inflate-spy content'),
+        id: '' as ObjectId,
+      };
+      const baseCtx = await buildSeededContext({ objects: [blob] });
+      const id = await writeObject(baseCtx, blob);
+
+      const spy = vi.spyOn(baseCtx.compressor, 'createInflateStream');
+
+      // Act
+      const sut = await streamBlob(baseCtx, id);
+      await collect(sut);
+
+      // Assert
+      expect(spy).toHaveBeenCalledOnce();
+      spy.mockRestore();
+    });
+  });
+
+  describe('Given a packed-base blob, When drained', () => {
+    it('Then createInflateStream is invoked (pins the streaming inflate path, not whole-buffer inflate)', async () => {
+      // Arrange
+      const content = ENC.encode('packed inflate-spy content');
+      const baseCtx = await buildSeededContext();
+      const ids = await writeSyntheticPack(baseCtx, 'inflate-spy-packed', [
         { kind: 'base', type: 'blob', content },
       ]);
       const id = ids[0] as ObjectId;
 
-      // Shadow with corrupt loose to force hash mismatch on default verify
-      const corruptBytes = ENC.encode(`blob 7\0CORRUPT`);
-      const compressed = await ctx.compressor.deflate(corruptBytes);
-      const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
-      await ctx.fs.write(loosePath, compressed);
+      const spy = vi.spyOn(baseCtx.compressor, 'createInflateStream');
 
-      // Act / Assert — should not throw with verifyHash: false
-      const sut = await streamBlob(ctx, id, { verifyHash: false });
-      await expect(collect(sut)).resolves.toBeDefined();
+      // Act
+      const sut = await streamBlob(baseCtx, id);
+      await collect(sut);
+
+      // Assert
+      expect(spy).toHaveBeenCalledOnce();
+      spy.mockRestore();
     });
   });
 
