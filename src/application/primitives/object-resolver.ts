@@ -257,7 +257,7 @@ async function collectDeltaChain(
   }
 }
 
-async function resolvePackChain(
+export async function resolvePackChain(
   ctx: Context,
   registry: PackRegistry,
   hit: PackLookupHit,
@@ -321,7 +321,7 @@ function packTypeName(type: PackEntryHeader['type'], targetId: ObjectId): string
   }
 }
 
-function isBase(h: PackEntryHeader): h is PackEntryHeader & { type: 1 | 2 | 3 | 4 } {
+export function isBase(h: PackEntryHeader): h is PackEntryHeader & { type: 1 | 2 | 3 | 4 } {
   return (
     h.type === PACK_ENTRY_TYPE.COMMIT ||
     h.type === PACK_ENTRY_TYPE.TREE ||
@@ -338,7 +338,7 @@ function isBase(h: PackEntryHeader): h is PackEntryHeader & { type: 1 | 2 | 3 | 
  * capped separately by the compressor's `maxOutputLength` — adding a second cap
  * would create a lower ceiling than the caller's contract permits.
  */
-async function readEntryHeaderWithChunk(
+export async function readEntryHeaderWithChunk(
   ctx: Context,
   hit: PackLookupHit,
   nextOffset: number,

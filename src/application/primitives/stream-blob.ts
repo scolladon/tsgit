@@ -1,15 +1,24 @@
 import { operationAborted } from '../../domain/error.js';
 import {
+  type ObjectType,
   objectHashMismatch,
   objectNotFound,
   unexpectedObjectType,
 } from '../../domain/objects/error.js';
 import { parseHeader } from '../../domain/objects/header.js';
 import type { ObjectId } from '../../domain/objects/index.js';
+import { PACK_ENTRY_TYPE } from '../../domain/storage/index.js';
 import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
 import type { Hasher } from '../../ports/hash-service.js';
-import { looseCompressedBytes } from './object-resolver.js';
+import {
+  isBase,
+  looseCompressedBytes,
+  readEntryHeaderWithChunk,
+  resolvePackChain,
+} from './object-resolver.js';
+import { nextOffsetForEntry } from './pack-registry.js';
+import { getPackRegistry } from './read-object.js';
 
 export interface StreamBlobOptions {
   readonly verifyHash?: boolean;
@@ -35,7 +44,39 @@ export async function streamBlob(
     return streamLooseBlob(ctx, id, compressed, verifyHash);
   }
 
-  throw objectNotFound(id);
+  const registry = getPackRegistry(ctx);
+  const hit = await registry.lookup(id);
+  if (hit === undefined) {
+    throw objectNotFound(id);
+  }
+
+  const table = await hit.pack.offsetTable();
+  const nextOffset = nextOffsetForEntry(table, hit.offset);
+  const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(ctx, hit, nextOffset);
+
+  if (isBase(header)) {
+    if (header.type !== PACK_ENTRY_TYPE.BLOB) {
+      throw unexpectedObjectType('blob', packTypeName(header.type), id);
+    }
+    return streamPackedBaseBlob(ctx, id, chunk.subarray(headerEndInChunk), header.size, verifyHash);
+  }
+
+  // Delta entry: reconstruct in full (full materialisation is expected for deltas)
+  const fullBytes = await resolvePackChain(ctx, registry, hit, id, undefined);
+  return streamFromBuffer(ctx, id, fullBytes, verifyHash, true);
+}
+
+function packTypeName(type: 1 | 2 | 3 | 4): ObjectType {
+  switch (type) {
+    case PACK_ENTRY_TYPE.COMMIT:
+      return 'commit';
+    case PACK_ENTRY_TYPE.TREE:
+      return 'tree';
+    case PACK_ENTRY_TYPE.BLOB:
+      return 'blob';
+    case PACK_ENTRY_TYPE.TAG:
+      return 'tag';
+  }
 }
 
 async function streamLooseBlob(
@@ -54,8 +95,68 @@ async function streamLooseBlob(
   const inflated = source.pipeThrough(ctx.compressor.createInflateStream());
   const chunks = readableStreamToAsyncIterable(inflated);
 
-  const iterable = streamLooseBlobChunks(ctx, id, chunks, verifyHash);
+  const iterable = yieldAndVerifyChunks(ctx, id, chunks, verifyHash);
   return Object.assign(iterable, { materialised: false as const });
+}
+
+async function streamPackedBaseBlob(
+  ctx: Context,
+  id: ObjectId,
+  compressedPayload: Uint8Array,
+  declaredSize: number,
+  verifyHash: boolean,
+): Promise<BlobStream> {
+  // Pack base entries carry no loose-format header in the inflated output.
+  // Feed the exact compressed slice through inflate, then yield content chunks.
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(compressedPayload);
+      controller.close();
+    },
+  });
+
+  const inflated = source.pipeThrough(ctx.compressor.createInflateStream());
+  const chunks = readableStreamToAsyncIterable(inflated);
+
+  const iterable = yieldAndVerifyPackedBaseChunks(ctx, id, chunks, declaredSize, verifyHash);
+  return Object.assign(iterable, { materialised: false as const });
+}
+
+async function streamFromBuffer(
+  ctx: Context,
+  id: ObjectId,
+  fullBytes: Uint8Array,
+  verifyHash: boolean,
+  materialised: boolean,
+): Promise<BlobStream> {
+  // fullBytes is loose-format: `<type> <size>\0<content>`
+  const nullPos = fullBytes.indexOf(0x00);
+  if (nullPos === -1) {
+    throw objectNotFound(id);
+  }
+  const { type } = parseHeader(fullBytes);
+  if (type !== 'blob') {
+    throw unexpectedObjectType('blob', type, id);
+  }
+  const headerBytes = fullBytes.subarray(0, nullPos + 1);
+  const content = fullBytes.subarray(nullPos + 1);
+
+  async function* gen(): AsyncIterable<Uint8Array> {
+    const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
+    hasher?.update(headerBytes);
+    if (content.length > 0) {
+      hasher?.update(content);
+      yield content;
+    }
+    if (hasher !== undefined) {
+      const actual = (await hasher.digestHex()) as ObjectId;
+      if (actual !== id) {
+        throw objectHashMismatch(id, actual);
+      }
+    }
+  }
+
+  return Object.assign(gen(), { materialised });
 }
 
 /** Result of stripping the git object header from accumulated inflate chunks. */
@@ -94,7 +195,11 @@ async function stripHeader(
   }
 }
 
-async function* streamLooseBlobChunks(
+/**
+ * Streaming tail for the loose path. Strips the git loose-format header
+ * from the inflated output, then yields content chunks with incremental hash verification.
+ */
+async function* yieldAndVerifyChunks(
   ctx: Context,
   id: ObjectId,
   chunks: AsyncIterable<Uint8Array>,
@@ -121,6 +226,44 @@ async function* streamLooseBlobChunks(
   }
 
   for await (const chunk of { [Symbol.asyncIterator]: () => iter }) {
+    if (ctx.signal?.aborted === true) {
+      throw operationAborted();
+    }
+    hasher?.update(chunk);
+    yield chunk;
+  }
+
+  if (hasher !== undefined) {
+    const actual = (await hasher.digestHex()) as ObjectId;
+    if (actual !== id) {
+      throw objectHashMismatch(id, actual);
+    }
+  }
+}
+
+/**
+ * Streaming tail for packed BASE entries. Pack base entries hold raw content
+ * bytes (no loose-format header in the inflated output). The canonical header
+ * `blob <declaredSize>\0` is built from the pack entry header's declared inflated
+ * size — known before inflation — so chunks can be yielded as they arrive.
+ * A wrong declared size is caught: the incremental hash over the synthetic header
+ * plus the true inflated bytes will not equal id, so objectHashMismatch fires.
+ */
+async function* yieldAndVerifyPackedBaseChunks(
+  ctx: Context,
+  id: ObjectId,
+  chunks: AsyncIterable<Uint8Array>,
+  declaredSize: number,
+  verifyHash: boolean,
+): AsyncIterable<Uint8Array> {
+  const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
+
+  if (hasher !== undefined) {
+    const headerBytes = new TextEncoder().encode(`blob ${declaredSize}\0`);
+    hasher.update(headerBytes);
+  }
+
+  for await (const chunk of chunks) {
     if (ctx.signal?.aborted === true) {
       throw operationAborted();
     }
