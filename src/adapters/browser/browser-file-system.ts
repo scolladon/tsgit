@@ -46,6 +46,15 @@ export class BrowserFileSystem implements FileSystem {
     await writable.close();
   }
 
+  async writeStream(path: string, source: AsyncIterable<Uint8Array>): Promise<void> {
+    const handle = await this.resolveFileHandle(path, true);
+    const writable = await handle.createWritable();
+    for await (const chunk of source) {
+      await writable.write(chunk as FileSystemWriteChunkType);
+    }
+    await writable.close();
+  }
+
   async writeExclusive(path: string, data: Uint8Array): Promise<void> {
     const segments = this.splitPath(path);
     if (segments.length === 0) throw permissionDenied(path);

@@ -60,6 +60,9 @@ export interface FileSystem {
   /** Write bytes to file, creating parent directories as needed. Overwrites if exists. */
   readonly write: (path: string, data: Uint8Array) => Promise<void>;
 
+  /** Stream bytes to file from an async source, creating parent directories as needed. Overwrites if exists. Writes bytes verbatim. */
+  readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>) => Promise<void>;
+
   /**
    * Write bytes to file. Fails with FILE_EXISTS if the file already exists (exclusive create).
    *

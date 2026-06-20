@@ -21,6 +21,16 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'readUtf8', invoke: (e, p) => e.fs.readUtf8(p) },
   { name: 'write', invoke: (e, p) => e.fs.write(p, new Uint8Array()) },
   { name: 'writeExclusive', invoke: (e, p) => e.fs.writeExclusive(p, new Uint8Array()) },
+  {
+    name: 'writeStream',
+    invoke: (e, p) =>
+      e.fs.writeStream(
+        p,
+        (async function* () {
+          yield new Uint8Array();
+        })(),
+      ),
+  },
   { name: 'writeUtf8', invoke: (e, p) => e.fs.writeUtf8(p, '') },
   { name: 'appendUtf8', invoke: (e, p) => e.fs.appendUtf8(p, '') },
   { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
@@ -230,6 +240,75 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
       // Assert
       expect(result).toEqual(new Uint8Array());
+    });
+
+    it('Given single-chunk async source, When writeStream then read, Then bytes are byte-identical', async () => {
+      // Arrange
+      const path = `${env.rootDir}/stream-single.bin`;
+      const data = new Uint8Array([1, 2, 3, 4, 5]);
+      async function* source() {
+        yield data;
+      }
+
+      // Act
+      await env.fs.writeStream(path, source());
+      const result = await env.fs.read(path);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given multi-chunk async source, When writeStream then read, Then bytes equal in-order concatenation', async () => {
+      // Arrange
+      const path = `${env.rootDir}/stream-multi.bin`;
+      const chunk1 = new Uint8Array([10, 20, 30]);
+      const chunk2 = new Uint8Array([40, 50]);
+      const chunk3 = new Uint8Array([60]);
+      async function* source() {
+        yield chunk1;
+        yield chunk2;
+        yield chunk3;
+      }
+
+      // Act
+      await env.fs.writeStream(path, source());
+      const result = await env.fs.read(path);
+
+      // Assert
+      expect(result).toEqual(new Uint8Array([10, 20, 30, 40, 50, 60]));
+    });
+
+    it('Given nested path whose parent does not exist, When writeStream, Then creates parent dirs and file exists', async () => {
+      // Arrange
+      const path = `${env.rootDir}/deep/nested/stream.bin`;
+      const data = new Uint8Array([42]);
+      async function* source() {
+        yield data;
+      }
+
+      // Act
+      await env.fs.writeStream(path, source());
+
+      // Assert
+      expect(await env.fs.exists(path)).toBe(true);
+      expect(await env.fs.read(path)).toEqual(data);
+    });
+
+    it('Given existing file, When writeStream, Then overwrites with new bytes', async () => {
+      // Arrange
+      const path = `${env.rootDir}/stream-overwrite.bin`;
+      await env.fs.write(path, new Uint8Array([1, 2, 3]));
+      const newData = new Uint8Array([9, 9]);
+      async function* source() {
+        yield newData;
+      }
+
+      // Act
+      await env.fs.writeStream(path, source());
+      const result = await env.fs.read(path);
+
+      // Assert
+      expect(result).toEqual(newData);
     });
 
     it('Given file, When rm, Then file no longer exists', async () => {

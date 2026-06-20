@@ -89,6 +89,19 @@ export class MemoryFileSystem implements FileSystem {
     this.touch(normalized);
   };
 
+  writeStream = async (path: string, source: AsyncIterable<Uint8Array>): Promise<void> => {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of source) chunks.push(chunk);
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) {
+      out.set(c, off);
+      off += c.length;
+    }
+    await this.write(path, out);
+  };
+
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const normalized = this.resolve(path);
     if (this.files.has(normalized) || this.symlinks.has(normalized)) {
