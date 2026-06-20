@@ -85,46 +85,43 @@ async function finalizeHash(hasher: Hasher | undefined, id: ObjectId): Promise<v
   if (actual !== id) throw objectHashMismatch(id, actual);
 }
 
-async function streamLooseBlob(
+function inflateOneShot(ctx: Context, bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+  const inflated = source.pipeThrough(ctx.compressor.createInflateStream());
+  return readableStreamToAsyncIterable(inflated);
+}
+
+function streamLooseBlob(
   ctx: Context,
   id: ObjectId,
   compressed: Uint8Array,
   verifyHash: boolean,
-): Promise<BlobStream> {
-  const source = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(compressed);
-      controller.close();
-    },
-  });
-
-  const inflated = source.pipeThrough(ctx.compressor.createInflateStream());
-  const chunks = readableStreamToAsyncIterable(inflated);
-
-  const iterable = yieldAndVerifyChunks(ctx, id, chunks, verifyHash);
+): BlobStream {
+  const iterable = yieldAndVerifyChunks(ctx, id, inflateOneShot(ctx, compressed), verifyHash);
   return Object.assign(iterable, { materialised: false as const });
 }
 
-async function streamPackedBaseBlob(
+function streamPackedBaseBlob(
   ctx: Context,
   id: ObjectId,
   compressedPayload: Uint8Array,
   declaredSize: number,
   verifyHash: boolean,
-): Promise<BlobStream> {
+): BlobStream {
   // Pack base entries carry no loose-format header in the inflated output.
   // Feed the exact compressed slice through inflate, then yield content chunks.
-  const source = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(compressedPayload);
-      controller.close();
-    },
-  });
-
-  const inflated = source.pipeThrough(ctx.compressor.createInflateStream());
-  const chunks = readableStreamToAsyncIterable(inflated);
-
-  const iterable = yieldAndVerifyPackedBaseChunks(ctx, id, chunks, declaredSize, verifyHash);
+  const iterable = yieldAndVerifyPackedBaseChunks(
+    ctx,
+    id,
+    inflateOneShot(ctx, compressedPayload),
+    declaredSize,
+    verifyHash,
+  );
   return Object.assign(iterable, { materialised: false as const });
 }
 
