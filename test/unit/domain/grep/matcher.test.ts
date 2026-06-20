@@ -490,4 +490,91 @@ describe('buildGrepMatcher', () => {
       });
     });
   });
+
+  describe('Given a regex that can match empty (/x*/)', () => {
+    describe('When matchLine scans a line with no x', () => {
+      it('Then advances past zero-length matches and reports a match', () => {
+        // Arrange
+        const sut = buildGrepMatcher([/x*/]);
+        const line = enc('abc');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert — empty matches at each position; the scan terminates (lastIndex advance)
+        expect(result.returned).toBe(true);
+        expect(result.spans.every((s: MatchSpan) => s.start === s.end)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a fixed pattern with an empty string { fixed: "" }', () => {
+    describe('When matchLine is called', () => {
+      it('Then matches nothing (empty needle yields no spans)', () => {
+        // Arrange
+        const sut = buildGrepMatcher([{ fixed: '' }]);
+        const line = enc('any content');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+        expect(result.spans).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given two patterns matching at the SAME start with different lengths', () => {
+    describe('When matchLine unions their spans', () => {
+      it('Then orders the same-start spans by end ascending', () => {
+        // Arrange
+        const sut = buildGrepMatcher([/ab/, /abc/]);
+        const line = enc('abc');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert — secondary comparator (a.end - b.end) breaks the same-start tie
+        expect(result.spans).toEqual([
+          { start: 0, end: 2 },
+          { start: 0, end: 3 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a caller RegExp already carrying the global flag (/o/g)', () => {
+    describe('When matchLine is called', () => {
+      it('Then finds all occurrences and leaves the caller lastIndex at 0', () => {
+        // Arrange
+        const caller = /o/g;
+        const sut = buildGrepMatcher([caller]);
+        const line = enc('foo boo');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.spans).toHaveLength(4);
+        expect(caller.lastIndex).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an UPPERCASE word byte on the boundary (wholeWord)', () => {
+    describe('When the left boundary is an uppercase letter', () => {
+      it('Then does NOT match (uppercase counts as a word byte)', () => {
+        // Arrange
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = enc('Bend');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+  });
 });
