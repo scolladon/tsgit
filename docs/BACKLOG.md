@@ -408,6 +408,7 @@ Not abandoned — deferred indefinitely. Pull back into a phase if profiling or 
 
 - **gc / repack / prune** — pack consolidation. Large lift, largely redundant for a library embedded next to canonical git (the host's `git gc` already maintains the object store). Revisit if profiling shows loose-object explosion hurting the browser/memory adapters, or on community demand. _(was 24.1)_
 - **System-wide ignore/attributes layer** — tsgit has no system-config layer anywhere; this covers both `$(prefix)/etc/gitattributes` and the system-level ignore source (`core.excludesFile` set in the system gitconfig). Revisit only on community traction. _(was 24.9d; parked by ADR-302.)_
+- **Idiomatic date inputs for `reflog.expire` / `expireUnreachable`** — these accept git approxidate strings (`"90.days.ago"`), parsed by `parseApproxidate` to unix seconds solely to filter which reflog entries are pruned. A JS-native `Date` (or epoch-seconds `number`) cutoff would be more idiomatic for a library whose callers write JS; the observable output (which entries survive, the on-disk reflog bytes) is unchanged, so this is an input-ergonomics change, not a faithfulness one (cf. the gitGrep `RegExp` divergence, ADR-395). Low lift; could accept the JS form alongside the approxidate string. _(surfaced by the 24.16 idiomatic-input audit, 2026-06-20.)_
 
 ---
 
