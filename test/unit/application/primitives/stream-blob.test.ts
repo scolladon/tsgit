@@ -406,7 +406,7 @@ describe('streamBlob', () => {
       // Arrange
       const content = ENC.encode('tree-like content');
       const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'nonblob-test', [
+      const ids = await writeSyntheticPack(ctx, 'non-blob-test', [
         { kind: 'base', type: 'tree', content },
       ]);
       const id = ids[0] as ObjectId;
@@ -514,7 +514,7 @@ describe('streamBlob', () => {
       // Arrange — write a pack blob, then shadow it with a corrupt loose object
       const content = ENC.encode('original packed content');
       const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'corrupt-pack-noverify', [
+      const ids = await writeSyntheticPack(ctx, 'corrupt-pack-no-verify', [
         { kind: 'base', type: 'blob', content },
       ]);
       const id = ids[0] as ObjectId;
