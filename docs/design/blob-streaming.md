@@ -5,8 +5,10 @@
 > The write side (checkout materialisation) buffers the same blob a second time
 > before `fs.write`.
 > Sequenced after 24.10's inflate fix (now landed).
-> Status: draft → self-reviewed ×3 → accepted → **read-side ADRs 383–389 ratified
-> → write side pulled in scope → revised + self-reviewed (Pass 4)**
+> Status: draft → self-reviewed ×3 → accepted → read-side ADRs 383–389 ratified
+> → write side pulled in scope → revised (Pass 4) → **write-side ADRs 390–393 ratified
+> (WC-3 broadened to the comprehensive sweep) → re-sliced against the authoritative
+> in-scope site list + self-reviewed (Pass 5)**
 
 ## Context
 
@@ -29,14 +31,14 @@
 
 ### The beneficiaries (why streaming matters)
 
-- **Write side (the strongest case, now IN scope):** the live checkout materialisation path is `src/application/primitives/apply-changeset.ts:167`:
+- **Write side (the strongest case, now IN scope — comprehensive sweep, ADR-392):** several live sites read a *full* blob and write it to the working tree, holding a 200 MB StaticResource **twice** (the inflated read buffer *plus* the whole-buffer handed to `fs.write`). The hot path is `src/application/primitives/apply-changeset.ts:167`:
 
   ```ts
   const blob = await readBlob(ctx, entry.id);
   await writeWorkingTreeEntry(ctx, entry.path, blob.content, entry.mode);
   ```
 
-  This is the `CHECKOUT_OP = 'checkout:materialize'` path (line 45), reached for every regular-file entry of a checkout / reset / merge / stash / sparse-checkout (`applyChangeset` callers: `checkout.ts`, `reset.ts`, `merge.ts`, `stash.ts`, `worktree.ts`, `internal/reset-worktree.ts`, `internal/apply-sparse-checkout.ts`). A 200 MB StaticResource is held **twice** — the inflated read buffer *plus* the whole-buffer handed to `fs.write`. Converting this consumer is where the real peak-memory win lands. (`materializeFile` in `src/application/commands/internal/working-tree.ts:36` is **dead code** — zero production callers, grep-confirmed — and is **not** the consumer; see Out of scope.)
+  This is the `CHECKOUT_OP = 'checkout:materialize'` path (line 45), reached for every regular-file entry of a checkout / reset / stash / sparse-checkout (`applyChangeset` callers: `checkout.ts`, `reset.ts`, `stash.ts`, `worktree.ts`, `internal/reset-worktree.ts`, `internal/apply-sparse-checkout.ts`). But it is **not** the only full-blob working-tree write. The three-way-merge paths materialise a clean survivor side directly via `readBlob(...).content` → `writeWorkingTreeFile`, bypassing the changeset loop — `merge.ts`'s own `writeOutcomeToTree` (the `merge` command) and `apply-merge-to-worktree.ts`'s `writeConflictWorktree` (the shared cherry-pick / revert / rebase / stash-apply path). Stash's untracked-restore (`stash.ts` `restoreUntracked`) is a third. ADR-392 chose to convert **all** of these (see the authoritative in-scope table). (`materializeFile` in `src/application/commands/internal/working-tree.ts:36` is **dead code** — zero production callers, grep-confirmed — and is **not** a consumer; see Out of scope.)
 - **Read side:** `read-file-at` (`src/application/commands/read-file-at.ts`), `blame`, `show`, `stash`, `merge` all consume `Blob.content`. Most need the whole buffer (line diff, hashing) and are NOT streaming candidates; `read-file-at` piping to a sink is.
 
 ### No working-tree transform blocks a streamed write (verified)
@@ -58,8 +60,8 @@ When this ships:
 3. Hash verification on the stream path is **incremental and default-on** (ADR-389), matching `readObject`'s posture, with the documented caveat that a mismatch surfaces only at end-of-stream.
 4. Deltified packed blobs are **reconstructed in full, then streamed, with `materialised: true`** on the result (ADR-386) — never silently claiming bounded memory.
 5. The existing fully-buffered `readBlob` is unchanged (additive read primitive; no regression to any current caller).
-6. **The in-tree checkout consumer (`apply-changeset.ts:167`) materialises regular-file blobs by streaming** read-stream → streaming-write, so the PR ships a real internal user and the actual peak-memory win, not just an unused primitive. Symlink and gitlink modes stay buffered (tiny by construction).
-7. Streamed checkout writes are **byte-identical** to canonical `git checkout`'s working-tree output, and the on-disk replace semantics stay faithful (see W1–W2).
+6. **Every in-tree site that materialises a *full* blob to the working tree streams it** read-stream → streaming-write (ADR-392, comprehensive sweep), not just the checkout hot path. The authoritative in-scope list (below) enumerates exactly which sites convert and which are excluded; the excluded sites write synthesised conflict-marker content or non-blob content (symlink target / gitlink). When this ships, no whole-blob working-tree write is left buffered.
+7. Streamed working-tree writes are **byte-identical** to canonical `git`'s working-tree output (checkout, and the merge clean-survivor path), and the on-disk replace semantics stay faithful (see W1–W2).
 8. Any new public symbol passes the surface gates (barrel + facade + repository.test snapshot + doc page + browser scenario + README/api.json) — see `.claude/workflow/surface-gates.md`. The plan owns the checklist; this doc flags the new exports.
 
 ## Read-side design (ratified — ADRs 383–389)
@@ -141,9 +143,34 @@ streamBlob(ctx, id)
 - **Browser-OPFS:** `createInflateStream` is `DecompressionStream('deflate')` (native, streaming). The 64 KiB O(n²) cap lives on `streamInflate`, **not** here. ✓
 - **Memory:** same `DecompressionStream` path; whole-buffer enqueue is acceptable for the in-memory adapter (no disk to stream from). Faithfulness/interop pins run on Node; parity runs on memory. ✓
 
-## Write-side design (NEW — in scope)
+## Write-side design (ratified — ADRs 390–393)
 
-Goal: convert the live checkout materialisation consumer (`apply-changeset.ts:167`) so a regular-file blob flows **read-stream → streaming-write** without ever holding the full inflated content in one buffer. This is what turns `streamBlob` from an unused primitive into a real peak-memory win.
+Goal: convert **every** in-tree site that materialises a *full* blob to the working tree so the blob flows **read-stream → streaming-write** without ever holding the full inflated content in one buffer (ADR-392, comprehensive sweep). This turns `streamBlob` from an unused primitive into a repo-wide peak-memory win across checkout, reset, stash, sparse-checkout, **and** the merge clean-survivor paths. The four write-side decisions are accepted:
+
+- **`writeStream(path, source)` is the streaming-write port method** (ADR-390).
+- **The write always streams regular-file blobs — no size threshold** (ADR-391); symlink/gitlink modes stay buffered.
+- **The conversion is the comprehensive sweep, not the single hot path** (ADR-392); the exclusion criterion is enumerated in the authoritative in-scope table below.
+- **The streamed write goes straight into the final path after `rmIfExists`, git-faithful and non-atomic** (ADR-393); verification stays end-of-stream (W3).
+
+### Authoritative in-scope site list (the contract the planner slices against)
+
+Every site under `src/` where a `readBlob(...).content` (or equivalent) result is written to the working tree, classified **convert** / **exclude** with a code-grounded reason. The two cap constants referenced are **both 256 MiB**: `MAX_WORKING_TREE_BLOB_BYTES` (`src/application/primitives/types.ts:42`) and `MAX_CONFLICT_OUTPUT_BYTES` (`src/domain/merge/merge-types.ts:98`) — each is a **reject-if-larger security ceiling** (throws `OBJECT_TOO_LARGE`), *not* a content-truncation marker. ADR-392's "length-capped content" exclusion means *synthesised content bounded as content* (conflict markers), **not** "a whole-blob read guarded by a reject ceiling" — so a whole-blob-with-reject-ceiling site still converts, and the dropped ceiling is exactly what WC-5 surfaces.
+
+| # | Site (file:line) | Write primitive | What it writes | Cap | Verdict | Reason |
+|---|---|---|---|---|---|---|
+| A | `apply-changeset.ts:167-168` (`applyEntry`) | `writeWorkingTreeEntry` (mode dispatch) | whole blob | none | **convert** | The checkout/reset/stash/sparse hot path; uncapped full blob. Regular modes (100644/100755) stream; symlink/gitlink stay buffered (ADR-391). |
+| B | `merge.ts:589-590` (`writeOutcomeToTree`, `unchanged`/`resolved-known`) | `writeWorkingTreeFile` | whole blob (merge clean survivor) | 256 MiB ceiling | **convert** | A single whole committed blob written verbatim; the cap is a reject ceiling, not truncation. This is the `merge` command's own clean-survivor materialisation (ADR-392). |
+| C | `apply-merge-to-worktree.ts:171-174` (`writeConflictWorktree`, `resolved-known`) | `writeWorkingTreeFile` | whole blob (merge clean survivor) | 256 MiB ceiling | **convert** | Same whole-blob clean survivor, on the *shared* path for cherry-pick / revert / rebase / stash-apply (parallel to B, not superseded by it — both live; see note). |
+| D | `stash.ts:380-381` (`restoreUntracked`) | `writeWorkingTreeFile` | whole untracked blob | 256 MiB ceiling | **convert*** | A genuine full-file restore of an untracked blob; the cap is a reject ceiling guarding a hostile `refs/stash`, not a small-content marker. ***Gated on WC-5** — `streamBlob` has no `maxBytes`, so converting drops the ceiling unless WC-5(a) restores it. |
+| E | `merge.ts:596` (`writeOutcomeToTree`, `resolved-merged`) | `writeWorkingTreeFile` | synthesised merged bytes (`outcome.bytes`, in-memory only) | n/a | **exclude** | Not a single blob — the merged content is computed in memory by the content merger; there is no blob id / stream to consume. |
+| F | `apply-merge-to-worktree.ts:166-167` (`writeConflictWorktree`, `resolved-merged`) | `writeWorkingTreeFile` | synthesised merged bytes (`outcome.bytes`) | n/a | **exclude** | Same as E on the shared path. |
+| G | `merge.ts:605-619` (`writeConflictToTree` → `materialiseConflictBytes`) | `writeWorkingTreeEntry` | conflict bytes: synthesised markers *or* a whole survivor blob, unified into one buffer | 256 MiB ceiling | **exclude** | Conflict materialisation (ADR-392 names it). The helper returns `Uint8Array \| undefined` where the value may be `conflictContent` (synthesised `<<<<<<<` markers) — the call site cannot stream what may be synthesised. The whole-blob arms (binary/type-change/modify-delete) would each need a stream/buffer-union refactor that ADR-392's "don't force-fit" guard rejects. |
+| H | `apply-merge-to-worktree.ts:106-149` (`writeMarkedConflict` → `conflictBytes`) | `writeWorkingTreeEntry` | conflict bytes (same dual nature as G) | 256 MiB ceiling | **exclude** | Same as G on the shared path. |
+| I | `write-distinct-types-sides.ts:19-25` | `writeWorkingTreeEntry` ×2 | each side's whole blob at its path | 256 MiB ceiling | **exclude** | Distinct-types **conflict** materialisation. Although each side *is* a whole blob, it is part of the conflict-write family ADR-392 names, is mode-dispatched (a side may be a symlink, which stays buffered), and converting it for the regular arm only would fragment one tight conflict helper. Excluded as conflict materialisation. |
+
+**The "two merge paths" question, resolved.** `merge.ts:writeOutcomeToTree` (caller at `merge.ts:532`) and `apply-merge-to-worktree.ts:applyMergeToWorktree` (callers: `cherry-pick.ts`, `revert.ts`, `stash.ts`) are **both live and parallel** — neither supersedes the other. `merge.ts` is the `merge` command's own working-tree materialisation; `apply-merge-to-worktree.ts` is the shared three-way-apply primitive for cherry-pick / revert / rebase / stash-apply. They share `write-distinct-types-sides.ts` and the same conflict-bytes shape but have separate clean-survivor write loops, so the sweep converts **both** B and C.
+
+**Not working-tree writes (excluded, stated why):** `snapshot/index-entry.ts:25` and `snapshot/tree-entry.ts:27` (lazy *read* accessors — `read: () => (await readBlob(...)).content`, not a write); `blame.ts:318,368` (read API, in-memory line authorship); `read-file-at.ts:51` (a *read* consumer — it could itself use `streamBlob` to pipe to a sink, but that is a read-API change, out of this feature's write scope; noted, not converted); `materialise-patch-files.ts`, `detect-similarity-renames.ts`, `build-content-merger.ts` (in-memory diff/merge inputs, capped, never written to the working tree); `walk-submodules.ts:114` (reads `.gitmodules`, capped, in-memory). All listed again under Out of scope.
 
 ### Faithfulness framing (empirically pinned — write side)
 
@@ -158,55 +185,73 @@ The working-tree write is observable on-disk state, so it **is** faithfulness-bo
 
 What git does *not* guarantee is crash-atomicity of the *new* content: working-tree writes are non-atomic, so a mid-write crash can leave a short/empty new file (the old content is already gone after the unlink, or survives only on a pre-existing hardlink as in W2). A streamed write has the **same** failure shape — a partial new file on crash — so streaming does **not** invent a divergence (it is no less atomic than git, which is itself non-atomic for working-tree content). This is the W3 interaction below; it is faithful, but it must be stated.
 
-### The missing capability — a streaming-write port method
+### The streaming-write port method (ADR-390)
 
-`FileSystem` has no way to write a path from a chunk source without buffering the whole thing. The write side needs one new port capability (exact shape is decision candidate **WC-1**). Cross-adapter feasibility is confirmed:
+`FileSystem` had no way to write a path from a chunk source without buffering the whole thing. ADR-390 adds one new port capability — `writeStream(path, source: AsyncIterable<Uint8Array>): Promise<void>`, same contract as `write` (creates parent dirs, overwrites, writes bytes verbatim). Cross-adapter feasibility is confirmed:
 
 - **Node:** `stream.pipeline(asyncIterable, fs.createWriteStream(real))` — genuinely bounded.
 - **Browser-OPFS:** `handle.createWritable()` returns a `FileSystemWritableFileStream`; loop `writable.write(chunk)` then `writable.close()` — natively streaming (the adapter's `write` already uses `createWritable()` at `browser-file-system.ts:44`).
 - **Memory:** concat chunks into a buffer then store (no real bound; parity-only — acceptable, the in-memory adapter has no disk to stream to).
 
-Blast radius of the new method: **1 port declaration + 3 adapter implementations + 1 port contract test** (plus its mode/symlink-safety wiring). This is the dominant new surface of the write side and the reason WC-1 is the first candidate.
+Blast radius of the new method: **1 port declaration + 3 adapter implementations + 1 port contract test** (plus its mode/symlink-safety wiring). It is the dominant new surface of the write side.
 
 ### Data flow (write — regular file modes)
 
+Two streaming write entrypoints are needed because the in-scope sites use two different existing buffered entrypoints (`write-working-tree-file.ts`):
+
+- `writeWorkingTreeFileStream(ctx, path, source)` — regular-only, for sites **B / C / D** that call `writeWorkingTreeFile` today.
+- `writeWorkingTreeEntryStream(ctx, path, source, mode)` — mode-dispatched, for site **A** (`apply-changeset.ts`) that calls `writeWorkingTreeEntry` today; only the regular arm streams.
+
+Both build on a streaming `writeRegularFile` sibling that preserves the `rmIfExists`-then-write order and the `chmod` tail byte-for-byte:
+
 ```
-applyEntry(ctx, workdir, entry)   // apply-changeset.ts
+checkout (site A):  applyEntry(ctx, workdir, entry)            // apply-changeset.ts
   regular file (100644 / 100755):
-    stream = await streamBlob(ctx, entry.id)        // read-stream (ADR-383/388)
+    stream = await streamBlob(ctx, entry.id)                   // read-stream (ADR-383/388)
     await writeWorkingTreeEntryStream(ctx, entry.path, stream, entry.mode)
-        rmIfExists(fullPath)                         // W1/W2 faithfulness + symlink-safety, UNCHANGED order
-        ctx.fs.<writeStream>(fullPath, stream)       // NEW port capability (WC-1)
-        chmod(fullPath, perm)                        // unchanged
-  symlink (120000):  unchanged — decode target, rmIfExists, ctx.fs.symlink (tiny, buffered)
+        rmIfExists(fullPath)                                   // W1/W2 faithfulness + symlink-safety, UNCHANGED order
+        ctx.fs.writeStream(fullPath, stream)                  // ADR-390, straight into final path (ADR-393)
+        chmod(fullPath, perm)                                  // unchanged
+  symlink (120000):  unchanged — decode target, rmIfExists, ctx.fs.symlink (tiny, buffered, ADR-391)
   gitlink (160000):  unchanged — mkdir (no content)
+
+merge clean survivor (sites B / C):  writeOutcomeToTree / writeConflictWorktree
+  resolved-known / unchanged:
+    stream = await streamBlob(ctx, outcome.id)                 // read-stream (ADR-383/388)
+    await writeWorkingTreeFileStream(ctx, outcome.path, stream)  // regular-only; WC-5 governs the cap
+
+stash untracked restore (site D):  restoreUntracked
+  for each untracked entry:
+    stream = await streamBlob(ctx, entry.id)                   // read-stream — WC-5: 256 MiB ceiling must be preserved
+    await writeWorkingTreeFileStream(ctx, path, stream)
 ```
 
-The dispatch lives in `write-working-tree-file.ts`: a streaming sibling of `writeWorkingTreeEntry` / `writeRegularFile` that takes an `AsyncIterable<Uint8Array>` instead of a `Uint8Array` and keeps the `rmIfExists`-then-write order and the `chmod` tail byte-for-byte. Symlink and gitlink arms are untouched — their content is tiny (a path string / nothing), so buffering is correct and a streamed write there would be pointless complexity (decision candidate **WC-3**).
+The dispatch lives in `write-working-tree-file.ts`: streaming siblings of `writeWorkingTreeEntry` / `writeWorkingTreeFile` / `writeRegularFile` that take an `AsyncIterable<Uint8Array>` instead of a `Uint8Array` and keep the `rmIfExists`-then-write order and the `chmod` tail byte-for-byte. Symlink and gitlink arms are untouched — their content is tiny (a path string / nothing), so buffering is correct and a streamed write there would be pointless complexity (ADR-391).
 
-### Write-side error & verification interaction (W3)
+### Write-side error & verification interaction (W3, resolved by ADR-393)
 
 The read stream verifies the hash at **end-of-stream** (ADR-389). The write consumes chunks as they arrive, so on a corrupt blob the write completes its chunks and *then* the read stream throws `objectHashMismatch` — leaving a **partial/whole-but-unverified file on disk**. This is a real interaction, not hand-waved:
 
 - It is **no worse than git**: W2 shows git's working-tree writes are non-atomic; a corrupt object would also leave bad bytes on disk.
-- It is **no worse than today's buffered path**: today `readBlob` verifies the *whole* buffer before `writeWorkingTreeEntry` is even called, so today a corrupt blob throws *before* any write. The streaming write **loses that pre-write verification** — a real behaviour change to surface.
+- It is **no worse than today's buffered path** for the *bytes published*, but it does **lose the buffered path's pre-write verification**: today `readBlob` verifies the *whole* buffer before the write is even called, so a corrupt blob throws *before* any write. The streaming write loses that — a real behaviour change.
 
-This tension is decision candidate **WC-4** (atomicity / verify-before-publish). Options range from "accept git-faithful non-atomic partial writes" to "stream to a temp path, verify, then rename into place" (which would make tsgit *more* atomic than git — a deliberate, documented choice, not an accidental divergence).
+**Decided (ADR-393):** the streamed write goes **straight into the final path** after `rmIfExists`, with no temp file or rename — git-faithful and non-atomic. Verification stays end-of-stream; a corrupt/aborted blob may leave a partial file, matching git's non-atomic working-tree write semantics (W1/W2). The temp-path + verify + rename alternative (which would make tsgit *more* atomic than git) was considered and rejected as a deliberate divergence; it remains a documented future opt-in.
 
-### Always-stream vs auto-escalate the write (WC-2)
+### Always-stream the write — no threshold (ADR-391)
 
-The read side always streams (ADR-385, no threshold). The write side has the same question: stream every regular-file write, or buffer small files and stream only large ones. Symlink/gitlink modes stay buffered regardless (tiny). This is decision candidate **WC-2**, recommended below to mirror ADR-385's always-stream posture for consistency unless the per-small-file overhead proves to matter.
+The read side always streams (ADR-385, no threshold). **Decided (ADR-391):** the write side mirrors it — every regular-file (100644 / 100755) working-tree materialisation streams, with no size threshold and no `bigFileThreshold` coupling. Symlink (120000) and gitlink (160000) modes stay buffered (content is tiny / absent). A per-small-file-cost-driven threshold remains a documented future option, never a git knob.
 
 ## Decision candidates
 
-> REQUIRED. The designer NEVER decides these; the user does, in the ADR phase. The **read-side** candidates are now **decided** (ADRs 383–389) and live in "Read-side design" above. This section holds only the **new write-side** candidates. ADR numbering continues from the current max (389) → **390+**.
+> REQUIRED. The designer NEVER decides these; the user does, in the ADR phase.
+
+**Read-side candidates — decided (ADRs 383–389):** seven candidates ratified, one deviation (ADR-388, whole-file loose reads). They live in "Read-side design" above.
+
+**Write-side candidates WC-1..WC-4 — decided (ADRs 390–393):** `writeStream(path, source)` port method (ADR-390); always-stream regular files, no threshold (ADR-391); the **comprehensive sweep** of every full-blob site, not the single hot path — the design had recommended the single shared primitive; the user chose the broad sweep (ADR-392); git-faithful straight write into the final path, non-atomic, verify end-of-stream (ADR-393). They live in "Write-side design" above. The sweep (ADR-392) surfaced a new wrinkle when it reached site D (stash), captured as **WC-5** below — the only open candidate.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| WC-1 | **Streaming-write port shape** | (a) New `ctx.fs.writeStream(path, source: AsyncIterable<Uint8Array>): Promise<void>` — high-level, mirrors `write`; the adapter owns the piping (`pipeline` / `createWritable` loop / concat). (b) New `ctx.fs.createWriteStream(path): WritableStream<Uint8Array>` — lower-level; the primitive owns the piping. (c) Reuse the `FileHandle` chunked-write loop via `openWithNoFollow`. | **(a) `writeStream(path, source)`** | Symmetry with the read decisions: high-level method, adapters hide the platform stream just as `createInflateStream` does. Blast radius is 1 port method ×3 adapters + 1 contract test, same posture as `read`/`readSlice`. (b) leaks a Web type into every call site and duplicates the bridge. (c) is **not uniform** — `openWithNoFollow` throws `UNSUPPORTED_OPERATION` on OPFS, so it can't be the cross-adapter write path. Symlink-safety stays the `rmIfExists`-then-stream order (the no-follow guard is unavailable on OPFS anyway). |
-| WC-2 | **Always-stream vs auto-escalate the write** | (a) Always stream every regular-file write. (b) Buffer below a tsgit constant (e.g. 16 MiB), stream above it. (c) Escalate off a caller option. | **(a) Always stream** | Mirrors ADR-385's always-stream read posture (one code path, no magic threshold, no faithfulness coupling). Symlink/gitlink stay buffered regardless (tiny). Pick (b)/(c) only if a measured per-small-file overhead justifies a second path — and if so, the threshold is a documented tsgit memory policy, never `bigFileThreshold`. |
-| WC-3 | **Call-site scope** | (a) Checkout `apply-changeset.ts:167` only (regular-file modes). (b) Also the merge conflict materialisation that shares `writeWorkingTreeEntry` (per its doc comment). (c) A broader sweep of every `applyChangeset` caller. | **(a) checkout regular-file modes (via the shared write primitive)** | `apply-changeset.ts:167` is the single hot path and every `applyChangeset` caller (checkout/reset/merge/stash/sparse) routes through it, so converting the shared `writeWorkingTreeEntry` regular-file arm covers them with one change. The merge **conflict** materialisation writes small synthesised conflict-marker content (not a raw large blob), so it gains nothing from streaming — fold it in only if it already shares the streaming primitive for free; do not expand the surface for it. Symlink/gitlink arms unchanged in all cases. |
-| WC-4 | **Crash / partial-write atomicity & verify-before-publish** | (a) Stream straight into the final path after `rmIfExists` (git-faithful non-atomic write; W3 leaves a partial/unverified file on crash or corruption). (b) Stream into a temp path in the same dir, drain the read stream (which verifies at end, ADR-389), then `rename` into place on success — atomic publish, **more** atomic than git, deliberately documented. (c) Keep buffered+verify-then-write for this consumer and only ship the read primitive streaming (no write-side memory win). | **(a) git-faithful straight write** *(call out (b) explicitly for the ADR round)* | W1/W2 pin that git itself does non-atomic working-tree writes, so (a) is faithful and the simplest — it does not invent a divergence, and it preserves the `rmIfExists`-then-write order that is also the symlink-safety. (b) is genuinely attractive because it *closes the W3 hole* (no partial/unverified file ever published) and OPFS `rename` is emulated anyway — but it makes tsgit deliberately *more* atomic than git and adds temp-name + rename + cleanup-on-failure logic; surface it as a real option, do not pick it silently. (c) abandons requirement 6 (the actual memory win) and is the fallback only if (a)/(b) both prove infeasible. |
+| WC-5 | **The stash size ceiling vs a `maxBytes`-less `streamBlob`** (surfaced by the ADR-392 sweep reaching site D). Today `stash.ts:380` (`restoreUntracked`) reads with `{ maxBytes: MAX_WORKING_TREE_BLOB_BYTES }` (256 MiB), a reject-if-larger ceiling guarding a hostile `refs/stash` from OOMing the restore. The ratified `streamBlob` (ADR-383/389) takes only `{ verifyHash }` — **no `maxBytes`**. Converting site D to `streamBlob` → `writeStream` therefore **drops** that ceiling unless the cap is restored some other way. (Sites B/C carry the same 256 MiB ceiling via `MAX_CONFLICT_OUTPUT_BYTES`; the answer here applies to them too.) | (a) **Add an optional `maxBytes` byte-ceiling to `streamBlob`** (and pass it through). The cap is enforceable cheaply *before* materialisation from the object's declared size — `streamBlob` already parses the loose/pack header (to strip it and type-check), and the buffered path's own ceiling is the same pre-materialisation declared-size check (`enforcePackBaseCap` / `enforceLooseCap` / `enforcePackDeltaPreApplyCap` in `object-resolver.ts:62-138`) throwing `objectTooLarge` before any buffer is built. So `streamBlob({ maxBytes })` throws `OBJECT_TOO_LARGE` before yielding a chunk — exact parity with the buffered cap, no buffering. Small **public** API addition to `StreamBlobOptions`. (b) **Keep a pre-stream size guard at the stash call site** — stat/read the declared inflated size (the object header `<type> <size>`) and throw `objectTooLarge` before opening the stream; `streamBlob` stays cap-free. No public-API change, but duplicates the ceiling logic at the call site (and at B/C). (c) **Exclude site D (and B/C) from the sweep** — keep them buffered+capped, on the grounds that a reject-if-larger ceiling means they are already bounded (≤256 MiB) so the streaming memory win is bounded too. Narrows ADR-392's "no full-blob write left buffered" by three sites. | **(a) add `maxBytes` to `streamBlob`** | It is the only option that keeps the faithful security ceiling **and** delivers the sweep's memory win at every site, and it is cheap and grounded — the ceiling is a declared-size check that fires before materialisation in both the buffered path today and a streaming path, so adding `maxBytes` to `streamBlob` is genuine parity, not a new mechanism. It also generalises cleanly to B/C (same constant). (b) works but duplicates the ceiling at three call sites and re-derives the declared size by hand. (c) is the honest fallback if the user prefers zero public-API growth and accepts that a ≤256 MiB capped restore still allocates up to the cap (the very thing the sweep set out to avoid). DO NOT decide — this is the user's call in the ADR round. |
 
 ## Slices
 
@@ -329,9 +374,11 @@ Given ctx.signal aborted between chunks
 
 ### Write-side slices
 
-#### Slice 7 — port + adapters: streaming-write capability (WC-1)
+> Scope reminder: the consumer conversion must cover **every** in-scope site — A (checkout), B + C (merge clean survivors), D (stash untracked restore) — per the authoritative table (ADR-392). One generalised streaming-write helper pair is built once (Slice 8) and applied at each site (Slices 9 / 9b / 9c). Site D rides on the WC-5 decision (cap restoration); the plan must not land D until WC-5 is resolved.
 
-**Why:** `FileSystem` has no streaming write; the checkout consumer needs one to bound write-side memory (requirement 6). Decided shape comes from WC-1 (recommended: `writeStream(path, source)`).
+#### Slice 7 — port + adapters: `writeStream` capability (ADR-390)
+
+**Why:** `FileSystem` has no streaming write; every converted consumer needs one to bound write-side memory (requirement 6).
 
 **Files:**
 - `src/ports/file-system.ts` — add to the `FileSystem` interface (near `write` line 61 / `writeExclusive` line 77): `readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>) => Promise<void>;` with a doc comment matching the `write` contract (parent-dir creation, overwrite, byte-for-byte). Keep `FileHandle` untouched.
@@ -342,25 +389,30 @@ Given ctx.signal aborted between chunks
 
 **Mutation-resistant patterns:** drive each adapter through the shared contract test (byte-equality round-trip via `read`); assert parent-dir creation on a nested path; assert overwrite of an existing file; feed a multi-chunk async source so a "first-chunk-only" mutant dies.
 
-#### Slice 8 — internal write primitive: streaming `writeWorkingTreeEntry` sibling (WC-3 scope, WC-4 atomicity)
+#### Slice 8 — internal write primitives: streaming siblings (ADR-391/393)
+
+**Why:** the in-scope sites use two buffered entrypoints — `writeWorkingTreeFile` (sites B / C / D) and `writeWorkingTreeEntry` (site A). Both get a streaming sibling, built on one streaming `writeRegularFile`.
 
 **Files:**
-- `src/application/primitives/internal/write-working-tree-file.ts` — add a streaming sibling of `writeRegularFile` (line 37) and `writeWorkingTreeEntry` (line 69). Current `writeRegularFile` does `rmIfExists` (line 43) → `ctx.fs.write` (line 44) → `chmod` (line 45). The streaming version preserves the **exact same order** (W1/W2 faithfulness + symlink-safety): `rmIfExists(ctx, fullPath)` → `ctx.fs.writeStream(fullPath, source)` → `chmod`. Per WC-4(a) it writes straight into the final path; if WC-4(b) is chosen, it streams to a temp path then `rename`s.
-- The mode dispatch (`writeWorkingTreeEntry`, lines 69–86) gains a streaming variant: **symlink (120000)** arm unchanged (`rmIfExists` + `ctx.fs.symlink(decode(content), …)`, tiny, buffered — WC-3); **gitlink (160000)** arm unchanged (`mkdir`, no content); **regular** modes route to the new streaming `writeRegularFile`.
+- `src/application/primitives/internal/write-working-tree-file.ts` — add three streaming siblings:
+  - **`writeRegularFileStream(ctx, fullPath, source: AsyncIterable<Uint8Array>, mode?)`** — mirror of `writeRegularFile` (line 37). Current order: `rmIfExists` (line 43) → `ctx.fs.write` (line 44) → `chmod` (lines 45–50). Streaming version preserves the **exact same order** (W1/W2 faithfulness + symlink-safety): `rmIfExists(ctx, fullPath)` → `ctx.fs.writeStream(fullPath, source)` → `chmod`. Straight into the final path, no temp/rename (ADR-393). The `MODE_REGULAR_PERM`/`MODE_EXEC_PERM` chmod tail (lines 15–16) is preserved byte-for-byte.
+  - **`writeWorkingTreeFileStream(ctx, path: FilePath, source)`** — mirror of `writeWorkingTreeFile` (line 53): `writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source)` (no mode → regular perm). For sites B / C / D.
+  - **`writeWorkingTreeEntryStream(ctx, path: FilePath, source, mode: FileMode)`** — mirror of `writeWorkingTreeEntry` (line 69) mode dispatch: **symlink (120000)** stays buffered (`rmIfExists` + `ctx.fs.symlink(decode(content), …)` — the target must be decoded whole, ADR-391); **gitlink (160000)** stays buffered (`mkdir`, no content); **regular** modes → `writeRegularFileStream`. For site A. NB: the streaming variant takes a `source`, so callers needing the symlink/gitlink arms keep calling the buffered `writeWorkingTreeEntry` with a decoded buffer — the streaming entry is for the regular arm only (site A dispatches before the call; see Slice 9).
 
-**Current signatures:**
+**Current signatures (to mirror):**
 - `writeRegularFile(ctx, fullPath: string, content: Uint8Array, mode?: FileMode): Promise<void>` (line 37).
+- `writeWorkingTreeFile(ctx, path: FilePath, content: Uint8Array): Promise<void>` (line 53).
 - `writeWorkingTreeEntry(ctx, path: FilePath, content: Uint8Array, mode: FileMode): Promise<void>` (line 69).
 - `rmIfExists(ctx, fullPath: string): Promise<void>` (line 23) — reused verbatim, it is the symlink-safe unlink.
 
-**Mechanism:** new `writeWorkingTreeEntryStream(ctx, path, source: AsyncIterable<Uint8Array>, mode)` (regular modes only call the stream path; symlink/gitlink fall back to the buffered arms since they need decoded content / no content). The `MODE_REGULAR_PERM`/`MODE_EXEC_PERM` chmod tail (lines 15–16, 45–50) is preserved byte-for-byte.
+**Fixtures/helpers:** `test/unit/application/primitives/internal/write-working-tree-file.test.ts` (extend); a small async-source helper that yields a `Uint8Array` in ≥2 chunks.
 
-**Mutation-resistant patterns:** assert `rmIfExists` runs **before** the stream write (spy ordering — kills a reorder mutant that would break symlink self-heal); assert `chmod` perm matches mode (executable vs regular); separate tests proving the symlink arm still buffers and the gitlink arm still `mkdir`s (a mutant routing them through the stream path must die); byte-equality of the written file vs the source.
+**Mutation-resistant patterns:** assert `rmIfExists` runs **before** the stream write (spy ordering — kills a reorder mutant that breaks symlink self-heal); assert `chmod` perm matches mode (executable vs regular vs none); separate tests proving `writeWorkingTreeEntryStream`'s symlink arm still buffers and the gitlink arm still `mkdir`s (a mutant routing them through the stream path must die); byte-equality of the written file (via `read`) vs the concatenated source; multi-chunk source so a "first-chunk-only" mutant dies.
 
-#### Slice 9 — consumer: stream the checkout materialisation (apply-changeset, WC-3)
+#### Slice 9 — consumer A: stream the checkout materialisation (apply-changeset)
 
 **Files:**
-- `src/application/primitives/apply-changeset.ts` — `applyEntry` (line 154). Current regular-file arm (lines 166–168):
+- `src/application/primitives/apply-changeset.ts` — `applyEntry` (line 154). Current non-gitlink arm (lines 166–171):
   ```ts
   if (entry.mode !== FILE_MODE.GITLINK) {
     const blob = await readBlob(ctx, entry.id as IndexEntry['id']);
@@ -369,44 +421,112 @@ Given ctx.signal aborted between chunks
     await writeWorkingTreeEntry(ctx, entry.path, new Uint8Array(), entry.mode);
   }
   ```
-  Convert the non-gitlink arm to: for **regular** modes, `const stream = await streamBlob(ctx, entry.id); await writeWorkingTreeEntryStream(ctx, entry.path, stream, entry.mode)`; for **symlink** mode keep the buffered `readBlob` + `writeWorkingTreeEntry` (the target string must be decoded whole — WC-3). The gitlink arm (line 170) is unchanged. The `buildIndexEntry` lstat tail (line 172) and `CHECKOUT_OP` progress tick (lines 200–207) are unchanged.
-- `src/application/primitives/apply-changeset.ts` imports — add `streamBlob` (alongside `readBlob`, line 31) and the streaming write primitive (alongside `writeWorkingTreeEntry`, line 30).
+  Convert: dispatch on mode inside the non-gitlink arm — for **regular** modes (not `SYMLINK`, not `GITLINK`), `const stream = await streamBlob(ctx, entry.id); await writeWorkingTreeEntryStream(ctx, entry.path, stream, entry.mode)`; for **symlink** keep the buffered `readBlob` + `writeWorkingTreeEntry` (target decoded whole, ADR-391). The gitlink arm (line 170) is unchanged. The `buildIndexEntry` lstat tail (line 172) and `CHECKOUT_OP` progress tick (lines 200–207) are unchanged.
+- `src/application/primitives/apply-changeset.ts` imports — add `streamBlob` (alongside `readBlob`, line 31) and `writeWorkingTreeEntryStream` (alongside `rmIfExists, writeWorkingTreeEntry`, line 30).
 
 **Current signatures:**
 - `applyEntry(ctx, workdir: string, entry: ChangesetEntry): Promise<IndexEntry | undefined>` (line 154).
-- `readBlob(ctx, id): Promise<Blob>` (read-blob.ts) — kept for the symlink arm.
+- `readBlob(ctx, id): Promise<Blob>` — kept for the symlink arm.
 
-**Decision dependency:** WC-3 (checkout regular-file modes via the shared primitive); the symlink/gitlink arms stay buffered. WC-2 (always-stream) means every regular-file write streams; if WC-2(b) is chosen instead, branch on a size hint here.
+**Fixtures/helpers:** `test/unit/application/primitives/apply-changeset.test.ts` (extend) — existing changeset fixtures; spy `streamBlob` / `writeWorkingTreeEntryStream` / `writeWorkingTreeEntry`.
 
-**Mutation-resistant patterns:** the existing `apply-changeset` unit tests (`test/unit/application/primitives/apply-changeset.test.ts`) must still pass byte-for-byte; add a case proving a large regular-file entry routes through `streamBlob` + the streaming write primitive (spy), and that symlink/gitlink entries still route through the buffered arm (spy) — a mutant collapsing the branch must die.
+**Mutation-resistant patterns:** existing `apply-changeset` unit tests must still pass byte-for-byte; add a case proving a regular-file entry routes through `streamBlob` + `writeWorkingTreeEntryStream` (spy), and that symlink/gitlink entries still route through the buffered arm (spy) — a mutant collapsing the branch must die.
 
-#### Slice 10 — interop test: streamed checkout is byte-identical to git checkout (W1/W2/W3)
+#### Slice 9b — consumers B + C: stream the merge clean-survivor writes (merge + apply-merge-to-worktree)
+
+**Why:** ADR-392's load-bearing addition over the design's original single-hot-path rec. Both merge worktree-application paths write a whole clean-survivor blob.
 
 **Files:**
-- `test/integration/blob-streaming-checkout-interop.test.ts` (new). Model on `test/integration/checkout-replace-symlink-with-file-interop.test.ts` (the existing checkout interop with symlink self-heal coverage) and the twin-repo helpers (`makePeerPair`/`initBothRepos`/`runGitEnv`).
+- `src/application/commands/merge.ts` — `writeOutcomeToTree` (line 579), `unchanged`/`resolved-known` arm (lines 584–592). Current:
+  ```ts
+  if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
+    if (isExcluded(matcher, outcome.path)) return;
+    const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
+    await writeWorkingTreeFile(ctx, outcome.path, blob.content);
+    return;
+  }
+  ```
+  Convert to `const stream = await streamBlob(ctx, outcome.id, /* WC-5 cap */); await writeWorkingTreeFileStream(ctx, outcome.path, stream);`. The `isExcluded` sparse guard, the `resolved-merged` arm (line 596, synthesised bytes — **unchanged**, site E), and `resolved-deleted` (line 599) are untouched. Imports: add `streamBlob`, `writeWorkingTreeFileStream`; the `Stryker disable` cap comment moves to / stays on the WC-5 cap argument.
+- `src/application/primitives/apply-merge-to-worktree.ts` — `writeConflictWorktree` (line 153), `resolved-known` arm (lines 171–175). Current:
+  ```ts
+  if (outcome.status === 'resolved-known') {
+    const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
+    await writeWorkingTreeFile(ctx, outcome.path, blob.content);
+  }
+  ```
+  Convert to `streamBlob` → `writeWorkingTreeFileStream` identically. The `resolved-merged` arm (line 167, synthesised, site F) and the conflict loop (lines 177–183, sites H/I) are **untouched**. Imports: add `streamBlob`, `writeWorkingTreeFileStream`.
+
+**Current signatures:**
+- `writeOutcomeToTree(ctx, outcome: MergeOutcome, matcher: SparseMatcher | undefined): Promise<void>` (merge.ts:579).
+- `writeConflictWorktree(ctx, outcomes, conflicts, changed: ReadonlySet<FilePath>): Promise<void>` (apply-merge-to-worktree.ts:153).
+- `MAX_CONFLICT_OUTPUT_BYTES = 256 * 1024 * 1024` (`src/domain/merge/merge-types.ts:98`) — the reject ceiling these sites carry; its fate is WC-5.
+
+**Fixtures/helpers:** `test/unit/application/commands/merge.test.ts` (`writeOutcomeToTree` is exported "for direct unit testing"); `test/unit/application/primitives/apply-merge-to-worktree.test.ts`. Spy `streamBlob` / `writeWorkingTreeFileStream`.
+
+**Mutation-resistant patterns:** assert the `resolved-known`/`unchanged` arm routes through `streamBlob` + `writeWorkingTreeFileStream` (spy); assert `resolved-merged` still routes through the buffered `writeWorkingTreeFile` with synthesised `outcome.bytes` (a mutant streaming it must die — there is no blob id to stream); assert the sparse `isExcluded` guard still short-circuits before the stream open; byte-equality of the written survivor vs `readBlob(outcome.id).content`.
+
+#### Slice 9c — consumer D: stream the stash untracked restore (stash) — GATED ON WC-5
+
+**Why:** the third whole-blob working-tree write; ADR-392 includes it, but it carries a 256 MiB reject ceiling that the ratified `streamBlob` cannot express. **Do not land this slice until WC-5 is decided** (it shapes the call signature).
+
+**Files:**
+- `src/application/commands/stash.ts` — `restoreUntracked` (line 373), loop body (lines 375–382). Current:
+  ```ts
+  for (const [path, entry] of flat.entries) {
+    const blob = await readBlob(ctx, entry.id, { maxBytes: MAX_WORKING_TREE_BLOB_BYTES });
+    await writeWorkingTreeFile(ctx, path, blob.content);
+  }
+  ```
+  Convert per WC-5:
+  - **WC-5(a) (recommended):** `const stream = await streamBlob(ctx, entry.id, { maxBytes: MAX_WORKING_TREE_BLOB_BYTES }); await writeWorkingTreeFileStream(ctx, path, stream);` — the cap rides on `streamBlob` and throws `OBJECT_TOO_LARGE` before any chunk.
+  - **WC-5(b):** add a pre-stream declared-size guard (read the object header size, throw `objectTooLarge` if > `MAX_WORKING_TREE_BLOB_BYTES`), then `streamBlob` cap-free.
+  - **WC-5(c):** exclude site D — leave this loop buffered+capped unchanged (drop this slice).
+  Imports: add `streamBlob` and `writeWorkingTreeFileStream`; keep the security-cap comment.
+- The existing oversize-cap test for `restoreUntracked` (asserting `OBJECT_TOO_LARGE` on an oversize crafted `refs/stash`) **must still pass** under WC-5(a)/(b) — this is the regression that pins the ceiling is not silently dropped.
+
+**Current signatures:**
+- `restoreUntracked(ctx: Context, uTree: ObjectId): Promise<void>` (stash.ts:373), called at stash.ts:459 on the clean-apply path.
+- `MAX_WORKING_TREE_BLOB_BYTES = 256 * 1024 * 1024` (`src/application/primitives/types.ts:42`).
+
+**Fixtures/helpers:** `test/unit/application/commands/stash.test.ts` — the existing untracked-restore + oversize-cap cases.
+
+**Mutation-resistant patterns:** assert the restore routes through `streamBlob` + `writeWorkingTreeFileStream` (spy); **assert the 256 MiB ceiling still rejects** an oversize entry with `OBJECT_TOO_LARGE` (try/catch + `.data` size/limit, not bare `toThrow`) — this is the WC-5 regression guard; byte-equality of a restored small untracked file vs source.
+
+#### Slice 10 — interop tests: streamed writes are byte-identical to git (W1/W2/W3)
+
+**Files:**
+- `test/integration/blob-streaming-checkout-interop.test.ts` (new). Model on `test/integration/checkout-replace-symlink-with-file-interop.test.ts` (existing checkout interop with symlink self-heal) and the twin-repo helpers (`makePeerPair`/`initBothRepos`/`runGitEnv`).
 
 **Fixtures:**
 
-| # | Setup | Test | Asserts |
-|---|---|---|---|
-| **C1** | peer commits a 200 KB regular-file blob on a branch; checkout that branch via tsgit into ours | working-tree file bytes | byte-identical to the peer's checked-out file (and to `catFileRaw(peer, id)`) |
-| **C2** | same, executable mode (100755) | working-tree file + perms | byte-identical content; mode 0755 (chmod tail preserved) |
-| **C3** | a path that is a **symlink** in the source tree, then a branch where it becomes a regular file; checkout across the kind change | working-tree state | regular file, no stale symlink (`rmIfExists`-before-stream self-heal — pins the W1 replace + symlink-safety order) |
-| **C4** | checkout a tree containing a regular file whose blob is **deltified** in the pack (`materialised: true` upstream) | working-tree file bytes | byte-identical (the write consumer is agnostic to the read stream's materialisation) |
+| # | Site | Setup | Test | Asserts |
+|---|---|---|---|---|
+| **C1** | A | peer commits a 200 KB regular-file blob on a branch; checkout that branch via tsgit into ours | working-tree file bytes | byte-identical to the peer's checked-out file (and `catFileRaw(peer, id)`) |
+| **C2** | A | same, executable mode (100755) | working-tree file + perms | byte-identical content; mode 0755 (chmod tail preserved) |
+| **C3** | A | a path that is a **symlink** in the source tree, then a branch where it becomes a regular file; checkout across the kind change | working-tree state | regular file, no stale symlink (`rmIfExists`-before-stream self-heal — pins the W1 replace + symlink-safety order) |
+| **C4** | A | checkout a tree with a regular file whose blob is **deltified** in the pack (`materialised: true` upstream) | working-tree file bytes | byte-identical (the write consumer is agnostic to the read stream's materialisation) |
+| **C5** | B/C | peer + ours diverge so a 200 KB blob is a **clean survivor** of a three-way merge (changed on one side only); run the merge via tsgit | working-tree file bytes for the survivor path | byte-identical to git's merged working-tree file (`git merge` on the peer). Covers the `merge` command path (B); a cherry-pick variant covers the shared `apply-merge-to-worktree` path (C) |
+| **C6** | D | peer creates a stash with a 200 KB **untracked** file; `stash apply` via tsgit | restored untracked file bytes | byte-identical to git's `stash apply` result. (Only if WC-5 ≠ (c).) |
 
-**Discipline:** scrubbed-env git helpers; isolate the spawned-git `GIT_*` env (the integration-test env-pollution gotcha — never inherit `GIT_DIR`). Pins requirements 7 and W1/W2 (faithful replace semantics) per ADR-249.
+**Discipline:** scrubbed-env git helpers; isolate the spawned-git `GIT_*` env (the env-pollution gotcha — never inherit `GIT_DIR`); for any conflict-adjacent merge fixture pin the peer `-c merge.conflictStyle=merge`. Pins requirement 7 and W1/W2 (faithful replace semantics) per ADR-249 — reconstruct git's working-tree output and compare; the library emits no display string.
 
 ## Test strategy
 
-- **Unit** (Slices 5, 7, 8, 9): routing + header-strip + verification + write-dispatch + consumer-branch logic, mutation-resistant per project conventions. Byte-equality against `readBlob` (read) and against the streamed source (write) is the oracle — independently-tested siblings, not re-implementations, so no tautology.
-- **Interop** (Slices 6, 10): byte-identity to real `git cat-file -p` (read) and to real `git checkout`'s working-tree output (write). The write side is the only **new** faithfulness surface this PR adds (W1/W2 pinned); the read side restates 24.10's obligation on the streaming surface.
+- **Unit** (Slices 5, 7, 8, 9, 9b, 9c): routing + header-strip + verification + write-dispatch + per-consumer-branch logic across all four sites (A/B/C/D), mutation-resistant per project conventions. Byte-equality against `readBlob` (read) and against the streamed source (write) is the oracle — independently-tested siblings, not re-implementations, so no tautology. Each consumer slice spies the streaming routing **and** proves the excluded sibling arms (synthesised `resolved-merged` bytes; symlink/gitlink; conflict markers) stay buffered — a mutant collapsing a branch must die.
+- **Interop** (Slices 6, 10): byte-identity to real `git cat-file -p` (read) and to real `git`'s working-tree output for checkout (C1–C4), merge clean survivor (C5), and stash-apply untracked restore (C6) (write). The write side is the only **new** faithfulness surface this PR adds (W1/W2 pinned); the read side restates 24.10's obligation on the streaming surface.
 - **Parity** (cross-adapter): if the browser-surface audit covers primitives, a `streamBlob` scenario proves memory-adapter byte-equality. The streaming-write adapter implementations are covered by the port contract test across all three adapters. Cross-adapter parity does NOT prove faithfulness (only interop does) — both run.
 - **Property-based — evaluated against the four lenses, result: skip** (read and write). `streamBlob` is a one-way decode whose oracle is the already-tested `readBlob` (not a parse/serialize round-trip, matcher, total-function-over-grammar, or counting invariant); generating valid packed/deltified blobs requires driving the production write path (the oracle would re-implement it). `writeStream` is an I/O port wrapper — belongs in the contract/interop tier, not property tests (per CLAUDE.md "I/O wrappers … belong in integration/parity tests"). Noted here rather than shipping a tautological property.
 - **Edge matrix:** empty blob (zero content bytes); blob whose content is exactly one chunk; header NUL on a chunk boundary; deltified blob; wrong-type id; aborted signal; executable-mode write (perm tail); symlink→file kind change on checkout (write-side self-heal); the largest test size that still runs fast (~200 KB inflated).
 
 ## Out of scope
 
-- **`materializeFile` dead-code removal** (`src/application/commands/internal/working-tree.ts:36`). Grep-confirmed zero production callers (only its own definition + `test/unit/application/commands/internal/working-tree.test.ts`). It is *not* the checkout consumer (that is `apply-changeset.ts:167`), so this feature does not touch it. Removing it (and its test) is a **refactor-phase dead-code candidate**, not scope-crept into this feature — flagged here so it is not silently left rotting.
+- **Excluded working-tree write sites (per the ADR-392 exclusion criterion — synthesised or non-blob content).** Enumerated in the authoritative in-scope table; restated here so the boundary is explicit:
+  - **Synthesised merged bytes** — `merge.ts:596` (site E) and `apply-merge-to-worktree.ts:166-167` (site F), both `resolved-merged` writing `outcome.bytes` computed in memory by the content merger. No blob id / stream to consume.
+  - **Conflict-bytes materialisation** — `merge.ts:605-619` (site G, `writeConflictToTree`/`materialiseConflictBytes`) and `apply-merge-to-worktree.ts:106-149` (site H, `writeMarkedConflict`/`conflictBytes`). Their unified return may be synthesised `<<<<<<<` marker content (`conflictContent`); the buffer call site cannot stream what may be synthesised, and splitting the whole-blob arms (binary/type-change/modify-delete) out would fragment one tight conflict helper — ADR-392's "don't force-fit" guard. Excluded as conflict materialisation.
+  - **Distinct-types conflict sides** — `write-distinct-types-sides.ts:19-25` (site I). Although each side is a whole blob, it is mode-dispatched (a side may be a symlink, which stays buffered, ADR-391) and is part of the conflict-write family ADR-392 names; converting only its regular arm would fragment one tight helper. Excluded as conflict materialisation.
+  - **Symlink / gitlink modes everywhere** — the target string is decoded whole / there is no content (ADR-391).
+- **Read consumers that are not working-tree writes** (the `readBlob` calls the sweep deliberately leaves alone): `snapshot/index-entry.ts:25` & `snapshot/tree-entry.ts:27` (lazy *read* accessors); `blame.ts:318,368` (in-memory line authorship); `materialise-patch-files.ts`, `detect-similarity-renames.ts`, `build-content-merger.ts`, `walk-submodules.ts:114` (in-memory diff/merge/`.gitmodules` inputs, capped, never written to the working tree). **`read-file-at.ts:51`** is a *read* consumer that could itself stream to a sink via `streamBlob` — noted as a read-API extension, but it is **out of this feature's write scope** (no working-tree write to convert).
+- **`materializeFile` dead-code removal** (`src/application/commands/internal/working-tree.ts:36`). Grep-confirmed zero production callers (only its own definition + `test/unit/application/commands/internal/working-tree.test.ts`). It is *not* a consumer (the consumers are A/B/C/D above), so this feature does not touch it. Removing it (and its test) is a **refactor-phase dead-code candidate**, not scope-crept into this feature — flagged here so it is not silently left rotting.
 - **`core.bigFileThreshold` support anywhere in tsgit.** F1–F4 show it's not faithfulness-bound; honouring it (delta-attempt skipping during packing) is a *write/packing* concern unrelated to blob reads or working-tree writes.
 - **Streaming non-blob objects** (commit/tree/tag). They're small by construction; no memory case.
 - **Range / partial reads** of a blob (`streamBlob(id, { start, end })`). Not needed by any current consumer; the feature is whole-content streaming.
@@ -448,3 +568,14 @@ Triggered by the ADR conversation: read-side candidates 1–7 ratified as ADRs 3
 - **New surface accounted.** Write side adds 1 port method ×3 adapters + contract test (Slice 7), an internal streaming write primitive (Slice 8), the consumer conversion (Slice 9), and a checkout interop (Slice 10). The streaming-write port method and internal primitive are internal (no public surface-gate beyond the contract test); only `streamBlob`/`BlobStream`/`StreamBlobOptions` remain public.
 - **ADR numbering:** confirmed current max ADR is 389; write-side candidates map to 390+.
 - **Convergence:** re-read Context ↔ Read-side design ↔ Decision candidates ↔ Slices ↔ Out of scope after the rewrite. No contradictions remain (the only `materializeFile` mention is now the Out-of-scope dead-code note; every write-consumer reference points at `apply-changeset.ts:167`). Converged.
+
+### Pass 5 — ADR-390–393 ratification revision (this revision)
+
+Triggered by the write-side ADR conversation: WC-1, WC-2, WC-4 ratified as recommended; **WC-3 was broadened — the user chose the comprehensive sweep (ADR-392), not the design's single-shared-primitive recommendation.** Re-sliced the write side against an authoritative, empirically-verified in-scope site list.
+
+- **Authoritative in-scope table built from a full grep, not the brief's pre-enumeration.** Verified every `readBlob → writeWorkingTree*` site in `src/`. The brief's line numbers were slightly off: the merge **whole-blob clean-survivor** writes are `apply-merge-to-worktree.ts:171-174` (`resolved-known`, site C) and `merge.ts:584-590` (`unchanged`/`resolved-known`, site B) — *not* the `:167`/`:149` lines, which are the synthesised `resolved-merged` writes (sites E/F, excluded). Classified nine write sites convert/exclude with code-grounded reasons.
+- **Both merge paths confirmed live and parallel.** `merge.ts:writeOutcomeToTree` (the `merge` command, caller line 532) and `apply-merge-to-worktree.ts:applyMergeToWorktree` (shared cherry-pick/revert/rebase/stash-apply, callers in `cherry-pick.ts`/`revert.ts`/`stash.ts`) — neither supersedes the other; both clean-survivor loops convert (B and C).
+- **Cap semantics grounded.** Greped both constants: `MAX_WORKING_TREE_BLOB_BYTES` and `MAX_CONFLICT_OUTPUT_BYTES` are **both 256 MiB reject-if-larger ceilings** (`objectTooLarge`/`OBJECT_TOO_LARGE`), not truncation markers. Reconciled this with ADR-392's "length-capped content" exclusion: that means *synthesised content bounded as content* (conflict markers), not "a whole-blob read with a reject ceiling" — so whole-blob-with-ceiling sites (B/C/D) convert, and the dropped ceiling is precisely the WC-5 wrinkle.
+- **WC-5 surfaced (the new open candidate).** `streamBlob` (ADR-383/389) carries only `{ verifyHash }` — no `maxBytes`. Converting stash's `restoreUntracked` (site D, capped 256 MiB) drops the ceiling. Verified the buffered ceiling is a **pre-materialisation declared-size check** (`enforcePackBaseCap`/`enforceLooseCap`/`enforcePackDeltaPreApplyCap`, `object-resolver.ts:62-138`) — so adding `maxBytes` to `streamBlob` is cheap parity, not a new mechanism. Three options (add to `streamBlob` / pre-stream guard at the call site / exclude D), recommended (a), left open for the ADR round. Sites B/C carry the same ceiling, so the WC-5 answer governs them too.
+- **Re-sliced the write side.** Slice 8 now builds three streaming primitives (`writeRegularFileStream`, `writeWorkingTreeFileStream`, `writeWorkingTreeEntryStream`) because the in-scope sites use two buffered entrypoints. Consumer conversion split into Slice 9 (site A, checkout), Slice 9b (sites B+C, merge clean survivors), Slice 9c (site D, stash — gated on WC-5). Slice 10 interop extended with C5 (merge clean survivor) and C6 (stash restore). Each carries a pre-chewed context block (file, line, current snippet, signature, fixture).
+- **Convergence:** re-read requirement 6/7 ↔ write-side design ↔ in-scope table ↔ Decision candidates ↔ Slices 7–10 ↔ Out of scope. Every converted site (A/B/C/D) appears in exactly one slice; every excluded site (E/F/G/H/I + read-not-write set) is in the table and Out of scope with the same reason; the only open candidate is WC-5; WC-1..WC-4 are stated as accepted (ADRs 390–393) with no lingering "decision candidate" framing. Converged.
