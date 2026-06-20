@@ -39,6 +39,7 @@ import {
   removeWorkingTreeFile,
   writeWorkingTreeEntry,
   writeWorkingTreeFile,
+  writeWorkingTreeFileStream,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
@@ -48,6 +49,7 @@ import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
+import { streamBlob } from '../primitives/stream-blob.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
@@ -583,11 +585,8 @@ export const writeOutcomeToTree = async (
 ): Promise<void> => {
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     if (isExcluded(matcher, outcome.path)) return;
-    // Cap with MAX_CONFLICT_OUTPUT_BYTES so a hostile clean-tree blob
-    // cannot OOM the merge consumer during a conflicting merge.
-    // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-    const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
-    await writeWorkingTreeFile(ctx, outcome.path, blob.content);
+    const stream = await streamBlob(ctx, outcome.id);
+    await writeWorkingTreeFileStream(ctx, outcome.path, stream);
     return;
   }
   if (outcome.status === 'resolved-merged') {

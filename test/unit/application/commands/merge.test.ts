@@ -18,11 +18,13 @@ import {
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
+import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -2247,6 +2249,165 @@ describe('writeOutcomeToTree (direct)', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/d.txt`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('writeOutcomeToTree (direct) — streaming', () => {
+  const seedBlob = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    content: Uint8Array,
+  ): Promise<ObjectId> => writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+
+  describe('Given an unchanged outcome', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then routes through streamBlob + writeWorkingTreeFileStream (not buffered readBlob)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const bytes = new TextEncoder().encode('unchanged-stream');
+        const id = await seedBlob(ctx, bytes);
+        const outcome: MergeOutcome = {
+          status: 'unchanged',
+          path: 'u.txt' as FilePath,
+          id,
+          mode: FILE_MODE.REGULAR,
+        };
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+
+        // Act
+        await writeOutcomeToTree(ctx, outcome, undefined);
+
+        // Assert
+        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(writeStreamSpy).toHaveBeenCalledOnce();
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/u.txt`)).toBe('unchanged-stream');
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a resolved-known outcome', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then routes through streamBlob + writeWorkingTreeFileStream and written bytes match blob content', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const bytes = new TextEncoder().encode('known-stream');
+        const id = await seedBlob(ctx, bytes);
+        const outcome: MergeOutcome = {
+          status: 'resolved-known',
+          path: 'k.txt' as FilePath,
+          id,
+          mode: FILE_MODE.REGULAR,
+        };
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+
+        // Act
+        await writeOutcomeToTree(ctx, outcome, undefined);
+
+        // Assert
+        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(writeStreamSpy).toHaveBeenCalledOnce();
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/k.txt`)).toBe('known-stream');
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a resolved-known outcome with a large blob (uncapped write)', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then streamBlob is called with no maxBytes arg and the full content is written', async () => {
+        // Arrange — a blob large enough to fail a small explicit cap but fine uncapped
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const bytes = new Uint8Array(1024).fill(0x42); // 1 KiB, any hypothetical small cap would throw
+        const id = await seedBlob(ctx, bytes);
+        const outcome: MergeOutcome = {
+          status: 'resolved-known',
+          path: 'large.bin' as FilePath,
+          id,
+          mode: FILE_MODE.REGULAR,
+        };
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+
+        // Act — must not throw; uncapped streaming path
+        await writeOutcomeToTree(ctx, outcome, undefined);
+
+        // Assert — streamBlob called with exactly (ctx, id) — no third options arg
+        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        const [, , thirdArg] = streamBlobSpy.mock.calls[0] ?? [];
+        expect(thirdArg).toBeUndefined();
+        const written = await ctx.fs.read(`${ctx.layout.workDir}/large.bin`);
+        expect(written).toEqual(bytes);
+
+        streamBlobSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a resolved-merged outcome', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then routes through buffered writeWorkingTreeFile (not streamBlob) and streamBlob is never called', async () => {
+        // Arrange — resolved-merged carries synthesised bytes in memory; no blob id to stream
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const outcome: MergeOutcome = {
+          status: 'resolved-merged',
+          path: 'm.txt' as FilePath,
+          bytes: new TextEncoder().encode('MERGED-BYTES'),
+          mode: FILE_MODE.REGULAR,
+        };
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+
+        // Act
+        await writeOutcomeToTree(ctx, outcome, undefined);
+
+        // Assert — streaming path must NOT be taken; mutation streaming it must die here
+        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(writeStreamSpy).not.toHaveBeenCalled();
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('MERGED-BYTES');
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given an unchanged outcome on an excluded sparse path', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then short-circuits before opening any stream (isExcluded guard precedes stream open)', async () => {
+        // Arrange — matcher that excludes everything
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const bytes = new TextEncoder().encode('excluded-data');
+        const id = await seedBlob(ctx, bytes);
+        const outcome: MergeOutcome = {
+          status: 'unchanged',
+          path: 'ex.txt' as FilePath,
+          id,
+          mode: FILE_MODE.REGULAR,
+        };
+        // SparseMatcher is (path: FilePath) => boolean; returning false means excluded
+        const excludesMatcher = (() => false) as Parameters<typeof writeOutcomeToTree>[2];
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+
+        // Act
+        await writeOutcomeToTree(ctx, outcome, excludesMatcher);
+
+        // Assert — stream not opened; guard fires before stream
+        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/ex.txt`)).toBe(false);
+
+        streamBlobSpy.mockRestore();
       });
     });
   });

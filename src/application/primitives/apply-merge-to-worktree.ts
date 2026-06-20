@@ -38,9 +38,11 @@ import {
   removeWorkingTreeFile,
   writeWorkingTreeEntry,
   writeWorkingTreeFile,
+  writeWorkingTreeFileStream,
 } from './internal/write-working-tree-file.js';
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { readBlob } from './read-blob.js';
+import { streamBlob } from './stream-blob.js';
 import { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 import { writeObject } from './write-object.js';
 
@@ -169,9 +171,8 @@ const writeConflictWorktree = async (
     }
     // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
     if (outcome.status === 'resolved-known') {
-      // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
-      const blob = await readBlob(ctx, outcome.id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES });
-      await writeWorkingTreeFile(ctx, outcome.path, blob.content);
+      const stream = await streamBlob(ctx, outcome.id);
+      await writeWorkingTreeFileStream(ctx, outcome.path, stream);
     }
   }
   for (const conflict of conflicts) {
