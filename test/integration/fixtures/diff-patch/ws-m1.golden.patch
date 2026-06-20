@@ -1,0 +1,8 @@
+diff --git a/f.txt b/f.txt
+index 71dbba1..3514ac4 100644
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+   ws
+-real
++REAL
