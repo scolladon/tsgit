@@ -85,6 +85,56 @@ export const writeWorkingTreeEntry = async (
   await writeRegularFile(ctx, fullPath, content, mode);
 };
 
+/**
+ * Streaming sibling of `writeRegularFile`. Preserves the exact
+ * `rmIfExists` → `writeStream` → `chmod` order so symlink self-heal and
+ * W1/W2 faithfulness hold. Writes straight into the final path (no temp/rename).
+ * `chmod` runs only when a `mode` is given.
+ */
+export const writeRegularFileStream = async (
+  ctx: Context,
+  fullPath: string,
+  source: AsyncIterable<Uint8Array>,
+  mode?: FileMode,
+): Promise<void> => {
+  await rmIfExists(ctx, fullPath);
+  await ctx.fs.writeStream(fullPath, source);
+  if (mode !== undefined) {
+    await ctx.fs.chmod(
+      fullPath,
+      mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM,
+    );
+  }
+};
+
+/**
+ * Streaming façade over `writeRegularFileStream` — no mode, so regular perm
+ * is applied if/when the adapter defaults it. Mirrors `writeWorkingTreeFile`.
+ */
+export const writeWorkingTreeFileStream = async (
+  ctx: Context,
+  path: FilePath,
+  source: AsyncIterable<Uint8Array>,
+): Promise<void> => {
+  await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source);
+};
+
+/**
+ * Regular-only streaming sibling of `writeWorkingTreeEntry`. The `mode`
+ * parameter drives the chmod bit only (100644 → 0o644, 100755 → 0o755).
+ * Symlink and gitlink modes are NOT dispatched here — site A routes them to
+ * the buffered `writeWorkingTreeEntry` instead; a symlink/gitlink branch here
+ * would be dead code.
+ */
+export const writeWorkingTreeEntryStream = async (
+  ctx: Context,
+  path: FilePath,
+  source: AsyncIterable<Uint8Array>,
+  mode: FileMode,
+): Promise<void> => {
+  await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source, mode);
+};
+
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
   const fullPath = joinPath(ctx.layout.workDir, path);
   await rmIfExists(ctx, fullPath);
