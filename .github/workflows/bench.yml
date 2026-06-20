@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       # Restore the scaled bench fixture cache. Keyed on the generator source
       # so any shape change (the version bump included) invalidates it.
