@@ -5,6 +5,8 @@ import type {
   Changeset,
   ChangesetEntry,
 } from '../../../../src/application/primitives/compute-changeset.js';
+import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
+import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -815,6 +817,125 @@ describe('applyChangeset', () => {
         const lastCall = progressUpdate.mock.calls.at(-1);
         expect(lastCall?.[1]).toBe(2);
         expect(lastCall?.[2]).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a regular (100644) add entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then routes through streamBlob + writeWorkingTreeEntryStream and written file bytes match blob content', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('streamed content');
+        const id = await writeBlob(ctx, content);
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('stream.txt', id, FILE_MODE.REGULAR)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(writeStreamSpy).toHaveBeenCalledOnce();
+        const bytes = await ctx.fs.read(`${WORKDIR}/stream.txt`);
+        expect(bytes).toEqual(content);
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given an executable (100755) add entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then routes through stream path and applies 0o755 mode', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const chmodSpy = vi.fn<(path: string, mode: number) => Promise<void>>(
+          async () => undefined,
+        );
+        const wrappedCtx: Context = { ...ctx, fs: { ...ctx.fs, chmod: chmodSpy } };
+        const sut = applyChangeset;
+
+        // Act
+        await sut(wrappedCtx, {
+          changeset: makeChangeset([makeAdd('exec.sh', id, FILE_MODE.EXECUTABLE)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(writeStreamSpy).toHaveBeenCalledOnce();
+        expect(chmodSpy).toHaveBeenCalledWith(`${WORKDIR}/exec.sh`, 0o755);
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a symlink (120000) add entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then routes through buffered readBlob + writeWorkingTreeEntry, not the stream path', async () => {
+        // Arrange — mutant collapsing symlink into stream path must die here
+        const ctx = await buildSeededContext();
+        const target = '../target.txt';
+        const id = await writeBlob(ctx, new TextEncoder().encode(target));
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('sym.link', id, FILE_MODE.SYMLINK)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — buffered path, not stream path
+        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(writeStreamSpy).not.toHaveBeenCalled();
+        expect(await ctx.fs.readlink(`${WORKDIR}/sym.link`)).toBe(target);
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a gitlink (160000) add entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the gitlink arm is unchanged: creates directory, does not invoke streamBlob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('sub', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — gitlink arm: directory placeholder, no streaming
+        const stat = await ctx.fs.lstat(`${WORKDIR}/sub`);
+        expect(stat.isDirectory).toBe(true);
+        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(writeStreamSpy).not.toHaveBeenCalled();
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
       });
     });
   });

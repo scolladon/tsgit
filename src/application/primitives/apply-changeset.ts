@@ -27,8 +27,13 @@ import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import { rmIfExists, writeWorkingTreeEntry } from './internal/write-working-tree-file.js';
+import {
+  rmIfExists,
+  writeWorkingTreeEntry,
+  writeWorkingTreeEntryStream,
+} from './internal/write-working-tree-file.js';
 import { readBlob } from './read-blob.js';
+import { streamBlob } from './stream-blob.js';
 
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
@@ -151,6 +156,25 @@ const buildIndexEntry = async (
   };
 };
 
+const writeBlobToWorkingTree = async (
+  ctx: Context,
+  path: FilePath,
+  id: IndexEntry['id'],
+  mode: FileMode,
+): Promise<void> => {
+  if (mode === FILE_MODE.GITLINK) {
+    await writeWorkingTreeEntry(ctx, path, new Uint8Array(), mode);
+    return;
+  }
+  if (mode === FILE_MODE.SYMLINK) {
+    const blob = await readBlob(ctx, id);
+    await writeWorkingTreeEntry(ctx, path, blob.content, mode);
+    return;
+  }
+  const stream = await streamBlob(ctx, id);
+  await writeWorkingTreeEntryStream(ctx, path, stream, mode);
+};
+
 const applyEntry = async (
   ctx: Context,
   workdir: string,
@@ -163,12 +187,7 @@ const applyEntry = async (
     return undefined;
   }
   if (entry.id === undefined) return undefined;
-  if (entry.mode !== FILE_MODE.GITLINK) {
-    const blob = await readBlob(ctx, entry.id as IndexEntry['id']);
-    await writeWorkingTreeEntry(ctx, entry.path, blob.content, entry.mode);
-  } else {
-    await writeWorkingTreeEntry(ctx, entry.path, new Uint8Array(), entry.mode);
-  }
+  await writeBlobToWorkingTree(ctx, entry.path, entry.id as IndexEntry['id'], entry.mode);
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };
 
