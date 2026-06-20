@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 37 entries, alphabetical.
+Every method bound on a `Repository` handle. 38 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -17,6 +17,7 @@ Every method bound on a `Repository` handle. 37 entries, alphabetical.
 | [`diff`](diff.md) | Compare two tree-like targets; returns a `TreeDiff` object. |
 | [`fetch`](fetch.md) | Fetch refs and objects from a remote. |
 | [`fetchMissing`](fetch-missing.md) | Prefetch promisor-remote objects in batch (partial clone). |
+| [`grep`](grep.md) | Search tracked content for a JavaScript `RegExp` (or literal); returns structured per-line match data (no rendered line). |
 | [`init`](init.md) | Initialize a fresh repository. |
 | [`log`](log.md) | Walk first-parent commit history. |
 | [`merge`](merge.md) | Three-way merge with conflict materialisation. Nested-namespace surface (`repo.merge.run/continue/abort`). |
