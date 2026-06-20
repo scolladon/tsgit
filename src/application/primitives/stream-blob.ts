@@ -79,6 +79,12 @@ function packTypeName(type: 1 | 2 | 3 | 4): ObjectType {
   }
 }
 
+async function finalizeHash(hasher: Hasher | undefined, id: ObjectId): Promise<void> {
+  if (hasher === undefined) return;
+  const actual = (await hasher.digestHex()) as ObjectId;
+  if (actual !== id) throw objectHashMismatch(id, actual);
+}
+
 async function streamLooseBlob(
   ctx: Context,
   id: ObjectId,
@@ -146,12 +152,7 @@ async function streamFromBuffer(
       hasher?.update(content);
       yield content;
     }
-    if (hasher !== undefined) {
-      const actual = (await hasher.digestHex()) as ObjectId;
-      if (actual !== id) {
-        throw objectHashMismatch(id, actual);
-      }
-    }
+    await finalizeHash(hasher, id);
   }
 
   return Object.assign(gen(), { materialised });
@@ -231,12 +232,7 @@ async function* yieldAndVerifyChunks(
     yield chunk;
   }
 
-  if (hasher !== undefined) {
-    const actual = (await hasher.digestHex()) as ObjectId;
-    if (actual !== id) {
-      throw objectHashMismatch(id, actual);
-    }
-  }
+  await finalizeHash(hasher, id);
 }
 
 /**
@@ -269,12 +265,7 @@ async function* yieldAndVerifyPackedBaseChunks(
     yield chunk;
   }
 
-  if (hasher !== undefined) {
-    const actual = (await hasher.digestHex()) as ObjectId;
-    if (actual !== id) {
-      throw objectHashMismatch(id, actual);
-    }
-  }
+  await finalizeHash(hasher, id);
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
