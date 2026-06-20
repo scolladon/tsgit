@@ -358,6 +358,87 @@ describe('Given a tracked binary blob whose bytes do NOT contain the pattern, Wh
   });
 });
 
+describe('Given a binary blob containing the pattern and invert=true, When grep runs', () => {
+  it('Then binaryMatch stays true (presence is independent of -v)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    const binaryBlob = new Uint8Array([0x00, ...enc('FIND_ME'), 0x00]);
+    await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
+    await add(ctx, ['data.bin']);
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act — invert must NOT suppress the binary-match report
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'FIND_ME' }],
+      invert: true,
+    });
+
+    // Assert
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.binaryMatch).toBe(true);
+    expect(result.paths[0]!.hits).toHaveLength(0);
+  });
+});
+
+// ─── Working-tree type changes & non-searchable modes ────────────────────────
+
+describe('Given a tracked file replaced on disk by a directory, When grep runs the default target', () => {
+  it('Then the path is skipped without crashing', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'found.txt', 'NEEDLE here');
+    await writeAndStage(ctx, 'gone.txt', 'NEEDLE gone');
+    await commitAll(ctx);
+    await ctx.fs.rm(`${ctx.layout.workDir}/gone.txt`);
+    await ctx.fs.mkdir(`${ctx.layout.workDir}/gone.txt`);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+
+    // Assert — gone.txt skipped, found.txt still searched, no throw
+    expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);
+  });
+});
+
+describe('Given a tracked regular file replaced on disk by a symlink, When grep runs the default target', () => {
+  it('Then the path is skipped (git does not follow the working-tree link)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'found.txt', 'NEEDLE here');
+    await writeAndStage(ctx, 'linked.txt', 'NEEDLE original');
+    await commitAll(ctx);
+    await ctx.fs.rm(`${ctx.layout.workDir}/linked.txt`);
+    await ctx.fs.symlink('found.txt', `${ctx.layout.workDir}/linked.txt`);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+
+    // Assert
+    expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);
+  });
+});
+
+describe('Given a tracked symlink (index mode 120000), When grep runs the default target', () => {
+  it('Then the symlink is not searched (only regular/executable blobs)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'real.txt', 'NEEDLE in a regular file');
+    await ctx.fs.symlink('real.txt', `${ctx.layout.workDir}/link.txt`);
+    await add(ctx, ['link.txt']);
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+
+    // Assert — only the regular file; the symlink (mode 120000) is skipped
+    expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['real.txt']);
+  });
+});
+
 // ─── Pathspec limiter ─────────────────────────────────────────────────────────
 
 describe('Given two tracked files, When grep is restricted to one via pathspec', () => {

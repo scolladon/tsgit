@@ -1,5 +1,5 @@
 import { invalidOption } from '../../domain/commands/error.js';
-import { isBinary, splitLines } from '../../domain/diff/index.js';
+import { isBinary, MAX_LINE_BYTES, splitLines } from '../../domain/diff/index.js';
 import {
   buildGrepMatcher,
   type GrepMatcher,
@@ -74,7 +74,10 @@ const enumerateWorkingTree = async (ctx: Context): Promise<ReadonlyArray<Candida
     if (!isSearchableMode(entry.mode)) continue;
     const absPath = joinPath(ctx.layout.workDir, entry.path);
     const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
-    if (stat === undefined) continue;
+    // A tracked path absent from the working tree, or whose working-tree entry is no
+    // longer a regular file (replaced by a directory or symlink), is skipped — git grep
+    // does not descend or follow it and exits 0 without searching it.
+    if (stat === undefined || stat.isDirectory || stat.isSymbolicLink) continue;
     candidates.push({
       path: entry.path,
       load: () => ctx.fs.read(absPath),
@@ -137,7 +140,11 @@ function scanBlob(
     // Binary blobs skip line scan. Use the non-inverted probe to check whether
     // the pattern occurs anywhere in the blob — independent of -v, because git
     // reports "Binary file X matches" based on pattern presence, not inversion.
-    const probeVerdict = binaryProbeMatcher.matchLine(bytes);
+    // Bound the probe to MAX_LINE_BYTES: a presence boolean does not need the whole
+    // blob, and an unbounded latin1 scan of a multi-MB blob with a backtracking caller
+    // RegExp would block the event loop. Trade-off: a match only beyond the first
+    // 64 KiB of a binary blob is not reported (documented in the design).
+    const probeVerdict = binaryProbeMatcher.matchLine(bytes.subarray(0, MAX_LINE_BYTES));
     if (!probeVerdict.returned) return undefined;
     return { path, hits: [], binaryMatch: true };
   }
