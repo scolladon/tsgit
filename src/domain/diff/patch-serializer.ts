@@ -10,6 +10,7 @@ import type {
 import { invalidDiffInput } from './error.js';
 import { diffLines, isBinary, type LineHunk, splitLines } from './line-diff.js';
 import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
+import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
 export interface PatchFile {
   readonly change: DiffChange;
@@ -25,6 +26,13 @@ export interface PatchPathPrefix {
 export interface PatchOptions {
   readonly contextLines?: number;
   readonly pathPrefix?: PatchPathPrefix;
+  readonly lineKey?: LineKey;
+  readonly ignoreBlankLines?: boolean;
+}
+
+interface EmitOptions {
+  readonly lineKey?: LineKey;
+  readonly ignoreBlankLines?: boolean;
 }
 
 const OID_ABBREV_LENGTH = 7;
@@ -134,17 +142,18 @@ export interface OutputHunk {
   readonly body: ReadonlyArray<BodyLine>;
 }
 
-function commonEditsFrom(hunk: LineHunk, oldLines: ReadonlyArray<string>): Edit[] {
+function commonEditsFrom(hunk: LineHunk, newLines: ReadonlyArray<string>): Edit[] {
   const edits: Edit[] = [];
   for (let i = hunk.oursStart; i < hunk.oursEnd; i++) {
-    // LineHunk indices are produced by buildHunks against the same line array,
-    // so oldLines[i] is always defined; the non-null assertion mirrors
-    // `line-diff.ts`'s own conventions.
+    // A context line is emitted from the post-image: identical to the pre-image
+    // for a byte-exact match, but the new-side bytes when the match is only
+    // whitespace-equal under a line-key mode (git emits context from the new side).
+    const newIndex = hunk.theirsStart + (i - hunk.oursStart);
     edits.push({
       kind: 'context',
       oldIndex: i,
-      newIndex: hunk.theirsStart + (i - hunk.oursStart),
-      text: oldLines[i]!,
+      newIndex,
+      text: newLines[newIndex]!,
     });
   }
   return edits;
@@ -181,9 +190,25 @@ function editsFromHunk(
   oldLines: ReadonlyArray<string>,
   newLines: ReadonlyArray<string>,
 ): Edit[] {
-  if (hunk.kind === 'common') return commonEditsFrom(hunk, oldLines);
+  if (hunk.kind === 'common') return commonEditsFrom(hunk, newLines);
   if (hunk.kind === 'ours-only') return deleteEditsFrom(hunk, oldLines);
   return insertEditsFrom(hunk, newLines);
+}
+
+function suppressBlankGroups(
+  edits: ReadonlyArray<Edit>,
+  ld: {
+    readonly oursLines: ReadonlyArray<Uint8Array>;
+    readonly theirsLines: ReadonlyArray<Uint8Array>;
+  },
+  key: LineKey,
+): ReadonlyArray<Edit> {
+  return edits.filter((edit) => {
+    if (edit.kind === 'context') return true;
+    const line =
+      edit.kind === 'delete' ? ld.oursLines[edit.oldIndex] : ld.theirsLines[edit.newIndex];
+    return line === undefined || !isBlankLine(line, key);
+  });
 }
 
 function buildEdits(
@@ -191,13 +216,19 @@ function buildEdits(
   newLines: ReadonlyArray<string>,
   oldBytes: Uint8Array,
   newBytes: Uint8Array,
+  emit?: EmitOptions,
 ): ReadonlyArray<Edit> {
-  const ld = diffLines(oldBytes, newBytes);
-  const edits: Edit[] = [];
+  const ld = diffLines(
+    oldBytes,
+    newBytes,
+    emit?.lineKey !== undefined ? { lineKey: emit.lineKey } : undefined,
+  );
+  const allEdits: Edit[] = [];
   for (const hunk of ld.hunks) {
-    for (const edit of editsFromHunk(hunk, oldLines, newLines)) edits.push(edit);
+    for (const edit of editsFromHunk(hunk, oldLines, newLines)) allEdits.push(edit);
   }
-  return edits;
+  if (emit?.ignoreBlankLines !== true) return allEdits;
+  return suppressBlankGroups(allEdits, ld, emit.lineKey ?? NONE_KEY);
 }
 
 function isChange(kind: EditKind): boolean {
@@ -437,10 +468,11 @@ export function computeHunks(
   oldBytes: Uint8Array,
   newBytes: Uint8Array,
   contextLines: number,
+  options?: EmitOptions,
 ): ReadonlyArray<OutputHunk> {
   const oldSplit = splitContentLines(oldBytes);
   const newSplit = splitContentLines(newBytes);
-  const edits = buildEdits(oldSplit.lines, newSplit.lines, oldBytes, newBytes);
+  const edits = buildEdits(oldSplit.lines, newSplit.lines, oldBytes, newBytes, options);
   return groupHunks(edits, contextLines, {
     oldTotal: oldSplit.lines.length,
     newTotal: newSplit.lines.length,
@@ -455,8 +487,12 @@ function renderTextBody(
   oldBytes: Uint8Array,
   newBytes: Uint8Array,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
-  const hunks = computeHunks(oldBytes, newBytes, contextLines);
+  const hunks = computeHunks(oldBytes, newBytes, contextLines, emit);
+  // Every change blank-suppressed: emit no body so the modify caller drops the
+  // whole file (empty document). A non-suppressed empty diff still emits ---/+++.
+  if (hunks.length === 0 && emit?.ignoreBlankLines === true) return [];
   const out: string[] = [];
   out.push(`--- ${prefix.old}${common.path}`);
   out.push(`+++ ${prefix.new}${common.path}`);
@@ -473,17 +509,22 @@ function renderSameKindBlock(
   oldBytes: Uint8Array,
   newBytes: Uint8Array,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
+  if (common.oldId !== common.newId && !isBinary(oldBytes) && !isBinary(newBytes)) {
+    const body = renderTextBody(common, prefix, oldBytes, newBytes, contextLines, emit);
+    if (body.length === 0) return [];
+    const out: string[] = [];
+    out.push(diffGitHeader(common.path, common.path, prefix));
+    for (const line of modePreamble(common)) out.push(line);
+    for (const line of body) out.push(line);
+    return out;
+  }
   const out: string[] = [];
   out.push(diffGitHeader(common.path, common.path, prefix));
   for (const line of modePreamble(common)) out.push(line);
   if (common.oldId === common.newId) return out;
-  if (isBinary(oldBytes) || isBinary(newBytes)) {
-    for (const line of renderBinaryBody(common, prefix, oldBytes, newBytes)) out.push(line);
-    return out;
-  }
-  for (const line of renderTextBody(common, prefix, oldBytes, newBytes, contextLines))
-    out.push(line);
+  for (const line of renderBinaryBody(common, prefix, oldBytes, newBytes)) out.push(line);
   return out;
 }
 
@@ -498,6 +539,7 @@ function renderBrokenModifyBlock(
   newBytes: Uint8Array,
   prefix: PatchPathPrefix,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
   const broken = change.broken;
   const common = changeToCommon(change);
@@ -507,12 +549,11 @@ function renderBrokenModifyBlock(
   // Index line: with mode suffix when oldMode === newMode, without when they differ.
   const base = `index ${shortOid(common.oldId)}..${shortOid(common.newId)}`;
   out.push(common.oldMode === common.newMode ? `${base} ${common.newMode}` : base);
-  if (isBinary(oldBytes) || isBinary(newBytes)) {
-    for (const line of renderBinaryBody(common, prefix, oldBytes, newBytes)) out.push(line);
-    return out;
-  }
-  for (const line of renderTextBody(common, prefix, oldBytes, newBytes, contextLines))
-    out.push(line);
+  const body =
+    isBinary(oldBytes) || isBinary(newBytes)
+      ? renderBinaryBody(common, prefix, oldBytes, newBytes)
+      : renderTextBody(common, prefix, oldBytes, newBytes, contextLines, emit);
+  for (const line of body) out.push(line);
   return out;
 }
 
@@ -522,6 +563,7 @@ function renderModifyOrTypeChangeBlock(
   newBytes: Uint8Array,
   prefix: PatchPathPrefix,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
   if (change.type === 'modify' && change.broken !== undefined) {
     return renderBrokenModifyBlock(
@@ -530,9 +572,17 @@ function renderModifyOrTypeChangeBlock(
       newBytes,
       prefix,
       contextLines,
+      emit,
     );
   }
-  return renderSameKindBlock(changeToCommon(change), prefix, oldBytes, newBytes, contextLines);
+  return renderSameKindBlock(
+    changeToCommon(change),
+    prefix,
+    oldBytes,
+    newBytes,
+    contextLines,
+    emit,
+  );
 }
 
 interface TwoPathChange {
@@ -557,6 +607,7 @@ function renderTwoPathBody(
   newBytes: Uint8Array,
   prefix: PatchPathPrefix,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
   const out: string[] = [];
   out.push(twoPathIndexLine(change));
@@ -566,7 +617,11 @@ function renderTwoPathBody(
     );
     return out;
   }
-  const hunks = computeHunks(oldBytes, newBytes, contextLines);
+  const hunks = computeHunks(oldBytes, newBytes, contextLines, emit);
+  // Blank-suppressed body: keep the index line, omit ---/+++ and hunks (git keeps the
+  // rename/copy header + index when the body vanishes). A non-suppressed empty diff
+  // still emits ---/+++.
+  if (hunks.length === 0 && emit?.ignoreBlankLines === true) return out;
   out.push(`--- ${prefix.old}${change.oldPath}`);
   out.push(`+++ ${prefix.new}${change.newPath}`);
   for (const hunk of hunks) {
@@ -582,29 +637,29 @@ function renderTwoPathBlock(
   file: PatchFile,
   prefix: PatchPathPrefix,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
-  const out: string[] = [];
-  out.push(diffGitHeader(change.oldPath, change.newPath, prefix));
+  const header: string[] = [];
+  header.push(diffGitHeader(change.oldPath, change.newPath, prefix));
   // Mode preamble PRECEDES the similarity line when modes differ (matrix #4).
   if (change.oldMode !== change.newMode) {
-    out.push(`old mode ${change.oldMode}`);
-    out.push(`new mode ${change.newMode}`);
+    header.push(`old mode ${change.oldMode}`);
+    header.push(`new mode ${change.newMode}`);
   }
-  out.push(`similarity index ${toSimilarityPercent(change.similarity.score)}%`);
-  out.push(`${keyword} from ${change.oldPath}`);
-  out.push(`${keyword} to ${change.newPath}`);
+  header.push(`similarity index ${toSimilarityPercent(change.similarity.score)}%`);
+  header.push(`${keyword} from ${change.oldPath}`);
+  header.push(`${keyword} to ${change.newPath}`);
   // Exact (100%): stop here — no index line, no hunk (matrix #5 / #C4).
-  if (change.similarity.score === MAX_SCORE) return out;
-  for (const line of renderTwoPathBody(
+  if (change.similarity.score === MAX_SCORE) return header;
+  const body = renderTwoPathBody(
     change,
     file.oldContent ?? new Uint8Array(0),
     file.newContent ?? new Uint8Array(0),
     prefix,
     contextLines,
-  )) {
-    out.push(line);
-  }
-  return out;
+    emit,
+  );
+  return [...header, ...body];
 }
 
 function renderRenameBlock(
@@ -612,8 +667,9 @@ function renderRenameBlock(
   file: PatchFile,
   prefix: PatchPathPrefix,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
-  return renderTwoPathBlock(change, 'rename', file, prefix, contextLines);
+  return renderTwoPathBlock(change, 'rename', file, prefix, contextLines, emit);
 }
 
 function renderCopyBlock(
@@ -621,8 +677,9 @@ function renderCopyBlock(
   file: PatchFile,
   prefix: PatchPathPrefix,
   contextLines: number,
+  emit?: EmitOptions,
 ): string[] {
-  return renderTwoPathBlock(change, 'copy', file, prefix, contextLines);
+  return renderTwoPathBlock(change, 'copy', file, prefix, contextLines, emit);
 }
 
 function renderAddBinary(change: AddChange, prefix: PatchPathPrefix): string[] {
@@ -643,7 +700,12 @@ function renderDeleteBinary(change: DeleteChange, prefix: PatchPathPrefix): stri
   ];
 }
 
-function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: number): string[] {
+function renderFile(
+  file: PatchFile,
+  prefix: PatchPathPrefix,
+  contextLines: number,
+  emit?: EmitOptions,
+): string[] {
   const change = file.change;
   if (change.type === 'add') {
     const newBytes = file.newContent ?? new Uint8Array(0);
@@ -655,8 +717,8 @@ function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: numb
     if (isBinary(oldBytes)) return renderDeleteBinary(change, prefix);
     return renderDeleteBlock(change, file.oldContent, prefix);
   }
-  if (change.type === 'rename') return renderRenameBlock(change, file, prefix, contextLines);
-  if (change.type === 'copy') return renderCopyBlock(change, file, prefix, contextLines);
+  if (change.type === 'rename') return renderRenameBlock(change, file, prefix, contextLines, emit);
+  if (change.type === 'copy') return renderCopyBlock(change, file, prefix, contextLines, emit);
   // `modify` and `type-change` share the same body shape (mode preamble +
   // optional content body); the discriminated union is exhaustive — no
   // fallthrough branch exists for the type system to flag.
@@ -666,6 +728,7 @@ function renderFile(file: PatchFile, prefix: PatchPathPrefix, contextLines: numb
     file.newContent ?? new Uint8Array(0),
     prefix,
     contextLines,
+    emit,
   );
 }
 
@@ -677,18 +740,33 @@ function resolveContextLines(value: number | undefined): number {
   return value;
 }
 
+function buildEmitOptions(opts: PatchOptions | undefined): EmitOptions | undefined {
+  if (opts === undefined) return undefined;
+  const lineKey = opts.lineKey;
+  const ignoreBlankLines = opts.ignoreBlankLines;
+  if (lineKey !== undefined && ignoreBlankLines === true) {
+    return { lineKey, ignoreBlankLines: true };
+  }
+  if (lineKey !== undefined) return { lineKey };
+  if (ignoreBlankLines === true) return { ignoreBlankLines: true };
+  return undefined;
+}
+
 export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions): string {
   const contextLines = resolveContextLines(opts?.contextLines);
   if (files.length === 0) return '';
   const prefix = opts?.pathPrefix ?? DEFAULT_PREFIX;
   for (const file of files) assertSafePaths(file.change, prefix);
+  const emit: EmitOptions | undefined = buildEmitOptions(opts);
   const lines: string[] = [];
   for (const file of files) {
-    const block = renderFile(file, prefix, contextLines);
+    const block = renderFile(file, prefix, contextLines, emit);
     for (const line of block) lines.push(line);
   }
-  // Every render*Block produces at least the `diff --git` header line, so by
-  // the time we reach here `lines` is non-empty whenever `files` is non-empty.
+  // When all file blocks are blank-suppressed, lines stays empty and we return ''.
+  // Otherwise push the trailing '' separator and join.
+  // equivalent-mutant: `lines.length === 0` -> `false` — when lines is empty the fallthrough pushes one '' and joins, and [''].join('\n') === '' === [].join('\n'), so both branches return ''.
+  if (lines.length === 0) return '';
   lines.push('');
   return lines.join('\n');
 }

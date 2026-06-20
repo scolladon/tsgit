@@ -1,0 +1,723 @@
+import { describe, expect, it } from 'vitest';
+import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
+import {
+  isBlankLine,
+  lineKeyIsActive,
+  linesEqualUnder,
+  NONE_KEY,
+  normalizeLine,
+  resolveLineKey,
+} from '../../../../src/domain/diff/whitespace.js';
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+// Build a line exactly as splitLines would return it: content + optional LF terminator
+const line = (s: string): Uint8Array => enc(s);
+
+describe('normalizeLine', () => {
+  describe("Given mode 'all' (ignore all space/tab)", () => {
+    const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+
+    describe('When the line has internal spaces', () => {
+      it('Then drops all space bytes (W1)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(line('a b\n'), key);
+        // Assert
+        expect(result).toEqual(enc('ab\n'));
+      });
+    });
+
+    describe('When the line has a tab byte', () => {
+      it('Then drops tab along with space bytes (W1)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(line('\tbeta gamma\n'), key);
+        // Assert
+        expect(result).toEqual(enc('betagamma\n'));
+      });
+    });
+
+    describe('When leading whitespace amount differs (presence irrelevant under all)', () => {
+      it('Then drops leading space so x and "  x" are equal keys', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('x\n'), key);
+        const b = sut(line('  x\n'), key);
+        // Assert
+        expect(a).toEqual(b);
+      });
+    });
+
+    describe('When a trailing CR is present before the LF terminator', () => {
+      it('Then drops the CR as part of all-whitespace removal (CR1)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(line('a\r\n'), key);
+        // Assert
+        expect(result).toEqual(enc('a\n'));
+      });
+    });
+
+    describe('When the content is unterminated (no trailing LF)', () => {
+      it('Then drops whitespace without appending a terminator', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b'), key);
+        // Assert — no LF is invented for an unterminated line
+        expect(result).toEqual(enc('ab'));
+      });
+    });
+
+    describe('When the content is terminated (trailing LF)', () => {
+      it('Then preserves exactly one trailing LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b\n'), key);
+        // Assert — the terminator is re-appended exactly once
+        expect(result).toEqual(enc('ab\n'));
+      });
+    });
+  });
+
+  describe("Given mode 'change' (ignore space-change / -b)", () => {
+    const key: LineKey = { mode: 'change', ignoreCrAtEol: false };
+
+    describe('When a run grows but stays non-zero (B-run)', () => {
+      it('Then collapses both runs to single space so lines are equal', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('xx a b yy\n'), key);
+        const b = sut(line('xx a    b yy\n'), key);
+        // Assert
+        expect(a).toEqual(b);
+      });
+    });
+
+    describe('When tab is swapped for space in a run (B-tab)', () => {
+      it('Then collapses both to single space so keys are equal', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('a\tb\n'), key);
+        const b = sut(line('a b\n'), key);
+        // Assert
+        expect(a).toEqual(b);
+      });
+    });
+
+    describe('When leading whitespace amount changes from tab to spaces (B-amt)', () => {
+      it('Then normalizes both to same leading representation', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('\tx\n'), key);
+        const b = sut(line('    x\n'), key);
+        // Assert
+        expect(a).toEqual(b);
+      });
+    });
+
+    describe('When space is fully removed from internal position (B-zero: some→none)', () => {
+      it('Then the keys differ because presence changed', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('a b\n'), key);
+        const b = sut(line('ab\n'), key);
+        // Assert
+        expect(a).not.toEqual(b);
+      });
+    });
+
+    describe('When leading whitespace is added where none existed (B-none)', () => {
+      it('Then the keys differ because presence changed', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('x\n'), key);
+        const b = sut(line('  x\n'), key);
+        // Assert
+        expect(a).not.toEqual(b);
+      });
+    });
+
+    describe('When a trailing CR is present before the LF terminator', () => {
+      it('Then drops the trailing CR as EOL whitespace (CR1 under -b)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const withCr = sut(line('a\r\n'), key);
+        const withoutCr = sut(line('a\n'), key);
+        // Assert
+        expect(withCr).toEqual(withoutCr);
+      });
+    });
+
+    describe('When a CR appears mid-line (not at EOL)', () => {
+      it('Then the mid-line CR is preserved and the keys differ (CR-narrow)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('a\rb\n'), key);
+        const b = sut(line('ab\n'), key);
+        // Assert
+        expect(a).not.toEqual(b);
+      });
+    });
+
+    describe('When a trailing whitespace run ends a terminated line', () => {
+      it('Then drops the collapsed trailing space (keeps the LF)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b \n'), key);
+        // Assert — the run collapses to one space then the trailing space is dropped
+        expect(result).toEqual(enc('a b\n'));
+      });
+    });
+
+    describe('When a trailing whitespace run ends an unterminated line', () => {
+      it('Then drops the collapsed trailing space (no LF)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b   '), key);
+        // Assert
+        expect(result).toEqual(enc('a b'));
+      });
+    });
+
+    describe('When the line ends in a non-whitespace byte', () => {
+      it('Then the trailing-space drop leaves the final byte intact', () => {
+        // Arrange — guards the pop against firing on a non-space last byte
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('ab\n'), key);
+        // Assert
+        expect(result).toEqual(enc('ab\n'));
+      });
+    });
+  });
+
+  describe("Given mode 'at-eol' (ignore space at EOL)", () => {
+    const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
+
+    describe('When trailing whitespace is added (EOL1)', () => {
+      it('Then drops trailing run so keys are equal', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('a\n'), key);
+        const b = sut(line('a   \n'), key);
+        // Assert
+        expect(a).toEqual(b);
+      });
+    });
+
+    describe('When trailing whitespace precedes the LF terminator', () => {
+      it('Then drops the run and re-appends exactly one LF', () => {
+        // Arrange — pins the terminator byte, not just cross-line equality
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a   \n'), key);
+        // Assert
+        expect(result).toEqual(enc('a\n'));
+      });
+    });
+
+    describe('When the line is entirely whitespace before the LF', () => {
+      it('Then collapses to a bare LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('   \n'), key);
+        // Assert
+        expect(result).toEqual(enc('\n'));
+      });
+    });
+
+    describe('When trailing whitespace ends an unterminated line', () => {
+      it('Then drops the run without inventing an LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a   '), key);
+        // Assert
+        expect(result).toEqual(enc('a'));
+      });
+    });
+
+    describe('When internal whitespace differs (W3)', () => {
+      it('Then internal whitespace is preserved so keys differ', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('\tbeta gamma\n'), key);
+        const b = sut(line('  beta  gamma   \n'), key);
+        // Assert
+        expect(a).not.toEqual(b);
+      });
+    });
+
+    describe('When leading whitespace amount changes (B-amt2)', () => {
+      it('Then leading difference is preserved so keys differ', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('\tx\n'), key);
+        const b = sut(line('    x\n'), key);
+        // Assert
+        expect(a).not.toEqual(b);
+      });
+    });
+
+    describe('When a trailing CR is present before the LF terminator', () => {
+      it('Then drops the trailing CR as EOL whitespace (CR1 under at-eol)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const withCr = sut(line('a\r\n'), key);
+        const withoutCr = sut(line('a\n'), key);
+        // Assert
+        expect(withCr).toEqual(withoutCr);
+      });
+    });
+
+    describe('When a CR appears mid-line (not at EOL)', () => {
+      it('Then the mid-line CR is preserved and the keys differ (CR-narrow)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('a\rb\n'), key);
+        const b = sut(line('ab\n'), key);
+        // Assert
+        expect(a).not.toEqual(b);
+      });
+    });
+  });
+
+  describe("Given mode 'none' (exact compare)", () => {
+    const key: LineKey = { mode: 'none', ignoreCrAtEol: false };
+
+    describe('When whitespace differs', () => {
+      it('Then returns the line unchanged', () => {
+        // Arrange
+        const sut = normalizeLine;
+        const input = line('a b\n');
+        // Act
+        const result = sut(input, key);
+        // Assert
+        expect(result).toEqual(input);
+      });
+    });
+
+    describe('When a trailing CR precedes the LF terminator', () => {
+      it('Then the CR is preserved (none mode never drops the CR)', () => {
+        // Arrange — without ignoreCrAtEol the CR is significant content
+        const sut = normalizeLine;
+        const input = line('a\r\n');
+        // Act
+        const result = sut(input, key);
+        // Assert
+        expect(result).toEqual(enc('a\r\n'));
+      });
+    });
+  });
+
+  describe('Given ignoreCrAtEol: true with mode none', () => {
+    const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
+
+    describe('When a trailing CR is present before the LF (CR1)', () => {
+      it('Then drops the trailing CR', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const withCr = sut(line('a\r\n'), key);
+        const withoutCr = sut(line('a\n'), key);
+        // Assert
+        expect(withCr).toEqual(withoutCr);
+      });
+    });
+
+    describe('When a CR appears mid-line (not at EOL)', () => {
+      it('Then the mid-line CR is preserved (CR-narrow)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(line('a\rb\n'), key);
+        const b = sut(line('ab\n'), key);
+        // Assert
+        expect(a).not.toEqual(b);
+      });
+    });
+
+    describe('When a trailing CR ends unterminated content (no final LF)', () => {
+      it('Then drops the CR without appending an LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(line('a\r'), key);
+        // Assert
+        expect(result).toEqual(line('a'));
+      });
+    });
+
+    describe('When the entire unterminated content is a single CR', () => {
+      it('Then drops it to an empty line (CR at index 0)', () => {
+        // Arrange — exercises the crPos === 0 boundary of the CR guard
+        const sut = normalizeLine;
+        // Act
+        const result = sut(line('\r'), key);
+        // Assert
+        expect(result).toEqual(enc(''));
+      });
+    });
+
+    describe('When no CR is present', () => {
+      it('Then trailing space is preserved (ignoreCrAtEol does not touch spaces)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const withTrailingSpace = sut(line('a  \n'), key);
+        // Assert
+        expect(withTrailingSpace).toEqual(enc('a  \n'));
+      });
+    });
+  });
+
+  describe('Given an unterminated line (no trailing LF, as with last line in no-newline file)', () => {
+    const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
+
+    describe('When trailing whitespace is in an unterminated line', () => {
+      it('Then drops trailing whitespace before end of content (D2 support)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const a = sut(enc('a'), key);
+        const b = sut(enc('a   '), key);
+        // Assert
+        expect(a).toEqual(b);
+      });
+    });
+  });
+});
+
+describe('linesEqualUnder', () => {
+  describe("Given mode 'all'", () => {
+    const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+
+    describe('When lines differ only in whitespace (W1)', () => {
+      it('Then returns true', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('\tbeta gamma\n'), line('  beta  gamma   \n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When lines differ in non-whitespace content', () => {
+      it('Then returns false', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('real\n'), line('REAL\n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When lines have space removed entirely (B-zero under all)', () => {
+      it('Then returns true because all space is dropped', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('a b\n'), line('ab\n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe("Given mode 'change'", () => {
+    const key: LineKey = { mode: 'change', ignoreCrAtEol: false };
+
+    describe('When run amount grows but neither side goes to zero (B-run)', () => {
+      it('Then returns true', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('a b\n'), line('a    b\n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When internal space is completely removed (B-zero)', () => {
+      it('Then returns false because presence changed', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('a b\n'), line('ab\n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When space is added where none existed (B-none)', () => {
+      it('Then returns false because presence changed', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('x\n'), line('  x\n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When leading whitespace amount changes (B-amt)', () => {
+      it('Then returns true because amount-only change is ignored', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('\tx\n'), line('    x\n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When tab is swapped for space (B-tab)', () => {
+      it('Then returns true', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('a\tb\n'), line('a b\n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe("Given mode 'at-eol'", () => {
+    const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
+
+    describe('When only trailing whitespace differs (EOL1)', () => {
+      it('Then returns true', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('a\n'), line('a   \n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When internal whitespace also differs (W3)', () => {
+      it('Then returns false', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('\tbeta gamma\n'), line('  beta  gamma   \n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe("Given mode 'none'", () => {
+    const key: LineKey = { mode: 'none', ignoreCrAtEol: false };
+
+    describe('When trailing whitespace differs', () => {
+      it('Then returns false (exact compare)', () => {
+        // Arrange
+        const sut = linesEqualUnder;
+        // Act
+        const result = sut(line('a\n'), line('a   \n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('resolveLineKey', () => {
+  describe("Given ignoreWhitespace is 'all', When resolveLineKey runs", () => {
+    it("Then mode is 'all'", () => {
+      // Arrange
+      const sut = resolveLineKey;
+      // Act
+      const result = sut({ ignoreWhitespace: 'all' });
+      // Assert
+      expect(result.mode).toBe('all');
+    });
+  });
+
+  describe("Given ignoreWhitespace is 'change', When resolveLineKey runs", () => {
+    it("Then mode is 'change'", () => {
+      // Arrange
+      const sut = resolveLineKey;
+      // Act
+      const result = sut({ ignoreWhitespace: 'change' });
+      // Assert
+      expect(result.mode).toBe('change');
+    });
+  });
+
+  describe("Given ignoreWhitespace is 'at-eol', When resolveLineKey runs", () => {
+    it("Then mode is 'at-eol'", () => {
+      // Arrange
+      const sut = resolveLineKey;
+      // Act
+      const result = sut({ ignoreWhitespace: 'at-eol' });
+      // Assert
+      expect(result.mode).toBe('at-eol');
+    });
+  });
+
+  describe('Given ignoreWhitespace is absent, When resolveLineKey runs', () => {
+    it("Then mode is 'none'", () => {
+      // Arrange
+      const sut = resolveLineKey;
+      // Act
+      const result = sut({});
+      // Assert
+      expect(result.mode).toBe('none');
+    });
+  });
+
+  describe('Given ignoreCrAtEol is true, When resolveLineKey runs', () => {
+    it('Then ignoreCrAtEol is true on the key', () => {
+      // Arrange
+      const sut = resolveLineKey;
+      // Act
+      const result = sut({ ignoreCrAtEol: true });
+      // Assert
+      expect(result.ignoreCrAtEol).toBe(true);
+    });
+  });
+
+  describe('Given ignoreCrAtEol is absent, When resolveLineKey runs', () => {
+    it('Then ignoreCrAtEol is false on the key', () => {
+      // Arrange
+      const sut = resolveLineKey;
+      // Act
+      const result = sut({});
+      // Assert
+      expect(result.ignoreCrAtEol).toBe(false);
+    });
+  });
+
+  describe('Given ignoreBlankLines is set, When resolveLineKey runs', () => {
+    it('Then ignoreBlankLines does NOT appear on the returned LineKey', () => {
+      // Arrange
+      const sut = resolveLineKey;
+      // Act
+      const result = sut({ ignoreBlankLines: true });
+      // Assert
+      // LineKey only has mode and ignoreCrAtEol
+      expect(Object.keys(result).sort()).toEqual(['ignoreCrAtEol', 'mode']);
+    });
+  });
+});
+
+describe('lineKeyIsActive', () => {
+  const modes: ReadonlyArray<WhitespaceMode> = ['all', 'change', 'at-eol', 'none'];
+
+  for (const mode of modes) {
+    describe(`Given mode '${mode}' and ignoreCrAtEol false, When lineKeyIsActive runs`, () => {
+      it(`Then ${mode !== 'none' ? 'returns true' : 'returns false'}`, () => {
+        // Arrange
+        const sut = lineKeyIsActive;
+        const key: LineKey = { mode, ignoreCrAtEol: false };
+        // Act
+        const result = sut(key);
+        // Assert
+        expect(result).toBe(mode !== 'none');
+      });
+    });
+  }
+
+  describe("Given mode 'none' and ignoreCrAtEol true, When lineKeyIsActive runs", () => {
+    it('Then returns true because ignoreCrAtEol alone activates the key', () => {
+      // Arrange
+      const sut = lineKeyIsActive;
+      const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
+      // Act
+      const result = sut(key);
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+});
+
+describe('isBlankLine', () => {
+  describe("Given mode 'all'", () => {
+    const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+
+    describe('When the line normalizes to empty', () => {
+      it('Then a spaces-only line is blank', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('   \n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the line has a single non-whitespace char', () => {
+      it('Then it is not blank (content length is 1, not 0)', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('a\n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given NONE_KEY (no normalization)', () => {
+    describe('When the line is a bare LF', () => {
+      it('Then it is blank', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('\n'), NONE_KEY);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the line is spaces-only', () => {
+      it('Then it is NOT blank (spaces are not stripped without a whitespace mode)', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('   \n'), NONE_KEY);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When the line is empty and unterminated', () => {
+      it('Then it is blank', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line(''), NONE_KEY);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+});

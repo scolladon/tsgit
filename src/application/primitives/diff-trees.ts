@@ -3,7 +3,12 @@ import {
   computeStatFields,
   type DiffChange,
   diffTrees as domainDiffTrees,
+  type LineKey,
+  lineKeyIsActive,
+  resolveLineKey,
   type StatDiffChange,
+  type StatFields,
+  type StatFieldsOptions,
   type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
@@ -50,17 +55,74 @@ export async function diffTrees(
           await buildPreimage(ctx, treeA, options.renameOptions),
         )
       : rawDiff;
-  if (options?.withStat === true) {
-    return attachStats(ctx, diff);
+
+  const lineKey = resolveLineKey(options ?? {});
+  const lineKeyActive = lineKeyIsActive(lineKey);
+  const ignoreBlankLines = options?.ignoreBlankLines === true;
+  const withStat = options?.withStat === true;
+
+  if (lineKeyActive || withStat) {
+    return applyLinePassAndStat(ctx, diff, lineKey, lineKeyActive, ignoreBlankLines, withStat);
   }
   return diff;
 }
 
+/** Resolve the stat options for one file: line-key + blank when a mode is active,
+ *  blank-only when only `ignoreBlankLines` is set, else none (plain counts). */
+function statOptionsFor(
+  lineKey: LineKey,
+  lineKeyActive: boolean,
+  ignoreBlankLines: boolean,
+): StatFieldsOptions | undefined {
+  // equivalent-mutant: `if (lineKeyActive)` -> `if (true)` — when lineKeyActive is false the key is mode 'none' + no ignoreCrAtEol, so normalizeLine is the identity and computeStatFields treats { lineKey: <none> } identically to omitting lineKey; counts are unchanged.
+  if (lineKeyActive) return { lineKey, ignoreBlankLines };
+  // equivalent-mutant: `if (ignoreBlankLines)` -> `if (true)` — reached only when lineKeyActive is false; with ignoreBlankLines false, { ignoreBlankLines: false } and undefined both yield lineKey undefined + blankKey undefined in computeStatFields, so counts are identical.
+  if (ignoreBlankLines) return { ignoreBlankLines };
+  return undefined;
+}
+
 /**
- * Build the flat preimage map for copies:'harder' — all tree-A paths as copy sources.
+ * Materialise blobs once, run the drop pass and stat in a single traversal.
+ * When `lineKeyActive`, drops modify changes that yield zero real hunks under
+ * the active line-key mode. When `withStat`, attaches per-file counts to
+ * every surviving change. The stat and drop predicate share one
+ * `computeStatFields` call per modify so drop and counts are mutually consistent.
+ */
+async function applyLinePassAndStat(
+  ctx: Context,
+  diff: TreeDiff,
+  lineKey: LineKey,
+  lineKeyActive: boolean,
+  ignoreBlankLines: boolean,
+  withStat: boolean,
+): Promise<TreeDiff | StatTreeDiff> {
+  const files = await materialisePatchFiles(ctx, diff.changes);
+  const surviving: Array<DiffChange | StatDiffChange> = [];
+  for (const file of files) {
+    const stats = computeStatFields(
+      file.oldContent ?? EMPTY,
+      file.newContent ?? EMPTY,
+      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines),
+    );
+    if (lineKeyActive && shouldDrop(file.change, stats)) continue;
+    surviving.push(withStat ? { ...file.change, ...stats } : file.change);
+  }
+  return { changes: surviving };
+}
+
+/**
+ * Drop predicate for the whitespace drop pass.
+ * Only `modify` changes with zero added+deleted non-binary lines are dropped.
+ * Type-changes, renames, copies, adds, and deletes are never dropped.
+ * Binary modifies are never dropped (binary detection ignores whitespace flags).
+ */
+function shouldDrop(change: DiffChange, stats: StatFields): boolean {
+  return change.type === 'modify' && stats.added === 0 && stats.deleted === 0 && !stats.binary;
+}
+
+/**
+ * Build the flat preimage map for copies:'harder' — all tree-A paths become copy sources.
  * Returns undefined when copies:'harder' is not active or treeA is absent.
- * The preimage is passed as a separate argument to detectSimilarityRenames so it
- * stays out of the public RenameDetectOptions surface.
  */
 async function buildPreimage(
   ctx: Context,
@@ -72,30 +134,8 @@ async function buildPreimage(
   return flat.entries;
 }
 
-/**
- * Hydrate each change with its line counts. Reads blob contents (via
- * `materialisePatchFiles`) and runs the line diff per file — the line-level cost
- * the tree-level path avoids.
- */
-async function attachStats(ctx: Context, diff: TreeDiff): Promise<StatTreeDiff> {
-  const files = await materialisePatchFiles(ctx, diff.changes);
-  const changes = files.map(
-    (file): StatDiffChange => withStatFields(file.change, file.oldContent, file.newContent),
-  );
-  return { changes };
-}
-
-const withStatFields = (
-  change: DiffChange,
-  oldContent: Uint8Array | undefined,
-  newContent: Uint8Array | undefined,
-): StatDiffChange => ({
-  ...change,
-  ...computeStatFields(oldContent ?? EMPTY, newContent ?? EMPTY),
-});
-
 async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree | undefined> {
-  // Stryker disable next-line ConditionalExpression: equivalent — when input is undefined, skipping this guard falls through to `return input`, which is also undefined
+  // equivalent-mutant: skipping this guard (`if (false)`) is equivalent — undefined input is not a string, so it falls through to `return input`, which is also undefined.
   if (input === undefined) return undefined;
   if (typeof input === 'string') {
     return readTree(ctx, input);
@@ -113,12 +153,11 @@ async function diffRecursive(
 }
 
 /**
- * Flatten a tree to a full-path blob *projection* — a `Tree` whose entries carry
- * full slash-separated names and the leaf blob mode. Classifying these
- * reproduces git's recursive diff order: a directory sorts as if it had a
- * trailing `/`, so a raw full-path byte sort matches the recursive walk. The
- * projection is diff-only and is never serialised — its slash-bearing names
- * would be rejected by the tree serializer, which it never reaches.
+ * Flatten a tree to a full-path blob projection — `Tree` entries carry
+ * full slash-separated names at the leaf blob mode. This reproduces git's
+ * recursive diff order: directories sort with a trailing `/`, so raw full-path
+ * byte sort matches a recursive walk. The projection is diff-only and is never
+ * serialised — its slash-bearing names would be rejected by the tree serializer.
  */
 async function blobProjection(ctx: Context, tree: Tree | undefined): Promise<Tree | undefined> {
   if (tree === undefined) return undefined;

@@ -82,6 +82,14 @@ export interface RepositoryConfig {
    */
   readonly maxObjectsPerPack?: number;
   readonly detectRenames?: boolean;
+  /**
+   * Programmatic facade defaults for whitespace-diff modes. These are NOT git's
+   * `.git/config` settings and NOT `core.whitespace` — they are library-tier
+   * defaults applied by the `diff` command when no per-call option overrides them.
+   */
+  readonly ignoreWhitespace?: 'all' | 'change' | 'at-eol';
+  readonly ignoreCrAtEol?: boolean;
+  readonly ignoreBlankLines?: boolean;
   readonly breakStaleLockMs?: number;
   readonly dnsResolver?: (host: string) => Promise<ReadonlyArray<string>>;
   /** Hard cap on `dnsResolver` return-array length to bound resolver-amplification DoS. Default 64. */

@@ -497,4 +497,392 @@ describe('diff', () => {
       });
     });
   });
+
+  describe('Given ignoreWhitespace: "all" and a whitespace-only file change', () => {
+    describe('When diff', () => {
+      it('Then the whitespace-only modify is absent from changes (dropped)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ws.txt`, 'hello\n');
+        await add(ctx, ['ws.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ws.txt`, 'hello   \n');
+        await add(ctx, ['ws.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const result = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          ignoreWhitespace: 'all',
+          recursive: true,
+        });
+
+        // Assert — whitespace-only change is dropped
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given ignoreWhitespace: "all" with withStat:true and a real change', () => {
+    describe('When diff', () => {
+      it('Then stat counts reflect the mode (real change counted)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'hello\n');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'HELLO\n');
+        await add(ctx, ['a.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const result = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          ignoreWhitespace: 'all',
+          withStat: true,
+          recursive: true,
+        });
+
+        // Assert — real change (case) still counted
+        expect(result.changes[0]).toMatchObject({ added: 1, deleted: 1, binary: false });
+      });
+    });
+  });
+
+  describe('Given no whitespace options', () => {
+    describe('When diff on a whitespace-only modify', () => {
+      it('Then the change is present (exact compare)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ws.txt`, 'hello\n');
+        await add(ctx, ['ws.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ws.txt`, 'hello   \n');
+        await add(ctx, ['ws.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const result = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+
+        // Assert — without whitespace mode, trailing-space change is visible
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  // Config precedence guards — detectRenames
+  describe('Given ctx.config.detectRenames: true and no per-call detectRenames', () => {
+    describe('When diff on a rename', () => {
+      it('Then rename detection fires (config default is consumed)', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        const content = 'unique content for config detectRenames guard';
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/src.txt`, content);
+        await add(baseCtx, ['src.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/dst.txt`, content);
+        await rm(baseCtx, ['src.txt']);
+        await add(baseCtx, ['dst.txt']);
+        const c2 = await commit(baseCtx, { message: 'rename', author });
+        const ctx = { ...baseCtx, config: { detectRenames: true } };
+
+        // Act — no per-call detectRenames; config provides the default
+        const result = await diff(ctx, { from: c1.id, to: c2.id });
+
+        // Assert
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given ctx.config.detectRenames: true and per-call detectRenames: false', () => {
+    describe('When diff on a rename', () => {
+      it('Then per-call false overrides the config (no rename detection)', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        const content = 'unique content for config detectRenames override guard';
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/src.txt`, content);
+        await add(baseCtx, ['src.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/dst.txt`, content);
+        await rm(baseCtx, ['src.txt']);
+        await add(baseCtx, ['dst.txt']);
+        const c2 = await commit(baseCtx, { message: 'rename', author });
+        const ctx = { ...baseCtx, config: { detectRenames: true } };
+
+        // Act — explicit false overrides config true
+        const result = await diff(ctx, { from: c1.id, to: c2.id, detectRenames: false });
+
+        // Assert
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given no config and no per-call detectRenames', () => {
+    describe('When diff on a rename', () => {
+      it('Then no rename detection (default is off)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const content = 'unique content for config detectRenames absent guard';
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src.txt`, content);
+        await add(ctx, ['src.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dst.txt`, content);
+        await rm(ctx, ['src.txt']);
+        await add(ctx, ['dst.txt']);
+        const c2 = await commit(ctx, { message: 'rename', author });
+
+        // Act — neither per-call nor config; should not detect renames
+        const result = await diff(ctx, { from: c1.id, to: c2.id });
+
+        // Assert
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
+      });
+    });
+  });
+
+  // Config precedence guards — ignoreWhitespace
+  describe('Given ctx.config.ignoreWhitespace: "all" and no per-call ignoreWhitespace', () => {
+    describe('When diff on a whitespace-only modify', () => {
+      it('Then config default drops the whitespace-only change', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/ws.txt`, 'hello\n');
+        await add(baseCtx, ['ws.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/ws.txt`, 'hello   \n');
+        await add(baseCtx, ['ws.txt']);
+        const c2 = await commit(baseCtx, { message: 'second', author });
+        const ctx = { ...baseCtx, config: { ignoreWhitespace: 'all' as const } };
+
+        // Act
+        const result = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+
+        // Assert — config-supplied mode drops the whitespace-only change
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given ctx.config.ignoreWhitespace: "all" and per-call ignoreWhitespace: "at-eol"', () => {
+    describe('When diff on a trailing-space modify', () => {
+      it('Then per-call overrides config (at-eol drops trailing-space change)', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/ws.txt`, 'hello\n');
+        await add(baseCtx, ['ws.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/ws.txt`, 'hello   \n');
+        await add(baseCtx, ['ws.txt']);
+        const c2 = await commit(baseCtx, { message: 'second', author });
+        const ctx = { ...baseCtx, config: { ignoreWhitespace: 'all' as const } };
+
+        // Act — per-call 'at-eol' overrides config 'all' (at-eol also drops trailing space)
+        const result = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          recursive: true,
+          ignoreWhitespace: 'at-eol',
+        });
+
+        // Assert — trailing-space change dropped under 'at-eol' (per-call wins)
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given no config and no per-call ignoreWhitespace', () => {
+    describe('When diff on a whitespace-only modify', () => {
+      it('Then change is present (exact compare by default)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ws.txt`, 'hello\n');
+        await add(ctx, ['ws.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/ws.txt`, 'hello   \n');
+        await add(ctx, ['ws.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const result = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  // Config precedence guards — ignoreCrAtEol
+  describe('Given ctx.config.ignoreCrAtEol: true and no per-call ignoreCrAtEol', () => {
+    describe('When diff on a CR-only modify', () => {
+      it('Then config default causes CR change to be dropped', async () => {
+        // Arrange — file changes only by gaining a trailing CR before LF
+        const enc = (s: string) => new TextEncoder().encode(s);
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        await baseCtx.fs.write(`${baseCtx.layout.workDir}/cr.txt`, enc('hello\n'));
+        await add(baseCtx, ['cr.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.write(`${baseCtx.layout.workDir}/cr.txt`, enc('hello\r\n'));
+        await add(baseCtx, ['cr.txt']);
+        const c2 = await commit(baseCtx, { message: 'second', author });
+        const ctx = { ...baseCtx, config: { ignoreCrAtEol: true } };
+
+        // Act
+        const result = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+
+        // Assert — CR-only change is hidden under ignoreCrAtEol
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given ctx.config.ignoreCrAtEol: true and per-call ignoreCrAtEol: false', () => {
+    describe('When diff on a CR-only modify', () => {
+      it('Then per-call false overrides config (CR change visible)', async () => {
+        // Arrange
+        const enc = (s: string) => new TextEncoder().encode(s);
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        await baseCtx.fs.write(`${baseCtx.layout.workDir}/cr.txt`, enc('hello\n'));
+        await add(baseCtx, ['cr.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.write(`${baseCtx.layout.workDir}/cr.txt`, enc('hello\r\n'));
+        await add(baseCtx, ['cr.txt']);
+        const c2 = await commit(baseCtx, { message: 'second', author });
+        const ctx = { ...baseCtx, config: { ignoreCrAtEol: true } };
+
+        // Act — per-call false overrides config true
+        const result = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          recursive: true,
+          ignoreCrAtEol: false,
+        });
+
+        // Assert — CR change is visible (config was overridden)
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given no config and no per-call ignoreCrAtEol', () => {
+    describe('When diff on a CR-only modify', () => {
+      it('Then CR change is visible (default is exact compare)', async () => {
+        // Arrange
+        const enc = (s: string) => new TextEncoder().encode(s);
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.write(`${ctx.layout.workDir}/cr.txt`, enc('hello\n'));
+        await add(ctx, ['cr.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.write(`${ctx.layout.workDir}/cr.txt`, enc('hello\r\n'));
+        await add(ctx, ['cr.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const result = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  // Config precedence guards — ignoreBlankLines
+  describe('Given ctx.config.ignoreBlankLines: true and no per-call ignoreBlankLines', () => {
+    describe('When diff on a blank-line-only modify', () => {
+      it('Then config default causes blank-only stat change to count zero', async () => {
+        // Arrange — file gains a blank line only
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/bl.txt`, 'hello\n');
+        await add(baseCtx, ['bl.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/bl.txt`, 'hello\n\n');
+        await add(baseCtx, ['bl.txt']);
+        const c2 = await commit(baseCtx, { message: 'second', author });
+        const ctx = { ...baseCtx, config: { ignoreBlankLines: true } };
+
+        // Act — withStat so we can observe the count
+        const result = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          recursive: true,
+          withStat: true,
+        });
+
+        // Assert — blank-only addition counted as 0 added under ignoreBlankLines
+        expect(result.changes[0]).toMatchObject({ added: 0, deleted: 0, binary: false });
+      });
+    });
+  });
+
+  describe('Given ctx.config.ignoreBlankLines: true and per-call ignoreBlankLines: false', () => {
+    describe('When diff on a blank-line-only modify', () => {
+      it('Then per-call false overrides config (blank line counted)', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        await init(baseCtx);
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/bl.txt`, 'hello\n');
+        await add(baseCtx, ['bl.txt']);
+        const c1 = await commit(baseCtx, { message: 'first', author });
+        await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/bl.txt`, 'hello\n\n');
+        await add(baseCtx, ['bl.txt']);
+        const c2 = await commit(baseCtx, { message: 'second', author });
+        const ctx = { ...baseCtx, config: { ignoreBlankLines: true } };
+
+        // Act — per-call false overrides config true
+        const result = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          recursive: true,
+          withStat: true,
+          ignoreBlankLines: false,
+        });
+
+        // Assert — blank line is counted (config overridden)
+        expect(result.changes[0]).toMatchObject({ added: 1, deleted: 0, binary: false });
+      });
+    });
+  });
+
+  describe('Given no config and no per-call ignoreBlankLines', () => {
+    describe('When diff on a blank-line-only modify', () => {
+      it('Then blank line is counted (default is exact compare)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/bl.txt`, 'hello\n');
+        await add(ctx, ['bl.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/bl.txt`, 'hello\n\n');
+        await add(ctx, ['bl.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+
+        // Act
+        const result = await diff(ctx, {
+          from: c1.id,
+          to: c2.id,
+          recursive: true,
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes[0]).toMatchObject({ added: 1, deleted: 0, binary: false });
+      });
+    });
+  });
 });

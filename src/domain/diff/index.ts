@@ -34,7 +34,7 @@ export {
 } from './index-diff.js';
 
 // Line diff
-export type { LineDiff, LineHunk } from './line-diff.js';
+export type { LineDiff, LineDiffOptions, LineHunk } from './line-diff.js';
 export {
   BINARY_DETECTION_BYTES,
   diffLines,
@@ -77,8 +77,17 @@ export {
 } from './similarity.js';
 
 // Per-file stat counts (withStat)
-export type { StatDiffChange, StatFields, StatTreeDiff } from './stat-fields.js';
+export type { StatDiffChange, StatFields, StatFieldsOptions, StatTreeDiff } from './stat-fields.js';
 export { computeStatFields } from './stat-fields.js';
 
 // Tree diff
 export { diffTrees } from './tree-diff.js';
+
+// Whitespace normalizer
+export type { LineKey, WhitespaceMode } from './whitespace.js';
+export {
+  lineKeyIsActive,
+  linesEqualUnder,
+  normalizeLine,
+  resolveLineKey,
+} from './whitespace.js';

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PatchFile } from '../../../../src/domain/diff/patch-serializer.js';
-import { renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
+import { computeHunks, renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -1317,6 +1317,41 @@ describe('patch-serializer', () => {
     });
   });
 
+  describe('Given a sub-100% rename whose content differs only by a blank line', () => {
+    describe('When renderPatch is called with ignoreBlankLines', () => {
+      it('Then keeps the rename header and index line but emits no hunk body', () => {
+        // Arrange — a real rename (oldId !== newId) whose only content change is an
+        // inserted blank line; under ignoreBlankLines the body is fully suppressed,
+        // but git keeps the rename header + index line.
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'original.txt' as FilePath,
+            newPath: 'moved.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 52200, maxScore: MAX_SCORE },
+          },
+          oldContent: utf8.encode('alpha\nbeta\ngamma\n'),
+          newContent: utf8.encode('alpha\nbeta\n\ngamma\n'),
+        };
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — rename header + index kept; no ---/+++ markers and no @@ hunk
+        expect(sut).toContain('rename from original.txt');
+        expect(sut).toContain('rename to moved.txt');
+        expect(sut).toContain('index aaaaaaa..bbbbbbb 100644');
+        expect(sut).not.toContain('@@');
+        expect(sut).not.toContain('--- a/');
+        expect(sut).not.toContain('+++ b/');
+      });
+    });
+  });
+
   describe('Given a mode-change + sub-100% rename (matrix #4)', () => {
     describe('When renderPatch is called', () => {
       it('Then emits old mode / new mode BEFORE similarity index, and index line WITHOUT trailing mode', () => {
@@ -1787,6 +1822,227 @@ describe('patch-serializer', () => {
         expect(sut).toContain('Binary files a/readme.txt and b/logo.png differ');
         // No hunk markers should appear (binary path returns early)
         expect(sut).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a lineKey patch option', () => {
+    describe('When renderPatch is called with mode:all on a file with a ws-only and a real change (#M1)', () => {
+      it('Then renders the ws-only line as context with the post-image bytes and the real change as delete/insert', () => {
+        // Arrange — ws-only line:  "  ws" → "    ws" (only whitespace change)
+        // real line: "real" → "REAL" (content change)
+        const file = modifyFile('f.txt', '  ws\nreal\n', '    ws\nREAL\n');
+
+        // Act
+        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert — the ws-only line is context (single-space prefix) carrying the
+        // NEW-side bytes "    ws" (git emits context from the post-image);
+        // the real line appears as a delete/insert pair.
+        expect(sut).toBe(
+          [
+            'diff --git a/f.txt b/f.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/f.txt',
+            '+++ b/f.txt',
+            '@@ -1,2 +1,2 @@',
+            '     ws',
+            '-real',
+            '+REAL',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+
+    describe('When renderPatch is called with mode:all on a tab-vs-space ws-only context line', () => {
+      it('Then the context line carries the post-image spaces, not the pre-image tabs', () => {
+        // Arrange — old has two tabs, new has four spaces before "ws"; equal under
+        // mode:all, so the line is context. The bytes disambiguate which side wins.
+        const file = modifyFile('t.txt', '\t\tws\nreal\n', '    ws\nREAL\n');
+
+        // Act
+        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert — context line is the new-side "    ws" (4 spaces), never "\t\tws".
+        expect(sut).toContain('\n     ws\n');
+        expect(sut).not.toContain('\t\tws');
+      });
+    });
+
+    describe('When computeHunks is called with 3 args (range-diff/patch-id compatibility)', () => {
+      it('Then returns byte-identical hunks to the no-options call', () => {
+        // Arrange — 3-arg call must compile unchanged and produce the same hunks
+        const oldBytes = utf8.encode('line1\nline2\n');
+        const newBytes = utf8.encode('line1\nchanged\n');
+
+        // Act
+        const sut = computeHunks(oldBytes, newBytes, 3);
+        const result = computeHunks(oldBytes, newBytes, 3, {});
+
+        // Assert — byte-identical results for both call forms
+        expect(sut).toEqual(result);
+      });
+    });
+
+    describe('When renderPatch is called with no options', () => {
+      it('Then produces output byte-identical to the default (regression guard)', () => {
+        // Arrange — a file with whitespace differences
+        const file = modifyFile('reg.txt', 'old  \n', 'new  \n');
+
+        // Act
+        const sut = renderPatch([file]);
+        const result = renderPatch([file], {});
+
+        // Assert — both call forms are identical
+        expect(sut).toBe(result);
+      });
+    });
+  });
+
+  describe('Given ignoreBlankLines', () => {
+    describe('When renderPatch is called on a blank-only modify (#BL1)', () => {
+      it('Then returns an empty document (no header, no hunk)', () => {
+        // Arrange — the only change is inserting a blank line (empty after any key)
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — #BL1: no diff --git header, empty document
+        expect(sut).toBe('');
+      });
+    });
+
+    describe('When renderPatch is called on a blank insert + real change (#BL2)', () => {
+      it('Then keeps the real change hunk and drops only the blank group', () => {
+        // Arrange — one blank line added AND a real line changed
+        const file = modifyFile('mixed.txt', 'a\nb\n', 'a\n\nB\n');
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — #BL2: diff --git header present, real change hunk emitted
+        expect(sut).toContain('diff --git');
+        expect(sut).toContain('-b');
+        expect(sut).toContain('+B');
+      });
+    });
+
+    describe('When renderPatch is called with both a lineKey and ignoreBlankLines', () => {
+      it('Then both filters apply and a ws-only + blank-only change yields an empty document', () => {
+        // Arrange — "x y" → "x  y" (internal ws, equal under mode:all) plus a blank
+        // line insert (suppressed by ignoreBlankLines): every hunk is filtered out.
+        const file = modifyFile('both.txt', 'x y\n', 'x  y\n\n');
+
+        // Act
+        const sut = renderPatch([file], {
+          lineKey: { mode: 'all', ignoreCrAtEol: false },
+          ignoreBlankLines: true,
+        });
+
+        // Assert — both options active: no header, empty document
+        expect(sut).toBe('');
+      });
+    });
+
+    describe('When renderPatch suppresses a spaces-only unterminated last line', () => {
+      it('Then the no-LF line is treated as blank and the body is suppressed', () => {
+        // Arrange — the inserted last line "   " has no trailing newline; under
+        // mode:all it normalizes to empty, so ignoreBlankLines suppresses it.
+        const file = modifyFile('eof.txt', 'a\n', 'a\n   ');
+
+        // Act
+        const sut = renderPatch([file], {
+          lineKey: { mode: 'all', ignoreCrAtEol: false },
+          ignoreBlankLines: true,
+        });
+
+        // Assert — the unterminated spaces-only line is blank, body fully suppressed
+        expect(sut).toBe('');
+      });
+    });
+
+    describe('When renderPatch is called on a blank-only modify with no options', () => {
+      it('Then emits the full diff with the blank hunk (default unchanged)', () => {
+        // Arrange — default (no ignoreBlankLines) must emit the blank-line hunk
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — hunk is present (regression guard — ignoreBlankLines inactive)
+        expect(sut).toContain('diff --git');
+        expect(sut).toContain('@@');
+      });
+    });
+
+    describe('When a lineKey is set but ignoreBlankLines is not, on a blank-only modify', () => {
+      it('Then the blank hunk is emitted (lineKey alone never suppresses blanks)', () => {
+        // Arrange — lineKey present, ignoreBlankLines absent; the blank insert
+        // must NOT be suppressed (suppression requires an explicit ignoreBlankLines).
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert
+        expect(sut).toContain('@@');
+      });
+    });
+
+    describe('When an empty options object is passed on a blank-only modify', () => {
+      it('Then the blank hunk is emitted ({} carries no suppression)', () => {
+        // Arrange — opts is defined but neither lineKey nor ignoreBlankLines is set
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file], {});
+
+        // Assert
+        expect(sut).toContain('@@');
+      });
+    });
+
+    describe('When a blank context line sits between changes under ignoreBlankLines', () => {
+      it('Then the blank context line is kept in the hunk body', () => {
+        // Arrange — line 2 is an unchanged blank (context); b→B is a real change.
+        const file = modifyFile('ctx.txt', 'a\n\nb\n', 'a\n\nB\n');
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — the blank context line (a single space) survives suppression
+        expect(sut).toContain('\n \n');
+      });
+    });
+
+    describe('When a renamed file still has a real content change under ignoreBlankLines', () => {
+      it('Then the rename header keeps its ---/+++ body and hunk', () => {
+        // Arrange — a rename whose body has a non-blank change must not be
+        // body-suppressed just because ignoreBlankLines is on.
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'orig.txt' as FilePath,
+            newPath: 'moved.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 52200, maxScore: MAX_SCORE },
+          },
+          oldContent: utf8.encode('line 00\nline 01\nline 02\n'),
+          newContent: utf8.encode('CHANGED\nline 01\nline 02\n'),
+        };
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — body is preserved (header alone is not enough)
+        expect(sut).toContain('--- a/orig.txt');
+        expect(sut).toContain('+++ b/moved.txt');
+        expect(sut).toContain('+CHANGED');
       });
     });
   });
