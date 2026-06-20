@@ -818,4 +818,191 @@ describe('streamBlob', () => {
       spy.mockRestore();
     });
   });
+
+  // Group A — delta-path non-blob type check (streamFromBuffer line 139)
+  describe('Given a deltified non-blob (tree) id, When streamBlob is drained', () => {
+    it('Then throws unexpectedObjectType with correct data (kills streamFromBuffer type guard)', async () => {
+      // Arrange — tree base entry + ofs-delta that reconstructs it; resolvedType is tree
+      const treeContent = ENC.encode('fake tree content');
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'delta-non-blob', [
+        { kind: 'base', type: 'tree', content: treeContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('delta tree content') },
+      ]);
+      const id = ids[1] as ObjectId;
+
+      // Act / Assert
+      try {
+        const sut = await streamBlob(ctx, id);
+        await collect(sut);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+          expect(data.expected).toBe('blob');
+          expect(data.actual).toBe('tree');
+          expect(data.id).toBe(id);
+        }
+      }
+    });
+  });
+
+  // Group A — empty deltified blob content check (streamFromBuffer line 148)
+  describe('Given a deltified blob with empty content, When streamBlob is drained', () => {
+    it('Then yields zero content chunks and materialised is true (kills >= 0 and true mutants)', async () => {
+      // Arrange — base blob + ofs-delta that reconstructs to empty blob
+      const baseContent = ENC.encode('base for empty delta');
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'delta-empty-blob', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: new Uint8Array(0) },
+      ]);
+      const id = ids[1] as ObjectId;
+
+      // Act
+      const sut = await streamBlob(ctx, id);
+      const chunks = await collectChunks(sut);
+
+      // Assert — empty blob yields no content chunks; materialised flag is true (delta path)
+      expect(chunks.length).toBe(0);
+      expect(sut.materialised).toBe(true);
+    });
+  });
+
+  // Group B — degenerate inflate: zero chunks (yieldAndVerifyChunks line 208)
+  describe('Given a loose blob whose inflate stream emits zero chunks, When streamBlob is drained', () => {
+    it('Then throws invalidObjectHeader (corrupt/empty inflate output, not silent empty)', async () => {
+      // Arrange — real loose object exists so looseCompressedBytes returns bytes;
+      // override createInflateStream to return an immediately-closed stream.
+      const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
+      const baseCtx = await buildSeededContext({ objects: [blob] });
+      const id = await writeObject(baseCtx, blob);
+
+      const ctx = {
+        ...baseCtx,
+        compressor: {
+          ...baseCtx.compressor,
+          createInflateStream: (): TransformStream<Uint8Array, Uint8Array> =>
+            new TransformStream<Uint8Array, Uint8Array>({
+              start(controller) {
+                controller.terminate();
+              },
+            }),
+        },
+      };
+
+      // Act / Assert
+      try {
+        const sut = await streamBlob(ctx as typeof baseCtx, id);
+        await collect(sut);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('INVALID_OBJECT_HEADER');
+        if (data.code === 'INVALID_OBJECT_HEADER') {
+          expect(data.reason).toContain(id);
+        }
+      }
+    });
+  });
+
+  // Group B — degenerate inflate: NUL-less bytes exhausted (stripHeader line 187)
+  describe('Given a loose blob whose inflate stream emits bytes with no NUL terminator, When streamBlob is drained', () => {
+    it('Then throws invalidObjectHeader (no NUL in header, not silent empty)', async () => {
+      // Arrange — real loose object exists; override inflate to emit bytes without NUL.
+      const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
+      const baseCtx = await buildSeededContext({ objects: [blob] });
+      const id = await writeObject(baseCtx, blob);
+
+      const ctx = {
+        ...baseCtx,
+        compressor: {
+          ...baseCtx.compressor,
+          createInflateStream: (): TransformStream<Uint8Array, Uint8Array> =>
+            new TransformStream<Uint8Array, Uint8Array>({
+              start(controller) {
+                // Emit bytes with no NUL (0x00) byte — stripHeader will exhaust the iterator
+                controller.enqueue(new Uint8Array([0x62, 0x6c, 0x6f, 0x62, 0x20])); // "blob "
+                controller.terminate();
+              },
+            }),
+        },
+      };
+
+      // Act / Assert
+      try {
+        const sut = await streamBlob(ctx as typeof baseCtx, id);
+        await collect(sut);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('INVALID_OBJECT_HEADER');
+        if (data.code === 'INVALID_OBJECT_HEADER') {
+          expect(data.reason).toContain(id);
+        }
+      }
+    });
+  });
+
+  // Group C — packTypeName COMMIT case (line 71 NoCoverage)
+  describe('Given a packed non-blob (commit) id, When streamBlob is drained', () => {
+    it('Then throws unexpectedObjectType with actual commit (kills COMMIT case NoCoverage)', async () => {
+      // Arrange
+      const content = ENC.encode('fake commit content');
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'non-blob-commit', [
+        { kind: 'base', type: 'commit', content },
+      ]);
+      const id = ids[0] as ObjectId;
+
+      // Act / Assert
+      try {
+        const sut = await streamBlob(ctx, id);
+        await collect(sut);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+          expect(data.expected).toBe('blob');
+          expect(data.actual).toBe('commit');
+          expect(data.id).toBe(id);
+        }
+      }
+    });
+  });
+
+  // Group C — packTypeName TAG case (line 75 NoCoverage — BLOB removed)
+  describe('Given a packed non-blob (tag) id, When streamBlob is drained', () => {
+    it('Then throws unexpectedObjectType with actual tag (kills TAG case NoCoverage)', async () => {
+      // Arrange
+      const content = ENC.encode('fake tag content');
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'non-blob-tag', [
+        { kind: 'base', type: 'tag', content },
+      ]);
+      const id = ids[0] as ObjectId;
+
+      // Act / Assert
+      try {
+        const sut = await streamBlob(ctx, id);
+        await collect(sut);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+          expect(data.expected).toBe('blob');
+          expect(data.actual).toBe('tag');
+          expect(data.id).toBe(id);
+        }
+      }
+    });
+  });
 });
