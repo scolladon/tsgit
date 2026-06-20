@@ -43,7 +43,7 @@ Hash verification is **on by default** (`verifyHash: true`). The running SHA is 
 
 `streamBlob` is uncapped. There is no `maxBytes` option — the caller streams through an
 `AsyncIterable` and decides when to stop consuming. Callers that need a size gate should
-check `BlobStream.materialised` and abort early via `AbortSignal`.
+count bytes as chunks arrive and abort via `AbortSignal` when the limit is reached.
 
 ## Throws
 

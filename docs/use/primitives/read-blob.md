@@ -32,5 +32,5 @@ const bounded = await repo.primitives.readBlob(oid, { maxBytes: 4 * 1024 * 1024 
 ## See also
 
 - Tier-1: [`catFile`](../commands/cat-file.md)
-- Related primitives: [`readObject`](read-object.md), [`catFileBatch`](cat-file-batch.md)
+- Related primitives: [`readObject`](read-object.md), [`catFileBatch`](cat-file-batch.md), [`streamBlob`](stream-blob.md) — bounded-memory streaming for large blobs
 - ADRs: [024](../../adr/024-bounded-reads-where-cap-fires.md)
