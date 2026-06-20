@@ -238,8 +238,8 @@ describe('buildGrepMatcher', () => {
     });
   });
 
-  describe('Given wholeWord=true option', () => {
-    describe('Given a regex pattern /hello/', () => {
+  describe('-w whole-word gating', () => {
+    describe('Given wholeWord=true and a regex pattern /hello/', () => {
       describe('When matchLine is called and LEFT boundary is a word byte', () => {
         it('Then does NOT match (left guard triggered)', () => {
           // Arrange
