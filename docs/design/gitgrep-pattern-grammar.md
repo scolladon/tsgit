@@ -44,17 +44,28 @@ The feature reuses three established subsystems:
 delegated to `RegExp`, `compile-glob` is no longer a model for the content matcher
 — it remains only the engine behind the pathspec limiter.)
 
-**Target enumeration + blob reading (primitive tier).**
-`walkWorkingTree(ctx, options?): AsyncIterable<WalkWorkingTreeEntry>` (entry =
-`{ path: FilePath; stat: FileStat }`, ignore-aware, embedded-repo-gated) for the
-working-tree target; `walkTree(ctx, treeIdOrObject, options?):
-AsyncIterable<WalkTreeEntry>` (recursive, `{ path, id, mode }`) for a `<tree-ish>`;
-`readIndex(ctx): Promise<GitIndex>` for `--cached`; `readHeadTree(ctx):
-Promise<FlatTree | undefined>` for HEAD; `readBlob(ctx, id, options?):
-Promise<Blob>` (`Blob.content: Uint8Array`) to load contents. All five are exported
-from `src/application/primitives/index.ts`. The bounded-concurrency fan-out pattern
-(`MAX_CONCURRENT_BLOB_LOADS` worker pool) is established in
-`src/application/primitives/materialise-patch-files.ts` and `range-diff.ts`.
+**Target enumeration + blob reading (primitive tier).** The default (working-tree)
+target is **index-driven, not a raw filesystem walk** — git grep's default searches
+only **tracked** files (index paths) reading their **working-tree** content, so
+untracked and ignored files are excluded. It enumerates `readIndex(ctx): Promise<GitIndex>`
+stage-0 entries, skips non-searchable modes (symlink/gitlink — see "searchable modes"
+below), `lstat`s the working-tree path (a tracked file absent from the working tree is
+silently skipped, git's exit-0 behaviour), and reads content via `ctx.fs.read(absPath)`
+so unstaged modifications stay visible. `--cached` enumerates the same stage-0 index
+entries but reads staged content via `readBlob(ctx, id)`; `<tree-ish>` uses
+`walkTree(ctx, treeIdOrObject, { recursive: true }): AsyncIterable<WalkTreeEntry>`
+(`{ path, id, mode }`) + `readBlob`. `readBlob(ctx, id, options?): Promise<Blob>`
+(`Blob.content: Uint8Array`) loads object content; the primitives are exported from
+`src/application/primitives/index.ts`. (`walkWorkingTree` is deliberately NOT used — it
+walks the raw filesystem and would surface untracked/ignored files, diverging from git
+grep.) The bounded-concurrency fan-out pattern (`MAX_CONCURRENT_BLOB_LOADS` worker pool)
+is established in `src/application/primitives/materialise-patch-files.ts` and `range-diff.ts`.
+
+**Searchable modes (faithful across all targets).** Only regular (`100644`) and
+executable (`100755`) file blobs are searched. Symlinks (`120000`) and gitlinks
+(`160000`) are skipped on every target — git grep does not search symlink contents, and
+a gitlink has no blob (`readBlob` would throw). Pinned against real git in the interop
+test (untracked / ignored / tracked-deleted / symlink exclusions).
 
 ### Constraining decisions (FIXED — not re-litigated here)
 
@@ -208,12 +219,16 @@ pins them.
 
 | # | Invocation | git decision | Load-bearing fact |
 |---|---|---|---|
-| T1 | (default) on `wt_only_unstaged` | matches | default target = **working tree** (unstaged content visible) |
+| T1 | (default) on a tracked file's unstaged change | matches | default = **tracked files**, working-tree content (unstaged visible) |
+| T1a | (default) on an **untracked** file | no match | default is tracked-only — untracked excluded |
+| T1b | (default) on a **gitignored** file | no match | ignored files excluded |
+| T1c | (default) on a tracked file **deleted from the worktree** | no match, exit 0 | absent working-tree file silently skipped |
+| T1d | (default) on a tracked **symlink** | no match | symlinks (and gitlinks) are not searched |
 | T2 | `--cached` on `staged_only` | matches | `--cached` = **index** blobs (staged content) |
 | T3 | `--cached` on `wt_only_unstaged` | no match | index does not carry the unstaged change |
 | T4 | `HEAD` on `staged_only` | no match | `<tree-ish>` = committed tree only |
 | L1 | match on line 12 of a multi-line blob | reports line 12 | **1-based** line numbering |
-| M1 | one pattern hitting 3 of 5 enumerated paths | 3 path entries, ignore-walk order | multi-path enumeration + ordering |
+| M1 | one pattern hitting 3 of 5 enumerated paths | 3 path entries, index/tree order | multi-path enumeration + ordering |
 | B1 | a literal that occurs in a blob with a NUL byte | prints `Binary file b.bin matches`; line scan skipped | binary skipped by default; the *datum* is "blob matched", not a printed line |
 
 `-c` (per-file count) and `-l` (name-only) are **derivable from the structured
