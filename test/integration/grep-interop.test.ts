@@ -16,7 +16,7 @@
  *   unique:         tsgit's grep data reconstructs canonical `git grep` target/binary/line decisions
  *   interopSurface: grep
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -124,17 +124,50 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     // git grep --cached sees the committed index bytes — no match (#T3).
     await writeFile(path.join(dir, 'wt_only_unstaged.txt'), 'no match committed\n');
 
+    // deleted_tracked: committed with NEEDLE, then deleted from the working tree.
+    // git grep silently skips it (exit 0, no output). Pins the absent-from-worktree skip.
+    await writeFile(path.join(dir, 'deleted_tracked.txt'), 'has NEEDLE committed\n');
+
+    // symlink_tracked: a tracked symlink whose target contains NEEDLE.
+    // git grep skips symlinks — they are not blob content.
+    // The target file is untracked so git grep won't find it via the target either.
+    await writeFile(path.join(dir, 'symlink_target.txt'), 'NEEDLE in symlink target\n');
+
     git(dir, 'add', '-A');
     clock += 60;
     runGit(['-C', dir, 'commit', '-q', '-m', 'initial'], { env: datedEnv(clock) });
 
+    // Delete deleted_tracked.txt from the working tree (leave it in the index).
+    await unlink(path.join(dir, 'deleted_tracked.txt'));
+
+    // Create a tracked symlink pointing at the target file and stage it.
+    await symlink(path.join(dir, 'symlink_target.txt'), path.join(dir, 'tracked_symlink.txt'));
+    git(dir, 'add', 'tracked_symlink.txt');
+    clock += 60;
+    runGit(['-C', dir, 'commit', '-q', '-m', 'add symlink'], { env: datedEnv(clock) });
+
     // Modify wt_only_unstaged.txt in the working tree without staging.
     await writeFile(path.join(dir, 'wt_only_unstaged.txt'), 'unstaged NEEDLE content\n');
 
+    // gitignored_with_needle: on disk but covered by .gitignore.
+    // git grep (any target) must NOT return it.
+    // Commit .gitignore before staging staged_only so the gitignore commit
+    // does not accidentally include the staged_only entry.
+    await writeFile(path.join(dir, '.gitignore'), 'ignored_needle.txt\n');
+    git(dir, 'add', '.gitignore');
+    clock += 60;
+    runGit(['-C', dir, 'commit', '-q', '-m', 'add gitignore'], { env: datedEnv(clock) });
+    await writeFile(path.join(dir, 'ignored_needle.txt'), 'NEEDLE in ignored file\n');
+
     // staged_only: a new file staged but NOT yet committed — visible in --cached (#T2),
-    // invisible in HEAD treeish (#T4).
+    // invisible in HEAD treeish (#T4). Staged AFTER the gitignore commit so it
+    // is not swept into that commit.
     await writeFile(path.join(dir, 'staged_only.txt'), 'staged NEEDLE content\n');
     git(dir, 'add', 'staged_only.txt');
+
+    // untracked_with_needle: exists only on disk, never staged.
+    // git grep (any target) must NOT return it.
+    await writeFile(path.join(dir, 'untracked_with_needle.txt'), 'NEEDLE in untracked file\n');
 
     ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
@@ -161,6 +194,93 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
         const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
         expect(tsgitPaths).toContain('wt_only_unstaged.txt');
         expect(gitPaths).toContain('wt_only_unstaged.txt');
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Faithful exclusion: untracked file is NOT searched
+    // ---------------------------------------------------------------------------
+    describe('When grepping for the literal with an untracked file present', () => {
+      it('Then tsgit omits the untracked file and git grep agrees', async () => {
+        // Arrange
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
+        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
+
+        // Assert
+        const tsgitPaths = result.paths.map((p) => p.path as string);
+        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
+        expect(tsgitPaths).not.toContain('untracked_with_needle.txt');
+        expect(gitPaths).not.toContain('untracked_with_needle.txt');
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Faithful exclusion: gitignored file is NOT searched
+    // ---------------------------------------------------------------------------
+    describe('When grepping for the literal with a gitignored file present', () => {
+      it('Then tsgit omits the gitignored file and git grep agrees', async () => {
+        // Arrange
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
+        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
+
+        // Assert
+        const tsgitPaths = result.paths.map((p) => p.path as string);
+        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
+        expect(tsgitPaths).not.toContain('ignored_needle.txt');
+        expect(gitPaths).not.toContain('ignored_needle.txt');
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Faithful exclusion: tracked file deleted from working tree — silent skip
+    // ---------------------------------------------------------------------------
+    describe('When grepping with a tracked file absent from the working tree', () => {
+      it('Then tsgit omits deleted_tracked.txt, does not throw, and git grep agrees', async () => {
+        // Arrange
+        const sut = grep;
+
+        // Act — must not throw (git exits 0 when no match found due to absent files)
+        let result: GrepResult | undefined;
+        let caught: unknown;
+        try {
+          result = await sut(ctx, { patterns: [{ fixed: LIT }] });
+        } catch (e) {
+          caught = e;
+        }
+        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
+
+        // Assert
+        expect(caught).toBeUndefined();
+        const tsgitPaths = result!.paths.map((p) => p.path as string);
+        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
+        expect(tsgitPaths).not.toContain('deleted_tracked.txt');
+        expect(gitPaths).not.toContain('deleted_tracked.txt');
+      });
+    });
+
+    // ---------------------------------------------------------------------------
+    // Faithful exclusion: tracked symlink is NOT searched
+    // ---------------------------------------------------------------------------
+    describe('When grepping with a tracked symlink in the index', () => {
+      it('Then tsgit omits the symlink path and git grep agrees', async () => {
+        // Arrange
+        const sut = grep;
+
+        // Act
+        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
+        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
+
+        // Assert
+        const tsgitPaths = result.paths.map((p) => p.path as string);
+        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
+        expect(tsgitPaths).not.toContain('tracked_symlink.txt');
+        expect(gitPaths).not.toContain('tracked_symlink.txt');
       });
     });
   });

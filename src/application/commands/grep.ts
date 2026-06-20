@@ -10,7 +10,7 @@ import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
-import { readBlob, readIndex, walkTree, walkWorkingTree } from '../primitives/index.js';
+import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
@@ -63,6 +63,39 @@ interface Candidate {
   readonly load: () => Promise<Uint8Array>;
 }
 
+const isSearchableMode = (mode: string): boolean =>
+  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+
+const enumerateWorkingTree = async (ctx: Context): Promise<ReadonlyArray<Candidate>> => {
+  const index = await readIndex(ctx);
+  const candidates: Candidate[] = [];
+  for (const entry of index.entries) {
+    if (entry.flags.stage !== 0) continue;
+    if (!isSearchableMode(entry.mode)) continue;
+    const absPath = joinPath(ctx.layout.workDir, entry.path);
+    const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
+    if (stat === undefined) continue;
+    candidates.push({
+      path: entry.path,
+      load: () => ctx.fs.read(absPath),
+    });
+  }
+  return candidates;
+};
+
+const enumerateIndex = async (ctx: Context): Promise<ReadonlyArray<Candidate>> => {
+  const index = await readIndex(ctx);
+  return index.entries
+    .filter((entry) => entry.flags.stage === 0 && isSearchableMode(entry.mode))
+    .map((entry) => ({
+      path: entry.path,
+      load: async (): Promise<Uint8Array> => {
+        const blob = await readBlob(ctx, entry.id);
+        return blob.content;
+      },
+    }));
+};
+
 async function enumerateCandidates(
   ctx: Context,
   opts: GrepOptions,
@@ -70,35 +103,18 @@ async function enumerateCandidates(
   const { target } = opts;
 
   if (target === undefined) {
-    const candidates: Candidate[] = [];
-    for await (const { path } of walkWorkingTree(ctx)) {
-      candidates.push({
-        path,
-        load: () => ctx.fs.read(joinPath(ctx.layout.workDir, path)),
-      });
-    }
-    return candidates;
+    return enumerateWorkingTree(ctx);
   }
 
   if (target === 'index') {
-    const index = await readIndex(ctx);
-    return index.entries
-      .filter((entry) => entry.flags.stage === 0)
-      .map((entry) => ({
-        path: entry.path,
-        load: async (): Promise<Uint8Array> => {
-          const blob = await readBlob(ctx, entry.id);
-          return blob.content;
-        },
-      }));
+    return enumerateIndex(ctx);
   }
 
   // tree-ish target
   const treeId = await resolveTreeish(ctx, target.treeish);
   const candidates: Candidate[] = [];
   for await (const { path, id, mode } of walkTree(ctx, treeId, { recursive: true })) {
-    // readBlob on a gitlink throws unexpectedObjectType; skip submodule entries.
-    if (mode === FILE_MODE.GITLINK) continue;
+    if (!isSearchableMode(mode)) continue;
     const capturedId: ObjectId = id;
     candidates.push({
       path,
