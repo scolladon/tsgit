@@ -498,9 +498,11 @@ function renderTextBody(
   newBytes: Uint8Array,
   contextLines: number,
   emit?: EmitOptions,
-): string[] | null {
+): string[] {
   const hunks = computeHunks(oldBytes, newBytes, contextLines, emit);
-  if (hunks.length === 0 && emit?.ignoreBlankLines === true) return null;
+  // Every change blank-suppressed: emit no body so the modify caller drops the
+  // whole file (empty document). A non-suppressed empty diff still emits ---/+++.
+  if (hunks.length === 0 && emit?.ignoreBlankLines === true) return [];
   const out: string[] = [];
   out.push(`--- ${prefix.old}${common.path}`);
   out.push(`+++ ${prefix.new}${common.path}`);
@@ -521,7 +523,7 @@ function renderSameKindBlock(
 ): string[] {
   if (common.oldId !== common.newId && !isBinary(oldBytes) && !isBinary(newBytes)) {
     const body = renderTextBody(common, prefix, oldBytes, newBytes, contextLines, emit);
-    if (body === null) return [];
+    if (body.length === 0) return [];
     const out: string[] = [];
     out.push(diffGitHeader(common.path, common.path, prefix));
     for (const line of modePreamble(common)) out.push(line);
@@ -551,24 +553,17 @@ function renderBrokenModifyBlock(
 ): string[] {
   const broken = change.broken;
   const common = changeToCommon(change);
-  if (!isBinary(oldBytes) && !isBinary(newBytes)) {
-    const body = renderTextBody(common, prefix, oldBytes, newBytes, contextLines, emit);
-    if (body === null) return [];
-    const out: string[] = [];
-    out.push(diffGitHeader(common.path, common.path, prefix));
-    out.push(`dissimilarity index ${toSimilarityPercent(broken.score)}%`);
-    const base = `index ${shortOid(common.oldId)}..${shortOid(common.newId)}`;
-    out.push(common.oldMode === common.newMode ? `${base} ${common.newMode}` : base);
-    for (const line of body) out.push(line);
-    return out;
-  }
   const out: string[] = [];
   out.push(diffGitHeader(common.path, common.path, prefix));
   out.push(`dissimilarity index ${toSimilarityPercent(broken.score)}%`);
   // Index line: with mode suffix when oldMode === newMode, without when they differ.
   const base = `index ${shortOid(common.oldId)}..${shortOid(common.newId)}`;
   out.push(common.oldMode === common.newMode ? `${base} ${common.newMode}` : base);
-  for (const line of renderBinaryBody(common, prefix, oldBytes, newBytes)) out.push(line);
+  const body =
+    isBinary(oldBytes) || isBinary(newBytes)
+      ? renderBinaryBody(common, prefix, oldBytes, newBytes)
+      : renderTextBody(common, prefix, oldBytes, newBytes, contextLines, emit);
+  for (const line of body) out.push(line);
   return out;
 }
 
@@ -623,7 +618,7 @@ function renderTwoPathBody(
   prefix: PatchPathPrefix,
   contextLines: number,
   emit?: EmitOptions,
-): string[] | null {
+): string[] {
   const out: string[] = [];
   out.push(twoPathIndexLine(change));
   if (isBinary(oldBytes) || isBinary(newBytes)) {
@@ -633,7 +628,10 @@ function renderTwoPathBody(
     return out;
   }
   const hunks = computeHunks(oldBytes, newBytes, contextLines, emit);
-  if (hunks.length === 0 && emit?.ignoreBlankLines === true) return null;
+  // Blank-suppressed body: keep the index line, omit ---/+++ and hunks (git keeps the
+  // rename/copy header + index when the body vanishes). A non-suppressed empty diff
+  // still emits ---/+++.
+  if (hunks.length === 0 && emit?.ignoreBlankLines === true) return out;
   out.push(`--- ${prefix.old}${change.oldPath}`);
   out.push(`+++ ${prefix.new}${change.newPath}`);
   for (const hunk of hunks) {
@@ -671,7 +669,6 @@ function renderTwoPathBlock(
     contextLines,
     emit,
   );
-  if (body === null) return [];
   return [...header, ...body];
 }
 
