@@ -248,7 +248,7 @@ export interface Repository {
   /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
   readonly worktree: commands.WorktreeNamespace;
 
-  // Tier-2 primitives (21) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (22) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
@@ -264,6 +264,7 @@ export interface Repository {
     readonly readTree: BindCtx<typeof primitives.readTree>;
     readonly resolveRef: BindCtx<typeof primitives.resolveRef>;
     readonly runHook: BindCtx<typeof primitives.runHook>;
+    readonly streamBlob: BindCtx<typeof primitives.streamBlob>;
     readonly updateRef: BindCtx<typeof primitives.updateRef>;
     readonly walkCommits: BindCtx<typeof primitives.walkCommits>;
     readonly walkCommitsByDate: BindCtx<typeof primitives.walkCommitsByDate>;
@@ -631,6 +632,10 @@ export const openRepository = async (
         guard();
         return primitives.runHook(ctx, name, input);
       }) as Repository['primitives']['runHook'],
+      streamBlob: ((id, options) => {
+        guard();
+        return primitives.streamBlob(ctx, id, options);
+      }) as Repository['primitives']['streamBlob'],
       updateRef: ((name, newId, options) => {
         guard();
         return primitives.updateRef(ctx, name, newId, options);

@@ -2,7 +2,7 @@
 
 The composable building blocks every Tier-1 command is built from. Same `Context` users get — you can compose them into custom workflows that don't fit the command surface.
 
-25 primitives bound on `repo.primitives.*`, alphabetical:
+26 primitives bound on `repo.primitives.*`, alphabetical:
 
 | Primitive | Summary |
 |---|---|
@@ -19,6 +19,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`readTree`](read-tree.md) | Read a tree object by ref or id (peeled). |
 | [`resolveRef`](resolve-ref.md) | Resolve a ref name to an `ObjectId`. |
 | [`runHook`](run-hook.md) | Execute a `.git/hooks/<name>` script (Node only). |
+| [`streamBlob`](stream-blob.md) | Stream a blob by id as `AsyncIterable<Uint8Array>`; `materialised` flag reflects pack storage form. |
 | [`updateRef`](update-ref.md) | Atomically write a ref, record its reflog, and log coupled HEAD. |
 | [`walkCommits`](walk-commits.md) | `AsyncIterable<Commit>` walker (any parent ordering). |
 | [`walkCommitsByDate`](walk-commits-by-date.md) | `AsyncIterable<Commit>` walker, all parents, newest committer-date first. |

@@ -35,10 +35,9 @@ import {
 import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
 import {
   removeWorkingTreeFile,
-  writeWorkingTreeFile,
+  writeWorkingTreeFileStream,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
-import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
@@ -51,8 +50,8 @@ import {
   type StashDropResult,
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
+import { streamBlob } from '../primitives/stream-blob.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
-import { MAX_WORKING_TREE_BLOB_BYTES } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -373,12 +372,8 @@ const untrackedOverwrites = async (
 const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
   const flat = await flattenTree(ctx, uTree);
   for (const [path, entry] of flat.entries) {
-    // Cap the read so a hostile crafted `refs/stash` cannot load an unbounded
-    // untracked blob (a tsgit-created stash never exceeds this — push hashes
-    // working files under the same limit).
-    // Stryker disable next-line ObjectLiteral: equivalent — the cap is unobservable without an oversize fixture; cap mechanics are covered by hash-blob.test.ts / read-blob.test.ts.
-    const blob = await readBlob(ctx, entry.id, { maxBytes: MAX_WORKING_TREE_BLOB_BYTES });
-    await writeWorkingTreeFile(ctx, path, blob.content);
+    const stream = await streamBlob(ctx, entry.id);
+    await writeWorkingTreeFileStream(ctx, path, stream);
   }
 };
 

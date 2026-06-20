@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -11,9 +11,11 @@ import {
   stashPush,
 } from '../../../../src/application/commands/stash.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
+import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -610,6 +612,54 @@ describe('stash apply', () => {
           expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['new.txt'] });
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+
+  describe('Given an include-untracked stash with a regular file', () => {
+    describe('When apply runs', () => {
+      it('Then routes through streamBlob + writeWorkingTreeFileStream and restored bytes match source', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await write(ctx, 'streamed.txt', 'streamed content\n');
+        await stashPush(ctx, { includeUntracked: true });
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+
+        // Act
+        await stashApply(ctx, {});
+
+        // Assert
+        expect(streamBlobSpy).toHaveBeenCalled();
+        expect(writeStreamSpy).toHaveBeenCalled();
+        expect(await read(ctx, 'streamed.txt')).toBe('streamed content\n');
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given an include-untracked stash with a large-ish blob (dropped size cap)', () => {
+    describe('When apply runs', () => {
+      it('Then streamBlob is invoked with no maxBytes and restore succeeds', async () => {
+        // Arrange — large enough that any explicit cap would be visible; no OBJECT_TOO_LARGE expected
+        const ctx = await setupRepo();
+        const largeContent = 'x'.repeat(2048);
+        await write(ctx, 'large.bin', largeContent);
+        await stashPush(ctx, { includeUntracked: true });
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+
+        // Act — must not throw
+        await stashApply(ctx, {});
+
+        // Assert — called with exactly (ctx, id): no third options argument (no maxBytes)
+        expect(streamBlobSpy).toHaveBeenCalled();
+        const [, , thirdArg] = streamBlobSpy.mock.calls[0] ?? [];
+        expect(thirdArg).toBeUndefined();
+        expect(await read(ctx, 'large.bin')).toBe(largeContent);
+
+        streamBlobSpy.mockRestore();
       });
     });
   });

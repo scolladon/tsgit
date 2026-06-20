@@ -17,6 +17,7 @@ interface WritePipelineResult {
   readonly blobId: string;
   readonly treeId: string;
   readonly commitId: string;
+  readonly streamBlobByteLength: number;
 }
 
 const BLOB_MODE = FILE_MODE.REGULAR;
@@ -31,6 +32,8 @@ export const writePipelineScenario: Scenario<WritePipelineResult> = {
     // 'seed commit' message (no trailing newline) yields a different id than the
     // porcelain's faithful commit — this is the intended primitive contract.
     commitId: '87863a6f57aeedd577100911fadbc21ff1062bec',
+    // 'hello a\n' is 8 bytes
+    streamBlobByteLength: 8,
   },
   run: async (repo, inputs) => {
     await repo.init();
@@ -62,6 +65,10 @@ export const writePipelineScenario: Scenario<WritePipelineResult> = {
       message: inputs.message,
     });
 
-    return { blobId, treeId, commitId };
+    const blobStream = await repo.primitives.streamBlob(blobId);
+    let streamBlobByteLength = 0;
+    for await (const chunk of blobStream) streamBlobByteLength += chunk.length;
+
+    return { blobId, treeId, commitId, streamBlobByteLength };
   },
 };

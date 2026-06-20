@@ -91,6 +91,10 @@ export function instrumentedContext(base: Context): InstrumentedContext {
       record('write', p);
       return base.fs.write(p, d);
     },
+    writeStream: async (p, source) => {
+      record('writeStream', p);
+      return base.fs.writeStream(p, source);
+    },
     writeExclusive: async (p, d) => {
       record('writeExclusive', p);
       return base.fs.writeExclusive(p, d);

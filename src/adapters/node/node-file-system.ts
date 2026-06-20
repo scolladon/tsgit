@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import type * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import {
   directoryNotEmpty,
   fileExists,
@@ -421,6 +422,14 @@ export class NodeFileSystem implements FileSystem {
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await this.fsOps.writeFile(real, data);
+    }, path);
+  };
+
+  writeStream = async (path: string, source: AsyncIterable<Uint8Array>): Promise<void> => {
+    const real = await this.checkContainment(path, 'creation');
+    await runFs(async () => {
+      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+      await pipeline(source, fs.createWriteStream(real));
     }, path);
   };
 

@@ -2,15 +2,24 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   removeWorkingTreeFile,
   writeRegularFile,
+  writeRegularFileStream,
   writeWorkingTreeEntry,
+  writeWorkingTreeEntryStream,
   writeWorkingTreeFile,
+  writeWorkingTreeFileStream,
 } from '../../../../../src/application/primitives/internal/write-working-tree-file.js';
 import type { FilePath } from '../../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, instrumentedContext } from '../fixtures.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+async function* chunks(...parts: Uint8Array[]): AsyncIterable<Uint8Array> {
+  for (const part of parts) {
+    yield part;
+  }
+}
 
 describe('write-working-tree-file', () => {
   describe('writeWorkingTreeFile', () => {
@@ -347,6 +356,162 @@ describe('write-working-tree-file', () => {
 
           // Assert
           expect(chmodSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
+  });
+
+  describe('writeWorkingTreeFileStream', () => {
+    describe('Given a multi-chunk source', () => {
+      describe('When writeWorkingTreeFileStream writes the stream', () => {
+        it('Then the working-tree file byte-equals the concatenated source', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const source = chunks(encode('hel'), encode('lo'));
+
+          // Act
+          await writeWorkingTreeFileStream(ctx, 'out.txt' as FilePath, source);
+
+          // Assert
+          const result = await ctx.fs.read(`${ctx.layout.workDir}/out.txt`);
+          expect(decode(result)).toBe('hello');
+        });
+      });
+    });
+
+    describe('Given the regular-only façade', () => {
+      describe('When writeWorkingTreeFileStream writes the stream', () => {
+        it('Then chmod is never called', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const source = chunks(encode('x'));
+
+          // Act
+          await writeWorkingTreeFileStream(ctx, 'r.txt' as FilePath, source);
+
+          // Assert
+          expect(chmodSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
+  });
+
+  describe('writeRegularFileStream', () => {
+    describe('Given an executable mode', () => {
+      describe('When writeRegularFileStream writes the stream', () => {
+        it('Then chmod is called with 0o755', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fullPath = `${ctx.layout.workDir}/x.sh`;
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const source = chunks(encode('exec'));
+
+          // Act
+          await writeRegularFileStream(ctx, fullPath, source, FILE_MODE.EXECUTABLE);
+
+          // Assert
+          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o755);
+        });
+      });
+    });
+
+    describe('Given a regular mode', () => {
+      describe('When writeRegularFileStream writes the stream', () => {
+        it('Then chmod is called with 0o644', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fullPath = `${ctx.layout.workDir}/r.txt`;
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const source = chunks(encode('regular'));
+
+          // Act
+          await writeRegularFileStream(ctx, fullPath, source, FILE_MODE.REGULAR);
+
+          // Assert
+          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o644);
+        });
+      });
+    });
+
+    describe('Given no mode argument', () => {
+      describe('When writeRegularFileStream writes the stream', () => {
+        it('Then chmod is never called', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fullPath = `${ctx.layout.workDir}/r.txt`;
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const source = chunks(encode('data'));
+
+          // Act
+          await writeRegularFileStream(ctx, fullPath, source);
+
+          // Assert
+          expect(chmodSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe('Given a path currently occupied', () => {
+      describe('When writeRegularFileStream runs', () => {
+        it('Then rmIfExists runs before writeStream', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fullPath = `${ctx.layout.workDir}/r.txt`;
+          await ctx.fs.symlink('old-target', fullPath);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const source = chunks(encode('new'));
+
+          // Act
+          await writeRegularFileStream(instrumented, fullPath, source);
+
+          // Assert
+          const log = calls();
+          const rmIndex = log.findIndex((c) => c.method === 'rm');
+          const writeStreamIndex = log.findIndex((c) => c.method === 'writeStream');
+          expect(rmIndex).toBeGreaterThanOrEqual(0);
+          expect(writeStreamIndex).toBeGreaterThanOrEqual(0);
+          expect(rmIndex).toBeLessThan(writeStreamIndex);
+        });
+      });
+    });
+  });
+
+  describe('writeWorkingTreeEntryStream', () => {
+    describe('Given a regular mode and a multi-chunk source', () => {
+      describe('When writeWorkingTreeEntryStream writes the stream', () => {
+        it('Then the file byte-equals the concatenated source and chmod is called with 0o644', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const source = chunks(encode('hel'), encode('lo'));
+
+          // Act
+          await writeWorkingTreeEntryStream(ctx, 'r.txt' as FilePath, source, FILE_MODE.REGULAR);
+
+          // Assert
+          const result = await ctx.fs.read(`${ctx.layout.workDir}/r.txt`);
+          expect(decode(result)).toBe('hello');
+          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/r.txt`, 0o644);
+        });
+      });
+    });
+
+    describe('Given an executable mode and a multi-chunk source', () => {
+      describe('When writeWorkingTreeEntryStream writes the stream', () => {
+        it('Then the file byte-equals the concatenated source and chmod is called with 0o755', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
+          const source = chunks(encode('ex'), encode('ec'));
+
+          // Act
+          await writeWorkingTreeEntryStream(ctx, 'x.sh' as FilePath, source, FILE_MODE.EXECUTABLE);
+
+          // Assert
+          const result = await ctx.fs.read(`${ctx.layout.workDir}/x.sh`);
+          expect(decode(result)).toBe('exec');
+          expect(chmodSpy).toHaveBeenCalledWith(`${ctx.layout.workDir}/x.sh`, 0o755);
         });
       });
     });

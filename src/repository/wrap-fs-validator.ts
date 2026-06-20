@@ -60,6 +60,10 @@ export const wrapFsValidator = (
       guard(p);
       return fs.write(p, d);
     },
+    writeStream: (p, source) => {
+      guard(p);
+      return fs.writeStream(p, source);
+    },
     writeExclusive: (p, d) => {
       guard(p);
       return fs.writeExclusive(p, d);

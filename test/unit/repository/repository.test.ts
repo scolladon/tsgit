@@ -265,6 +265,7 @@ describe('openRepository — Repository binding integrity', () => {
             'readTree',
             'resolveRef',
             'runHook',
+            'streamBlob',
             'updateRef',
             'walkCommits',
             'walkCommitsByDate',
@@ -808,6 +809,40 @@ describe('openRepository — round-trip via memory adapter', () => {
 
         // Assert
         expect(ids).toEqual([a, b]);
+      });
+    });
+  });
+});
+
+describe('openRepository — streamBlob smoke', () => {
+  describe('Given a written blob', () => {
+    describe('When sut.primitives.streamBlob is drained', () => {
+      it('Then the concatenated bytes equal the original content', async () => {
+        // Arrange
+        const fallback = makeFallback();
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+        await sut.init();
+        const content = new Uint8Array([10, 20, 30, 40]);
+        const id = await sut.primitives.writeObject({
+          type: 'blob',
+          id: '' as ObjectId,
+          content,
+        } satisfies Blob);
+
+        // Act
+        const stream = await sut.primitives.streamBlob(id);
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        const total = chunks.reduce((n, c) => n + c.length, 0);
+        const result = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) {
+          result.set(c, off);
+          off += c.length;
+        }
+
+        // Assert
+        expect(result).toEqual(content);
       });
     });
   });

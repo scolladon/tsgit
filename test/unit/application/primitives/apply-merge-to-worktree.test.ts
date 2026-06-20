@@ -3,6 +3,8 @@ import {
   applyMergeToWorktree,
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
+import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
+import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -776,6 +778,172 @@ describe('applyMergeToWorktree', () => {
           }
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+});
+
+describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', () => {
+  // These tests exercise the resolved-known arm inside writeConflictWorktree via
+  // applyMergeToWorktree in the conflict path (conflict + clean resolved-known side).
+
+  describe('Given a conflict merge where the clean side is resolved-known', () => {
+    describe('When the merge is applied', () => {
+      it('Then the clean side routes through streamBlob + writeWorkingTreeFileStream', async () => {
+        // Arrange — a conflicts (content), b is cleanly taken from theirs (resolved-known)
+        const ctx = await buildSeededContext();
+        const aBase = await writeBlob(ctx, 'a-base\n');
+        const aOurs = await writeBlob(ctx, 'a-ours\n');
+        const aTheirs = await writeBlob(ctx, 'a-theirs\n');
+        const bId = await writeBlob(ctx, 'b-original\n');
+        const bNew = await writeBlob(ctx, 'b-new\n');
+        const reg = FILE_MODE.REGULAR;
+        const base = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aBase, mode: reg },
+          { name: 'b' as FilePath, id: bId, mode: reg },
+        ]);
+        const ours = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aOurs, mode: reg },
+          { name: 'b' as FilePath, id: bId, mode: reg },
+        ]);
+        const theirs = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aTheirs, mode: reg },
+          { name: 'b' as FilePath, id: bNew, mode: reg },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bId)]),
+        });
+
+        // Assert — conflict path reached; b's clean side used streaming
+        expect(sut.kind).toBe('conflict');
+        expect(streamBlobSpy).toHaveBeenCalled();
+        expect(writeStreamSpy).toHaveBeenCalled();
+        expect(await readWork(ctx, 'b')).toBe('b-new\n');
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a conflict merge where the clean side is resolved-known (uncapped write)', () => {
+    describe('When the merge is applied', () => {
+      it('Then streamBlob is invoked with no maxBytes arg and the full blob is written', async () => {
+        // Arrange — a conflicts; b is resolved-known (theirs changed it from bBase to bNew;
+        // ours unchanged). The bNew content is large enough that a small cap would throw.
+        const ctx = await buildSeededContext();
+        const aBase = await writeBlob(ctx, 'a-base\n');
+        const aOurs = await writeBlob(ctx, 'a-ours\n');
+        const aTheirs = await writeBlob(ctx, 'a-theirs\n');
+        const bBaseContent = new TextEncoder().encode('b-base\n');
+        const bNewContent = new Uint8Array(512).fill(0x43); // 512 B; a small cap would throw
+        const bBaseId = await writeObject(ctx, {
+          type: 'blob',
+          content: bBaseContent,
+          id: '' as ObjectId,
+        });
+        const bNewId = await writeObject(ctx, {
+          type: 'blob',
+          content: bNewContent,
+          id: '' as ObjectId,
+        });
+        const reg = FILE_MODE.REGULAR;
+        // base: b=bBase; ours: b=bBase (unchanged); theirs: b=bNew → resolved-known at bNew
+        const base = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aBase, mode: reg },
+          { name: 'b' as FilePath, id: bBaseId, mode: reg },
+        ]);
+        const ours = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aOurs, mode: reg },
+          { name: 'b' as FilePath, id: bBaseId, mode: reg },
+        ]);
+        const theirs = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aTheirs, mode: reg },
+          { name: 'b' as FilePath, id: bNewId, mode: reg },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/b`, bBaseContent);
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+
+        // Act — must not throw (no maxBytes cap applied)
+        await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bBaseId)]),
+        });
+
+        // Assert — streamBlob called without a third options arg (no maxBytes)
+        const blobCalls = streamBlobSpy.mock.calls;
+        // At least one call for the resolved-known b side (bNewId)
+        expect(blobCalls.length).toBeGreaterThanOrEqual(1);
+        for (const call of blobCalls) {
+          const [, , thirdArg] = call;
+          expect(thirdArg).toBeUndefined();
+        }
+        const written = await ctx.fs.read(`${ctx.layout.workDir}/b`);
+        expect(written).toEqual(bNewContent);
+
+        streamBlobSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a conflict merge where the resolved-merged side has synthesised bytes', () => {
+    describe('When the merge is applied', () => {
+      it('Then resolved-merged routes through buffered writeWorkingTreeFile (not streamBlob)', async () => {
+        // Arrange — a conflicts; d is a clean line-merge (resolved-merged)
+        const ctx = await buildSeededContext();
+        const aBase = await writeBlob(ctx, 'a-base\n');
+        const aOurs = await writeBlob(ctx, 'a-ours\n');
+        const aTheirs = await writeBlob(ctx, 'a-theirs\n');
+        const dBase = await writeBlob(ctx, 'd1\nd2\nd3\n');
+        const dOurs = await writeBlob(ctx, 'D1\nd2\nd3\n');
+        const dTheirs = await writeBlob(ctx, 'd1\nd2\nD3\n');
+        const reg = FILE_MODE.REGULAR;
+        const base = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aBase, mode: reg },
+          { name: 'd' as FilePath, id: dBase, mode: reg },
+        ]);
+        const ours = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aOurs, mode: reg },
+          { name: 'd' as FilePath, id: dOurs, mode: reg },
+        ]);
+        const theirs = await treeWith(ctx, [
+          { name: 'a' as FilePath, id: aTheirs, mode: reg },
+          { name: 'd' as FilePath, id: dTheirs, mode: reg },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/d`, new TextEncoder().encode('D1\nd2\nd3\n'));
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('a', aOurs), indexEntry('d', dOurs)]),
+        });
+
+        // Assert — d is resolved-merged (synthesised bytes); stream path must NOT be taken
+        expect(sut.kind).toBe('conflict');
+        expect(writeStreamSpy).not.toHaveBeenCalled();
+        // streamBlob may have been called for other paths but NOT for d (resolved-merged)
+        // Verify d was written via buffered path with merged bytes
+        expect(await readWork(ctx, 'd')).toBe('D1\nd2\nD3\n');
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
       });
     });
   });
