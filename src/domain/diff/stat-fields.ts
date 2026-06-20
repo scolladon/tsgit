@@ -1,6 +1,6 @@
 import type { DiffChange } from './diff-change.js';
 import { diffLines, isBinary, type LineDiff, type LineHunk } from './line-diff.js';
-import { type LineKey, normalizeLine } from './whitespace.js';
+import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
 /**
  * Per-file line counts for one changed path — the data half of git's
@@ -29,25 +29,15 @@ export interface StatFieldsOptions {
   readonly ignoreBlankLines?: boolean;
 }
 
-const NONE_KEY: LineKey = { mode: 'none', ignoreCrAtEol: false };
-
-function isBlankLine(line: Uint8Array, key: LineKey): boolean {
-  const normalized = normalizeLine(line, key);
-  const lastIndex = normalized.length - 1;
-  const hasLf = lastIndex >= 0 && normalized[lastIndex] === 0x0a;
-  const contentLength = hasLf ? lastIndex : normalized.length;
-  return contentLength === 0;
-}
-
 function hunkHasNonBlank(diff: LineDiff, hunk: LineHunk, key: LineKey): boolean {
   if (hunk.kind === 'ours-only') {
     for (let i = hunk.oursStart; i < hunk.oursEnd; i++) {
-      if (!isBlankLine(diff.oursLines[i] as Uint8Array, key)) return true;
+      if (!isBlankLine(diff.oursLines[i]!, key)) return true;
     }
     return false;
   }
   for (let i = hunk.theirsStart; i < hunk.theirsEnd; i++) {
-    if (!isBlankLine(diff.theirsLines[i] as Uint8Array, key)) return true;
+    if (!isBlankLine(diff.theirsLines[i]!, key)) return true;
   }
   return false;
 }

@@ -10,7 +10,7 @@ import type {
 import { invalidDiffInput } from './error.js';
 import { diffLines, isBinary, type LineHunk, splitLines } from './line-diff.js';
 import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
-import { type LineKey, normalizeLine } from './whitespace.js';
+import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
 export interface PatchFile {
   readonly change: DiffChange;
@@ -195,16 +195,6 @@ function editsFromHunk(
   return insertEditsFrom(hunk, newLines);
 }
 
-const NONE_KEY: LineKey = { mode: 'none', ignoreCrAtEol: false };
-
-function isBlankEdit(line: Uint8Array, key: LineKey): boolean {
-  const normalized = normalizeLine(line, key);
-  const last = normalized.length - 1;
-  const hasLf = last >= 0 && normalized[last] === 0x0a;
-  const contentLen = hasLf ? last : normalized.length;
-  return contentLen === 0;
-}
-
 function suppressBlankGroups(
   edits: ReadonlyArray<Edit>,
   ld: {
@@ -217,7 +207,7 @@ function suppressBlankGroups(
     if (edit.kind === 'context') return true;
     const line =
       edit.kind === 'delete' ? ld.oursLines[edit.oldIndex] : ld.theirsLines[edit.newIndex];
-    return line === undefined || !isBlankEdit(line, key);
+    return line === undefined || !isBlankLine(line, key);
   });
 }
 

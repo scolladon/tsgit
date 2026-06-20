@@ -8,6 +8,7 @@ import {
   resolveLineKey,
   type StatDiffChange,
   type StatFields,
+  type StatFieldsOptions,
   type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
@@ -66,6 +67,18 @@ export async function diffTrees(
   return diff;
 }
 
+/** Resolve the stat options for one file: line-key + blank when a mode is active,
+ *  blank-only when only `ignoreBlankLines` is set, else none (plain counts). */
+function statOptionsFor(
+  lineKey: LineKey,
+  lineKeyActive: boolean,
+  ignoreBlankLines: boolean,
+): StatFieldsOptions | undefined {
+  if (lineKeyActive) return { lineKey, ignoreBlankLines };
+  if (ignoreBlankLines) return { ignoreBlankLines };
+  return undefined;
+}
+
 /**
  * Materialise blobs once, run the drop pass and stat in a single traversal.
  * When `lineKeyActive`, drops modify changes that yield zero real hunks under
@@ -87,11 +100,7 @@ async function applyLinePassAndStat(
     const stats = computeStatFields(
       file.oldContent ?? EMPTY,
       file.newContent ?? EMPTY,
-      lineKeyActive
-        ? { lineKey, ignoreBlankLines }
-        : ignoreBlankLines
-          ? { ignoreBlankLines }
-          : undefined,
+      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines),
     );
     if (lineKeyActive && shouldDrop(file.change, stats)) continue;
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);

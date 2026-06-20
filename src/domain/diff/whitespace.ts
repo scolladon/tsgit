@@ -7,12 +7,6 @@ export interface LineKey {
   readonly ignoreCrAtEol: boolean;
 }
 
-export interface LineKeyFields {
-  readonly ignoreWhitespace?: 'all' | 'change' | 'at-eol';
-  readonly ignoreCrAtEol?: boolean;
-  readonly ignoreBlankLines?: boolean;
-}
-
 const SPACE = 0x20;
 const TAB = 0x09;
 const CR = 0x0d;
@@ -119,11 +113,27 @@ export function linesEqualUnder(a: Uint8Array, b: Uint8Array, key: LineKey): boo
   return bytesEqual(normalizeLine(a, key), normalizeLine(b, key));
 }
 
-export function resolveLineKey(fields: LineKeyFields): LineKey {
+export function resolveLineKey(fields: {
+  readonly ignoreWhitespace?: 'all' | 'change' | 'at-eol';
+  readonly ignoreCrAtEol?: boolean;
+  readonly ignoreBlankLines?: boolean;
+}): LineKey {
   return {
     mode: fields.ignoreWhitespace ?? 'none',
     ignoreCrAtEol: fields.ignoreCrAtEol ?? false,
   };
+}
+
+/** The inert line key: no normalization (exact byte comparison). */
+export const NONE_KEY: LineKey = { mode: 'none', ignoreCrAtEol: false };
+
+/**
+ * A line is blank when its content (excluding a trailing LF) is empty after
+ * normalization under the active key — so a spaces-only line counts as blank
+ * only under a whitespace mode, not under ignore-blank-lines alone.
+ */
+export function isBlankLine(line: Uint8Array, key: LineKey): boolean {
+  return lfIndex(normalizeLine(line, key)) === 0;
 }
 
 export function lineKeyIsActive(key: LineKey): boolean {
