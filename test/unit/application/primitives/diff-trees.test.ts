@@ -683,6 +683,52 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given a pure-insert modify under ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is KEPT (added>0, deleted=0 must not drop)', async () => {
+        // Arrange — a real non-whitespace line is inserted; under mode:all the
+        // change still has added=1, deleted=0 and must survive the drop pass.
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'a\n');
+        const newId = await blob(ctx, 'a\nXYZ\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — kept (only added>0 → shouldDrop must be false)
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('modify');
+      });
+    });
+  });
+
+  describe('Given a pure-delete modify under ignoreWhitespace:all', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is KEPT (deleted>0, added=0 must not drop)', async () => {
+        // Arrange — a real non-whitespace line is removed; under mode:all the
+        // change still has deleted=1, added=0 and must survive the drop pass.
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'a\nXYZ\n');
+        const newId = await blob(ctx, 'a\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — kept (only deleted>0 → shouldDrop must be false)
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]?.type).toBe('modify');
+      });
+    });
+  });
+
   describe('Given a blank-only modify and ignoreBlankLines alone (no line-key mode)', () => {
     describe('When diffTrees is called', () => {
       it('Then the blank-only modify is KEPT in changes (#BL1 — lineKeyActive is false)', async () => {

@@ -62,6 +62,28 @@ describe('normalizeLine', () => {
         expect(result).toEqual(enc('a\n'));
       });
     });
+
+    describe('When the content is unterminated (no trailing LF)', () => {
+      it('Then drops whitespace without appending a terminator', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b'), key);
+        // Assert — no LF is invented for an unterminated line
+        expect(result).toEqual(enc('ab'));
+      });
+    });
+
+    describe('When the content is terminated (trailing LF)', () => {
+      it('Then preserves exactly one trailing LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b\n'), key);
+        // Assert — the terminator is re-appended exactly once
+        expect(result).toEqual(enc('ab\n'));
+      });
+    });
   });
 
   describe("Given mode 'change' (ignore space-change / -b)", () => {
@@ -150,6 +172,39 @@ describe('normalizeLine', () => {
         expect(a).not.toEqual(b);
       });
     });
+
+    describe('When a trailing whitespace run ends a terminated line', () => {
+      it('Then drops the collapsed trailing space (keeps the LF)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b \n'), key);
+        // Assert — the run collapses to one space then the trailing space is dropped
+        expect(result).toEqual(enc('a b\n'));
+      });
+    });
+
+    describe('When a trailing whitespace run ends an unterminated line', () => {
+      it('Then drops the collapsed trailing space (no LF)', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a b   '), key);
+        // Assert
+        expect(result).toEqual(enc('a b'));
+      });
+    });
+
+    describe('When the line ends in a non-whitespace byte', () => {
+      it('Then the trailing-space drop leaves the final byte intact', () => {
+        // Arrange — guards the pop against firing on a non-space last byte
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('ab\n'), key);
+        // Assert
+        expect(result).toEqual(enc('ab\n'));
+      });
+    });
   });
 
   describe("Given mode 'at-eol' (ignore space at EOL)", () => {
@@ -164,6 +219,39 @@ describe('normalizeLine', () => {
         const b = sut(line('a   \n'), key);
         // Assert
         expect(a).toEqual(b);
+      });
+    });
+
+    describe('When trailing whitespace precedes the LF terminator', () => {
+      it('Then drops the run and re-appends exactly one LF', () => {
+        // Arrange — pins the terminator byte, not just cross-line equality
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a   \n'), key);
+        // Assert
+        expect(result).toEqual(enc('a\n'));
+      });
+    });
+
+    describe('When the line is entirely whitespace before the LF', () => {
+      it('Then collapses to a bare LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('   \n'), key);
+        // Assert
+        expect(result).toEqual(enc('\n'));
+      });
+    });
+
+    describe('When trailing whitespace ends an unterminated line', () => {
+      it('Then drops the run without inventing an LF', () => {
+        // Arrange
+        const sut = normalizeLine;
+        // Act
+        const result = sut(enc('a   '), key);
+        // Assert
+        expect(result).toEqual(enc('a'));
       });
     });
 
@@ -230,6 +318,18 @@ describe('normalizeLine', () => {
         expect(result).toEqual(input);
       });
     });
+
+    describe('When a trailing CR precedes the LF terminator', () => {
+      it('Then the CR is preserved (none mode never drops the CR)', () => {
+        // Arrange — without ignoreCrAtEol the CR is significant content
+        const sut = normalizeLine;
+        const input = line('a\r\n');
+        // Act
+        const result = sut(input, key);
+        // Assert
+        expect(result).toEqual(enc('a\r\n'));
+      });
+    });
   });
 
   describe('Given ignoreCrAtEol: true with mode none', () => {
@@ -267,6 +367,17 @@ describe('normalizeLine', () => {
         const result = sut(line('a\r'), key);
         // Assert
         expect(result).toEqual(line('a'));
+      });
+    });
+
+    describe('When the entire unterminated content is a single CR', () => {
+      it('Then drops it to an empty line (CR at index 0)', () => {
+        // Arrange — exercises the crPos === 0 boundary of the CR guard
+        const sut = normalizeLine;
+        // Act
+        const result = sut(line('\r'), key);
+        // Assert
+        expect(result).toEqual(enc(''));
       });
     });
 

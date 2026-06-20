@@ -1976,5 +1976,74 @@ describe('patch-serializer', () => {
         expect(sut).toContain('@@');
       });
     });
+
+    describe('When a lineKey is set but ignoreBlankLines is not, on a blank-only modify', () => {
+      it('Then the blank hunk is emitted (lineKey alone never suppresses blanks)', () => {
+        // Arrange — lineKey present, ignoreBlankLines absent; the blank insert
+        // must NOT be suppressed (suppression requires an explicit ignoreBlankLines).
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert
+        expect(sut).toContain('@@');
+      });
+    });
+
+    describe('When an empty options object is passed on a blank-only modify', () => {
+      it('Then the blank hunk is emitted ({} carries no suppression)', () => {
+        // Arrange — opts is defined but neither lineKey nor ignoreBlankLines is set
+        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+
+        // Act
+        const sut = renderPatch([file], {});
+
+        // Assert
+        expect(sut).toContain('@@');
+      });
+    });
+
+    describe('When a blank context line sits between changes under ignoreBlankLines', () => {
+      it('Then the blank context line is kept in the hunk body', () => {
+        // Arrange — line 2 is an unchanged blank (context); b→B is a real change.
+        const file = modifyFile('ctx.txt', 'a\n\nb\n', 'a\n\nB\n');
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — the blank context line (a single space) survives suppression
+        expect(sut).toContain('\n \n');
+      });
+    });
+
+    describe('When a renamed file still has a real content change under ignoreBlankLines', () => {
+      it('Then the rename header keeps its ---/+++ body and hunk', () => {
+        // Arrange — a rename whose body has a non-blank change must not be
+        // body-suppressed just because ignoreBlankLines is on.
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'orig.txt' as FilePath,
+            newPath: 'moved.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: 52200, maxScore: MAX_SCORE },
+          },
+          oldContent: utf8.encode('line 00\nline 01\nline 02\n'),
+          newContent: utf8.encode('CHANGED\nline 01\nline 02\n'),
+        };
+
+        // Act
+        const sut = renderPatch([file], { ignoreBlankLines: true });
+
+        // Assert — body is preserved (header alone is not enough)
+        expect(sut).toContain('--- a/orig.txt');
+        expect(sut).toContain('+++ b/moved.txt');
+        expect(sut).toContain('+CHANGED');
+      });
+    });
   });
 });
