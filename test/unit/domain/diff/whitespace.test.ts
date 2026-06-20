@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
 import {
+  isBlankLine,
   lineKeyIsActive,
   linesEqualUnder,
+  NONE_KEY,
   normalizeLine,
   resolveLineKey,
 } from '../../../../src/domain/diff/whitespace.js';
@@ -542,6 +544,69 @@ describe('lineKeyIsActive', () => {
       const result = sut(key);
       // Assert
       expect(result).toBe(true);
+    });
+  });
+});
+
+describe('isBlankLine', () => {
+  describe("Given mode 'all'", () => {
+    const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+
+    describe('When the line normalizes to empty', () => {
+      it('Then a spaces-only line is blank', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('   \n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the line has a single non-whitespace char', () => {
+      it('Then it is not blank (content length is 1, not 0)', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('a\n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given NONE_KEY (no normalization)', () => {
+    describe('When the line is a bare LF', () => {
+      it('Then it is blank', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('\n'), NONE_KEY);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When the line is spaces-only', () => {
+      it('Then it is NOT blank (spaces are not stripped without a whitespace mode)', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line('   \n'), NONE_KEY);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When the line is empty and unterminated', () => {
+      it('Then it is blank', () => {
+        // Arrange
+        const sut = isBlankLine;
+        // Act
+        const result = sut(line(''), NONE_KEY);
+        // Assert
+        expect(result).toBe(true);
+      });
     });
   });
 });
