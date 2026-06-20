@@ -152,6 +152,20 @@ async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefi
   return ctx.compressor.inflate(compressed);
 }
 
+/**
+ * Returns the raw compressed bytes for a loose object, or undefined if it
+ * does not exist. Does not inflate — callers that need streaming inflate use
+ * `createInflateStream` on these bytes directly.
+ */
+export async function looseCompressedBytes(
+  ctx: Context,
+  id: ObjectId,
+): Promise<Uint8Array | undefined> {
+  const path = looseObjectPath(commonGitDir(ctx), id);
+  if (!(await ctx.fs.exists(path))) return undefined;
+  return ctx.fs.read(path);
+}
+
 async function finalize(
   ctx: Context,
   id: ObjectId,
