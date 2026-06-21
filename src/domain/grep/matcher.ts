@@ -112,7 +112,8 @@ function unionSpans(allSpans: ReadonlyArray<ReadonlyArray<MatchSpan>>): Readonly
 // git (on CRLF lines `$` sits after the `\r`).
 function stripTrailingNewline(line: Uint8Array): Uint8Array {
   const LF = 0x0a;
-  return line.length > 0 && line[line.length - 1] === LF ? line.subarray(0, line.length - 1) : line;
+  // `line[-1]` on an empty line is undefined (≠ LF), so no length guard is needed.
+  return line[line.length - 1] === LF ? line.subarray(0, line.length - 1) : line;
 }
 
 export function buildGrepMatcher(
