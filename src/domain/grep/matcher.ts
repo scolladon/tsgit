@@ -65,6 +65,7 @@ function fixedSpans(line: Uint8Array, needle: Uint8Array): ReadonlyArray<MatchSp
   if (needle.length === 0) return [];
   const spans: MatchSpan[] = [];
   let from = 0;
+  // equivalent-mutant(id=200): `line.length + needle.length` — extra iterations access line[from+j]=undefined ≠ needle[j], inner loop always fails, identical result
   outer: while (from <= line.length - needle.length) {
     for (let j = 0; j < needle.length; j++) {
       if (line[from + j] !== needle[j]) {
@@ -85,7 +86,10 @@ function applyWholeWord(
   return spans.filter((span) => {
     const leftByte = line[span.start - 1];
     const rightByte = line[span.end];
+    // equivalent-mutant(id=225): `span.start === 0` → `false` — when start=0, line[-1]=undefined, leftByte===undefined short-circuits, leftOk=true regardless
     const leftOk = span.start === 0 || leftByte === undefined || !isWordByte(leftByte);
+    // equivalent-mutant(id=235): `span.end >= line.length` → `false` — when end≥length, line[end]=undefined, rightByte===undefined catches it, rightOk=true regardless
+    // equivalent-mutant(id=236): `span.end >= line.length` → `span.end > line.length` — when end===length exactly, line[length]=undefined, same undefined-check outcome
     const rightOk = span.end >= line.length || rightByte === undefined || !isWordByte(rightByte);
     return leftOk && rightOk;
   });

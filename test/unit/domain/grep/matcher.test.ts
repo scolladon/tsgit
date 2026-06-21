@@ -644,4 +644,174 @@ describe('buildGrepMatcher', () => {
       });
     });
   });
+
+  // ─── isWordByte exact range boundaries (kills ids 154,156,157,164,165,170,172) ─
+
+  describe('Given wholeWord=true and a fixed pattern "end"', () => {
+    describe('When the left boundary byte is exactly A (0x41 — lower edge of upper-case range)', () => {
+      it('Then does NOT match (A is a word byte)', () => {
+        // Arrange — 'A' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x41, ...new TextEncoder().encode('end')]); // 'A' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+
+    describe('When the left boundary byte is exactly Z (0x5a — upper edge of upper-case range)', () => {
+      it('Then does NOT match (Z is a word byte)', () => {
+        // Arrange — 'Z' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x5a, ...new TextEncoder().encode('end')]); // 'Z' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+
+    describe('When the left boundary byte is [ (0x5b — one above Z, just outside upper-case range)', () => {
+      it('Then MATCHES ([ is NOT a word byte)', () => {
+        // Arrange — '[' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x5b, ...new TextEncoder().encode('end')]); // '[' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(true);
+      });
+    });
+
+    describe('When the left boundary byte is exactly a (0x61 — lower edge of lower-case range)', () => {
+      it('Then does NOT match (a is a word byte)', () => {
+        // Arrange — 'a' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x61, ...new TextEncoder().encode('end')]); // 'a' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+
+    describe('When the left boundary byte is exactly z (0x7a — upper edge of lower-case range)', () => {
+      it('Then does NOT match (z is a word byte)', () => {
+        // Arrange — 'z' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x7a, ...new TextEncoder().encode('end')]); // 'z' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+
+    describe('When the left boundary byte is { (0x7b — one above z, just outside lower-case range)', () => {
+      it('Then MATCHES ({ is NOT a word byte)', () => {
+        // Arrange — '{' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x7b, ...new TextEncoder().encode('end')]); // '{' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(true);
+      });
+    });
+
+    describe('When the left boundary byte is exactly 0 (0x30 — lower edge of digit range)', () => {
+      it('Then does NOT match (0 is a word byte)', () => {
+        // Arrange — '0' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x30, ...new TextEncoder().encode('end')]); // '0' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+
+    describe('When the left boundary byte is exactly 9 (0x39 — upper edge of digit range)', () => {
+      it('Then does NOT match (9 is a word byte)', () => {
+        // Arrange — '9' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x39, ...new TextEncoder().encode('end')]); // '9' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+
+    describe('When the left boundary byte is : (0x3a — one above 9, just outside digit range)', () => {
+      it('Then MATCHES (: is NOT a word byte)', () => {
+        // Arrange — ':' immediately before "end"
+        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
+        const line = new Uint8Array([0x3a, ...new TextEncoder().encode('end')]); // ':' + 'end'
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(true);
+      });
+    });
+  });
+
+  // ─── unionSpans sort ordering (kills ids 253, 257, 258, 259) ────────────────
+
+  describe('Given two patterns where the second pattern matches EARLIER in the line', () => {
+    describe('When matchLine returns the union of spans', () => {
+      it('Then spans are sorted by start ascending regardless of pattern order', () => {
+        // Arrange — /bar/ matches at [4,7], /foo/ at [0,3]; must come out start-sorted
+        const sut = buildGrepMatcher([/bar/, /foo/]);
+        const line = enc('foo bar');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.spans).toEqual([
+          { start: 0, end: 3 },
+          { start: 4, end: 7 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given two patterns with the SAME start byte-offset but different end positions', () => {
+    describe('When matchLine returns the union of spans', () => {
+      it('Then same-start spans are ordered by end ascending (secondary sort key)', () => {
+        // Arrange — /ab/ matches [0,2], /abc/ matches [0,3]; same start, different end
+        const sut = buildGrepMatcher([/abc/, /ab/]);
+        const line = enc('abc');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.spans).toEqual([
+          { start: 0, end: 2 },
+          { start: 0, end: 3 },
+        ]);
+      });
+    });
+  });
 });

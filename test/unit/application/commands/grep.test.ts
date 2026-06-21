@@ -11,8 +11,18 @@ import {
 import { init } from '../../../../src/application/commands/init.js';
 import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import {
+  type GitIndex,
+  type IndexEntry,
+  STAGE0_FLAGS,
+} from '../../../../src/domain/git-index/index-entry.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE, FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import {
+  buildSeededContext,
+  serializeIndexFixtureAsync,
+} from '../../application/primitives/fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Test',
@@ -631,5 +641,383 @@ describe('Given a tracked file with no matching content, When grep runs', () => 
 
     // Assert
     expect(result.paths).toHaveLength(0);
+  });
+});
+
+// ─── binaryMatch is exactly false for text blobs (kills id 77) ───────────────
+
+describe('Given a tracked text file with matching content, When grep runs', () => {
+  it('Then binaryMatch is exactly false (not just falsy) for the matched path', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'text.txt', 'hello world\n');
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'hello' }] });
+
+    // Assert
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.binaryMatch).toBe(false);
+  });
+});
+
+// ─── Error reason string (kills id 84) ───────────────────────────────────────
+
+describe('Given no patterns, When grep is called', () => {
+  it('Then the INVALID_OPTION error reason is exactly "at least one pattern required"', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    const sut = grep;
+
+    // Act
+    let caught: unknown;
+    try {
+      await sut(ctx, { patterns: [] });
+    } catch (e) {
+      caught = e;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const err = caught as TsgitError;
+    const data = err.data as { code: string; option: string; reason: string };
+    expect(data.reason).toBe('at least one pattern required');
+  });
+});
+
+// ─── wholeWord: true propagates to the line matcher (kills id 86) ────────────
+
+describe('Given a tracked file with a sub-word occurrence, When grep uses wholeWord on index target', () => {
+  it('Then the embedded occurrence is NOT returned (wholeWord passed to matcher)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'w.txt', 'keyword only\n');
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'word' }],
+      wholeWord: true,
+      target: 'index',
+    });
+
+    // Assert
+    expect(result.paths).toHaveLength(0);
+  });
+});
+
+// ─── wholeWord propagates to the binary probe matcher (kills ids 98–104) ─────
+
+describe('Given a binary blob where the pattern appears only as part of another word, When grep uses wholeWord', () => {
+  it('Then binaryMatch is NOT reported (binary probe also gates on wholeWord)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    // Build binary blob: NUL + "xFIND_MEx" so "FIND_ME" only occurs embedded
+    const content = new Uint8Array([0x00, 0x78, ...new TextEncoder().encode('FIND_ME'), 0x78]);
+    await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, content);
+    await add(ctx, ['data.bin']);
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act — wholeWord must suppress the embedded binary match
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'FIND_ME' }],
+      wholeWord: true,
+    });
+
+    // Assert
+    expect(result.paths).toHaveLength(0);
+  });
+});
+
+describe('Given a binary blob where the pattern appears as a whole word, When grep uses wholeWord', () => {
+  it('Then binaryMatch IS reported (binary probe respects wholeWord and still matches)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    // Build binary blob: NUL + space + "FIND_ME" + space so it IS a whole-word occurrence
+    const content = new Uint8Array([0x00, 0x20, ...new TextEncoder().encode('FIND_ME'), 0x20]);
+    await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, content);
+    await add(ctx, ['data.bin']);
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'FIND_ME' }],
+      wholeWord: true,
+    });
+
+    // Assert
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.binaryMatch).toBe(true);
+  });
+});
+
+// ─── Empty paths array is treated as "no pathspec" (kills ids 110, 111) ──────
+
+describe('Given two tracked files, When grep is called with an empty paths array', () => {
+  it('Then both files are searched (empty array means no pathspec filter)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'a.txt', 'needle\n');
+    await writeAndStage(ctx, 'b.txt', 'needle\n');
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act — paths: [] must behave the same as paths: undefined
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'needle' }],
+      paths: [],
+    });
+
+    // Assert
+    expect(result.paths).toHaveLength(2);
+    expect(result.paths.map((p) => p.path as string)).toEqual(['a.txt', 'b.txt']);
+  });
+});
+
+// ─── Custom-index helpers ─────────────────────────────────────────────────────
+
+const ZERO_OID = '0000000000000000000000000000000000000001' as ObjectId;
+
+const makeEntry = (
+  path: string,
+  opts: { mode?: string; stage?: 0 | 1 | 2 | 3 } = {},
+): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode: (opts.mode ?? FILE_MODE.REGULAR) as IndexEntry['mode'],
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+  id: ZERO_OID,
+  flags: { ...STAGE0_FLAGS, stage: opts.stage ?? 0 },
+  path: FilePath.from(path),
+});
+
+const writeIndex = async (ctx: Context, index: GitIndex): Promise<void> => {
+  const bytes = await serializeIndexFixtureAsync(index, ctx);
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, bytes);
+};
+
+// ─── Working-tree: conflict entries (stage≠0) are skipped (kills ids 12,16) ──
+
+describe('Given an index with a stage-1 conflict entry, When grep runs with default target', () => {
+  it('Then the conflict entry is skipped (stage≠0 filter)', async () => {
+    // Arrange — use buildSeededContext to get an initialized repo, then plant a custom index
+    const ctx = await buildSeededContext();
+    // Write the working-tree file so it exists
+    await ctx.fs.mkdir(ctx.layout.workDir);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'needle\n');
+    const index: GitIndex = {
+      version: 2,
+      entries: [makeEntry('conflict.txt', { stage: 1 })],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await writeIndex(ctx, index);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'needle' }] });
+
+    // Assert — conflict entry excluded; no path returned
+    expect(result.paths).toHaveLength(0);
+  });
+});
+
+describe('Given an index with a symlink-mode entry (120000), When grep runs with default target', () => {
+  it('Then the symlink entry is skipped (mode filter in working-tree enumeration)', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    await ctx.fs.mkdir(ctx.layout.workDir);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/link.txt`, 'needle\n');
+    const index: GitIndex = {
+      version: 2,
+      entries: [makeEntry('link.txt', { mode: FILE_MODE.SYMLINK })],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await writeIndex(ctx, index);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'needle' }] });
+
+    // Assert — symlink mode excluded from search
+    expect(result.paths).toHaveLength(0);
+  });
+});
+
+// ─── Index target: conflict entries (stage≠0) are skipped (kills ids 27,29,31,32) ─
+
+describe('Given an index with a stage-2 conflict entry, When grep runs with target "index"', () => {
+  it('Then the conflict entry is skipped (stage===0 filter on index enumeration)', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    const index: GitIndex = {
+      version: 2,
+      entries: [makeEntry('conflict.txt', { stage: 2 })],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await writeIndex(ctx, index);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'needle' }],
+      target: 'index',
+    });
+
+    // Assert
+    expect(result.paths).toHaveLength(0);
+  });
+});
+
+describe('Given an index with one stage-0 and one stage-2 entry, When grep runs with target "index"', () => {
+  it('Then only the stage-0 entry is searched', async () => {
+    // Arrange — seed a real blob object so the stage-0 entry can be read
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'real.txt', 'needle\n');
+    await commitAll(ctx);
+    // Read the current index to get the real OID for real.txt, then inject a stage-2 sibling
+    const { readIndex: readIdx } = await import('../../../../src/application/primitives/index.js');
+    const currentIndex = await readIdx(ctx);
+    const realEntry = currentIndex.entries[0]!;
+    const index: GitIndex = {
+      version: 2,
+      entries: [realEntry, makeEntry('conflict.txt', { stage: 2 })],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await writeIndex(ctx, index);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'needle' }],
+      target: 'index',
+    });
+
+    // Assert — only real.txt returned; conflict.txt (stage-2) excluded
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.path).toBe('real.txt');
+  });
+});
+
+describe('Given an index with a gitlink-mode entry (160000), When grep runs with target "index"', () => {
+  it('Then the gitlink entry is skipped (mode filter on index enumeration)', async () => {
+    // Arrange
+    const ctx = await buildSeededContext();
+    const index: GitIndex = {
+      version: 2,
+      entries: [makeEntry('sub', { mode: FILE_MODE.GITLINK })],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await writeIndex(ctx, index);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'needle' }],
+      target: 'index',
+    });
+
+    // Assert
+    expect(result.paths).toHaveLength(0);
+  });
+});
+
+// ─── isSearchableMode: executable files ARE searched (kills ids 1, 7) ─────────
+// The memory adapter always produces mode=100644. We verify via index target using
+// a custom index entry with mode=100755 pointing at a real blob.
+
+describe('Given an index with an executable-mode entry (100755), When grep runs with target "index"', () => {
+  it('Then the executable entry IS searched (100755 is searchable)', async () => {
+    // Arrange — stage a file first to get a real blob OID stored
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'script.sh', 'needle\n');
+    await commitAll(ctx);
+    const { readIndex: readIdx } = await import('../../../../src/application/primitives/index.js');
+    const currentIndex = await readIdx(ctx);
+    const stagedEntry = currentIndex.entries[0]!;
+    // Rebuild the index with mode=100755 pointing at the same blob
+    const execEntry: IndexEntry = {
+      ...stagedEntry,
+      mode: FILE_MODE.EXECUTABLE as IndexEntry['mode'],
+    };
+    const index: GitIndex = {
+      version: 2,
+      entries: [execEntry],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    await writeIndex(ctx, index);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'needle' }],
+      target: 'index',
+    });
+
+    // Assert — executable mode is searchable; the blob is found
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.path).toBe('script.sh');
+  });
+});
+
+// ─── Tree-ish: recursive walk (kills ids 48, 49) ─────────────────────────────
+
+describe('Given a committed file in a subdirectory, When grep runs with tree-ish target', () => {
+  it('Then the nested file is found (walkTree is called with recursive:true)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'src/nested.txt', 'needle\n');
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'needle' }],
+      target: { treeish: 'HEAD' },
+    });
+
+    // Assert — recursive walk exposes nested file
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.path).toBe('src/nested.txt');
+  });
+});
+
+// ─── Tree-ish: non-searchable tree entries are skipped (kills id 53) ──────────
+
+describe('Given a committed tree containing only a subtree directory entry, When grep runs with tree-ish target', () => {
+  it('Then the subtree directory entry is skipped and no error is thrown', async () => {
+    // Arrange — commit two files, one nested (produces both a blob and a tree entry)
+    // The walkTree recursive call yields both blobs and nested-tree entries; mode filter
+    // must skip the tree entry (40000) and only process blobs.
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'root.txt', 'needle\n');
+    await writeAndStage(ctx, 'sub/leaf.txt', 'needle\n');
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act — recursive=true surfaces sub/ directory entry AND sub/leaf.txt blob
+    const result: GrepResult = await sut(ctx, {
+      patterns: [{ fixed: 'needle' }],
+      target: { treeish: 'HEAD' },
+    });
+
+    // Assert — both text files found; no throw from the skipped tree entry
+    const paths = result.paths.map((p) => p.path as string).sort();
+    expect(paths).toEqual(['root.txt', 'sub/leaf.txt']);
   });
 });
