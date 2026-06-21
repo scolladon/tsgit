@@ -715,6 +715,89 @@ describe('patch-serializer', () => {
     });
   });
 
+  describe('Given a symlink-to-binary type change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits delete symlink block then add binary block', () => {
+        // Arrange — old content is a text symlink target (text delete block);
+        // a NUL byte in new content triggers isBinary for the add block.
+        // Real git emits a full deletion then a binary addition.
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'swap.bin' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.SYMLINK,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: utf8.encode('/some/target'),
+          newContent: new Uint8Array([0x01, 0x00, 0x02, 0x03]),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — verified against real git in a mktemp throwaway
+        expect(sut).toBe(
+          [
+            'diff --git a/swap.bin b/swap.bin',
+            'deleted file mode 120000',
+            'index aaaaaaa..0000000',
+            '--- a/swap.bin',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-/some/target',
+            '\\ No newline at end of file',
+            'diff --git a/swap.bin b/swap.bin',
+            'new file mode 100644',
+            'index 0000000..bbbbbbb',
+            'Binary files /dev/null and b/swap.bin differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a type change with no blob content on either side', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits header-only delete and add blocks (empty-content guard)', () => {
+        // Arrange — a PatchFile may omit oldContent/newContent; the renderer
+        // falls back to empty bytes, yielding header-only delete + add blocks.
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'empty.x' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.SYMLINK,
+          },
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert
+        expect(sut).toBe(
+          [
+            'diff --git a/empty.x b/empty.x',
+            'deleted file mode 100644',
+            'index aaaaaaa..0000000',
+            '--- a/empty.x',
+            '+++ /dev/null',
+            'diff --git a/empty.x b/empty.x',
+            'new file mode 120000',
+            'index 0000000..bbbbbbb',
+            '--- /dev/null',
+            '+++ b/empty.x',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
   describe('Given a pure rename change', () => {
     describe('When renderPatch is called', () => {
       it('Then emits similarity index 100% + rename from + rename to (no hunks)', () => {
