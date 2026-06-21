@@ -425,7 +425,7 @@ interface SameKindChange {
   readonly newMode: string;
 }
 
-function changeToCommon(change: ModifyChange | TypeChangeChange): SameKindChange {
+function changeToCommon(change: ModifyChange): SameKindChange {
   return {
     path: change.path,
     oldId: change.oldId,
@@ -557,15 +557,15 @@ function renderBrokenModifyBlock(
   return out;
 }
 
-function renderModifyOrTypeChangeBlock(
-  change: ModifyChange | TypeChangeChange,
+function renderModifyBlock(
+  change: ModifyChange,
   oldBytes: Uint8Array,
   newBytes: Uint8Array,
   prefix: PatchPathPrefix,
   contextLines: number,
   emit?: EmitOptions,
 ): string[] {
-  if (change.type === 'modify' && change.broken !== undefined) {
+  if (change.broken !== undefined) {
     return renderBrokenModifyBlock(
       change as ModifyChange & { readonly broken: NonNullable<ModifyChange['broken']> },
       oldBytes,
@@ -583,6 +583,35 @@ function renderModifyOrTypeChangeBlock(
     contextLines,
     emit,
   );
+}
+
+function renderTypeChangeBlock(
+  change: TypeChangeChange,
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+  prefix: PatchPathPrefix,
+): string[] {
+  // Real git renders a type-change as two separate diff --git blocks:
+  // a full deletion of the old kind followed by a full addition of the new kind.
+  const deleteChange: DeleteChange = {
+    type: 'delete',
+    oldPath: change.path,
+    oldId: change.oldId,
+    oldMode: change.oldMode,
+  };
+  const addChange: AddChange = {
+    type: 'add',
+    newPath: change.path,
+    newId: change.newId,
+    newMode: change.newMode,
+  };
+  const deleteBlock = isBinary(oldBytes)
+    ? renderDeleteBinary(deleteChange, prefix)
+    : renderDeleteBlock(deleteChange, oldBytes, prefix);
+  const addBlock = isBinary(newBytes)
+    ? renderAddBinary(addChange, prefix)
+    : renderAddBlock(addChange, newBytes, prefix);
+  return [...deleteBlock, ...addBlock];
 }
 
 interface TwoPathChange {
@@ -719,10 +748,16 @@ function renderFile(
   }
   if (change.type === 'rename') return renderRenameBlock(change, file, prefix, contextLines, emit);
   if (change.type === 'copy') return renderCopyBlock(change, file, prefix, contextLines, emit);
-  // `modify` and `type-change` share the same body shape (mode preamble +
-  // optional content body); the discriminated union is exhaustive — no
-  // fallthrough branch exists for the type system to flag.
-  return renderModifyOrTypeChangeBlock(
+  if (change.type === 'type-change') {
+    return renderTypeChangeBlock(
+      change,
+      file.oldContent ?? new Uint8Array(0),
+      file.newContent ?? new Uint8Array(0),
+      prefix,
+    );
+  }
+  // `modify` is the only remaining case; the discriminated union is exhaustive.
+  return renderModifyBlock(
     change,
     file.oldContent ?? new Uint8Array(0),
     file.newContent ?? new Uint8Array(0),

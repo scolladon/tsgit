@@ -28,9 +28,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createNodeContext } from '../../src/adapters/node/index.js';
+import { diff } from '../../src/application/commands/diff.js';
 import type { DiffChange, TreeDiff } from '../../src/domain/diff/index.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
+import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -80,6 +83,10 @@ const gitRawLines = (dir: string, from: string, to: string): ReadonlyArray<strin
 const gitNameStatus = (dir: string, from: string, to: string): string =>
   git(dir, 'diff', '--no-ext-diff', '--name-status', from, to).trim();
 
+/** git's unified diff patch for a commit pair (no colour, no ext-diff). */
+const gitDiff = (dir: string, from: string, to: string): string =>
+  git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
+
 /** Derive name-status string from a TreeDiff. */
 const nameStatusFrom = (treeDiff: TreeDiff): string =>
   treeDiff.changes
@@ -97,6 +104,7 @@ const nameStatusFrom = (treeDiff: TreeDiff): string =>
 
 let dir = '';
 let repo: Awaited<ReturnType<typeof openRepository>>;
+let ctx: ReturnType<typeof createNodeContext>;
 
 interface CommitPair {
   readonly from: string;
@@ -201,6 +209,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     blobToDirectory = { from: xBlob, to: xDir };
 
     repo = await openRepository({ cwd: dir });
+    ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -254,6 +263,19 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         // Assert
         expect(ours).toBe(peer);
       });
+
+      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
+        // Arrange
+        const { from, to } = fileToSymlink;
+        const peer = gitDiff(dir, from, to);
+
+        // Act
+        const treeDiff = await diff(ctx, { from, to });
+        const result = await reconstructPatch(ctx, treeDiff);
+
+        // Assert
+        expect(result).toBe(peer);
+      });
     });
   });
 
@@ -300,6 +322,19 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
 
         // Assert
         expect(ours).toBe(peer);
+      });
+
+      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
+        // Arrange
+        const { from, to } = symlinkToFile;
+        const peer = gitDiff(dir, from, to);
+
+        // Act
+        const treeDiff = await diff(ctx, { from, to });
+        const result = await reconstructPatch(ctx, treeDiff);
+
+        // Assert
+        expect(result).toBe(peer);
       });
     });
   });
