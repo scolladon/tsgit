@@ -152,8 +152,44 @@ function arbBinaryAddFile(): fc.Arbitrary<PatchFile> {
     });
 }
 
+function arbBytesMaybeBinary(): fc.Arbitrary<Uint8Array> {
+  return fc.oneof(
+    arbTextStream().map((stream) => utf8.encode(stream)),
+    fc.uint8Array({ minLength: 1, maxLength: 16 }).map((bytes) => {
+      // Force a leading NUL so isBinary() triggers regardless of the payload.
+      const withNul = new Uint8Array(bytes.length + 1);
+      withNul[0] = 0x00;
+      withNul.set(bytes, 1);
+      return withNul;
+    }),
+  );
+}
+
+function arbTypeChangeFile(): fc.Arbitrary<PatchFile> {
+  return fc
+    .tuple(arbPath(), fc.boolean(), arbBytesMaybeBinary(), arbBytesMaybeBinary())
+    .map(([path, fileToSymlink, oldBytes, newBytes]) => ({
+      change: {
+        type: 'type-change',
+        path: path as FilePath,
+        oldId: OID_A,
+        newId: OID_B,
+        oldMode: fileToSymlink ? FILE_MODE.REGULAR : FILE_MODE.SYMLINK,
+        newMode: fileToSymlink ? FILE_MODE.SYMLINK : FILE_MODE.REGULAR,
+      },
+      oldContent: oldBytes,
+      newContent: newBytes,
+    }));
+}
+
 function arbAnyShape(): fc.Arbitrary<PatchFile> {
-  return fc.oneof(arbAddFile(), arbDeleteFile(), arbRenameFile(), arbBinaryAddFile());
+  return fc.oneof(
+    arbAddFile(),
+    arbDeleteFile(),
+    arbRenameFile(),
+    arbBinaryAddFile(),
+    arbTypeChangeFile(),
+  );
 }
 
 describe('patch-serializer (properties)', () => {
@@ -181,7 +217,7 @@ describe('patch-serializer (properties)', () => {
     });
   });
 
-  describe('Given any single DiffChange shape (add, delete, rename, or binary add)', () => {
+  describe('Given any single DiffChange shape (add, delete, rename, binary add, or type-change)', () => {
     describe('When renderPatch is called', () => {
       it('Then the text always starts with `diff --git ` and ends with `\\n`', () => {
         fc.assert(
@@ -243,6 +279,40 @@ describe('patch-serializer (properties)', () => {
             expect(sut).toContain('Binary files /dev/null and b/');
             expect(sut).toContain(' differ');
             expect(sut).not.toContain('@@ ');
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a type-change DiffChange (file↔symlink, arbitrary content)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then it emits a deletion block then an addition block, no hunk marker inside a binary block', () => {
+        fc.assert(
+          fc.property(arbTypeChangeFile(), (file) => {
+            // Arrange — fast-check supplied a type-change with any text/binary mix
+            const input = [file];
+
+            // Act
+            const sut = renderPatch(input);
+
+            // Assert — git renders a type-change as a full deletion then a full
+            // addition. Group lines into `diff --git ` blocks; content lines are
+            // +/-/space-prefixed, so they never match a bare header/marker prefix.
+            const blocks: string[][] = [];
+            for (const line of sut.split('\n')) {
+              if (line.startsWith('diff --git ')) blocks.push([]);
+              blocks[blocks.length - 1]?.push(line);
+            }
+            expect(blocks).toHaveLength(2);
+            expect(blocks[0]?.some((line) => line.startsWith('deleted file mode '))).toBe(true);
+            expect(blocks[1]?.some((line) => line.startsWith('new file mode '))).toBe(true);
+            for (const block of blocks) {
+              if (block.some((line) => line.startsWith('Binary files '))) {
+                expect(block.some((line) => line.startsWith('@@ '))).toBe(false);
+              }
+            }
           }),
           { numRuns: 100 },
         );

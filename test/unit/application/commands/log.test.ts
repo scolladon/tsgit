@@ -544,8 +544,9 @@ describe('log', () => {
         // Act
         const sut = await log(ctx, { minParents: 1 });
 
-        // Assert — B is in the result; kills `>` mutant replacing `>=`
-        expect(sut.map((e) => e.message)).toContain('B');
+        // Assert — full sequence: B (exactly 1 parent) IS kept, A (0) excluded;
+        // self-sufficient against both `>=`→`>` (B drops) and the directional flip
+        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B']);
       });
     });
 
@@ -557,8 +558,9 @@ describe('log', () => {
         // Act
         const sut = await log(ctx, { maxParents: 1 });
 
-        // Assert — B is in the result; kills `<` mutant replacing `<=`
-        expect(sut.map((e) => e.message)).toContain('B');
+        // Assert — full sequence: B (exactly 1 parent) IS kept, D (2) excluded;
+        // self-sufficient against both `<=`→`<` (B drops) and the directional flip
+        expect(sut.map((e) => e.message)).toEqual(['C', 'B', 'A']);
       });
     });
 
