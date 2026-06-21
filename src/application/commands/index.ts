@@ -140,7 +140,7 @@ export {
   bindWorktreeNamespace,
   type WorktreeNamespace,
 } from './internal/worktree-namespace.js';
-export { type LogEntry, type LogOptions, log } from './log.js';
+export { type LogEntry, type LogOptions, type LogOrder, log } from './log.js';
 export { type MergeResult, type MergeRunInput, mergeRun } from './merge.js';
 export {
   type MvMove,
