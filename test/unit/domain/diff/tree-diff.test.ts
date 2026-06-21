@@ -183,6 +183,56 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given same path with 120000 → 160000 (symlink → gitlink)', () => {
+    describe('When diffTrees called', () => {
+      it('Then returns [TypeChangeChange]', () => {
+        // Arrange
+        const oldTree = tree([entry('sub', FILE_MODE.SYMLINK, ID_A)]);
+        const newTree = tree([entry('sub', FILE_MODE.GITLINK, ID_B)]);
+
+        // Act
+        const sut = diffTrees(oldTree, newTree);
+
+        // Assert
+        expect(sut.changes).toEqual([
+          {
+            type: 'type-change',
+            path: 'sub',
+            oldId: ID_A,
+            newId: ID_B,
+            oldMode: FILE_MODE.SYMLINK,
+            newMode: FILE_MODE.GITLINK,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given same path with 160000 → 120000 (gitlink → symlink)', () => {
+    describe('When diffTrees called', () => {
+      it('Then returns [TypeChangeChange]', () => {
+        // Arrange
+        const oldTree = tree([entry('sub', FILE_MODE.GITLINK, ID_A)]);
+        const newTree = tree([entry('sub', FILE_MODE.SYMLINK, ID_B)]);
+
+        // Act
+        const sut = diffTrees(oldTree, newTree);
+
+        // Assert
+        expect(sut.changes).toEqual([
+          {
+            type: 'type-change',
+            path: 'sub',
+            oldId: ID_A,
+            newId: ID_B,
+            oldMode: FILE_MODE.GITLINK,
+            newMode: FILE_MODE.SYMLINK,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given mixed add + delete + modify at different paths', () => {
     describe('When diffTrees called', () => {
       it('Then all three emitted', () => {
