@@ -543,11 +543,10 @@ const writeConflictingWorkingTree = async (
 };
 
 /**
- * Run `fn` over `items` with at most `limit` in-flight at once. Promise
- * rejection propagates upward (matches `Promise.all` semantics); in-flight
- * tasks are not cancelled. Exported for direct unit testing.
+ * Bounded parallel for-each: run side-effecting `fn` over `items` with at most
+ * `limit` in flight. A thin void specialization of `boundedMap` (discards results).
  */
-export const runBounded = async <T>(
+const runBounded = async <T>(
   items: ReadonlyArray<T>,
   limit: number,
   fn: (item: T) => Promise<void>,
