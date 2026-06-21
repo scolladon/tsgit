@@ -22,12 +22,11 @@ import {
 } from '../../domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
 import { readBlob } from './read-blob.js';
 
 /** Must match `rename-detect.ts` DEFAULT_LIMIT (1000). */
 const DEFAULT_LIMIT = 1000;
-
-const MAX_CONCURRENT_BLOB_LOADS = 32;
 
 interface BlobEntry {
   readonly id: ObjectId;
@@ -38,24 +37,10 @@ async function hydrateIds(
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<BlobEntry>> {
-  const results = new Array<BlobEntry | undefined>(ids.length);
-  let cursor = 0;
-  const worker = async (): Promise<void> => {
-    while (cursor < ids.length) {
-      const idx = cursor++;
-      // The loop guard pins `idx < ids.length`, so `ids[idx]` is always defined;
-      // the cast mirrors the bounded pool pattern in `materialise-patch-files.ts`.
-      const id = ids[idx] as ObjectId;
-      const blob = await readBlob(ctx, id);
-      results[idx] = { id, bytes: blob.content };
-    }
-  };
-  const concurrency = Math.min(MAX_CONCURRENT_BLOB_LOADS, ids.length);
-  const workers: Promise<void>[] = [];
-  for (let i = 0; i < concurrency; i++) workers.push(worker());
-  await Promise.all(workers);
-  // Every slot is populated by the time all workers return; mirrors materialise-patch-files.ts.
-  return results.map((e) => e as BlobEntry);
+  return boundedMap(ids, MAX_CONCURRENT_BLOB_LOADS, async (id) => ({
+    id,
+    bytes: (await readBlob(ctx, id)).content,
+  }));
 }
 
 interface CopySource {

@@ -197,6 +197,7 @@ export interface Repository {
   };
   readonly fetch: BindCtx<typeof commands.fetch>;
   readonly fetchMissing: BindCtx<typeof commands.fetchMissing>;
+  readonly grep: BindCtx<typeof commands.grep>;
   readonly init: BindCtx<typeof commands.init>;
   readonly log: BindCtx<typeof commands.log>;
   /** Nested `repo.merge.{run,continue,abort}` namespace. */
@@ -500,6 +501,10 @@ export const openRepository = async (
       guard();
       return commands.fetchMissing(ctx, fetchMissingOpts);
     }) as Repository['fetchMissing'],
+    grep: ((grepOpts) => {
+      guard();
+      return commands.grep(ctx, grepOpts);
+    }) as Repository['grep'],
     init: ((initOpts) => {
       guard();
       return commands.init(ctx, initOpts);

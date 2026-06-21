@@ -4,6 +4,7 @@ import { cherryPickScenario } from './cherry-pick.scenario.ts';
 import { configScenario } from './config.scenario.ts';
 import { describeScenario } from './describe.scenario.ts';
 import { diffPipelineScenario } from './diff-pipeline.scenario.ts';
+import { grepScenario } from './grep.scenario.ts';
 import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.ts';
 import { mergeAbortScenario } from './merge-abort.scenario.ts';
 import { mergeContinueScenario } from './merge-continue.scenario.ts';
@@ -57,4 +58,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   whatchangedScenario,
   nameRevScenario,
   worktreeScenario,
+  grepScenario,
 ];
