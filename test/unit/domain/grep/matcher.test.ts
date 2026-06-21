@@ -615,5 +615,33 @@ describe('buildGrepMatcher', () => {
         expect(result.returned).toBe(false);
       });
     });
+
+    describe('When the left boundary is a digit', () => {
+      it('Then does NOT match (a digit is a word byte)', () => {
+        // Arrange
+        const sut = buildGrepMatcher([{ fixed: 'cat' }], { wholeWord: true });
+        const line = enc('9cat');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
+
+    describe('When the left boundary is an underscore', () => {
+      it('Then does NOT match (an underscore is a word byte)', () => {
+        // Arrange
+        const sut = buildGrepMatcher([{ fixed: 'cat' }], { wholeWord: true });
+        const line = enc('_cat');
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(false);
+      });
+    });
   });
 });
