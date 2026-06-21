@@ -196,6 +196,54 @@ describe('diffIndexAgainstTree', () => {
     });
   });
 
+  describe('Given same path file (tree) → gitlink (index) (different kind)', () => {
+    describe('When diffIndexAgainstTree called', () => {
+      it('Then TypeChangeChange with oldMode REGULAR and newMode GITLINK', () => {
+        // Arrange — tree (old) has REGULAR, index (new) has GITLINK
+        const sut = diffIndexAgainstTree(
+          index([entry('sub', ID_B, FILE_MODE.GITLINK, 0)]),
+          flatTree([['sub', ID_A, FILE_MODE.REGULAR]]),
+        );
+
+        // Assert
+        expect(sut.changes).toEqual([
+          {
+            type: 'type-change',
+            path: 'sub',
+            oldId: ID_A,
+            newId: ID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.GITLINK,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given same path symlink (tree) → gitlink (index) (different kind)', () => {
+    describe('When diffIndexAgainstTree called', () => {
+      it('Then TypeChangeChange with oldMode SYMLINK and newMode GITLINK', () => {
+        // Arrange — tree (old) has SYMLINK, index (new) has GITLINK
+        const sut = diffIndexAgainstTree(
+          index([entry('sub', ID_B, FILE_MODE.GITLINK, 0)]),
+          flatTree([['sub', ID_A, FILE_MODE.SYMLINK]]),
+        );
+
+        // Assert
+        expect(sut.changes).toEqual([
+          {
+            type: 'type-change',
+            path: 'sub',
+            oldId: ID_A,
+            newId: ID_B,
+            oldMode: FILE_MODE.SYMLINK,
+            newMode: FILE_MODE.GITLINK,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given same id but a DIFFERENT mode (same kind)', () => {
     describe('When diffIndexAgainstTree called', () => {
       it('Then ModifyChange (the mode-equality guard is not skipped)', () => {

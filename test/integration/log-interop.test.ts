@@ -53,7 +53,11 @@ interface Scenario {
 const oidLines = (out: string): ReadonlyArray<string> =>
   out.split('\n').filter((line) => line.length > 0);
 
-/** base ← b (main) and base ← c (side), merge(b, c); annotated tag `v1` over b. */
+/**
+ * base ← b (main) and base ← c (side), merge(b, c); annotated tag `v1` over b.
+ * Also adds a second orphan root (root2) and merges it with --allow-unrelated-histories
+ * so --max-parents=0 returns >1 root (non-trivial).
+ */
 const buildScenario = async (): Promise<Scenario> => {
   const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-log-interop-')));
   runGit(['init', '-q', '-b', 'main', dir]);
@@ -75,6 +79,28 @@ const buildScenario = async (): Promise<Scenario> => {
   runGit(['-C', dir, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side'], {
     env: dateEnv(1700000004),
   });
+
+  // Second orphan root — makes --max-parents=0 return >1 root (non-trivial fixture)
+  runGit(['-C', dir, 'checkout', '-q', '--orphan', 'root2']);
+  runGit(['-C', dir, 'rm', '-q', '-rf', '.']);
+  await commit(1700000005, 'root2.txt', 'root2');
+  git(dir, 'checkout', '-q', 'main');
+  runGit(
+    [
+      '-C',
+      dir,
+      'merge',
+      '-q',
+      '--no-ff',
+      '--allow-unrelated-histories',
+      '-m',
+      'merge root2',
+      'root2',
+    ],
+    {
+      env: dateEnv(1700000006),
+    },
+  );
 
   const dispose = (): Promise<void> => rm(dir, { recursive: true, force: true });
   return { dir, tag: 'v1', dispose };
@@ -149,14 +175,127 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
     });
 
     describe('When log excludes a grammar selector', () => {
-      it('Then it matches git rev-list HEAD~2..HEAD', async () => {
-        // Arrange — HEAD~2 is the root `base`; excluding it leaves {merge, c, b}.
+      it('Then it matches git rev-list HEAD~3..HEAD', async () => {
+        // Arrange — HEAD~3 is `b on main`; excluding it leaves the top 3 commits.
         const scenario = await buildScenario();
         try {
-          const peer = oidLines(git(scenario.dir, 'rev-list', 'HEAD~2..HEAD'));
+          const peer = oidLines(git(scenario.dir, 'rev-list', 'HEAD~3..HEAD'));
 
           // Act
-          const ours = await logIds(scenario.dir, { excluding: ['HEAD~2'] });
+          const ours = await logIds(scenario.dir, { excluding: ['HEAD~3'] });
+
+          // Assert
+          expect(ours).toEqual(peer);
+        } finally {
+          await scenario.dispose();
+        }
+      });
+    });
+
+    describe('When log runs with maxParents:0', () => {
+      it('Then the oid sequence equals git rev-list --max-parents=0', async () => {
+        // Arrange — scenario has two roots (base and root2); non-trivial set
+        const scenario = await buildScenario();
+        try {
+          const peer = oidLines(git(scenario.dir, 'rev-list', '--max-parents=0', 'HEAD'));
+
+          // Act
+          const ours = await logIds(scenario.dir, { maxParents: 0 });
+
+          // Assert
+          expect(ours).toEqual(peer);
+        } finally {
+          await scenario.dispose();
+        }
+      });
+    });
+
+    describe('When log runs with minParents:2', () => {
+      it('Then the oid sequence equals git rev-list --min-parents=2', async () => {
+        // Arrange — merges only
+        const scenario = await buildScenario();
+        try {
+          const peer = oidLines(git(scenario.dir, 'rev-list', '--min-parents=2', 'HEAD'));
+
+          // Act
+          const ours = await logIds(scenario.dir, { minParents: 2 });
+
+          // Assert
+          expect(ours).toEqual(peer);
+        } finally {
+          await scenario.dispose();
+        }
+      });
+    });
+
+    describe('When log runs with maxParents:1', () => {
+      it('Then the oid sequence equals git rev-list --max-parents=1', async () => {
+        // Arrange — non-merges only
+        const scenario = await buildScenario();
+        try {
+          const peer = oidLines(git(scenario.dir, 'rev-list', '--max-parents=1', 'HEAD'));
+
+          // Act
+          const ours = await logIds(scenario.dir, { maxParents: 1 });
+
+          // Assert
+          expect(ours).toEqual(peer);
+        } finally {
+          await scenario.dispose();
+        }
+      });
+    });
+
+    describe('When log runs with minParents:1', () => {
+      it('Then the oid sequence equals git rev-list --min-parents=1', async () => {
+        // Arrange — non-roots only
+        const scenario = await buildScenario();
+        try {
+          const peer = oidLines(git(scenario.dir, 'rev-list', '--min-parents=1', 'HEAD'));
+
+          // Act
+          const ours = await logIds(scenario.dir, { minParents: 1 });
+
+          // Assert
+          expect(ours).toEqual(peer);
+        } finally {
+          await scenario.dispose();
+        }
+      });
+    });
+
+    describe('When log runs with maxParents:1 and limit:1', () => {
+      it('Then the first result equals git rev-list --max-parents=1 -n 1 (filter-then-limit)', async () => {
+        // Arrange — filter applied before limit: newest non-merge commit
+        const scenario = await buildScenario();
+        try {
+          const peer = oidLines(
+            git(scenario.dir, 'rev-list', '--max-parents=1', '-n', '1', 'HEAD'),
+          );
+
+          // Act
+          const ours = await logIds(scenario.dir, { maxParents: 1, limit: 1 });
+
+          // Assert — proves filter precedes limit; result is a non-merge, not a merge
+          expect(ours).toEqual(peer);
+        } finally {
+          await scenario.dispose();
+        }
+      });
+    });
+
+    describe("When log runs with order 'first-parent' and minParents:2", () => {
+      it('Then the oid sequence equals git rev-list --first-parent --min-parents=2', async () => {
+        // Arrange — first-parent walk; merge commits still count >=2 parents even though
+        // only first parent is followed during traversal
+        const scenario = await buildScenario();
+        try {
+          const peer = oidLines(
+            git(scenario.dir, 'rev-list', '--first-parent', '--min-parents=2', 'HEAD'),
+          );
+
+          // Act
+          const ours = await logIds(scenario.dir, { order: 'first-parent', minParents: 2 });
 
           // Assert
           expect(ours).toEqual(peer);

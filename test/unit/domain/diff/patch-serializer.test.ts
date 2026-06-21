@@ -638,9 +638,142 @@ describe('patch-serializer', () => {
 
   describe('Given a type change from regular to symlink', () => {
     describe('When renderPatch is called', () => {
-      it('Then emits old mode 100644, new mode 120000, index, and content hunk', () => {
-        // Arrange
+      it('Then emits two blocks: deleted file mode 100644 then new file mode 120000', () => {
+        // Arrange — file→symlink type-change; git emits TWO separate diff --git blocks,
+        // not a single block with old mode / new mode (that form is for same-kind mode changes).
         const file = typeChangeFile('foo', 'old contents\n', '/some/symlink/target');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — verified against real git in mktemp throwaway
+        expect(sut).toBe(
+          [
+            'diff --git a/foo b/foo',
+            'deleted file mode 100644',
+            'index aaaaaaa..0000000',
+            '--- a/foo',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-old contents',
+            'diff --git a/foo b/foo',
+            'new file mode 120000',
+            'index 0000000..bbbbbbb',
+            '--- /dev/null',
+            '+++ b/foo',
+            '@@ -0,0 +1 @@',
+            '+/some/symlink/target',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a binary-to-symlink type change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits delete binary block then add symlink block', () => {
+        // Arrange — NUL byte in old content triggers isBinary for the delete block;
+        // new content is a text symlink target so the add block is a text diff.
+        // Real git emits two separate diff --git blocks just like the text case.
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'binfile.bin' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.SYMLINK,
+          },
+          oldContent: new Uint8Array([0x01, 0x00, 0x02, 0x03]),
+          newContent: utf8.encode('/target/path'),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — verified against real git in mktemp throwaway
+        expect(sut).toBe(
+          [
+            'diff --git a/binfile.bin b/binfile.bin',
+            'deleted file mode 100644',
+            'index aaaaaaa..0000000',
+            'Binary files a/binfile.bin and /dev/null differ',
+            'diff --git a/binfile.bin b/binfile.bin',
+            'new file mode 120000',
+            'index 0000000..bbbbbbb',
+            '--- /dev/null',
+            '+++ b/binfile.bin',
+            '@@ -0,0 +1 @@',
+            '+/target/path',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a symlink-to-binary type change', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits delete symlink block then add binary block', () => {
+        // Arrange — old content is a text symlink target (text delete block);
+        // a NUL byte in new content triggers isBinary for the add block.
+        // Real git emits a full deletion then a binary addition.
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'swap.bin' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.SYMLINK,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: utf8.encode('/some/target'),
+          newContent: new Uint8Array([0x01, 0x00, 0x02, 0x03]),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — verified against real git in a mktemp throwaway
+        expect(sut).toBe(
+          [
+            'diff --git a/swap.bin b/swap.bin',
+            'deleted file mode 120000',
+            'index aaaaaaa..0000000',
+            '--- a/swap.bin',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-/some/target',
+            '\\ No newline at end of file',
+            'diff --git a/swap.bin b/swap.bin',
+            'new file mode 100644',
+            'index 0000000..bbbbbbb',
+            'Binary files /dev/null and b/swap.bin differ',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a type change with no blob content on either side', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits header-only delete and add blocks (empty-content guard)', () => {
+        // Arrange — a PatchFile may omit oldContent/newContent; the renderer
+        // falls back to empty bytes, yielding header-only delete + add blocks.
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'empty.x' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.SYMLINK,
+          },
+        };
 
         // Act
         const sut = renderPatch([file]);
@@ -648,16 +781,16 @@ describe('patch-serializer', () => {
         // Assert
         expect(sut).toBe(
           [
-            'diff --git a/foo b/foo',
-            'old mode 100644',
-            'new mode 120000',
-            'index aaaaaaa..bbbbbbb',
-            '--- a/foo',
-            '+++ b/foo',
-            '@@ -1 +1 @@',
-            '-old contents',
-            '+/some/symlink/target',
-            '\\ No newline at end of file',
+            'diff --git a/empty.x b/empty.x',
+            'deleted file mode 100644',
+            'index aaaaaaa..0000000',
+            '--- a/empty.x',
+            '+++ /dev/null',
+            'diff --git a/empty.x b/empty.x',
+            'new file mode 120000',
+            'index 0000000..bbbbbbb',
+            '--- /dev/null',
+            '+++ b/empty.x',
             '',
           ].join('\n'),
         );

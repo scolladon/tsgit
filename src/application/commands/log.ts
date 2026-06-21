@@ -18,6 +18,8 @@ export interface LogOptions {
   readonly limit?: number;
   readonly excluding?: ReadonlyArray<string>;
   readonly before?: Date;
+  readonly minParents?: number;
+  readonly maxParents?: number;
 }
 
 export interface LogEntry {
@@ -29,12 +31,18 @@ export interface LogEntry {
   readonly message: string;
 }
 
+const withinParentBand = (parentCount: number, opts: LogOptions): boolean => {
+  if (opts.minParents !== undefined && parentCount < opts.minParents) return false;
+  if (opts.maxParents !== undefined && parentCount > opts.maxParents) return false;
+  return true;
+};
+
 /**
  * Walk commits starting from `rev` (default: HEAD), yielding ordered `LogEntry`
  * records. By default walks every reachable commit across all parents in
  * committer-date order; `order: 'first-parent'` follows only the first parent.
- * Honors `limit`, `excluding` (commit-ish stops), and `before` (only commits with
- * `committer.timestamp < before`).
+ * Honors `limit`, `excluding` (commit-ish stops), `before` (only commits with
+ * `committer.timestamp < before`), and `minParents`/`maxParents` (parent-count band).
  */
 export const log = async (
   ctx: Context,
@@ -52,6 +60,9 @@ export const log = async (
   let yielded = 0;
   for await (const value of walk) {
     if (before !== undefined && value.data.committer.timestamp >= before.getTime() / 1000) {
+      continue;
+    }
+    if (!withinParentBand(value.data.parents.length, opts)) {
       continue;
     }
     out.push({

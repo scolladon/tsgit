@@ -482,4 +482,185 @@ describe('log', () => {
       });
     });
   });
+
+  describe('Given diamond root, single-parent commits, merge', () => {
+    describe('When log runs with maxParents:0', () => {
+      it('Then only the root commit is yielded', async () => {
+        // Arrange — diamond: A(root) ← B, A ← C, merge D(parents=[B,C])
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { maxParents: 0 });
+
+        // Assert — only A has 0 parents; kills option-ignored mutant (returns all four)
+        expect(sut.map((e) => e.message)).toEqual(['A']);
+      });
+    });
+
+    describe('When log runs with minParents:2', () => {
+      it('Then only the merge commit is yielded', async () => {
+        // Arrange
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { minParents: 2 });
+
+        // Assert — only D has 2 parents; kills option-ignored mutant (returns all four)
+        expect(sut.map((e) => e.message)).toEqual(['D']);
+      });
+    });
+
+    describe('When log runs with maxParents:1', () => {
+      it('Then all non-merge commits are yielded', async () => {
+        // Arrange
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { maxParents: 1 });
+
+        // Assert — A(0), B(1), C(1) pass; D(2) is excluded
+        expect(sut.map((e) => e.message)).toEqual(['C', 'B', 'A']);
+      });
+    });
+
+    describe('When log runs with minParents:1', () => {
+      it('Then all non-root commits are yielded', async () => {
+        // Arrange
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { minParents: 1 });
+
+        // Assert — B(1), C(1), D(2) pass; A(0) is excluded
+        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B']);
+      });
+    });
+
+    describe('When log filters with minParents equal to a commit parent count', () => {
+      it('Then it IS kept (>= semantics)', async () => {
+        // Arrange — B has exactly 1 parent; minParents:1 must include it
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { minParents: 1 });
+
+        // Assert — full sequence: B (exactly 1 parent) IS kept, A (0) excluded;
+        // self-sufficient against both `>=`→`>` (B drops) and the directional flip
+        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B']);
+      });
+    });
+
+    describe('When log filters with maxParents equal to a commit parent count', () => {
+      it('Then it IS kept (<= semantics)', async () => {
+        // Arrange — B has exactly 1 parent; maxParents:1 must include it
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { maxParents: 1 });
+
+        // Assert — full sequence: B (exactly 1 parent) IS kept, D (2) excluded;
+        // self-sufficient against both `<=`→`<` (B drops) and the directional flip
+        expect(sut.map((e) => e.message)).toEqual(['C', 'B', 'A']);
+      });
+    });
+
+    describe('When log runs with an impossible band (minParents:2, maxParents:1)', () => {
+      it('Then result is empty', async () => {
+        // Arrange
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { minParents: 2, maxParents: 1 });
+
+        // Assert — no commit satisfies both conditions
+        expect(sut).toEqual([]);
+      });
+    });
+
+    describe('When log runs with maxParents:1 and limit:1', () => {
+      it('Then the newest non-merge commit is returned (filter-then-limit)', async () => {
+        // Arrange — date order: D(4000) > C(3000) > B(2000) > A(1000)
+        // After maxParents:1 filter: C, B, A remain; limit:1 picks C
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx, { maxParents: 1, limit: 1 });
+
+        // Assert — filter applied before limit; kills limit-before-filter mutant
+        expect(sut.map((e) => e.message)).toEqual(['C']);
+      });
+    });
+
+    describe('When neither minParents nor maxParents are set', () => {
+      it('Then output is unchanged from the default walk', async () => {
+        // Arrange — regression guard: undefined options must not activate the filter
+        const { ctx } = await seedDiamond();
+
+        // Act
+        const sut = await log(ctx);
+
+        // Assert — all four commits in date order; kills mutant that filters with undefined
+        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B', 'A']);
+      });
+    });
+  });
+
+  describe('Given an octopus merge (3 parents)', () => {
+    describe('When log runs with minParents:3', () => {
+      it('Then only the octopus commit is yielded', async () => {
+        // Arrange — base diamond plus E off A; octopus O with 3 parents
+        const ctx = createMemoryContext();
+        const a = await writeCommitAt(ctx, [], 1000, 'A');
+        const b = await writeCommitAt(ctx, [a], 2000, 'B');
+        const c = await writeCommitAt(ctx, [a], 3000, 'C');
+        const e = await writeCommitAt(ctx, [a], 4000, 'E');
+        const o = await writeCommitAt(ctx, [b, c, e], 5000, 'O');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': o } });
+
+        // Act
+        const sut = await log(ctx, { minParents: 3 });
+
+        // Assert — only O(3 parents) passes; proves numeric band not boolean isMerge
+        expect(sut.map((e) => e.message)).toEqual(['O']);
+      });
+    });
+  });
+
+  describe('Given before and maxParents both set', () => {
+    describe('When log', () => {
+      it('Then both filters apply independently', async () => {
+        // Arrange — timestamp chain: oldest(c1,t=1000,0 parents), middle(c2,t=2000,1 parent),
+        // newest(c3,t=3000,1 parent). minParents:1 + before:2500s: before excludes newest
+        // (t=3000 >= 2500), minParents:1 excludes root oldest (0 parents).
+        // Only middle (1 parent, t=2000 < 2500s) passes both.
+        const { ctx, c1, c2, c3 } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx, { before: new Date(2500 * 1000), minParents: 1 });
+
+        // Assert
+        expect(sut.map((e) => e.message)).toEqual(['middle']);
+        void c1;
+        void c2;
+        void c3;
+      });
+    });
+  });
+
+  describe('Given excluding and minParents both set', () => {
+    describe('When log', () => {
+      it('Then both filters apply', async () => {
+        // Arrange — timestamp chain: oldest(0 parents), middle(1 parent), newest(1 parent)
+        // excluding=['HEAD~1'] stops at middle; minParents:1 excludes roots
+        // Only newest (1 parent, not excluded) passes
+        const { ctx } = await seedTimestampChain();
+
+        // Act
+        const sut = await log(ctx, { excluding: ['HEAD~1'], minParents: 1 });
+
+        // Assert — HEAD~1 = middle; walk stops there; newest has 1 parent and passes
+        expect(sut.map((e) => e.message)).toEqual(['newest']);
+      });
+    });
+  });
 });
