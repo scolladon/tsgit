@@ -34,6 +34,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { boundedMap } from '../primitives/internal/bounded-map.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import {
   removeWorkingTreeFile,
@@ -551,19 +552,7 @@ export const runBounded = async <T>(
   limit: number,
   fn: (item: T) => Promise<void>,
 ): Promise<void> => {
-  let cursor = 0;
-  const workers: Promise<void>[] = [];
-  const worker = async (): Promise<void> => {
-    // Stryker disable next-line EqualityOperator: equivalent — `cursor <= items.length` reads `items[items.length]` (undefined) once, and the `next === undefined` break below terminates identically.
-    while (cursor < items.length) {
-      const next = items[cursor++];
-      if (next === undefined) break;
-      await fn(next);
-    }
-  };
-  const concurrency = Math.min(limit, items.length);
-  for (let i = 0; i < concurrency; i++) workers.push(worker());
-  await Promise.all(workers);
+  await boundedMap(items, limit, fn);
 };
 
 /**

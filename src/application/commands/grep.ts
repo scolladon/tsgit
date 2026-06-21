@@ -11,6 +11,7 @@ import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
+import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from '../primitives/internal/bounded-map.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
@@ -55,8 +56,6 @@ export interface GrepOptions {
   /** Pathspec limiter (`-- <path>...`). */
   readonly paths?: ReadonlyArray<string>;
 }
-
-const MAX_CONCURRENT_BLOB_LOADS = 32;
 
 interface Candidate {
   readonly path: FilePath;
@@ -162,31 +161,6 @@ function scanBlob(
   return { path, hits, binaryMatch: false };
 }
 
-async function runBoundedPool(
-  candidates: ReadonlyArray<Candidate>,
-  matcher: GrepMatcher,
-  binaryProbeMatcher: GrepMatcher,
-): Promise<ReadonlyArray<GrepPathResult | undefined>> {
-  const results = new Array<GrepPathResult | undefined>(candidates.length);
-  let cursor = 0;
-
-  const worker = async (): Promise<void> => {
-    while (cursor < candidates.length) {
-      const idx = cursor++;
-      // loop guard pins idx < candidates.length, so candidates[idx] is defined
-      const candidate = candidates[idx] as Candidate;
-      const bytes = await candidate.load();
-      results[idx] = scanBlob(matcher, binaryProbeMatcher, candidate.path, bytes);
-    }
-  };
-
-  const concurrency = Math.min(MAX_CONCURRENT_BLOB_LOADS, candidates.length);
-  const workers: Promise<void>[] = [];
-  for (let i = 0; i < concurrency; i++) workers.push(worker());
-  await Promise.all(workers);
-  return results;
-}
-
 export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult> {
   if (opts.patterns.length === 0) {
     throw invalidOption('patterns', 'at least one pattern required');
@@ -213,7 +187,9 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
       ? candidates.filter(({ path }) => matchesPathspec(pathspecMatcher.matcher, path))
       : candidates;
 
-  const results = await runBoundedPool(inScope, matcher, binaryProbeMatcher);
+  const results = await boundedMap(inScope, MAX_CONCURRENT_BLOB_LOADS, async (c) =>
+    scanBlob(matcher, binaryProbeMatcher, c.path, await c.load()),
+  );
   const paths = results.filter((r): r is GrepPathResult => r !== undefined);
   return { paths };
 }
