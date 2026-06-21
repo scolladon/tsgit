@@ -10,18 +10,21 @@ Accepted
 
 ## Context
 
-`log` is exposed on the repository facade, but its public types — `LogOptions`,
-`LogEntry`, `LogOrder` — are **not** re-exported from `src/public-types.ts`. The
-sweep that established the shared barrel ([ADR-362](362-shared-public-types-reexport-barrel.md))
-and set the inclusion bar "**every facade-reachable type is re-exported**"
-([ADR-363](363-facade-reachable-inclusion-bar.md)) covered the diff types but missed
-`log`. A consumer calling `repository.log({...})` therefore cannot import the option
-or result type without reaching into a deep internal path.
+`log` is exposed on the repository facade. `LogOptions` and `LogEntry` already reach
+the public surface — `application/commands/index.ts` exports them and
+`src/public-types.ts` re-exports the whole commands barrel via `export type *`. But
+`LogOrder` (the `'date' | 'first-parent'` order union referenced by
+`LogOptions.order`) is **not** named in that barrel export, so it is the one log
+public type that is unreachable — inconsistent with the already-exported analogous
+`ShortlogBy`, and with the inclusion bar "**every facade-reachable type is
+re-exported**" set when the shared barrel was established
+([ADR-362](362-shared-public-types-reexport-barrel.md) /
+[ADR-363](363-facade-reachable-inclusion-bar.md)).
 
-This item ([ADR-400](400-log-parent-count-filter.md)) adds `minParents`/`maxParents`
-to `LogOptions`, so the option type a consumer now needs to construct is itself
-unreachable through the public surface — sharpening a pre-existing gap exactly where
-this feature lands.
+This item ([ADR-400](400-log-parent-count-filter.md)) edits the `log` surface
+(`minParents`/`maxParents` on `LogOptions` — both `number`, introducing no new named
+type), so it is the natural moment to close the pre-existing `LogOrder` gap rather
+than defer it.
 
 ## Options considered
 
@@ -38,10 +41,13 @@ small gaps as deferred follow-ups.
 
 ## Decision
 
-Re-export `LogOptions`, `LogEntry`, and `LogOrder` from `src/public-types.ts`,
-applying [ADR-363](363-facade-reachable-inclusion-bar.md)'s facade-reachable
-inclusion bar to the `log` surface. The regenerated `reports/api.json` is committed
-with the change (the public-surface gate).
+Add the missing `type LogOrder` to the `log` export in
+`application/commands/index.ts`, so all three log public types (`LogOptions`,
+`LogEntry`, `LogOrder`) reach `src/public-types.ts` through its existing
+`export type *` wildcard — applying [ADR-363](363-facade-reachable-inclusion-bar.md)'s
+facade-reachable inclusion bar to the `log` surface, mirroring the already-exported
+`ShortlogBy`. The regenerated `reports/api.json` is committed with the change (the
+public-surface gate).
 
 This **deviates from the design doc's recommendation** (D3.C: "leave as-is"), on the
 grounds that ADR-363's already-ratified inclusion bar makes inclusion the consistent
@@ -51,9 +57,9 @@ choice, not a scope expansion.
 
 ### Positive
 
-- The `log` surface is type-complete for consumers, consistent with the diff surface
-  and ADR-363's bar; the new `min/maxParents` option is constructible from public
-  types.
+- The `log` surface is type-complete for consumers — `LogOrder` becomes nameable,
+  consistent with the diff surface, the already-exported `ShortlogBy`, and ADR-363's
+  bar.
 
 ### Negative
 
