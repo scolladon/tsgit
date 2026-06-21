@@ -15,7 +15,8 @@
 >    commits" cheaply; consumers walk and post-filter `parents.length === 0`. Add
 >    git's `rev-list --max-parents`/`--min-parents` family as a structured option.
 >
-> Status: draft → self-reviewed ×3.
+> Status: draft → self-reviewed ×3 → revised against ratified ADRs 398–401
+> (D3.C deviated: public re-export bundled in, [ADR-401](../adr/401-reexport-log-types.md)).
 >
 > The three parts are independent. §1/§2/§3 are each self-contained (problem →
 > current state → faithfulness baseline → proposed change → test/interop plan).
@@ -39,6 +40,9 @@ worktree's `.git`.
 ---
 
 ## 1. Part 1 — LFS pointer handling (pin-only, no tsgit code change)
+
+> Ratified by [ADR-398](../adr/398-lfs-pointer-diff-no-filter-baseline.md)
+> (D1.A full matrix, D1.B active-driver out of scope — both as recommended).
 
 ### 1.1 Problem
 
@@ -149,6 +153,10 @@ declares the boundary so the interop test's environment hardening (no driver in
 ---
 
 ## 2. Part 2 — file↔symlink type-change (`T`) — STALE note, pin-only
+
+> Ratified by [ADR-399](../adr/399-type-change-already-faithful-pin-only.md)
+> (D2.A dedicated `diff-type-change-interop.test.ts`, D2.B all three leaf-kind
+> pairs — both as recommended).
 
 ### 2.1 Problem (as stated) vs reality
 
@@ -263,7 +271,12 @@ already unit-covered in `tree-diff.test.ts` / `index-diff.test.ts` /
 
 ---
 
-## 3. Part 3 — `log` roots / parent-count filter
+## 3. Part 3 — `log` roots / parent-count filter (+ public re-export)
+
+> Ratified by [ADR-400](../adr/400-log-parent-count-filter.md) (D3.A numeric
+> `min/maxParents` pair, D3.B post-walk filter in `log.ts` — both as recommended)
+> and [ADR-401](../adr/401-reexport-log-types.md) (D3.C public re-export bundled in —
+> **DEVIATES** from this design's original "defer" recommendation; see §3.2/§3.4/§4).
 
 ### 3.1 Problem
 
@@ -284,12 +297,20 @@ excluding?, before? }`. `log` resolves the start commit, then walks via
 commit. `limit` is applied as a running `yielded >= opts.limit` break AFTER the
 `before` time filter (`log.ts:66`). There is no parent-count filter today.
 
-`LogOptions`/`LogEntry`/`LogOrder` are **NOT** re-exported from `public-types.ts`
-(clean grep) — so adding a field to `LogOptions` does not, by itself, change the
-public type surface report; but `log` is exposed on the facade
-(`repository.ts:512`), so a new option is reachable by every consumer. (Whether
-24.17 should also re-export `LogOptions` is a pre-existing public-type gap, NOT in
-this brief — flagged in §5, not silently bundled.)
+The `log` public types are not fully reachable through the shared barrel today.
+`LogOptions`/`LogEntry` ARE re-exported from the commands barrel
+(`application/commands/index.ts:143` — `export { type LogEntry, type LogOptions,
+log } from './log.js'`), so they already ride `public-types.ts`'s
+`export type * from './application/commands/index.js'` wildcard. But `LogOrder`
+(`log.ts:13`, the `order` alias) is **NOT** in that barrel line, so it never reaches
+`public-types.ts` (the only explicit `Log` hits there are `Logger`/`noopLogger`,
+unrelated port types). `log` is exposed on the facade (`repository.ts:512`), so by
+[ADR-363](../adr/363-facade-reachable-inclusion-bar.md)'s facade-reachable inclusion
+bar all three types should be surfaced. Per
+[ADR-401](../adr/401-reexport-log-types.md) — which deviates from this design's
+original recommendation (see D3.C) — this item closes the gap NOW (it is in scope,
+no longer a deferred follow-up). See §3.4 for the exact change and the `api.json`
+gate.
 
 ### 3.3 Empirical pin (run in a `mktemp` throwaway, git 2.54.0)
 
@@ -343,13 +364,32 @@ BOTH the `before` and the parent-count predicate pass (filter-then-limit). git
 still follows all parents (the walk is unchanged), matching §3.3's "output filter,
 not traversal pruner".
 
-**Interaction with `order: 'first-parent'` (D3.C is informational).** Under
+**Interaction with `order: 'first-parent'` (informational).** Under
 `--first-parent`, git only ever follows the first parent, but the parent-count
 filter still tests the commit's TRUE parent count (a merge under `--first-parent`
 still has ≥2 parents and is still a "merge" for `--min-parents=2`). The predicate
 reads `data.parents.length` (the full count), unaffected by which parents the walk
 followed — so it composes correctly with both `order` modes with no special case.
 This is pinned in the interop test (a `--first-parent --min-parents=2` case).
+
+**Public re-export (D3.C → [ADR-401](../adr/401-reexport-log-types.md), in scope).**
+The ratified decision bundles the `log` type re-export into this item, applying
+[ADR-363](../adr/363-facade-reachable-inclusion-bar.md)'s facade-reachable inclusion
+bar — the same bar under which the diff types (`DiffOptions`, `TreeDiff`, …) were
+swept. Exact change: add `type LogOrder` to the existing `log.js` re-export line in
+the commands barrel (`application/commands/index.ts:143`), so it reads
+`export { type LogEntry, type LogOptions, type LogOrder, log } from './log.js'`.
+`LogOptions`/`LogEntry` already reach `public-types.ts` through its
+`export type * from './application/commands/index.js'` wildcard; adding `LogOrder` to
+that one line makes all three reachable, mirroring how the sibling alias `ShortlogBy`
+rides the `shortlog.js` re-export line (`index.ts:226`). No new line in
+`public-types.ts` itself is needed — the wildcard does the work, keeping the change
+surgical and house-consistent. Regenerate and commit the public-surface report with
+`npm run docs:json` (typedoc → `reports/api.json`); the `check:doc-typedoc` gate
+(`git diff --exit-code -- reports/api.json`, run under `prepush`) fails if the
+committed report is stale. The new `min/maxParents` fields from §3.4 (D3.A) land in
+the same regenerated report, so a consumer can construct the option from the public
+types.
 
 ### 3.5 Edge semantics to pin
 
@@ -398,18 +438,23 @@ selection from them.
 
 ADRs 226/249 fix faithfulness and the structured-data rule. The load-bearing
 choices THIS feature introduces are below — each ≤3 options with a recommendation.
-**These are NOT decided here**; they feed the ADR conversation the orchestrator
-runs with the user. Target ADR dir: `docs/adr/`.
+**All seven are now RATIFIED** by the ADR conversation; the ratified outcome and its
+ADR are recorded in each row. Six matched this design's recommendation; **D3.C
+deviated** — the user chose to bundle the public re-export now ([ADR-401](../adr/401-reexport-log-types.md))
+rather than defer it. Per-part trace: §1 → [ADR-398](../adr/398-lfs-pointer-diff-no-filter-baseline.md);
+§2 → [ADR-399](../adr/399-type-change-already-faithful-pin-only.md); §3 →
+[ADR-400](../adr/400-log-parent-count-filter.md) (filter) +
+[ADR-401](../adr/401-reexport-log-types.md) (re-export). ADR dir: `docs/adr/`.
 
 | # | Choice | Options | Recommendation |
 |---|---|---|---|
-| **D1.A** | What does the LFS interop pin? | (a) pointer add + pointer modify + pointer→real-file, all under the no-filter baseline, PLUS the `.gitattributes diff=lfs`-declared-but-no-driver non-interference case; (b) only pointer add + modify (no type/content transition); (c) only a single round-trip add. | **(a)** — the consumer's real concern is "does tsgit stay faithful as pointers evolve AND when an lfs attribute is declared but no driver runs". (a) pins the realistic CI case; (b)/(c) leave the inert-driver boundary untested, which is exactly where a future filter port would regress. |
-| **D1.B** | Is `.gitattributes diff=lfs` with an ACTIVE git-lfs driver in scope? | (a) explicitly OUT of scope (declare it, test only the no-driver baseline); (b) attempt to pin it (requires git-lfs installed in CI + a filter port to match). | **(a)** — tsgit has no filter port; reproducing a smudged diff is impossible without inventing one (a separate large backlog item). Declaring the boundary (§1.7) is the faithful, honest scope. |
-| **D2.A** | Where does the tree↔tree `T` interop fixture live? | (a) new dedicated `diff-type-change-interop.test.ts`; (b) extend `whatchanged-interop.test.ts`'s `beforeAll` fixture to include a `T` entry; (c) fold into the §1 LFS interop file. | **(a)** — keeps each interop file single-purpose (the house pattern: one `*-interop.test.ts` per surface). (b) exercises the existing dead `T` arm but mixes a structural change into the whatchanged history fixture (which other assertions depend on); (c) conflates two unrelated brief parts. |
-| **D2.B** | Which kind-pairs does part 2 pin? | (a) only file↔symlink (both directions) — the brief's named case; (b) file↔symlink AND file↔gitlink AND symlink↔gitlink (every reachable leaf-kind pair); (c) file↔symlink + a single representative gitlink pair. | **(b)** — `kindOf` distinguishes four kinds; three leaf-kind pairs are reachable as a same-path `type-change` (directory cannot co-occur with a leaf at one path). Pinning all three closes the audit completely for one extra fixture each; (a) leaves gitlink type-changes unpinned despite the consumer being a real repo with submodules. |
-| **D3.A** | `log` parent-count API shape | (a) numeric `minParents?`/`maxParents?` pair on `LogOptions`; (b) a narrow `roots?: boolean`; (c) both (numeric pair + `roots` convenience alias). | **(a)** — git-faithful and fully general: covers roots (`maxParents:0`), merges (`minParents:2`), no-merges (`maxParents:1`), no-roots (`minParents:1`), octopus bands — all the brief's named cases and more, with no rendered string (ADR-249-clean). (b) cannot express merges/octopus; (c) adds a redundant field that (a) already subsumes. |
-| **D3.B** | Where does the parent-count filter run? | (a) post-walk in `log.ts` (alongside the existing `before` filter, limit applied after); (b) threaded into the walk primitives (`walkCommits`/`commitDateWalk`). | **(a)** — the predicate is pure and I/O-free (every `Commit` already carries `parents`), so there is no traversal-cost reason to push it down; keeping it in `log.ts` avoids widening the shared walk-primitive contract that blame and other consumers depend on. Honours filter-then-limit (§3.3) by moving the limit break after the predicate. |
-| **D3.C** | `LogEntry`/`LogOptions` public re-export | (a) leave as-is (not re-exported, matching today; out of this brief's scope); (b) re-export `LogOptions`/`LogEntry`/`LogOrder` from `public-types.ts` as part of 24.17. | **(a)** — the public-type re-export gap is pre-existing (24.11 swept the diff types but not log) and not in this brief; bundling it silently would scope-creep. Flag it as a follow-up (§5) for the user to decide, do not auto-bundle. |
+| **D1.A** | What does the LFS interop pin? | (a) pointer add + pointer modify + pointer→real-file, all under the no-filter baseline, PLUS the `.gitattributes diff=lfs`-declared-but-no-driver non-interference case; (b) only pointer add + modify (no type/content transition); (c) only a single round-trip add. | **RATIFIED: (a)** — [ADR-398](../adr/398-lfs-pointer-diff-no-filter-baseline.md). the consumer's real concern is "does tsgit stay faithful as pointers evolve AND when an lfs attribute is declared but no driver runs". (a) pins the realistic CI case; (b)/(c) leave the inert-driver boundary untested, which is exactly where a future filter port would regress. |
+| **D1.B** | Is `.gitattributes diff=lfs` with an ACTIVE git-lfs driver in scope? | (a) explicitly OUT of scope (declare it, test only the no-driver baseline); (b) attempt to pin it (requires git-lfs installed in CI + a filter port to match). | **RATIFIED: (a)** — [ADR-398](../adr/398-lfs-pointer-diff-no-filter-baseline.md). tsgit has no filter port; reproducing a smudged diff is impossible without inventing one (a separate large backlog item). Declaring the boundary (§1.7) is the faithful, honest scope. |
+| **D2.A** | Where does the tree↔tree `T` interop fixture live? | (a) new dedicated `diff-type-change-interop.test.ts`; (b) extend `whatchanged-interop.test.ts`'s `beforeAll` fixture to include a `T` entry; (c) fold into the §1 LFS interop file. | **RATIFIED: (a)** — [ADR-399](../adr/399-type-change-already-faithful-pin-only.md). keeps each interop file single-purpose (the house pattern: one `*-interop.test.ts` per surface). (b) exercises the existing dead `T` arm but mixes a structural change into the whatchanged history fixture (which other assertions depend on); (c) conflates two unrelated brief parts. |
+| **D2.B** | Which kind-pairs does part 2 pin? | (a) only file↔symlink (both directions) — the brief's named case; (b) file↔symlink AND file↔gitlink AND symlink↔gitlink (every reachable leaf-kind pair); (c) file↔symlink + a single representative gitlink pair. | **RATIFIED: (b)** — [ADR-399](../adr/399-type-change-already-faithful-pin-only.md). `kindOf` distinguishes four kinds; three leaf-kind pairs are reachable as a same-path `type-change` (directory cannot co-occur with a leaf at one path). Pinning all three closes the audit completely for one extra fixture each; (a) leaves gitlink type-changes unpinned despite the consumer being a real repo with submodules. |
+| **D3.A** | `log` parent-count API shape | (a) numeric `minParents?`/`maxParents?` pair on `LogOptions`; (b) a narrow `roots?: boolean`; (c) both (numeric pair + `roots` convenience alias). | **RATIFIED: (a)** — [ADR-400](../adr/400-log-parent-count-filter.md). git-faithful and fully general: covers roots (`maxParents:0`), merges (`minParents:2`), no-merges (`maxParents:1`), no-roots (`minParents:1`), octopus bands — all the brief's named cases and more, with no rendered string (ADR-249-clean). (b) cannot express merges/octopus; (c) adds a redundant field that (a) already subsumes. |
+| **D3.B** | Where does the parent-count filter run? | (a) post-walk in `log.ts` (alongside the existing `before` filter, limit applied after); (b) threaded into the walk primitives (`walkCommits`/`commitDateWalk`). | **RATIFIED: (a)** — [ADR-400](../adr/400-log-parent-count-filter.md). the predicate is pure and I/O-free (every `Commit` already carries `parents`), so there is no traversal-cost reason to push it down; keeping it in `log.ts` avoids widening the shared walk-primitive contract that blame and other consumers depend on. Honours filter-then-limit (§3.3) by moving the limit break after the predicate. |
+| **D3.C** | `LogEntry`/`LogOptions`/`LogOrder` public re-export | (a) leave as-is (not re-exported, matching today; defer as a follow-up); (b) re-export `LogOptions`/`LogEntry`/`LogOrder` via the commands barrel as part of this item. | **RATIFIED: (b)** — [ADR-401](../adr/401-reexport-log-types.md). The design originally recommended (a); the user chose (b). `log` plainly meets [ADR-363](../adr/363-facade-reachable-inclusion-bar.md)'s facade-reachable inclusion bar (the same bar that swept the diff types), so the omission is a bug in the original sweep, not a new surface decision; and `LogOptions` is already being edited for D3.A, so the consumer touch-point is in scope. Bundle now: add `type LogOrder` to the `log.js` barrel line (§3.4) and commit the regenerated `reports/api.json`. |
 
 ---
 
@@ -427,8 +472,6 @@ runs with the user. Target ADR dir: `docs/adr/`.
 - **Changing `type-change` emission** — part 2 is pin-only; the domain already
   emits `type-change` on every surface. No `tree-diff.ts`/`index-diff.ts`/
   `status.ts` behaviour change.
-- **`LogOptions`/`LogEntry` public re-export** — pre-existing gap (D3.C), flagged
-  as a follow-up for the user, not bundled into 24.17 without a decision.
 - **Threading parent-count into the walk primitives** — rejected in D3.B; the
   shared `walkCommits`/`commitDateWalk` contract stays unchanged so blame and
   future walk consumers are byte-unaffected.
