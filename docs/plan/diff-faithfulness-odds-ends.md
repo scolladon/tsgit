@@ -477,3 +477,119 @@ escalate as a faithfulness defect (not a TDD RED).
 ### Commit
 
 `test(diff): pin git-lfs pointer diff against filter-less git baseline`
+
+---
+
+## Slice 4 — type-change patch rendering: delete + add blocks (file↔symlink)
+
+### Context
+
+**Source fix (the ONLY one in Part 2).** Surfaced by Slice 2's interop pin and ratified
+in `docs/adr/402-type-change-patch-render-delete-add.md`: the patch serializer renders a
+`type-change` through the `modify` path, producing a single `diff --git` block with
+`old mode`/`new mode` headers. Real git (verified, git 2.54.0, mktemp) emits **two**
+`diff --git` blocks at the same path — a full `deleted file mode <old>` block then a full
+`new file mode <new>` block:
+
+```
+diff --git a/f b/f
+deleted file mode 100644
+index <old7>..0000000
+--- a/f
++++ /dev/null
+@@ -1,2 +0,0 @@
+-hello world
+-second line
+diff --git a/f b/f
+new file mode 120000
+index 0000000..<new7>
+--- /dev/null
++++ b/f
+@@ -0,0 +1 @@
++some/target/path
+\ No newline at end of file
+```
+
+(The `old mode`/`new mode` single-block form is git's **mode-only** change rendering —
+same kind, e.g. `100644`→`100755` — NOT a type change. Leave that path untouched.)
+
+**Symbols & change (`src/domain/diff/patch-serializer.ts`):**
+- `renderFile` (lines 703-733) — the dispatch. Its final `return renderModifyOrTypeChangeBlock(...)`
+  (lines 725-732) handles both `modify` and `type-change`. SPLIT the `type-change` case out
+  BEFORE that call: when `change.type === 'type-change'`, return the delete block ++ add block.
+- REUSE the existing block renderers: `renderDeleteBlock` (line 401) / `renderDeleteBinary`
+  (line 694) for the old side; `renderAddBlock` (line 382) / `renderAddBinary` (line 685) for
+  the new side. Synthesize the `DeleteChange`/`AddChange` shapes from the `TypeChangeChange`:
+  delete `{ type:'delete', oldPath: change.path, oldId: change.oldId, oldMode: change.oldMode }`
+  with `file.oldContent`; add `{ type:'add', newPath: change.path, newId: change.newId,
+  newMode: change.newMode }` with `file.newContent`. Mirror `renderFile`'s own binary dispatch
+  (`isBinary(oldBytes)` → `renderDeleteBinary`; `isBinary(newBytes)` → `renderAddBinary`).
+- `renderModifyOrTypeChangeBlock` (line 560) now only handles `modify` — rename it to
+  `renderModifyBlock` and narrow its param to `ModifyChange` (the `change.type === 'modify'
+  && change.broken` guard stays). Update the stale comment at lines 722-724 (it claims modify
+  and type-change "share the same body shape" — no longer true).
+- A small `renderTypeChangeBlock(change, oldBytes, newBytes, prefix)` helper (delete++add with
+  binary dispatch) keeps `renderFile` flat (early-return, named, no boolean param).
+
+**Scope boundary (ADR-402): file↔symlink ONLY.** Both sides are real blobs. The gitlink side
+of a type-change renders as git's synthetic `+Subproject commit <40-hex>` (submodule diff
+rendering) — OUT of scope (tsgit has no submodule-content synthesis; `materialisePatchFiles`
+cannot read a gitlink oid as a blob). Do NOT add `reconstructPatch` pins for gitlink type-change
+pairs; their structural/`--raw`/`--name-status` pins from Slice 2 stay. Do NOT try to special-case
+gitlink in the serializer.
+
+**Pre-existing WRONG unit test to CORRECT — `test/unit/domain/diff/patch-serializer.test.ts`:**
+- Helper `typeChangeFile(path, oldText, newText)` at line 70 (builds a `type-change` PatchFile).
+- The case at line 641-653 (`it('Then emits old mode 100644, new mode 120000, index, and content
+  hunk')`) asserts the WRONG single-block output. REWRITE it to the two-block git form
+  (`deleted file mode 100644` + old-content deletion hunk, then `new file mode 120000` +
+  new-content addition hunk). Verify the exact bytes in a mktemp throwaway against real git for
+  the same content. Check for any OTHER `typeChangeFile` usages in the file and correct them too.
+- The mode-only-change cases (lines 579, 618 — `100644`→`100755`, same kind) are CORRECT and
+  unrelated; do NOT touch them. The rename-with-mode-change case (line 1357) is also same-kind —
+  leave it.
+
+**Re-add the dropped interop pins — `test/integration/diff-type-change-interop.test.ts`:** Slice 2
+dropped the `reconstructPatch` assertions for type-change. Re-add them for **file↔symlink both
+directions** only: assert `reconstructPatch(ctx, treeDiff)` equals
+`git diff --no-ext-diff --no-color HEAD~1 HEAD` for the file→symlink and symlink→file fixtures.
+The structural/raw/name-status pins already there stay. (Gitlink pairs: no reconstructPatch.)
+
+**Golden fixtures & downstream — verify, regenerate ONLY if genuinely git-faithful:**
+- `grep -rl 'mode 120000\|mode 160000' test/integration/fixtures/diff-patch/*.golden.patch` — check
+  `nested-mixed.golden.patch` (flagged in planning) for a type-change entry rendered the OLD way.
+  If a golden contains a file↔symlink type-change in the wrong single-block form, regenerate it
+  FROM REAL GIT (not from tsgit) and confirm byte-identity. If a golden's generator script exists,
+  use it; else hand-fix to match live git.
+- `src/application/primitives/patch-id.ts`, `src/application/commands/range-diff.ts`,
+  `src/application/commands/rebase.ts` consume `renderPatch`. Run their test files — a type-change
+  patch-id will change to git's value. If any test pinned the OLD type-change patch-id, it pinned a
+  non-faithful value: re-pin against real `git patch-id` (mktemp). If none exercise a type-change,
+  they stay green untouched. Do NOT broaden scope into submodule patch-id.
+
+### TDD steps
+
+1. RED (unit): rewrite `patch-serializer.test.ts` line 641 case to expect the two-block git output
+   (verified in mktemp). Run it — FAILS against current single-block rendering.
+2. RED (interop): re-add the file↔symlink `reconstructPatch` assertions in
+   `diff-type-change-interop.test.ts`. Run — FAIL (current serializer emits the wrong block).
+3. GREEN: split `type-change` out of `renderFile` into `renderTypeChangeBlock` (delete block ++
+   add block, binary-dispatched); narrow `renderModifyOrTypeChangeBlock` → `renderModifyBlock`
+   (`ModifyChange` only); fix the stale comment. Run the two tests — GREEN. `get_diagnostics_for_file`
+   on `patch-serializer.ts`.
+4. Regression sweep: run the golden-patch parity test, `patch-id`, `range-diff`, `rebase` test
+   files. Triage any failure as faithful-or-not: if it pinned the old wrong bytes, re-pin from real
+   git; otherwise investigate. NEVER make a test green by re-asserting a non-git value.
+5. REFACTOR: keep `renderFile` flat; ensure no dead branch remains in the narrowed
+   `renderModifyBlock`.
+
+### Gate
+
+`npx vitest run test/unit/domain/diff/patch-serializer.test.ts test/integration/diff-type-change-interop.test.ts test/unit/application/primitives/patch-id.test.ts test/integration/diff-patch-interop.test.ts && npm run check:types && ./node_modules/.bin/biome check src/domain/diff/patch-serializer.ts test/unit/domain/diff/patch-serializer.test.ts test/integration/diff-type-change-interop.test.ts`
+
+(If a listed test path does not exist, substitute the actual patch-id / golden-patch parity test
+file you find under `test/` — discover with `find test -name 'patch-id*' -o -name '*diff-patch*'`.)
+
+### Commit
+
+`fix(diff): render type-change patch as delete and add blocks`

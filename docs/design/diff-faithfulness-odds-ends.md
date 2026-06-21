@@ -152,11 +152,12 @@ declares the boundary so the interop test's environment hardening (no driver in
 
 ---
 
-## 2. Part 2 — file↔symlink type-change (`T`) — STALE note, pin-only
+## 2. Part 2 — file↔symlink type-change (`T`) — STALE note; pin + a patch-render fix
 
 > Ratified by [ADR-399](../adr/399-type-change-already-faithful-pin-only.md)
 > (D2.A dedicated `diff-type-change-interop.test.ts`, D2.B all three leaf-kind
-> pairs — both as recommended).
+> pairs — both as recommended) and [ADR-402](../adr/402-type-change-patch-render-delete-add.md)
+> (the patch-render fix the interop pin surfaced — see §2.5).
 
 ### 2.1 Problem (as stated) vs reality
 
@@ -238,10 +239,24 @@ fixture hole**, not change behaviour:
 
 ### 2.5 Proposed change
 
-**No tsgit source change** (the audit confirms faithful behaviour on every
-surface). The change is test-only: a tree↔tree `T` interop fixture (and,
-per D2.B, optional gitlink-pair fixtures). This is the "pin-only" outcome the
-brief anticipated.
+The audit confirmed faithful **structured** emission and `--raw`/`--name-status`
+reconstruction on every surface — but it did NOT check **patch** rendering. Adding
+the interop `reconstructPatch` arm surfaced a real divergence: the serializer
+rendered a type-change through the `modify` path (`renderModifyOrTypeChangeBlock` →
+single `diff --git` block with `old mode`/`new mode`), whereas real git emits **two**
+blocks (`deleted file mode` + `new file mode`). A pre-existing unit test had pinned
+the wrong single-block output (it asserted tsgit's own rendering with no real-git
+cross-check). So Part 2 is **mostly pin-only, plus one source fix**
+([ADR-402](../adr/402-type-change-patch-render-delete-add.md)):
+
+- **Source fix:** render a `type-change` patch as a delete block + an add block
+  (reusing `renderDeleteBlock`/`renderAddBlock`), matching git, and correct the
+  pre-existing unit assertion. Scope: type-changes whose **both** sides are real
+  blobs (**file↔symlink**). The gitlink side renders as git's synthetic
+  `Subproject commit <oid>` (submodule diff rendering) — OUT of scope (a separate
+  feature); gitlink type-changes keep their structural pins only.
+- **Pin-only (unchanged):** the structural / `--raw` / `--name-status` `T` pins for
+  all three leaf-kind pairs, and the leaf↔directory delete+add negative.
 
 ### 2.6 Test / interop plan
 
