@@ -494,8 +494,8 @@ describe('buildGrepMatcher', () => {
     });
   });
 
-  describe('Given an end-anchored regex /c$/ and a line with a trailing newline', () => {
-    describe('When matchLine is called', () => {
+  describe('Given an end-anchored regex /c$/', () => {
+    describe('When the line ends with LF', () => {
       it('Then anchors at end-of-line (the trailing LF is not part of the content)', () => {
         // Arrange
         const sut = buildGrepMatcher([/c$/]);
@@ -601,7 +601,7 @@ describe('buildGrepMatcher', () => {
     });
   });
 
-  describe('Given an UPPERCASE word byte on the boundary (wholeWord)', () => {
+  describe('Given a word byte on the boundary (wholeWord)', () => {
     describe('When the left boundary is an uppercase letter', () => {
       it('Then does NOT match (uppercase counts as a word byte)', () => {
         // Arrange

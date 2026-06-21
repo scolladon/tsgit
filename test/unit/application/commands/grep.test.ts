@@ -9,6 +9,7 @@ import {
   grep,
 } from '../../../../src/application/commands/grep.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -378,6 +379,26 @@ describe('Given a binary blob containing the pattern and invert=true, When grep 
     expect(result.paths).toHaveLength(1);
     expect(result.paths[0]!.binaryMatch).toBe(true);
     expect(result.paths[0]!.hits).toHaveLength(0);
+  });
+});
+
+describe('Given a binary blob whose only match lies beyond the first 64 KiB, When grep runs', () => {
+  it('Then binaryMatch is not reported (the presence probe is bounded to MAX_LINE_BYTES)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    const blob = new Uint8Array(MAX_LINE_BYTES + 64);
+    blob[0] = 0x00; // NUL in the first 8 KiB → isBinary
+    blob.set(enc('DEEP_MATCH'), MAX_LINE_BYTES + 10); // pattern only beyond the 64 KiB window
+    await ctx.fs.write(`${ctx.layout.workDir}/deep.bin`, blob);
+    await add(ctx, ['deep.bin']);
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'DEEP_MATCH' }] });
+
+    // Assert — the bounded probe never sees the match (documented 64 KiB binary window)
+    expect(result.paths).toHaveLength(0);
   });
 });
 
