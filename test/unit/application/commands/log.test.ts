@@ -536,7 +536,7 @@ describe('log', () => {
       });
     });
 
-    describe('Given commit exactly at minParents boundary', () => {
+    describe('When log filters with minParents equal to a commit parent count', () => {
       it('Then it IS kept (>= semantics)', async () => {
         // Arrange — B has exactly 1 parent; minParents:1 must include it
         const { ctx } = await seedDiamond();
@@ -549,7 +549,7 @@ describe('log', () => {
       });
     });
 
-    describe('Given commit exactly at maxParents boundary', () => {
+    describe('When log filters with maxParents equal to a commit parent count', () => {
       it('Then it IS kept (<= semantics)', async () => {
         // Arrange — B has exactly 1 parent; maxParents:1 must include it
         const { ctx } = await seedDiamond();
@@ -562,7 +562,7 @@ describe('log', () => {
       });
     });
 
-    describe('Given minParents:2 and maxParents:1 (impossible band)', () => {
+    describe('When log runs with an impossible band (minParents:2, maxParents:1)', () => {
       it('Then result is empty', async () => {
         // Arrange
         const { ctx } = await seedDiamond();
@@ -575,7 +575,7 @@ describe('log', () => {
       });
     });
 
-    describe('Given maxParents:1 and limit:1', () => {
+    describe('When log runs with maxParents:1 and limit:1', () => {
       it('Then the newest non-merge commit is returned (filter-then-limit)', async () => {
         // Arrange — date order: D(4000) > C(3000) > B(2000) > A(1000)
         // After maxParents:1 filter: C, B, A remain; limit:1 picks C
