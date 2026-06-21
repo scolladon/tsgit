@@ -294,7 +294,7 @@ pin here = a real faithfulness defect to ESCALATE, not a TDD RED to satisfy.
 dedicated file, one `*-interop.test.ts` per surface — the house pattern). Study
 `test/integration/whatchanged-interop.test.ts` for the structure: `@proves` doc-comment header
 (surface/bucket/unique/interopSurface), `SETUP_TIMEOUT = 60_000`, `ZERO_OID = '0'.repeat(40)`,
-`IDENTITY`/`dateEnv`/`nonEmptyLines`, the `rawLine(c: DiffChange)` reconstructor (lines 55-70 —
+`IDENTITY`/`dateEnv`/`nonEmptyLines`, the `rawLine(c: DiffChange)` helper (lines 55-70 —
 note the `type-change` arm at line 64 already emits `:${oldMode} ${newMode} ${oldId} ${newId} T\t${path}`),
 `gitRawLines(dir, oid)` via `git diff-tree -r --no-commit-id --abbrev=40` (line 74), and the
 `beforeAll` build-via-git + `openRepository({ cwd: dir })` pattern.

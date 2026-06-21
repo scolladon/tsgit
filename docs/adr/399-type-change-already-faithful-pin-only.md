@@ -7,7 +7,7 @@ Accepted
 - **Date:** 2026-06-21
 - **Design:** [design/diff-faithfulness-odds-ends.md](../design/diff-faithfulness-odds-ends.md) §2
 - **Refines:** [ADR-226](226-git-faithfulness-prime-directive.md) (git-faithfulness)
-- **Relates to:** [ADR-243](243-diff-recursive-tree-diff.md) (recursive diff), [ADR-369](369-similarity-rename-detection-scope.md) (diffcore detection surface)
+- **Relates to:** [ADR-243](243-diff-recursive-flag-public.md) (recursive diff), [ADR-369](369-copy-break-threshold-scope.md) (diffcore detection surface)
 
 ## Context
 

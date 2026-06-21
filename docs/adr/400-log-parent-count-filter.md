@@ -7,7 +7,7 @@ Accepted
 - **Date:** 2026-06-21
 - **Design:** [design/diff-faithfulness-odds-ends.md](../design/diff-faithfulness-odds-ends.md) §3
 - **Refines:** [ADR-249](249-describe-structured-data-only.md) (structured output)
-- **Relates to:** [ADR-275](275-commit-date-walk-core.md) (commit-date walk core)
+- **Relates to:** [ADR-275](275-consolidate-date-walk-internal-core.md) (commit-date walk core)
 
 ## Context
 
