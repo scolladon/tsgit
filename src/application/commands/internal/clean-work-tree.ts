@@ -11,7 +11,7 @@ import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { compareWorkingTreeEntry } from '../../primitives/compare-working-tree-entry.js';
 import { flattenTree } from '../../primitives/flatten-tree.js';
-import { buildAttributeProvider } from '../../primitives/internal/read-gitattributes.js';
+import { maybeBuildAttributeProvider } from '../../primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../primitives/read-index.js';
 
 interface PartitionedIndex {
@@ -56,7 +56,7 @@ const unstagedDirty = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
 ): Promise<ReadonlyArray<FilePath>> => {
-  const provider = ctx.command !== undefined ? await buildAttributeProvider(ctx) : undefined;
+  const provider = await maybeBuildAttributeProvider(ctx);
   const dirty: FilePath[] = [];
   for (const entry of stage0) {
     // Skip-worktree (sparse-excluded) entries are intentionally off-disk.

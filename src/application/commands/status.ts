@@ -21,7 +21,7 @@ import {
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
-  buildAttributeProvider,
+  maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -140,7 +140,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     // Build the attribute provider once per status invocation when a command
     // runner is wired. When absent, the provider is undefined and every
     // compareWorkingTreeDelta call takes the raw-bytes path (R11 guard).
-    const provider = ctx.command !== undefined ? await buildAttributeProvider(ctx) : undefined;
+    const provider = await maybeBuildAttributeProvider(ctx);
     const workingMap = await scanWorkingTree(ctx, grouped.staged, tracker, provider);
     const untracked = await scanUntracked(ctx, trackedPaths);
     const headTree = await readHeadTree(ctx);

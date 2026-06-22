@@ -21,7 +21,7 @@ import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js
 import type { Context } from '../../ports/context.js';
 import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
 import { joinPath } from './internal/join-working-tree-path.js';
-import { buildAttributeProvider } from './internal/read-gitattributes.js';
+import { maybeBuildAttributeProvider } from './internal/read-gitattributes.js';
 
 export interface WouldOverwrite {
   readonly localChanges: ReadonlyArray<FilePath>;
@@ -105,7 +105,7 @@ export const findWouldOverwrite = async (
   currentIndex: GitIndex,
 ): Promise<WouldOverwrite> => {
   const byPath = stage0ByPath(currentIndex);
-  const provider = ctx.command !== undefined ? await buildAttributeProvider(ctx) : undefined;
+  const provider = await maybeBuildAttributeProvider(ctx);
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
   for (const path of paths) {

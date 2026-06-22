@@ -25,7 +25,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
-import { buildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
@@ -138,7 +138,7 @@ const projectWorkingTree = async (
 ): Promise<WorkingTreeProjection> => {
   const entries: IndexEntry[] = [];
   let dirty = false;
-  const provider = ctx.command !== undefined ? await buildAttributeProvider(ctx) : undefined;
+  const provider = await maybeBuildAttributeProvider(ctx);
   for (const entry of index.entries) {
     // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
     if (entry.flags.stage !== 0) continue;

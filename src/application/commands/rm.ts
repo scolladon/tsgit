@@ -28,7 +28,7 @@ import {
   compareWorkingTreeEntry,
   isWorkingTreeModified,
 } from '../primitives/compare-working-tree-entry.js';
-import { buildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -130,7 +130,7 @@ const classifyEntries = async (
   head: ReadonlyMap<FilePath, FlatTreeEntry>,
   cached: boolean,
 ): Promise<LocalModCategories> => {
-  const provider = ctx.command !== undefined ? await buildAttributeProvider(ctx) : undefined;
+  const provider = await maybeBuildAttributeProvider(ctx);
   const both: FilePath[] = [];
   const stagedOnly: FilePath[] = [];
   const localOnly: FilePath[] = [];

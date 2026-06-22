@@ -25,7 +25,7 @@ import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
-  buildAttributeProvider,
+  maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveFilterDriver } from '../primitives/resolve-filter-driver.js';
@@ -86,7 +86,7 @@ export const add = async (
   await assertNoPendingOperation(ctx, { except: ['merge', 'cherry-pick', 'revert', 'rebase'] });
   // Build the attribute provider ONCE per add invocation. Skip when no runner
   // is wired (R11 inert fallback — ctx.command absent means no filter execution).
-  const provider = ctx.command !== undefined ? await buildAttributeProvider(ctx) : undefined;
+  const provider = await maybeBuildAttributeProvider(ctx);
   if (opts.all === true) {
     if (paths.length !== 0) {
       throw invalidOption('all', 'pathspec must be empty when all=true');
