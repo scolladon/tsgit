@@ -889,7 +889,9 @@
     "unrunnable",
     "uppercased",
     "myfilter",
-    "fexec"
+    "fexec",
+    "norun",
+    "uppercases"
   ],
   "ignorePaths": [
     "node_modules",
