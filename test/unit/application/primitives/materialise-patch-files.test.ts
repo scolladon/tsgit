@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 // `vi` is still used by the bounded-concurrency test below.
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import {
   materialiseOne,
   materialisePatchFiles,
 } from '../../../../src/application/primitives/materialise-patch-files.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type {
   AddChange,
   CopyChange,
@@ -15,8 +17,15 @@ import type {
   TypeChangeChange,
 } from '../../../../src/domain/diff/index.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
-import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+
+const AUTHOR: AuthorIdentity = {
+  name: 'a',
+  email: 'a@a',
+  timestamp: 0,
+  timezoneOffset: '+0000',
+};
 
 const utf8 = new TextEncoder();
 
@@ -28,6 +37,25 @@ async function writeBlob(
     type: 'blob',
     id: '' as ObjectId,
     content: utf8.encode(content),
+  });
+}
+
+/**
+ * Write a real commit object (type = 'commit') so `readBlob` on its oid
+ * throws `unexpectedObjectType('blob', 'commit')`.  This proves the
+ * gitlink guard fires BEFORE any attempt to read blob bytes.
+ */
+async function writeCommitAsGitlink(
+  ctx: ReturnType<typeof createMemoryContext>,
+  parents: ReadonlyArray<ObjectId> = [],
+): Promise<ObjectId> {
+  const tree = await writeTree(ctx, []);
+  return createCommit(ctx, {
+    tree,
+    parents: [...parents],
+    author: AUTHOR,
+    committer: AUTHOR,
+    message: 'm',
   });
 }
 
@@ -309,6 +337,130 @@ describe('materialiseOne', () => {
         // Assert — no blob content loaded for an exact copy
         expect(sut.oldContent).toBeUndefined();
         expect(sut.newContent).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an add change with a gitlink new side', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then newContent is the synthesized Subproject commit line without reading a blob', async () => {
+        // Arrange — gitlink oid is a real commit so readBlob would throw if called
+        const ctx = createMemoryContext();
+        const gitlinkOid = await writeCommitAsGitlink(ctx);
+        const change: AddChange = {
+          type: 'add',
+          newPath: 'sub' as FilePath,
+          newId: gitlinkOid,
+          newMode: FILE_MODE.GITLINK,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert
+        expect(sut.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(sut.oldContent).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a delete change with a gitlink old side', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then oldContent is the synthesized Subproject commit line without reading a blob', async () => {
+        // Arrange — gitlink oid is a real commit so readBlob would throw if called
+        const ctx = createMemoryContext();
+        const gitlinkOid = await writeCommitAsGitlink(ctx);
+        const change: DeleteChange = {
+          type: 'delete',
+          oldPath: 'sub' as FilePath,
+          oldId: gitlinkOid,
+          oldMode: FILE_MODE.GITLINK,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert
+        expect(sut.oldContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(sut.newContent).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a gitlink-to-gitlink modify (pointer bump, both sides gitlink, different oids)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then both oldContent and newContent are synthesized Subproject commit lines without reading a blob', async () => {
+        // Arrange — both oids are real commits so readBlob would throw on either
+        const ctx = createMemoryContext();
+        const oldGitlinkOid = await writeCommitAsGitlink(ctx);
+        const newGitlinkOid = await writeCommitAsGitlink(ctx, [oldGitlinkOid]);
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'sub' as FilePath,
+          oldId: oldGitlinkOid,
+          newId: newGitlinkOid,
+          oldMode: FILE_MODE.GITLINK,
+          newMode: FILE_MODE.GITLINK,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — oids differ so same-id short-circuit is not taken
+        expect(sut.oldContent).toEqual(utf8.encode(`Subproject commit ${oldGitlinkOid}\n`));
+        expect(sut.newContent).toEqual(utf8.encode(`Subproject commit ${newGitlinkOid}\n`));
+      });
+    });
+  });
+
+  describe('Given a type-change with gitlink on the new side (regular-to-gitlink)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then newContent is synthesized and oldContent is the real blob bytes', async () => {
+        // Arrange — newId is a real commit; readBlob on it would throw
+        const ctx = createMemoryContext();
+        const oldOid = await writeBlob(ctx, 'regular content\n');
+        const gitlinkOid = await writeCommitAsGitlink(ctx);
+        const change: TypeChangeChange = {
+          type: 'type-change',
+          path: 'fg' as FilePath,
+          oldId: oldOid,
+          newId: gitlinkOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.GITLINK,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert
+        expect(sut.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(sut.oldContent).toEqual(utf8.encode('regular content\n'));
+      });
+    });
+  });
+
+  describe('Given a type-change with gitlink on the old side (gitlink-to-regular)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then oldContent is synthesized and newContent is the real blob bytes', async () => {
+        // Arrange — oldId is a real commit; readBlob on it would throw
+        const ctx = createMemoryContext();
+        const gitlinkOid = await writeCommitAsGitlink(ctx);
+        const newOid = await writeBlob(ctx, 'regular content\n');
+        const change: TypeChangeChange = {
+          type: 'type-change',
+          path: 'gf' as FilePath,
+          oldId: gitlinkOid,
+          newId: newOid,
+          oldMode: FILE_MODE.GITLINK,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert
+        expect(sut.oldContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(sut.newContent).toEqual(utf8.encode('regular content\n'));
       });
     });
   });
