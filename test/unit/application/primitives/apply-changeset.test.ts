@@ -11,9 +11,37 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  CommandRequest,
+  CommandResult,
+  CommandRunner,
+} from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+/** Fake runner: applies a transform to stdin and returns it as stdout. */
+class FakeSmudgeRunner implements CommandRunner {
+  private readonly exitCode: number;
+  private readonly transform: (input: Uint8Array) => Uint8Array;
+  readonly calls: CommandRequest[] = [];
+
+  constructor(exitCode = 0, transform: (input: Uint8Array) => Uint8Array = (b) => b) {
+    this.exitCode = exitCode;
+    this.transform = transform;
+  }
+
+  async run(request: CommandRequest): Promise<CommandResult> {
+    this.calls.push(request);
+    if (this.exitCode !== 0) return { exitCode: this.exitCode };
+    return { exitCode: 0, stdout: this.transform(request.stdin ?? new Uint8Array(0)) };
+  }
+}
+
+const lowercase = (b: Uint8Array): Uint8Array => enc(dec(b).toLowerCase());
 
 const WORKDIR = '/repo';
 
@@ -936,6 +964,201 @@ describe('applyChangeset', () => {
 
         streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  // ── Smudge filter (F2 identity + active smudge + fallback) ──────────────
+
+  describe('Given a regular file add with an active smudge filter and a runner that lowercases', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the worktree file contains the smudged (lowercased) bytes, not the raw blob bytes', async () => {
+        // Arrange — blob contains uppercase; smudge produces lowercase
+        const ctx = await buildSeededContext();
+        const blobContent = enc('HELLO WORLD');
+        const id = await writeBlob(ctx, blobContent);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = lowercase\n',
+        );
+        const runner = new FakeSmudgeRunner(0, lowercase);
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const sut = applyChangeset;
+
+        // Act
+        await sut(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — worktree file must be lowercased (smudged), not the raw uppercase bytes
+        const written = await ctx.fs.read(`${WORKDIR}/a.y`);
+        expect(dec(written)).toBe('hello world');
+        expect(runner.calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a regular file add with a clean-only filter (no smudge configured) and a runner', () => {
+    describe('When applyChangeset runs (F2 identity smudge)', () => {
+      it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
+        // Arrange — clean-only filter: smudge is absent → identity (F2)
+        const ctx = await buildSeededContext();
+        const blobContent = enc('HELLO WORLD');
+        const id = await writeBlob(ctx, blobContent);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tclean = uppercase\n',
+        );
+        const runner = new FakeSmudgeRunner(0, lowercase);
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — identity: verbatim blob bytes; streaming path taken; runner not invoked
+        const written = await ctx.fs.read(`${WORKDIR}/a.y`);
+        expect(dec(written)).toBe('HELLO WORLD');
+        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(writeStreamSpy).toHaveBeenCalledOnce();
+        expect(runner.calls).toHaveLength(0);
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a regular file add with an active smudge filter but smudge exits non-zero', () => {
+    describe('When applyChangeset runs (smudge failure fallback)', () => {
+      it('Then the worktree file contains the raw blob bytes (graceful fallback, no throw)', async () => {
+        // Arrange — smudge fails (non-zero exit); v1 writes raw bytes
+        const ctx = await buildSeededContext();
+        const blobContent = enc('HELLO WORLD');
+        const id = await writeBlob(ctx, blobContent);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = fail-cmd\n',
+        );
+        const runner = new FakeSmudgeRunner(1);
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const sut = applyChangeset;
+
+        // Act — must NOT throw
+        await sut(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — raw blob bytes written (graceful fallback)
+        const written = await ctx.fs.read(`${WORKDIR}/a.y`);
+        expect(dec(written)).toBe('HELLO WORLD');
+      });
+    });
+  });
+
+  describe('Given a regular file add with a filter attribute but no ctx.command (R11 fallback)', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
+        // Arrange — no command in ctx (ADR-408 inert fallback)
+        const ctx = await buildSeededContext();
+        const blobContent = enc('HELLO WORLD');
+        const id = await writeBlob(ctx, blobContent);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = lowercase\n',
+        );
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const sut = applyChangeset;
+
+        // Act — ctx has no command
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('a.y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — identity (no runner): verbatim blob bytes; streaming path taken
+        const written = await ctx.fs.read(`${WORKDIR}/a.y`);
+        expect(dec(written)).toBe('HELLO WORLD');
+        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(writeStreamSpy).toHaveBeenCalledOnce();
+
+        streamBlobSpy.mockRestore();
+        writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a gitlink add with an active smudge filter and a runner', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the gitlink arm is unchanged (not smudged): creates directory', async () => {
+        // Arrange — gitlink mode must not be smudged (git smudges regular file content only)
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'sub filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = lowercase\n',
+        );
+        const runner = new FakeSmudgeRunner(0, lowercase);
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const sut = applyChangeset;
+
+        // Act
+        await sut(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('sub', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — directory placeholder created; runner not invoked
+        const stat = await ctx.fs.lstat(`${WORKDIR}/sub`);
+        expect(stat.isDirectory).toBe(true);
+        expect(runner.calls).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a symlink add with an active smudge filter and a runner', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the symlink arm is unchanged (not smudged): symlink target written verbatim', async () => {
+        // Arrange — symlink mode must not be smudged (git filters file content, not link targets)
+        const ctx = await buildSeededContext();
+        const target = '../target.txt';
+        const id = await writeBlob(ctx, enc(target));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.link filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = lowercase\n',
+        );
+        const runner = new FakeSmudgeRunner(0, lowercase);
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const sut = applyChangeset;
+
+        // Act
+        await sut(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.link', id, FILE_MODE.SYMLINK)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — symlink target is verbatim (not lowercased); runner not invoked
+        expect(await ctx.fs.readlink(`${WORKDIR}/a.link`)).toBe(target);
+        expect(runner.calls).toHaveLength(0);
       });
     });
   });

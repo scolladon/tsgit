@@ -26,6 +26,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
   rmIfExists,
@@ -33,6 +34,8 @@ import {
   writeWorkingTreeEntryStream,
 } from './internal/write-working-tree-file.js';
 import { readBlob } from './read-blob.js';
+import { resolveFilterDriver } from './resolve-filter-driver.js';
+import { runFilterDriver } from './run-filter-driver.js';
 import { streamBlob } from './stream-blob.js';
 
 export interface ApplyChangesetOpts {
@@ -161,6 +164,7 @@ const writeBlobToWorkingTree = async (
   path: FilePath,
   id: IndexEntry['id'],
   mode: FileMode,
+  provider?: AttributeProvider,
 ): Promise<void> => {
   if (mode === FILE_MODE.GITLINK) {
     await writeWorkingTreeEntry(ctx, path, new Uint8Array(), mode);
@@ -171,6 +175,16 @@ const writeBlobToWorkingTree = async (
     await writeWorkingTreeEntry(ctx, path, blob.content, mode);
     return;
   }
+  if (provider !== undefined && ctx.command !== undefined) {
+    const choice = await resolveFilterDriver(ctx, provider, path);
+    if (choice.kind === 'external' && choice.smudge !== undefined) {
+      const blob = await readBlob(ctx, id);
+      const result = await runFilterDriver(ctx, ctx.command, choice.smudge, blob.content);
+      const smudgedBytes = result.ok ? result.bytes : blob.content;
+      await writeWorkingTreeEntry(ctx, path, smudgedBytes, mode);
+      return;
+    }
+  }
   const stream = await streamBlob(ctx, id);
   await writeWorkingTreeEntryStream(ctx, path, stream, mode);
 };
@@ -179,6 +193,7 @@ const applyEntry = async (
   ctx: Context,
   workdir: string,
   entry: ChangesetEntry,
+  provider?: AttributeProvider,
 ): Promise<IndexEntry | undefined> => {
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'noop') return undefined;
@@ -187,29 +202,23 @@ const applyEntry = async (
     return undefined;
   }
   if (entry.id === undefined) return undefined;
-  await writeBlobToWorkingTree(ctx, entry.path, entry.id as IndexEntry['id'], entry.mode);
+  await writeBlobToWorkingTree(ctx, entry.path, entry.id as IndexEntry['id'], entry.mode, provider);
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };
 
-export const applyChangeset = async (
+const applyAllEntries = async (
   ctx: Context,
-  opts: ApplyChangesetOpts,
+  changeset: Changeset,
+  workdir: string,
+  lazyProvider: () => Promise<AttributeProvider>,
 ): Promise<ApplyChangesetResult> => {
-  const { changeset, force, workdir } = opts;
-
-  if (!force) {
-    const dirty = await checkDirty(ctx, workdir, changeset);
-    if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
-      throw checkoutOverwriteDirty(dirty);
-    }
-  }
-
   const writtenEntries: IndexEntry[] = [];
   let written = 0;
   let deleted = 0;
 
   for (const entry of changeset.entries) {
-    const indexEntry = await applyEntry(ctx, workdir, entry);
+    const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
+    const indexEntry = await applyEntry(ctx, workdir, entry, provider);
     if (entry.kind === 'delete') {
       deleted += 1;
     } else if (entry.kind === 'add' || entry.kind === 'update') {
@@ -227,4 +236,26 @@ export const applyChangeset = async (
   }
 
   return { writtenEntries, written, deleted };
+};
+
+export const applyChangeset = async (
+  ctx: Context,
+  opts: ApplyChangesetOpts,
+): Promise<ApplyChangesetResult> => {
+  const { changeset, force, workdir } = opts;
+
+  if (!force) {
+    const dirty = await checkDirty(ctx, workdir, changeset);
+    if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
+      throw checkoutOverwriteDirty(dirty);
+    }
+  }
+
+  // Build attribute provider lazily once per invocation (mirror build-content-merger.ts:48).
+  // Skip entirely when no runner is wired (R11 inert fallback — ADR-408).
+  let providerPromise: Promise<AttributeProvider> | undefined;
+  const lazyProvider = (): Promise<AttributeProvider> =>
+    (providerPromise ??= buildAttributeProvider(ctx));
+
+  return applyAllEntries(ctx, changeset, workdir, lazyProvider);
 };
