@@ -1039,10 +1039,10 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given a regular file add with an active smudge filter but smudge exits non-zero', () => {
+  describe('Given a regular file add with an active smudge filter (required=false) but smudge exits non-zero', () => {
     describe('When applyChangeset runs (smudge failure fallback)', () => {
-      it('Then the worktree file contains the raw blob bytes (graceful fallback, no throw)', async () => {
-        // Arrange — smudge fails (non-zero exit); v1 writes raw bytes
+      it('Then the worktree file contains the raw blob bytes and runner was invoked', async () => {
+        // Arrange — smudge fails (non-zero exit); required absent → graceful fallback
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
         const id = await writeBlob(ctx, blobContent);
@@ -1062,9 +1062,85 @@ describe('applyChangeset', () => {
           workdir: WORKDIR,
         });
 
-        // Assert — raw blob bytes written (graceful fallback)
+        // Assert — raw blob bytes written (graceful fallback); runner WAS invoked
+        // (distinguishes this from the F2 identity path where runner.calls === 0)
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
+        expect(runner.calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a regular file add with an active smudge filter (required=true) and smudge exits non-zero', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then throws SMUDGE_FILTER_FAILED with structured data and the worktree file is not written', async () => {
+        // Arrange — smudge required=true; runner fails with exit 1
+        const ctx = await buildSeededContext();
+        const blobContent = enc('HELLO WORLD');
+        const id = await writeBlob(ctx, blobContent);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = fail-cmd\n\trequired = true\n',
+        );
+        const runner = new FakeSmudgeRunner(1);
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const sut = applyChangeset;
+
+        // Act + Assert — must throw
+        let caught: unknown;
+        try {
+          await sut(enrichedCtx, {
+            changeset: makeChangeset([makeAdd('a.y', id)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert structured error
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('SMUDGE_FILTER_FAILED');
+        expect((err.data as { exitCode: number }).exitCode).toBe(1);
+        expect((err.data as { filter: string }).filter).toBe('myf');
+        expect((err.data as { path: string }).path).toBe('a.y');
+
+        // Worktree file must NOT be written
+        const fileExists = await ctx.fs.exists(`${WORKDIR}/a.y`);
+        expect(fileExists).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a regular file add with an active smudge filter (required=true) and smudge exits zero', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then writes smudged bytes without throwing (required=true does not throw on success)', async () => {
+        // Arrange — smudge required=true; runner succeeds (exit 0, lowercases)
+        const ctx = await buildSeededContext();
+        const blobContent = enc('HELLO WORLD');
+        const id = await writeBlob(ctx, blobContent);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = lowercase\n\trequired = true\n',
+        );
+        const runner = new FakeSmudgeRunner(0, lowercase);
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const sut = applyChangeset;
+
+        // Act — must NOT throw
+        await sut(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — smudged bytes written; runner invoked
+        const written = await ctx.fs.read(`${WORKDIR}/a.y`);
+        expect(dec(written)).toBe('hello world');
+        expect(runner.calls).toHaveLength(1);
       });
     });
   });

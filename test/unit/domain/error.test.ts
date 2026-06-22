@@ -5,6 +5,7 @@ import {
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  smudgeFilterFailed,
   worktreeFileAbsent,
 } from '../../../src/domain/commands/error.js';
 import {
@@ -1137,6 +1138,50 @@ describe('cleanFilterFailed error', () => {
 
         // Assert
         expect(sut.message).toContain('lfs-clean');
+        expect(sut.message).toContain('photo.png');
+        expect(sut.message).toContain('2');
+      });
+    });
+  });
+});
+
+describe('smudgeFilterFailed error', () => {
+  describe('Given smudgeFilterFailed factory with path, filter name and exitCode', () => {
+    describe('When accessing .data', () => {
+      it('Then data carries code SMUDGE_FILTER_FAILED, path, filter, exitCode', () => {
+        // Arrange & Act
+        const sut = smudgeFilterFailed('src/file.bin' as never, 'lfs', 1);
+
+        // Assert
+        expect(sut.data.code).toBe('SMUDGE_FILTER_FAILED');
+        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.path).toBe('src/file.bin');
+        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.filter).toBe('lfs');
+        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.exitCode).toBe(1);
+      });
+    });
+  });
+
+  describe('Given smudgeFilterFailed with exitCode 128', () => {
+    describe('When accessing .data.exitCode', () => {
+      it('Then exitCode is preserved as 128', () => {
+        // Arrange & Act
+        const sut = smudgeFilterFailed('blob.dat' as never, 'myfilter', 128);
+
+        // Assert
+        expect(sut.data.code).toBe('SMUDGE_FILTER_FAILED');
+        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.exitCode).toBe(128);
+      });
+    });
+  });
+
+  describe('Given smudgeFilterFailed factory', () => {
+    describe('When reading .message', () => {
+      it('Then message contains filter name, file basename and exitCode', () => {
+        // Arrange & Act
+        const sut = smudgeFilterFailed('repo/assets/photo.png' as never, 'lfs-smudge', 2);
+
+        // Assert
+        expect(sut.message).toContain('lfs-smudge');
         expect(sut.message).toContain('photo.png');
         expect(sut.message).toContain('2');
       });

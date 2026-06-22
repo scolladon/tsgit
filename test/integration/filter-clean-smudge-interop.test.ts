@@ -57,6 +57,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
   let ctx: ReturnType<typeof createNodeContext>;
   let cleanScript = '';
   let cleanFailScript = '';
+  let smudgeFailScript = '';
   let fexecLogFile = '';
   let epoch = 1_700_040_000;
 
@@ -90,6 +91,11 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     await writeFile(smudgeScript, '#!/bin/sh\nLC_ALL=C tr A-Z a-z\n');
     await chmod(smudgeScript, 0o755);
 
+    // Always-failing smudge driver (for F6/F7)
+    smudgeFailScript = path.join(dir, '.git', 'smudge-fail.sh');
+    await writeFile(smudgeFailScript, '#!/bin/sh\nexit 1\n');
+    await chmod(smudgeFailScript, 0o755);
+
     // F-EXEC logging driver: echo stdin→stdout, append argc to a log file
     fexecLogFile = path.join(dir, '.git', 'fexec-argc.log');
     const fexecScript = path.join(dir, '.git', 'fexec-log.sh');
@@ -102,6 +108,13 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     runGit(['-C', dir, 'config', `filter.fail-req.clean`, cleanFailScript]);
     runGit(['-C', dir, 'config', `filter.fail-req.required`, 'true']);
     runGit(['-C', dir, 'config', `filter.fail-opt.clean`, cleanFailScript]);
+    // F6: smudge-required — smudge fails + required=true → fatal
+    runGit(['-C', dir, 'config', `filter.smudge-req.clean`, cleanScript]);
+    runGit(['-C', dir, 'config', `filter.smudge-req.smudge`, smudgeFailScript]);
+    runGit(['-C', dir, 'config', `filter.smudge-req.required`, 'true']);
+    // F7: smudge-optional — smudge fails, no required → raw bytes written
+    runGit(['-C', dir, 'config', `filter.smudge-opt.clean`, cleanScript]);
+    runGit(['-C', dir, 'config', `filter.smudge-opt.smudge`, smudgeFailScript]);
     // F2: clean-only (no smudge configured) — identity smudge
     runGit(['-C', dir, 'config', `filter.c2.clean`, cleanScript]);
     // F-EXEC: logging driver wired as clean
@@ -110,7 +123,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     // .gitattributes mapping
     await writeFile(
       path.join(dir, '.gitattributes'),
-      `${['*.y filter=myf', '*.req filter=fail-req', '*.opt filter=fail-opt', '*.c2 filter=c2', '*.fx filter=fexec'].join('\n')}\n`,
+      `${['*.y filter=myf', '*.req filter=fail-req', '*.opt filter=fail-opt', '*.c2 filter=c2', '*.fx filter=fexec', '*.sr filter=smudge-req', '*.so filter=smudge-opt'].join('\n')}\n`,
     );
 
     // Commit .gitattributes as the repository root so no test leaves it untracked
@@ -320,6 +333,113 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
         const changedPath = result.changes.find((c) => c.path === 'f2.c2');
         expect(changedPath).toBeUndefined();
         expect(result.clean).toBe(true);
+      });
+    });
+  });
+
+  // ── F6: smudge required=true + failing smudge → fatal; file NOT written ────
+
+  describe('Given a .sr file under filter=smudge-req (required=true) with a failing smudge', () => {
+    describe('When checkout is attempted after the worktree file is removed', () => {
+      it('Then real git exits 128 and writes no file; tsgit throws SMUDGE_FILTER_FAILED and writes no file', async () => {
+        // Arrange — create f6.sr, stage+commit via git (clean=upper succeeds → UPPERCASE blob stored)
+        const rawContent = 'hello smudge req\n';
+        await writeFile(path.join(dir, 'f6.sr'), rawContent);
+        git(dir, 'add', 'f6.sr');
+        doCommit('add f6.sr');
+
+        // Verify git committed UPPERCASE (clean applied at add)
+        const gitBlobOid = git(dir, 'rev-parse', 'HEAD:f6.sr').trim();
+        const gitBlobContent = git(dir, 'cat-file', 'blob', gitBlobOid);
+        expect(gitBlobContent).toBe('HELLO SMUDGE REQ\n');
+
+        // Remove worktree file
+        await rm(path.join(dir, 'f6.sr'));
+
+        // Git golden: required=true + smudge failure → exit 128, file NOT written
+        const gitResult = tryRunGit(['-C', dir, 'checkout', '--', 'f6.sr']);
+        expect(gitResult.ok).toBe(false);
+
+        // Git leaves the worktree file absent
+        let gitFilePresent = true;
+        try {
+          await readFile(path.join(dir, 'f6.sr'));
+        } catch {
+          gitFilePresent = false;
+        }
+        expect(gitFilePresent).toBe(false);
+
+        // Act — tsgit: must throw a structured error
+        let caught: unknown;
+        try {
+          await checkout(ctx, { paths: ['f6.sr'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert structured error
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('SMUDGE_FILTER_FAILED');
+        expect((err.data as { exitCode: number }).exitCode).toBeGreaterThan(0);
+        expect((err.data as { filter: string }).filter).toBe('smudge-req');
+        expect((err.data as { path: string }).path).toBe('f6.sr');
+
+        // tsgit leaves the worktree file absent (not written on failure)
+        let tsFilePresent = true;
+        try {
+          await readFile(path.join(dir, 'f6.sr'));
+        } catch {
+          tsFilePresent = false;
+        }
+        expect(tsFilePresent).toBe(false);
+      });
+    });
+  });
+
+  // ── F7: smudge optional (no required) + failing smudge → raw bytes, succeeds ─
+
+  describe('Given a .so file under filter=smudge-opt (required absent) with a failing smudge', () => {
+    describe('When checkout is performed after the worktree file is removed', () => {
+      it('Then both git and tsgit write raw blob bytes and succeed; worktree bytes are identical', async () => {
+        // Arrange — create f7.so, stage+commit via git (clean=upper succeeds → UPPERCASE blob stored)
+        const rawContent = 'hello smudge opt\n';
+        await writeFile(path.join(dir, 'f7.so'), rawContent);
+        git(dir, 'add', 'f7.so');
+        doCommit('add f7.so');
+
+        // Verify git committed UPPERCASE (clean applied at add)
+        const gitBlobOid = git(dir, 'rev-parse', 'HEAD:f7.so').trim();
+        const gitBlobContent = git(dir, 'cat-file', 'blob', gitBlobOid);
+        expect(gitBlobContent).toBe('HELLO SMUDGE OPT\n');
+
+        // Remove worktree file
+        await rm(path.join(dir, 'f7.so'));
+
+        // Git golden: required absent + smudge failure → exit 0, raw blob bytes written
+        const gitResult = tryRunGit(['-C', dir, 'checkout', '--', 'f7.so']);
+        expect(gitResult.ok).toBe(true);
+
+        // Git writes raw blob bytes (UPPERCASE — no smudge transform applied)
+        const gitWorktreeBytes = await readFile(path.join(dir, 'f7.so'));
+        expect(dec(gitWorktreeBytes)).toBe('HELLO SMUDGE OPT\n');
+
+        // Remove again so tsgit writes fresh
+        await rm(path.join(dir, 'f7.so'));
+
+        // Act — tsgit checkout: must succeed (no throw), write raw blob bytes
+        await checkout(ctx, { paths: ['f7.so'] });
+
+        // Assert tsgit worktree bytes = git worktree bytes = raw blob bytes
+        const tsWorktreeBytes = await readFile(path.join(dir, 'f7.so'));
+        expect(dec(tsWorktreeBytes)).toBe('HELLO SMUDGE OPT\n');
+
+        // OID parity: tsgit wrote the same bytes git did
+        expect(dec(tsWorktreeBytes)).toBe(dec(gitWorktreeBytes));
+
+        // Committed blob bytes are UPPERCASE (cleaned); worktree = blob bytes (raw, no smudge)
+        const sut = await readBlob(ctx, gitBlobOid as ObjectId);
+        expect(dec(sut.content)).toBe('HELLO SMUDGE OPT\n');
       });
     });
   });

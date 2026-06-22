@@ -13,7 +13,11 @@
  * Atomicity: per-file (matches canonical git). No cross-file rollback —
  * see.
  */
-import { checkoutOverwriteDirty, type WouldOverwriteClasses } from '../../domain/commands/error.js';
+import {
+  checkoutOverwriteDirty,
+  smudgeFilterFailed,
+  type WouldOverwriteClasses,
+} from '../../domain/commands/error.js';
 import { comparePaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
@@ -180,8 +184,14 @@ const writeBlobToWorkingTree = async (
     if (choice.kind === 'external' && choice.smudge !== undefined) {
       const blob = await readBlob(ctx, id);
       const result = await runFilterDriver(ctx, ctx.command, choice.smudge, blob.content);
-      const smudgedBytes = result.ok ? result.bytes : blob.content;
-      await writeWorkingTreeEntry(ctx, path, smudgedBytes, mode);
+      if (!result.ok) {
+        if (choice.required) {
+          throw smudgeFilterFailed(path, choice.name, result.exitCode);
+        }
+        await writeWorkingTreeEntry(ctx, path, blob.content, mode);
+        return;
+      }
+      await writeWorkingTreeEntry(ctx, path, result.bytes, mode);
       return;
     }
   }

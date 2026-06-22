@@ -361,6 +361,8 @@ brief). **The pin decides the model.**
 | **F3** | `filter.f.clean='false'` (always fails) + `filter.f.required=true`; `git add a.y` | stderr (3 lines): `error: external filter 'false' failed 1` / `error: external filter 'false' failed` / `fatal: a.y: clean filter 'f' failed`; **exit 128**; `ls-files` shows `a.y` **not** staged | `required=true` + clean failure is **fatal** — refuse the stage. Re-pinned 2026-06-22: the fatal line is the third line, distinct from the two `error:` warnings. |
 | **F4** | same but `required` absent (default false) | stderr (2 lines): `error: external filter 'false' failed 1` / `error: external filter 'false' failed`; **no `fatal:` line**; **exit 0**; `cat-file :a.y` shows the **raw** bytes `Hello World` (un-cleaned) staged | `required` absent/false + clean failure ⇒ git **warns, stores raw bytes, succeeds** (graceful fallback). Re-pinned 2026-06-22: only the two `error:` warnings, no fatal; raw bytes confirmed via `cat-file`. |
 | **T5/F5** | `.gitattributes` `*.z diff=d` **only** (no `filter=`); `diff.d.textconv=<uppercase>`; commit `hello`, then `world` | committed blobs are **raw** (`cat-file` → `world`); `git diff` shows textconv-uppercased both sides | `diff=` and `filter=` are **independent**: `diff=` alone never cleans the committed bytes; it only transforms at diff time. (Symmetric: `filter=` alone cleans/smudges but diffs raw.) |
+| **F6** | `filter.smudge-req.clean=<uppercase>`, `filter.smudge-req.smudge=<fail>`, `filter.smudge-req.required=true`; commit `hello filter` (blob = `HELLO FILTER`, UPPERCASE via clean); `rm f6.sr; git checkout -- f6.sr` | stderr (3 lines): `error: external filter '<fail>' failed 1` / `error: external filter '<fail>' failed` / `fatal: f6.sr: smudge filter smudge-req failed`; **exit 128**; `f6.sr` **absent** from the working tree | `required=true` + smudge failure is **fatal** at checkout: git refuses to write the file, exits 128. Symmetric to F3 (clean). Firm-pinned 2026-06-22 in mktemp throwaway (isolated HOME, GIT_CONFIG_NOSYSTEM=1, scrubbed GIT_*, signing off). |
+| **F7** | same filter config but **`required` absent** (`filter.smudge-opt`); commit `hello smudge opt` (blob = `HELLO SMUDGE OPT`); `rm f7.so; git checkout -- f7.so` | stderr (2 lines): `error: external filter '<fail>' failed 1` / `error: external filter '<fail>' failed`; **no `fatal:` line**; **exit 0**; `f7.so` present with **raw blob bytes** `HELLO SMUDGE OPT` (no smudge transform applied) | `required` absent + smudge failure ⇒ git warns, writes the raw blob bytes (the committed UPPERCASE content), succeeds. Symmetric to F4 (clean). Firm-pinned 2026-06-22. |
 | **F-EXEC** | log clean's and smudge's argv; `git add` then `rm`+`checkout` | both drivers see `argc=0 args=[]`; content arrives on **stdin**, result read from **stdout** | clean/smudge contract (re-pinned 2026-06-22): **no temp-file arg** — pure `stdin → stdout`. Contrast textconv (`argv[1]` file + stdout, T-EXEC) and the merge driver (in-place `%A` file). This is the contract `run-filter-driver` reproduces via the extended `CommandRunner` (`stdin` in, `stdout` captured). |
 
 The clean/smudge contract (driver invocation, pinned F-EXEC): git pipes content on
@@ -597,10 +599,15 @@ All clean/smudge tests below are **firm v1** (ADR-406) — none is gated on D-SC
   identity smudge, verbatim blob bytes), **F3** (`required=true` + failing clean ⇒
   fatal, exit 128, nothing staged — reconstruct git's refusal from the structured error
   per ADR-249, do not byte-match stderr), **F4** (`required` absent ⇒ exit 0, raw bytes
-  staged — assert the raw blob OID), and **F-EXEC** (the stdin→stdout contract via a
-  logging driver). If this file's `beforeAll` grows heavy (it spawns git for add +
-  checkout + diff per case), use `SETUP_TIMEOUT=120_000` — the gitlink interop file
-  precedent from #194 (the interop load→validate flake note).
+  staged — assert the raw blob OID), **F6** (`required=true` + failing smudge at checkout
+  ⇒ fatal, exit 128, file NOT written — structured `SMUDGE_FILTER_FAILED` error with
+  `.data.filter`/`.data.exitCode`, file absent asserted; symmetric to F3 for checkout),
+  **F7** (`required` absent + failing smudge ⇒ exit 0, raw blob bytes written — worktree
+  content equals the committed UPPERCASE blob, parity between git and tsgit; symmetric
+  to F4 for checkout), and **F-EXEC** (the stdin→stdout contract via a logging driver).
+  If this file's `beforeAll` grows heavy (it spawns git for add + checkout + diff per
+  case), use `SETUP_TIMEOUT=120_000` — the gitlink interop file precedent from #194 (the
+  interop load→validate flake note).
 - **`lfs-pointer-interop.test.ts` stays green** — the
   [ADR-398](../adr/398-lfs-pointer-diff-no-filter-baseline.md) no-driver baseline is
   the regression boundary; assert the declared-but-inert `diff=lfs`-with-no-driver

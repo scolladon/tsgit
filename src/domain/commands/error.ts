@@ -116,6 +116,12 @@ export type CommandError =
       readonly exitCode: number;
     }
   | {
+      readonly code: 'SMUDGE_FILTER_FAILED';
+      readonly path: FilePath;
+      readonly filter: string;
+      readonly exitCode: number;
+    }
+  | {
       readonly code: 'CONFIG_KEY_INVALID';
       readonly key: string;
       readonly reason: 'empty-section' | 'missing-name' | 'bad-character';
@@ -435,6 +441,9 @@ export const hookFailed = (hook: HookName, exitCode: number, stderr: string): Ts
 
 export const cleanFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
   new TsgitError({ code: 'CLEAN_FILTER_FAILED', path, filter, exitCode });
+
+export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
+  new TsgitError({ code: 'SMUDGE_FILTER_FAILED', path, filter, exitCode });
 
 export const configKeyInvalid = (
   key: string,
