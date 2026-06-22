@@ -17,6 +17,22 @@ const AUTHOR: AuthorIdentity = {
 
 const encoder = new TextEncoder();
 
+/** Build a commit that introduces a gitlink at path `sub` with `gitlinkOid`. */
+const commitGitlink = async (
+  ctx: Context,
+  gitlinkOid: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+): Promise<ObjectId> => {
+  const tree = await writeTree(ctx, [{ mode: FILE_MODE.GITLINK, name: 'sub', id: gitlinkOid }]);
+  return createCommit(ctx, {
+    tree,
+    parents: [...parents],
+    author: AUTHOR,
+    committer: AUTHOR,
+    message: 'c',
+  });
+};
+
 /** Build a commit whose single file `f` holds `content`, on `parents`. */
 const commitFile = async (
   ctx: Context,
@@ -172,6 +188,48 @@ describe('computePatchId', () => {
       // Assert — a non-empty hex digest, distinct from a different root's
       expect(sut).toMatch(/^[0-9a-f]+$/);
       expect(sut).not.toBe(await computePatchId(ctx, rootOther));
+    });
+  });
+
+  describe('Given two commits introducing the same submodule pointer, When patch-ids are computed', () => {
+    it('Then the patch-ids are equal (Subproject commit line is stable in the equivalence key)', async () => {
+      // Arrange — both commits introduce the same gitlink oid at path `sub`
+      // on top of the same empty-tree base; the gitlink oid need not exist as
+      // a real object because materialiseOne synthesizes without reading it.
+      const ctx = await buildSeededContext();
+      const base = await commitFile(ctx, 'seed\n', []);
+      // Use a fixed arbitrary gitlink oid (40 hex chars); writeTree accepts
+      // without validating the target object exists.
+      const gitlinkOid = '1'.repeat(40) as ObjectId;
+      const cA = await commitGitlink(ctx, gitlinkOid, [base]);
+      const cB = await commitGitlink(ctx, gitlinkOid, [base]);
+
+      // Act
+      const sut = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert — same pointer → same patch-id
+      expect(sut).toBe(other);
+    });
+  });
+
+  describe('Given two commits introducing different submodule pointers, When patch-ids are computed', () => {
+    it('Then the patch-ids differ (oid-bearing Subproject commit line distinguishes them)', async () => {
+      // Arrange — two different gitlink oids; both commits are otherwise
+      // identical (same base, same path `sub`).
+      const ctx = await buildSeededContext();
+      const base = await commitFile(ctx, 'seed\n', []);
+      const gitlinkOidA = '1'.repeat(40) as ObjectId;
+      const gitlinkOidB = '2'.repeat(40) as ObjectId;
+      const cA = await commitGitlink(ctx, gitlinkOidA, [base]);
+      const cB = await commitGitlink(ctx, gitlinkOidB, [base]);
+
+      // Act
+      const sut = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert — different pointers → different patch-ids
+      expect(sut).not.toBe(other);
     });
   });
 });

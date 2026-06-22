@@ -2179,4 +2179,296 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  // Gitlink / submodule rendering pins (§ A1, DEL1, M, D1–D4)
+  // These tests prove the existing serializer renders synthesized
+  // `Subproject commit <oid>\n` content byte-faithfully without any
+  // serializer change.  OIDs use clean repeating-digit values so the
+  // index-line abbrev is predictable via shortOid (first 7 chars).
+
+  const GL1 = '1'.repeat(40) as ObjectId;
+  const GL2 = '2'.repeat(40) as ObjectId;
+
+  describe('Given a pure gitlink add (A1 pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits a single new-file-mode-160000 block with Subproject commit body', () => {
+        // Arrange
+        const file: PatchFile = {
+          change: {
+            type: 'add',
+            newPath: 'sub' as FilePath,
+            newId: GL1,
+            newMode: FILE_MODE.GITLINK,
+          },
+          newContent: utf8.encode(`Subproject commit ${GL1}\n`),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — A1 golden (§ Faithfulness baseline)
+        expect(sut).toBe(
+          [
+            'diff --git a/sub b/sub',
+            'new file mode 160000',
+            'index 0000000..1111111',
+            '--- /dev/null',
+            '+++ b/sub',
+            '@@ -0,0 +1 @@',
+            `+Subproject commit ${GL1}`,
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a pure gitlink delete (DEL1 pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits a single deleted-file-mode-160000 block with Subproject commit body', () => {
+        // Arrange
+        const file: PatchFile = {
+          change: {
+            type: 'delete',
+            oldPath: 'sub' as FilePath,
+            oldId: GL1,
+            oldMode: FILE_MODE.GITLINK,
+          },
+          oldContent: utf8.encode(`Subproject commit ${GL1}\n`),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — DEL1 golden
+        expect(sut).toBe(
+          [
+            'diff --git a/sub b/sub',
+            'deleted file mode 160000',
+            'index 1111111..0000000',
+            '--- a/sub',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            `-Subproject commit ${GL1}`,
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a gitlink-to-gitlink modify / pointer bump (M pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits a single index-160000 block with -/+ Subproject commit lines', () => {
+        // Arrange
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'sm' as FilePath,
+            oldId: GL1,
+            newId: GL2,
+            oldMode: FILE_MODE.GITLINK,
+            newMode: FILE_MODE.GITLINK,
+          },
+          oldContent: utf8.encode(`Subproject commit ${GL1}\n`),
+          newContent: utf8.encode(`Subproject commit ${GL2}\n`),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — M golden (modePreamble equal-modes form)
+        expect(sut).toBe(
+          [
+            'diff --git a/sm b/sm',
+            'index 1111111..2222222 160000',
+            '--- a/sm',
+            '+++ b/sm',
+            '@@ -1 +1 @@',
+            `-Subproject commit ${GL1}`,
+            `+Subproject commit ${GL2}`,
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a type-change from regular to gitlink (D1 pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits two blocks: deleted-file-100644 then new-file-160000', () => {
+        // Arrange — oldMode 100644 / newMode 160000; blob side uses OID_C
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'fg' as FilePath,
+            oldId: OID_C,
+            newId: GL1,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.GITLINK,
+          },
+          oldContent: utf8.encode('regular content\n'),
+          newContent: utf8.encode(`Subproject commit ${GL1}\n`),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — D1 golden
+        expect(sut).toBe(
+          [
+            'diff --git a/fg b/fg',
+            'deleted file mode 100644',
+            'index ccccccc..0000000',
+            '--- a/fg',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-regular content',
+            'diff --git a/fg b/fg',
+            'new file mode 160000',
+            'index 0000000..1111111',
+            '--- /dev/null',
+            '+++ b/fg',
+            '@@ -0,0 +1 @@',
+            `+Subproject commit ${GL1}`,
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a type-change from gitlink to regular (D2 pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits two blocks: deleted-file-160000 then new-file-100644', () => {
+        // Arrange — oldMode 160000 / newMode 100644; blob side uses OID_C
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'gf' as FilePath,
+            oldId: GL1,
+            newId: OID_C,
+            oldMode: FILE_MODE.GITLINK,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: utf8.encode(`Subproject commit ${GL1}\n`),
+          newContent: utf8.encode('regular content\n'),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — D2 golden
+        expect(sut).toBe(
+          [
+            'diff --git a/gf b/gf',
+            'deleted file mode 160000',
+            'index 1111111..0000000',
+            '--- a/gf',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            `-Subproject commit ${GL1}`,
+            'diff --git a/gf b/gf',
+            'new file mode 100644',
+            'index 0000000..ccccccc',
+            '--- /dev/null',
+            '+++ b/gf',
+            '@@ -0,0 +1 @@',
+            '+regular content',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a type-change from symlink to gitlink (D3 pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits two blocks: deleted-file-120000 (with no-newline marker) then new-file-160000 (no marker)', () => {
+        // Arrange — symlink side has no trailing LF; gitlink side does
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'sg' as FilePath,
+            oldId: OID_C,
+            newId: GL1,
+            oldMode: FILE_MODE.SYMLINK,
+            newMode: FILE_MODE.GITLINK,
+          },
+          oldContent: utf8.encode('target'),
+          newContent: utf8.encode(`Subproject commit ${GL1}\n`),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — D3 golden (symlink delete carries \\ No newline marker)
+        expect(sut).toBe(
+          [
+            'diff --git a/sg b/sg',
+            'deleted file mode 120000',
+            'index ccccccc..0000000',
+            '--- a/sg',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            '-target',
+            '\\ No newline at end of file',
+            'diff --git a/sg b/sg',
+            'new file mode 160000',
+            'index 0000000..1111111',
+            '--- /dev/null',
+            '+++ b/sg',
+            '@@ -0,0 +1 @@',
+            `+Subproject commit ${GL1}`,
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a type-change from gitlink to symlink (D4 pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then emits two blocks: deleted-file-160000 (no marker) then new-file-120000 (with no-newline marker)', () => {
+        // Arrange — gitlink side has trailing LF; symlink side does not
+        const file: PatchFile = {
+          change: {
+            type: 'type-change',
+            path: 'gs' as FilePath,
+            oldId: GL1,
+            newId: OID_C,
+            oldMode: FILE_MODE.GITLINK,
+            newMode: FILE_MODE.SYMLINK,
+          },
+          oldContent: utf8.encode(`Subproject commit ${GL1}\n`),
+          newContent: utf8.encode('target'),
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert — D4 golden (gitlink delete has no marker; symlink add carries it)
+        expect(sut).toBe(
+          [
+            'diff --git a/gs b/gs',
+            'deleted file mode 160000',
+            'index 1111111..0000000',
+            '--- a/gs',
+            '+++ /dev/null',
+            '@@ -1 +0,0 @@',
+            `-Subproject commit ${GL1}`,
+            'diff --git a/gs b/gs',
+            'new file mode 120000',
+            'index 0000000..ccccccc',
+            '--- /dev/null',
+            '+++ b/gs',
+            '@@ -0,0 +1 @@',
+            '+target',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
 });

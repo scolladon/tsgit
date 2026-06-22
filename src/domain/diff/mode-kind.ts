@@ -13,3 +13,7 @@ export function kindOf(mode: FileMode): ModeKind {
 export function isSameKind(a: FileMode, b: FileMode): boolean {
   return kindOf(a) === kindOf(b);
 }
+
+export function isGitlink(mode: FileMode): boolean {
+  return kindOf(mode) === 'gitlink';
+}
