@@ -2,13 +2,74 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
+import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  CommandRequest,
+  CommandResult,
+  CommandRunner,
+} from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+const uppercase = (b: Uint8Array): Uint8Array => enc(dec(b).toUpperCase());
+
+class FakeRunner implements CommandRunner {
+  async run(request: CommandRequest): Promise<CommandResult> {
+    return { exitCode: 0, stdout: uppercase(request.stdin ?? new Uint8Array(0)) };
+  }
+}
+
+/**
+ * Seeds a repo with a .gitattributes filter=myf mapping + [filter "myf"] config,
+ * stages the CLEANED (uppercased) bytes via add+runner, commits HEAD so the file
+ * is tracked — then re-writes the smudged (original) bytes to the working tree
+ * to simulate a post-checkout smudged state.
+ */
+const seedFilterRepo = async (
+  name: string,
+  smudgedContent: string,
+): Promise<{ ctx: Context; cleanedContent: string }> => {
+  const runner = new FakeRunner();
+  const baseCtx = createMemoryContext();
+  await init(baseCtx);
+
+  const ext = name.split('.').pop() ?? 'y';
+  await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/.gitattributes`, `*.${ext} filter=myf\n`);
+  const configPath = `${baseCtx.layout.gitDir}/config`;
+  const existingConfig = await baseCtx.fs.readUtf8(configPath).catch(() => '');
+  await baseCtx.fs.writeUtf8(
+    configPath,
+    `${existingConfig}\n[filter "myf"]\n\tclean = uppercase-clean\n\tsmudge = lowercase-smudge\n`,
+  );
+
+  const ctxWithRunner: Context = { ...baseCtx, command: runner };
+
+  // Stage and commit the file so it's tracked (HEAD matches index)
+  await ctxWithRunner.fs.writeUtf8(`${baseCtx.layout.workDir}/${name}`, smudgedContent);
+  await add(ctxWithRunner, [name]);
+  await commit(ctxWithRunner, {
+    message: 'seed',
+    author: {
+      name: 'Ada',
+      email: 'ada@example.com',
+      timestamp: 1_700_000_000,
+      timezoneOffset: '+0000',
+    },
+  });
+
+  // Simulate post-checkout: working tree holds smudged bytes again
+  await ctxWithRunner.fs.writeUtf8(`${baseCtx.layout.workDir}/${name}`, smudgedContent);
+
+  const cleanedContent = dec(uppercase(enc(smudgedContent)));
+  return { ctx: ctxWithRunner, cleanedContent };
+};
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -721,6 +782,49 @@ describe('rm', () => {
         expect(err.data.paths).toEqual(['both.txt']);
         expect(await ctx.fs.exists(work(ctx, 'staged.txt'))).toBe(true);
         expect(await ctx.fs.exists(work(ctx, 'both.txt'))).toBe(true);
+      });
+    });
+  });
+});
+
+// ── Filter-aware safety valve ──────────────────────────────────────────────
+
+describe('rm safety valve — clean filter re-application', () => {
+  describe('Given a smudged-unmodified file under an active filter=myf and a command runner', () => {
+    describe('When rm is called on the file (no force)', () => {
+      it('Then the file is removed (safety valve treats it as unchanged, not locally modified)', async () => {
+        // Arrange — seed with cleaned OID in HEAD; worktree holds smudged bytes
+        const { ctx } = await seedFilterRepo('filtered.y', 'hello world\n');
+
+        // Act — safety valve must NOT refuse; file should be removed
+        const result = await rm(ctx, ['filtered.y']);
+
+        // Assert — removed successfully; working file deleted from disk
+        expect(result.removed).toEqual(['filtered.y']);
+        expect(await ctx.fs.exists(work(ctx, 'filtered.y'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a smudged-unmodified file under an active filter=myf but ctx.command is absent', () => {
+    describe('When rm is called on the file (no force, no runner)', () => {
+      it('Then rm refuses with RM_LOCAL_MODIFICATIONS (raw bytes differ from cleaned OID — regression guard)', async () => {
+        // Arrange — build context WITHOUT command so raw-bytes path is taken
+        const { ctx } = await seedFilterRepo('norun.y', 'hello world\n');
+        const { command: _cmd, ...ctxWithoutCommand } = ctx;
+        const noRunnerCtx: Context = ctxWithoutCommand;
+
+        // Act — raw bytes differ from cleaned OID => spuriously modified => refuse
+        let caught: unknown;
+        try {
+          await rm(noRunnerCtx, ['norun.y']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — safety valve fires because raw path sees the smudged bytes as modified
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('RM_LOCAL_MODIFICATIONS');
       });
     });
   });

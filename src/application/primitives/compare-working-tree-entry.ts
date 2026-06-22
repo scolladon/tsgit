@@ -123,4 +123,5 @@ export const compareWorkingTreeDelta = async (
 export const compareWorkingTreeEntry = async (
   ctx: Context,
   entry: IndexEntry,
-): Promise<WorkingTreeComparison> => (await compareWorkingTreeDelta(ctx, entry)).status;
+  provider?: AttributeProvider,
+): Promise<WorkingTreeComparison> => (await compareWorkingTreeDelta(ctx, entry, provider)).status;

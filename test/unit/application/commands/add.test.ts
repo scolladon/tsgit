@@ -1939,4 +1939,31 @@ describe('add', () => {
       });
     });
   });
+
+  describe('Given a file with required=true clean filter that exits 0', () => {
+    describe('When add stages the file', () => {
+      it('Then the CLEANED blob OID is committed and no error is thrown (required=true + exit 0 = success)', async () => {
+        // Arrange — required=true, but runner exits 0 (success path)
+        const runner = new FakeRunner(0, uppercase);
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=f\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "f"]\n\tclean = uppercase\n\trequired = true\n',
+        );
+        const enrichedCtx = { ...ctx, command: runner };
+
+        // Act — must NOT throw even though required=true, because exit code is 0
+        const result = await add(enrichedCtx, ['a.y']);
+
+        // Assert — cleaned bytes stored; no exception
+        const index = await readIndex(enrichedCtx);
+        const entry = index.entries.find((e) => e.path === 'a.y');
+        expect(entry).toBeDefined();
+        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        expect(dec(blob.content)).toBe('HELLO WORLD');
+        expect(result.added).toEqual(['a.y']);
+      });
+    });
+  });
 });

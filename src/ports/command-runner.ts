@@ -2,10 +2,6 @@
  * A single shell-command invocation. The port is stateless — every fact the
  * adapter needs to run the command travels in this request.
  */
-/**
- * A single shell-command invocation. The port is stateless — every fact the
- * adapter needs to run the command travels in this request.
- */
 export interface CommandRequest {
   /** Shell command line, executed through the platform shell (`sh -c` / `cmd /c`). */
   readonly command: string;
@@ -20,10 +16,6 @@ export interface CommandRequest {
 }
 
 /**
- * Outcome of a command. A merge driver communicates its result by overwriting
- * its output file, so only the exit code is surfaced (`0` ⇒ success).
- */
-/**
  * Outcome of a command. Two output conventions are carried by one port:
  * - A merge driver communicates its result by overwriting its output file `%A`
  *   — only the exit code matters (`0` ⇒ success); `stdout` is ignored.
@@ -36,13 +28,6 @@ export interface CommandResult {
   readonly stdout?: Uint8Array;
 }
 
-/**
- * Runs an arbitrary shell command line — the custom merge-driver command.
- * Optional on `Context`: when absent (browser / memory adapters cannot spawn a
- * process), a configured external driver falls back to the built-in merge.
- * NEVER rejects for a non-zero exit — interpreting the exit code is the caller's
- * policy.
- */
 /**
  * Runs an arbitrary shell command line — the custom merge-driver / textconv /
  * clean-smudge filter command. Optional on `Context`: when absent (browser /

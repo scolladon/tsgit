@@ -59,6 +59,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
   let cleanFailScript = '';
   let smudgeFailScript = '';
   let fexecLogFile = '';
+  let fexecSmudgeLogFile = '';
   let epoch = 1_700_040_000;
 
   const nextEpoch = (): number => (epoch += 1);
@@ -96,11 +97,20 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     await writeFile(smudgeFailScript, '#!/bin/sh\nexit 1\n');
     await chmod(smudgeFailScript, 0o755);
 
-    // F-EXEC logging driver: echo stdin→stdout, append argc to a log file
+    // F-EXEC logging driver: echo stdin→stdout, append argc to a log file (clean side)
     fexecLogFile = path.join(dir, '.git', 'fexec-argc.log');
     const fexecScript = path.join(dir, '.git', 'fexec-log.sh');
     await writeFile(fexecScript, `#!/bin/sh\necho $# >> "${fexecLogFile}"\nLC_ALL=C tr a-z A-Z\n`);
     await chmod(fexecScript, 0o755);
+
+    // F-EXEC smudge logging driver: echo stdin→stdout lowercase, append argc to log file
+    fexecSmudgeLogFile = path.join(dir, '.git', 'fexec-smudge-argc.log');
+    const fexecSmudgeScript = path.join(dir, '.git', 'fexec-smudge-log.sh');
+    await writeFile(
+      fexecSmudgeScript,
+      `#!/bin/sh\necho $# >> "${fexecSmudgeLogFile}"\nLC_ALL=C tr A-Z a-z\n`,
+    );
+    await chmod(fexecSmudgeScript, 0o755);
 
     // Configure local filter drivers in .git/config
     runGit(['-C', dir, 'config', `filter.myf.clean`, cleanScript]);
@@ -119,11 +129,14 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     runGit(['-C', dir, 'config', `filter.c2.clean`, cleanScript]);
     // F-EXEC: logging driver wired as clean
     runGit(['-C', dir, 'config', `filter.fexec.clean`, fexecScript]);
+    // F-EXEC smudge: logging driver wired as smudge (with a clean pass-through)
+    runGit(['-C', dir, 'config', `filter.fexec2.clean`, cleanScript]);
+    runGit(['-C', dir, 'config', `filter.fexec2.smudge`, fexecSmudgeScript]);
 
     // .gitattributes mapping
     await writeFile(
       path.join(dir, '.gitattributes'),
-      `${['*.y filter=myf', '*.req filter=fail-req', '*.opt filter=fail-opt', '*.c2 filter=c2', '*.fx filter=fexec', '*.sr filter=smudge-req', '*.so filter=smudge-opt'].join('\n')}\n`,
+      `${['*.y filter=myf', '*.req filter=fail-req', '*.opt filter=fail-opt', '*.c2 filter=c2', '*.fx filter=fexec', '*.fs filter=fexec2', '*.sr filter=smudge-req', '*.so filter=smudge-opt'].join('\n')}\n`,
     );
 
     // Commit .gitattributes as the repository root so no test leaves it untracked
@@ -467,6 +480,48 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
         expect(tsEntry).toBeDefined();
         const tsBlob = await readBlob(ctx, tsEntry!.id as ObjectId);
         expect(dec(tsBlob.content)).toBe('HELLO EXEC\n');
+      });
+    });
+  });
+
+  // ── F-EXEC smudge: smudge driver receives stdin, writes stdout, no positional args ──
+
+  describe('Given a .fs file under filter=fexec2 whose smudge driver logs $# to a file', () => {
+    describe('When tsgit checkout restores the file', () => {
+      it('Then the smudge driver received argc=0 (stdin→stdout only) and worktree bytes are lowercased', async () => {
+        // Arrange — add the file (clean driver uppercases it)
+        const rawContent = 'hello smudge exec\n';
+        await writeFile(path.join(dir, 'fexec-smudge.fs'), rawContent);
+        runGit(['-C', dir, 'add', 'fexec-smudge.fs']);
+        doCommit('add fexec-smudge.fs');
+
+        // Remove the working file so checkout writes fresh from blob
+        runGit(['-C', dir, 'rm', '--cached', 'fexec-smudge.fs']);
+        // Also delete from disk so tsgit checkout re-writes it
+        const { rm: fsRm } = await import('node:fs/promises');
+        await fsRm(path.join(dir, 'fexec-smudge.fs'), { force: true });
+        // Re-stage blob so checkout has something to restore
+        runGit(['-C', dir, 'checkout', 'HEAD', '--', 'fexec-smudge.fs']);
+        await fsRm(path.join(dir, 'fexec-smudge.fs'), { force: true });
+
+        // Clear the log file so we count only this invocation
+        const { writeFile: wf } = await import('node:fs/promises');
+        await wf(fexecSmudgeLogFile, '');
+
+        // Act — tsgit checkout triggers the fexec2 smudge driver
+        await checkout(ctx, { paths: ['fexec-smudge.fs'] });
+
+        // Assert argc=0: the log file must end with "0"
+        const logContent = await readFile(fexecSmudgeLogFile, 'utf8');
+        const logLines = logContent
+          .trim()
+          .split('\n')
+          .filter((l) => l.length > 0);
+        expect(logLines.at(-1)).toBe('0');
+
+        // Assert worktree bytes are lowercase (smudge driver ran stdin→stdout)
+        const worktreeBytes = await readFile(path.join(dir, 'fexec-smudge.fs'), 'utf8');
+        expect(worktreeBytes).toBe('hello smudge exec\n');
       });
     });
   });

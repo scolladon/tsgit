@@ -19,6 +19,11 @@ import * as streamBlobMod from '../../../../src/application/primitives/stream-bl
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  CommandRequest,
+  CommandResult,
+  CommandRunner,
+} from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const author: AuthorIdentity = {
@@ -885,6 +890,84 @@ describe('stash push — ignored files', () => {
         // The ignored file is excluded from the stash and left on disk.
         expect(await treeContent(ctx, u, 'ignored.txt')).toBe('<absent>');
         expect(await read(ctx, 'ignored.txt')).toBe('secret\n');
+      });
+    });
+  });
+});
+
+// ── Filter-aware stash push ────────────────────────────────────────────────
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+const uppercase = (b: Uint8Array): Uint8Array => enc(dec(b).toUpperCase());
+
+class FakeRunner implements CommandRunner {
+  async run(request: CommandRequest): Promise<CommandResult> {
+    return { exitCode: 0, stdout: uppercase(request.stdin ?? new Uint8Array(0)) };
+  }
+}
+
+/**
+ * Seeds a repo with a .gitattributes filter=myf + [filter "myf"] config,
+ * commits the CLEANED (uppercased) bytes as HEAD, then writes the smudged
+ * (original) bytes back to the working tree to simulate post-checkout state.
+ * Returns the ctx with command runner wired.
+ */
+const seedFilterStash = async (name: string, smudgedContent: string): Promise<Context> => {
+  const runner = new FakeRunner();
+  const baseCtx = createMemoryContext();
+  await init(baseCtx);
+
+  const ext = name.split('.').pop() ?? 'y';
+  await baseCtx.fs.writeUtf8(`${baseCtx.layout.workDir}/.gitattributes`, `*.${ext} filter=myf\n`);
+  const configPath = `${baseCtx.layout.gitDir}/config`;
+  const existingConfig = await baseCtx.fs.readUtf8(configPath).catch(() => '');
+  await baseCtx.fs.writeUtf8(
+    configPath,
+    `${existingConfig}\n[filter "myf"]\n\tclean = uppercase-clean\n\tsmudge = lowercase-smudge\n`,
+  );
+
+  const ctxWithRunner: Context = { ...baseCtx, command: runner };
+
+  await ctxWithRunner.fs.writeUtf8(`${baseCtx.layout.workDir}/${name}`, smudgedContent);
+  await add(ctxWithRunner, [name]);
+  await commit(ctxWithRunner, { message: 'seed', author });
+
+  // Simulate post-checkout: working tree holds smudged bytes
+  await ctxWithRunner.fs.writeUtf8(`${baseCtx.layout.workDir}/${name}`, smudgedContent);
+  return ctxWithRunner;
+};
+
+describe('stashPush — clean filter re-application', () => {
+  describe('Given a smudged-unmodified file under an active filter=myf and a command runner', () => {
+    describe('When stashPush is called', () => {
+      it('Then the stash reports no-local-changes (worktree treated as unchanged via clean re-application)', async () => {
+        // Arrange — worktree holds smudged bytes matching the staged cleaned OID after clean
+        const ctx = await seedFilterStash('stash-filtered.y', 'hello stash\n');
+
+        // Act — projectWorkingTree must recognise the smudged file as unchanged
+        const result = await stashPush(ctx);
+
+        // Assert — no local changes detected (smudged == cleaned OID after filter)
+        expect(result.kind).toBe('no-local-changes');
+      });
+    });
+  });
+
+  describe('Given a smudged-unmodified file under an active filter=myf but ctx.command is absent', () => {
+    describe('When stashPush is called (no runner)', () => {
+      it('Then the stash detects local changes (raw bytes differ from cleaned OID — regression guard)', async () => {
+        // Arrange — build context WITHOUT command so raw-bytes path is taken
+        const ctx = await seedFilterStash('norun-stash.y', 'hello norun\n');
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { command: _cmd, ...ctxWithoutCommand } = ctx;
+        const noRunnerCtx: Context = ctxWithoutCommand;
+
+        // Act — raw bytes differ from cleaned OID => projectWorkingTree sees dirty
+        const result = await stashPush(noRunnerCtx);
+
+        // Assert — spuriously detected as modified (regression: raw path in use)
+        expect(result.kind).toBe('saved');
       });
     });
   });
