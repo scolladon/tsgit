@@ -1,5 +1,5 @@
 import type { DiffChange, PatchFile } from '../../domain/diff/index.js';
-import { kindOf } from '../../domain/diff/index.js';
+import { isGitlink } from '../../domain/diff/index.js';
 import { MAX_SCORE } from '../../domain/diff/similarity.js';
 import type { FileMode, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -15,7 +15,7 @@ function synthesizeGitlink(oid: ObjectId): Uint8Array {
 }
 
 async function resolveSide(ctx: Context, mode: FileMode, id: ObjectId): Promise<Uint8Array> {
-  if (kindOf(mode) === 'gitlink') return synthesizeGitlink(id);
+  if (isGitlink(mode)) return synthesizeGitlink(id);
   const blob = await readBlob(ctx, id);
   return blob.content;
 }
@@ -35,14 +35,12 @@ export async function materialisePatchFiles(
 
 export async function materialiseOne(ctx: Context, change: DiffChange): Promise<PatchFile> {
   if (change.type === 'add') {
-    if (kindOf(change.newMode) === 'gitlink')
-      return { change, newContent: synthesizeGitlink(change.newId) };
+    if (isGitlink(change.newMode)) return { change, newContent: synthesizeGitlink(change.newId) };
     const blob = await readBlob(ctx, change.newId);
     return { change, newContent: blob.content };
   }
   if (change.type === 'delete') {
-    if (kindOf(change.oldMode) === 'gitlink')
-      return { change, oldContent: synthesizeGitlink(change.oldId) };
+    if (isGitlink(change.oldMode)) return { change, oldContent: synthesizeGitlink(change.oldId) };
     const blob = await readBlob(ctx, change.oldId);
     return { change, oldContent: blob.content };
   }
@@ -58,11 +56,7 @@ export async function materialiseOne(ctx: Context, change: DiffChange): Promise<
   // Short-circuit when ids match (mode-only modify) only when neither side
   // is gitlink: a gitlink pointer-bump always has different oids, but guard
   // explicitly to keep the existing mode-only short-circuit test green.
-  if (
-    change.oldId === change.newId &&
-    kindOf(change.oldMode) !== 'gitlink' &&
-    kindOf(change.newMode) !== 'gitlink'
-  ) {
+  if (change.oldId === change.newId && !isGitlink(change.oldMode) && !isGitlink(change.newMode)) {
     const blob = await readBlob(ctx, change.oldId);
     return { change, oldContent: blob.content, newContent: blob.content };
   }

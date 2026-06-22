@@ -9,7 +9,7 @@ import type {
   TreeDiff,
 } from '../../domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import { kindOf } from '../../domain/diff/index.js';
+import { isGitlink } from '../../domain/diff/index.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
@@ -28,8 +28,6 @@ import { readBlob } from './read-blob.js';
 
 /** Must match `rename-detect.ts` DEFAULT_LIMIT (1000). */
 const DEFAULT_LIMIT = 1000;
-
-const isGitlinkMode = (mode: FileMode): boolean => kindOf(mode) === 'gitlink';
 
 interface BlobEntry {
   readonly id: ObjectId;
@@ -68,7 +66,7 @@ function buildCopySourcesForOn(
   }
   for (const change of other) {
     if (change.type === 'modify' || change.type === 'type-change') {
-      if (!isGitlinkMode(change.oldMode))
+      if (!isGitlink(change.oldMode))
         sources.push({ oldPath: change.path, oldId: change.oldId, oldMode: change.oldMode });
     }
   }
@@ -87,7 +85,7 @@ function buildCopySourcesForHarder(
 ): ReadonlyArray<CopySource> {
   const sources: CopySource[] = [];
   for (const [path, entry] of preimage) {
-    if (!isGitlinkMode(entry.mode))
+    if (!isGitlink(entry.mode))
       sources.push({ oldPath: path, oldId: entry.id, oldMode: entry.mode });
   }
   return sources;
@@ -349,10 +347,10 @@ function partitionLeftovers(changes: ReadonlyArray<DiffChange>): {
   const other: DiffChange[] = [];
   for (const change of changes) {
     if (change.type === 'add') {
-      if (isGitlinkMode(change.newMode)) other.push(change);
+      if (isGitlink(change.newMode)) other.push(change);
       else adds.push(change);
     } else if (change.type === 'delete') {
-      if (isGitlinkMode(change.oldMode)) other.push(change);
+      if (isGitlink(change.oldMode)) other.push(change);
       else deletes.push(change);
     } else other.push(change);
   }
@@ -584,7 +582,7 @@ async function attemptBreaks(
   breakScore: number,
 ): Promise<{ readonly broken: ReadonlyArray<BrokenRecord>; readonly patchedDiff: TreeDiff }> {
   const modifies = diff.changes.filter(
-    (c): c is ModifyChange => c.type === 'modify' && !isGitlinkMode(c.oldMode),
+    (c): c is ModifyChange => c.type === 'modify' && !isGitlink(c.oldMode),
   );
   if (modifies.length === 0) return { broken: [], patchedDiff: diff };
 

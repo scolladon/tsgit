@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { isSameKind, kindOf } from '../../../../src/domain/diff/mode-kind.js';
+import { isGitlink, isSameKind, kindOf } from '../../../../src/domain/diff/mode-kind.js';
 import type { FileMode } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -172,6 +172,45 @@ describe('isSameKind', () => {
             return isSameKind(a, b) === isSameKind(b, a);
           }),
         );
+      });
+    });
+  });
+});
+
+describe('isGitlink', () => {
+  describe('Given FILE_MODE.GITLINK', () => {
+    describe('When isGitlink called', () => {
+      it('Then returns true', () => {
+        // Arrange
+        const mode = FILE_MODE.GITLINK;
+
+        // Act
+        const sut = isGitlink(mode);
+
+        // Assert
+        expect(sut).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a non-gitlink mode', () => {
+    describe('When isGitlink called', () => {
+      it('Then returns false for REGULAR, EXECUTABLE, SYMLINK, and DIRECTORY', () => {
+        // Arrange
+        const nonGitlinkModes: FileMode[] = [
+          FILE_MODE.REGULAR,
+          FILE_MODE.EXECUTABLE,
+          FILE_MODE.SYMLINK,
+          FILE_MODE.DIRECTORY,
+        ];
+
+        for (const mode of nonGitlinkModes) {
+          // Act
+          const sut = isGitlink(mode);
+
+          // Assert
+          expect(sut).toBe(false);
+        }
       });
     });
   });

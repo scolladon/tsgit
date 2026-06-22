@@ -49,7 +49,7 @@ export {
 
 // Mode-kind helpers (shared with merge)
 export type { ModeKind } from './mode-kind.js';
-export { isSameKind, kindOf } from './mode-kind.js';
+export { isGitlink, isSameKind, kindOf } from './mode-kind.js';
 // Patch serializer
 export type {
   BodyLine,
