@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
+  cleanFilterFailed,
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
@@ -1095,6 +1096,50 @@ describe('domain error — AdapterError', () => {
 
       // Assert
       expect(sut.message).toContain('invalid sequencer todo: bad line');
+    });
+  });
+});
+
+describe('cleanFilterFailed error', () => {
+  describe('Given cleanFilterFailed factory with path, filter name and exitCode', () => {
+    describe('When accessing .data', () => {
+      it('Then data carries code CLEAN_FILTER_FAILED, path, filter, exitCode', () => {
+        // Arrange & Act
+        const sut = cleanFilterFailed('src/file.bin' as never, 'lfs', 1);
+
+        // Assert
+        expect(sut.data.code).toBe('CLEAN_FILTER_FAILED');
+        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.path).toBe('src/file.bin');
+        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.filter).toBe('lfs');
+        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.exitCode).toBe(1);
+      });
+    });
+  });
+
+  describe('Given cleanFilterFailed with exitCode 128', () => {
+    describe('When accessing .data.exitCode', () => {
+      it('Then exitCode is preserved as 128', () => {
+        // Arrange & Act
+        const sut = cleanFilterFailed('blob.dat' as never, 'myfilter', 128);
+
+        // Assert
+        expect(sut.data.code).toBe('CLEAN_FILTER_FAILED');
+        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.exitCode).toBe(128);
+      });
+    });
+  });
+
+  describe('Given cleanFilterFailed factory', () => {
+    describe('When reading .message', () => {
+      it('Then message contains filter name, file basename and exitCode', () => {
+        // Arrange & Act
+        const sut = cleanFilterFailed('repo/assets/photo.png' as never, 'lfs-clean', 2);
+
+        // Assert
+        expect(sut.message).toContain('lfs-clean');
+        expect(sut.message).toContain('photo.png');
+        expect(sut.message).toContain('2');
+      });
     });
   });
 });
