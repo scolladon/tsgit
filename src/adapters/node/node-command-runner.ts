@@ -11,6 +11,13 @@ interface CommandChild {
   on(event: 'error', listener: (err: Error) => void): void;
   on(event: 'close', listener: (code: number | null) => void): void;
   kill(): void;
+  readonly stdin: {
+    write(chunk: Uint8Array): void;
+    end(): void;
+  };
+  readonly stdout: {
+    on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+  };
 }
 
 /**
@@ -22,11 +29,26 @@ export interface CommandRunnerOps {
   readonly spawn: (
     command: string,
     args: ReadonlyArray<string>,
-    options: { readonly cwd: string; readonly env: NodeJS.ProcessEnv; readonly stdio: 'ignore' },
+    options: {
+      readonly cwd: string;
+      readonly env: NodeJS.ProcessEnv;
+      readonly stdio: ['pipe', 'pipe', 'inherit'];
+    },
   ) => CommandChild;
 }
 
 export const realCommandRunnerOps: CommandRunnerOps = { spawn };
+
+const concatChunks = (chunks: Uint8Array[]): Uint8Array => {
+  const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+};
 
 const spawnCommand = (
   ops: CommandRunnerOps,
@@ -38,7 +60,7 @@ const spawnCommand = (
     const child = ops.spawn(shell, [flag, request.command], {
       cwd: request.cwd,
       env: { ...process.env, ...request.env },
-      stdio: 'ignore',
+      stdio: ['pipe', 'pipe', 'inherit'] as ['pipe', 'pipe', 'inherit'],
     });
     const signal = request.signal;
     const onAbort = (): void => {
@@ -46,25 +68,37 @@ const spawnCommand = (
     };
     signal?.addEventListener('abort', onAbort);
     if (signal?.aborted === true) child.kill();
+    if (request.stdin !== undefined) {
+      child.stdin.write(request.stdin);
+      child.stdin.end();
+    }
+    const stdoutChunks: Uint8Array[] = [];
+    child.stdout.on('data', (chunk: Uint8Array) => {
+      stdoutChunks.push(chunk);
+    });
     // `error` and `close` can both fire on a failed spawn; `resolve` is
     // idempotent, so the first result wins and any second call is a no-op.
-    const finish = (result: CommandResult): void => {
+    const finish = (exitCode: number): void => {
       signal?.removeEventListener('abort', onAbort);
-      resolve(result);
+      if (stdoutChunks.length > 0) {
+        resolve({ exitCode, stdout: concatChunks(stdoutChunks) });
+      } else {
+        resolve({ exitCode });
+      }
     };
     child.on('error', () => {
-      finish({ exitCode: SPAWN_ERROR_EXIT });
+      finish(SPAWN_ERROR_EXIT);
     });
     child.on('close', (code) => {
-      finish({ exitCode: code ?? SIGNAL_KILLED_EXIT });
+      finish(code ?? SIGNAL_KILLED_EXIT);
     });
   });
 
 /**
  * Node `CommandRunner`: runs a command line through the platform shell
  * (`sh -c` on POSIX, `cmd /c` on Windows) with `cwd` and an environment that
- * merges `request.env` over `process.env`. Child stdio is ignored — a merge
- * driver communicates via its output file, not stdout. Never rejects for a
+ * merges `request.env` over `process.env`. Stdin is piped from `request.stdin`
+ * when present; stdout is captured into `result.stdout`. Never rejects for a
  * non-zero exit.
  */
 export class NodeCommandRunner implements CommandRunner {

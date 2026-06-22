@@ -7978,7 +7978,23 @@
 							},
 							{
 								"kind": "text",
-								"text": ". Child stdio is ignored — a merge\ndriver communicates via its output file, not stdout. Never rejects for a\nnon-zero exit."
+								"text": ". Stdin is piped from "
+							},
+							{
+								"kind": "code",
+								"text": "`request.stdin`"
+							},
+							{
+								"kind": "text",
+								"text": "\nwhen present; stdout is captured into "
+							},
+							{
+								"kind": "code",
+								"text": "`result.stdout`"
+							},
+							{
+								"kind": "text",
+								"text": ". Never rejects for a\nnon-zero exit."
 							}
 						]
 					},
@@ -11629,8 +11645,21 @@
 																		"isReadonly": true
 																	},
 																	"type": {
-																		"type": "literal",
-																		"value": "ignore"
+																		"type": "tuple",
+																		"elements": [
+																			{
+																				"type": "literal",
+																				"value": "pipe"
+																			},
+																			{
+																				"type": "literal",
+																				"value": "pipe"
+																			},
+																			{
+																				"type": "literal",
+																				"value": "inherit"
+																			}
+																		]
 																	}
 																}
 															],
@@ -58238,7 +58267,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Runs an arbitrary shell command line — the custom merge-driver command.\nOptional on "
+								"text": "Runs an arbitrary shell command line — the custom merge-driver / textconv /\nclean-smudge filter command. Optional on "
 							},
 							{
 								"kind": "code",
@@ -58246,7 +58275,63 @@
 							},
 							{
 								"kind": "text",
-								"text": ": when absent (browser / memory adapters cannot spawn a\nprocess), a configured external driver falls back to the built-in merge.\nNEVER rejects for a non-zero exit — interpreting the exit code is the caller's\npolicy."
+								"text": ": when absent (browser /\nmemory adapters cannot spawn a process), a configured external driver falls\nback to the built-in behaviour.\n\nNEVER rejects for a non-zero exit — interpreting the exit code is the\ncaller's policy.\n\nTwo output conventions coexist on this single port:\n- **Merge driver**: communicates via its "
+							},
+							{
+								"kind": "code",
+								"text": "`%A`"
+							},
+							{
+								"kind": "text",
+								"text": " output file; the caller\n  ignores "
+							},
+							{
+								"kind": "code",
+								"text": "`result.stdout`"
+							},
+							{
+								"kind": "text",
+								"text": ". Pass no "
+							},
+							{
+								"kind": "code",
+								"text": "`stdin`"
+							},
+							{
+								"kind": "text",
+								"text": "; "
+							},
+							{
+								"kind": "code",
+								"text": "`stdout`"
+							},
+							{
+								"kind": "text",
+								"text": " will be absent.\n- **Textconv / filter driver**: communicates via stdout; the caller reads\n  "
+							},
+							{
+								"kind": "code",
+								"text": "`result.stdout`"
+							},
+							{
+								"kind": "text",
+								"text": ". Pass "
+							},
+							{
+								"kind": "code",
+								"text": "`stdin`"
+							},
+							{
+								"kind": "text",
+								"text": " bytes when the driver reads from stdin\n  (clean/smudge); omit "
+							},
+							{
+								"kind": "code",
+								"text": "`stdin`"
+							},
+							{
+								"kind": "text",
+								"text": " when the driver reads from a file argument\n  (textconv)."
 							}
 						]
 					},
