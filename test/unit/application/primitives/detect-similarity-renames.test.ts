@@ -3009,6 +3009,56 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given a gitlink add and a real-blob delete (add-side guard)', () => {
+    describe('When detectSimilarityRenames runs', () => {
+      it('Then gitlink stays add and blob stays delete, gitlink oid never read', async () => {
+        // Arrange — isolates the gitlink-add guard in partitionLeftovers. A non-gitlink
+        // delete keeps `deletes` non-empty so the inexact pass runs past its short-circuit;
+        // a mutant dropping the add-side guard would route the gitlink add into `adds`,
+        // hydrate its commit oid via readBlob, and throw.
+        const ctx = await buildSeededContext();
+        const emptyTree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, emptyTree);
+        const author = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+        const commitX: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'x',
+            extraHeaders: [],
+          },
+        };
+        const glX = await writeObject(ctx, commitX);
+        const blobId = await writeBlob(ctx, tenLines(0));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'file.txt' as FilePath,
+              oldId: blobId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            { type: 'add', newPath: 'sub' as FilePath, newId: glX, newMode: FILE_MODE.GITLINK },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+
+        // Assert — gitlink add stays, blob delete stays; no rename
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        const add = result.changes.find((c) => c.type === 'add');
+        if (add?.type === 'add') expect(add.newMode).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+
   describe('Given a gitlink modify above the break-attempt gate', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then gitlink modify passes through unchanged, readBlob never called', async () => {

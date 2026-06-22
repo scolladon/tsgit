@@ -277,11 +277,11 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
 
     // 13. R3 — gitlink delete + near-similar real blob add (not cross-paired)
     runGit(['-C', dir, 'update-index', '--add', '--cacheinfo', `160000,${GITLINK_OID},r3_gone`]);
+    const r3From = doCommit('r3 gitlink present');
+    git(dir, 'rm', '--cached', 'r3_gone');
     await writeFile(path.join(dir, 'r3_blob'), 'line1\nline2\nline3\n');
     git(dir, 'add', 'r3_blob');
-    const r3From = doCommit('r3 gitlink and blob present');
-    git(dir, 'rm', '--cached', 'r3_gone');
-    const r3To = doCommit('r3 gitlink deleted blob stays');
+    const r3To = doCommit('r3 gitlink deleted blob added');
     r3GitlinkDeleteBlobAdd = { from: r3From, to: r3To };
 
     // 14. copy-source — gitlink is NOT a copy source under -C --find-copies-harder
@@ -967,7 +967,8 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
           renameOptions: { threshold: Math.floor(MAX_SCORE * 0.5) },
         });
 
-        // Assert — gitlink keeps 160000, blob keeps 100644, no rename
+        // Assert — both sides survive unpaired: gitlink stays a 160000 delete,
+        // blob stays a 100644 add, no rename/copy
         const types = sut.changes.map((c) => c.type);
         expect(types).not.toContain('rename');
         expect(types).not.toContain('copy');
@@ -975,6 +976,11 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         expect(deleteChange?.type).toBe('delete');
         if (deleteChange?.type === 'delete') {
           expect(deleteChange.oldMode).toBe('160000');
+        }
+        const addChange = sut.changes.find((c) => c.type === 'add');
+        expect(addChange?.type).toBe('add');
+        if (addChange?.type === 'add') {
+          expect(addChange.newMode).toBe('100644');
         }
       });
     });
