@@ -7,7 +7,8 @@
  * structured data; git refuses with exit 128), and F4 (required absent ⇒ exit 0,
  * raw bytes staged — assert raw blob OID parity).
  *
- * Slices 8/9 extend this SAME file with smudge@checkout and F1-no-diff halves.
+ * F-EXEC pins the stdin→stdout driver contract: the driver receives no positional
+ * arguments (argc=0), content on stdin, result on stdout.
  *
  * Drivers are trivial portable stdin→stdout scripts (`LC_ALL=C tr a-z A-Z` for
  * clean / uppercase, `LC_ALL=C tr A-Z a-z` for smudge / lowercase). The `tr`
@@ -18,13 +19,15 @@
  * env vars, points `HOME` at a non-existent path, and sets `GIT_CONFIG_NOSYSTEM=1`
  * — no global/system/XDG git config engages.
  */
-import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
+import { checkout } from '../../src/application/commands/checkout.js';
+import { status } from '../../src/application/commands/status.js';
 import { readBlob } from '../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -54,6 +57,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
   let ctx: ReturnType<typeof createNodeContext>;
   let cleanScript = '';
   let cleanFailScript = '';
+  let fexecLogFile = '';
   let epoch = 1_700_040_000;
 
   const nextEpoch = (): number => (epoch += 1);
@@ -81,17 +85,37 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     await writeFile(cleanFailScript, '#!/bin/sh\nexit 1\n');
     await chmod(cleanFailScript, 0o755);
 
+    // Portable smudge (stdin→stdout lowercase) — inverse of clean-upper.sh
+    const smudgeScript = path.join(dir, '.git', 'smudge-lower.sh');
+    await writeFile(smudgeScript, '#!/bin/sh\nLC_ALL=C tr A-Z a-z\n');
+    await chmod(smudgeScript, 0o755);
+
+    // F-EXEC logging driver: echo stdin→stdout, append argc to logfile
+    fexecLogFile = path.join(dir, '.git', 'fexec-argc.log');
+    const fexecScript = path.join(dir, '.git', 'fexec-log.sh');
+    await writeFile(fexecScript, `#!/bin/sh\necho $# >> "${fexecLogFile}"\nLC_ALL=C tr a-z A-Z\n`);
+    await chmod(fexecScript, 0o755);
+
     // Configure local filter drivers in .git/config
     runGit(['-C', dir, 'config', `filter.myf.clean`, cleanScript]);
+    runGit(['-C', dir, 'config', `filter.myf.smudge`, smudgeScript]);
     runGit(['-C', dir, 'config', `filter.fail-req.clean`, cleanFailScript]);
     runGit(['-C', dir, 'config', `filter.fail-req.required`, 'true']);
     runGit(['-C', dir, 'config', `filter.fail-opt.clean`, cleanFailScript]);
+    // F2: clean-only (no smudge configured) — identity smudge
+    runGit(['-C', dir, 'config', `filter.c2.clean`, cleanScript]);
+    // F-EXEC: logging driver wired as clean
+    runGit(['-C', dir, 'config', `filter.fexec.clean`, fexecScript]);
 
     // .gitattributes mapping
     await writeFile(
       path.join(dir, '.gitattributes'),
-      ['*.y filter=myf', '*.req filter=fail-req', '*.opt filter=fail-opt'].join('\n') + '\n',
+      `${['*.y filter=myf', '*.req filter=fail-req', '*.opt filter=fail-opt', '*.c2 filter=c2', '*.fx filter=fexec'].join('\n')}\n`,
     );
+
+    // Commit .gitattributes as the repository root so no test leaves it untracked
+    runGit(['-C', dir, 'add', '.gitattributes']);
+    runGit(['-C', dir, 'commit', '-q', '-m', 'init'], { env: dateEnv(nextEpoch()) });
 
     ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
@@ -219,6 +243,110 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
 
         // OID parity
         expect(tsEntry!.id).toBe(gitBlobOid);
+      });
+    });
+  });
+
+  // ── smudge-F1: checkout writes smudged bytes; tsgit status is clean ────────
+
+  describe('Given a committed .y file whose blob is UPPERCASE (cleaned) and filter=myf smudge is configured', () => {
+    describe('When tsgit checkout restores the file and status is queried', () => {
+      it('Then the worktree file has lowercase bytes and tsgit status is clean', async () => {
+        // Arrange — create f1s.y, stage+commit via git so HEAD has UPPERCASE blob
+        const rawContent = 'hello filter\n';
+        await writeFile(path.join(dir, 'f1s.y'), rawContent);
+        git(dir, 'add', 'f1s.y');
+        doCommit('add f1s.y');
+
+        // Verify git committed UPPERCASE (clean applied at add)
+        const gitBlobOid = git(dir, 'rev-parse', 'HEAD:f1s.y').trim();
+        const gitBlobContent = git(dir, 'cat-file', 'blob', gitBlobOid);
+        expect(gitBlobContent).toBe('HELLO FILTER\n');
+
+        // Remove worktree file so checkout writes it fresh
+        await rm(path.join(dir, 'f1s.y'));
+
+        // Act — tsgit checkout restores file (smudge → lowercase)
+        await checkout(ctx, { paths: ['f1s.y'] });
+
+        // Assert worktree file has smudged (lowercase) bytes
+        const worktreeBytes = await readFile(path.join(dir, 'f1s.y'));
+        expect(dec(worktreeBytes)).toBe('hello filter\n');
+
+        // Git diff is clean (peer verification)
+        const gitDiff = git(dir, 'diff', '--no-ext-diff', '--', 'f1s.y').trim();
+        expect(gitDiff).toBe('');
+
+        // tsgit status: path absent from changes, repo is clean
+        const result = await status(ctx);
+        const changedPath = result.changes.find((c) => c.path === 'f1s.y');
+        expect(changedPath).toBeUndefined();
+        expect(result.clean).toBe(true);
+      });
+    });
+  });
+
+  // ── F2: clean-only filter → identity smudge → worktree = blob bytes ────────
+
+  describe('Given a committed .c2 file with filter=c2 (clean-only, no smudge configured)', () => {
+    describe('When tsgit checkout restores the file', () => {
+      it('Then the worktree file has verbatim blob bytes (identity smudge) and status is clean', async () => {
+        // Arrange — create f2.c2, stage+commit via git (UPPERCASE blob stored)
+        const rawContent = 'hello c2\n';
+        await writeFile(path.join(dir, 'f2.c2'), rawContent);
+        git(dir, 'add', 'f2.c2');
+        doCommit('add f2.c2');
+
+        const gitBlobOid = git(dir, 'rev-parse', 'HEAD:f2.c2').trim();
+        const gitBlobContent = git(dir, 'cat-file', 'blob', gitBlobOid);
+        expect(gitBlobContent).toBe('HELLO C2\n');
+
+        // Remove worktree file so checkout writes it fresh
+        await rm(path.join(dir, 'f2.c2'));
+
+        // Act — tsgit checkout: no smudge configured → identity → writes blob bytes
+        await checkout(ctx, { paths: ['f2.c2'] });
+
+        // Assert worktree file equals UPPERCASE blob (no smudge applied)
+        const worktreeBytes = await readFile(path.join(dir, 'f2.c2'));
+        expect(dec(worktreeBytes)).toBe('HELLO C2\n');
+
+        // Git diff is clean
+        const gitDiff = git(dir, 'diff', '--no-ext-diff', '--', 'f2.c2').trim();
+        expect(gitDiff).toBe('');
+
+        // tsgit status: clean
+        const result = await status(ctx);
+        const changedPath = result.changes.find((c) => c.path === 'f2.c2');
+        expect(changedPath).toBeUndefined();
+        expect(result.clean).toBe(true);
+      });
+    });
+  });
+
+  // ── F-EXEC: driver receives stdin, writes stdout, no positional args ────────
+
+  describe('Given a .fx file under filter=fexec whose clean driver logs $# to a file', () => {
+    describe('When tsgit add stages it', () => {
+      it('Then the driver received argc=0 (stdin→stdout only) and the blob content matches', async () => {
+        // Arrange
+        const rawContent = 'hello exec\n';
+        await writeFile(path.join(dir, 'fexec.fx'), rawContent);
+
+        // Act — tsgit add triggers the fexec clean driver
+        await add(ctx, ['fexec.fx']);
+
+        // Assert argc=0: the log file must contain a single line with "0"
+        const logContent = await readFile(fexecLogFile, 'utf8');
+        const logLines = logContent.trim().split('\n');
+        expect(logLines.at(-1)).toBe('0');
+
+        // Assert blob content is UPPERCASE (clean driver ran stdin→stdout)
+        const tsIndex = await readIndex(ctx);
+        const tsEntry = tsIndex.entries.find((e) => e.path === 'fexec.fx');
+        expect(tsEntry).toBeDefined();
+        const tsBlob = await readBlob(ctx, tsEntry!.id as ObjectId);
+        expect(dec(tsBlob.content)).toBe('HELLO EXEC\n');
       });
     });
   });

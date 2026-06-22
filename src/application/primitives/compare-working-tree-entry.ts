@@ -18,10 +18,14 @@
 import { isSameKind } from '../../domain/diff/mode-kind.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/objects/file-mode.js';
-import type { ObjectId } from '../../domain/objects/object-id.js';
+import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
+import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
+import { resolveFilterDriver } from './resolve-filter-driver.js';
+import { runFilterDriver } from './run-filter-driver.js';
 
 export type WorkingTreeComparison =
   | 'absent'
@@ -53,9 +57,28 @@ export const isWorkingTreeModified = (comparison: WorkingTreeComparison): boolea
 
 const LINK_ENCODER = new TextEncoder();
 
+/**
+ * Apply the clean filter to worktree bytes before hashing for comparison.
+ * On driver failure, fall back to the raw bytes (graceful, matches add's F4).
+ * Symlinks are never filtered — callers guard this.
+ */
+const cleanWorktreeBytes = async (
+  ctx: Context,
+  runner: CommandRunner,
+  provider: AttributeProvider,
+  path: FilePath,
+  bytes: Uint8Array,
+): Promise<Uint8Array> => {
+  const choice = await resolveFilterDriver(ctx, provider, path);
+  if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
+  const result = await runFilterDriver(ctx, runner, choice.clean, bytes);
+  return result.ok ? result.bytes : bytes;
+};
+
 export const compareWorkingTreeDelta = async (
   ctx: Context,
   entry: IndexEntry,
+  provider?: AttributeProvider,
 ): Promise<WorkingTreeDelta> => {
   const absPath = joinPath(ctx.layout.workDir, entry.path);
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
@@ -71,9 +94,15 @@ export const compareWorkingTreeDelta = async (
     return { status: 'type-changed', worktreeMode };
   }
   try {
-    const content = stat.isSymbolicLink
+    const raw = stat.isSymbolicLink
       ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
       : await ctx.fs.read(absPath);
+    // Route regular-file bytes through the clean filter before hashing when a
+    // provider and runner are available. Symlink targets are always hashed raw.
+    const content =
+      !stat.isSymbolicLink && provider !== undefined && ctx.command !== undefined
+        ? await cleanWorktreeBytes(ctx, ctx.command, provider, entry.path, raw)
+        : raw;
     const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
     // Content dominates: a changed blob is `modified` regardless of mode. Only a
     // same-blob mode difference (exec bit) is `mode-changed`.

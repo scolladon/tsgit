@@ -8,9 +8,27 @@ import {
   isWorkingTreeModified,
   type WorkingTreeComparison,
 } from '../../../../src/application/primitives/compare-working-tree-entry.js';
+import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
+import type {
+  CommandRequest,
+  CommandResult,
+  CommandRunner,
+} from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+const uppercase = (b: Uint8Array): Uint8Array => enc(dec(b).toUpperCase());
+
+/** Fake runner: applies a transform to stdin bytes and returns them as stdout. */
+class FakeRunner implements CommandRunner {
+  constructor(private readonly transform: (input: Uint8Array) => Uint8Array = uppercase) {}
+  async run(request: CommandRequest): Promise<CommandResult> {
+    return { exitCode: 0, stdout: this.transform(request.stdin ?? new Uint8Array(0)) };
+  }
+}
 
 const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
 
@@ -386,6 +404,144 @@ describe('compareWorkingTreeDelta', () => {
 
         // Assert
         expect(sut).toBe('modified');
+      });
+    });
+  });
+
+  // ── Filter-aware clean re-application ─────────────────────────────────────
+
+  /**
+   * Seeds a repo with a .gitattributes filter mapping and a [filter] config
+   * section, stages the CLEANED (uppercased) bytes via add+runner, then
+   * returns the ctx WITH a command runner, the index entry (cleaned OID),
+   * and a provider.
+   */
+  const seedFilterRepo = async (
+    name: string,
+    smudgedContent: string,
+  ): Promise<{ ctx: Context; entry: IndexEntry }> => {
+    const runner = new FakeRunner(uppercase);
+    const baseCtx = createMemoryContext();
+    await init(baseCtx);
+
+    // Write .gitattributes: *.y filter=myf
+    const ext = name.split('.').pop() ?? 'y';
+    await baseCtx.fs.writeUtf8(work(baseCtx, '.gitattributes'), `*.${ext} filter=myf\n`);
+
+    // Write filter config in .git/config
+    const configPath = `${baseCtx.layout.gitDir}/config`;
+    const existingConfig = await baseCtx.fs.readUtf8(configPath).catch(() => '');
+    await baseCtx.fs.writeUtf8(
+      configPath,
+      `${existingConfig}\n[filter "myf"]\n\tclean = uppercase-clean\n\tsmudge = lowercase-smudge\n`,
+    );
+
+    // Context WITH command runner so clean filter runs during add
+    const ctxWithRunner: Context = { ...baseCtx, command: runner };
+
+    // Stage the file — the clean filter (uppercase) runs and stores CLEANED bytes
+    await ctxWithRunner.fs.writeUtf8(work(baseCtx, name), smudgedContent);
+    await add(ctxWithRunner, [name]);
+    const index = await readIndex(ctxWithRunner);
+    const entry = index.entries.find((e) => e.path === name);
+    if (entry === undefined) throw new Error(`seedFilterRepo: ${name} not staged`);
+
+    return { ctx: ctxWithRunner, entry };
+  };
+
+  describe('Given a smudged worktree file under an active filter=myf', () => {
+    describe('When the clean driver produces bytes whose hash equals the staged cleaned blob OID', () => {
+      it("Then compareWorkingTreeDelta returns 'unchanged' (worktree-side clean re-application)", async () => {
+        // Arrange
+        const smudgedContent = 'hello world\n';
+        const { ctx, entry } = await seedFilterRepo('f1.y', smudgedContent);
+
+        // Worktree holds smudged (lowercase) bytes — simulating post-checkout state
+        await ctx.fs.writeUtf8(work(ctx, 'f1.y'), smudgedContent);
+
+        const provider = await buildAttributeProvider(ctx);
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, entry, provider);
+
+        // Assert — clean(smudged) == staged OID => unchanged
+        expect(sut.status).toBe('unchanged');
+      });
+    });
+  });
+
+  describe('Given a genuinely-modified file under an active filter=myf', () => {
+    describe('When the cleaned worktree bytes differ from the staged blob OID', () => {
+      it("Then compareWorkingTreeDelta returns 'modified'", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFilterRepo('f1mod.y', 'hello world\n');
+
+        // Worktree has genuinely different content (cleaned hash will also differ)
+        await ctx.fs.writeUtf8(work(ctx, 'f1mod.y'), 'different content\n');
+
+        const provider = await buildAttributeProvider(ctx);
+
+        // Act
+        const sut = await compareWorkingTreeDelta(ctx, entry, provider);
+
+        // Assert
+        expect(sut.status).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given a smudged worktree file but ctx.command is absent', () => {
+    describe('When compareWorkingTreeDelta is called without a runner', () => {
+      it("Then it falls back to raw-bytes comparison and reports 'modified'", async () => {
+        // Arrange — build a context without command (no runner wired)
+        const smudgedContent = 'hello world\n';
+        const { ctx, entry } = await seedFilterRepo('f1raw.y', smudgedContent);
+
+        // Worktree holds smudged bytes; raw hash differs from cleaned OID -> modified
+        await ctx.fs.writeUtf8(work(ctx, 'f1raw.y'), smudgedContent);
+
+        const provider = await buildAttributeProvider(ctx);
+
+        // Build a fresh context sharing the same fs/layout but without command
+        const baseCtx = createMemoryContext();
+        const noRunnerCtx: Context = {
+          ...baseCtx,
+          fs: ctx.fs,
+          layout: ctx.layout,
+        };
+
+        // Act
+        const sut = await compareWorkingTreeDelta(noRunnerCtx, entry, provider);
+
+        // Assert — no runner -> raw path -> smudged bytes hash != cleaned OID -> modified
+        expect(sut.status).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given a symlink entry under an active filter=myf', () => {
+    describe('When compareWorkingTreeDelta is called with a provider', () => {
+      it('Then the symlink target is hashed raw, never passed through clean', async () => {
+        // Arrange — seed with a regular file to get .gitattributes + config,
+        // then create a symlink that is NOT filtered (symlinks are always raw).
+        const { ctx } = await seedFilterRepo('sym.y', 'hello\n');
+        // Stage a symlink (without runner so it is stored as raw link target)
+        await ctx.fs.symlink('target-link', work(ctx, 'sym2.y'));
+        // Use a context without command runner to stage the symlink without filtering
+        const baseNoCmd = createMemoryContext();
+        const noRunnerCtx: Context = { ...baseNoCmd, fs: ctx.fs, layout: ctx.layout };
+        await add(noRunnerCtx, ['sym2.y']);
+        const index = await readIndex(ctx);
+        const symEntry = index.entries.find((e) => e.path === 'sym2.y');
+        if (symEntry === undefined) throw new Error('symlink not staged');
+
+        const provider = await buildAttributeProvider(ctx);
+
+        // Act — worktree symlink target unchanged; should be unchanged (raw)
+        const sut = await compareWorkingTreeDelta(ctx, symEntry, provider);
+
+        // Assert — symlink target hashed raw (not cleaned) => unchanged
+        expect(sut.status).toBe('unchanged');
       });
     });
   });
