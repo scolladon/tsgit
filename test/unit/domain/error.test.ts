@@ -1143,6 +1143,19 @@ describe('cleanFilterFailed error', () => {
       });
     });
   });
+
+  describe('Given cleanFilterFailed factory', () => {
+    describe('When reading .message prefix', () => {
+      it('Then message starts with "clean filter" (not "smudge filter" via case fall-through)', () => {
+        // Arrange & Act
+        const sut = cleanFilterFailed('dir/file.dat' as never, 'myfilter', 3);
+
+        // Assert — the CLEAN_FILTER_FAILED case must return its own message, not fall through
+        // to the SMUDGE_FILTER_FAILED case which starts with "smudge filter".
+        expect(sut.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter '/);
+      });
+    });
+  });
 });
 
 describe('smudgeFilterFailed error', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { applyTextconv } from '../../../../src/application/primitives/apply-textconv.js';
-import type { CommandRunner } from '../../../../src/ports/command-runner.js';
+import type { CommandRequest, CommandRunner } from '../../../../src/ports/command-runner.js';
 
 const utf8 = new TextEncoder();
 
@@ -141,6 +141,54 @@ describe('applyTextconv', () => {
         // per-side+path token is what prevents concurrent-diff collisions;
         // the cross-path collision itself is exercised in materialise-patch-files.test.ts)
         expect(capturedTmpPath).toMatch(new RegExp(`TEXTCONV_INPUT_${token}$`));
+      });
+    });
+  });
+
+  describe('Given a context with no abort signal', () => {
+    describe('When applyTextconv is called', () => {
+      it('Then the signal key is absent from the runner request (not just undefined)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const content = utf8.encode('data\n');
+        let capturedReq: CommandRequest | undefined;
+        const runner: CommandRunner = {
+          run: async (req) => {
+            capturedReq = req;
+            return { exitCode: 0, stdout: content };
+          },
+        };
+
+        // Act
+        await applyTextconv(ctx, runner, 'cmd', content, 'tok');
+
+        // Assert — the spread `...(undefined !== undefined ? {signal} : {})` must
+        // resolve to `{}`, so `signal` must be absent as an own property.
+        expect(capturedReq).toBeDefined();
+        expect(Object.hasOwn(capturedReq ?? {}, 'signal')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a context with a gitDir layout', () => {
+    describe('When applyTextconv is called', () => {
+      it('Then env.GIT_DIR is set to ctx.layout.gitDir', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const content = utf8.encode('abc\n');
+        let capturedEnv: Record<string, string> | undefined;
+        const runner: CommandRunner = {
+          run: async (req) => {
+            capturedEnv = req.env;
+            return { exitCode: 0, stdout: content };
+          },
+        };
+
+        // Act
+        await applyTextconv(ctx, runner, 'cmd', content, 'tok');
+
+        // Assert — driver must receive GIT_DIR so it resolves relative paths correctly
+        expect(capturedEnv?.GIT_DIR).toBe(ctx.layout.gitDir);
       });
     });
   });

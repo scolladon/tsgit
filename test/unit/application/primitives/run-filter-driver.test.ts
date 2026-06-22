@@ -141,7 +141,7 @@ describe('runFilterDriver', () => {
 
   describe('Given a context without an abort signal', () => {
     describe('When run', () => {
-      it('Then no signal is set on the request', async () => {
+      it('Then the signal key is absent from the runner request (not just undefined)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const runner = new FakeRunner(0, enc('out'));
@@ -149,8 +149,10 @@ describe('runFilterDriver', () => {
         // Act
         await runFilterDriver(ctx, runner, 'cmd', enc('in'));
 
-        // Assert
+        // Assert — spreading `...(undefined !== undefined ? {signal} : {})` must
+        // yield `{}`, so `signal` must be absent as an own property on the request.
         expect(runner.calls[0]?.signal).toBeUndefined();
+        expect(Object.hasOwn(runner.calls[0] ?? {}, 'signal')).toBe(false);
       });
     });
   });

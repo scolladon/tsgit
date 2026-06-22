@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { buildAttributeProvider } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
+import {
+  buildAttributeProvider,
+  maybeBuildAttributeProvider,
+} from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { resolveAttribute } from '../../../../../src/domain/attributes/index.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
@@ -364,6 +367,41 @@ describe('buildAttributeProvider', () => {
           caught = err;
         }
         expect((caught as Error).message).toBe('unexpected I/O failure');
+      });
+    });
+  });
+});
+
+describe('maybeBuildAttributeProvider', () => {
+  describe('Given a context without a command runner (ctx.command is undefined)', () => {
+    describe('When maybeBuildAttributeProvider is called', () => {
+      it('Then resolves to undefined (no provider built without a runner)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const sut = await maybeBuildAttributeProvider(ctx);
+
+        // Assert — the conditional `ctx.command !== undefined` must be checked:
+        // when command is absent the right-hand branch must run, not always-build.
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a context with a command runner', () => {
+    describe('When maybeBuildAttributeProvider is called', () => {
+      it('Then resolves to a defined AttributeProvider', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          command: { run: async () => ({ exitCode: 0 }) },
+        });
+
+        // Act
+        const sut = await maybeBuildAttributeProvider(ctx);
+
+        // Assert
+        expect(sut).toBeDefined();
       });
     });
   });
