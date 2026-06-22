@@ -959,7 +959,6 @@ describe('stashPush — clean filter re-application', () => {
       it('Then the stash detects local changes (raw bytes differ from cleaned OID — regression guard)', async () => {
         // Arrange — build context WITHOUT command so raw-bytes path is taken
         const ctx = await seedFilterStash('norun-stash.y', 'hello norun\n');
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { command: _cmd, ...ctxWithoutCommand } = ctx;
         const noRunnerCtx: Context = ctxWithoutCommand;
 

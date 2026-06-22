@@ -137,13 +137,10 @@ describe('applyTextconv', () => {
         // Act
         await applyTextconv(ctx, runner, 'upper', content, token);
 
-        // Assert — the temp path ends with the caller-supplied token
+        // Assert — the temp path ends with the caller-supplied token (the
+        // per-side+path token is what prevents concurrent-diff collisions;
+        // the cross-path collision itself is exercised in materialise-patch-files.test.ts)
         expect(capturedTmpPath).toMatch(new RegExp(`TEXTCONV_INPUT_${token}$`));
-        // Two distinct tokens yield distinct paths, preventing concurrent collisions
-        const otherToken = 'old_src_ts';
-        const expectedOther = `${ctx.layout.gitDir}/TEXTCONV_INPUT_${otherToken}`;
-        const expectedThis = `${ctx.layout.gitDir}/TEXTCONV_INPUT_${token}`;
-        expect(expectedThis).not.toBe(expectedOther);
       });
     });
   });
