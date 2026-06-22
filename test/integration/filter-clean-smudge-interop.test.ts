@@ -90,7 +90,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     await writeFile(smudgeScript, '#!/bin/sh\nLC_ALL=C tr A-Z a-z\n');
     await chmod(smudgeScript, 0o755);
 
-    // F-EXEC logging driver: echo stdin→stdout, append argc to logfile
+    // F-EXEC logging driver: echo stdin→stdout, append argc to a log file
     fexecLogFile = path.join(dir, '.git', 'fexec-argc.log');
     const fexecScript = path.join(dir, '.git', 'fexec-log.sh');
     await writeFile(fexecScript, `#!/bin/sh\necho $# >> "${fexecLogFile}"\nLC_ALL=C tr a-z A-Z\n`);
