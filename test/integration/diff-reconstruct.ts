@@ -18,4 +18,5 @@ export const reconstructPatch = async (
   ctx: Context,
   treeDiff: TreeDiff,
   opts?: PatchOptions,
-): Promise<string> => renderPatch(await materialisePatchFiles(ctx, treeDiff.changes), opts);
+): Promise<string> =>
+  renderPatch(await materialisePatchFiles(ctx, treeDiff.changes, { applyTextconv: true }), opts);

@@ -27,7 +27,7 @@ export interface ShowItem {
 }
 
 const patchTextOf = async (ctx: Context, diff: TreeDiff): Promise<string> =>
-  renderPatch(await materialisePatchFiles(ctx, diff.changes));
+  renderPatch(await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true }));
 
 const commitNode = async (
   ctx: Context,

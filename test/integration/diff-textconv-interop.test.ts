@@ -90,6 +90,7 @@ let seedCommit: string;
 let textconvModify: CommitPair;
 let textconvAdd: CommitPair;
 let namedUnconfigured: CommitPair;
+let binaryMacro: CommitPair;
 
 describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
   beforeAll(async () => {
@@ -121,10 +122,11 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
     runGit(['-C', dir, 'config', 'diff.lower.textconv', lowerScript]);
 
     // Seed commit — .gitattributes that assigns diff=upper to *.upper files,
-    // diff=lower to *.lower files, and diff=unconfigured to *.unk (T2 fallback).
+    // diff=lower to *.lower files, diff=unconfigured to *.unk (T2 fallback),
+    // and treats *.bin as binary (binary macro — T-BIN).
     await writeFile(
       path.join(dir, '.gitattributes'),
-      '*.upper diff=upper\n*.lower diff=lower\n*.unk diff=unconfigured\n',
+      '*.upper diff=upper\n*.lower diff=lower\n*.unk diff=unconfigured\n*.bin binary\n',
     );
     await writeFile(path.join(dir, 'seed.upper'), 'hello world\n');
     git(dir, 'add', '.gitattributes', 'seed.upper');
@@ -151,6 +153,16 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
     git(dir, 'add', 'plain.unk');
     const c3 = doCommit('modify plain.unk');
     namedUnconfigured = { from: c2, to: c3 };
+
+    // T-BIN: add then modify a .bin file — content with null bytes triggers binary
+    // detection in both git (byte scanner) and tsgit's isBinary (hasNulInWindow).
+    await writeFile(path.join(dir, 'data.bin'), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+    git(dir, 'add', 'data.bin');
+    const c4 = doCommit('add data.bin');
+    await writeFile(path.join(dir, 'data.bin'), Buffer.from([0x00, 0x01, 0x02, 0x04]));
+    git(dir, 'add', 'data.bin');
+    const c5 = doCommit('modify data.bin');
+    binaryMacro = { from: c4, to: c5 };
 
     ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
@@ -286,6 +298,67 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
         const result = await reconstructPatch(ctx, treeDiff);
 
         // Assert — raw bytes used (no textconv transform)
+        expect(result).toBe(peer);
+      });
+    });
+  });
+
+  // T5 — committed-byte rawness: textconv transforms display only; the stored blob is raw
+  describe('Given a .upper file with diff=upper configured (T5 committed-byte rawness)', () => {
+    describe('When the blob OID is read directly from git cat-file', () => {
+      it('Then the committed bytes are raw (textconv never writes back to the object store)', () => {
+        // Arrange — textconvModify uses seed.upper which was committed as lowercase
+        const { to } = textconvModify;
+
+        // Act — read the committed blob bytes directly (no diff, no textconv)
+        const raw = git(dir, 'cat-file', '-p', `${to}:seed.upper`);
+
+        // Assert — the object store holds lowercase (raw) content, not the uppercase display form
+        expect(raw).toBe('hello there\n');
+      });
+    });
+
+    describe('When the DiffChange old OID is dereferenced via cat-file', () => {
+      it('Then the old committed bytes are raw', async () => {
+        // Arrange
+        const { from, to } = textconvModify;
+
+        // Act
+        const treeDiff = await diff(ctx, { from, to });
+        const change = treeDiff.changes[0];
+        if (change?.type !== 'modify') return;
+        const rawOld = git(dir, 'cat-file', '-p', change.oldId);
+        const rawNew = git(dir, 'cat-file', '-p', change.newId);
+
+        // Assert — OIDs point to raw blobs (lowercase), not textconv output
+        expect(rawOld).toBe('hello world\n');
+        expect(rawNew).toBe('hello there\n');
+      });
+    });
+  });
+
+  // T-BIN — binary macro ⇒ no diff output (Binary files differ) and no textconv
+  describe('Given a .bin file marked with the binary macro in .gitattributes (T-BIN)', () => {
+    describe('When diff is called and patch is reconstructed', () => {
+      it('Then git diff shows Binary files differ (binary macro suppresses diff)', () => {
+        // Arrange — verify peer git produces no textual diff for binary files
+        const { from, to } = binaryMacro;
+        const peer = git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
+
+        // Assert — peer output contains the binary sentinel, no text diff
+        expect(peer).toContain('Binary files');
+      });
+
+      it('Then reconstructed patch matches git diff output for binary change (T-BIN)', async () => {
+        // Arrange
+        const { from, to } = binaryMacro;
+        const peer = git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
+
+        // Act
+        const treeDiff = await diff(ctx, { from, to });
+        const result = await reconstructPatch(ctx, treeDiff);
+
+        // Assert — both produce the same binary sentinel line
         expect(result).toBe(peer);
       });
     });

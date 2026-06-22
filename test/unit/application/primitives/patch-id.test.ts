@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { computePatchId } from '../../../../src/application/primitives/patch-id.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -230,6 +231,40 @@ describe('computePatchId', () => {
 
       // Assert — different pointers → different patch-ids
       expect(sut).not.toBe(other);
+    });
+  });
+
+  describe('Given ctx.command is wired and a textconv driver is configured, When patch-id is computed', () => {
+    it('Then the patch-id uses raw blob bytes — textconv does not affect the equivalence key', async () => {
+      // Arrange — ctx with command runner (simulates real Node.js context);
+      // a textconv driver is configured; two commits introduce the same change
+      // to the same file; patch-ids must match regardless of textconv output.
+      let runnerCallCount = 0;
+      const ctx = createMemoryContext({
+        command: {
+          run: async () => {
+            runnerCallCount++;
+            return { exitCode: 0, stdout: encoder.encode('TRANSFORMED\n') };
+          },
+        },
+      });
+      // Write textconv config into the memory context's gitDir
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f diff=upper\n');
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+      );
+      const base = await commitFile(ctx, 'before\n', []);
+      const cA = await commitFile(ctx, 'after\n', [base]);
+      const cB = await commitFile(ctx, 'after\n', [base]);
+
+      // Act
+      const patchIdA = await computePatchId(ctx, cA);
+      const patchIdB = await computePatchId(ctx, cB);
+
+      // Assert — patch-ids are equal (same logical change) and textconv was NOT invoked
+      expect(patchIdA).toBe(patchIdB);
+      expect(runnerCallCount).toBe(0);
     });
   });
 });

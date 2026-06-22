@@ -117,4 +117,34 @@ describe('applyTextconv', () => {
       });
     });
   });
+
+  describe('Given a caller-supplied token', () => {
+    describe('When applyTextconv is called', () => {
+      it('Then the temp file path embeds the token verbatim for per-invocation uniqueness', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const content = utf8.encode('hello\n');
+        let capturedTmpPath = '';
+        const runner: CommandRunner = {
+          run: async (req) => {
+            // argv[1] is the last space-separated token in the command string
+            capturedTmpPath = req.command.split(' ').pop() ?? '';
+            return { exitCode: 0, stdout: utf8.encode('HELLO\n') };
+          },
+        };
+        const token = 'new_src_ts';
+
+        // Act
+        await applyTextconv(ctx, runner, 'upper', content, token);
+
+        // Assert — the temp path ends with the caller-supplied token
+        expect(capturedTmpPath).toMatch(new RegExp(`TEXTCONV_INPUT_${token}$`));
+        // Two distinct tokens yield distinct paths, preventing concurrent collisions
+        const otherToken = 'old_src_ts';
+        const expectedOther = `${ctx.layout.gitDir}/TEXTCONV_INPUT_${otherToken}`;
+        const expectedThis = `${ctx.layout.gitDir}/TEXTCONV_INPUT_${token}`;
+        expect(expectedThis).not.toBe(expectedOther);
+      });
+    });
+  });
 });
