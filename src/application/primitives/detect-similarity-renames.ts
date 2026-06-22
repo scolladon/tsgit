@@ -9,6 +9,7 @@ import type {
   TreeDiff,
 } from '../../domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
+import { kindOf } from '../../domain/diff/index.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
@@ -27,6 +28,8 @@ import { readBlob } from './read-blob.js';
 
 /** Must match `rename-detect.ts` DEFAULT_LIMIT (1000). */
 const DEFAULT_LIMIT = 1000;
+
+const isGitlinkMode = (mode: FileMode): boolean => kindOf(mode) === 'gitlink';
 
 interface BlobEntry {
   readonly id: ObjectId;
@@ -65,7 +68,8 @@ function buildCopySourcesForOn(
   }
   for (const change of other) {
     if (change.type === 'modify' || change.type === 'type-change') {
-      sources.push({ oldPath: change.path, oldId: change.oldId, oldMode: change.oldMode });
+      if (!isGitlinkMode(change.oldMode))
+        sources.push({ oldPath: change.path, oldId: change.oldId, oldMode: change.oldMode });
     }
   }
   return sources;
@@ -83,7 +87,8 @@ function buildCopySourcesForHarder(
 ): ReadonlyArray<CopySource> {
   const sources: CopySource[] = [];
   for (const [path, entry] of preimage) {
-    sources.push({ oldPath: path, oldId: entry.id, oldMode: entry.mode });
+    if (!isGitlinkMode(entry.mode))
+      sources.push({ oldPath: path, oldId: entry.id, oldMode: entry.mode });
   }
   return sources;
 }
@@ -343,9 +348,13 @@ function partitionLeftovers(changes: ReadonlyArray<DiffChange>): {
   const deletes: DeleteChange[] = [];
   const other: DiffChange[] = [];
   for (const change of changes) {
-    if (change.type === 'add') adds.push(change);
-    else if (change.type === 'delete') deletes.push(change);
-    else other.push(change);
+    if (change.type === 'add') {
+      if (isGitlinkMode(change.newMode)) other.push(change);
+      else adds.push(change);
+    } else if (change.type === 'delete') {
+      if (isGitlinkMode(change.oldMode)) other.push(change);
+      else deletes.push(change);
+    } else other.push(change);
   }
   return { adds, deletes, other };
 }
@@ -574,7 +583,9 @@ async function attemptBreaks(
   diff: TreeDiff,
   breakScore: number,
 ): Promise<{ readonly broken: ReadonlyArray<BrokenRecord>; readonly patchedDiff: TreeDiff }> {
-  const modifies = diff.changes.filter((c): c is ModifyChange => c.type === 'modify');
+  const modifies = diff.changes.filter(
+    (c): c is ModifyChange => c.type === 'modify' && !isGitlinkMode(c.oldMode),
+  );
   if (modifies.length === 0) return { broken: [], patchedDiff: diff };
 
   const { records, paths } = await scoreModifies(ctx, modifies, breakScore);

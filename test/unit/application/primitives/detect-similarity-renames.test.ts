@@ -16,7 +16,7 @@ import {
   MAX_SCORE,
 } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Commit, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
@@ -2894,6 +2894,344 @@ describe('detectSimilarityRenames', () => {
           expect(result.changes[0].similarity.score).toBeGreaterThanOrEqual(
             DEFAULT_RENAME_THRESHOLD,
           );
+        }
+      });
+    });
+  });
+
+  describe('Given a different-oid gitlink add/delete pair', () => {
+    describe('When detectSimilarityRenames runs at threshold 1', () => {
+      it('Then stays separate add and delete, gitlink oid never read', async () => {
+        // Arrange — seed real commit objects so a mutant dropping the partitionLeftovers
+        // guard falls through to hydrateAndFingerprint → readBlob → throws
+        const ctx = await buildSeededContext();
+        const emptyTree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, emptyTree);
+        const author = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+        const commitX: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'x',
+            extraHeaders: [],
+          },
+        };
+        const commitY: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'y',
+            extraHeaders: [],
+          },
+        };
+        const glX = await writeObject(ctx, commitX);
+        const glY = await writeObject(ctx, commitY);
+        const diff: TreeDiff = {
+          changes: [
+            { type: 'delete', oldPath: 'sub' as FilePath, oldId: glX, oldMode: FILE_MODE.GITLINK },
+            { type: 'add', newPath: 'sub' as FilePath, newId: glY, newMode: FILE_MODE.GITLINK },
+          ],
+        };
+
+        // Act — threshold 1 maximises chance of inexact match
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+        const resultHarder = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder' },
+          new Map(),
+        );
+
+        // Assert — both runs: one add + one delete, no rename, no copy, no throw
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(resultHarder.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        expect(resultHarder.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+        expect(resultHarder.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a gitlink delete and a real-blob add (R3 candidate)', () => {
+    describe('When detectSimilarityRenames runs', () => {
+      it('Then gitlink stays delete and blob stays add (no cross-kind rename)', async () => {
+        // Arrange — isolates the gitlink-delete guard in partitionLeftovers
+        const ctx = await buildSeededContext();
+        const emptyTree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, emptyTree);
+        const author = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+        const commitX: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'x',
+            extraHeaders: [],
+          },
+        };
+        const glX = await writeObject(ctx, commitX);
+        const blobId = await writeBlob(ctx, tenLines(0));
+        const diff: TreeDiff = {
+          changes: [
+            { type: 'delete', oldPath: 'sub' as FilePath, oldId: glX, oldMode: FILE_MODE.GITLINK },
+            {
+              type: 'add',
+              newPath: 'file.txt' as FilePath,
+              newId: blobId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+
+        // Assert — gitlink delete stays, blob add stays; no rename
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        const del = result.changes.find((c) => c.type === 'delete');
+        if (del?.type === 'delete') expect(del.oldMode).toBe(FILE_MODE.GITLINK);
+      });
+    });
+  });
+
+  describe('Given a gitlink modify above the break-attempt gate', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then gitlink modify passes through unchanged, readBlob never called', async () => {
+        // Arrange — isolates the attemptBreaks gitlink-mode filter.
+        // Seed real commit objects; a mutant removing the filter would call readBlob and throw.
+        const ctx = await buildSeededContext();
+        const emptyTree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, emptyTree);
+        const author = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+        const commitOld: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'o',
+            extraHeaders: [],
+          },
+        };
+        const commitNew: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'n',
+            extraHeaders: [],
+          },
+        };
+        const oldId = await writeObject(ctx, commitOld);
+        const newId = await writeObject(ctx, commitNew);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'sub' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.GITLINK,
+              newMode: FILE_MODE.GITLINK,
+            },
+          ],
+        };
+
+        // Act — break score 1 guarantees the gate triggers for non-gitlink modifies
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 1, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — modify passes through untouched (no break datum)
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeUndefined();
+          expect(change.oldMode).toBe(FILE_MODE.GITLINK);
+        }
+      });
+    });
+  });
+
+  describe('Given a gitlink modify in the diff with copies: "on"', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then gitlink preimage is NOT a copy source, blob add stays add', async () => {
+        // Arrange — isolates buildCopySourcesForOn gitlink-mode guard (other-derived source).
+        // Seed real commit objects; a mutant removing the guard would add gitlink to copy sources,
+        // call readBlob and throw.
+        const ctx = await buildSeededContext();
+        const emptyTree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, emptyTree);
+        const author = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+        const commitOld: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'o',
+            extraHeaders: [],
+          },
+        };
+        const commitNew: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'n',
+            extraHeaders: [],
+          },
+        };
+        const oldGlId = await writeObject(ctx, commitOld);
+        const newGlId = await writeObject(ctx, commitNew);
+        const blobId = await writeBlob(ctx, tenLines(0));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'sub' as FilePath,
+              oldId: oldGlId,
+              newId: newGlId,
+              oldMode: FILE_MODE.GITLINK,
+              newMode: FILE_MODE.GITLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'file.txt' as FilePath,
+              newId: blobId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — copies:'on' includes modify preimages as copy sources
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+
+        // Assert — gitlink modify is not a copy source; blob add stays as add
+        expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given an unchanged gitlink entry in the preimage with copies: "harder"', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then gitlink preimage entry is NOT a copy source, blob add stays add', async () => {
+        // Arrange — isolates buildCopySourcesForHarder gitlink-mode guard (preimage-derived source).
+        // Seed real commit object so a mutant removing the guard would add it to copy sources,
+        // call readBlob and throw.
+        const ctx = await buildSeededContext();
+        const emptyTree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, emptyTree);
+        const author = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+        const commitX: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'x',
+            extraHeaders: [],
+          },
+        };
+        const gitlinkOid = await writeObject(ctx, commitX);
+        const blobId = await writeBlob(ctx, tenLines(0));
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['unchanged_sub' as FilePath, { id: gitlinkOid, mode: FILE_MODE.GITLINK }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'file.txt' as FilePath,
+              newId: blobId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — copies:'harder' includes unchanged preimage entries as copy sources
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'harder' }, preimage);
+
+        // Assert — gitlink preimage is NOT a copy source; blob add stays as add
+        expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given an exact same-oid gitlink add/delete pair (R1)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then folds to R100 MAX_SCORE rename, no bytes read', async () => {
+        // Arrange — regression guard: exact domain fold must stay mode-agnostic
+        const ctx = await buildSeededContext();
+        const emptyTree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, emptyTree);
+        const author = { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+        const commitX: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'x',
+            extraHeaders: [],
+          },
+        };
+        const glId = await writeObject(ctx, commitX);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'a/sub' as FilePath,
+              oldId: glId,
+              oldMode: FILE_MODE.GITLINK,
+            },
+            { type: 'add', newPath: 'b/sub' as FilePath, newId: glId, newMode: FILE_MODE.GITLINK },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff);
+
+        // Assert — one rename at MAX_SCORE, both modes 160000
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(renames).toHaveLength(1);
+        if (renames[0]?.type === 'rename') {
+          expect(renames[0].similarity.score).toBe(MAX_SCORE);
+          expect(renames[0].oldMode).toBe(FILE_MODE.GITLINK);
+          expect(renames[0].newMode).toBe(FILE_MODE.GITLINK);
         }
       });
     });
