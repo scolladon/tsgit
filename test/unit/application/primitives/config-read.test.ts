@@ -471,6 +471,228 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [diff "upper"] section with textconv', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.diff.get("upper").textconv is the command string', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "upper"]\n\ttextconv = up\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.diff?.get('upper')?.textconv).toBe('up');
+        expect(sut.diff?.get('upper')?.cachetextconv).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "upper"] section with textconv and cachetextconv=true', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.diff.get("upper") has both textconv and cachetextconv true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tcachetextconv = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.diff?.get('upper')?.textconv).toBe('up');
+        expect(sut.diff?.get('upper')?.cachetextconv).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a [diff "upper"] section with valueless cachetextconv (git NULL)', () => {
+    describe('When readConfig', () => {
+      it('Then cachetextconv is true (git NULL boolean-true semantics)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tcachetextconv\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.diff?.get('upper')?.cachetextconv).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two [diff "<name>"] sections', () => {
+    describe('When readConfig', () => {
+      it('Then each diff driver is parsed independently', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "a"]\n\ttextconv = tool-a\n[diff "b"]\n\ttextconv = tool-b\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.diff?.get('a')?.textconv).toBe('tool-a');
+        expect(sut.diff?.get('b')?.textconv).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given a config with no diff section', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.diff is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.diff).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a subsectionless [diff] section', () => {
+    describe('When readConfig', () => {
+      it('Then it is ignored and diff remains undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff]\n\ttextconv = up\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.diff).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [filter "myf"] section with clean and smudge', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.filter.get("myf") has clean and smudge', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "myf"]\n\tclean = up\n\tsmudge = down\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.filter?.get('myf')?.clean).toBe('up');
+        expect(sut.filter?.get('myf')?.smudge).toBe('down');
+        expect(sut.filter?.get('myf')?.process).toBeUndefined();
+        expect(sut.filter?.get('myf')?.required).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [filter "myf"] section with clean only', () => {
+    describe('When readConfig', () => {
+      it('Then smudge is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "myf"]\n\tclean = up\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.filter?.get('myf')?.clean).toBe('up');
+        expect(sut.filter?.get('myf')?.smudge).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [filter "f"] section with valueless required (git NULL)', () => {
+    describe('When readConfig', () => {
+      it('Then required is true (git NULL boolean-true semantics)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "f"]\n\tclean = up\n\trequired\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.filter?.get('f')?.required).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a [filter "f"] section with all four keys', () => {
+    describe('When readConfig', () => {
+      it('Then all four keys are parsed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[filter "f"]\n\tclean = cl\n\tsmudge = sm\n\tprocess = pr\n\trequired = true\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.filter?.get('f')?.clean).toBe('cl');
+        expect(sut.filter?.get('f')?.smudge).toBe('sm');
+        expect(sut.filter?.get('f')?.process).toBe('pr');
+        expect(sut.filter?.get('f')?.required).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two [filter "<name>"] sections', () => {
+    describe('When readConfig', () => {
+      it('Then each filter driver is parsed independently', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "a"]\n\tclean = tool-a\n[filter "b"]\n\tsmudge = tool-b\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.filter?.get('a')?.clean).toBe('tool-a');
+        expect(sut.filter?.get('b')?.smudge).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given a config with no filter section', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.filter is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.filter).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a subsectionless [filter] section', () => {
+    describe('When readConfig', () => {
+      it('Then it is ignored and filter remains undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter]\n\tclean = up\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.filter).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a config with # comments and ; comments', () => {
     describe('When readConfig', () => {
       it('Then comments are skipped', async () => {

@@ -43,6 +43,21 @@ export interface ParsedConfig {
     string,
     { readonly name?: string; readonly driver?: string; readonly recursive?: string }
   >;
+  /** `[diff "<name>"]` configured diff/textconv drivers. */
+  readonly diff?: ReadonlyMap<
+    string,
+    { readonly textconv?: string; readonly cachetextconv?: boolean }
+  >;
+  /** `[filter "<name>"]` configured clean/smudge filter drivers. */
+  readonly filter?: ReadonlyMap<
+    string,
+    {
+      readonly clean?: string;
+      readonly smudge?: string;
+      readonly process?: string;
+      readonly required?: boolean;
+    }
+  >;
   /** `[extensions]` — `partialClone` names the promisor remote of a partial clone. */
   readonly extensions?: { readonly partialClone?: string };
 }
@@ -970,23 +985,28 @@ interface MutableParsedConfig {
   branch?: Map<string, { remote?: string; merge?: string }>;
   submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
   merge?: Map<string, { name?: string; driver?: string; recursive?: string }>;
+  diff?: Map<string, { textconv?: string; cachetextconv?: boolean }>;
+  filter?: Map<string, { clean?: string; smudge?: string; process?: string; required?: boolean }>;
   extensions?: { partialClone?: string };
 }
 
+const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: string): void => {
+  if (sec.section === 'remote') mergeRemote(acc, name, sec);
+  else if (sec.section === 'branch') mergeBranch(acc, name, sec);
+  else if (sec.section === 'submodule') mergeSubmodule(acc, name, sec);
+  else if (sec.section === 'merge') mergeMergeDriver(acc, name, sec);
+  else if (sec.section === 'diff') mergeDiffDriver(acc, name, sec);
+  else if (sec.section === 'filter') mergeFilterDriver(acc, name, sec);
+};
+
 const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
-  if (sec.section === 'core' && sec.subsection === undefined) {
+  if (sec.subsection !== undefined) {
+    dispatchSubsection(acc, sec, sec.subsection);
+  } else if (sec.section === 'core') {
     mergeCore(acc, sec);
-  } else if (sec.section === 'user' && sec.subsection === undefined) {
+  } else if (sec.section === 'user') {
     mergeUser(acc, sec);
-  } else if (sec.section === 'remote' && sec.subsection !== undefined) {
-    mergeRemote(acc, sec.subsection, sec);
-  } else if (sec.section === 'branch' && sec.subsection !== undefined) {
-    mergeBranch(acc, sec.subsection, sec);
-  } else if (sec.section === 'submodule' && sec.subsection !== undefined) {
-    mergeSubmodule(acc, sec.subsection, sec);
-  } else if (sec.section === 'merge' && sec.subsection !== undefined) {
-    mergeMergeDriver(acc, sec.subsection, sec);
-  } else if (sec.section === 'extensions' && sec.subsection === undefined) {
+  } else if (sec.section === 'extensions') {
     mergeExtensions(acc, sec);
   }
 };
@@ -1202,6 +1222,56 @@ const mergeMergeDriver = (
   acc.merge.set(name, next);
 };
 
+const mergeDiffDriver = (
+  acc: { diff?: Map<string, { textconv?: string; cachetextconv?: boolean }> },
+  name: string,
+  sec: IniSection,
+): void => {
+  acc.diff ??= new Map();
+  const next: { textconv?: string; cachetextconv?: boolean } = {
+    ...(acc.diff.get(name) ?? {}),
+  };
+  for (const { key, value } of sec.entries) {
+    const lowered = key.toLowerCase();
+    if (lowered === 'textconv') {
+      // String-typed field: skip null (valueless key treated as absent).
+      if (value === null) continue;
+      next.textconv = value;
+    } else if (lowered === 'cachetextconv') {
+      next.cachetextconv = parseGitBoolean(value);
+    }
+  }
+  acc.diff.set(name, next);
+};
+
+type FilterEntry = { clean?: string; smudge?: string; process?: string; required?: boolean };
+
+const applyFilterEntry = (next: FilterEntry, key: string, value: string | null): void => {
+  const lowered = key.toLowerCase();
+  if (lowered === 'required') {
+    next.required = parseGitBoolean(value);
+    return;
+  }
+  // String-typed fields skip null (valueless key treated as absent).
+  if (value === null) return;
+  if (lowered === 'clean') next.clean = value;
+  else if (lowered === 'smudge') next.smudge = value;
+  else if (lowered === 'process') next.process = value;
+};
+
+const mergeFilterDriver = (
+  acc: { filter?: Map<string, FilterEntry> },
+  name: string,
+  sec: IniSection,
+): void => {
+  acc.filter ??= new Map();
+  const next: FilterEntry = { ...(acc.filter.get(name) ?? {}) };
+  for (const { key, value } of sec.entries) {
+    applyFilterEntry(next, key, value);
+  }
+  acc.filter.set(name, next);
+};
+
 const mergeExtensions = (
   acc: { extensions?: { partialClone?: string } },
   sec: IniSection,
@@ -1238,6 +1308,19 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   };
 };
 
+type FinalizeOut = {
+  diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
+  filter?: ReadonlyMap<string, FilterEntry>;
+};
+
+// Extracted to keep `finalize` under the cognitive-complexity ceiling.
+const finalizeDriverMaps = (acc: MutableParsedConfig, out: FinalizeOut): void => {
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.diff` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
+  if (acc.diff !== undefined && acc.diff.size > 0) out.diff = acc.diff;
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.filter` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
+  if (acc.filter !== undefined && acc.filter.size > 0) out.filter = acc.filter;
+};
+
 const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   const out: {
     core?: {
@@ -1264,6 +1347,11 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
     submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
     merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
+    diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
+    filter?: ReadonlyMap<
+      string,
+      { clean?: string; smudge?: string; process?: string; required?: boolean }
+    >;
     extensions?: { partialClone?: string };
   } = {};
   const core = finalizeCore(acc.core);
@@ -1283,6 +1371,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   if (acc.submodule !== undefined && acc.submodule.size > 0) out.submodule = acc.submodule;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.merge` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.merge !== undefined && acc.merge.size > 0) out.merge = acc.merge;
+  finalizeDriverMaps(acc, out);
   return out;
 };
 
