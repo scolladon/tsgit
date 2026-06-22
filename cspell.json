@@ -887,7 +887,8 @@
     "chokepoints",
     "PORTBOUND",
     "unrunnable",
-    "uppercased"
+    "uppercased",
+    "myfilter"
   ],
   "ignorePaths": [
     "node_modules",

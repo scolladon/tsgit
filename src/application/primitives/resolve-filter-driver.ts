@@ -14,6 +14,7 @@ export type FilterChoice =
   | { readonly kind: 'identity' }
   | {
       readonly kind: 'external';
+      readonly name: string;
       readonly clean?: string;
       readonly smudge?: string;
       readonly required: boolean;
@@ -27,6 +28,7 @@ const namedFilterChoice = async (ctx: Context, name: string): Promise<FilterChoi
   if (section === undefined) return IDENTITY;
   return {
     kind: 'external',
+    name,
     ...(section.clean !== undefined && { clean: section.clean }),
     ...(section.smudge !== undefined && { smudge: section.smudge }),
     required: section.required ?? false,

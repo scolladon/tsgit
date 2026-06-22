@@ -80,7 +80,13 @@ describe('resolveFilterDriver', () => {
         const sut = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', clean: 'up', smudge: 'down', required: false });
+        expect(sut).toEqual({
+          kind: 'external',
+          name: 'myf',
+          clean: 'up',
+          smudge: 'down',
+          required: false,
+        });
       });
     });
   });
@@ -96,7 +102,7 @@ describe('resolveFilterDriver', () => {
         const sut = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', clean: 'up', required: false });
+        expect(sut).toEqual({ kind: 'external', name: 'c', clean: 'up', required: false });
       });
     });
   });
@@ -112,7 +118,7 @@ describe('resolveFilterDriver', () => {
         const sut = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', clean: 'false', required: true });
+        expect(sut).toEqual({ kind: 'external', name: 'f', clean: 'false', required: true });
       });
     });
   });
@@ -148,7 +154,45 @@ describe('resolveFilterDriver', () => {
         const sut = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', clean: 'up', smudge: 'down', required: false });
+        expect(sut).toEqual({
+          kind: 'external',
+          name: 'myf',
+          clean: 'up',
+          smudge: 'down',
+          required: false,
+        });
+      });
+    });
+  });
+
+  describe('Given *.y filter=myf with [filter "myf"] clean configured', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then external driver carries name="myf" on the external arm', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '*.y filter=myf\n', '[filter "myf"]\n\tclean = up\n');
+
+        // Act
+        const sut = await choose(ctx, 'a.y');
+
+        // Assert — name must be present so CLEAN_FILTER_FAILED can carry it
+        expect(sut).toEqual({ kind: 'external', clean: 'up', required: false, name: 'myf' });
+      });
+    });
+  });
+
+  describe('Given *.y filter=f with required=true', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then external driver carries name="f" on the external arm', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, 'a.y filter=f\n', '[filter "f"]\n\tclean = false\n\trequired = true\n');
+
+        // Act
+        const sut = await choose(ctx, 'a.y');
+
+        // Assert
+        expect(sut).toEqual({ kind: 'external', clean: 'false', required: true, name: 'f' });
       });
     });
   });

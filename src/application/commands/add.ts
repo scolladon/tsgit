@@ -9,7 +9,11 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
-import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
+import {
+  cleanFilterFailed,
+  invalidOption,
+  workingTreeFileTooLarge,
+} from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
@@ -19,7 +23,13 @@ import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import {
+  type AttributeProvider,
+  buildAttributeProvider,
+} from '../primitives/internal/read-gitattributes.js';
 import { readIndex } from '../primitives/read-index.js';
+import { resolveFilterDriver } from '../primitives/resolve-filter-driver.js';
+import { runFilterDriver } from '../primitives/run-filter-driver.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { writeObject } from '../primitives/write-object.js';
@@ -74,31 +84,39 @@ export const add = async (
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.
   await assertNoPendingOperation(ctx, { except: ['merge', 'cherry-pick', 'revert', 'rebase'] });
+  // Build the attribute provider ONCE per add invocation. Skip when no runner
+  // is wired (R11 inert fallback — ctx.command absent means no filter execution).
+  const provider = ctx.command !== undefined ? await buildAttributeProvider(ctx) : undefined;
   if (opts.all === true) {
     if (paths.length !== 0) {
       throw invalidOption('all', 'pathspec must be empty when all=true');
     }
-    return addAll(ctx);
+    return addAll(ctx, undefined, provider);
   }
   if (paths.length === 0) throw emptyPathspec();
-  return dispatchPathspec(ctx, paths);
+  return dispatchPathspec(ctx, paths, provider);
 };
 
 // Branch on the resolved pathspec: pure literals that each name an
 // existing file route through the byte-identical per-path stage flow
 // from; anything else (globs, literal directories, negations)
 // walks the working tree and filters with the matcher.
-const dispatchPathspec = async (ctx: Context, paths: ReadonlyArray<string>): Promise<AddResult> => {
+const dispatchPathspec = async (
+  ctx: Context,
+  paths: ReadonlyArray<string>,
+  provider: AttributeProvider | undefined,
+): Promise<AddResult> => {
   const { matcher, literalMustMatch, hasGlob } = resolvePathspec(paths);
   if (!hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
-    return addLiteralOnly(ctx, literalMustMatch);
+    return addLiteralOnly(ctx, literalMustMatch, provider);
   }
-  return addByPathspec(ctx, matcher, literalMustMatch);
+  return addByPathspec(ctx, matcher, literalMustMatch, provider);
 };
 
 const addLiteralOnly = async (
   ctx: Context,
   validated: ReadonlyArray<FilePath>,
+  provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
   try {
@@ -107,7 +125,7 @@ const addLiteralOnly = async (
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
     for (const path of validated) {
-      const result = await stageOne(ctx, path);
+      const result = await stageOne(ctx, path, provider);
       if (result === 'missing') throw pathspecNoMatch(path);
       const previous = existing.get(path);
       newEntries.set(path, result);
@@ -143,6 +161,7 @@ const addByPathspec = async (
   ctx: Context,
   matcher: Pathspec,
   literalMustMatch: ReadonlyArray<FilePath>,
+  provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
   const ignore = await buildRepoIgnorePredicate(ctx);
   const combinedIgnore: IgnorePredicate = async (path, isDirectory) => {
@@ -159,7 +178,7 @@ const addByPathspec = async (
     const modified: FilePath[] = [];
     const seen = new Set<FilePath>();
     for await (const walkEntry of walkWorkingTree(ctx, { ignore: combinedIgnore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen);
+      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider);
       if (result === undefined) continue;
       matched.push(result.path);
       newEntries.set(result.path, result.entry);
@@ -183,6 +202,7 @@ const addByPathspec = async (
 export const addAll = async (
   ctx: Context,
   ignoreOverride?: IgnorePredicate,
+  provider?: AttributeProvider,
 ): Promise<AddResult> => {
   const ignore = ignoreOverride ?? (await buildRepoIgnorePredicate(ctx));
   const lock = await acquireIndexLock(ctx);
@@ -197,7 +217,7 @@ export const addAll = async (
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
     for await (const walkEntry of walkWorkingTree(ctx, { ignore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen);
+      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider);
       if (result === undefined) continue;
       newEntries.set(result.path, result.entry);
       if (result.kind === 'added') added.push(result.path);
@@ -271,6 +291,7 @@ const processWalkEntry = async (
   walkEntry: WalkWorkingTreeEntry,
   existing: ReadonlyMap<FilePath, IndexEntry>,
   seen: Set<FilePath>,
+  provider: AttributeProvider | undefined,
 ): Promise<WalkOutcome | undefined> => {
   const { path, stat } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
@@ -284,7 +305,7 @@ const processWalkEntry = async (
   if (stat.size > MAX_WORKING_TREE_BLOB_BYTES) {
     throw workingTreeFileTooLarge(path, stat.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
-  const entry = await stageFromStat(ctx, path, stat);
+  const entry = await stageFromStat(ctx, path, stat, provider);
   const previous = existing.get(path);
   if (previous === undefined) return { kind: 'added', path, entry };
   if (previous.id !== entry.id || previous.mode !== entry.mode) {
@@ -309,16 +330,21 @@ const readExistingEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, 
   }
 };
 
-const stageOne = async (ctx: Context, path: FilePath): Promise<IndexEntry | 'missing'> => {
+const stageOne = async (
+  ctx: Context,
+  path: FilePath,
+  provider: AttributeProvider | undefined,
+): Promise<IndexEntry | 'missing'> => {
   const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
   if (stat === undefined) return 'missing';
-  return stageFromStat(ctx, path, stat);
+  return stageFromStat(ctx, path, stat, provider);
 };
 
 const stageFromStat = async (
   ctx: Context,
   path: FilePath,
   stat: Awaited<ReturnType<Context['fs']['lstat']>>,
+  provider: AttributeProvider | undefined,
 ): Promise<IndexEntry> => {
   // Re-lstat under the index lock to close the walk→stage TOCTOU window:
   // an attacker swapping the inode (regular ↔ symlink, file ↔ directory)
@@ -340,13 +366,36 @@ const stageFromStat = async (
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
   const mode: FileMode = deriveWorkingMode(fresh);
-  const bytes = await readContent(ctx, path, fresh);
+  const raw = await readContent(ctx, path, fresh);
+  const bytes = await applyCleanFilter(ctx, path, raw, fresh.isSymbolicLink, provider);
   const id = (await writeObject(ctx, {
     type: 'blob',
     id: '' as ObjectId,
     content: bytes,
   })) as ObjectId;
   return indexEntryFromStat(fresh, mode, id, path);
+};
+
+/**
+ * Apply the clean filter for `path` when a runner and provider are available.
+ * Symlinks are never filtered (git stores the link target verbatim).
+ * F3: required=true + non-zero exit → throw CLEAN_FILTER_FAILED.
+ * F4: required=false/absent + non-zero exit → stage raw bytes silently.
+ */
+const applyCleanFilter = async (
+  ctx: Context,
+  path: FilePath,
+  bytes: Uint8Array,
+  isSymbolicLink: boolean,
+  provider: AttributeProvider | undefined,
+): Promise<Uint8Array> => {
+  if (provider === undefined || ctx.command === undefined || isSymbolicLink) return bytes;
+  const choice = await resolveFilterDriver(ctx, provider, path);
+  if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
+  const result = await runFilterDriver(ctx, ctx.command, choice.clean, bytes);
+  if (result.ok) return result.bytes;
+  if (choice.required) throw cleanFilterFailed(path, choice.name, result.exitCode);
+  return bytes;
 };
 
 const readContent = async (

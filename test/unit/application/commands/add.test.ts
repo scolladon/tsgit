@@ -1,11 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
+import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type {
+  CommandRequest,
+  CommandResult,
+  CommandRunner,
+} from '../../../../src/ports/command-runner.js';
 import { seedRepo } from './fixtures.js';
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+/** Fake runner: transforms stdin bytes (uppercase) and records calls. */
+class FakeRunner implements CommandRunner {
+  private readonly exitCode: number;
+  private readonly transform: (input: Uint8Array) => Uint8Array;
+  readonly calls: CommandRequest[] = [];
+
+  constructor(exitCode = 0, transform: (input: Uint8Array) => Uint8Array = (b) => b) {
+    this.exitCode = exitCode;
+    this.transform = transform;
+  }
+
+  async run(request: CommandRequest): Promise<CommandResult> {
+    this.calls.push(request);
+    if (this.exitCode !== 0) return { exitCode: this.exitCode };
+    return { exitCode: 0, stdout: this.transform(request.stdin ?? new Uint8Array(0)) };
+  }
+}
+
+const uppercase = (b: Uint8Array): Uint8Array => enc(dec(b).toUpperCase());
 
 const seedFreshRepo = async (workingTree: Readonly<Record<string, string>> = {}) => {
   const ctx = createMemoryContext();
@@ -1761,6 +1791,151 @@ describe('add', () => {
 
         // Assert
         expect(sut.added).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  // ── Clean filter (F1/F3/F4/symlink/fallback) ─────────────────────────────
+
+  describe('Given a file with an active clean filter that exits 0', () => {
+    describe('When add stages the file', () => {
+      it('Then the CLEANED blob OID is committed (not the raw bytes)', async () => {
+        // Arrange
+        const runner = new FakeRunner(0, uppercase);
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tclean = uppercase\n',
+        );
+        const enrichedCtx = { ...ctx, command: runner };
+
+        // Act
+        const result = await add(enrichedCtx, ['a.y']);
+
+        // Assert — blob content must be uppercased
+        const index = await readIndex(enrichedCtx);
+        const entry = index.entries.find((e) => e.path === 'a.y');
+        expect(entry).toBeDefined();
+        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        expect(dec(blob.content)).toBe('HELLO WORLD');
+        expect(result.added).toEqual(['a.y']);
+      });
+    });
+  });
+
+  describe('Given a file with required=true clean filter that exits non-zero', () => {
+    describe('When add stages the file (F3)', () => {
+      it('Then throws CLEAN_FILTER_FAILED and nothing is staged', async () => {
+        // Arrange
+        const runner = new FakeRunner(1);
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=f\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "f"]\n\tclean = false\n\trequired = true\n',
+        );
+        const enrichedCtx = { ...ctx, command: runner };
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(enrichedCtx, ['a.y']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — structured error (mutation-resistant: check code + exitCode + filter)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CLEAN_FILTER_FAILED');
+        expect((err.data as { exitCode: number }).exitCode).toBe(1);
+        expect((err.data as { filter: string }).filter).toBe('f');
+
+        // Nothing staged
+        const index = await readIndex(enrichedCtx).catch(() => null);
+        expect(index?.entries.length ?? 0).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a file with required=false (default) clean filter that exits non-zero', () => {
+    describe('When add stages the file (F4)', () => {
+      it('Then stages RAW bytes and succeeds (no throw)', async () => {
+        // Arrange
+        const runner = new FakeRunner(1);
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=f\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "f"]\n\tclean = false\n');
+        const enrichedCtx = { ...ctx, command: runner };
+
+        // Act
+        const result = await add(enrichedCtx, ['a.y']);
+
+        // Assert — raw blob stored (Hello World, not uppercased)
+        const index = await readIndex(enrichedCtx);
+        const entry = index.entries.find((e) => e.path === 'a.y');
+        expect(entry).toBeDefined();
+        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        expect(dec(blob.content)).toBe('Hello World');
+        expect(result.added).toEqual(['a.y']);
+      });
+    });
+  });
+
+  describe('Given a symlink with an active clean filter', () => {
+    describe('When add stages the symlink', () => {
+      it('Then the symlink target is staged verbatim (symlinks are not filtered)', async () => {
+        // Arrange
+        const runner = new FakeRunner(0, uppercase);
+        const ctx = await seedFreshRepo();
+        // Create a symlink pointing to 'target.txt'
+        await ctx.fs.symlink('target.txt', `${ctx.layout.workDir}/link.y`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tclean = uppercase\n',
+        );
+        const enrichedCtx = { ...ctx, command: runner };
+
+        // Act
+        const result = await add(enrichedCtx, ['link.y']);
+
+        // Assert — link target stored verbatim (not uppercased)
+        const index = await readIndex(enrichedCtx);
+        const entry = index.entries.find((e) => e.path === 'link.y');
+        expect(entry).toBeDefined();
+        const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
+        expect(dec(blob.content)).toBe('target.txt');
+        // Runner was NOT called for the symlink
+        expect(runner.calls.length).toBe(0);
+        expect(result.added).toEqual(['link.y']);
+      });
+    });
+  });
+
+  describe('Given a file with an active filter attribute but no ctx.command (no runner)', () => {
+    describe('When add stages the file (R11 fallback)', () => {
+      it('Then raw bytes are staged and no runner is invoked', async () => {
+        // Arrange — no command in ctx (ADR-408 fallback)
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tclean = uppercase\n',
+        );
+        // ctx has no command property (undefined)
+
+        // Act
+        const result = await add(ctx, ['a.y']);
+
+        // Assert — raw bytes stored
+        const index = await readIndex(ctx);
+        const entry = index.entries.find((e) => e.path === 'a.y');
+        expect(entry).toBeDefined();
+        const blob = await readBlob(ctx, entry!.id as ObjectId);
+        expect(dec(blob.content)).toBe('Hello World');
+        expect(result.added).toEqual(['a.y']);
       });
     });
   });
