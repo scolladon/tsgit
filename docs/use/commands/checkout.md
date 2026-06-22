@@ -59,6 +59,39 @@ await repo.checkout({ rev: 'main', force: true });
 - `PATHSPEC_NO_MATCH` — a literal path pattern matched nothing.
 - `BARE_REPOSITORY` — checkout is not valid in a bare repository.
 
+## Smudge filter drivers (`filter=<name>`)
+
+When a path carries a `filter=<name>` attribute in `.gitattributes` and
+`[filter "<name>"].smudge` is configured, `checkout` runs the smudge command over
+the committed blob bytes before writing to the working tree — the file on disk
+holds the **smudged** content.
+
+- **Smudge is a stdin → stdout transform.** The blob bytes are fed to the
+  command's stdin; the captured stdout is written to the working tree file.
+- **Symlinks and gitlinks are not smudged.** Only regular-file content is
+  passed through the smudge command, as git does.
+- **Clean-only (no smudge key) ⇒ identity smudge.** If `[filter "<name>"].clean`
+  is set but `smudge` is absent, the blob bytes are written verbatim — the file
+  on disk is identical to the committed bytes.
+- **`required` failure semantics.** If the smudge command exits non-zero:
+  - `filter.<name>.required = true` — the checkout is **refused**: `checkout`
+    throws `SMUDGE_FILTER_FAILED` (`{ path, filter, exitCode }`). The file is not
+    written to the working tree.
+  - `required` absent or `false` — the failure is a warning; raw blob bytes are
+    written and `checkout` succeeds (git's fallback behaviour).
+- **Named-but-unconfigured driver.** If `filter=<name>` is set but no `[filter
+  "<name>"]` section (or no `smudge` key) exists in the config, blob bytes are
+  written verbatim — identity smudge.
+- **Independent of `diff=`.** Clean/smudge and textconv are orthogonal. A path
+  with `filter=<name>` only is diffed against raw committed bytes; textconv only
+  applies to paths carrying `diff=<name>`.
+
+**Node.** The smudge command runs through the `CommandRunner` port (same trust
+model as merge drivers and hooks). In the browser / memory adapters, or in Node
+with `openRepository({ command: false })`, no driver is wired and blob bytes are
+written raw (identity smudge). See the [RUNBOOK](../../../RUNBOOK.md) "Operating filter
+and textconv drivers" section.
+
 ## See also
 
 - Primitives: [`materializeTree`](../primitives/internals.md#materializetree), [`buildIndexFromTree`](../primitives/internals.md#buildindexfromtree), [`synthesizeTreeFromIndex`](../primitives/internals.md#synthesizetreefromindex), [`readIndex`](../primitives/read-index.md)
