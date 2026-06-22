@@ -19,6 +19,7 @@ import type {
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import type { CommandRunner } from '../../../../src/ports/command-runner.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'a',
@@ -461,6 +462,184 @@ describe('materialiseOne', () => {
         // Assert
         expect(sut.oldContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
         expect(sut.newContent).toEqual(utf8.encode('regular content\n'));
+      });
+    });
+  });
+
+  // --- Textconv transform cases ---
+
+  describe('Given a modify change with textconv configured and ctx.command present', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then both sides are transformed by the textconv command output', async () => {
+        // Arrange
+        const oldTransformed = utf8.encode('HELLO WORLD\n');
+        const newTransformed = utf8.encode('HELLO THERE\n');
+        const runner: CommandRunner = {
+          run: async (req) => {
+            // Simulate: return uppercase of whichever raw bytes were written to the tmp file
+            if (req.command.includes('old')) return { exitCode: 0, stdout: oldTransformed };
+            return { exitCode: 0, stdout: newTransformed };
+          },
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.x diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+        );
+        const oldOid = await writeBlob(ctx, 'hello world\n');
+        const newOid = await writeBlob(ctx, 'hello there\n');
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'a.x' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — both sides are textconv-transformed
+        expect(sut.oldContent).toEqual(oldTransformed);
+        expect(sut.newContent).toEqual(newTransformed);
+        // OIDs on the change are untouched (R2 / T6)
+        expect(sut.change.type).toBe('modify');
+        if (sut.change.type === 'modify') {
+          expect(sut.change.oldId).toBe(oldOid);
+          expect(sut.change.newId).toBe(newOid);
+        }
+      });
+    });
+  });
+
+  describe('Given an add change with textconv configured and ctx.command present', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then only the new side is transformed (T-ADD)', async () => {
+        // Arrange
+        const newTransformed = utf8.encode('HELLO WORLD\n');
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 0, stdout: newTransformed }),
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.x diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+        );
+        const newOid = await writeBlob(ctx, 'hello world\n');
+        const change: AddChange = {
+          type: 'add',
+          newPath: 'a.x' as FilePath,
+          newId: newOid,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — new side is transformed, old side absent
+        expect(sut.newContent).toEqual(newTransformed);
+        expect(sut.oldContent).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a delete change with textconv configured and ctx.command present', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then only the old side is transformed', async () => {
+        // Arrange
+        const oldTransformed = utf8.encode('HELLO WORLD\n');
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 0, stdout: oldTransformed }),
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.x diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+        );
+        const oldOid = await writeBlob(ctx, 'hello world\n');
+        const change: DeleteChange = {
+          type: 'delete',
+          oldPath: 'a.x' as FilePath,
+          oldId: oldOid,
+          oldMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — old side is transformed, new side absent
+        expect(sut.oldContent).toEqual(oldTransformed);
+        expect(sut.newContent).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an add change with gitlink mode and textconv configured', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then gitlink side is NOT transformed (synthesized Subproject commit line)', async () => {
+        // Arrange
+        let runnerCalled = false;
+        const runner: CommandRunner = {
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0, stdout: utf8.encode('SHOULD NOT HAPPEN\n') };
+          },
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'sub diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+        );
+        const gitlinkOid = await writeCommitAsGitlink(ctx);
+        const change: AddChange = {
+          type: 'add',
+          newPath: 'sub' as FilePath,
+          newId: gitlinkOid,
+          newMode: FILE_MODE.GITLINK,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — gitlink side is synthesized, NOT transformed
+        expect(sut.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(runnerCalled).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a modify change with no ctx.command (default diff path)', () => {
+    describe('When materialiseOne is called', () => {
+      it('Then content is byte-identical raw blob bytes (default path unchanged)', async () => {
+        // Arrange
+        const ctx = createMemoryContext(); // no command runner
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.x diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+        );
+        const oldOid = await writeBlob(ctx, 'hello world\n');
+        const newOid = await writeBlob(ctx, 'hello there\n');
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'a.x' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const sut = await materialiseOne(ctx, change);
+
+        // Assert — raw bytes returned unchanged (no textconv)
+        expect(sut.oldContent).toEqual(utf8.encode('hello world\n'));
+        expect(sut.newContent).toEqual(utf8.encode('hello there\n'));
       });
     });
   });

@@ -880,7 +880,14 @@
     "maximises",
     "mislocates",
     "repr",
-    "unch"
+    "unch",
+    "cachetextconv",
+    "tcachetextconv",
+    "foob",
+    "chokepoints",
+    "PORTBOUND",
+    "unrunnable",
+    "uppercased"
   ],
   "ignorePaths": [
     "node_modules",
