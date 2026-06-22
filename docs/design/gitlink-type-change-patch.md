@@ -15,7 +15,17 @@
 > submodule diff of all. The fix ([ADR-403](../adr/403-synthesize-gitlink-subproject-line-in-materialise.md))
 > is **per-side and change-kind-agnostic**: every `materialiseOne` arm that would
 > `readBlob` a gitlink-mode side synthesizes `Subproject commit <oid>\n` instead.
-> Status: draft → self-reviewed ×3 → accepted → **revised against ADRs 403–404**
+>
+> **Scope fold-in (this revision):** the user ratified bringing the previously-deferred
+> rename-detection follow-up INTO this feature. tsgit's opt-in similarity rename/copy
+> detection (`detectRenames` / `-M` / `-C` / `-B`) must become gitlink-faithful too: it
+> must NOT throw on a gitlink-mode entry, and it must EXCLUDE gitlinks from the inexact
+> similarity matrix exactly as git excludes `S_ISGITLINK` — so a "moved" gitlink whose
+> pointer changed is reported as delete+add, never rename-paired by similarity. The
+> EXACT same-oid fold (which reads no bytes) already pairs same-oid gitlinks as `R100`,
+> matching git, and is preserved unchanged.
+> Status: draft -> self-reviewed x3 -> accepted -> revised against ADRs 403-404 ->
+> **revised for rename-detection gitlink exclusion (this revision)**
 
 ## Context
 
@@ -59,7 +69,7 @@ Subsystems this touches:
 | blob hydration (primitive) | `src/application/primitives/materialise-patch-files.ts` `materialiseOne` (`:20`) | hydrates **every** change kind via `readBlob` — `add`, `delete`, `rename`/`copy`, `modify`, `type-change`; the gitlink side of ANY arm must NOT read a blob |
 | diff change shape (domain) | `src/domain/diff/diff-change.ts` `AddChange` (`:6`), `DeleteChange` (`:13`), `ModifyChange` (`:20`), `TypeChangeChange` (`:42`) | each already carries the relevant `*Id`/`*Mode`; the gitlink oid + `160000` are already present on every shape |
 | mode kind (domain) | `src/domain/diff/mode-kind.ts` `kindOf` (`:6`) | `gitlink = 160000` (`FILE_MODE.GITLINK`, `src/domain/objects/file-mode.ts:8`); the per-side guard is `kindOf(mode) === 'gitlink'` |
-| rename detection (primitive) | `src/application/primitives/detect-similarity-renames.ts` `partitionLeftovers` (`:337`), `hydrateIds` (`:36`), `runInexactPass` (`:428`); `src/domain/diff/rename-detect.ts` `detectRenames` (`:87`), `tryFoldAdd` (`:64`) | inexact rename/copy reads blob bytes to score similarity — a gitlink has no readable content; § Design determines whether a gitlink can ever be a rename/copy candidate |
+| rename detection (primitive) — **NOW IN SCOPE** | `src/application/primitives/detect-similarity-renames.ts` `partitionLeftovers` (`:337`), `attemptBreaks` (`:572`), `scoreModifies` (`:513`), `hydrateIds` (`:36`), `hydrateAndFingerprint` (`:377`), `runInexactPass` (`:428`); `src/domain/diff/rename-detect.ts` `detectRenames` (`:87`), `tryFoldAdd` (`:64`) | inexact rename/copy + `-B` break read blob bytes to score similarity — a gitlink has no readable content and `readBlob` throws on its commit oid. Fix: exclude gitlink-mode entries from the inexact + break candidate pools (mirror git's `S_ISGITLINK` exclusion); keep the EXACT same-oid fold (domain, byte-free) untouched. See § Design § "Rename detection over gitlinks" |
 | interop pins | `test/integration/diff-type-change-interop.test.ts` | builds the four type-change gitlink directions via `--cacheinfo 160000` with `--raw`/`--name-status` arms; gains `reconstructPatch` arms for those + new ADD / DELETE / MODIFY arms |
 
 Cross-cutting constraints (tsgit prime directives — non-negotiable):
@@ -103,10 +113,14 @@ What must be true when this ships:
 5. The structural gitlink `T` pins from ADR-399 keep passing **unchanged**, and this
    feature adds the matching `A`/`D`/`M` `--raw`/`--name-status` structural pins — all
    purely additive (no existing pin changes).
-6. The rename/copy arm is correct: a gitlink can be at most an **exact same-oid**
-   rename (which `materialiseOne` short-circuits with no `readBlob`); git never
-   produces an **inexact** (content-scored) gitlink rename/copy — § Design § "rename/copy
-   arm" pins this and states whether a defensive guard is required.
+6. **Rename/copy/break detection is gitlink-faithful (NOW IN SCOPE).** Opt-in
+   `detectRenames`/`-M`/`-C`/`-B` must NOT throw on a gitlink-mode entry. The EXACT
+   same-oid fold keeps pairing same-oid gitlinks as `R100` (R1 pin, byte-free domain
+   fold, unchanged). The INEXACT similarity matrix and the `-B` break pass EXCLUDE
+   gitlink-mode entries exactly as git's diffcore-rename/break exclude `S_ISGITLINK`
+   (R2/R3/B pins) — a different-oid gitlink move stays `A`+`D`; a gitlink pointer-bump
+   stays a plain `M`; a gitlink is never similarity-paired against a content blob. No
+   `readBlob` is attempted on a gitlink commit oid in any detection pass.
 7. Blast-radius consumers (`patch-id`, `range-diff`, `rebase`) compose any gitlink
    patch correctly through the shared `materialisePatchFiles` → `renderPatch` path;
    patch-id stays stable (the `Subproject commit` line survives canonicalisation;
@@ -168,7 +182,7 @@ side it would otherwise `readBlob`, check whether that side's mode is a gitlink
 | `add` | `readBlob(change.newId)` → `newContent` | new side | `newContent = Subproject commit <newId>\n` |
 | `delete` | `readBlob(change.oldId)` → `oldContent` | old side | `oldContent = Subproject commit <oldId>\n` |
 | `modify` / `type-change` | `readBlob(oldId)` + `readBlob(newId)` (short-circuits when ids equal) | each side independently | gitlink side → `Subproject commit <oid>\n`; non-gitlink side → real blob |
-| `rename` / `copy` | none (exact, `score === MAX_SCORE`) or both (inexact) | see § "rename/copy arm" | exact gitlink rename reads nothing; inexact gitlink rename is **unreachable** (git never produces one) |
+| `rename` / `copy` | none (exact, `score === MAX_SCORE`) or both (inexact) | see § "Rename detection over gitlinks" | exact gitlink rename (R1) reads nothing and short-circuits to `{ change }`; an inexact gitlink rename never reaches `materialiseOne` because the detection pass now EXCLUDES gitlinks from the inexact matrix (this revision), matching git |
 
 This is a **per-side check applied to each arm**, NOT a per-kind special case — the
 simplest, most uniform shape (ADR-404 § Consequences). A `TypeChangeChange` has at most
@@ -186,45 +200,116 @@ The synthetic string is git's literal display form: the ASCII bytes
 only submodule-specific knowledge the primitive needs; it is the application-tier
 analogue of git's `show_submodule_summary` "fast-path" one-line form.
 
-### The rename/copy arm — can a gitlink ever be a rename/copy candidate?
+### Rename detection over gitlinks — exclude gitlinks from the inexact matrix (IN SCOPE)
 
-This arm is the one that does NOT trivially fall out of the per-side guard, so it is
-resolved here explicitly (not left ambiguous). **Empirically pinned** against real git
-(§"Faithfulness baseline" R-pins) and reasoned from the detection code
-(`detect-similarity-renames.ts`, `rename-detect.ts`):
+This was a deferred follow-up; the user folded it into this feature. tsgit's opt-in
+similarity detection (`detectRenames`/`-M`/`-C`/`-B`) must mirror git's diffcore-rename,
+which **excludes `S_ISGITLINK` entries from the inexact similarity matrix** because a
+gitlink has no readable content to score. Two facts, both empirically pinned
+(§"Faithfulness baseline" R/B-pins) against git 2.54.0, drive the design:
 
-- **Exact (same-oid) gitlink rename IS reachable and needs no guard.** git folds a
-  gitlink moved between paths with the *same* commit oid as `R100` (pinned:
-  `:160000 160000 <oid> <oid> R100 old new`). tsgit's `detectRenames`/`tryFoldAdd`
-  folds same-oid add+delete into a `RenameChange` **mode-agnostically** (it keys on
-  `add.newId === del.oldId`, never reading bytes), producing a rename with both modes
-  `160000`. In `materialiseOne` this hits `change.similarity.score === MAX_SCORE` ⇒
-  `return { change }` — **no `readBlob`, no body to synthesize** (`renderPatch` emits a
-  header-only `rename from/to` block with `similarity index 100%`, no hunk). So the
-  per-side guard is **not needed** on this path: it is already byte-safe.
-- **Inexact (content-scored) gitlink rename/copy is UNREACHABLE — git never produces
-  one.** Pinned: with `-M` and even `-C --find-copies-harder`, two gitlinks with
-  *different* oids at old/new paths are reported as separate `A`/`D`, never `R`/`C`
-  (git's diffcore-rename excludes `S_ISGITLINK` entries from the similarity matrix
-  because a gitlink has no readable content to score). For tsgit to be faithful it must
-  match this. Critically, an inexact gitlink rename can therefore never legitimately
-  reach `materialiseOne`'s inexact arm: to score one, the **upstream**
-  `detect-similarity-renames.ts` (`hydrateIds` → `readBlob`) would have to read the
-  gitlink commit oid first and would throw `unexpectedObjectType` *before*
-  `materialiseOne` runs.
+- **Exact (same-oid) gitlink rename IS detected and reads no bytes — preserve it.** git
+  folds a gitlink moved between paths with the *same* commit oid as `R100` even under
+  `-M` (pinned R1: `:160000 160000 <oid> <oid> R100 old new`; patch is header-only
+  `similarity index 100%` + `rename from/to`, no hunk). tsgit's domain `detectRenames` /
+  `tryFoldAdd` (`src/domain/diff/rename-detect.ts`) folds same-oid add+delete into a
+  `RenameChange` **mode-agnostically** — it keys on `add.newId === del.oldId`, never
+  reading bytes — producing a rename with both modes `160000`. This already matches R1
+  and **must not change**. Downstream, `materialiseOne` hits
+  `change.similarity.score === MAX_SCORE` ⇒ `return { change }` (no `readBlob`).
+- **Inexact (content-scored) gitlink rename/copy is what git EXCLUDES — and what tsgit
+  currently CRASHES on.** Pinned R2/R3/B: with `-M`, `-M05` (low threshold),
+  `-C --find-copies-harder`, and `-B0/0` (forced break), two gitlinks with *different*
+  oids — or a gitlink delete alongside a real near-similar blob add, or a gitlink↔gitlink
+  pointer-bump modify — are ALL reported as separate `A`/`D` (or a plain `M` for the
+  bump), never `R`/`C`, and never broken into delete+add. git's diffcore-rename and
+  diffcore-break both skip gitlink entries. **tsgit does not**: `detectSimilarityRenames`
+  feeds every add/delete (and, under `-B`, every modify) into the candidate pools without
+  a mode check, then hydrates their ids via `readBlob` — which throws on a commit oid.
+  *Empirically reproduced* (throwaway memory-adapter probe): a different-oid gitlink
+  delete+add with `threshold: 1` rejects with `{ data: { expected: 'blob', actual:
+  'commit' } }` — `unexpectedObjectType('blob','commit',id)` from
+  `src/application/primitives/read-blob.ts:14`, reached via `hydrateIds` →
+  `hydrateAndFingerprint` in the inexact pass.
 
-**Determination:** the per-side gitlink guard on `materialiseOne`'s rename/copy arm is
-**not required for faithfulness** — the exact arm reads nothing, and the inexact arm is
-never reached with a gitlink. Adding a defensive guard there would be dead code (no test
-could reach it without first constructing an inexact gitlink rename that git itself
-never emits and tsgit's detection would reject upstream). The design therefore scopes the
-synthesis to the `add` / `delete` / `modify` / `type-change` arms only and **does not**
-touch the rename/copy arm. The separate latent question — that tsgit's *opt-in*
-`detect-similarity-renames.ts` would throw if a gitlink ever entered its inexact matrix,
-rather than faithfully excluding gitlinks like git does — is a **distinct, pre-existing
-path** (rename detection defaults OFF; no current test combines `detectRenames` with a
-gitlink) and is out of scope for this feature (§"Out of scope"; § Decision candidates
-notes whether it warrants escalation).
+#### The throw sites (precise)
+
+`detectSimilarityRenames` (`src/application/primitives/detect-similarity-renames.ts`)
+hydrates blob bytes in exactly two places, both via the local `hydrateIds` (`:36`,
+`readBlob(ctx, id)` at `:42`):
+
+| Caller | Line | Pool it hydrates | Gitlink reaches it when |
+|---|---|---|---|
+| `hydrateAndFingerprint` | `:377` (called from `runInexactPass` `:436`, hydrates `allSrcIds` = `deletes` + `copySources` src ids, plus `adds` dst ids) | the inexact rename/copy matrix: rename SOURCES (`deletes`), copy SOURCES (`copySources` from `other` preimages + `--find-copies-harder` tree), and DESTINATIONS (`adds`) | a gitlink `add`/`delete` survives the exact pass into the inexact pool, OR a gitlink modify/type-change/unchanged entry becomes a copy source |
+| `scoreModifies` | `:522` (called from `attemptBreaks` `:580`, only when `-B` set) | both ids of every `modify` (break-attempt) | a gitlink↔gitlink `modify` (pointer bump) is present and `breakRewrites` is enabled |
+
+The domain exact pass `detectRenames` (`:87`) reads no bytes and is already faithful
+(R1). The fix keeps gitlink-mode entries OUT of three pools that feed these two hydration
+sites — the rename/destination pool (`partitionLeftovers`), the copy-source pool
+(`buildCopySourcesForOn`/`ForHarder`), and the break pool (`attemptBreaks`) — never the
+exact pass.
+
+#### The fix — exclude gitlink-mode entries from the candidate pools
+
+Mirror git's `S_ISGITLINK` exclusion by partitioning gitlink-mode `add`/`delete`/`modify`
+entries OUT of the similarity/break candidate pools and carrying them straight through to
+the output unchanged. The single, change-kind-agnostic predicate is
+`kindOf(mode) === 'gitlink'` (`src/domain/diff/mode-kind.ts`, already imported across the
+diff layer; `FILE_MODE.GITLINK === '160000'`).
+
+There are THREE pools that feed a `readBlob` — every one must exclude gitlinks, or git's
+exclusion is only partially matched. A single shared predicate
+`isGitlinkChange(c)` (true when the change's relevant `*Mode` is gitlink) keeps all three
+edits one-liners. Insertion points, all inside `detect-similarity-renames.ts`:
+
+1. **`partitionLeftovers`** (current signature
+   `function partitionLeftovers(changes: ReadonlyArray<DiffChange>): { adds; deletes; other }`,
+   `:337`) — the rename/copy DESTINATION (`adds`) and rename SOURCE (`deletes`) pools. A
+   gitlink-mode `add` or `delete` must NOT land in `adds`/`deletes` — route it to `other`
+   (passed through verbatim by `assemblePostPass` `:764`, never hydrated). Guard with
+   `kindOf(add.newMode) === 'gitlink'` / `kindOf(del.oldMode) === 'gitlink'` before the
+   `adds.push` / `deletes.push`. (This removes a gitlink delete as a rename source AND a
+   gitlink add as a rename/copy destination — covering R2 and R3's blob-vs-gitlink case.)
+2. **`buildCopySourcesForOn`** (`:58`) and **`buildCopySourcesForHarder`** (`:81`) — the
+   COPY SOURCE pool. `buildCopySourcesForOn` pulls sources from unpaired `deletes` and from
+   `other` modify/type-change preimages; `buildCopySourcesForHarder` pulls from the FULL
+   `preimage` tree (unchanged entries included). A gitlink-mode source (a gitlink modify's
+   preimage, or an unchanged gitlink under `--find-copies-harder`) must be skipped in BOTH.
+   *Pinned necessity:* even a content blob whose bytes are literally `Subproject commit
+   <X>\n` is never copy-paired from an unchanged or modified gitlink (pin: `-C
+   --find-copies-harder` leaves the gitlink `M`/absent and the blob a pure `A`). Guard each
+   `sources.push` / preimage iteration with `kindOf(oldMode/entry.mode) !== 'gitlink'`.
+   (The deletes-derived sources in `buildCopySourcesForOn` are already gitlink-free once
+   step 1 routes gitlink deletes to `other`, but the `other`-derived and preimage-derived
+   sources are NOT — hence this step is load-bearing, not redundant.)
+3. **`attemptBreaks`** (`:572`) — the BREAK pool. It filters `modifies` from
+   `diff.changes` before `scoreModifies` hydrates them. Exclude gitlink-mode modifies from
+   that filter (`c.type === 'modify' && kindOf(c.oldMode) !== 'gitlink'`) so a gitlink
+   pointer-bump modify is never scored for a break and never hydrated. A gitlink modify
+   always has both sides gitlink (a one-gitlink-side change is a type-change, not a
+   modify), so checking `oldMode` suffices; checking both is the clean, explicit guard.
+
+All three edits are inside the application primitive — no domain change, no new public
+option, no serializer change. The excluded gitlink entries flow to the output exactly as
+git leaves them: a different-oid gitlink move stays `A`+`D`; a gitlink pointer-bump stays a
+plain `M`; an unchanged/modified gitlink is never a copy source. The exact same-oid `R100`
+fold (domain `detectRenames`) is untouched and keeps matching R1.
+
+> **Architecture note.** The exclusion is the application-tier analogue of git's own
+> `S_ISGITLINK` guard living in submodule-aware diff code, not the generic matrix. The
+> domain `rename-detect.ts` (exact fold) stays mode-agnostic and platform-free; only the
+> application primitive that hydrates blob bytes learns to skip gitlinks — because only it
+> would otherwise attempt the impossible `readBlob` on a commit oid.
+
+#### Interaction with the patch-render synthesis (one coherent surface)
+
+These now compose cleanly. After the exclusion, a "moved" gitlink leaves
+`detectSimilarityRenames` as an `AddChange` + `DeleteChange`; `materialiseOne` then
+synthesizes `Subproject commit <oid>\n` for each (ADR-403) and `renderPatch` emits the
+faithful add block + delete block (A1/DEL1 pins). The exact-rename case (R1) renders the
+header-only `rename from/to` block with no hunk (no `readBlob`, no synthesis). Every
+gitlink path through the diff+rename+render pipeline is therefore byte-faithful and never
+throws.
 
 ### The serializer touch-point — no change (ADR-403 decision)
 
@@ -337,8 +422,9 @@ side. Bytes captured via a Python `repr` dump (exact trailing newlines and
 
 The matrix spans **all four reachable gitlink change kinds** — add (A1), delete (DEL1),
 modify (M, gitlink↔gitlink pointer bump), and type-change (D1–D4, the two-block
-delete+add form, same as ADR-402 file↔symlink) — plus the rename/copy R-pins (R1/R2)
-that establish the rename/copy determination (§ Design § "rename/copy arm").
+delete+add form, same as ADR-402 file↔symlink) — plus the rename/copy/break R-pins
+(R1/R2/R3/B) and the THROW pin that establish the gitlink rename-detection exclusion
+(§ Design § "Rename detection over gitlinks").
 
 ### A1 — pure gitlink ADD (path absent → `160000`), path `sub`
 
@@ -508,37 +594,76 @@ common submodule diff after add).
 
 ### R-pins — rename/copy determination (gitlink as rename/copy candidate)
 
-These pins establish the § Design § "rename/copy arm" determination — they record what
-git does, NOT bytes tsgit must render (tsgit must MATCH git's classification):
+These pins establish the § Design § "Rename detection over gitlinks" determination — they
+record what git does, NOT bytes tsgit must render (tsgit must MATCH git's classification).
+All pinned against git 2.54.0, isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_*` scrubbed,
+signing off, `--no-ext-diff`, gitlinks built via
+`git update-index --add --cacheinfo 160000,<oid>,<path>`; oids `X = 1×40`, `Y = 2×40`:
 
-- **R1 — same-oid gitlink rename IS detected (exact, no content read).** A gitlink with
-  the *same* commit oid moved `old`→`new`, `git diff -M`:
+- **R1 — same-oid gitlink "move" IS detected as an EXACT rename (no content read).** A
+  gitlink with the *same* commit oid X moved `A`→`B`, `git diff -M`:
   ```
-  diff --git a/old b/new
+  diff --git a/A b/B
   similarity index 100%
-  rename from old
-  rename to new
+  rename from A
+  rename to B
   ```
-  `--name-status -M` → `R100\told\tnew`; `diff-tree -r -M --raw` →
-  `:160000 160000 111…1 111…1 R100\told\tnew`. (Header-only — no `Subproject commit`
-  body, because an exact rename emits no hunk.)
-- **R2 — different-oid gitlinks are NOT detected as rename/copy.** With `-M` *and*
-  `-C --find-copies-harder`, two gitlinks of *different* oids at `old`/`new2` stay
-  `A\tnew2` / `D\told` — git's diffcore-rename excludes `S_ISGITLINK` from the
-  content-similarity matrix. There is no inexact gitlink rename for tsgit to render or
-  for `materialiseOne` to hydrate.
+  `repr`: `b'diff --git a/A b/B\nsimilarity index 100%\nrename from A\nrename to B\n'`.
+  `--name-status -M` → `R100\tA\tB`; `diff-tree -r -M --raw` →
+  `:160000 160000 1…1 1…1 R100\tA\tB`. (Header-only — no `Subproject commit` body; an
+  exact rename emits no hunk.) **Baseline without `-M`** is `D\tA` / `A\tB` — so `-M` is
+  what folds it. Determination: gitlinks DO participate in git's exact (same-oid) rename
+  pass; tsgit's domain `detectRenames` already matches this mode-agnostically.
+- **R2 — different-oid gitlinks are NOT rename/copy-paired (inexact exclusion).** X@`old`
+  deleted, Y@`new2` added. Under `-M`, `-M05` (low threshold), AND
+  `-C --find-copies-harder`, all stay separate:
+  ```
+  :000000 160000 0…0 2…2 A	new2
+  :160000 000000 1…1 0…0 D	old
+  ```
+  `-M -p` confirms git renders them as two independent blocks (an add block
+  `+Subproject commit 2…2` and a delete block `-Subproject commit 1…1`), never a rename.
+  git's diffcore-rename excludes `S_ISGITLINK` from the similarity matrix.
+- **R3 — gitlink delete + a real near-similar blob add are NOT cross-paired.** X@`gone`
+  deleted, real blob `blobnew` (`line1\nline2\nline3\n`) added, `-M05 --name-status`:
+  ```
+  A	blobnew
+  D	gone
+  ```
+  (`--raw` shows the blob keeps mode `100644`, oid `83db48f…`; the gitlink stays `D`.) A
+  gitlink is never a similarity candidate even against a content blob.
+- **B — gitlink↔gitlink pointer-bump modify is NOT broken into delete+add, even under
+  forced `-B`.** X@`bp` → Y@`bp`. Under `-B`, `-B -M -C`, AND `-B0/0` (forced break) it
+  stays a single modify:
+  ```
+  :160000 160000 1…1 2…2 M	bp
+  ```
+  `-B -M -C -p` →
+  `b'diff --git a/bp b/bp\nindex 1111111..2222222 160000\n--- a/bp\n+++ b/bp\n@@ -1 +1 @@\n-Subproject commit 1111111111111111111111111111111111111111\n+Subproject commit 2222222222222222222222222222222222222222\n'`
+  (control: `-B0/0` is active — it leaves a small real-blob modify as `M` too, but the
+  load-bearing fact is git's diffcore-break skips the gitlink entirely; tsgit's break pass
+  must do the same). Determination: tsgit's `-B` break pass (`scoreModifies`) must EXCLUDE
+  gitlink modifies, matching this.
+- **THROW — tsgit's CURRENT behavior (empirically reproduced).** In a throwaway
+  memory-adapter probe, `detectSimilarityRenames(ctx, { delete X@old/160000, add
+  Y@new2/160000 }, { threshold: 1 })` rejects with
+  `{ data: { expected: 'blob', actual: 'commit' } }` —
+  `unexpectedObjectType('blob','commit',id)` from `read-blob.ts:14`, reached via
+  `hydrateIds` → `hydrateAndFingerprint`. This is the gap R2/R3/B require the fix to close.
 
 ## Decision candidates
 
-**All load-bearing candidates this feature raised are now RATIFIED** — no open decision
-remains for the ADR phase. ADRs 226/249 fix faithfulness and the structured-data rule;
-ADR-399 fixed the structural gitlink pins; ADR-402 fixed the file↔symlink patch form and
-deferred the gitlink side. **[ADR-403](../adr/403-synthesize-gitlink-subproject-line-in-materialise.md)
+The original patch-render candidates (D1–D5) are all RATIFIED; this revision's
+rename-detection fold-in adds **one genuinely open fork, D6** (the insertion point for the
+gitlink exclusion), for which the *behavior* is fully pinned but the *placement* carries a
+real trade-off the user should settle. ADRs 226/249 fix faithfulness and the
+structured-data rule; ADR-399 fixed the structural gitlink pins; ADR-402 fixed the
+file↔symlink patch form and deferred the gitlink side.
+**[ADR-403](../adr/403-synthesize-gitlink-subproject-line-in-materialise.md)
 ratified the synthesis MECHANISM** (D1/D2/D5 below — adopted-as-recommended) and
 **[ADR-404](../adr/404-gitlink-patch-rendering-all-diff-kinds.md) ratified the
-ALL-KINDS scope** (D3 — user-ratified, widening type-change-only to add/delete/modify/
-type-change). The table is retained as the rationale record; the "Status" column marks
-each as settled.
+ALL-KINDS scope** (D3 — user-ratified). The table is the rationale record; the "Status"
+column marks each settled candidate and flags D6 as OPEN.
 
 | # | Choice | Status | Settled outcome + why |
 |---|---|---|---|
@@ -547,17 +672,47 @@ each as settled.
 | **D3** | Which gitlink change kinds are in scope | **RATIFIED — ADR-404 (user)** | **ALL FOUR** — add, delete, modify, type-change. The synthesis fix is per-side and identical across kinds; `materialiseOne` calls `readBlob` on every arm, so the commit-oid throw hits a pure gitlink add (the most common submodule diff) and delete just as it hits modify/type-change. Type-change-only (the literal brief) and type-change+modify were rejected — both ship a primitive that still crashes on introducing a submodule. (Supersedes the previous draft's "modify only if D3 ratifies" recommendation, which is now folded into this all-kinds outcome.) |
 | **D4** | Where the gitlink PATCH pins live, and which arms | **RATIFIED — ADR-404 (with D3)** | (a) extend `test/integration/diff-type-change-interop.test.ts` with `reconstructPatch` arms for the four type-change directions **plus new ADD / DELETE / gitlink↔gitlink MODIFY arms**, + domain unit pins in `patch-serializer.test.ts` and primitive pins in `materialise-patch-files.test.ts`. The interop file already builds the gitlink directions and wires `reconstructPatch`; the cheap mutation-resistant guard is the domain/primitive unit pin. Interop-only / unit-only were rejected (no fast unit guard / no live-git cross-check). |
 | **D5** | The exact synthetic content template | **RATIFIED — ADR-403** | (a) `Subproject commit <40-hex>\n` (the literal git fast-path form, pinned) as a single named constant in the primitive. Parameterising the format / reusing git's verbose `--submodule=log` summary were rejected (invented flexibility / a different opt-in rendering, out of scope). |
+| **D6** | Where to exclude gitlinks from inexact rename/copy/break detection | **OPEN — genuine fork (see below)** | Pinned outcome (R1/R2/R3/B) is not in doubt: exact same-oid fold stays, inexact/break must skip gitlinks. The judgment call is the precise insertion point in `detect-similarity-renames.ts`. ≤3 options below; **recommendation (a)**. |
 
-**No NEW open decision candidate surfaced** during this revision's code exploration.
-One adjacent observation was evaluated and deliberately NOT escalated as a candidate
-(see § Out of scope): tsgit's *opt-in* `detect-similarity-renames.ts` would throw if a
-gitlink ever entered its inexact-rename matrix, rather than faithfully excluding gitlinks
-the way git's diffcore-rename does (R2 pin). This is a **pre-existing, separate latent
-path** outside this feature's `materialiseOne`+`renderPatch` surface — rename detection
-defaults OFF, no current test combines it with a gitlink, and git's own exclusion means
-the correct fix is a faithfulness pin on the *detection* primitive, not a decision this
-feature must make. It is recorded as a follow-up note, not a load-bearing choice for the
-ADR conversation.
+**D6 — the gitlink-exclusion insertion point (the one GENUINE open fork this revision
+surfaces).** The behavior is fully pinned (R1 keep exact fold; R2/R3/B exclude inexact +
+break). What is NOT pre-decided is *where* in `detect-similarity-renames.ts` the exclusion
+lives. This is a real architecture/maintainability trade-off, not a "match git" mechanic —
+so it is surfaced, not decided here:
+
+- **(a) Exclude at the three pool builders — RECOMMENDED.** Add the
+  `kindOf(mode) === 'gitlink'` guard inside `partitionLeftovers` (route gitlink add/delete
+  to `other`), inside `buildCopySourcesForOn`/`buildCopySourcesForHarder` (skip gitlink
+  copy sources), and inside `attemptBreaks`'s modify filter (skip gitlink modifies). pros:
+  smallest, most local diff; each pool that feeds a `readBlob` learns to skip gitlinks at
+  the exact point it is built; `other` is already a pass-through, so excluded entries need
+  no new plumbing; the domain exact pass and serializer stay untouched. cons: three edit
+  sites rather than one, sharing one `isGitlinkChange` predicate (mitigated: these are the
+  only pools that flow into the two `hydrateIds` callers, so the surface is closed).
+- **(b) A single split AFTER the exact pass, before the inexact/break passes** —
+  immediately after `detectRenames` (the exact fold) runs in `detectSimilarityRenames`,
+  partition gitlink-mode `add`/`delete`/`modify` out of `exactResult.changes`, run the
+  inexact + break passes on the non-gitlink remainder, then concat the gitlinks back. pros:
+  one choke point; the exact R100 fold (which ran first) is preserved, so R1 holds. cons:
+  the split must reproduce the copy-source exclusion anyway (a gitlink modify left in the
+  remainder would still seed `buildCopySourcesForOn` from `other`), so it does not actually
+  collapse to one guard — it adds a whole extra partition+concat layer on top of the
+  existing `partitionLeftovers`/`assemblePostPass` flow that already does exactly this
+  routing. More code for the same result; the gitlink-as-copy-source case still needs
+  thought. A split BEFORE the exact pass is strictly worse — it strips same-oid gitlinks
+  from the exact fold and **breaks R1** unless that fold is re-implemented for the subset.
+- **(c) Push the exclusion into the domain `rename-detect.ts`** — make `detectRenames`
+  itself drop gitlinks from the inexact-eligible set. cons: the domain exact pass reads no
+  bytes and is correctly mode-agnostic (R1); the inexact/break passes that actually
+  `readBlob` live in the application primitive, not the domain — putting the guard in the
+  domain mislocates it and co-mingles a hydration concern with the pure fold. Rejected on
+  hexagonal grounds.
+
+**Recommendation: (a).** It is the minimal faithful change, keeps the R1 exact fold
+provably intact (it never touches the exact pass), and localises the guard to exactly the
+two pools that would otherwise attempt the impossible `readBlob` on a commit oid. (b)
+endangers R1; (c) violates the domain/application boundary. This is the only fork; if the
+user prefers (b)/(c) the plan adapts, but the pinned behavior is identical either way.
 
 ## Test strategy
 
@@ -590,6 +745,65 @@ GWT/AAA/`sut` conventions:
   stay **unchanged** (regression guard that ADR-399's structural pins still pass); the
   new `A`/`D`/`M` structural arms extend that same guard set.
 
+**Interop — rename detection over gitlinks (new arms; same file or a sibling
+`rename-similarity-interop.test.ts`, whichever keeps the `--cacheinfo` helper closest).**
+These pin tsgit's `diff(ctx, {from, to, detectRenames: true, renameOptions})` against
+live `git diff -M`/`-C`/`-B` for the gitlink scenarios R1/R2/R3/B pinned:
+
+- **Exact same-oid gitlink move under `-M` is `R100` (R1).** Commit pair: gitlink oid X
+  at path `A` → same X at path `B`. `Then diff with detectRenames pairs the move as a
+  rename` — assert the result has one `RenameChange` (`oldPath A`, `newPath B`, both modes
+  `160000`, `similarity.score === MAX_SCORE`), and `reconstructPatch` equals git's
+  header-only `similarity index 100%` / `rename from A` / `rename to B` bytes. Plus
+  `--name-status -M` → `R100\tA\tB` structural pin.
+- **Different-oid gitlink "move" under `-M`/`-M05`/`-C --find-copies-harder` stays
+  `A`+`D` (R2).** Commit pair: gitlink X@`old` → gitlink Y@`new2`. `Then diff with
+  detectRenames does NOT rename-pair the gitlinks` — assert the result is one
+  `AddChange` + one `DeleteChange` (no `RenameChange`/`CopyChange`), `reconstructPatch`
+  equals git's two-block add+delete patch, and **the call does not throw**. Run at
+  default threshold AND `renameOptions: { threshold: 1 }` (lowest) AND
+  `{ copies: 'harder' }` — each must stay `A`+`D`.
+- **gitlink delete + real near-similar blob add are not cross-paired (R3).** `Then a
+  gitlink delete and a content-blob add stay separate under -M05` — assert `A`+`D`, gitlink
+  keeps mode `160000` / blob keeps `100644`, no rename, no throw.
+- **gitlink is not a COPY SOURCE under `-C --find-copies-harder` (copy-source pin).**
+  Commit pair: a gitlink modify (X→Y at `g`) + an UNCHANGED gitlink (X at `u`) + a content
+  blob added whose bytes are literally `Subproject commit <X>\n`. `renameOptions: {
+  copies: 'harder' }`. `Then no copy is detected from a gitlink source` — assert the
+  gitlink modify stays `M`, the blob stays a pure `A` (no `CopyChange`), and no throw.
+  (This is the pin that makes the `buildCopySourcesForOn`/`ForHarder` exclusion
+  load-bearing, not redundant with the add/delete guard.)
+- **gitlink↔gitlink pointer bump under `-B` stays a plain `M` (B).** Commit pair gitlink
+  X@`bp` → gitlink Y@`bp`, `renameOptions: { breakRewrites: { score: 0, merge: 0 } }`
+  (forced break). `Then -B does not break the gitlink modify into delete+add` — assert one
+  `ModifyChange` (no synthetic delete+add, no `broken` datum), `reconstructPatch` equals
+  git's single `index <a>..<b> 160000` block, and no throw.
+
+**Unit — `test/unit/application/primitives/detect-similarity-renames.test.ts`** (the
+cheap mutation-resistant guard for the exclusion; the file already covers every other
+branch). Add, per the GWT/AAA/`sut` conventions:
+
+- `Given a different-oid gitlink add/delete pair` / `When detectSimilarityRenames runs at
+  threshold 1` / `Then the gitlinks are NOT hydrated and stay as a separate add and
+  delete` — the *primary kill test*: today this throws `unexpectedObjectType`; after the
+  fix it returns `A`+`D` with NO `readBlob` on the gitlink oid (assert via a context whose
+  gitlink oids resolve to commit objects that would throw if read, or a spy asserting
+  `readBlob` is never called with a gitlink oid).
+- `Given a gitlink delete and a real-blob add` / `Then only the blob is a candidate; the
+  gitlink stays a delete` — isolates the `partitionLeftovers` gitlink-add vs gitlink-delete
+  guards as separate Conditional mutation targets (one test per side).
+- `Given a gitlink↔gitlink modify and breakRewrites enabled` / `Then the modify is not
+  scored for a break and is not hydrated` — isolates the `attemptBreaks` modify-filter
+  gitlink guard.
+- `Given copies:'harder' with a gitlink modify (or unchanged gitlink) preimage and a
+  similar add` / `Then the gitlink is not a copy source and no copy is detected` —
+  isolates the `buildCopySourcesForOn`/`buildCopySourcesForHarder` gitlink guards (one test
+  per builder, since `copies:'on'` exercises the `other`-derived source and
+  `copies:'harder'` exercises the preimage-derived source — separate Conditional targets).
+- `Given an exact same-oid gitlink add/delete pair` / `Then it still folds to R100 with
+  MAX_SCORE and reads no bytes` — the regression guard that the fix does NOT break the
+  exact fold (R1), proving the exact fold stays mode-agnostic.
+
 **Unit — `test/unit/domain/diff/patch-serializer.test.ts`** (the cheap
 mutation-resistant guard; the file already has file↔symlink and binary type-change
 patch tests at lines 639–745). Add blocks for each gitlink kind: `Given an add of a
@@ -616,7 +830,8 @@ Isolated guard tests: one per arm AND, for modify/type-change, one per side
 checks are separate Conditional mutation targets, one test per branch. Include a
 `Given an exact same-oid gitlink rename` case asserting the rename/copy arm
 short-circuits (`score === MAX_SCORE` ⇒ `{ change }`, no `readBlob`, no synthesis) — the
-§ "rename/copy arm" determination's positive half.
+§ "Rename detection over gitlinks" R1 determination's `materialiseOne` half (the
+detection-pass half lives in the `detect-similarity-renames.test.ts` arms above).
 
 **Unit — `test/unit/application/primitives/patch-id.test.ts`** (blast-radius pin for
 the one consumer-specific invariant). Add a guard that two commits introducing the
@@ -656,17 +871,24 @@ scrubbed `GIT_*`, isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`, signing off, `--no-e
   domain already emits all four kinds faithfully on every surface (ADR-399 et al.); no
   `tree-diff.ts`/`index-diff.ts`/`status.ts` change. This feature touches only the
   patch-RENDER and the hydration primitive.
-- **Inexact rename/copy detection over gitlinks** (`detect-similarity-renames.ts`). git
-  excludes `S_ISGITLINK` from its similarity matrix (R2 pin); tsgit's opt-in rename
-  detection does not yet, so if a gitlink ever entered the inexact matrix it would throw
-  on the commit-oid `readBlob` instead of faithfully leaving the gitlink as `A`/`D`. That
-  path is **outside this feature's `materialiseOne`+`renderPatch` surface**: rename
-  detection defaults OFF, no current test combines it with a gitlink, and the exact
-  same-oid rename (R1) — the only gitlink rename git produces — already flows correctly
-  (no `readBlob`, no synthesis). Recorded as a **follow-up**: a faithfulness pin +
-  gitlink-exclusion on the detection primitive, a distinct change from this one.
-- **NOT out of scope (now IN scope, ADR-404):** gitlink **add**, gitlink **delete**, and
+- **NOT out of scope (now IN scope, this revision):** inexact rename/copy/break detection
+  over gitlinks (`detect-similarity-renames.ts`). The previous draft DEFERRED this as a
+  follow-up; the user folded it in. tsgit's opt-in `-M`/`-C`/`-B` now EXCLUDES gitlink-mode
+  entries from the inexact similarity matrix and the break pass exactly as git's
+  diffcore-rename/break exclude `S_ISGITLINK` (R2/R3/B pins), and never `readBlob`s a
+  gitlink commit oid. The EXACT same-oid fold (R1) stays unchanged. See § Design §
+  "Rename detection over gitlinks" and § Decision candidates D6.
+- **NOT out of scope (IN scope, ADR-404):** gitlink **add**, gitlink **delete**, and
   gitlink↔gitlink **modify** patch rendering — all three are covered by the per-side
   synthesis alongside type-change. (The previous draft listed modify as conditional and
   did not list add/delete; ADRs 403–404 fold all of them in.)
+- **STILL out of scope — rename/copy/break behavior is pinned to git's classification
+  ONLY for gitlink entries.** This feature does not otherwise alter similarity scoring,
+  thresholds, the candidate cap, copy-source resolution, or break gating for non-gitlink
+  changes — those stay exactly as the existing detection ships. The only change is the
+  gitlink exclusion guard.
+- **STILL out of scope — `--submodule=diff`/`log` rendering of a renamed or bumped
+  submodule.** A gitlink that IS exact-renamed (R1) renders the header-only
+  `rename from/to` form; the verbose submodule-diff family is the separate larger feature
+  noted above, unchanged by the rename fold-in.
 
