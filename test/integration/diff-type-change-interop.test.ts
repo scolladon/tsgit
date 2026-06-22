@@ -50,7 +50,10 @@ import { openRepository } from '../../src/index.node.js';
 import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
-const SETUP_TIMEOUT = 60_000;
+// Heaviest interop fixture set in the suite (15 commit-pair scenarios, ~60 git
+// spawns). Under the full validate run's parallel git load the shared setup needs
+// more than the 60s the lighter interop files use, so it gets the global testTimeout.
+const SETUP_TIMEOUT = 120_000;
 const ZERO_OID = '0'.repeat(40);
 
 const IDENTITY = {
