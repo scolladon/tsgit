@@ -97,6 +97,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 | Code | Payload | Raised when |
 |---|---|---|
 | `CHECKOUT_OVERWRITE_DIRTY` | `localChanges`, `untracked` | `checkout` switch mode would discard tracked modifications or clobber untracked files and no `force`. |
+| `CLEAN_FILTER_FAILED` | `path, filter, exitCode` | A `filter=<name>` clean command (`filter.<name>.required = true`) exited non-zero during `add` / stage — the stage is refused and nothing is committed. If `required` is absent or `false`, a failing clean is a warning and raw bytes are staged instead (no throw). |
+| `SMUDGE_FILTER_FAILED` | `path, filter, exitCode` | A `filter=<name>` smudge command (`filter.<name>.required = true`) exited non-zero during `checkout` — the checkout is refused and the file is not written to the working tree. If `required` is absent or `false`, a failing smudge is a warning and raw blob bytes are written instead (no throw). |
 | `GITIGNORE_FILE_TOO_LARGE` | `name, bytes, limit` | `.gitignore` (or `core.excludesFile`) exceeds 1 MiB cap. |
 | `INVALID_INDEX_ENTRY` | `offset, reason` | Entry in `.git/index` malformed. |
 | `INVALID_INDEX_HEADER` | `reason` | `.git/index` header malformed. |

@@ -93,3 +93,8 @@ export const buildAttributeProvider = async (ctx: Context): Promise<AttributePro
   };
   return { sourcesForPath };
 };
+
+export const maybeBuildAttributeProvider = (
+  ctx: Context,
+): Promise<AttributeProvider | undefined> =>
+  ctx.command !== undefined ? buildAttributeProvider(ctx) : Promise.resolve(undefined);

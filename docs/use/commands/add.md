@@ -53,6 +53,40 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `BARE_REPOSITORY` — `add` is not valid in a bare repository.
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
 
+## Clean filter drivers (`filter=<name>`)
+
+When a path carries a `filter=<name>` attribute in `.gitattributes` and
+`[filter "<name>"].clean` is configured, `add` runs the clean command over the
+worktree bytes before hashing and storing the blob — the committed object holds
+the **cleaned** content, not the raw worktree bytes.
+
+- **Clean is a stdin → stdout transform.** The worktree bytes are fed to the
+  command's stdin; the captured stdout becomes the committed blob.
+- **Symlinks are not filtered.** Only regular-file content is passed through
+  the clean command; symlink targets are staged verbatim, as git does.
+- **`required` failure semantics.** If the clean command exits non-zero:
+  - `filter.<name>.required = true` — the stage is **refused**: `add` throws
+    `CLEAN_FILTER_FAILED` (`{ path, filter, exitCode }`). Nothing is staged.
+  - `required` absent or `false` — the failure is a warning; raw worktree bytes
+    are staged and `add` succeeds (git's fallback behaviour).
+- **Named-but-unconfigured driver.** If `filter=<name>` is set but no `[filter
+  "<name>"]` section (or no `clean` key) exists in the config, the path is staged
+  raw — identity clean.
+- **Independent of `diff=`.** Clean/smudge and textconv are orthogonal. A path
+  with `filter=<name>` only is diffed against raw committed bytes; textconv only
+  applies to paths carrying `diff=<name>`.
+
+**Status and diff after clean.** `status` and working-tree diffs re-apply the
+clean filter to the worktree file before comparing the result to the cleaned blob
+OID in the index — so a file that was checked out via smudge and then left
+unmodified shows as unchanged.
+
+**Node.** The clean command runs through the `CommandRunner` port (same trust
+model as merge drivers and hooks). In the browser / memory adapters, or in Node
+with `openRepository({ command: false })`, no driver is wired and worktree bytes
+are staged raw. See the [RUNBOOK](../../../RUNBOOK.md) "Operating filter and textconv drivers"
+section.
+
 ## See also
 
 - Primitives: [`walkWorkingTree`](../primitives/walk-working-tree.md), [`readIndex`](../primitives/read-index.md), [`writeObject`](../primitives/write-object.md)

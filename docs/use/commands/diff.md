@@ -149,6 +149,38 @@ These are tsgit's own defaults — not git's on-disk `.git/config` and explicitl
 not `core.whitespace` (which governs whitespace-error detection, a different
 feature).
 
+## Textconv drivers (`diff=<name>`)
+
+When a path carries a `diff=<name>` attribute in `.gitattributes` and the
+corresponding `[diff "<name>"].textconv` command is configured, the diff compares
+the **textconv output** of each side rather than the raw committed bytes — exactly
+as `git diff --no-ext-diff` does.
+
+- **Both sides transformed.** The textconv command receives each blob's raw bytes
+  and its stdout replaces the content for hunk and numstat computation. Added files
+  run textconv on the new side only; deleted files on the old side only.
+- **OIDs are not affected.** The structured `DiffChange` fields (`oldId`, `newId`,
+  mode, rename similarity) are computed from the raw committed tree and are never
+  touched by textconv. A caller rendering an `index` header line should use the raw
+  OIDs — textconv affects only the patch hunks and `added`/`deleted` counts.
+- **Named-but-unconfigured driver.** If a path's `diff=<name>` attribute names a
+  driver with no `[diff "<name>"]` section (or no `textconv` key) in the config,
+  the diff falls back to raw bytes — git's declared-but-inert boundary.
+- **`-diff` / `binary` macro.** A path resolving `diff` to `false` (via `-diff` or
+  the built-in `binary` macro) suppresses the text diff entirely; textconv is never
+  applied to binary-suppressed paths.
+- **Range-diff and patch-id.** Textconv is NOT applied when computing patch-id or
+  range-diff output — those use raw committed bytes.
+- **Out of scope.** `[diff].cachetextconv` is not implemented in v1; the driver
+  always runs. The `[filter].process` long-running protocol is also out of scope.
+
+**Node.** The textconv command is run through the `CommandRunner` port (same trust
+model as merge drivers and hooks — the command comes from `.git/config`, the
+attribute only names it). In the browser / memory adapters, or in Node with
+`openRepository({ command: false })`, no driver is wired and the diff falls back
+to raw bytes. See the [RUNBOOK](../../../RUNBOOK.md) "Operating filter and textconv drivers"
+section for security and operator notes.
+
 ## See also
 
 - Primitives: [`diffTrees`](../primitives/diff-trees.md),

@@ -28,6 +28,7 @@ import {
   compareWorkingTreeEntry,
   isWorkingTreeModified,
 } from '../primitives/compare-working-tree-entry.js';
+import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -116,17 +117,25 @@ export const rm = async (
  * from the index entry. `--cached` (`cached`) suppresses the staged-only and
  * local-only categories but not the combined one — faithful to git.
  */
-const enforceSafetyValve = async (
+interface LocalModCategories {
+  readonly both: ReadonlyArray<FilePath>;
+  readonly stagedOnly: ReadonlyArray<FilePath>;
+  readonly localOnly: ReadonlyArray<FilePath>;
+}
+
+/** Classify entries by modification category for the safety valve. */
+const classifyEntries = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
+  head: ReadonlyMap<FilePath, FlatTreeEntry>,
   cached: boolean,
-): Promise<void> => {
-  const head = await headTreeEntries(ctx);
+): Promise<LocalModCategories> => {
+  const provider = await maybeBuildAttributeProvider(ctx);
   const both: FilePath[] = [];
   const stagedOnly: FilePath[] = [];
   const localOnly: FilePath[] = [];
   for (const entry of entries) {
-    const worktree = await compareWorkingTreeEntry(ctx, entry);
+    const worktree = await compareWorkingTreeEntry(ctx, entry, provider);
     if (worktree === 'absent') continue;
     const local = isWorkingTreeModified(worktree);
     const staged = isStaged(head, entry);
@@ -134,6 +143,16 @@ const enforceSafetyValve = async (
     else if (staged && !cached) stagedOnly.push(entry.path);
     else if (local && !cached) localOnly.push(entry.path);
   }
+  return { both, stagedOnly, localOnly };
+};
+
+const enforceSafetyValve = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+  cached: boolean,
+): Promise<void> => {
+  const head = await headTreeEntries(ctx);
+  const { both, stagedOnly, localOnly } = await classifyEntries(ctx, entries, head, cached);
   // Precedence: surface the strongest required override first (`both` needs `-f`).
   if (both.length > 0) throw rmStagedAndLocalChanges(both);
   if (stagedOnly.length > 0) throw rmStagedChanges(stagedOnly);

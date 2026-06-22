@@ -86,6 +86,8 @@ interface RangeDiffEntry {
 - **Userdiff-driver funcname patterns** (`.gitattributes diff=<lang>`) are not
   supported — only git's default funcname heuristic. For the default config the
   matching is byte-faithful (pinned by the cross-tool interop suite).
+- **`diff=<name>` textconv** is NOT applied to range-diff output — the
+  diff-of-diffs is computed over raw committed bytes, not textconv output.
 - **Rename-with-edit** shows as delete+add (the diff machinery detects exact
   renames only).
 - On an **unstructured** cost matrix git's solver may leave a commit unpaired; for

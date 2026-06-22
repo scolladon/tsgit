@@ -19,6 +19,10 @@ import {
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import {
+  type AttributeProvider,
+  maybeBuildAttributeProvider,
+} from '../primitives/internal/read-gitattributes.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -133,7 +137,11 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
   ctx.progress.start(STATUS_SCAN_OP);
   try {
     const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-    const workingMap = await scanWorkingTree(ctx, grouped.staged, tracker);
+    // Build the attribute provider once per status invocation when a command
+    // runner is wired. When absent, the provider is undefined and every
+    // compareWorkingTreeDelta call takes the raw-bytes path (R11 guard).
+    const provider = await maybeBuildAttributeProvider(ctx);
+    const workingMap = await scanWorkingTree(ctx, grouped.staged, tracker, provider);
     const untracked = await scanUntracked(ctx, trackedPaths);
     const headTree = await readHeadTree(ctx);
     const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
@@ -150,17 +158,20 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
  * Working-tree pass: compare every stage-0 entry to its working file. A
  * skip-worktree entry is intentionally absent from disk (sparse), so it is not
  * compared — its staged column is still surfaced via `stage0Map`. Every entry
- * ticks the progress tracker.
+ * ticks the progress tracker. The optional provider enables clean-filter
+ * re-application so smudged-then-unmodified files report unchanged (F1).
  */
 const scanWorkingTree = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
   tracker: GranularityTracker,
+  provider: AttributeProvider | undefined,
 ): Promise<Map<FilePath, WorkingTreeDelta>> => {
   const map = new Map<FilePath, WorkingTreeDelta>();
   await Promise.all(
     stage0.map(async (entry) => {
-      if (!entry.flags.skipWorktree) map.set(entry.path, await compareWorkingTreeDelta(ctx, entry));
+      if (!entry.flags.skipWorktree)
+        map.set(entry.path, await compareWorkingTreeDelta(ctx, entry, provider));
       tracker.tick();
     }),
   );

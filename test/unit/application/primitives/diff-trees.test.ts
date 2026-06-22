@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { CommandRunner } from '../../../../src/ports/command-runner.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
@@ -980,6 +982,66 @@ describe('diffTrees', () => {
           expect(change.oldId).toBe(oldId);
           expect(change.newId).toBe(newId);
         }
+      });
+    });
+  });
+
+  describe('Given withStat:true and a textconv driver that collapses multi-line content to one line', () => {
+    describe('When diffTrees is called', () => {
+      it('Then stat counts reflect the textconv-transformed content (applyTextconv:true is forwarded)', async () => {
+        // Arrange — rawOld has 3 lines; rawNew has 1 line. Without textconv:
+        //   added=1, deleted=3. The fake textconv driver collapses BOTH sides to a
+        //   single line each (different values), so with textconv: added=1, deleted=1.
+        //   This distinguishes the two code paths.
+        const enc = new TextEncoder();
+        const rawOld = enc.encode('line1\nline2\nline3\n');
+        const rawNew = enc.encode('only\n');
+        // Textconv always collapses to one line regardless of raw content.
+        const collapsedOld = enc.encode('COLLAPSED_OLD\n');
+        const collapsedNew = enc.encode('COLLAPSED_NEW\n');
+
+        const runner: CommandRunner = {
+          run: async (req) => {
+            // The command is `<textconv-cmd> <tmpPath>`. The tmp path embeds the
+            // side token (old_ or new_) so we can distinguish which side is being
+            // transformed without reading the file.
+            const stdout = req.command.includes('old_') ? collapsedOld : collapsedNew;
+            return { exitCode: 0, stdout };
+          },
+        };
+
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.dat diff=collapse\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "collapse"]\n\ttextconv = collapse-cmd\n',
+        );
+
+        const writeBlobId = async (content: Uint8Array): Promise<ObjectId> =>
+          writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+
+        const oldBlobId = await writeBlobId(rawOld);
+        const newBlobId = await writeBlobId(rawNew);
+        const before = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldBlobId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newBlobId },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert — textconv collapses both sides to 1 line each → added=1, deleted=1.
+        // Without textconv (applyTextconv:false / {}): rawOld=3 lines, rawNew=1 line
+        // → added=1, deleted=3. The textconv path uniquely produces deleted=1.
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
       });
     });
   });

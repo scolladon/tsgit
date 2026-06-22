@@ -96,7 +96,7 @@ async function applyLinePassAndStat(
   ignoreBlankLines: boolean,
   withStat: boolean,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const files = await materialisePatchFiles(ctx, diff.changes);
+  const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
     const stats = computeStatFields(
