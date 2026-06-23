@@ -15,6 +15,8 @@ import { listReflogs, readReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertRepository } from './internal/repo-state.js';
 
+export type { FsckObjectType, FsckSeverity } from '../../domain/fsck/index.js';
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------

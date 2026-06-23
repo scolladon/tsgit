@@ -213,6 +213,7 @@ describe('openRepository — Repository binding integrity', () => {
             'dispose',
             'fetch',
             'fetchMissing',
+            'fsck',
             'grep',
             'init',
             'log',
