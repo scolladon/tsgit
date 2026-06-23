@@ -24,6 +24,8 @@ export {
 } from './config-scoped-read.js';
 export { createCommit } from './create-commit.js';
 export { diffTrees } from './diff-trees.js';
+export type { EnumerateObjectsOptions } from './enumerate-objects.js';
+export { enumerateObjects } from './enumerate-objects.js';
 export type { EnumeratePushObjectsInput } from './enumerate-push-objects.js';
 export { enumeratePushObjects } from './enumerate-push-objects.js';
 export { enumerateRefs } from './enumerate-refs.js';
