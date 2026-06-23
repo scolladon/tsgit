@@ -53,7 +53,7 @@ function sanitizePath(filePath: string): string {
 }
 
 /** Bundled override/textconv config — only present when applyTextconv is enabled.
- *  `runner` is only non-null when `ctx.command` is available (textconv execution).
+ *  `runner` is defined only when `ctx.command` is available (textconv execution).
  *  `getProvider` is always available when the config object exists. */
 interface OverrideConfig {
   readonly runner: CommandRunner | undefined;
@@ -85,7 +85,7 @@ async function resolveOverrideAndCommand(
   ctx: Context,
   provider: AttributeProvider,
   filePath: string,
-  rawIsBinaryHint: boolean,
+  rawIsBinary: () => boolean | Promise<boolean>,
 ): Promise<{ pair: BinaryOverridePair; command: string | undefined }> {
   const { sources, macros } = await provider.sourcesForPath(
     filePath as Parameters<typeof provider.sourcesForPath>[0],
@@ -106,7 +106,9 @@ async function resolveOverrideAndCommand(
 
   const pair = resolveBinaryOverride(diffAttr, {
     textconvConfigured,
-    rawIsBinary: rawIsBinaryHint,
+    // Evaluate the raw-binary scan only when a configured named driver consumes it;
+    // every other attribute state ignores it, so non-textconv paths skip the blob scan.
+    rawIsBinary: textconvConfigured ? await rawIsBinary() : false,
   });
   return { pair, command };
 }
@@ -167,12 +169,11 @@ async function materialiseAdd(
   const rawNew = blob.content;
   if (config === undefined) return { change, newContent: rawNew };
   const provider = await config.getProvider();
-  const rawIsBinary = isBinary(rawNew);
   const { pair, command } = await resolveOverrideAndCommand(
     ctx,
     provider,
     primaryPath(change),
-    rawIsBinary,
+    () => isBinary(rawNew),
   );
   const newContent =
     config.runner !== undefined && command !== undefined
@@ -191,12 +192,11 @@ async function materialiseDelete(
   const rawOld = blob.content;
   if (config === undefined) return { change, oldContent: rawOld };
   const provider = await config.getProvider();
-  const rawIsBinary = isBinary(rawOld);
   const { pair, command } = await resolveOverrideAndCommand(
     ctx,
     provider,
     primaryPath(change),
-    rawIsBinary,
+    () => isBinary(rawOld),
   );
   const oldContent =
     config.runner !== undefined && command !== undefined
@@ -216,14 +216,12 @@ async function materialiseRenameOrCopy(
     if (config === undefined) return { change };
     const provider = await config.getProvider();
     // Gitlink sides have no blob in the object store — synthesize is pointer-only; treat as non-binary.
-    const rawIsBinary = isGitlink(change.newMode)
-      ? false
-      : isBinary((await readBlob(ctx, change.newId)).content);
     const { pair } = await resolveOverrideAndCommand(
       ctx,
       provider,
       primaryPath(change),
-      rawIsBinary,
+      async () =>
+        isGitlink(change.newMode) ? false : isBinary((await readBlob(ctx, change.newId)).content),
     );
     return withOverride({ change }, pair);
   }
@@ -235,12 +233,11 @@ async function materialiseRenameOrCopy(
     return { change, oldContent: oldBlob.content, newContent: newBlob.content };
   }
   const provider = await config.getProvider();
-  const rawIsBinary = isBinary(oldBlob.content) || isBinary(newBlob.content);
   const { pair, command } = await resolveOverrideAndCommand(
     ctx,
     provider,
     primaryPath(change),
-    rawIsBinary,
+    () => isBinary(oldBlob.content) || isBinary(newBlob.content),
   );
   const [oldContent, newContent] = await applyTextconvBothSides(
     ctx,
@@ -264,12 +261,11 @@ async function materialiseModifySameId(
   const rawBytes = blob.content;
   if (config === undefined) return { change, oldContent: rawBytes, newContent: rawBytes };
   const provider = await config.getProvider();
-  const rawIsBinary = isBinary(rawBytes);
   const { pair, command } = await resolveOverrideAndCommand(
     ctx,
     provider,
     primaryPath(change),
-    rawIsBinary,
+    () => isBinary(rawBytes),
   );
   const [oldContent, newContent] = await applyTextconvBothSides(
     ctx,
@@ -299,12 +295,11 @@ async function materialiseModifyDifferentIds(
   const oldForBinary = isGitlink(change.oldMode) ? new Uint8Array(0) : oldRaw;
   const newForBinary = isGitlink(change.newMode) ? new Uint8Array(0) : newRaw;
   const provider = await config.getProvider();
-  const rawIsBinary = isBinary(oldForBinary) || isBinary(newForBinary);
   const { pair, command } = await resolveOverrideAndCommand(
     ctx,
     provider,
     primaryPath(change),
-    rawIsBinary,
+    () => isBinary(oldForBinary) || isBinary(newForBinary),
   );
   const [oldContent, newContent] = await applyTextconvBothSides(
     ctx,
