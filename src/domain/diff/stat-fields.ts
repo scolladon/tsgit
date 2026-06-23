@@ -27,6 +27,10 @@ export interface StatTreeDiff {
 export interface StatFieldsOptions {
   readonly lineKey?: LineKey;
   readonly ignoreBlankLines?: boolean;
+  /** Override the binary-vs-text decision for the numstat surface. `'binary'` ⇒
+   *  `{ added: 0, deleted: 0, binary: true }`; `'text'` ⇒ count lines even over NUL;
+   *  `undefined` ⇒ today's `isBinary` content-sniff. */
+  readonly numstatBinaryOverride?: 'binary' | 'text';
 }
 
 function hunkHasNonBlank(diff: LineDiff, hunk: LineHunk, key: LineKey): boolean {
@@ -77,7 +81,8 @@ export const computeStatFields = (
   next: Uint8Array,
   options?: StatFieldsOptions,
 ): StatFields => {
-  if (isBinary(old) || isBinary(next)) {
+  const override = options?.numstatBinaryOverride;
+  if (override === 'binary' || (override === undefined && (isBinary(old) || isBinary(next)))) {
     return { added: 0, deleted: 0, binary: true };
   }
   const lineKey = options?.lineKey;

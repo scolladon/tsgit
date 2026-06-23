@@ -302,3 +302,66 @@ describe('Given a node repo (command:false) declaring *.bin filter=lfs diff=lfs 
     });
   });
 });
+
+// ── Binary override parity (no runner) ───────────────────────────────────────
+
+describe('Given -diff attribute with no runner (memory and node command:false)', () => {
+  describe('When diff is called with withStat: true', () => {
+    it('Then patchBinaryOverride and numstatBinaryOverride are both binary without a runner (off-node chokepoint)', async () => {
+      // Arrange — memory ctx with -diff attribute, no runner
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.forced -diff\n');
+      await add(ctx, ['.gitattributes']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.forced`, 'old content\n');
+      await add(ctx, ['file.forced']);
+      const c1 = await commit(ctx, { message: 'add file.forced', author: AUTHOR });
+
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.forced`, 'new content\n');
+      await add(ctx, ['file.forced']);
+      const c2 = await commit(ctx, { message: 'modify file.forced', author: AUTHOR });
+
+      // Act
+      const result = await diff(ctx, { from: c1.id, to: c2.id, withStat: true });
+
+      // Assert — -diff forces binary even without a command runner
+      expect(result.changes).toHaveLength(1);
+      expect(result.changes[0]).toMatchObject({
+        type: 'modify',
+        path: 'file.forced',
+        added: 0,
+        deleted: 0,
+        binary: true,
+      });
+    });
+  });
+
+  describe('When diff is called without withStat (R4 boundary — no provider built)', () => {
+    it('Then the change has no binary stat and no override (content-stable path unaffected)', async () => {
+      // Arrange — same -diff attribute, but called without withStat
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.forced -diff\n');
+      await add(ctx, ['.gitattributes']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.forced`, 'old content\n');
+      await add(ctx, ['file.forced']);
+      const c1 = await commit(ctx, { message: 'add file.forced', author: AUTHOR });
+
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.forced`, 'new content\n');
+      await add(ctx, ['file.forced']);
+      const c2 = await commit(ctx, { message: 'modify file.forced', author: AUTHOR });
+
+      // Act — no withStat: content-stable callers
+      const result = await diff(ctx, { from: c1.id, to: c2.id });
+
+      // Assert — tree-level only, no binary override applied
+      expect(result.changes).toHaveLength(1);
+      expect(result.changes[0]).toMatchObject({
+        type: 'modify',
+        path: 'file.forced',
+      });
+      // No added/deleted/binary on a plain TreeDiff
+      expect((result.changes[0] as unknown as Record<string, unknown>).binary).toBeUndefined();
+    });
+  });
+});

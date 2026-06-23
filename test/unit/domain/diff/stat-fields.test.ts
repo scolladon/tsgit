@@ -316,4 +316,80 @@ describe('computeStatFields', () => {
       });
     });
   });
+
+  describe("Given numstatBinaryOverride 'binary' over purely textual content", () => {
+    describe('When computeStatFields called with numstatBinaryOverride binary', () => {
+      it('Then it short-circuits to binary shape without sniffing content', () => {
+        // Arrange — purely textual sides; override forces binary
+        const old = enc('a\n');
+        const next = enc('b\n');
+        // Act
+        const sut = computeStatFields;
+        const result = sut(old, next, { numstatBinaryOverride: 'binary' });
+        // Assert — all three fields
+        expect(result).toEqual({ added: 0, deleted: 0, binary: true });
+      });
+    });
+  });
+
+  describe("Given numstatBinaryOverride 'text' over NUL-bearing content", () => {
+    describe('When computeStatFields called with numstatBinaryOverride text', () => {
+      it('Then it skips the isBinary guard and counts lines even over NUL bytes', () => {
+        // Arrange — both sides contain a NUL byte; override forces text counting
+        const old = new Uint8Array([0x61, 0x00, 0x0a]); // "a\0\n"
+        const next = new Uint8Array([0x62, 0x00, 0x0a]); // "b\0\n"
+        // Act
+        const sut = computeStatFields;
+        const result = sut(old, next, { numstatBinaryOverride: 'text' });
+        // Assert — real line counts, not binary shape
+        expect(result).toEqual({ added: 1, deleted: 1, binary: false });
+      });
+    });
+  });
+
+  describe('Given numstatBinaryOverride absent over NUL-bearing content (regression)', () => {
+    describe('When computeStatFields called with no override option', () => {
+      it('Then it uses the isBinary sniff and returns binary shape', () => {
+        // Arrange — NUL byte triggers isBinary; override is absent (undefined path)
+        const old = new Uint8Array([0x61, 0x00, 0x0a]);
+        const next = new Uint8Array([0x62, 0x00, 0x0a]);
+        // Act
+        const sut = computeStatFields;
+        const result = sut(old, next, {});
+        // Assert — today's sniff fires
+        expect(result).toEqual({ added: 0, deleted: 0, binary: true });
+      });
+    });
+  });
+
+  describe('Given numstatBinaryOverride absent over purely textual content (regression)', () => {
+    describe('When computeStatFields called with no override option', () => {
+      it('Then it uses the isBinary sniff and returns real line counts', () => {
+        // Arrange — textual content; sniff returns false; counts computed normally
+        const old = enc('a\n');
+        const next = enc('b\n');
+        // Act
+        const sut = computeStatFields;
+        const result = sut(old, next, {});
+        // Assert — real counts, not binary
+        expect(result).toEqual({ added: 1, deleted: 1, binary: false });
+      });
+    });
+  });
+
+  describe("Given numstatBinaryOverride 'text' combined with lineKey and ignoreBlankLines", () => {
+    describe('When computeStatFields called with text override and normalization options', () => {
+      it('Then normalization options still apply after the isBinary guard is skipped', () => {
+        // Arrange — NUL-bearing sides + blank insert; text override skips binary guard
+        // The blank line insert should be suppressed by ignoreBlankLines
+        const old = new Uint8Array([0x61, 0x00, 0x0a]); // "a\0\n"
+        const next = new Uint8Array([0x61, 0x00, 0x0a, 0x0a]); // "a\0\n\n" (blank appended)
+        // Act
+        const sut = computeStatFields;
+        const result = sut(old, next, { numstatBinaryOverride: 'text', ignoreBlankLines: true });
+        // Assert — blank-only hunk suppressed; override doesn't disturb normalization
+        expect(result).toEqual({ added: 0, deleted: 0, binary: false });
+      });
+    });
+  });
 });
