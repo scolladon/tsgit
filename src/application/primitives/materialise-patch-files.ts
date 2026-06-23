@@ -70,6 +70,8 @@ async function resolveTextconvCommand(
 ): Promise<string | undefined> {
   const section = (await readConfig(ctx)).diff?.get(driverName);
   const textconv = section?.textconv;
+  // equivalent-mutant: `true && textconv !== ''` — for textconv=undefined, both `!== undefined && !==''`
+  // and `true && !==''` evaluate identically (undefined!==''=true, so both return undefined).
   return textconv !== undefined && textconv !== '' ? textconv : undefined;
 }
 
@@ -97,6 +99,9 @@ async function resolveOverrideAndCommand(
     macros,
   );
 
+  // equivalent-mutant: initial `false` is overwritten for named-driver paths and
+  // ignored by resolveBinaryOverride for non-named paths (false/true/unspecified
+  // all return before reading textconvConfigured), so `= true` is indistinguishable.
   let textconvConfigured = false;
   let command: string | undefined;
   if (diffAttr !== false && diffAttr !== true && diffAttr !== 'unspecified') {
@@ -108,6 +113,8 @@ async function resolveOverrideAndCommand(
     textconvConfigured,
     // Evaluate the raw-binary scan only when a configured named driver consumes it;
     // every other attribute state ignores it, so non-textconv paths skip the blob scan.
+    // equivalent-mutant: `: false` fallback taken only when !textconvConfigured; resolveBinaryOverride
+    // reads rawIsBinary only in the named+textconvConfigured=true branch, so the fallback is never consumed.
     rawIsBinary: textconvConfigured ? await rawIsBinary() : false,
   });
   return { pair, command };
