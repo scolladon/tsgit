@@ -501,10 +501,14 @@ left untested per-side.
 - **`grep`/`blame`/`merge` binary decisions** — other commands also consult `isBinary`;
   this feature touches only the **diff/numstat** display path. Other consumers of the
   attribute are separate features.
-- **Public API surface** — confirmed **no api.json delta** even under the ratified
-  per-surface D-SHAPE (c): the **two** threading fields live on internal functions /
-  types (`computeStatFields` / `StatFieldsOptions` gains `numstatBinaryOverride`;
-  `PatchFile` gains `patchBinaryOverride` + `numstatBinaryOverride`; `renderPatch`) that
-  are **not** re-exported through `src/index.ts` (verified: absent from
-  `application/commands/index.ts` and `public-types.ts`). The public `StatFields.binary`
-  boolean already exists — this feature changes its **computation**, adds no field.
+- **Public API surface** — **api.json delta = YES** (corrected at planning; the earlier
+  "no delta" reading missed a wildcard re-export). `StatFieldsOptions` and `PatchFile` are
+  **public**: `public-types.ts` does `export type * from './domain/diff/index.js'`, and
+  `domain/diff/index.ts` barrels both (`StatFieldsOptions` from `stat-fields.js`; `PatchFile`
+  from the diff barrel) — both appear in `reports/api.json`. So the new optional fields
+  (`StatFieldsOptions.numstatBinaryOverride`; `PatchFile.{patchBinaryOverride,numstatBinaryOverride}`)
+  ARE public-surface additions and change `api.json`. The parts that add these fields pre-pay
+  `npm run docs:json` and commit `reports/api.json` in-slice (the `check:doc-typedoc` prepush gate,
+  per `surface-gates.md`). The internal `resolveBinaryOverride` primitive is unbarrelled (like
+  `resolve-textconv-driver`) — no delta. The public `StatFields.binary` boolean already exists —
+  its **computation** changes, no new field there.

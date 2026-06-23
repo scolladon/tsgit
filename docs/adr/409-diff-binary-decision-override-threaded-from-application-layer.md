@@ -71,9 +71,12 @@ resolver implements; `undefined` ⇒ today's content-sniff):
 - The override is resolved **once per path** in `materialise-patch-files.ts`, reusing #195's
   `AttributeProvider` (one `sourcesForPath` lookup drives both the textconv choice and this
   override — guaranteed consistent).
-- The public `StatFields.binary` boolean's **computation** changes; no new public field is added;
-  **no `api.json` delta** (the threading params live on internal functions not re-exported through
-  `src/index.ts`).
+- The public `StatFields.binary` boolean's **computation** changes. The new optional override
+  fields land on the **public** `PatchFile` and `StatFieldsOptions` types — both reach the package
+  surface via `public-types.ts`'s `export type * from './domain/diff/index.js'` wildcard (confirmed
+  in `reports/api.json`) — so there **is** an `api.json` delta, regenerated (`npm run docs:json`)
+  and committed in the parts that add the fields (the `check:doc-typedoc` prepush gate). The
+  internal `resolveBinaryOverride` primitive is unbarrelled — no delta from it.
 - Each pinned row (design §3.4) becomes a cross-tool `*-interop` test reconstructing git's
   `Binary files … differ` / `-\t-` / text-hunk from the structured fields (ADR-249); the library
   emits no rendered display string.
