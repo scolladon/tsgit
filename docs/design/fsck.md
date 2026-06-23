@@ -85,9 +85,13 @@ identity}.ts`) already throw on the structural faults (`INVALID_OBJECT_HEADER`,
 `INVALID_FILE_MODE`, `OBJECT_HASH_MISMATCH`), but git's named fsck catalogue
 (`treeNotSorted`, `zeroPaddedFilemode`, `missingSpaceBeforeEmail`, … — the full
 set pinned below) is a separate severity-classified pass git runs *on top of*
-parsing. The validator takes a parsed object + its kind and returns the ordered
-list of `(msgId, severity)` checks it fails; the command maps each to a
-`bad-object` finding. The msg-id → default-severity map and the strict-upgrade set
+parsing. The validator takes the **raw decompressed object body** + its kind (+
+`strict`) and returns the ordered list of `(msgId, severity)` checks it fails; the
+command maps each to a `bad-object` finding. It must **not** take a parsed object:
+tsgit's parsers normalise or reject exactly these faults (zero-padded modes
+discarded by `normalizeFileMode`, bad/duplicate/unsorted tree names never reach a
+parsed `Tree`, malformed identity spacing never parses), so a parsed input would
+make most of the catalogue invisible — the module parses the bytes tolerantly itself. The msg-id → default-severity map and the strict-upgrade set
 (WARN-class → ERROR) are the module's core tables, pinned against real git below.
 
 **Roots** — `enumerateRefs(ctx): Promise<ReadonlyArray<RefName>>`
