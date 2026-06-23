@@ -181,6 +181,39 @@ attribute only names it). In the browser / memory adapters, or in Node with
 to raw bytes. See the [RUNBOOK](../../../RUNBOOK.md) "Operating filter and textconv drivers"
 section for security and operator notes.
 
+## Binary-vs-text decision (`diff` / `binary` attribute)
+
+The `binary` field on `StatFields` (and the patch binary branch when reconstructing
+a unified diff) is not purely a content-sniff — it honours the `diff` attribute in
+`.gitattributes` first, exactly as git does. The library ships the structured
+`binary: boolean`; a caller reconstructing `Binary files a/F and b/F differ` and
+`-\t-` numstat rows derives them from that field.
+
+| `.gitattributes` rule | `binary` (numstat) | patch binary branch |
+|---|---|---|
+| `f -diff` (or `*.bin binary` macro) | `true` — even over textual content (no NUL) | forced binary — `Binary files … differ` |
+| `f diff` (bare, set true) | `false` — even over NUL content | forced text hunk — NUL bytes survive verbatim |
+| `f diff=<name>` + configured `textconv` | raw-blob decision: `true` if the **raw** committed bytes contain NUL, `false` otherwise | text hunk over the **textconv output** |
+| `f diff=<name>`, no `textconv` configured | content-sniff of raw bytes | content-sniff of raw bytes |
+| no rule (unspecified) | content-sniff (NUL → binary) — unchanged | content-sniff (NUL → binary) — unchanged |
+
+A few points worth noting:
+
+- **`binary` macro.** The built-in `binary` macro expands to `-diff -merge -text`. A
+  path matching `*.bin binary` therefore resolves `diff` to `false` — it forces binary
+  display on both surfaces, even when the content has no NUL bytes.
+- **Named-driver numstat asymmetry.** When `diff=<name>` names a configured textconv
+  driver, the patch is a text hunk (over the transformed bytes) but numstat tracks the
+  **raw** blob — so a NUL-retaining or NUL-stripping textconv still shows `-\t-` in
+  numstat while the patch shows a clean text hunk. This matches git exactly.
+- **OIDs are not affected.** The `diff` / `binary` attribute never enters the
+  `DiffChange` OIDs, modes, or rename similarity scores — only the `binary` boolean
+  and the patch binary branch.
+- **Off-node adapters.** `-diff` and bare `diff` (and the raw-blob numstat decision
+  for named drivers) are honoured in the browser and in-memory adapters — they need
+  no external command. Only textconv driver *execution* requires a Node `CommandRunner`
+  (see the textconv section above).
+
 ## See also
 
 - Primitives: [`diffTrees`](../primitives/diff-trees.md),
