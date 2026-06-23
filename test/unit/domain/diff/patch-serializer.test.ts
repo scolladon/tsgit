@@ -2526,6 +2526,39 @@ describe('patch-serializer', () => {
     });
   });
 
+  describe('Given a NUL-bearing modify with patchBinaryOverride "text" and numstatBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then only patchBinaryOverride drives the patch surface — text hunk with NUL, numstat field ignored', () => {
+        // Arrange
+        const oldBytes = new Uint8Array([0x61, 0x00, 0x0a]); // a\0\n
+        const newBytes = new Uint8Array([0x62, 0x00, 0x0a]); // b\0\n
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'nul.bin' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: oldBytes,
+          newContent: newBytes,
+          patchBinaryOverride: 'text',
+          numstatBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert — numstatBinaryOverride 'binary' must NOT leak into the patch decision
+        expect(result).toContain('@@ -1 +1 @@');
+        expect(result).not.toContain('Binary files');
+        const nulIndex = [...result].findIndex((_, i) => result.charCodeAt(i) === 0x00);
+        expect(nulIndex).toBeGreaterThan(-1);
+      });
+    });
+  });
+
   describe('Given a modify change with NUL-bearing content and patchBinaryOverride undefined', () => {
     describe('When renderPatch is called', () => {
       it('Then falls back to isBinary sniff and renders Binary files (regression)', () => {
