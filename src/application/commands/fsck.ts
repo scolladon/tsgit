@@ -1,9 +1,13 @@
+import { TsgitError } from '../../domain/error.js';
 import type { FsckObjectType, FsckSeverity } from '../../domain/fsck/index.js';
+import { validateObject } from '../../domain/fsck/index.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
+import { parseHeader, serializeObject } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { looseCompressedBytes } from '../primitives/object-resolver.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { listReflogs, readReflog } from '../primitives/reflog-store.js';
@@ -79,9 +83,15 @@ export interface FsckResult {
 }
 
 // ---------------------------------------------------------------------------
-// Exit-code bits (3b/3c add the rest of the bitmask)
+// Exit-code bits (pinned against real git 2.54.0)
+// bit 1 = generic fsck error: content-ERROR, strict-upgraded WARN, corrupt, hash-mismatch
+// bit 2 = missing / broken-link / ref→absent-sha
+// bit 8 = refs-verify content failure (3c)
 // ---------------------------------------------------------------------------
 
+const EXIT_CONTENT_ERROR = 1;
+const EXIT_CORRUPT = 1;
+const EXIT_HASH_MISMATCH = 1;
 const EXIT_MISSING = 2;
 
 // ---------------------------------------------------------------------------
@@ -139,6 +149,108 @@ async function collectRoots(ctx: Context, opts: FsckOptions): Promise<ReadonlySe
   if (opts.reflogRoots !== false) await addReflogRoots(ctx, roots);
   if (opts.indexRoot !== false) await addIndexRoots(ctx, roots);
   return roots;
+}
+
+// ---------------------------------------------------------------------------
+// Object-content validation pass
+// ---------------------------------------------------------------------------
+
+type RawObjectResult =
+  | { readonly ok: true; readonly kind: FsckObjectType; readonly rawBody: Uint8Array }
+  | { readonly ok: false; readonly msgId: string };
+
+/**
+ * Read an object's raw decompressed body for content validation.
+ *
+ * For loose objects: inflate the compressed bytes and return the body (after
+ * the git `<type> <size>\0` header). This preserves zero-padded file modes
+ * and other normalisation-defeated bytes that tsgit's strict parsers reject.
+ *
+ * For pack objects: re-serialize the parsed object. Packs never contain
+ * zero-padded modes (git normalises on pack write), so re-serialisation is
+ * correct for all catalogue checks that apply to packed objects.
+ */
+async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
+  const compressed = await looseCompressedBytes(ctx, id);
+  if (compressed !== undefined) {
+    try {
+      const inflated = await ctx.compressor.inflate(compressed);
+      const { type, contentOffset } = parseHeader(inflated);
+      return { ok: true, kind: type, rawBody: inflated.subarray(contentOffset) };
+    } catch {
+      // inflate or header parse failed → structural corruption
+      return { ok: false, msgId: 'unterminatedHeader' };
+    }
+  }
+
+  // Pack object — go through the normal parse path and re-serialize
+  try {
+    const obj = await readObject(ctx, id, { verifyHash: false });
+    const full = serializeObject(obj, ctx.hashConfig);
+    const { contentOffset } = parseHeader(full);
+    return { ok: true, kind: obj.type, rawBody: full.subarray(contentOffset) };
+  } catch {
+    return { ok: false, msgId: 'badType' };
+  }
+}
+
+interface ContentValidationResult {
+  readonly findings: ReadonlyArray<FsckFinding>;
+  readonly exitBit: number;
+}
+
+/**
+ * Validate object contents for the entire universe.
+ * Skipped when connectivityOnly is true.
+ * Returns bad-object and hash-mismatch findings plus the OR'd exit bit.
+ */
+async function runContentValidationPass(
+  ctx: Context,
+  universe: ReadonlySet<ObjectId>,
+  strict: boolean,
+): Promise<ContentValidationResult> {
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
+
+  for (const id of universe) {
+    // Step 1: get raw bytes (preserves zero-padded modes in loose objects)
+    const rawResult = await tryGetRawObjectBody(ctx, id);
+    if (!rawResult.ok) {
+      findings.push({
+        type: 'bad-object',
+        id,
+        objectType: 'blob',
+        msgId: rawResult.msgId,
+        severity: 'error',
+      });
+      exitBit |= EXIT_CORRUPT;
+      continue;
+    }
+
+    const { kind, rawBody } = rawResult;
+
+    // Step 2: run the msg-id catalogue validator on raw bytes
+    const catalogueFindings = validateObject({ rawBody, kind, strict });
+    for (const { msgId, severity } of catalogueFindings) {
+      findings.push({ type: 'bad-object', id, objectType: kind, msgId, severity });
+      if (severity === 'error') exitBit |= EXIT_CONTENT_ERROR;
+    }
+
+    // Step 3: verify hash separately (hash-mismatch does not preclude catalogue checks)
+    try {
+      await readObject(ctx, id, { verifyHash: true });
+    } catch (err) {
+      if (err instanceof TsgitError && err.data.code === 'OBJECT_HASH_MISMATCH') {
+        const actual = (err.data as { actual: ObjectId }).actual;
+        findings.push({ type: 'hash-mismatch', id, actual });
+        exitBit |= EXIT_HASH_MISMATCH;
+      }
+      // Parse errors (INVALID_FILE_MODE, INVALID_TREE_ENTRY, etc.) for loose objects
+      // whose raw bytes were already validated above — not a hash fault, ignore here.
+    }
+  }
+
+  return { findings, exitBit };
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +477,12 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const allIds = await enumerateObjects(ctx, { includePacks: opts.full !== false });
   const universe = new Set(allIds);
 
+  // Content validation pass (skipped when connectivityOnly)
+  const contentResult =
+    opts.connectivityOnly === true
+      ? { findings: [] as FsckFinding[], exitBit: 0 }
+      : await runContentValidationPass(ctx, universe, opts.strict === true);
+
   const [roots, inEdgePresent] = await Promise.all([
     collectRoots(ctx, opts),
     buildInEdgeMap(ctx, universe),
@@ -378,7 +496,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
 
-  const findings: FsckFinding[] = [];
+  const findings: FsckFinding[] = [...contentResult.findings];
 
   for (const id of missingIds) {
     findings.push({ type: 'missing', id, objectType: await resolveObjectType(ctx, id) });
@@ -393,7 +511,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     findings.push({ type: 'tagged', id: targetId, objectType: targetType, tagName, tag: tagId });
   }
 
-  const exitCode = missingIds.size > 0 || brokenEdges.length > 0 ? EXIT_MISSING : 0;
+  const connectivityBit = missingIds.size > 0 || brokenEdges.length > 0 ? EXIT_MISSING : 0;
+  const exitCode = contentResult.exitBit | connectivityBit;
   return { findings, exitCode };
 }
 

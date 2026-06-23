@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fsck } from '../../../../src/application/commands/fsck.js';
+import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import {
@@ -639,6 +640,405 @@ describe('Given a missing object (referenced but absent)', () => {
 
       // Assert
       expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for writing raw (potentially malformed) loose objects
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a raw loose object directly — bypassing writeObject's strict
+ * serialisation. This lets tests place malformed content (zero-padded modes,
+ * unsorted tree entries, bad identity lines) into the object store exactly as
+ * hand-corrupted loose objects exist on real disks.
+ *
+ * Returns the SHA-1 OID of the raw bytes.
+ */
+async function writeMalformedLooseObject(ctx: Context, rawBytes: Uint8Array): Promise<ObjectId> {
+  const id = (await ctx.hash.hashHex(rawBytes)) as ObjectId;
+  const prefix = id.slice(0, 2);
+  const dir = objectsDir(ctx.layout.gitDir, prefix);
+  await ctx.fs.mkdir(dir);
+  const compressed = await ctx.compressor.deflate(rawBytes);
+  await ctx.fs.writeExclusive(looseObjectPath(ctx.layout.gitDir, id), compressed);
+  return id;
+}
+
+const enc2 = new TextEncoder();
+
+function buildLooseBytes(type: string, body: Uint8Array): Uint8Array {
+  const header = enc2.encode(`${type} ${body.length}\0`);
+  const out = new Uint8Array(header.length + body.length);
+  out.set(header, 0);
+  out.set(body, header.length);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// CONTENT VALIDATION — zeroPaddedFilemode (WARN, no strict → exit 0)
+// ---------------------------------------------------------------------------
+
+describe('Given a loose tree object with zeroPaddedFilemode (zero-padded mode bytes)', () => {
+  describe('When fsck runs without --strict', () => {
+    it('Then emits a bad-object finding with severity warning and exit code 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      // Create a valid blob to reference
+      const blobId = await writeObject(ctx, makeBlob('content'));
+      // Build a tree with zero-padded filemode: "0100644" instead of "100644"
+      const blobHex = blobId as string;
+      const blobSha = new Uint8Array(20);
+      for (let i = 0; i < 20; i++) {
+        blobSha[i] = Number.parseInt(blobHex.slice(i * 2, i * 2 + 2), 16);
+      }
+      const modeBytes = enc2.encode('0100644 file.txt\0');
+      const treeBody = new Uint8Array(modeBytes.length + 20);
+      treeBody.set(modeBytes, 0);
+      treeBody.set(blobSha, modeBytes.length);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — warning in tree <sha>: zeroPaddedFilemode
+      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
+      const zeroPadded = badObjects.find(
+        (f) => (f as { msgId: string }).msgId === 'zeroPaddedFilemode',
+      );
+      expect(zeroPadded).toBeDefined();
+      expect(zeroPadded).toMatchObject({
+        type: 'bad-object',
+        id: treeId,
+        objectType: 'tree',
+        msgId: 'zeroPaddedFilemode',
+        severity: 'warning',
+      });
+      // WARN default → exit 0
+      expect(result.exitCode & 1).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONTENT VALIDATION — zeroPaddedFilemode under strict (WARN→ERROR → exit 1)
+// ---------------------------------------------------------------------------
+
+describe('Given a loose tree object with zeroPaddedFilemode (zero-padded mode bytes)', () => {
+  describe('When fsck runs with strict:true', () => {
+    it('Then emits a bad-object finding with severity error and exit code has bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('content'));
+      const blobHex = blobId as string;
+      const blobSha = new Uint8Array(20);
+      for (let i = 0; i < 20; i++) {
+        blobSha[i] = Number.parseInt(blobHex.slice(i * 2, i * 2 + 2), 16);
+      }
+      const modeBytes = enc2.encode('0100644 file.txt\0');
+      const treeBody = new Uint8Array(modeBytes.length + 20);
+      treeBody.set(modeBytes, 0);
+      treeBody.set(blobSha, modeBytes.length);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx, { strict: true });
+
+      // Assert — error in tree <sha>: zeroPaddedFilemode (WARN upgraded to ERROR under strict)
+      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
+      const zeroPadded = badObjects.find(
+        (f) => (f as { msgId: string }).msgId === 'zeroPaddedFilemode',
+      );
+      expect(zeroPadded).toBeDefined();
+      expect(zeroPadded).toMatchObject({
+        type: 'bad-object',
+        msgId: 'zeroPaddedFilemode',
+        severity: 'error',
+      });
+      // ERROR under strict → exit bit 1
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONTENT VALIDATION — treeNotSorted (ERROR in both default and strict)
+// ---------------------------------------------------------------------------
+
+describe('Given a loose tree object with treeNotSorted (entries in wrong order)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits a bad-object finding with severity error and exit code has bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('a'));
+      const blobId2 = await writeObject(ctx, makeBlob('b'));
+      const blobHex1 = blobId as string;
+      const blobHex2 = blobId2 as string;
+      const sha1 = new Uint8Array(20);
+      const sha2 = new Uint8Array(20);
+      for (let i = 0; i < 20; i++) {
+        sha1[i] = Number.parseInt(blobHex1.slice(i * 2, i * 2 + 2), 16);
+        sha2[i] = Number.parseInt(blobHex2.slice(i * 2, i * 2 + 2), 16);
+      }
+      // Wrong order: 'z.txt' before 'a.txt' (descending, which violates git sort)
+      const entry1 = enc2.encode('100644 z.txt\0');
+      const entry2 = enc2.encode('100644 a.txt\0');
+      const treeBody = new Uint8Array(entry1.length + 20 + entry2.length + 20);
+      let off = 0;
+      treeBody.set(entry1, off);
+      off += entry1.length;
+      treeBody.set(sha1, off);
+      off += 20;
+      treeBody.set(entry2, off);
+      off += entry2.length;
+      treeBody.set(sha2, off);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — error in tree <sha>: treeNotSorted: not properly sorted
+      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
+      const notSorted = badObjects.find((f) => (f as { msgId: string }).msgId === 'treeNotSorted');
+      expect(notSorted).toBeDefined();
+      expect(notSorted).toMatchObject({
+        type: 'bad-object',
+        id: treeId,
+        objectType: 'tree',
+        msgId: 'treeNotSorted',
+        severity: 'error',
+      });
+      // ERROR → exit bit 1
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONTENT VALIDATION — missingSpaceBeforeEmail (ERROR in both modes)
+// ---------------------------------------------------------------------------
+
+describe('Given a loose commit object with missingSpaceBeforeEmail', () => {
+  describe('When fsck runs', () => {
+    it('Then emits bad-object finding with severity error and exit code has bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      // Write a valid empty tree
+      const treeId = await writeObject(ctx, makeTree([]));
+      const treeHex = treeId as string;
+      // Commit body with 'Name<email>' (missing space before '<')
+      const commitBody = enc2.encode(
+        `tree ${treeHex}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\nmessage\n`,
+      );
+      const commitRaw = buildLooseBytes('commit', commitBody);
+      const commitId = await writeMalformedLooseObject(ctx, commitRaw);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — error in commit <sha>: missingSpaceBeforeEmail
+      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
+      const missingSpace = badObjects.find(
+        (f) => (f as { msgId: string }).msgId === 'missingSpaceBeforeEmail',
+      );
+      expect(missingSpace).toBeDefined();
+      expect(missingSpace).toMatchObject({
+        type: 'bad-object',
+        id: commitId,
+        objectType: 'commit',
+        msgId: 'missingSpaceBeforeEmail',
+        severity: 'error',
+      });
+      // ERROR → exit bit 1
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONTENT VALIDATION — strict does NOT upgrade ERROR or INFO ids
+// ---------------------------------------------------------------------------
+
+describe('Given a loose tree with treeNotSorted (ERROR, not in strict-upgrade set)', () => {
+  describe('When fsck runs with strict:true', () => {
+    it('Then treeNotSorted severity stays error (not changed by strict)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('x'));
+      const blobHex = blobId as string;
+      const sha = new Uint8Array(20);
+      for (let i = 0; i < 20; i++) sha[i] = Number.parseInt(blobHex.slice(i * 2, i * 2 + 2), 16);
+      const e1 = enc2.encode('100644 z.txt\0');
+      const e2 = enc2.encode('100644 a.txt\0');
+      const body = new Uint8Array(e1.length + 20 + e2.length + 20);
+      let o = 0;
+      body.set(e1, o);
+      o += e1.length;
+      body.set(sha, o);
+      o += 20;
+      body.set(e2, o);
+      o += e2.length;
+      body.set(sha, o);
+      const treeRaw = buildLooseBytes('tree', body);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx, { strict: true });
+
+      // Assert — treeNotSorted remains 'error' even under strict
+      const notSorted = result.findings.find(
+        (f) => f.type === 'bad-object' && (f as { msgId: string }).msgId === 'treeNotSorted',
+      );
+      expect(notSorted).toBeDefined();
+      expect((notSorted as { severity: string }).severity).toBe('error');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HASH MISMATCH — content hash ≠ path oid → hash-mismatch finding, exit bit 1
+// ---------------------------------------------------------------------------
+
+describe('Given a loose object whose content hash does not match its path (hash-path mismatch)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits hash-mismatch finding and exit code has bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      // Write blob1 normally to get its hash
+      const blobId1 = await writeObject(ctx, makeBlob('hello'));
+      // Write blob2 normally to get the content we'll store under blob1's path
+      const blobId2 = await writeObject(ctx, makeBlob('world'));
+      // Overwrite blob1's path with blob2's compressed bytes
+      const blob2Path = looseObjectPath(ctx.layout.gitDir, blobId2);
+      const blob2Compressed = await ctx.fs.read(blob2Path);
+      const blob1Path = looseObjectPath(ctx.layout.gitDir, blobId1);
+      // Need to write: blob2's content at blob1's path (hash≠path)
+      // The memory FS supports overwrite via writeUtf8 but we need binary
+      // Use ctx.fs.read + ctx.fs.writeExclusive on the blob1 path
+      // First remove blob1's original content by overwriting
+      await ctx.fs.write(blob1Path, blob2Compressed);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — hash-mismatch finding for blobId1 (path oid) with actual = blobId2
+      const hashMismatch = result.findings.filter((f) => f.type === 'hash-mismatch');
+      expect(hashMismatch.length).toBeGreaterThanOrEqual(1);
+      const mismatch = hashMismatch.find((f) => (f as { id: ObjectId }).id === blobId1);
+      expect(mismatch).toBeDefined();
+      expect((mismatch as { actual: ObjectId }).actual).toBe(blobId2);
+      // hash-mismatch → exit bit 1
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CORRUPT OBJECT — inflate failure → bad-object finding, exit bit 1
+// ---------------------------------------------------------------------------
+
+describe('Given a loose object whose compressed bytes are invalid (inflate failure)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits bad-object finding with severity error and exit code has bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      // Write a blob to get a valid OID to corrupt
+      const blobId = await writeObject(ctx, makeBlob('to-corrupt'));
+      // Overwrite with invalid compressed bytes (not valid zlib)
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      const garbage = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await ctx.fs.write(blobPath, garbage);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — bad-object finding for the corrupt oid
+      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
+      const corrupt = badObjects.find((f) => (f as { id: ObjectId }).id === blobId);
+      expect(corrupt).toBeDefined();
+      expect((corrupt as { severity: string }).severity).toBe('error');
+      // Corrupt → exit bit 1
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONNECTIVITY-ONLY — content validation skipped
+// ---------------------------------------------------------------------------
+
+describe('Given a loose tree with zeroPaddedFilemode and connectivityOnly:true', () => {
+  describe('When fsck runs with connectivityOnly:true', () => {
+    it('Then no bad-object findings are emitted (content pass skipped)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('content'));
+      const blobHex = blobId as string;
+      const blobSha = new Uint8Array(20);
+      for (let i = 0; i < 20; i++) {
+        blobSha[i] = Number.parseInt(blobHex.slice(i * 2, i * 2 + 2), 16);
+      }
+      const modeBytes = enc2.encode('0100644 file.txt\0');
+      const treeBody = new Uint8Array(modeBytes.length + 20);
+      treeBody.set(modeBytes, 0);
+      treeBody.set(blobSha, modeBytes.length);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert — no bad-object findings (content pass skipped entirely)
+      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
+      expect(badObjects).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EXIT BIT ISOLATION — WARN content finding alone → exit 0
+// ---------------------------------------------------------------------------
+
+describe('Given a repo with only WARN-severity content findings (zeroPaddedFilemode, no strict)', () => {
+  describe('When fsck runs without strict', () => {
+    it('Then exit code is 0 (WARN alone does not set exit bit)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('content'));
+      const blobHex = blobId as string;
+      const blobSha = new Uint8Array(20);
+      for (let i = 0; i < 20; i++) {
+        blobSha[i] = Number.parseInt(blobHex.slice(i * 2, i * 2 + 2), 16);
+      }
+      const modeBytes = enc2.encode('0100644 file.txt\0');
+      const treeBody = new Uint8Array(modeBytes.length + 20);
+      treeBody.set(modeBytes, 0);
+      treeBody.set(blobSha, modeBytes.length);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — exit code 0 (WARN doesn't trigger exit bit)
+      expect(result.exitCode).toBe(0);
     });
   });
 });
