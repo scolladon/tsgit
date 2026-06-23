@@ -1045,4 +1045,104 @@ describe('diffTrees', () => {
       });
     });
   });
+
+  // --- numstatBinaryOverride threading via diff attribute ---
+
+  describe('Given a modify change with -diff attribute and withStat: true', () => {
+    describe('When diffTrees is called with withStat: true', () => {
+      it('Then the change has binary: true and added/deleted: 0 (numstatBinaryOverride=binary reaches computeStatFields)', async () => {
+        // Arrange — -diff attribute forces binary on numstat surface
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.dat -diff\n');
+        const enc = new TextEncoder();
+        const writeBlobId = async (content: Uint8Array): Promise<ObjectId> =>
+          writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+        const oldId = await writeBlobId(enc.encode('line-a\nline-b\n'));
+        const newId = await writeBlobId(enc.encode('line-x\nline-y\n'));
+        const before = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newId },
+        ]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert — numstatBinaryOverride=binary forces binary row
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 0,
+          deleted: 0,
+          binary: true,
+        });
+      });
+    });
+  });
+
+  describe('Given a modify change with bare diff attribute (force text) and NUL content, withStat: true', () => {
+    describe('When diffTrees is called with withStat: true', () => {
+      it('Then the change has binary: false (numstatBinaryOverride=text suppresses isBinary sniff)', async () => {
+        // Arrange — bare diff forces text, even though content has NUL bytes
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'g diff\n');
+        const NUL_OLD = new Uint8Array([0x61, 0x00, 0x0a]); // "a\0\n"
+        const NUL_NEW = new Uint8Array([0x62, 0x00, 0x0a]); // "b\0\n"
+        const writeBlobId = async (content: Uint8Array): Promise<ObjectId> =>
+          writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+        const oldId = await writeBlobId(NUL_OLD);
+        const newId = await writeBlobId(NUL_NEW);
+        const before = await writeTree(ctx, [{ name: 'g', mode: FILE_MODE.REGULAR, id: oldId }]);
+        const after = await writeTree(ctx, [{ name: 'g', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const sut = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert — forced-text: binary: false (override suppresses NUL detection)
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]).toMatchObject({
+          type: 'modify',
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a modify change with -diff attribute and withStat: true with lineKey active', () => {
+    describe('When diffTrees is called with ignoreWhitespace: all and content differs only in spaces', () => {
+      it('Then the change is NOT dropped (forced-binary modify is kept even when whitespace-only diff)', async () => {
+        // Arrange — whitespace-only content: without -diff the lineKey pass would drop this;
+        // with -diff the forced-binary override makes binary:true, so shouldDrop returns false
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.dat -diff\n');
+        const enc = new TextEncoder();
+        const writeBlobId = async (content: Uint8Array): Promise<ObjectId> =>
+          writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+        // Blobs differ only in whitespace (spaces vs tabs) — distinct OIDs
+        const oldId = await writeBlobId(enc.encode('hello world\n'));
+        const newId = await writeBlobId(enc.encode('hello  world\n')); // extra space
+        const before = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newId },
+        ]);
+
+        // Act — ignoreWhitespace:all would drop a whitespace-only text change; -diff makes it binary
+        const sut = await diffTrees(ctx, before, after, {
+          withStat: true,
+          ignoreWhitespace: 'all',
+        });
+
+        // Assert — forced-binary is never dropped (binary: true, added=0, deleted=0 kept)
+        expect(sut.changes).toHaveLength(1);
+        expect(sut.changes[0]).toMatchObject({
+          added: 0,
+          deleted: 0,
+          binary: true,
+        });
+      });
+    });
+  });
 });

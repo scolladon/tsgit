@@ -68,16 +68,20 @@ export async function diffTrees(
 }
 
 /** Resolve the stat options for one file: line-key + blank when a mode is active,
- *  blank-only when only `ignoreBlankLines` is set, else none (plain counts). */
+ *  blank-only when only `ignoreBlankLines` is set, else none (plain counts).
+ *  When `numstatBinaryOverride` is set it is threaded through unchanged. */
 function statOptionsFor(
   lineKey: LineKey,
   lineKeyActive: boolean,
   ignoreBlankLines: boolean,
+  numstatBinaryOverride: 'binary' | 'text' | undefined,
 ): StatFieldsOptions | undefined {
+  const override = numstatBinaryOverride !== undefined ? { numstatBinaryOverride } : {};
   // equivalent-mutant: `if (lineKeyActive)` -> `if (true)` — when lineKeyActive is false the key is mode 'none' + no ignoreCrAtEol, so normalizeLine is the identity and computeStatFields treats { lineKey: <none> } identically to omitting lineKey; counts are unchanged.
-  if (lineKeyActive) return { lineKey, ignoreBlankLines };
+  if (lineKeyActive) return { lineKey, ignoreBlankLines, ...override };
   // equivalent-mutant: `if (ignoreBlankLines)` -> `if (true)` — reached only when lineKeyActive is false; with ignoreBlankLines false, { ignoreBlankLines: false } and undefined both yield lineKey undefined + blankKey undefined in computeStatFields, so counts are identical.
-  if (ignoreBlankLines) return { ignoreBlankLines };
+  if (ignoreBlankLines) return { ignoreBlankLines, ...override };
+  if (numstatBinaryOverride !== undefined) return { numstatBinaryOverride };
   return undefined;
 }
 
@@ -102,7 +106,7 @@ async function applyLinePassAndStat(
     const stats = computeStatFields(
       file.oldContent ?? EMPTY,
       file.newContent ?? EMPTY,
-      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines),
+      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
     );
     if (lineKeyActive && shouldDrop(file.change, stats)) continue;
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);

@@ -770,4 +770,180 @@ describe('materialiseOne', () => {
       });
     });
   });
+
+  // --- Binary override via diff attribute ---
+
+  describe('Given a modify change with -diff attribute and applyTextconv opt-in (no runner — off-node path)', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true on a memory context (no command)', () => {
+      it('Then PatchFile has patchBinaryOverride binary and numstatBinaryOverride binary', async () => {
+        // Arrange — memory context has no runner; -diff forces binary override in-process
+        const ctx = createMemoryContext(); // no command runner
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.bin -diff\n');
+        const oldOid = await writeBlob(ctx, 'textual old content\n');
+        const newOid = await writeBlob(ctx, 'textual new content\n');
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'file.bin' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — -diff attribute forces binary both surfaces, even without a runner
+        expect(result).toHaveLength(1);
+        expect(result[0]?.patchBinaryOverride).toBe('binary');
+        expect(result[0]?.numstatBinaryOverride).toBe('binary');
+      });
+    });
+  });
+
+  describe('Given a modify change with bare diff attribute (force text) and NUL content, applyTextconv opt-in', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true on a memory context', () => {
+      it('Then PatchFile has patchBinaryOverride text and numstatBinaryOverride text', async () => {
+        // Arrange — bare diff forces text even over NUL content
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f diff\n');
+        const NUL_CONTENT = new Uint8Array([0x68, 0x69, 0x00, 0x0a]); // "hi\0\n"
+        const oldOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: NUL_CONTENT,
+        });
+        const NUL_CONTENT2 = new Uint8Array([0x68, 0x6f, 0x00, 0x0a]); // "ho\0\n"
+        const newOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: NUL_CONTENT2,
+        });
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'f' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — bare diff forces text both surfaces
+        expect(result).toHaveLength(1);
+        expect(result[0]?.patchBinaryOverride).toBe('text');
+        expect(result[0]?.numstatBinaryOverride).toBe('text');
+      });
+    });
+  });
+
+  describe('Given a modify change with diff=up textconv configured and NUL-bearing raw blob but NUL-stripping textconv output', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true', () => {
+      it('Then patchBinaryOverride is text AND numstatBinaryOverride is binary (raw blob NUL computed before transform)', async () => {
+        // Arrange — NUL-stripping textconv: raw=NUL ⇒ numstat:binary; output=clean ⇒ patch:text
+        const NUL_CONTENT = new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x0a]); // "hello\0\n"
+        const cleanOutput = utf8.encode('HELLO\n');
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 0, stdout: cleanOutput }),
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f diff=up\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "up"]\n\ttextconv = strip-nul-and-upper\n',
+        );
+        const oldOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: NUL_CONTENT,
+        });
+        const NUL_CONTENT2 = new Uint8Array([0x77, 0x6f, 0x72, 0x6c, 0x64, 0x00, 0x0a]); // "world\0\n"
+        const newOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: NUL_CONTENT2,
+        });
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'f' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — patch=text (textconv output drives display), numstat=binary (raw blob has NUL)
+        expect(result).toHaveLength(1);
+        expect(result[0]?.patchBinaryOverride).toBe('text');
+        expect(result[0]?.numstatBinaryOverride).toBe('binary');
+        // Content is the transformed output (textconv ran)
+        expect(result[0]?.oldContent).toEqual(cleanOutput);
+        expect(result[0]?.newContent).toEqual(cleanOutput);
+      });
+    });
+  });
+
+  describe('Given a modify change with no applyTextconv opt-in (content-stable path)', () => {
+    describe('When materialisePatchFiles is called without opt-in', () => {
+      it('Then every PatchFile has patchBinaryOverride undefined and numstatBinaryOverride undefined', async () => {
+        // Arrange — -diff attribute would force binary, but no opt-in ⇒ no override
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f -diff\n');
+        const oldOid = await writeBlob(ctx, 'hello\n');
+        const newOid = await writeBlob(ctx, 'world\n');
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'f' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act — no applyTextconv: content-stable callers
+        const result = await materialisePatchFiles(ctx, [change]);
+
+        // Assert — both overrides absent; content-stable boundary preserved
+        expect(result).toHaveLength(1);
+        expect(result[0]?.patchBinaryOverride).toBeUndefined();
+        expect(result[0]?.numstatBinaryOverride).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a modify change with -diff attribute and applyTextconv opt-in', () => {
+    describe('When materialisePatchFiles is called', () => {
+      it('Then patchBinaryOverride and numstatBinaryOverride are set from the single attribute lookup', async () => {
+        // Arrange — verifies override is set (proving the provider was used correctly)
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'x.f -diff\n');
+        const oldOid = await writeBlob(ctx, 'old\n');
+        const newOid = await writeBlob(ctx, 'new\n');
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'x.f' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — override was set (proving provider lookup ran)
+        expect(result).toHaveLength(1);
+        expect(result[0]?.patchBinaryOverride).toBe('binary');
+        expect(result[0]?.numstatBinaryOverride).toBe('binary');
+        // Content is the raw blob (no textconv runner)
+        expect(result[0]?.oldContent).toEqual(utf8.encode('old\n'));
+        expect(result[0]?.newContent).toEqual(utf8.encode('new\n'));
+      });
+    });
+  });
 });
