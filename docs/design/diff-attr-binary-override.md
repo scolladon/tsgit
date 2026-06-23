@@ -12,7 +12,7 @@
 > functions, keep the no-attribute path byte- and cost-identical to today. Lifts the
 > **binary** part of the `text`/`eol`/`binary` parking note in
 > [`lfs-filter-driver-port.md` §6](lfs-filter-driver-port.md).
-> Status: draft → self-reviewed ×3 → **decision candidates open** (§4 drives the ADR phase).
+> Status: draft → self-reviewed ×3 → decision candidates → **ratified by [ADR-409](../adr/409-diff-binary-decision-override-threaded-from-application-layer.md) + [ADR-410](../adr/410-binary-attribute-override-honoured-off-node.md)** (§4 is the resolved decision trail).
 
 This design has no requirements phase upstream; §1.1 supplies a short brief. It
 follows the house format of its direct precedent
@@ -30,7 +30,7 @@ decision candidates → out of scope.
 | ADR-226 / CLAUDE.md (git-faithfulness) | Replicate canonical git's observable DATA + on-disk state byte-for-byte: the `diff`/`binary` attribute's effect on the binary-vs-text decision must reproduce git's `Binary files … differ` / numstat `-\t-` / text-hunk choice for the same `.gitattributes`. Pinned against real `git 2.54.0` (§3.4), scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, isolated `HOME`, signing off, `mktemp -d` throwaway, `--no-ext-diff` on every scripted `git diff`. Every pinned behaviour becomes a cross-tool interop test in `test/integration/*-interop.test.ts`. |
 | ADR-249 (structured-data-only) | The library ships the structured `binary: boolean` (already on `StatFields`) and `PatchFile` content; it emits **no** rendered `Binary files … differ` line or `-\t-` row. The override changes how `binary`/the patch's binary branch is **computed**, never adds a rendering knob. The interop test reconstructs git's display from the structured fields and compares to real `git`. The `--raw`/`--name-status`/`index`-line OIDs stay the **raw** tree OIDs, untouched by the attribute (§3.4 row R). |
 | CLAUDE.md (architecture) | Hexagonal: `repository → commands → primitives → domain`. `src/domain/diff/` is **pure** — no `Context`, no `AttributeProvider`, cannot resolve attributes. The override is **resolved in the application layer** (`materialise-patch-files.ts`, reusing #195's provider) and **threaded into** the domain diff functions as an optional value, exactly as #195 threaded textconv content. Domain stays platform-free. |
-| Performance / regression boundary | The default path (no `diff`/`binary` attribute, or no provider/runner) must be **byte- and cost-identical** to today: no attribute read forced onto a diff that has no attribute. The override is `undefined` on that path and every domain function falls back to today's `isBinary` content-sniff. |
+| Performance / regression boundary | The default path (no `diff`/`binary` attribute) must be **byte- and cost-identical** to today: a path with no attribute resolves to `unspecified` ⇒ both overrides `undefined` ⇒ every domain function falls back to today's `isBinary` content-sniff. Content-stable callers (no `applyTextconv` opt-in) build no provider at all (ADR-410). |
 
 All empirical pins in §3.4 were run in `mktemp -d` throwaways with the faithfulness
 procedure (`.claude/workflow/faithfulness.md`); none touched the worktree's `.git`
@@ -52,7 +52,9 @@ git's binary-vs-text **display** decision in diff is **not** purely content-snif
 - `diff=<name>` (a named userdiff driver) makes the **patch** a text hunk (and, with
   a configured `[diff "<name>"].textconv`, diffs the transformed bytes — #195),
   while the **numstat / `--stat`** binary decision stays on the **raw** content
-  (a surprising asymmetry, pinned §3.4 rows N3/N3s, decision candidate **D-NAMED**).
+  (pinned §3.4 rows N3/N3s). tsgit reproduces this raw-blob numstat decision faithfully —
+  the application layer holds the raw bytes and threads the decision down (ratified
+  **D-NAMED = (b)**, ADR-409); N3s is faithful, not a divergence.
 - unspecified (no rule) → content sniff (NUL → binary) — **today's behaviour**, the
   regression boundary.
 
@@ -86,10 +88,10 @@ feature reuses:
 | `.gitattributes` resolve | `domain/attributes/` (`resolveAttribute(sources, path, 'diff', macros)`, `AttributeValue` four-state `true`/`false`/`'unspecified'`/`{set}`, `macros.ts` `BUILTIN_MACROS` `binary = -diff -merge -text`) | **Reuse verbatim.** `resolveAttribute` for `'diff'` already yields the four-state value; the `binary` macro already expands to `diff:false`. The binary-override resolver maps that value to `'binary'`/`'text'`/`undefined` (§3.3). |
 | Attribute provider | `primitives/internal/read-gitattributes.ts` `buildAttributeProvider(ctx)` → `sourcesForPath(path)` | **Reuse the SAME instance** #195 builds in `materialisePatchFiles`. Do **not** build a second provider — resolve the binary-override in the **same** per-path lookup that already resolves textconv (§3.2). |
 | Textconv resolver | `primitives/resolve-textconv-driver.ts` `resolveTextconvDriver(ctx, provider, path) → TextconvChoice` over `resolveAttribute(…, 'diff', …)` | **Sibling / compose.** The new resolver reads the **same** `diff` attribute value. §3.2 shows it can share `provider.sourcesForPath(path)` to avoid a second lookup. |
-| Diff content chokepoint | `primitives/materialise-patch-files.ts` `materialisePatchFiles(ctx, changes, { applyTextconv })` → `PatchFile{change, oldContent?, newContent?}` | **Hook point.** The single place #195 resolves the provider + `diff` attribute per path and transforms content. The binary-override is resolved here in the **same** `maybeTextconv` per-path pass and attached to the `PatchFile` (§3.2, decision candidate **D-SHAPE**). |
-| Numstat + drop chokepoint | `primitives/diff-trees.ts` `applyLinePassAndStat` (l.99–110): `materialisePatchFiles(ctx, diff.changes, { applyTextconv: true })` then `computeStatFields(file.oldContent, file.newContent, statOptionsFor(…))` per file | **Single numstat call site.** The override attached to each `PatchFile` (§3.2) feeds `computeStatFields` here. `shouldDrop` (whitespace drop) reads `stats.binary` — the override must reach it consistently. |
-| Patch reconstruction (interop) | `test/integration/diff-reconstruct.ts` `reconstructPatch(ctx, treeDiff, opts?)` = `renderPatch(materialisePatchFiles(ctx, changes, { applyTextconv: true }), opts)` | **The display reconstructor (ADR-249).** Once `PatchFile` carries the override and `renderPatch` honours it, the interop test reconstructs git's binary/text choice from the structured data. |
-| Content-stable callers (must NOT get the override) | `primitives/patch-id.ts` l.59–60, `commands/range-diff.ts` l.74, `commands/rebase.ts` l.301 — all call `materialisePatchFiles(ctx, changes)` **without** `applyTextconv` | **Boundary.** These need content-stable raw bytes (patch-id stability, rebase `.git/rebase-merge/patch`). They must **not** receive a binary-override either — the override rides the **same opt-in** as textconv (`applyTextconv: true`), so it is absent on these paths by construction (§3.2, R4). |
+| Diff content chokepoint | `primitives/materialise-patch-files.ts` `materialisePatchFiles(ctx, changes, { applyTextconv })` → `PatchFile{change, oldContent?, newContent?, patchBinaryOverride?, numstatBinaryOverride?}` | **Hook point.** The single place #195 resolves the provider + `diff` attribute per path and transforms content. **Both** binary overrides are resolved here in the **same** `maybeTextconv` per-path pass and attached to the `PatchFile`; the numstat side is `isBinary(raw)` over the raw bytes still in hand before textconv replaces them (§3.2; resolved D-SHAPE (c) / D-NAMED (b), ADR-409). |
+| Numstat + drop chokepoint | `primitives/diff-trees.ts` `applyLinePassAndStat` (l.99–110): `materialisePatchFiles(ctx, diff.changes, { applyTextconv: true })` then `computeStatFields(file.oldContent, file.newContent, statOptionsFor(…))` per file | **Single numstat call site.** The `numstatBinaryOverride` attached to each `PatchFile` (§3.2) feeds `computeStatFields` here. `shouldDrop` (whitespace drop) reads `stats.binary` — the override must reach it consistently. |
+| Patch reconstruction (interop) | `test/integration/diff-reconstruct.ts` `reconstructPatch(ctx, treeDiff, opts?)` = `renderPatch(materialisePatchFiles(ctx, changes, { applyTextconv: true }), opts)` | **The display reconstructor (ADR-249).** Once `PatchFile` carries `patchBinaryOverride` and `renderPatch` honours it, the interop test reconstructs git's binary/text choice from the structured data. |
+| Content-stable callers (must NOT get the override) | `primitives/patch-id.ts` l.59–60, `commands/range-diff.ts` l.74, `commands/rebase.ts` l.301 — all call `materialisePatchFiles(ctx, changes)` **without** `applyTextconv` | **Boundary.** These need content-stable raw bytes (patch-id stability, rebase `.git/rebase-merge/patch`). They must **not** receive either override — both ride the **same opt-in** as textconv (`applyTextconv: true`), so they are absent on these paths by construction (§3.2, R4). The opt-in (not the runner) is the boundary (ADR-410). |
 
 `isBinary` is also exported through the domain diff barrel and used by `patch-id.ts`
 (content-stable) — **unchanged**; the override never touches `isBinary` itself, only
@@ -100,9 +102,11 @@ who calls it and whether a caller short-circuits it.
 | Source | Decision this design must honour |
 |---|---|
 | ADR-302 | `.gitattributes` source model, precedence, macros, `AttributeValue` four-state — reuse verbatim. The `binary` macro is `-diff -merge -text`. |
-| ADR-406 / ADR-407 / ADR-408 (#195) | The active-driver port: `diff=<name>` textconv resolution + the `AttributeProvider` build in `materialisePatchFiles`, the off-node inert fallback (no `ctx.command` ⇒ no attribute read). This feature **composes with** that resolution, reusing the same provider; it does **not** re-open it. |
+| ADR-406 / ADR-407 / ADR-408 (#195) | The active-driver port: `diff=<name>` textconv resolution + the `AttributeProvider` build in `materialisePatchFiles`. This feature **composes with** that resolution, reusing the same provider; it does **not** re-open it. **[ADR-410](../adr/410-binary-attribute-override-honoured-off-node.md) refines ADR-408**: the provider build is decoupled from the runner guard (built whenever `applyTextconv: true`, regardless of `ctx.command`); only textconv *execution* stays runner-gated. ADR-408's inert fallback still covers the spawning textconv driver. |
 | ADR-249 | Library emits structured data; display (`Binary files … differ`, `-\t-`) is reconstructed in the interop test. The `binary` boolean already exists on `StatFields`; this feature changes its computation, adds no field. |
 | ADR-398 | The no-driver / no-attribute baseline (content-sniff) is the faithful target and the regression boundary the override must not silently cross. |
+| **[ADR-409](../adr/409-diff-binary-decision-override-threaded-from-application-layer.md)** (this feature) | The override is **per-surface** (patch decision and numstat decision carried independently on `PatchFile`; `computeStatFields` options carry the numstat override). The named-driver **numstat** decision is taken on the **RAW** blob in the application layer (which holds both raw and transformed bytes at the single resolve point) and passed down as a resolved enum — **fully faithful**, no divergence. |
+| **[ADR-410](../adr/410-binary-attribute-override-honoured-off-node.md)** (this feature) | The provider build is decoupled from `ctx.command`; `-diff` / bare `diff` / the raw-numstat decision are honoured off-node (memory/browser) too. The content-stable boundary stays the `applyTextconv` opt-in. |
 
 ## 2. Requirements
 
@@ -117,14 +121,15 @@ What must be true when this ships (verifiable statements). All firm for v1:
    to git — the NUL byte survives verbatim in the patch text (§3.4 rows T2/T2n).
 3. A path with **`diff=<name>`** and a configured `[diff "<name>"].textconv`
    composes with #195: the **patch** is a text hunk over the **textconv-transformed**
-   bytes (#195's behaviour, unchanged); the **numstat** binary decision is git's —
-   pinned **divergent** from the patch over NUL content (§3.4 rows N3/N3s,
-   decision candidate **D-NAMED**).
+   bytes (#195's behaviour, unchanged); the **numstat** binary decision is taken on the
+   **RAW** (pre-textconv) blob, exactly like git (`diff_filespec_is_binary` sniffs the
+   raw blob) — **fully faithful** across clean-text, NUL-keeping, and NUL-stripping
+   textconv (§3.4 rows N3 **and N3s**, ratified **D-NAMED = (b)** per ADR-409).
 4. A path with **`diff=<name>`** and **no** `[diff "<name>"].textconv` (or empty)
    falls back to the **raw content-sniff** on both surfaces — a text hunk + line
    counts over clean content, `Binary files … differ` + `-\t-` over NUL content —
-   byte-identical to git (§3.4 row N4), composing with #195's T2 fallback (no override
-   applied).
+   byte-identical to git (§3.4 row N4): no override applied (raw == content), composing
+   with #195's T2 fallback.
 5. The override resolution rides the **same opt-in** as #195's textconv
    (`applyTextconv: true`): the display paths (`diff`/`show`/`log -p`, numstat) get
    it; the **content-stable** paths (patch-id, range-diff, rebase patch file) do
@@ -132,52 +137,71 @@ What must be true when this ships (verifiable statements). All firm for v1:
 6. The structured `TreeDiff.changes` membership, change `type`, and `--raw`/`index`-line
    **OIDs** are the **raw tree** values — the override affects only the
    patch-binary-branch + numstat `binary`, never OIDs (§3.4 row R).
-7. **Default path (no `diff`/`binary` attribute, or no provider/runner) is byte- and
-   cost-identical to today:** the override is `undefined`, every domain site calls
-   `isBinary` exactly as before, no attribute is read. The ADR-408 inert fallback
-   (no `ctx.command`) yields `undefined` override ⇒ content-sniff (§3.3).
-8. Every pinned row (§3.4) is a cross-tool `*-interop` test; the existing
+7. **`-diff` / bare `diff` (and the raw-blob numstat decision) are honoured off-node**
+   (memory / browser / node-without-runner), byte-identical to node-with-a-runner and
+   to real git: the provider build is **decoupled** from `ctx.command` (built whenever
+   `applyTextconv: true`), and only textconv *execution* stays runner-gated (ratified
+   **D-OPTIN = (b)** per ADR-410). The `diff=<name>` textconv driver still no-ops
+   off-node (ADR-408, refined), and the override then applies faithfully to the raw
+   bytes it leaves behind.
+8. **Default path (no `diff`/`binary` attribute) is byte- and cost-identical to today:**
+   both overrides are `undefined`, every domain site calls `isBinary` exactly as before,
+   no attribute is read (§3.3). Content-stable callers (no opt-in) build no provider at
+   all.
+9. Every pinned row (§3.4) is a cross-tool `*-interop` test; the existing
    `diff-textconv-interop.test.ts` T-BIN case (binary macro over **NUL** content,
    where attribute and content agree) stays green.
 
 ## 3. Design
 
-### 3.1 Shape: an optional tri-state override threaded from the application layer
+### 3.1 Shape: per-surface overrides threaded from the application layer (ratified D-SHAPE = (c), ADR-409)
 
-The domain stays pure. A single optional value — call it `binaryOverride` (decision
-candidate **D-SHAPE** picks the exact type) — is resolved **once per changed path** in
-the application layer and threaded into the two domain decision surfaces:
+The domain stays pure. Because git's two diff surfaces **genuinely disagree** for named
+drivers (the patch follows the textconv output, the numstat follows the raw blob — §3.4
+N3/N3s), the patch decision and the numstat decision each carry their **own** optional
+override. Both are resolved **once per changed path** in the application layer and
+threaded into the two domain decision surfaces independently:
 
 ```
-domain/diff/                              (pure — gains an optional parameter only)
+domain/diff/                              (pure — gains optional parameters only)
   line-diff.ts        isBinary(bytes)                    UNCHANGED (the fallback)
   stat-fields.ts      computeStatFields(old, next, options?)
-                        options gains  binaryOverride?: 'binary' | 'text'
+                        options gains  numstatBinaryOverride?: 'binary' | 'text'
                         'binary' ⇒ { added:0, deleted:0, binary:true }
                         'text'   ⇒ skip the isBinary short-circuit, count lines
                         undefined⇒ today's `isBinary(old) || isBinary(next)`
-  patch-serializer.ts PatchFile gains  binaryOverride?: 'binary' | 'text'
-                        each of the 6 isBinary call sites consults the override first
+  patch-serializer.ts PatchFile gains  patchBinaryOverride?: 'binary' | 'text'
+                        each of the 6 isBinary call sites consults the PATCH override first
 
 application/primitives/
-  resolve-binary-override.ts   NEW — (ctx?, provider, path) → 'binary' | 'text' | undefined
-                               over resolveAttribute(…, 'diff', …); sibling of resolve-textconv-driver
-  materialise-patch-files.ts   resolves the override in the SAME per-path pass that
-                               resolves textconv (reuse the one provider), attaches it to PatchFile
-  diff-trees.ts                applyLinePassAndStat feeds PatchFile.binaryOverride into computeStatFields
+  resolve-binary-override.ts   NEW — (provider, path) → { patch, numstat } each 'binary' | 'text' | undefined
+                               over resolveAttribute(…, 'diff', …); sibling of resolve-textconv-driver.
+                               For a configured named driver the numstat side is isBinary(raw) (the raw
+                               blob the app layer already holds), computed BEFORE textconv transforms it
+  materialise-patch-files.ts   resolves both overrides in the SAME per-path pass that
+                               resolves textconv (reuse the one provider), attaches them to PatchFile
+  diff-trees.ts                applyLinePassAndStat feeds PatchFile.numstatBinaryOverride into computeStatFields
 ```
 
-**Dependency rule** honoured exactly as #195: `domain/diff` gains a plain optional
-enum parameter (no `Context`, no provider); the application layer computes it from the
-attribute provider; ports/adapters untouched. This mirrors how #195 fed *transformed
-content* into the same domain functions — here we feed a *decision* instead of content,
-because the binary decision (unlike textconv) is not expressible as a byte transform
-(`-diff` over textual content cannot be made "look binary" by transforming bytes; it is
-a pure display-mode flag).
+**Why two fields, not one.** A single tri-state field (the pre-ADR recommendation)
+cannot express the per-surface disagreement: for `diff=<name>` + configured textconv over
+NUL-keeping content git wants `patch = text` but `numstat = binary` (raw-blob decision).
+ADR-409 ratified **(c) per-surface override**; `PatchFile` carries both, the 6 patch-serializer
+sites read `patchBinaryOverride`, and `computeStatFields` reads `numstatBinaryOverride`.
+
+**Dependency rule** honoured exactly as #195: `domain/diff` gains plain optional
+enum parameters (no `Context`, no provider, **no raw bytes** — the numstat raw-blob
+decision is collapsed to an enum *in the application layer*, which holds both raw and
+transformed bytes at the single resolve point); the application layer computes both
+overrides from the attribute provider; ports/adapters untouched. This mirrors how #195
+fed *transformed content* into the same domain functions — here we feed a *decision*
+instead of content, because the binary decision (unlike textconv) is not expressible as
+a byte transform (`-diff` over textual content cannot be made "look binary" by
+transforming bytes; it is a pure display-mode flag).
 
 Two precision points:
 
-- **The override short-circuits BOTH `isBinary` sub-signals** (the NUL window scan
+- **Each override short-circuits BOTH `isBinary` sub-signals** (the NUL window scan
   **and** the line-length / line-count caps `exceedsLineCaps`): `'text'` forces a real
   line diff even on a NUL-bearing or cap-exceeding blob (git does too when `diff` is
   set); `'binary'` forces the binary branch even on small clean text. The caps are a
@@ -194,101 +218,93 @@ Two precision points:
 
 ### 3.2 The single resolve point — reuse #195's provider, ride its opt-in
 
-`materialisePatchFiles` (`materialise-patch-files.ts`) already, under
-`options.applyTextconv === true && ctx.command !== undefined`, builds a lazily-memoised
-`AttributeProvider` (`getProvider: () => (providerPromise ??= buildAttributeProvider(ctx))`)
-and, in `maybeTextconv`, calls `provider.sourcesForPath(filePath)` →
-`resolveTextconvDriver`. The binary-override is resolved in the **same** per-path pass:
+`materialisePatchFiles` (`materialise-patch-files.ts`) already, under the display opt-in,
+builds a lazily-memoised `AttributeProvider`
+(`getProvider: () => (providerPromise ??= buildAttributeProvider(ctx))`) and, in
+`maybeTextconv`, calls `provider.sourcesForPath(filePath)` → `resolveTextconvDriver`. Both
+binary overrides are resolved in the **same** per-path pass:
 
 1. `maybeTextconv` (or a renamed `maybePerPathDiffAttr`) already holds the resolved
    `diff` attribute value for the path via `resolveAttribute(sources, path, 'diff', macros)`
    (today only inside `resolveTextconvDriver`). Expose that one lookup so **both** the
-   textconv choice **and** the binary-override are derived from **one**
+   textconv choice **and** the binary overrides are derived from **one**
    `sourcesForPath(path)` call — no second provider, no second resolve.
-2. The resolved override (`'binary'` | `'text'` | `undefined`) is attached to the
-   returned `PatchFile` (`{ change, oldContent?, newContent?, binaryOverride? }`).
-3. Everything downstream reads it: `renderPatch`/`renderFile` (patch text), and
-   `applyLinePassAndStat` → `computeStatFields` (numstat + the whitespace `shouldDrop`).
+2. The resolved overrides are attached to the returned `PatchFile`
+   (`{ change, oldContent?, newContent?, patchBinaryOverride?, numstatBinaryOverride? }`).
+   For a configured named driver the numstat side is `isBinary(raw)` over the raw blob —
+   computed here, where the raw bytes are still in hand, *before* textconv replaces
+   `{old,new}Content` with the transformed bytes.
+3. Everything downstream reads them: `renderPatch`/`renderFile` consult `patchBinaryOverride`
+   (patch text), and `applyLinePassAndStat` → `computeStatFields` consult
+   `numstatBinaryOverride` (numstat + the whitespace `shouldDrop`).
 
-**Riding the opt-in (R4 boundary).** The override is computed **only** when
+**Riding the opt-in (R4 boundary).** Both overrides are computed **only** when
 `options.applyTextconv === true` (the display opt-in) — the same condition that gates
 textconv. The content-stable callers (`patch-id.ts`, `range-diff.ts`, `rebase.ts`)
-call `materialisePatchFiles(ctx, changes)` with **no** options, so `binaryOverride`
-is `undefined` on every `PatchFile` they get, and `renderPatch`/any stat there sees the
-pure content-sniff — patch-id and rebase patch bytes are unchanged. (This is why the
-override is **not** a separate `materialisePatchFiles` option: coupling it to
-`applyTextconv` makes the content-stable boundary automatic and impossible to mis-wire.
-Decision candidate **D-OPTIN** records the alternative of a separate flag.)
+call `materialisePatchFiles(ctx, changes)` with **no** opt-in, so **no provider is built
+at all** and both overrides are `undefined` on every `PatchFile` they get;
+`renderPatch`/any stat there sees the pure content-sniff — patch-id and rebase patch
+bytes are unchanged. The content-stable boundary **is** the opt-in flag (not the runner);
+this is exactly why the override is **not** a separate `materialisePatchFiles` option —
+coupling it to `applyTextconv` makes the content-stable boundary automatic and impossible
+to mis-wire.
 
-**Off-node / inert fallback (R7) — and a deliberate conservatism to flag.** When
-`ctx.command === undefined` (memory/browser), the existing #195 guard skips the provider
-build, so `binaryOverride` is `undefined` everywhere ⇒ content-sniff. This matches
-#195's inert fallback precisely and yields no throw.
+**Off-node: the runner guard is decoupled (ratified D-OPTIN = (b), ADR-410).** The
+provider build is gated on the **display opt-in only** (`applyTextconv: true`),
+**not** on `ctx.command`. The `AttributeProvider` needs only the `FileSystem` port —
+available on every adapter — so it is built and the binary overrides are resolved
+**in-process on memory / browser / node-without-runner alike**. `-diff`, bare `diff`,
+and the raw-blob numstat decision spawn **nothing**, so they are git-faithful off-node:
+a `*.bin -diff` textual file shows `Binary files … differ` in the browser exactly as on
+node. **Only textconv *driver execution* stays runner-gated** — a `diff=<name>` textconv
+driver still no-ops off-node (ADR-407/408 unchanged for the spawning part), leaving raw
+bytes to which the ADR-409 override then applies faithfully.
 
-But note an **asymmetry with #195's rationale**: textconv genuinely needs a
-`CommandRunner` (it spawns a process), so gating it on `ctx.command !== undefined` is
-load-bearing for #195. The **binary override**, by contrast, is a pure in-process
-decision over the resolved attribute — `-diff` / bare `diff` spawn **nothing**, so they
-*could* be honoured off-node by building the provider whenever the display opt-in is
-requested, **regardless** of a runner. Tying the override to `ctx.command !== undefined`
-is therefore a **deliberate simplification** (one guard, mirrors #195, keeps the
-default path's cost story identical) that is **more conservative than faithfulness
-strictly requires**: in the browser, a `*.bin -diff` textual file would show a text hunk
-where node-with-a-runner shows `Binary files … differ`. That is a real (if narrow)
-off-node divergence from git. Whether to accept it (recommended — mirror #195, browser
-is a no-driver environment by ADR-398/408) or to decouple the override's guard from the
-runner (honour `-diff`/`diff` off-node, gate only textconv on the runner) is folded into
-decision candidate **D-OPTIN**.
+This **refines ADR-408's inert fallback** rather than contradicting it: the inert
+fallback still scopes to the **spawning textconv driver**; the pure binary override is
+intentionally **live** off-node. The cross-adapter parity claim is correspondingly
+refined — memory ≡ node-without-runner still agree with **each other**, and now **both
+match real git** for the override (all honour `-diff`/bare `diff` identically), rather
+than all falling back to content-sniff. Cost is a single `.gitattributes` read on the
+off-node display path where #195 skipped it — bounded by the same opt-in (display paths
+only) and the same single lazily-memoised provider build.
 
 ### 3.3 Attribute → override mapping (the crux — pinned §3.4)
 
-`resolve-binary-override.ts` maps the resolved `diff` `AttributeValue` to an override.
-The mapping is **surface-dependent** because of the pinned numstat/patch asymmetry for
-named drivers (§3.4 N3). The recommended model treats the **patch** and **numstat**
-override mappings as follows:
+`resolve-binary-override.ts` maps the resolved `diff` `AttributeValue` to a **per-surface**
+override pair `{ patch, numstat }`. This is the **ratified ADR-409 mapping** — the named-driver
+**numstat** side is the **RAW-blob** decision (`isBinary(raw)`) computed in the application
+layer, exactly like git, so there is **no divergence** (N3 *and* N3s are faithful):
 
-| resolved `diff` value | patch binary-override | numstat binary-override | git behaviour pinned |
+| resolved `diff` value | patch override | numstat override | git behaviour pinned |
 |---|---|---|---|
 | `false` (`-diff`, incl. `binary` macro) | **`'binary'`** | **`'binary'`** | force binary both surfaces (§3.4 B1/Bn) |
 | `true` (bare `diff`) | **`'text'`** | **`'text'`** | force text both surfaces (§3.4 T2/T2n) |
-| `{ set: 'name' }`, `textconv` configured | **`'text'`** (textconv content feeds a text hunk even when NUL-retaining) | **`undefined`** (content-sniff on RAW bytes ⇒ `-\t-` over NUL) | patch=text via textconv; numstat=binary over NUL (§3.4 N3/N3s) — **D-NAMED** |
-| `{ set: 'name' }`, no/empty `textconv` | **`undefined`** (raw content-sniff: text hunk over clean, `Binary files` over NUL) | **`undefined`** (content-sniff on raw) | patch + numstat both content-sniff the raw fallback (§3.4 N4) |
+| `{ set: 'name' }`, `textconv` configured | **`'text'`** (textconv output feeds a text hunk even when NUL-retaining) | **`isBinary(raw) ? 'binary' : 'text'`** — the **RAW-blob** decision | patch=text via textconv; numstat tracks the raw blob exactly like git (§3.4 N3 **and N3s**) |
+| `{ set: 'name' }`, no/empty `textconv` | **`undefined`** (raw == content; content-sniff: text hunk over clean, `Binary files` over NUL) | **`undefined`** (raw == content; content-sniff already sees raw) | patch + numstat both content-sniff the raw fallback (§3.4 N4) |
 | `'unspecified'` (no rule) | **`undefined`** | **`undefined`** | content-sniff — today's behaviour |
 
-Note the two named-driver rows differ: a **configured** `textconv` forces the patch to
-text (N3 — git shows a hunk even when the transformed bytes keep NUL), but a
-**named-but-unconfigured** driver does **not** force the patch — it content-sniffs the
-**raw** fallback (N4: text hunk over clean content, `Binary files … differ` over NUL).
-So the patch `'text'` override is needed **only** when a `textconv` is actually
-configured.
+The named-configured rows are where the two surfaces **genuinely disagree** and the reason
+ADR-409 ratified **D-NAMED = (b)** (sniff the raw blob) and the **per-surface** D-SHAPE = (c).
+Two observations make the implementation tractable:
 
-The asymmetry (named-configured: patch `'text'` but numstat `undefined`) is the
-single most load-bearing pinned fact and the reason for decision candidate
-**D-NAMED**. Two observations make it tractable:
-
-- **Patch side for named drivers needs no new override in the common case.** When a
-  `textconv` is configured, #195 already replaces `PatchFile.{old,new}Content` with the
-  transformed bytes; if the transformed bytes are clean text, `renderPatch`'s existing
-  `isBinary` already chooses the text branch. The override `'text'` is only needed when
-  the transformed bytes **still contain NUL** yet git shows a text hunk anyway (§3.4
-  N3s, the `tr a-z A-Z`-keeps-NUL case). **D-NAMED** decides whether v1 forces patch
-  `'text'` for every named driver (faithful to N3s) or relies on the transformed-bytes
-  sniff (simpler, diverges only on the NUL-retaining-textconv edge).
-- **Numstat side for named drivers is ALREADY what tsgit produces.** tsgit's
-  `computeStatFields` receives the **transformed** bytes (via `applyLinePassAndStat`'s
-  `materialisePatchFiles({applyTextconv:true})`). For `diff=name` over NUL where the
-  textconv keeps NUL, the transformed bytes trip `isBinary` ⇒ `-\t-` — matching git's
-  numstat (§3.4 N3). So `undefined` (content-sniff on the transformed bytes) is the
-  faithful numstat override for named drivers, requiring **no change** on that surface.
-  The risk is a NUL-**stripping** textconv (§3.4 N3-strip): transformed bytes are clean
-  ⇒ tsgit numstat would count lines, but git numstat shows `-\t-` (it sniffs the RAW
-  blob, not the transformed). **D-NAMED** must decide whether v1 reproduces this
-  raw-vs-transformed numstat divergence (requires numstat to sniff RAW bytes, not the
-  transformed ones #195 hands it — a deeper change) or accepts it as a documented edge.
-
-Because the override differs per surface only for the named-driver rows, **D-SHAPE**
-also covers whether the `PatchFile` carries **one** override (and the numstat path
-derives its own) or **two** (`patchBinaryOverride` / `numstatBinaryOverride`).
+- **Patch side.** When a `textconv` is configured, #195 already replaces
+  `PatchFile.{old,new}Content` with the transformed bytes; if they are clean text,
+  `renderPatch`'s existing `isBinary` already chooses the text branch. The explicit `'text'`
+  patch override is needed for the case where the transformed bytes **still contain NUL** yet
+  git shows a text hunk anyway (§3.4 N3, the `tr a-z A-Z`-keeps-NUL case). Forcing `'text'`
+  unconditionally for a configured named driver is faithful and simpler than re-deriving the
+  sub-case, so the mapping always emits patch `'text'` for configured named drivers.
+- **Numstat side — the RAW-blob decision (the crux, now FAITHFUL).** git's
+  `diff_filespec_is_binary` sniffs the **raw** blob regardless of any userdiff name/textconv.
+  The application layer holds **both** the raw and the transformed bytes at the single resolve
+  point, so it computes `isBinary(raw)` there and threads the resulting enum down. This is
+  faithful for **all** named-driver cases — clean text (N1 ⇒ raw clean ⇒ `'text'` ⇒ `n\tm`),
+  NUL-keeping textconv (N3 ⇒ raw has NUL ⇒ `'binary'` ⇒ `-\t-`), **and NUL-stripping textconv
+  (N3s ⇒ raw has NUL ⇒ `'binary'` ⇒ `-\t-`)**. The N3s row that the earlier draft parked as a
+  documented divergence is now **resolved**: passing the raw-blob decision (not sniffing the
+  transformed bytes #195 hands the domain) makes numstat match git on every named-driver path.
+  No raw bytes cross into the pure domain — only the resolved enum does.
 
 ### 3.4 Pinned faithfulness matrix (real `git 2.54.0`, mktemp throwaway)
 
@@ -314,13 +330,13 @@ Scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, isolated `HOME`, signing off,
 | **T2** | `.gitattributes` `f diff`; commit `line one\0zero\nline two`, then `line ONE\0zero\nline two` (**NUL in line 1**); `git diff HEAD~1 HEAD` | full text hunk: `@@ -1,2 +1,2 @@` / `-line one\0zero` / `+line ONE\0zero` / ` line two` — **the NUL byte (`\0`) is emitted verbatim in the patch** | bare `diff` forces a **text hunk over NUL content**. `isBinary` would say binary — the attribute overrides it. The NUL survives in the patch bytes. |
 | **T2n** | same | `--numstat` → **`1\t1\tf`** | numstat counts lines over NUL content when `diff` is set. |
 
-#### `diff=<name>` named driver — patch/numstat ASYMMETRY (decision candidate **D-NAMED**)
+#### `diff=<name>` named driver — patch/numstat ASYMMETRY (ratified **D-NAMED = (b)**, numstat sniffs the RAW blob — faithful)
 
 | # | Setup | `git` result | Load-bearing fact |
 |---|---|---|---|
 | **N1** | `f diff=up`, `diff.up.textconv=<uppercase>`; **clean text** `hello\nkeep` → `world\nkeep`; **default** `git diff` (no `--textconv` flag) | text hunk `-HELLO` / `+WORLD` / ` KEEP`; numstat `1\t1` | a configured `diff=name` runs textconv on **default** `git diff` (the `--textconv` flag is irrelevant when the attribute names a driver). Patch + numstat both text. (#195 territory — unchanged.) |
 | **N3** | `f diff=up`, `diff.up.textconv=<uppercase, keeps NUL>`; **NUL content** `hello\0nul\nkeep` → `world\0nul\nkeep`; default `git diff` | **patch**: text hunk `-HELLO\0NUL` / `+WORLD\0NUL` (textconv ran, NUL retained, **text hunk shown**); **numstat**: **`-\t-`**; **`--stat`**: `Bin 0 -> N bytes` | **THE ASYMMETRY.** Named driver ⇒ patch is a text hunk (textconv output) **even with NUL retained**, but numstat/`--stat` show **binary** (`diff_filespec_is_binary` sniffs the **raw** blob; a userdiff name does not clear it for numstat). |
-| **N3s** | as N3 but textconv **strips NUL** (`tr -d '\0' \| tr a-z A-Z`) | **patch**: text hunk `-HELLOX` / `+WORLDX` (clean); **numstat**: **`-\t-`** (still binary!) | numstat is **`-\t-`** regardless of whether the textconv output has NUL — it is decided on the **raw** blob, not the transformed bytes. tsgit (which sniffs transformed bytes) would say **text** here ⇒ a divergence **D-NAMED** must rule on. |
+| **N3s** | as N3 but textconv **strips NUL** (`tr -d '\0' \| tr a-z A-Z`) | **patch**: text hunk `-HELLOX` / `+WORLDX` (clean); **numstat**: **`-\t-`** (still binary!) | numstat is **`-\t-`** regardless of whether the textconv output has NUL — it is decided on the **raw** blob, not the transformed bytes. tsgit threads `isBinary(raw)` from the app layer (ratified D-NAMED (b)) ⇒ **`-\t-`** ⇒ **FAITHFUL** (no longer a divergence). |
 | **N4** | `f diff=unk` with **no** `[diff "unk"]` section; **NUL content** modify | **patch**: `Binary files … differ`; numstat `-\t-` | a named-but-**unconfigured** driver over NUL ⇒ patch falls back to the raw content-sniff (NUL ⇒ binary). Compose with #195 T2 (raw fallback). (Over **clean** content, N4 would show a raw text hunk — #195 T2.) |
 
 #### Structured-data invariance (ADR-249)
@@ -333,10 +349,11 @@ Scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, isolated `HOME`, signing off,
 
 | Case | git | tsgit today | After |
 |---|---|---|---|
-| `-diff`, textual content | `Binary files differ` / `-\t-` | text hunk / `n\tm` (sniffs content=text) | binary (override `'binary'`) |
-| bare `diff`, NUL content | text hunk / `1\t1` | `Binary files differ` / `-\t-` (sniffs content=binary) | text (override `'text'`) |
-| `diff=name` (NUL-keeping textconv), patch | text hunk | `Binary files differ` (sniffs transformed=NUL) | text hunk (override `'text'` — D-NAMED) |
-| `diff=name` (NUL-stripping textconv), numstat | `-\t-` (raw sniff) | `n\tm` (sniffs transformed=clean) | D-NAMED edge |
+| `-diff`, textual content | `Binary files differ` / `-\t-` | text hunk / `n\tm` (sniffs content=text) | binary (patch+numstat override `'binary'`) — **faithful** |
+| bare `diff`, NUL content | text hunk / `1\t1` | `Binary files differ` / `-\t-` (sniffs content=binary) | text (patch+numstat override `'text'`) — **faithful** |
+| `diff=name` (NUL-keeping textconv), patch | text hunk | `Binary files differ` (sniffs transformed=NUL) | text hunk (patch override `'text'`) — **faithful** |
+| `diff=name` (NUL-keeping textconv), numstat | `-\t-` (raw sniff) | `-\t-` (sniffs transformed=NUL) | `-\t-` (numstat override `isBinary(raw)='binary'`) — **faithful** |
+| `diff=name` (NUL-**stripping** textconv), numstat | `-\t-` (raw sniff) | `n\tm` (sniffs transformed=clean) | `-\t-` (numstat override `isBinary(raw)='binary'`) — **RESOLVED, faithful** (ratified D-NAMED (b)) |
 
 ### 3.5 Precedence / composition with #195 textconv (unambiguous)
 
@@ -346,9 +363,10 @@ Stated as the binding contract the application layer implements:
   (#195's `resolveTextconvDriver` already returns `none` for `diff:false`).
 - **bare `diff`** ⇒ text display both surfaces; **no textconv** (no named driver;
   #195 returns `none` for `diff:true`).
-- **`diff=name` + configured `textconv`** ⇒ patch text (over the transformed bytes,
-  forced text even when NUL-retaining — N3); numstat content-sniffs the raw blob
-  (D-NAMED).
+- **`diff=name` + configured `textconv`** ⇒ patch override `'text'` (over the transformed
+  bytes, forced text even when NUL-retaining — N3); numstat override is the **raw-blob**
+  decision `isBinary(raw) ? 'binary' : 'text'`, computed in the app layer (ratified
+  D-NAMED (b)) — faithful for N3 and N3s.
 - **`diff=name` + no/empty `textconv`** ⇒ patch + numstat both content-sniff the raw
   fallback (#195 T2): text hunk over clean content, `Binary files differ` over NUL (N4).
   No override applied (`undefined`).
@@ -366,17 +384,24 @@ Textconv spawning is #195's established boundary (ADR-407); the binary-override 
 pure in-process decision with no command execution. The `binary`-macro / `-diff` path
 spawns no driver at all.
 
-## 4. Decision candidates — for the ADR conversation (≤3 options each; do not decide here)
+## 4. Decision trail — RESOLVED by the ADR conversation
+
+> This section is the resolved decision trail. The candidates below were taken to the ADR
+> conversation; the user **ratified** the outcomes recorded in
+> [ADR-409](../adr/409-diff-binary-decision-override-threaded-from-application-layer.md) and
+> [ADR-410](../adr/410-binary-attribute-override-honoured-off-node.md). Each row records the
+> alternatives weighed and the ratified choice — which in two cases **deviates** from the
+> draft's recommendation (D-SHAPE, D-NAMED) toward fuller faithfulness.
 
 ADRs 226/249/302/406/407/408 fix faithfulness, structured-data, the attribute model,
-and #195's textconv port. The load-bearing choices **this** feature introduces:
+and #195's textconv port. The load-bearing choices **this** feature introduced:
 
-| # | Choice | Alternatives (≤3) | Recommendation |
+| # | Choice | Alternatives weighed (≤3) | **Ratified outcome** |
 |---|---|---|---|
-| **D-SHAPE** | The override type threaded into `computeStatFields` + `PatchFile` | (a) **one** optional tri-state `binaryOverride?: 'binary' \| 'text'` on both `StatFieldsOptions` and `PatchFile` (`undefined` ⇒ today's sniff); (b) a **boolean** `forceBinary?: boolean` (loses the `'text'`-force-over-NUL case — insufficient for bare `diff`); (c) a **richer descriptor** `{ mode: 'binary' \| 'text' \| 'auto' }` per surface (patch vs numstat) to carry the D-NAMED asymmetry explicitly | **(a)** — the minimal faithful shape; matches the four-state attribute collapsed to the two display modes git actually has, plus `undefined`. If D-NAMED needs per-surface divergence, extend to (c)'s two fields (`patchBinaryOverride` / numstat derives its own) — but keep one enum, not a struct. |
-| **D-NAMED** | How `diff=<name>` maps to the **numstat** binary decision, given the pinned raw-vs-transformed asymmetry (N3/N3s) | (a) **numstat = content-sniff on the transformed bytes** (`undefined` override; **no change** to the numstat path) — faithful for NUL-**keeping** textconv (N3), **diverges** for NUL-**stripping** textconv (N3s: git `-\t-` on raw, tsgit `n\tm` on transformed); (b) **numstat sniffs the RAW blob** for named-driver paths (thread the raw bytes separately so `computeStatFields` sees raw, not transformed) — faithful for N3 **and** N3s, but a deeper change to `applyLinePassAndStat`; (c) **force numstat `'binary'`** whenever `diff=name` is active (git only does this when the raw blob is binary — would diverge for `diff=name` over clean text, N1 numstat `1\t1`) | **(a) for v1**, documenting the N3s NUL-stripping-textconv edge as a known divergence (a textconv that strips NUL is exotic; the common `diff=name` cases — clean text N1, NUL-keeping N3 — are faithful). Escalate (b) to the user: it is the fully-faithful option but costs a raw-bytes side-channel through the numstat path. **This row needs the user's explicit sign-off — it is the surprising pinned behaviour.** |
-| **D-OPTIN** | How the override is gated so (i) content-stable callers never get it, and (ii) the off-node guard is set | (a) **ride #195's `applyTextconv: true` opt-in, gated `&& ctx.command !== undefined`** — content-stable callers (patch-id/range-diff/rebase) pass no options ⇒ never get it; off-node ⇒ inert content-sniff (mirrors #195); (b) ride `applyTextconv` for the content-stable boundary **but decouple the runner guard** — build the provider for the override whenever the display opt-in is set, even with no `CommandRunner`, so `-diff`/bare-`diff` are honoured off-node (only textconv stays runner-gated); (c) a **separate** `materialisePatchFiles` option `resolveBinaryAttr?: boolean` decoupled from textconv | **(a)** — simplest; the binary override and textconv are two halves of the **same** `diff` resolution, so gating them together reuses the one provider/lookup (§3.2), makes the content-stable boundary automatic, and keeps cross-adapter parity (memory ≡ node-with-no-runner) trivially true. (b) is **strictly more faithful off-node** (honours `-diff`/`diff` in the browser) at the cost of building the provider off-node and breaking the simple memory≡no-runner parity — surface to the user alongside §3.2's conservatism note. (c) duplicates the provider build. |
-| **D-ADR** | ADR set for the ADR phase | (a) **one** ADR — "diff binary-vs-text display override threaded from the application layer, mirroring #195's textconv ADR-407" — deciding D-SHAPE + D-OPTIN + the §3.3 mapping including the D-NAMED resolution; (b) **two** ADRs — one for the threading mechanism (D-SHAPE/D-OPTIN), one for the named-driver numstat asymmetry (D-NAMED) given its divergence stakes; (c) fold into a #195 follow-up ADR amendment | **(a)** — one ADR, next free number **409** (highest existing is 408). The mechanism is a direct mirror of ADR-407's threading; the only genuinely contentious sub-decision is D-NAMED, which the single ADR records as its consequential edge. Propose **ADR-409** title: *"diff binary-decision override threaded from the application layer"*. If the user wants D-NAMED isolated, split to **ADR-409** (threading) + **ADR-410** (named-driver numstat faithfulness). |
+| **D-SHAPE** | The override type threaded into `computeStatFields` + `PatchFile` | (a) **one** optional tri-state `binaryOverride?: 'binary' \| 'text'` on both `StatFieldsOptions` and `PatchFile`; (b) a **boolean** `forceBinary?` (loses the `'text'`-force-over-NUL case); (c) **per-surface** overrides (patch vs numstat carried independently) | **RESOLVED → (c) per-surface override** ([ADR-409](../adr/409-diff-binary-decision-override-threaded-from-application-layer.md)). Forced by D-NAMED (b): git's two surfaces genuinely disagree for named drivers, so `PatchFile` carries **both** `patchBinaryOverride` and `numstatBinaryOverride`; the 6 patch-serializer sites read the patch override, `computeStatFields` reads the numstat override. (a) cannot express the disagreement; (b) cannot force text over NUL. **Deviates from the draft recommendation of (a).** |
+| **D-NAMED** | How `diff=<name>` maps to the **numstat** binary decision, given the pinned raw-vs-transformed asymmetry (N3/N3s) | (a) **sniff the transformed bytes** (no change to the numstat path) — faithful for clean text + NUL-keeping textconv, **diverges** only for NUL-stripping textconv (N3s); (b) **sniff the RAW blob** — faithful for **every** named-driver case; (c) **force `'binary'`** for any `diff=name` — diverges over clean text (N1) | **RESOLVED → (b) sniff the RAW blob** ([ADR-409](../adr/409-diff-binary-decision-override-threaded-from-application-layer.md)). The application layer holds both raw and transformed bytes at the single resolve point; it computes `isBinary(raw)` and threads the resulting enum down — **no raw bytes enter the pure domain**. Faithful across clean-text (N1), NUL-keeping (N3), **and NUL-stripping (N3s)** textconv. **N3s is now faithful, not a divergence.** **Deviates from the draft recommendation of (a)** — the prime directive (ADR-226) forbids divergence absent a documented exception, and the user declined to carve one. |
+| **D-OPTIN** | How the override is gated so (i) content-stable callers never get it, and (ii) the off-node guard is set | (a) **runner-gated** — ride #195's `applyTextconv: true && ctx.command !== undefined` (off-node ⇒ inert content-sniff, mirrors #195; a narrow off-node divergence); (b) **decouple the runner guard** — build the provider whenever the display opt-in is set, keep only textconv *execution* runner-gated, so `-diff`/bare `diff` are honoured off-node; (c) a **separate** `resolveBinaryAttr?` option | **RESOLVED → (b) decouple the runner guard** ([ADR-410](../adr/410-binary-attribute-override-honoured-off-node.md)). The provider needs only `FileSystem`; `-diff`/bare `diff`/the raw-numstat decision are pure and honoured on node, in-memory, and browser alike. The content-stable boundary stays the `applyTextconv` opt-in (R4 preserved); only textconv *execution* stays runner-gated (ADR-408 refined, scoped to the spawning driver). **Matches draft option (b), deviating from the draft recommendation of (a).** |
+| **D-ADR** | ADR set for the ADR phase | (a) **one** ADR deciding D-SHAPE + D-OPTIN + the §3.3 mapping; (b) **two** ADRs — one for threading (D-SHAPE/D-NAMED), one for the off-node gating (D-OPTIN); (c) fold into a #195 follow-up amendment | **RESOLVED → (b) two ADRs**: [ADR-409](../adr/409-diff-binary-decision-override-threaded-from-application-layer.md) (per-surface override + raw-blob numstat threading — D-SHAPE/D-NAMED) and [ADR-410](../adr/410-binary-attribute-override-honoured-off-node.md) (off-node decoupling — D-OPTIN). Split because the off-node faithfulness decision (refining ADR-408) is independently load-bearing and deserves its own record. |
 
 ## 5. Test strategy
 
@@ -384,36 +409,54 @@ Mirrors #195's test plan (`lfs-filter-driver-port.md §5`) and the diff-faithful
 interop discipline.
 
 **Unit (domain — pure, no Context):**
-- `stat-fields.test.ts` — `computeStatFields` with each override: `'binary'` ⇒
+- `stat-fields.test.ts` — `computeStatFields` with each `numstatBinaryOverride`: `'binary'` ⇒
   `{0,0,true}` over textual content (isolated guard, assert all three fields);
   `'text'` ⇒ counts lines over NUL content (the short-circuit is skipped); `undefined`
   ⇒ today's `isBinary` short-circuit (regression). Isolated per-branch tests
   (mutation-resistant: the `isBinary(old) || isBinary(next)` guard needs each side
   triggered alone, per CLAUDE.md guard-clause rule).
-- `patch-serializer.test.ts` — `renderPatch`/`renderFile` with `PatchFile.binaryOverride`
+- `patch-serializer.test.ts` — `renderPatch`/`renderFile` with `PatchFile.patchBinaryOverride`
   at each of the 6 decision functions (modify same-kind, two-path rename/copy,
   broken-modify, type-change delete+add — both sides, add, delete): `'binary'` forces the
   `Binary files … differ` branch over textual content; `'text'` forces the text-hunk
   branch over NUL content (NUL survives in the rendered bytes); `undefined` ⇒ today.
-  Assert exact rendered bytes (not just "contains Binary").
+  Assert exact rendered bytes (not just "contains Binary"). The patch sites read the
+  **patch** override only — a test fixes `patchBinaryOverride='text'` alongside
+  `numstatBinaryOverride='binary'` (the N3 shape) and asserts the patch renders a text hunk
+  while the numstat field is untouched (proves the two surfaces are independent).
 
 **Property (per CLAUDE.md lens — compositional matcher):** `resolve-binary-override`
-is a total function over the `AttributeValue` algebra (4 inputs → 3 outputs). A small
-**parameterised example sweep** (not fast-check) covers it — the input is a 4-value
+is a total function over the `AttributeValue` algebra (4 inputs → a `{patch,numstat}` pair).
+A small **parameterised example sweep** (not fast-check) covers it — the input is a 4-value
 enum, so property generators add no value (CLAUDE.md "small enum ⇒ parameterised sweep").
 
 **Unit (application):**
-- `resolve-binary-override.test.ts` — every §3.3 row: `false`/`binary`-macro ⇒
-  `'binary'`; `true` ⇒ `'text'`; `{set:name}` ⇒ patch `'text'` / numstat per D-NAMED;
-  `'unspecified'` ⇒ `undefined`. Reuse a fake `AttributeProvider`. Isolated per-branch.
-- `materialise-patch-files.test.ts` — the override is attached to `PatchFile` only when
-  `applyTextconv: true` (R4): assert content-stable call (no options) yields
-  `binaryOverride === undefined` on every file; assert the override and textconv come
-  from **one** `sourcesForPath` call (spy the provider — called once per path).
-- `diff-trees.test.ts` — `applyLinePassAndStat` threads `PatchFile.binaryOverride` into
+- `resolve-binary-override.test.ts` — every §3.3 row, asserting the **pair**: `false`/`binary`-macro
+  ⇒ `{patch:'binary', numstat:'binary'}`; `true` ⇒ `{patch:'text', numstat:'text'}`;
+  `{set:name}` + configured textconv ⇒ `{patch:'text', numstat: isBinary(raw)?'binary':'text'}`
+  — the **raw-blob** numstat path: a NUL-stripping-textconv fixture (clean transformed bytes,
+  NUL **raw** blob) must yield `numstat:'binary'` (the N3s kill); `{set:name}` no textconv ⇒
+  `{undefined, undefined}`; `'unspecified'` ⇒ `{undefined, undefined}`. Reuse a fake
+  `AttributeProvider`. Isolated per-branch.
+- `materialise-patch-files.test.ts` — both overrides are attached to `PatchFile` only when
+  `applyTextconv: true` (R4): assert a content-stable call (no opt-in) builds **no provider**
+  and yields `patchBinaryOverride === undefined && numstatBinaryOverride === undefined` on every
+  file; assert the overrides and textconv come from **one** `sourcesForPath` call (spy the
+  provider — called once per path); assert the numstat override is computed from the **raw**
+  bytes *before* textconv replaces `{old,new}Content`.
+- `diff-trees.test.ts` — `applyLinePassAndStat` threads `PatchFile.numstatBinaryOverride` into
   `computeStatFields`; `shouldDrop` consistency (a `'text'`-forced path with zero real
   hunks still drops correctly; a `'binary'`-forced path never drops — `stats.binary`).
-- `ctx.command` absent ⇒ override `undefined` everywhere (R7 inert fallback).
+
+**Cross-adapter (the decoupled guard — ADR-410):**
+- `-diff` / bare `diff` are honoured **off-node** with no `CommandRunner`: a memory- (and
+  browser-, in the e2e suite) adapter repo with `f -diff` over textual content renders the
+  binary patch + `-\t-` numstat — identical to node-without-runner **and** to real git,
+  **not** the content-sniff fallback. This is the live assertion that the provider is built on
+  the opt-in, not the runner.
+- A `diff=<name>` textconv driver still no-ops off-node (ADR-408 refined): the override applies
+  to the raw bytes the inert driver leaves behind, so the numstat raw-blob decision is still
+  faithful with no runner.
 
 **Interop (real git — the only faithfulness proof):**
 - **`test/integration/diff-attr-binary-interop.test.ts`** (new; twin real-`git` vs
@@ -422,8 +465,9 @@ enum, so property generators add no value (CLAUDE.md "small enum ⇒ parameteris
   (`-diff` textual ⇒ binary patch + `-\t-` numstat), **Ba/Bd** (add/delete one-sided
   binary lines), **Bmacro** (binary macro), **T2/T2n** (bare `diff` over NUL ⇒ text
   hunk with NUL verbatim + `1\t1`), **N1** (`diff=name` clean text — #195 cross-check),
-  **N3/N3s** (the named-driver patch/numstat asymmetry — the D-NAMED rows; assert per
-  the chosen D-NAMED option), **N4** (named-unconfigured fallback), **R** (raw OIDs
+  **N3** (NUL-keeping textconv ⇒ patch text hunk + numstat `-\t-`), **N3s** (NUL-stripping
+  textconv ⇒ patch clean text hunk + numstat **`-\t-`** — assert the **faithful** raw-blob
+  numstat, the ratified D-NAMED (b) row), **N4** (named-unconfigured fallback), **R** (raw OIDs
   unchanged). Reconstruct git's patch via the shared `diff-reconstruct.ts`
   `reconstructPatch` helper; reconstruct numstat via the existing `numstatRowsFrom`
   shape (it already reads `c.binary`).
@@ -441,6 +485,11 @@ left untested per-side.
 - **IN:** the `diff`/`binary` attribute's effect on the binary-vs-text **display**
   decision in diff + numstat (patch `Binary files … differ` line, numstat `-\t-`
   short-circuit), and its correct composition with #195's textconv.
+- **IN:** the `diff=name` numstat **raw-vs-transformed** faithfulness (N3s) — now in scope
+  and **faithful** via the ratified raw-blob decision (D-NAMED (b), ADR-409). No longer a v1
+  divergence.
+- **IN:** `-diff` / bare `diff` honoured **off-node** (memory/browser) via the decoupled
+  runner guard (D-OPTIN (b), ADR-410).
 - **`text` / `eol` / `autocrlf` / `working-tree-encoding`** line-ending normalisation —
   still parked exactly as `lfs-filter-driver-port.md §6` parks it. tsgit has zero
   line-ending transformation today; this feature lifts only the **binary** part of the
@@ -448,18 +497,14 @@ left untested per-side.
 - **`--stat` cosmetic graph** (`Bin 0 -> N bytes`, bar widths) — the caller renders it
   from the structured `binary` boolean + blob sizes (ADR-249); the library emits no
   `--stat` text. `--stat`'s binary decision tracks numstat's `binary` field, so it
-  follows D-NAMED automatically.
-- **`diff=name` numstat raw-vs-transformed faithfulness (N3s)** — if D-NAMED picks
-  option (a), the NUL-stripping-textconv numstat edge is a documented divergence, not a
-  v1 surface. Option (b) brings it in scope.
+  follows the ratified raw-blob numstat decision (D-NAMED (b)) automatically.
 - **`grep`/`blame`/`merge` binary decisions** — other commands also consult `isBinary`;
   this feature touches only the **diff/numstat** display path. Other consumers of the
   attribute are separate features.
-- **Public API surface** — confirmed **no api.json delta**: the threading parameter
-  lives on internal functions (`computeStatFields`, `renderPatch`, `PatchFile`,
-  `StatFieldsOptions`) that are **not** re-exported through `src/index.ts` (verified:
-  absent from `application/commands/index.ts` and `public-types.ts`). The public
-  `StatFields.binary` boolean already exists — this feature changes its **computation**,
-  adds no field. If D-SHAPE (c) or a public command option were chosen instead, that
-  would be flagged as an api.json-touching decision — it is not, under the recommended
-  shape.
+- **Public API surface** — confirmed **no api.json delta** even under the ratified
+  per-surface D-SHAPE (c): the **two** threading fields live on internal functions /
+  types (`computeStatFields` / `StatFieldsOptions` gains `numstatBinaryOverride`;
+  `PatchFile` gains `patchBinaryOverride` + `numstatBinaryOverride`; `renderPatch`) that
+  are **not** re-exported through `src/index.ts` (verified: absent from
+  `application/commands/index.ts` and `public-types.ts`). The public `StatFields.binary`
+  boolean already exists — this feature changes its **computation**, adds no field.
