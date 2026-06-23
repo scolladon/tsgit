@@ -232,16 +232,14 @@ away** several catalogue conditions before a parsed object exists:
   spacing → `missingSpaceBeforeEmail`/`missingNameBeforeEmail`/`badEmail` never yield a parsed
   identity.
 
-**Resolution (recommended, pin it in this module):** the validator inspects the **raw object bytes**
-(plus the declared object kind) for the byte-level ids (tree entry modes/names/sort order, identity
-line spacing, NUL-in-header, header structure), and may use the parsed shape only where the parser
-preserves the needed fields losslessly. Concretely, give `validateObject` the **raw decompressed
-object body** (`Uint8Array`) + kind + `strict` flag, and parse the bytes itself with fsck's tolerant
-rules (it must NOT throw — it classifies). This keeps `domain/fsck/` self-contained and faithful.
-Confirm this is acceptable as the primary Decision-candidate before deep implementation; if the
-session prefers the parsed-object path, the catalogue shrinks to only the ids the parsers preserve
-and the rest fall through to Part 3's structural `bad-object (corrupt)` path (different `msgId`,
-same exit class) — interop byte-faithfulness then degrades on the `msgId` field.
+**Resolution (ADOPTED — D-c1, forced by ADR-412 full-catalogue faithfulness):** the validator
+inspects the **raw object bytes** (plus the declared object kind) for the byte-level ids (tree entry
+modes/names/sort order, identity line spacing, NUL-in-header, header structure), and may use the
+parsed shape only where the parser preserves the needed fields losslessly. Concretely,
+`validateObject` takes the **raw decompressed object body** (`Uint8Array`) + kind + `strict` flag,
+and parses the bytes itself with fsck's tolerant rules (it must NOT throw — it classifies). This
+keeps `domain/fsck/` self-contained and faithful. The parsed-object path is rejected: it would shrink
+the catalogue to only the ids the parsers preserve and degrade interop `msgId` byte-faithfulness.
 
 **Pinned msg-id → default-severity table (from `git` 2.54.0 `fsck-msgids.adoc`, cross-checked
 behaviourally — reproduce verbatim; design lines ~270-330):**
@@ -315,17 +313,17 @@ IGNORE / FATAL / ERROR ids are **not** upgraded by `strict`. Pinned: `treeNotSor
 `missingSpaceBeforeEmail` stay ERROR in both default and strict; `zeroPaddedFilemode` flips
 warning→error under strict.
 
-**Scope guard:** Many ids (`gitmodules*`, `gitattributes*`, `mailmapSymlink`, `gitignoreSymlink`)
-require content-aware checks on specially-named blobs/entries. Implement the full table's
-**severity classification** (every id resolvable to a severity, every id upgradable-or-not), and the
-**detection** for the ids the interop matrix and unit cases exercise (`zeroPaddedFilemode`,
-`treeNotSorted`, `missingSpaceBeforeEmail`, plus a representative ERROR/WARN/INFO per object kind).
-Ids whose detection requires machinery beyond v1 (e.g. `.gitmodules` parsing) should still be in the
-severity table and reachable by the validator's dispatch, even if their detection predicate is a
-documented stub returning "not triggered" — but do NOT stub silently; if a detection is deferred,
-raise it as a blocker `{ unit: <msgId>, reason: detection needs <X>, options: [implement now / narrow
-v1 detection to matrix+representative set / split follow-up] }` rather than guessing. (Default
-recommendation: detect the matrix + representative set, classify the full table.)
+**Scope guard (RESOLVED — D-c3 ADOPTED = full catalogue detection, per ratified ADR-412):**
+Implement the full table's **severity classification** (every id resolvable to a severity, every id
+upgradable-or-not) AND **detection** for the FULL catalogue — every object-structure id (commit /
+tree / tag / blob byte-level faults) and the special-blob content checks (`gitmodules*`,
+`gitattributes*`, `gitignoreSymlink`, `mailmapSymlink`), the latter using tsgit's existing
+`.gitmodules` parser (`domain/`-level INI/submodule parsing) and `.gitattributes` parser
+(`domain/attributes/`). Every detected id carries a pinned interop or unit fixture. No silent stubs.
+The per-item escape hatch survives ONLY for a single id whose detection needs machinery tsgit
+genuinely lacks: raise it as a blocker `{ unit: <msgId>, reason: detection needs <X>, options:
+[implement now / split that one id to a follow-up / equivalent ] }` rather than guessing or stubbing —
+escalation is per-id and concrete, never a blanket narrowing of the full-catalogue scope.
 
 ### TDD steps
 
