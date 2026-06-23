@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { fsck } from '../../../../src/application/commands/fsck.js';
+import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -1049,3 +1049,226 @@ describe('Given a repo with only WARN-severity content findings (zeroPaddedFilem
 
 const asRefName = (s: string): RefName => s as RefName;
 void asRefName; // used in IDE hover checks only
+
+// ---------------------------------------------------------------------------
+// REFS-VERIFY PASS — badRefContent (malformed loose ref, exit bit 8)
+// ---------------------------------------------------------------------------
+
+describe('Given a loose ref with malformed content (not a valid OID)', () => {
+  describe('When fsck runs with checkReferences default (true)', () => {
+    it('Then emits bad-ref badRefContent finding severity error, exit bit 8 set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — badRefContent finding present
+      const badRef = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefContent',
+      );
+      expect(badRef).toBeDefined();
+      expect(badRef?.severity).toBe('error');
+      expect(badRef?.ref).toBe('refs/heads/garbage');
+      // exit bit 8 set (refs content failure)
+      expect(result.exitCode & 8).toBe(8);
+    });
+  });
+});
+
+describe('Given a loose ref with malformed content', () => {
+  describe('When fsck runs with checkReferences:false', () => {
+    it('Then no badRefContent finding is emitted (refs-verify pass skipped)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert — no badRefContent finding when refs-verify pass is skipped
+      const badRefContent = result.findings.find(
+        (f) => f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefContent',
+      );
+      expect(badRefContent).toBeUndefined();
+      // exit bit 8 NOT set
+      expect(result.exitCode & 8).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REFS-VERIFY PASS — badRefOid (absent OID, exit bit 2)
+// ---------------------------------------------------------------------------
+
+describe('Given a loose ref pointing to a valid-format but absent OID', () => {
+  describe('When fsck runs', () => {
+    it('Then emits bad-ref badRefOid finding severity error, exit bit 2 set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      const absentOid = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as ObjectId;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — badRefOid finding for the absent OID ref
+      const badRef = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(badRef).toBeDefined();
+      expect(badRef?.severity).toBe('error');
+      expect(badRef?.ref).toBe('refs/heads/broken');
+      expect(badRef?.target).toBe(absentOid);
+      // exit bit 2 set (missing/absent)
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+describe('Given a loose ref pointing to an absent OID', () => {
+  describe('When fsck runs', () => {
+    it('Then does NOT emit a duplicate missing finding for the absent OID', async () => {
+      // Arrange — absent OID ref should produce bad-ref, not 'missing' finding
+      const ctx = await initBareCtx();
+      const absentOid = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as ObjectId;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — only bad-ref, no 'missing' finding for the absent OID
+      const missingForAbsent = result.findings.filter(
+        (f) => f.type === 'missing' && (f as { id: ObjectId }).id === absentOid,
+      );
+      expect(missingForAbsent).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REFS-VERIFY PASS — malformed content: badRefContent + badRefOid(zero), exit 10
+// ---------------------------------------------------------------------------
+
+describe('Given a loose ref with malformed content (matrix #9b)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits both badRefContent (bit 8) and badRefOid for zero OID (bit 2), exit 10', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — badRefContent finding
+      const badRefContent = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefContent',
+      );
+      expect(badRefContent).toBeDefined();
+      expect(badRefContent?.severity).toBe('error');
+
+      // Assert — badRefOid finding (synthesized zero OID)
+      const badRefOid = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(badRefOid).toBeDefined();
+      expect(badRefOid?.target).toBe('0000000000000000000000000000000000000000');
+
+      // Assert — composite exit 10 = 2|8
+      expect(result.exitCode).toBe(10);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REFS-VERIFY PASS — packed-refs absent OID (exit bit 2)
+// ---------------------------------------------------------------------------
+
+describe('Given a packed-ref entry pointing to an absent OID', () => {
+  describe('When fsck runs', () => {
+    it('Then emits bad-ref badRefOid finding for the packed ref, exit bit 2 set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const absentOid = 'cccccccccccccccccccccccccccccccccccccccc' as ObjectId;
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/packed-refs`,
+        `# pack-refs with: peeled fully-peeled sorted \n${absentOid} refs/heads/packed-broken\n`,
+      );
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — badRefOid finding
+      const badRef = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(badRef).toBeDefined();
+      expect(badRef?.ref).toBe('refs/heads/packed-broken');
+      expect(badRef?.target).toBe(absentOid);
+      // exit bit 2 set
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REFS-VERIFY PASS — checkReferences:false skips ENTIRE refs-verify pass
+// ---------------------------------------------------------------------------
+
+describe('Given a loose ref with absent OID and checkReferences:false', () => {
+  describe('When fsck runs with checkReferences:false', () => {
+    it('Then still emits badRefOid (absent OID always checked) but no badRefContent', async () => {
+      // Arrange — checkReferences:false skips content-format check but not absent-OID check
+      const ctx = await initBareCtx();
+      const absentOid = 'dddddddddddddddddddddddddddddddddddddddd' as ObjectId;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+
+      // Act
+      const result = await sut(ctx, { checkReferences: false });
+
+      // Assert — badRefOid still emitted (absent OID not gated by checkReferences)
+      const badRefOid = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(badRefOid).toBeDefined();
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REFS-VERIFY PASS — unborn HEAD (symref → non-existent branch) is clean
+// ---------------------------------------------------------------------------
+
+describe('Given HEAD pointing to unborn branch (no commits)', () => {
+  describe('When fsck runs', () => {
+    it('Then no bad-ref findings and exit code 0 (unborn HEAD tolerated)', async () => {
+      // Arrange — initBareCtx writes HEAD → ref: refs/heads/main (unborn)
+      const ctx = await initBareCtx();
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — no bad-ref findings for unborn HEAD
+      const badRefs = result.findings.filter((f) => f.type === 'bad-ref');
+      expect(badRefs).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});

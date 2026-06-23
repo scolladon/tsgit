@@ -485,3 +485,142 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// Refs-verify pass — matrix #9a: ref → valid-but-absent sha (exit 2)
+// ---------------------------------------------------------------------------
+// Pinned against real git 2.54.0:
+//   stderr: "error: refs/heads/broken: invalid sha1 pointer <sha>"
+//   exit: 2 (bit 2; same with/without --no-references)
+
+let refAbsentDir = '';
+let refAbsentCtx: Context;
+const ABSENT_OID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+beforeAll(async () => {
+  refAbsentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-refabsent-'));
+  initRepo(refAbsentDir);
+  // Write a valid-format but absent OID to a loose ref (bypasses git's write-side check)
+  await mkdir(path.join(refAbsentDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(path.join(refAbsentDir, '.git', 'refs', 'heads', 'broken'), `${ABSENT_OID}\n`);
+  refAbsentCtx = createNodeContext({ workDir: refAbsentDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (refAbsentDir !== '') await rm(refAbsentDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given loose ref pointing to valid-format but absent OID (matrix #9a)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits bad-ref badRefOid, exit code 2 matches real git', async () => {
+        // Arrange — git's expected output
+        const gitResult = gitFsck(refAbsentDir);
+
+        // Act
+        const result = await fsck(refAbsentCtx);
+
+        // Assert — exit code 2 (absent OID = bit 2)
+        expect(result.exitCode).toBe(2);
+        expect(gitResult.exitCode).toBe(2);
+
+        // Assert — badRefOid finding present
+        const badRef = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-ref' } =>
+            f.type === 'bad-ref' && f.msgId === 'badRefOid',
+        );
+        expect(badRef).toBeDefined();
+        expect(badRef?.severity).toBe('error');
+        expect(badRef?.ref).toBe('refs/heads/broken');
+        expect(badRef?.target).toBe(ABSENT_OID);
+
+        // Reconstruct git's exact stderr line and assert byte-equality
+        // git: "error: refs/heads/broken: invalid sha1 pointer <sha>"
+        if (badRef !== undefined) {
+          const reconstructed = `${badRef.ref}: invalid sha1 pointer ${badRef.target}`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Refs-verify pass — matrix #9b: ref → malformed content (exit 10 = 2|8)
+// ---------------------------------------------------------------------------
+// Pinned against real git 2.54.0:
+//   stderr line 1: "error: refs/heads/garbage: badRefContent: not-a-valid-sha"
+//   stderr line 2: "error: refs/heads/garbage: invalid sha1 pointer 0000...0"
+//   exit: 10 (2|8)
+
+let refBadContentDir = '';
+let refBadContentCtx: Context;
+const BAD_CONTENT = 'not-a-valid-sha';
+const ZERO_OID_STR = '0000000000000000000000000000000000000000';
+
+beforeAll(async () => {
+  refBadContentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-refbadcontent-'));
+  initRepo(refBadContentDir);
+  // Write malformed content to a loose ref (bypasses git's write-side check)
+  await mkdir(path.join(refBadContentDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(
+    path.join(refBadContentDir, '.git', 'refs', 'heads', 'garbage'),
+    `${BAD_CONTENT}\n`,
+  );
+  refBadContentCtx = createNodeContext({ workDir: refBadContentDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (refBadContentDir !== '') await rm(refBadContentDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given loose ref with malformed content (matrix #9b, exit 10 = 2|8)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits badRefContent + badRefOid(zero), composite exit 10 matches real git', async () => {
+        // Arrange — git's expected output
+        const gitResult = gitFsck(refBadContentDir);
+
+        // Act
+        const result = await fsck(refBadContentCtx);
+
+        // Assert — composite exit 10 = 2|8 (badRefContent bit 8 + absent zero-OID bit 2)
+        expect(result.exitCode).toBe(10);
+        expect(gitResult.exitCode).toBe(10);
+
+        // Assert — badRefContent finding
+        const badRefContent = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-ref' } =>
+            f.type === 'bad-ref' && f.msgId === 'badRefContent',
+        );
+        expect(badRefContent).toBeDefined();
+        expect(badRefContent?.severity).toBe('error');
+        expect(badRefContent?.ref).toBe('refs/heads/garbage');
+
+        // Reconstruct git's first stderr line:
+        // "error: refs/heads/garbage: badRefContent: not-a-valid-sha"
+        if (badRefContent !== undefined) {
+          const reconstructed = `${badRefContent.ref}: badRefContent: ${BAD_CONTENT}`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+
+        // Assert — badRefOid finding for synthesised zero OID
+        const badRefOid = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-ref' } =>
+            f.type === 'bad-ref' && f.msgId === 'badRefOid',
+        );
+        expect(badRefOid).toBeDefined();
+        expect(badRefOid?.target).toBe(ZERO_OID_STR);
+
+        // Reconstruct git's second stderr line:
+        // "error: refs/heads/garbage: invalid sha1 pointer 0000...0"
+        if (badRefOid !== undefined) {
+          const reconstructed = `${badRefOid.ref}: invalid sha1 pointer ${badRefOid.target}`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      });
+    });
+  },
+);

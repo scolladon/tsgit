@@ -3,13 +3,14 @@ import type { FsckObjectType, FsckSeverity } from '../../domain/fsck/index.js';
 import { validateObject } from '../../domain/fsck/index.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
-import { parseHeader, serializeObject } from '../../domain/objects/index.js';
+import { parseHeader, serializeObject, ZERO_OID } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { looseCompressedBytes } from '../primitives/object-resolver.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
+import { getRefStore } from '../primitives/ref-store.js';
 import { listReflogs, readReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertRepository } from './internal/repo-state.js';
@@ -93,18 +94,27 @@ const EXIT_CONTENT_ERROR = 1;
 const EXIT_CORRUPT = 1;
 const EXIT_HASH_MISMATCH = 1;
 const EXIT_MISSING = 2;
+const EXIT_REFS_CONTENT = 8;
 
 // ---------------------------------------------------------------------------
 // Root collection
 // ---------------------------------------------------------------------------
 
-async function addRefRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
+async function addRefRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<void> {
   const refNames = await enumerateRefs(ctx);
   for (const ref of refNames) {
     try {
-      roots.add(await resolveRef(ctx, ref, { peel: false }));
+      const id = await resolveRef(ctx, ref, { peel: false });
+      // Only add to roots if the OID is present in the universe.
+      // Absent OIDs are reported as bad-ref(badRefOid) by the refs-verify pass
+      // and must NOT be added to roots (would produce spurious 'missing' findings).
+      if (universe.has(id)) roots.add(id);
     } catch {
-      // Unresolvable ref (unborn, dangling symref, etc.) — tolerated
+      // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
     }
   }
 }
@@ -143,12 +153,124 @@ async function addIndexRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> 
  * - Reflog old/new oids (when reflogRoots !== false)
  * - Index entry oids (when indexRoot !== false)
  */
-async function collectRoots(ctx: Context, opts: FsckOptions): Promise<ReadonlySet<ObjectId>> {
+async function collectRoots(
+  ctx: Context,
+  opts: FsckOptions,
+  universe: ReadonlySet<ObjectId>,
+): Promise<ReadonlySet<ObjectId>> {
   const roots = new Set<ObjectId>();
-  await addRefRoots(ctx, roots);
+  await addRefRoots(ctx, roots, universe);
   if (opts.reflogRoots !== false) await addReflogRoots(ctx, roots);
   if (opts.indexRoot !== false) await addIndexRoots(ctx, roots);
   return roots;
+}
+
+// ---------------------------------------------------------------------------
+// Refs-verify pass
+// ---------------------------------------------------------------------------
+
+type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
+
+/** Matches a valid SHA-1 (40-hex) or SHA-256 (64-hex) OID. */
+const OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+/**
+ * Classify and report findings for a single loose ref's raw content.
+ * Returns findings + accumulated exit-bit contribution.
+ *
+ * Content format check (badRefContent) is gated by `checkContentFormat`.
+ * Absent-OID check (badRefOid) is always run, matching git's behaviour
+ * with `--no-references` (pinned: matrix #9a, exit 2 both ways).
+ */
+function checkLooseRef(
+  ref: RefName,
+  raw: string,
+  universe: ReadonlySet<ObjectId>,
+  checkContentFormat: boolean,
+): { readonly findings: ReadonlyArray<BadRefFinding>; readonly exitBit: number } {
+  const content = raw.replace(/[\r\n]+$/, '');
+
+  if (content.startsWith('ref: ')) {
+    // Symref — absent symref targets not an error (unborn branch = OK, matrix #9c)
+    return { findings: [], exitBit: 0 };
+  }
+
+  if (!OID_RE.test(content)) {
+    // Malformed content: badRefContent (gated) + synthesised zero-OID pointer (always)
+    const badFindings: BadRefFinding[] = [];
+    let bit = EXIT_MISSING; // zero-OID pointer always contributes bit 2
+    if (checkContentFormat) {
+      badFindings.push({ type: 'bad-ref', ref, msgId: 'badRefContent', severity: 'error' });
+      bit |= EXIT_REFS_CONTENT;
+    }
+    badFindings.push({
+      type: 'bad-ref',
+      ref,
+      msgId: 'badRefOid',
+      severity: 'error',
+      target: ZERO_OID,
+    });
+    return { findings: badFindings, exitBit: bit };
+  }
+
+  const oid = content as ObjectId;
+  if (universe.has(oid)) return { findings: [], exitBit: 0 };
+  // Valid OID format but absent from object store
+  return {
+    findings: [{ type: 'bad-ref', ref, msgId: 'badRefOid', severity: 'error', target: oid }],
+    exitBit: EXIT_MISSING,
+  };
+}
+
+/**
+ * Verify every ref's content and OID-reachability.
+ *
+ * Two sub-checks run independently:
+ * - **Content format** (gated by `checkReferences`): loose-ref must be a valid hex OID
+ *   or `ref: <target>`. Malformed → `badRefContent` (bit 8) + synthesised zero-OID → `badRefOid`
+ *   (bit 2). Pinned: matrix #9b, composite exit 10 = 2|8.
+ * - **OID presence** (always): every ref OID (loose + packed) must be in the object universe.
+ *   Absent → `badRefOid` (bit 2). Pinned: matrix #9a, exit 2 same with/without `--no-references`.
+ */
+async function runRefsVerifyPass(
+  ctx: Context,
+  universe: ReadonlySet<ObjectId>,
+  checkContentFormat: boolean,
+): Promise<{ readonly findings: ReadonlyArray<BadRefFinding>; readonly exitBit: number }> {
+  const findings: BadRefFinding[] = [];
+  let exitBit = 0;
+
+  const refStore = getRefStore(ctx);
+  const refNames = await enumerateRefs(ctx);
+
+  for (const ref of refNames) {
+    const raw = await refStore.readLooseRaw(ref);
+    if (raw !== undefined) {
+      const { findings: f, exitBit: b } = checkLooseRef(ref, raw, universe, checkContentFormat);
+      findings.push(...f);
+      exitBit |= b;
+      continue;
+    }
+
+    // Not a loose ref — check packed-refs entry for OID presence
+    const packed = await refStore.getPackedRefs();
+    for (const entry of packed.entries) {
+      if (entry.name !== ref) continue;
+      if (!universe.has(entry.id)) {
+        findings.push({
+          type: 'bad-ref',
+          ref,
+          msgId: 'badRefOid',
+          severity: 'error',
+          target: entry.id,
+        });
+        exitBit |= EXIT_MISSING;
+      }
+      break;
+    }
+  }
+
+  return { findings, exitBit };
 }
 
 // ---------------------------------------------------------------------------
@@ -483,8 +605,12 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
       ? { findings: [] as FsckFinding[], exitBit: 0 }
       : await runContentValidationPass(ctx, universe, opts.strict === true);
 
+  // Refs-verify pass: always checks absent OIDs; content-format check gated by checkReferences.
+  // Runs before collectRoots so absent-OID refs are reported as bad-ref (not 'missing').
+  const refsResult = await runRefsVerifyPass(ctx, universe, opts.checkReferences !== false);
+
   const [roots, inEdgePresent] = await Promise.all([
-    collectRoots(ctx, opts),
+    collectRoots(ctx, opts, universe),
     buildInEdgeMap(ctx, universe),
   ]);
 
@@ -496,7 +622,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
 
-  const findings: FsckFinding[] = [...contentResult.findings];
+  const findings: FsckFinding[] = [...contentResult.findings, ...refsResult.findings];
 
   for (const id of missingIds) {
     findings.push({ type: 'missing', id, objectType: await resolveObjectType(ctx, id) });
@@ -512,7 +638,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   }
 
   const connectivityBit = missingIds.size > 0 || brokenEdges.length > 0 ? EXIT_MISSING : 0;
-  const exitCode = contentResult.exitBit | connectivityBit;
+  const exitCode = contentResult.exitBit | connectivityBit | refsResult.exitBit;
   return { findings, exitCode };
 }
 
