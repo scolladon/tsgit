@@ -2471,4 +2471,238 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // patchBinaryOverride — per-site isolated tests (mutation-resistant)
+  // ---------------------------------------------------------------------------
+
+  describe('Given a modify change with purely-textual content and patchBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then renders Binary files line with no @@ hunk header (site 514 + 527 forced)', () => {
+        // Arrange
+        const file: PatchFile = {
+          ...modifyFile('text.txt', 'hello\n', 'world\n'),
+          patchBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert
+        expect(result).toContain('Binary files a/text.txt and b/text.txt differ');
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a modify change with NUL-bearing content and patchBinaryOverride "text"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then renders @@ hunk header and NUL byte survives verbatim (site 514 forced text)', () => {
+        // Arrange
+        const oldBytes = new Uint8Array([0x61, 0x00, 0x0a]); // a\0\n
+        const newBytes = new Uint8Array([0x62, 0x00, 0x0a]); // b\0\n
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'nul.bin' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: oldBytes,
+          newContent: newBytes,
+          patchBinaryOverride: 'text',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert — hunk exists and the NUL byte (0x00) survives verbatim
+        expect(result).toContain('@@ -1 +1 @@');
+        const nulIndex = [...result].findIndex((_, i) => result.charCodeAt(i) === 0x00);
+        expect(nulIndex).toBeGreaterThan(-1);
+      });
+    });
+  });
+
+  describe('Given a modify change with NUL-bearing content and patchBinaryOverride undefined', () => {
+    describe('When renderPatch is called', () => {
+      it('Then falls back to isBinary sniff and renders Binary files (regression)', () => {
+        // Arrange
+        const oldBytes = new Uint8Array([0x61, 0x00, 0x0a]);
+        const newBytes = new Uint8Array([0x62, 0x00, 0x0a]);
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'nul.bin' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: oldBytes,
+          newContent: newBytes,
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert
+        expect(result).toContain('Binary files a/nul.bin and b/nul.bin differ');
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given an add change with textual content and patchBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then renders Binary files /dev/null and b/<p> differ (site 741 forced)', () => {
+        // Arrange
+        const file: PatchFile = {
+          ...addFile('new.txt', 'hello\n'),
+          patchBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert
+        expect(result).toContain('Binary files /dev/null and b/new.txt differ');
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a delete change with textual content and patchBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then renders Binary files a/<p> and /dev/null differ (site 746 forced)', () => {
+        // Arrange
+        const file: PatchFile = {
+          ...deleteFile('old.txt', 'hello\n'),
+          patchBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert
+        expect(result).toContain('Binary files a/old.txt and /dev/null differ');
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a type-change with textual content and patchBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then both the delete and add blocks render as binary (sites 608 + 611 forced)', () => {
+        // Arrange
+        const file: PatchFile = {
+          ...typeChangeFile('kind.txt', 'hello\n', 'target'),
+          patchBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert — two binary-files lines (one for the delete block, one for the add block)
+        const matches = result.match(/Binary files .* differ/g);
+        expect(matches).toHaveLength(2);
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a rename with similarity < 100% and textual content and patchBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then renders binary two-path body (site 643 forced)', () => {
+        // Arrange
+        const HALF_SCORE = Math.floor(MAX_SCORE / 2);
+        const file: PatchFile = {
+          change: {
+            type: 'rename',
+            oldPath: 'old.txt' as FilePath,
+            newPath: 'new.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: HALF_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent: utf8.encode('hello\n'),
+          newContent: utf8.encode('world\n'),
+          patchBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert
+        expect(result).toContain('Binary files a/old.txt and b/new.txt differ');
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a broken-modify change with textual content and patchBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then renders Binary files after dissimilarity index line (site 553 forced)', () => {
+        // Arrange
+        const BROKEN_SCORE = Math.floor(MAX_SCORE / 2);
+        const file: PatchFile = {
+          change: {
+            type: 'modify',
+            path: 'broken.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            broken: { score: BROKEN_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent: utf8.encode('hello\n'),
+          newContent: utf8.encode('world\n'),
+          patchBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert
+        expect(result).toContain('dissimilarity index');
+        expect(result).toContain('Binary files a/broken.txt and b/broken.txt differ');
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
+
+  describe('Given a copy change with similarity < 100% and textual content and patchBinaryOverride "binary"', () => {
+    describe('When renderPatch is called', () => {
+      it('Then renders binary two-path body (site 643 forced via copy path)', () => {
+        // Arrange
+        const HALF_SCORE = Math.floor(MAX_SCORE / 2);
+        const file: PatchFile = {
+          change: {
+            type: 'copy',
+            oldPath: 'src.txt' as FilePath,
+            newPath: 'dst.txt' as FilePath,
+            oldId: OID_A,
+            newId: OID_B,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: HALF_SCORE, maxScore: MAX_SCORE },
+          },
+          oldContent: utf8.encode('hello\n'),
+          newContent: utf8.encode('world\n'),
+          patchBinaryOverride: 'binary',
+        };
+
+        // Act
+        const result = renderPatch([file]);
+
+        // Assert
+        expect(result).toContain('Binary files a/src.txt and b/dst.txt differ');
+        expect(result).not.toContain('@@');
+      });
+    });
+  });
 });

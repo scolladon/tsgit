@@ -16,6 +16,13 @@ export interface PatchFile {
   readonly change: DiffChange;
   readonly oldContent?: Uint8Array;
   readonly newContent?: Uint8Array;
+  /** Override the binary-vs-text decision for the PATCH surface. `'binary'` forces the
+   *  `Binary files … differ` / binary-body branch; `'text'` forces the text-hunk branch
+   *  even over NUL content; `undefined` uses the default `isBinary` content-sniff. */
+  readonly patchBinaryOverride?: 'binary' | 'text';
+  /** Override the numstat decision (consumed by computeStatFields via diff-trees, NOT by
+   *  this serializer). Carried on PatchFile so a single resolve pass attaches both. */
+  readonly numstatBinaryOverride?: 'binary' | 'text';
 }
 
 export interface PatchPathPrefix {
@@ -41,6 +48,10 @@ const DEFAULT_PREFIX: PatchPathPrefix = { old: 'a/', new: 'b/' };
 const DEFAULT_CONTEXT_LINES = 3;
 const NO_NEWLINE_MARKER = '\\ No newline at end of file';
 const NEWLINE_CODE = 0x0a;
+
+/** Resolve the binary verdict for one side, honouring an optional patch override. */
+const sideIsBinary = (bytes: Uint8Array, override: 'binary' | 'text' | undefined): boolean =>
+  override === undefined ? isBinary(bytes) : override === 'binary';
 
 const decoder = new TextDecoder('utf-8', { fatal: false });
 
@@ -510,8 +521,13 @@ function renderSameKindBlock(
   newBytes: Uint8Array,
   contextLines: number,
   emit?: EmitOptions,
+  override?: 'binary' | 'text',
 ): string[] {
-  if (common.oldId !== common.newId && !isBinary(oldBytes) && !isBinary(newBytes)) {
+  if (
+    common.oldId !== common.newId &&
+    !sideIsBinary(oldBytes, override) &&
+    !sideIsBinary(newBytes, override)
+  ) {
     const body = renderTextBody(common, prefix, oldBytes, newBytes, contextLines, emit);
     if (body.length === 0) return [];
     const out: string[] = [];
@@ -540,6 +556,7 @@ function renderBrokenModifyBlock(
   prefix: PatchPathPrefix,
   contextLines: number,
   emit?: EmitOptions,
+  override?: 'binary' | 'text',
 ): string[] {
   const broken = change.broken;
   const common = changeToCommon(change);
@@ -550,7 +567,7 @@ function renderBrokenModifyBlock(
   const base = `index ${shortOid(common.oldId)}..${shortOid(common.newId)}`;
   out.push(common.oldMode === common.newMode ? `${base} ${common.newMode}` : base);
   const body =
-    isBinary(oldBytes) || isBinary(newBytes)
+    sideIsBinary(oldBytes, override) || sideIsBinary(newBytes, override)
       ? renderBinaryBody(common, prefix, oldBytes, newBytes)
       : renderTextBody(common, prefix, oldBytes, newBytes, contextLines, emit);
   for (const line of body) out.push(line);
@@ -564,6 +581,7 @@ function renderModifyBlock(
   prefix: PatchPathPrefix,
   contextLines: number,
   emit?: EmitOptions,
+  override?: 'binary' | 'text',
 ): string[] {
   if (change.broken !== undefined) {
     return renderBrokenModifyBlock(
@@ -573,6 +591,7 @@ function renderModifyBlock(
       prefix,
       contextLines,
       emit,
+      override,
     );
   }
   return renderSameKindBlock(
@@ -582,6 +601,7 @@ function renderModifyBlock(
     newBytes,
     contextLines,
     emit,
+    override,
   );
 }
 
@@ -590,6 +610,7 @@ function renderTypeChangeBlock(
   oldBytes: Uint8Array,
   newBytes: Uint8Array,
   prefix: PatchPathPrefix,
+  override?: 'binary' | 'text',
 ): string[] {
   // Real git renders a type-change as two separate diff --git blocks:
   // a full deletion of the old kind followed by a full addition of the new kind.
@@ -605,10 +626,10 @@ function renderTypeChangeBlock(
     newId: change.newId,
     newMode: change.newMode,
   };
-  const deleteBlock = isBinary(oldBytes)
+  const deleteBlock = sideIsBinary(oldBytes, override)
     ? renderDeleteBinary(deleteChange, prefix)
     : renderDeleteBlock(deleteChange, oldBytes, prefix);
-  const addBlock = isBinary(newBytes)
+  const addBlock = sideIsBinary(newBytes, override)
     ? renderAddBinary(addChange, prefix)
     : renderAddBlock(addChange, newBytes, prefix);
   return [...deleteBlock, ...addBlock];
@@ -637,10 +658,11 @@ function renderTwoPathBody(
   prefix: PatchPathPrefix,
   contextLines: number,
   emit?: EmitOptions,
+  override?: 'binary' | 'text',
 ): string[] {
   const out: string[] = [];
   out.push(twoPathIndexLine(change));
-  if (isBinary(oldBytes) || isBinary(newBytes)) {
+  if (sideIsBinary(oldBytes, override) || sideIsBinary(newBytes, override)) {
     out.push(
       `Binary files ${prefix.old}${change.oldPath} and ${prefix.new}${change.newPath} differ`,
     );
@@ -687,6 +709,7 @@ function renderTwoPathBlock(
     prefix,
     contextLines,
     emit,
+    file.patchBinaryOverride,
   );
   return [...header, ...body];
 }
@@ -736,14 +759,15 @@ function renderFile(
   emit?: EmitOptions,
 ): string[] {
   const change = file.change;
+  const override = file.patchBinaryOverride;
   if (change.type === 'add') {
     const newBytes = file.newContent ?? new Uint8Array(0);
-    if (isBinary(newBytes)) return renderAddBinary(change, prefix);
+    if (sideIsBinary(newBytes, override)) return renderAddBinary(change, prefix);
     return renderAddBlock(change, file.newContent, prefix);
   }
   if (change.type === 'delete') {
     const oldBytes = file.oldContent ?? new Uint8Array(0);
-    if (isBinary(oldBytes)) return renderDeleteBinary(change, prefix);
+    if (sideIsBinary(oldBytes, override)) return renderDeleteBinary(change, prefix);
     return renderDeleteBlock(change, file.oldContent, prefix);
   }
   if (change.type === 'rename') return renderRenameBlock(change, file, prefix, contextLines, emit);
@@ -754,6 +778,7 @@ function renderFile(
       file.oldContent ?? new Uint8Array(0),
       file.newContent ?? new Uint8Array(0),
       prefix,
+      override,
     );
   }
   // `modify` is the only remaining case; the discriminated union is exhaustive.
@@ -764,6 +789,7 @@ function renderFile(
     prefix,
     contextLines,
     emit,
+    override,
   );
 }
 
