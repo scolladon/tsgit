@@ -929,6 +929,29 @@ describe('Given commit with NUL byte in header', () => {
 });
 
 // ---------------------------------------------------------------------------
+// commit — nulInHeader suppresses further faults (early-return isolation)
+// ---------------------------------------------------------------------------
+
+describe('Given commit header NUL byte AND missing committer', () => {
+  describe('When validateObject runs', () => {
+    it('Then result is exactly [nulInHeader], suppressing missing-committer fault', () => {
+      // Arrange
+      const sut = validateObject;
+      // Header has NUL: early-return fires before checking for committer.
+      // Committer is also absent — but the guard short-circuits before that check.
+      const rawBytes = encode(`tree ${BLOB_SHA_HEX}\x00junk\nauthor ${VALID_IDENTITY}\n\nmsg\n`);
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ msgId: 'nulInHeader', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // commit — zeroPaddedDate (ERROR)
 // ---------------------------------------------------------------------------
 
@@ -2170,6 +2193,93 @@ describe('Given commit with author that has no timezone after the timestamp', ()
 
       // Assert — no badTimezone finding for empty timezone
       expect(result.filter((f) => f.msgId === 'badTimezone')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — badDateOverflow: tagger timestamp 19 digits but > INT64_MAX (line 36 branch)
+// Pinned real git 2.54.0: '9223372036854775808' has same length as INT64_MAX_STR
+// but is lexicographically greater → overflow (badDateOverflow, exit 1).
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger timestamp that is 19 digits and exceeds INT64_MAX', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDateOverflow at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      // '9223372036854775808' == INT64_MAX + 1, same 19-digit length as INT64_MAX_STR,
+      // so isTaggerTimestampOverflow falls through to the lexicographic comparison branch.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com> 9223372036854775808 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkTaggerLine: no closing '>' in tagger address → no date-check (early return)
+// Pinned real git 2.54.0: unclosed angle-bracket in tagger does not produce a
+// badDate or badDateOverflow finding; the parser bails out before the date.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger line that has an opening angle-bracket but no closing one', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badDateOverflow finding (date section never reached)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Tagger has '<' but no '>' — gtIdx === -1 branch fires, returning [] immediately.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <unclosed 9999999999999999999 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — no date fault because the parser bails before the date field
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkTaggerLine: no space after closing '>' → no date-check (early return)
+// Pinned real git 2.54.0: tagger '<email>' with no space separator does not
+// produce a badDateOverflow finding; the parser bails out before the date.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger line that has no space after the closing angle-bracket', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badDateOverflow finding (date section never reached)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Tagger has '<...>' but the character immediately after '>' is not a space.
+      // afterGt.startsWith(' ') is false → early return [] without date check.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com>9999999999999999999 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — no date fault because the parser bails before the date field
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
     });
   });
 });
