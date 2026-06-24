@@ -459,7 +459,7 @@
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
-        "stryker.config.json",
+        "stryker.config.mjs",
         "vitest.config.ts"
       ],
       "output": [
@@ -475,7 +475,7 @@
         "src/**/*.ts",
         "test/unit/**/*.ts",
         "tooling/run-stryker-pr.ts",
-        "stryker.config.json",
+        "stryker.config.mjs",
         "vitest.config.ts"
       ],
       "output": [
