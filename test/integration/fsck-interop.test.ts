@@ -1230,6 +1230,125 @@ afterAll(async () => {
   if (connTagTargetDir !== '') await rm(connTagTargetDir, { recursive: true, force: true });
 });
 
+// ---------------------------------------------------------------------------
+// FIX B — badDateOverflow
+//
+// Pinned real git 2.54.0:
+//   Commit with author/committer timestamp > INT64_MAX (9223372036854775807):
+//     stderr: "error in commit <sha>: badDateOverflow: invalid author/committer
+//              line - date causes integer overflow"
+//     exit: 1 (bit 1 = content error)
+//   Tag with tagger timestamp > INT64_MAX:
+//     stderr: "error in tag <sha>: badDateOverflow: invalid author/committer
+//              line - date causes integer overflow"
+//     exit: 1
+//   Boundary value 9223372036854775807 (INT64_MAX itself): NO error.
+//   Non-numeric date: badDate (not badDateOverflow).
+// ---------------------------------------------------------------------------
+
+const OVERFLOW_TIMESTAMP = '99999999999999999999';
+
+let badDateOverflowDir = '';
+let badDateOverflowCtx: Context;
+let overflowCommitSha = '';
+let overflowTagSha = '';
+
+beforeAll(async () => {
+  badDateOverflowDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-badDateOvf-'));
+  initRepo(badDateOverflowDir);
+
+  // Empty tree
+  const emptyTreeBody = Buffer.alloc(0);
+  const emptyTreeSha = await writeLooseObject(badDateOverflowDir, 'tree', emptyTreeBody);
+
+  // Commit with overflowing author timestamp
+  const commitBody = Buffer.from(
+    `tree ${emptyTreeSha}\nauthor Test <t@t.com> ${OVERFLOW_TIMESTAMP} +0000\ncommitter Test <t@t.com> 1700000000 +0000\n\novf commit\n`,
+  );
+  overflowCommitSha = await writeLooseObject(badDateOverflowDir, 'commit', commitBody);
+  await mkdir(path.join(badDateOverflowDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(
+    path.join(badDateOverflowDir, '.git', 'refs', 'heads', 'main'),
+    `${overflowCommitSha}\n`,
+  );
+
+  // Tag with overflowing tagger timestamp
+  const tagBody = Buffer.from(
+    `object ${emptyTreeSha}\ntype tree\ntag v-ovf\ntagger Test <t@t.com> ${OVERFLOW_TIMESTAMP} +0000\n\novf tag\n`,
+  );
+  overflowTagSha = await writeLooseObject(badDateOverflowDir, 'tag', tagBody);
+  await mkdir(path.join(badDateOverflowDir, '.git', 'refs', 'tags'), { recursive: true });
+  await writeFile(
+    path.join(badDateOverflowDir, '.git', 'refs', 'tags', 'v-ovf'),
+    `${overflowTagSha}\n`,
+  );
+
+  await rm(path.join(badDateOverflowDir, '.git', 'logs'), { recursive: true, force: true });
+
+  badDateOverflowCtx = createNodeContext({ workDir: badDateOverflowDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (badDateOverflowDir !== '') await rm(badDateOverflowDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given commit and tag with tagger/author timestamps overflowing INT64_MAX (badDateOverflow)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits badDateOverflow bad-object findings and exit code 1 matches real git', async () => {
+        // Arrange
+        // Pinned real git 2.54.0:
+        //   "error in commit <sha>: badDateOverflow: invalid author/committer line - date causes integer overflow"
+        //   "error in tag <sha>: badDateOverflow: invalid author/committer line - date causes integer overflow"
+        //   exit: 1
+        const gitResult = gitFsck(badDateOverflowDir, '--no-reflogs');
+
+        // Act
+        const result = await fsck(badDateOverflowCtx, { reflogRoots: false });
+
+        // Assert — exit code 1 matches real git
+        expect(result.exitCode).toBe(1);
+        expect(gitResult.exitCode).toBe(1);
+
+        // Assert — badDateOverflow finding on commit
+        const commitFinding = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' &&
+            f.msgId === 'badDateOverflow' &&
+            (f as { id: string }).id === overflowCommitSha,
+        );
+        expect(commitFinding).toBeDefined();
+        expect(commitFinding?.severity).toBe('error');
+        expect(commitFinding?.objectType).toBe('commit');
+
+        // Reconstruct git's stderr line for commit
+        if (commitFinding !== undefined) {
+          const reconstructed = `error in commit ${(commitFinding as { id: string }).id}: badDateOverflow: invalid author/committer line - date causes integer overflow`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+
+        // Assert — badDateOverflow finding on tag
+        const tagFinding = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' &&
+            f.msgId === 'badDateOverflow' &&
+            (f as { id: string }).id === overflowTagSha,
+        );
+        expect(tagFinding).toBeDefined();
+        expect(tagFinding?.severity).toBe('error');
+        expect(tagFinding?.objectType).toBe('tag');
+
+        // Reconstruct git's stderr line for tag
+        if (tagFinding !== undefined) {
+          const reconstructed = `error in tag ${(tagFinding as { id: string }).id}: badDateOverflow: invalid author/committer line - date causes integer overflow`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      });
+    });
+  },
+);
+
 describe.skipIf(!GIT_AVAILABLE)(
   'Given annotated tag referencing a missing commit target (tag→missing-target edge)',
   () => {

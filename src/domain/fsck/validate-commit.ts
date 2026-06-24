@@ -1,5 +1,6 @@
 import {
   MSG_BAD_DATE,
+  MSG_BAD_DATE_OVERFLOW,
   MSG_BAD_PARENT_SHA1,
   MSG_BAD_TIMEZONE,
   MSG_BAD_TREE_SHA1,
@@ -38,12 +39,31 @@ function isValidTimezone(tz: string): boolean {
   return hours < 24 && minutes < 60;
 }
 
+// INT64_MAX = 2^63 - 1 = 9223372036854775807 (19 decimal digits).
+// Pinned real git 2.54.0: timestamps with this value are valid; values above
+// this emit badDateOverflow (not badDate).  git uses strtoumax internally and
+// checks against a platform TIME_T_MAX; the effective limit on all 64-bit
+// platforms is INT64_MAX.
+const INT64_MAX_STR = '9223372036854775807';
+
+function isTimestampOverflow(timestamp: string): boolean {
+  if (timestamp.length > INT64_MAX_STR.length) return true;
+  if (timestamp.length < INT64_MAX_STR.length) return false;
+  return timestamp > INT64_MAX_STR;
+}
+
 function checkTimestamp(timestamp: string, strict: boolean): CommitFinding | undefined {
   if (timestamp.startsWith('0') && timestamp.length > 1) {
     return { msgId: MSG_ZERO_PADDED_DATE, severity: resolveSeverity(MSG_ZERO_PADDED_DATE, strict) };
   }
   if (!/^\d+$/.test(timestamp)) {
     return { msgId: MSG_BAD_DATE, severity: resolveSeverity(MSG_BAD_DATE, strict) };
+  }
+  if (isTimestampOverflow(timestamp)) {
+    return {
+      msgId: MSG_BAD_DATE_OVERFLOW,
+      severity: resolveSeverity(MSG_BAD_DATE_OVERFLOW, strict),
+    };
   }
   return undefined;
 }

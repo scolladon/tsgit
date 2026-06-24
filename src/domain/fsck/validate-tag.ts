@@ -1,4 +1,5 @@
 import {
+  MSG_BAD_DATE_OVERFLOW,
   MSG_BAD_OBJECT_SHA1,
   MSG_BAD_TAG_NAME,
   MSG_MISSING_OBJECT,
@@ -25,6 +26,16 @@ function isValidSha(hex: string): boolean {
   return SHA1_HEX_RE.test(hex) || SHA256_HEX_RE.test(hex);
 }
 
+// INT64_MAX = 2^63 - 1 = 9223372036854775807 (19 decimal digits).
+// Pinned real git 2.54.0: tagger timestamps above this value emit badDateOverflow.
+const INT64_MAX_STR = '9223372036854775807';
+
+function isTaggerTimestampOverflow(timestamp: string): boolean {
+  if (timestamp.length > INT64_MAX_STR.length) return true;
+  if (timestamp.length < INT64_MAX_STR.length) return false;
+  return timestamp > INT64_MAX_STR;
+}
+
 function checkTaggerLine(line: string, strict: boolean): ReadonlyArray<TagFinding> {
   const ltIdx = line.indexOf('<');
   if (ltIdx === -1) return [];
@@ -37,6 +48,23 @@ function checkTaggerLine(line: string, strict: boolean): ReadonlyArray<TagFindin
       },
     ];
   }
+
+  const gtIdx = line.indexOf('>', ltIdx);
+  if (gtIdx === -1) return [];
+  const afterGt = line.slice(gtIdx + 1);
+  if (!afterGt.startsWith(' ')) return [];
+
+  const parts = afterGt.trim().split(/\s+/);
+  const timestamp = parts[0] ?? '';
+  if (/^\d+$/.test(timestamp) && isTaggerTimestampOverflow(timestamp)) {
+    return [
+      {
+        msgId: MSG_BAD_DATE_OVERFLOW,
+        severity: resolveSeverity(MSG_BAD_DATE_OVERFLOW, strict),
+      },
+    ];
+  }
+
   return [];
 }
 

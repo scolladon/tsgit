@@ -977,6 +977,97 @@ describe('Given commit with non-numeric timestamp', () => {
 });
 
 // ---------------------------------------------------------------------------
+// commit — badDateOverflow (ERROR)
+// Pinned real git 2.54.0: timestamp > 9223372036854775807 (INT64_MAX = 2^63-1)
+// emits badDateOverflow; timestamp == INT64_MAX is valid (no error).
+// Non-numeric emits badDate (not badDateOverflow).
+// ---------------------------------------------------------------------------
+
+describe('Given commit with timestamp that overflows INT64_MAX (20-digit number)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDateOverflow at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 99999999999999999999 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — badDateOverflow, not badDate
+      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+describe('Given commit with timestamp exactly at INT64_MAX (9223372036854775807)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no date-related finding (boundary value is valid)', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 9223372036854775807 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — no badDate or badDateOverflow
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+    });
+  });
+});
+
+describe('Given commit with timestamp one above INT64_MAX (9223372036854775808)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDateOverflow at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 9223372036854775808 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+describe('Given commit with non-numeric timestamp (no digits)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDate (not badDateOverflow) at error severity', () => {
+      // Arrange — non-numeric emits badDate, not badDateOverflow (distinct from overflow)
+      const sut = validateObject;
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> notanumber +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // commit — badTimezone (ERROR)
 // ---------------------------------------------------------------------------
 
@@ -1728,6 +1819,34 @@ describe('Given commit with author that has < but no closing >', () => {
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — badDateOverflow in tagger line (ERROR)
+// Pinned real git 2.54.0: fires for tag tagger timestamps > INT64_MAX,
+// same rule as commit author/committer (both emit badDateOverflow, exit 1).
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger timestamp that overflows INT64_MAX', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDateOverflow at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com> 99999999999999999999 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
     });
   });
 });
