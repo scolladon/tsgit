@@ -4,15 +4,11 @@ import { type FsckFinding, fsck } from '../../../../src/application/commands/fsc
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import {
-  FILE_MODE,
-  type ObjectId,
-  type RefName,
-  type TreeEntry,
-} from '../../../../src/domain/objects/index.js';
+import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain/objects/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
+import { writeSyntheticPack } from '../primitives/pack-fixture.js';
 
 const sut = fsck;
 
@@ -1044,13 +1040,6 @@ describe('Given a repo with only WARN-severity content findings (zeroPaddedFilem
 });
 
 // ---------------------------------------------------------------------------
-// REFNAME narrowing helper for type assertions
-// ---------------------------------------------------------------------------
-
-const asRefName = (s: string): RefName => s as RefName;
-void asRefName; // used in IDE hover checks only
-
-// ---------------------------------------------------------------------------
 // REFS-VERIFY PASS — badRefContent (malformed loose ref, exit bit 8)
 // ---------------------------------------------------------------------------
 
@@ -1544,6 +1533,141 @@ describe('Given a loose object whose raw header declares an unknown type (e.g. "
       expect((unknownType as { objectType: string }).objectType).toBe('unknown');
       expect((unknownType as { severity: string }).severity).toBe('error');
       expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// full:false — packed objects excluded from universe
+// ---------------------------------------------------------------------------
+
+describe('Given a repo where the only object is in a pack file', () => {
+  describe('When fsck runs with full:false', () => {
+    it('Then no findings are emitted (packed object not enumerated)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobContent = enc.encode('packed-content');
+      // Write a pack containing a blob (no loose copy)
+      const [blobId] = await writeSyntheticPack(ctx, 'testpack', [
+        { kind: 'base', type: 'blob', content: blobContent },
+      ]);
+      // Write a minimal valid commit so the repo has a ref
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      // The packed blob is NOT referenced — in full mode it would be dangling.
+      // In full:false mode it is invisible (not in universe), so no finding.
+
+      // Act
+      const result = await sut(ctx, { full: false });
+
+      // Assert — packed blob is invisible; no dangling finding for it
+      const danglingForPacked = result.findings.filter(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(danglingForPacked).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Merge commit — two reachable parents, no spurious dangling/root findings
+// ---------------------------------------------------------------------------
+
+describe('Given a merge commit with two reachable parent commits', () => {
+  describe('When fsck runs', () => {
+    it('Then no dangling or missing findings for either parent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const parent1Id = await writeObject(ctx, makeCommit(treeId, []));
+      const parent2Id = await writeObject(ctx, makeCommit(treeId, []));
+      const mergeId = await writeObject(ctx, makeCommit(treeId, [parent1Id, parent2Id]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${mergeId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — parents are reached; no dangling/missing for either
+      const parentFindings = result.findings.filter(
+        (f) =>
+          (f.type === 'dangling' || f.type === 'missing') &&
+          ((f as { id?: ObjectId }).id === parent1Id || (f as { id?: ObjectId }).id === parent2Id),
+      );
+      expect(parentFindings).toHaveLength(0);
+      // merge commit is not a root finding (it has parents)
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dangling object in pack only (no loose copy) — reported dangling
+// ---------------------------------------------------------------------------
+
+describe('Given a dangling blob that exists only in a pack file', () => {
+  describe('When fsck runs (full mode, default)', () => {
+    it('Then emits dangling finding for the packed blob', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobContent = enc.encode('dangling-packed-blob');
+      const [blobId] = await writeSyntheticPack(ctx, 'danglingpack', [
+        { kind: 'base', type: 'blob', content: blobContent },
+      ]);
+      // No ref or commit references blobId — it is dangling.
+      // Write a minimal valid commit so the repo is non-empty.
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — dangling finding for the packed blob
+      const danglingPacked = result.findings.find(
+        (f): f is FsckFinding & { type: 'dangling' } =>
+          f.type === 'dangling' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(danglingPacked).toBeDefined();
+      expect((danglingPacked as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EXIT CODE COMPOSITE — bit1 (content-error) AND bit2 (missing) → exitCode === 3 exactly
+// ---------------------------------------------------------------------------
+
+describe('Given a repo with both a content-ERROR finding and a missing referenced object', () => {
+  describe('When fsck runs', () => {
+    it('Then exit code is exactly 3 (bit 1 OR bit 2)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      // Build a tree with treeNotSorted fault (ERROR, bit 1)
+      const blobId = await writeObject(ctx, makeBlob('content'));
+      const blobHex = blobId as string;
+      const blobSha = new Uint8Array(20);
+      for (let i = 0; i < 20; i++) {
+        blobSha[i] = Number.parseInt(blobHex.slice(i * 2, i * 2 + 2), 16);
+      }
+      // Unsorted tree: 'z-file' before 'a-file' → treeNotSorted (ERROR)
+      const zEntry = new Uint8Array([...enc2.encode('100644 z-file\0'), ...blobSha]);
+      const aEntry = new Uint8Array([...enc2.encode('100644 a-file\0'), ...blobSha]);
+      const treeBody = new Uint8Array(zEntry.length + aEntry.length);
+      treeBody.set(zEntry, 0);
+      treeBody.set(aEntry, zEntry.length);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
+      // Missing parent reference (bit 2)
+      const ghostParent = '0000000000000000000000000000000000000099' as ObjectId;
+      const commitId = await writeObject(ctx, makeCommit(treeId, [ghostParent]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — both bits set: exitCode === 3 exactly (not just masked)
+      expect(result.exitCode).toBe(3);
     });
   });
 });
