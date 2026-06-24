@@ -41,9 +41,9 @@ function isValidTimezone(tz: string): boolean {
 
 // INT64_MAX = 2^63 - 1 = 9223372036854775807 (19 decimal digits).
 // Pinned real git 2.54.0: timestamps with this value are valid; values above
-// this emit badDateOverflow (not badDate).  git uses strtoumax internally and
-// checks against a platform TIME_T_MAX; the effective limit on all 64-bit
-// platforms is INT64_MAX.
+// this emit badDateOverflow (not badDate).  git parses timestamps with the
+// C stdlib unsigned-max call and compares against TIME_T_MAX; the effective
+// limit on 64-bit platforms is INT64_MAX.
 const INT64_MAX_STR = '9223372036854775807';
 
 function isTimestampOverflow(timestamp: string): boolean {

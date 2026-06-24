@@ -1053,7 +1053,7 @@ describe('Given commit with non-numeric timestamp (no digits)', () => {
       const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> notanumber +0000',
+        author: 'T <t@t.com> not-a-number +0000',
         committer: VALID_IDENTITY,
       });
 

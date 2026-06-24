@@ -871,7 +871,7 @@ let connTreeBlobTreeSha = '';
 const CONN_MISSING_BLOB = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab';
 
 beforeAll(async () => {
-  connTreeBlobDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-treeb-'));
+  connTreeBlobDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-blob-'));
   initRepo(connTreeBlobDir);
 
   const blobShaBytes = Buffer.from(CONN_MISSING_BLOB, 'hex');
@@ -957,7 +957,7 @@ let connTreeSubtreeTreeSha = '';
 const CONN_MISSING_SUBTREE = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc';
 
 beforeAll(async () => {
-  connTreeSubtreeDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-trees-'));
+  connTreeSubtreeDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-subtree-'));
   initRepo(connTreeSubtreeDir);
 
   const subtreeShaBytes = Buffer.from(CONN_MISSING_SUBTREE, 'hex');
@@ -1041,7 +1041,7 @@ let connCommitTreeCommitSha = '';
 const CONN_MISSING_TREE = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef0';
 
 beforeAll(async () => {
-  connCommitTreeDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-commt-'));
+  connCommitTreeDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-tree-'));
   initRepo(connCommitTreeDir);
 
   const commitBody = Buffer.from(
@@ -1123,7 +1123,7 @@ let connCommitParentCommitSha = '';
 const CONN_MISSING_PARENT = 'cccccccccccccccccccccccccccccccccccccccd';
 
 beforeAll(async () => {
-  connCommitParentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-commp-'));
+  connCommitParentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-parent-'));
   initRepo(connCommitParentDir);
 
   // Write an empty tree (4b825dc…) to the object store
@@ -1209,7 +1209,7 @@ let connTagTargetTagSha = '';
 const CONN_MISSING_TAG_TARGET = 'ddddddddddddddddddddddddddddddddddddddde';
 
 beforeAll(async () => {
-  connTagTargetDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-tagt-'));
+  connTagTargetDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-tag-'));
   initRepo(connTagTargetDir);
 
   const tagBody = Buffer.from(
@@ -1263,7 +1263,7 @@ beforeAll(async () => {
 
   // Commit with overflowing author timestamp
   const commitBody = Buffer.from(
-    `tree ${emptyTreeSha}\nauthor Test <t@t.com> ${OVERFLOW_TIMESTAMP} +0000\ncommitter Test <t@t.com> 1700000000 +0000\n\novf commit\n`,
+    `tree ${emptyTreeSha}\nauthor Test <t@t.com> ${OVERFLOW_TIMESTAMP} +0000\ncommitter Test <t@t.com> 1700000000 +0000\n\noverflow commit\n`,
   );
   overflowCommitSha = await writeLooseObject(badDateOverflowDir, 'commit', commitBody);
   await mkdir(path.join(badDateOverflowDir, '.git', 'refs', 'heads'), { recursive: true });
@@ -1274,12 +1274,12 @@ beforeAll(async () => {
 
   // Tag with overflowing tagger timestamp
   const tagBody = Buffer.from(
-    `object ${emptyTreeSha}\ntype tree\ntag v-ovf\ntagger Test <t@t.com> ${OVERFLOW_TIMESTAMP} +0000\n\novf tag\n`,
+    `object ${emptyTreeSha}\ntype tree\ntag v-overflow\ntagger Test <t@t.com> ${OVERFLOW_TIMESTAMP} +0000\n\noverflow tag\n`,
   );
   overflowTagSha = await writeLooseObject(badDateOverflowDir, 'tag', tagBody);
   await mkdir(path.join(badDateOverflowDir, '.git', 'refs', 'tags'), { recursive: true });
   await writeFile(
-    path.join(badDateOverflowDir, '.git', 'refs', 'tags', 'v-ovf'),
+    path.join(badDateOverflowDir, '.git', 'refs', 'tags', 'v-overflow'),
     `${overflowTagSha}\n`,
   );
 
