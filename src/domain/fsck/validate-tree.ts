@@ -95,8 +95,8 @@ function treeEntrySortKey(entry: TreeEntry): Uint8Array {
 function compareBytes(a: Uint8Array, b: Uint8Array): number {
   const len = Math.min(a.length, b.length);
   for (let i = 0; i < len; i++) {
-    const ai = a[i] ?? 0;
-    const bi = b[i] ?? 0;
+    const ai = a[i]!;
+    const bi = b[i]!;
     if (ai !== bi) return ai - bi;
   }
   return a.length - b.length;

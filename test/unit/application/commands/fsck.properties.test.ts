@@ -249,29 +249,28 @@ describe('Given an arbitrary repo state', () => {
     it('Then adding a root ref makes a previously-dangling object no longer dangling or unreachable', async () => {
       await fc.assert(
         fc.asyncProperty(arbBlobContent(), async (content) => {
-          // Arrange: orphan blob, no refs except HEAD (unborn)
+          // Arrange
           const ctx = await buildSeededContext();
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
           const orphanId = await writeObject(ctx, makeBlob(content));
-
-          // Without any ref: orphan is dangling
+          // Verify precondition: orphan is dangling before adding a ref
           const before = await sut(ctx);
           const wasDangling = before.findings.some(
             (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === orphanId,
           );
-          if (!wasDangling) return true; // skip: may not be the only state
+          if (!wasDangling) return true; // skip: precondition not met
 
-          // Add a ref pointing at the blob (unusual but valid for the property)
+          // Act
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${orphanId}\n`);
-
           const after = await sut(ctx);
+
+          // Assert
           const isDanglingAfter = after.findings.some(
             (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === orphanId,
           );
           const isUnreachableAfter = after.findings.some(
             (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === orphanId,
           );
-
           return !isDanglingAfter && !isUnreachableAfter;
         }),
         { numRuns: 100 },

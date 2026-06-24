@@ -27,8 +27,7 @@ const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const TIMEZONE_RE = /^[+-]\d{4}$/;
 
-function isValidSha(hex: string | undefined): boolean {
-  if (hex === undefined) return false;
+function isValidSha(hex: string): boolean {
   return SHA1_HEX_RE.test(hex) || SHA256_HEX_RE.test(hex);
 }
 
@@ -97,7 +96,7 @@ function checkIdentityLine(line: string, strict: boolean): ReadonlyArray<CommitF
   }
 
   const parts = afterGt.trim().split(/\s+/);
-  const timestamp = parts[0] ?? '';
+  const timestamp = parts[0]!;
   const timezone = parts[1] ?? '';
 
   const timestampFault = checkTimestamp(timestamp, strict);
@@ -130,11 +129,11 @@ function checkTreeAndParents(
 ): { readonly findings: ReadonlyArray<CommitFinding>; readonly nextIdx: number } {
   const findings: CommitFinding[] = [];
 
-  if (!lines[0]?.startsWith('tree ')) {
+  if (!lines[0]!.startsWith('tree ')) {
     findings.push({ msgId: MSG_MISSING_TREE, severity: resolveSeverity(MSG_MISSING_TREE, strict) });
     return { findings, nextIdx: -1 };
   }
-  const treeVal = lines[0].slice(5);
+  const treeVal = lines[0]!.slice(5);
   if (!isValidSha(treeVal)) {
     findings.push({
       msgId: MSG_BAD_TREE_SHA1,
@@ -143,8 +142,8 @@ function checkTreeAndParents(
   }
 
   let i = 1;
-  while (i < lines.length && lines[i]?.startsWith('parent ')) {
-    const parentVal = lines[i]?.slice(7);
+  while (i < lines.length && lines[i]!.startsWith('parent ')) {
+    const parentVal = lines[i]!.slice(7);
     if (!isValidSha(parentVal)) {
       findings.push({
         msgId: MSG_BAD_PARENT_SHA1,
@@ -172,11 +171,11 @@ function checkAuthorAndCommitter(
     });
     return findings;
   }
-  for (const f of checkIdentityLine((lines[i] ?? '').slice(7), strict)) findings.push(f);
+  for (const f of checkIdentityLine(lines[i]!.slice(7), strict)) findings.push(f);
   i++;
 
   // detect multiple author lines
-  while (i < lines.length && lines[i]?.startsWith('author ')) {
+  while (i < lines.length && lines[i]!.startsWith('author ')) {
     findings.push({
       msgId: MSG_MULTIPLE_AUTHORS,
       severity: resolveSeverity(MSG_MULTIPLE_AUTHORS, strict),
@@ -184,7 +183,7 @@ function checkAuthorAndCommitter(
     i++;
   }
 
-  while (i < lines.length && !lines[i]?.startsWith('committer ')) i++;
+  while (i < lines.length && !lines[i]!.startsWith('committer ')) i++;
 
   if (!lines[i]?.startsWith('committer ')) {
     findings.push({
@@ -193,7 +192,7 @@ function checkAuthorAndCommitter(
     });
     return findings;
   }
-  for (const f of checkIdentityLine((lines[i] ?? '').slice(10), strict)) findings.push(f);
+  for (const f of checkIdentityLine(lines[i]!.slice(10), strict)) findings.push(f);
 
   return findings;
 }

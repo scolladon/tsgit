@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { MSG_EXTRA_HEADER_ENTRY } from '../../../../src/domain/fsck/msg-ids.js';
+import { resolveSeverity } from '../../../../src/domain/fsck/severity.js';
 import { validateObject } from '../../../../src/domain/fsck/validate-object.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
 
@@ -57,7 +59,7 @@ function buildCommit(options: {
   for (const p of options.parents ?? []) lines.push(`parent ${p}`);
   if (options.author !== undefined) lines.push(`author ${options.author}`);
   if (options.committer !== undefined) lines.push(`committer ${options.committer}`);
-  const body = lines.join('\n') + '\n\n' + (options.message ?? 'msg\n');
+  const body = `${lines.join('\n')}\n\n${options.message ?? 'msg\n'}`;
   return encode(body);
 }
 
@@ -75,7 +77,7 @@ function buildTag(options: {
   if (options.tag !== undefined) lines.push(`tag ${options.tag}`);
   if (options.tagger !== undefined) lines.push(`tagger ${options.tagger}`);
   if (options.extra !== undefined) lines.push(options.extra);
-  const body = lines.join('\n') + '\n\n' + (options.message ?? 'msg\n');
+  const body = `${lines.join('\n')}\n\n${options.message ?? 'msg\n'}`;
   return encode(body);
 }
 
@@ -673,7 +675,7 @@ describe('Given tree with duplicate entry names', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tree — badTree (ERROR) — truncated/unparse-able tree
+// tree — badTree (ERROR) — truncated/unparseable tree
 // ---------------------------------------------------------------------------
 
 describe('Given tree with truncated content', () => {
@@ -998,6 +1000,50 @@ describe('Given commit with invalid timezone offset', () => {
   });
 });
 
+describe('Given commit with timezone that matches format but has out-of-range hours', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTimezone at error severity (hours >= 24)', () => {
+      // Arrange
+      const sut = validateObject;
+      // +9900 passes TIMEZONE_RE (/^[+-]\d{4}$/) but hours=99 >= 24 →
+      // hours < 24 is false → && short-circuits → isValidTimezone returns false.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 1234567890 +9900',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
+    });
+  });
+});
+
+describe('Given commit with timezone that matches format but has out-of-range minutes', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTimezone at error severity (minutes >= 60)', () => {
+      // Arrange
+      const sut = validateObject;
+      // +0099 passes TIMEZONE_RE but hours=0 < 24 and minutes=99 >= 60 →
+      // hours < 24 is true, minutes < 60 is false → isValidTimezone returns false.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 1234567890 +0099',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // commit — missingSpaceBeforeDate (ERROR)
 // ---------------------------------------------------------------------------
@@ -1310,14 +1356,14 @@ describe('Given tag with extra unknown header', () => {
         type: 'blob',
         tag: 'v1.0',
         tagger: VALID_IDENTITY,
-        extra: 'somekey somevalue',
+        extra: 'foo bar',
       });
 
       // Act
       const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
-      expect(result.map((f) => f.msgId)).not.toContain('extraHeaderEntry');
+      expect(result.map((f) => f.msgId)).not.toContain(MSG_EXTRA_HEADER_ENTRY);
     });
   });
 });
@@ -1382,8 +1428,8 @@ describe('Given .gitattributes blob with line exceeding 2048 bytes', () => {
     it('Then emits gitattributesLineLength at error severity', () => {
       // Arrange
       const sut = validateObject;
-      const longLine = '*.txt ' + 'key=val '.repeat(300); // well over 2048 bytes
-      const rawBytes = encode(longLine + '\n');
+      const longLine = `*.txt ${'key=val '.repeat(300)}`; // well over 2048 bytes
+      const rawBytes = encode(`${longLine}\n`);
 
       // Act
       const result = sut({
@@ -1470,6 +1516,442 @@ describe('Given an INFO severity id (badFilemode) with strict mode', () => {
       // Assert
       const finding = result.find((f) => f.msgId === 'badFilemode');
       expect(finding?.severity).toBe('info');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// severity — resolveSeverity fallback for unknown msgId
+// ---------------------------------------------------------------------------
+
+describe('Given an unknown msgId not in the default-severity catalogue', () => {
+  describe('When resolveSeverity is called', () => {
+    it('Then returns error as the default fallback', () => {
+      // Arrange
+      const sut = resolveSeverity;
+
+      // Act
+      const result = sut('totallyUnknownMsgId', false);
+
+      // Assert
+      expect(result).toBe('error');
+    });
+  });
+
+  describe('When resolveSeverity is called with strict:true', () => {
+    it('Then still returns error (no upgrade possible for unknown id)', () => {
+      // Arrange
+      const sut = resolveSeverity;
+
+      // Act
+      const result = sut('totallyUnknownMsgId', true);
+
+      // Assert
+      expect(result).toBe('error');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — gitmodulesLarge (ERROR): blob size exceeds 100 MiB limit
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob exceeding 100 MiB', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitmodulesLarge at error severity and returns immediately', () => {
+      // Arrange
+      const sut = validateObject;
+      // Allocate exactly one byte over the 100 MiB limit (all zeros = valid INI by
+      // default, but the size guard fires first before any content parsing).
+      const rawBytes = new Uint8Array(100 * 1024 * 1024 + 1);
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({ msgId: 'gitmodulesLarge', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — gitattributesLarge (ERROR): blob size exceeds 100 MiB limit
+// ---------------------------------------------------------------------------
+
+describe('Given .gitattributes blob exceeding 100 MiB', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitattributesLarge at error severity and returns immediately', () => {
+      // Arrange
+      const sut = validateObject;
+      // Allocate exactly one byte over the 100 MiB limit.
+      const rawBytes = new Uint8Array(100 * 1024 * 1024 + 1);
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitattributes',
+      });
+
+      // Assert
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({ msgId: 'gitattributesLarge', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — missingEmail via unclosed angle bracket (< without >)
+// ---------------------------------------------------------------------------
+
+describe('Given commit with author that has < but no closing >', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingEmail at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      // Author has opening '<' but no closing '>' — the gtIdx === -1 branch in
+      // checkIdentityLine must fire and emit missingEmail then return early.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'Test <unclosed 1234567890 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — tagger line with no angle bracket at all (checkTaggerLine ltIdx === -1)
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger line that has no < character', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no missingSpaceBeforeEmail finding (checkTaggerLine returns empty)', () => {
+      // Arrange
+      const sut = validateObject;
+      // The tagger line has no '<', so checkTaggerLine returns [] early (ltIdx === -1).
+      const rawBytes = encode(
+        `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\ntagger NoEmailNameHere\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — checkTaggerLine's early-return branch produces no findings for the
+      // tagger line itself (the tag is otherwise valid so no other findings either)
+      expect(result.filter((f) => f.msgId === 'missingSpaceBeforeEmail')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — validateTag with no blank-line separator (blankIdx === -1 branch)
+// ---------------------------------------------------------------------------
+
+describe('Given tag body with no blank-line separator between header and message', () => {
+  describe('When validateObject runs', () => {
+    it('Then parses the entire body as header with no crash and returns findings', () => {
+      // Arrange
+      const sut = validateObject;
+      // No '\n\n' in the body: headerText === the full text (blankIdx === -1 branch).
+      // A valid tag in this form produces no findings.
+      const rawBytes = encode(
+        `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\ntagger ${VALID_IDENTITY}`,
+      );
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — no findings for a structurally valid tag even without blank separator
+      expect(result).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — treeEntrySortKey directory branch (mode '40000' appends '/')
+// ---------------------------------------------------------------------------
+
+describe('Given tree with a file entry followed by a directory entry in correct sort order', () => {
+  describe('When validateObject runs', () => {
+    it('Then exercises the directory sort-key path and emits no treeNotSorted finding', () => {
+      // Arrange
+      const sut = validateObject;
+      // 'aaa' (file, 100644) followed by 'bbb' (dir, 40000): git sort 'aaa' < 'bbb/'
+      // so this is correctly sorted. treeEntrySortKey appends '/' for the dir entry.
+      const rawBytes = buildTree(
+        buildTreeEntry('100644', 'aaa', BLOB_SHA),
+        buildTreeEntry('40000', 'bbb', BLOB_SHA),
+      );
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — parseTreeEntriesTolerant spaceIdx === offset (mode is empty)
+// ---------------------------------------------------------------------------
+
+describe('Given tree bytes where mode field is empty (space is the first byte)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTree at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      // Tree entry starting with space: mode is empty → spaceIdx === offset branch.
+      // Format: <space><name>\0<sha20> — the leading space means spaceIdx === offset.
+      const nameBytes = new TextEncoder().encode('file');
+      const raw = new Uint8Array(1 + nameBytes.length + 1 + 20);
+      raw[0] = 0x20; // leading space — empty mode
+      raw.set(nameBytes, 1);
+      raw[1 + nameBytes.length] = 0x00; // null terminator
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — parseTreeEntriesTolerant shaEnd > raw.length (truncated SHA)
+// ---------------------------------------------------------------------------
+
+describe('Given tree bytes with valid mode+name but truncated SHA', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTree at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      // Valid mode ' 100644', space, name 'f', null — then only 10 bytes of SHA
+      // instead of 20, so shaEnd (1+6+1+1+20=29) > raw.length (1+6+1+1+10=19).
+      const modeBytes = new TextEncoder().encode('100644');
+      const nameBytes = new TextEncoder().encode('f');
+      const raw = new Uint8Array(modeBytes.length + 1 + nameBytes.length + 1 + 10);
+      raw.set(modeBytes, 0);
+      raw[modeBytes.length] = 0x20; // space after mode
+      raw.set(nameBytes, modeBytes.length + 1);
+      raw[modeBytes.length + 1 + nameBytes.length] = 0x00; // null terminator
+      // remaining 10 bytes are the truncated SHA (zeros)
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — .gitmodules as regular file (isRegular=true, else-if(!isRegular) false)
+// ---------------------------------------------------------------------------
+
+describe('Given tree with .gitmodules as a regular file (mode 100644)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no gitmodulesBlob or gitmodulesSymlink finding', () => {
+      // Arrange
+      const sut = validateObject;
+      // Mode 100644 → isSymlink=false, isRegular=true → else if(!isRegular) is false
+      const rawBytes = buildTree(buildTreeEntry('100644', '.gitmodules', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'gitmodulesBlob')).toHaveLength(0);
+      expect(result.filter((f) => f.msgId === 'gitmodulesSymlink')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — .gitattributes as regular file (isRegular=true, else-if(!isRegular) false)
+// ---------------------------------------------------------------------------
+
+describe('Given tree with .gitattributes as a regular file (mode 100644)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no gitattributesBlob or gitattributesSymlink finding', () => {
+      // Arrange
+      const sut = validateObject;
+      // Mode 100644 → isSymlink=false, isRegular=true → else if(!isRegular) is false
+      const rawBytes = buildTree(buildTreeEntry('100644', '.gitattributes', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'gitattributesBlob')).toHaveLength(0);
+      expect(result.filter((f) => f.msgId === 'gitattributesSymlink')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — .gitmodules with non-submodule section header (startsWith=false branch)
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob with a non-submodule section header', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no finding (non-submodule sections are ignored by the name parser)', () => {
+      // Arrange
+      const sut = validateObject;
+      // [core] section: header = 'core', startsWith('submodule "') = false → short-circuit
+      const rawBytes = encode('[core]\n\tfilemode = true\n');
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert
+      expect(result).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — committer with bad identity (checkIdentityLine returns non-empty)
+// ---------------------------------------------------------------------------
+
+describe('Given commit with committer that has no space before email', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingSpaceBeforeEmail for committer via checkIdentityLine', () => {
+      // Arrange
+      const sut = validateObject;
+      // Committer has no space before '<', triggering checkIdentityLine to return a
+      // non-empty array for the committer loop at line 195 (findings.push(f)).
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: VALID_IDENTITY,
+        committer: 'Bad<bad@example.com> 1234567890 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — extra header between author and committer (while i++ path)
+// ---------------------------------------------------------------------------
+
+describe('Given commit with an extra non-committer line between author and committer', () => {
+  describe('When validateObject runs', () => {
+    it('Then skips the extra line and still finds committer (while loop i++ body)', () => {
+      // Arrange
+      const sut = validateObject;
+      // The while loop at `while (!startsWith('committer')) i++` advances past extra
+      // headers (like mergetag) between author and committer.
+      const rawBytes = encode(
+        `tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\nmergetag extra\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — no missingCommitter finding (committer was found after skip)
+      expect(result.filter((f) => f.msgId === 'missingCommitter')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — SHA-256 tree OID (isValidSha: SHA256_HEX_RE true branch)
+// ---------------------------------------------------------------------------
+
+describe('Given commit with a SHA-256 tree OID (64 hex chars)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badTreeSha1 finding (SHA-256 OID is valid)', () => {
+      // Arrange
+      const sut = validateObject;
+      // 64-hex-char SHA-256 OID: SHA1_HEX_RE.test() = false, SHA256_HEX_RE.test() = true.
+      const sha256TreeOid = 'a'.repeat(64);
+      const rawBytes = encode(
+        `tree ${sha256TreeOid}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'badTreeSha1')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — no blank-line separator (parseHeaderLines blankIdx === -1)
+// ---------------------------------------------------------------------------
+
+describe('Given commit body with no blank-line separator between header and message', () => {
+  describe('When validateObject runs', () => {
+    it('Then treats entire body as header, returns findings from parsed headers', () => {
+      // Arrange
+      const sut = validateObject;
+      // No '\n\n' in the body: blankIdx === -1 → headerText = entire text, messageBody = ''.
+      // A valid commit without a blank separator still has all the right headers.
+      const rawBytes = encode(
+        `tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}`,
+      );
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — no findings for a structurally valid commit even without blank separator
+      expect(result).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — identity line with timestamp only, no timezone (parts[1] undefined)
+// ---------------------------------------------------------------------------
+
+describe('Given commit with author that has no timezone after the timestamp', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no finding for missing timezone (empty string is accepted)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Identity ends with just a timestamp but no timezone: parts[1] is undefined
+      // in checkIdentityLine, timezone = '' from the ?? '' fallback, and the
+      // timezone validation condition (timezone !== '') is false so no finding.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'Test User <test@example.com> 1234567890',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — no badTimezone finding for empty timezone
+      expect(result.filter((f) => f.msgId === 'badTimezone')).toHaveLength(0);
     });
   });
 });

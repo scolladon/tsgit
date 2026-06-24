@@ -21,8 +21,7 @@ const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const VALID_OBJECT_TYPES: ReadonlySet<string> = new Set(['blob', 'tree', 'commit', 'tag']);
 
-function isValidSha(hex: string | undefined): boolean {
-  if (hex === undefined) return false;
+function isValidSha(hex: string): boolean {
   return SHA1_HEX_RE.test(hex) || SHA256_HEX_RE.test(hex);
 }
 
@@ -89,7 +88,7 @@ function checkTagAndTagger(
     findings.push({ msgId: MSG_MISSING_TAG, severity: resolveSeverity(MSG_MISSING_TAG, strict) });
     return findings;
   }
-  const tagVal = (lines[startIdx] ?? '').slice(4);
+  const tagVal = lines[startIdx]!.slice(4);
   if (tagVal === '') {
     findings.push({
       msgId: MSG_MISSING_TAG_ENTRY,
@@ -109,7 +108,7 @@ function checkTagAndTagger(
     });
     return findings;
   }
-  for (const f of checkTaggerLine((lines[taggerIdx] ?? '').slice(7), strict)) findings.push(f);
+  for (const f of checkTaggerLine(lines[taggerIdx]!.slice(7), strict)) findings.push(f);
 
   return findings;
 }

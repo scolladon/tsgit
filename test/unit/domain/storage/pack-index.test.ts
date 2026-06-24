@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
+  allObjectIds,
   entryOffsets,
   findByPrefix,
   lookupPackIndex,
@@ -1001,6 +1002,49 @@ describe('pack-index', () => {
               expect(sut).toBeUndefined();
             }),
           );
+        });
+      });
+    });
+  });
+
+  describe('allObjectIds', () => {
+    describe('Given an empty pack index', () => {
+      describe('When allObjectIds is called', () => {
+        it('Then returns an empty array', () => {
+          // Arrange
+          const index = parsePackIndex(buildTestIndex([]));
+          const sut = allObjectIds;
+
+          // Act
+          const result = sut(index);
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a pack index with three objects', () => {
+      describe('When allObjectIds is called', () => {
+        it('Then returns all object ids in index order', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            makeEntry('aa' + '00'.repeat(19), 100),
+            makeEntry('bb' + '00'.repeat(19), 200),
+            makeEntry('cc' + '00'.repeat(19), 300),
+          ];
+          const index = parsePackIndex(buildTestIndex(entries));
+          const sut = allObjectIds;
+
+          // Act
+          const result = sut(index);
+
+          // Assert — ids are returned in the same order the index stores them
+          // (sorted by sha: aa… < bb… < cc…)
+          expect(result).toHaveLength(3);
+          expect(result[0]).toBe('aa' + '00'.repeat(19));
+          expect(result[1]).toBe('bb' + '00'.repeat(19));
+          expect(result[2]).toBe('cc' + '00'.repeat(19));
         });
       });
     });
