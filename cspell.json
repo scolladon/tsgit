@@ -917,7 +917,9 @@
     "multiset",
     "reconstructors",
     "tagobj",
-    "togglable"
+    "togglable",
+    "testpack",
+    "danglingpack"
   ],
   "ignorePaths": [
     "node_modules",
