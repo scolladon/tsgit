@@ -15,6 +15,9 @@ export interface BlobFinding {
   readonly severity: FsckSeverity;
 }
 
+const DECODER = new TextDecoder();
+const ENCODER = new TextEncoder();
+
 /** Maximum blob size git allows for .gitmodules and .gitattributes. */
 const GITMODULES_MAX_BYTES = 100 * 1024 * 1024;
 const GITATTRIBUTES_MAX_BYTES = 100 * 1024 * 1024;
@@ -95,7 +98,7 @@ function validateGitmodulesBlob(raw: Uint8Array, strict: boolean): ReadonlyArray
     return findings;
   }
 
-  const text = new TextDecoder().decode(raw);
+  const text = DECODER.decode(raw);
   const { names, urls, parseError } = parseGitmodules(text);
 
   if (parseError) {
@@ -138,9 +141,9 @@ function validateGitattributesBlob(raw: Uint8Array, strict: boolean): ReadonlyAr
     return findings;
   }
 
-  const text = new TextDecoder().decode(raw);
+  const text = DECODER.decode(raw);
   for (const line of text.split('\n')) {
-    const lineBytes = new TextEncoder().encode(line).length;
+    const lineBytes = ENCODER.encode(line).length;
     if (lineBytes > GITATTRIBUTES_MAX_LINE_BYTES) {
       findings.push({
         msgId: MSG_GITATTRIBUTES_LINE_LENGTH,

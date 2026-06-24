@@ -18,6 +18,8 @@ export interface TagFinding {
   readonly severity: FsckSeverity;
 }
 
+const DECODER = new TextDecoder();
+
 const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const VALID_OBJECT_TYPES: ReadonlySet<string> = new Set(['blob', 'tree', 'commit', 'tag']);
@@ -144,7 +146,7 @@ function checkTagAndTagger(
 
 /** Validate a raw tag object body, returning ordered findings. */
 export function validateTag(raw: Uint8Array, strict: boolean): ReadonlyArray<TagFinding> {
-  const text = new TextDecoder().decode(raw);
+  const text = DECODER.decode(raw);
   const blankIdx = text.indexOf('\n\n');
   const headerText = blankIdx === -1 ? text : text.slice(0, blankIdx);
   const lines = headerText.split('\n');

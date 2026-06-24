@@ -919,7 +919,8 @@
     "tagobj",
     "togglable",
     "testpack",
-    "danglingpack"
+    "danglingpack",
+    "worklist"
   ],
   "ignorePaths": [
     "node_modules",

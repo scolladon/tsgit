@@ -40,7 +40,7 @@ export function buildInEdgeMap(
 }
 
 // ---------------------------------------------------------------------------
-// BFS reachability walk
+// Reachability walk
 // ---------------------------------------------------------------------------
 
 interface GraphEdge {
@@ -65,25 +65,25 @@ interface WalkResult {
   readonly tagRefs: ReadonlyArray<TagRef>;
 }
 
-interface BfsState {
+interface WalkState {
   readonly universe: ReadonlySet<ObjectId>;
   readonly reached: Set<ObjectId>;
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: GraphEdge[];
   readonly rootCommits: ObjectId[];
   readonly tagRefs: TagRef[];
-  readonly queue: ObjectId[];
+  readonly worklist: ObjectId[];
 }
 
-function enqueueIfPresent(state: BfsState, id: ObjectId): void {
+function enqueueIfPresent(state: WalkState, id: ObjectId): void {
   if (!state.universe.has(id)) {
     state.missingIds.add(id);
   } else if (!state.reached.has(id)) {
-    state.queue.push(id);
+    state.worklist.push(id);
   }
 }
 
-function processCommit(state: BfsState, id: ObjectId, obj: GitObject & { type: 'commit' }): void {
+function processCommit(state: WalkState, id: ObjectId, obj: GitObject & { type: 'commit' }): void {
   const { tree, parents } = obj.data;
   if (!state.universe.has(tree)) {
     state.missingIds.add(tree);
@@ -102,7 +102,7 @@ function processCommit(state: BfsState, id: ObjectId, obj: GitObject & { type: '
   if (parents.length === 0) state.rootCommits.push(id);
 }
 
-function processTree(state: BfsState, id: ObjectId, obj: GitObject & { type: 'tree' }): void {
+function processTree(state: WalkState, id: ObjectId, obj: GitObject & { type: 'tree' }): void {
   for (const entry of obj.entries) {
     if (entry.mode === FILE_MODE.GITLINK) continue;
     const toType: FsckObjectType = entry.mode === FILE_MODE.DIRECTORY ? 'tree' : 'blob';
@@ -115,7 +115,7 @@ function processTree(state: BfsState, id: ObjectId, obj: GitObject & { type: 'tr
   }
 }
 
-function processTag(state: BfsState, id: ObjectId, obj: GitObject & { type: 'tag' }): void {
+function processTag(state: WalkState, id: ObjectId, obj: GitObject & { type: 'tag' }): void {
   const { object: target, objectType: targetType, tagName } = obj.data;
   if (!state.universe.has(target)) {
     state.missingIds.add(target);
@@ -126,7 +126,7 @@ function processTag(state: BfsState, id: ObjectId, obj: GitObject & { type: 'tag
   }
 }
 
-function visitObject(state: BfsState, id: ObjectId, obj: GitObject): void {
+function visitObject(state: WalkState, id: ObjectId, obj: GitObject): void {
   state.reached.add(id);
   if (obj.type === 'commit') processCommit(state, id, obj);
   if (obj.type === 'tree') processTree(state, id, obj);
@@ -134,7 +134,7 @@ function visitObject(state: BfsState, id: ObjectId, obj: GitObject): void {
 }
 
 /**
- * BFS over the reachable object graph starting from `seeds`.
+ * Reachability walk over the object graph starting from `seeds`.
  * Walks commit→(tree, parents), tree→entries (non-gitlink), tag→target.
  */
 export function buildReachableSet(
@@ -142,18 +142,18 @@ export function buildReachableSet(
   seeds: ReadonlySet<ObjectId>,
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
 ): WalkResult {
-  const state: BfsState = {
+  const state: WalkState = {
     universe,
     reached: new Set(),
     missingIds: new Set(),
     brokenEdges: [],
     rootCommits: [],
     tagRefs: [],
-    queue: [...seeds],
+    worklist: [...seeds],
   };
 
-  while (state.queue.length > 0) {
-    const id = state.queue.pop();
+  while (state.worklist.length > 0) {
+    const id = state.worklist.pop();
     if (id === undefined || state.reached.has(id)) continue;
     if (!universe.has(id)) {
       state.missingIds.add(id);

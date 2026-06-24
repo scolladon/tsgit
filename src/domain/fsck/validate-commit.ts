@@ -24,6 +24,8 @@ export interface CommitFinding {
   readonly severity: FsckSeverity;
 }
 
+const DECODER = new TextDecoder();
+
 const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const TIMEZONE_RE = /^[+-]\d{4}$/;
@@ -222,7 +224,7 @@ function checkAuthorAndCommitter(
 
 /** Validate a raw commit object body, returning ordered findings. */
 export function validateCommit(raw: Uint8Array, strict: boolean): ReadonlyArray<CommitFinding> {
-  const text = new TextDecoder().decode(raw);
+  const text = DECODER.decode(raw);
   const { headerText, messageBody, lines } = parseHeaderLines(text);
 
   if (headerText.includes('\x00')) {

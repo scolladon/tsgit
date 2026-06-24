@@ -34,6 +34,9 @@ interface TreeEntry {
   readonly offset: number;
 }
 
+const DECODER = new TextDecoder();
+const ENCODER = new TextEncoder();
+
 const VALID_MODES: ReadonlySet<string> = new Set(['100644', '100755', '120000', '40000', '160000']);
 
 const SHA_LENGTH = 20;
@@ -68,8 +71,8 @@ function parseTreeEntriesTolerant(raw: Uint8Array): {
     const nameBytes = raw.subarray(spaceIdx + 1, nullIdx);
     const sha = raw.subarray(nullIdx + 1, shaEnd);
 
-    const mode = new TextDecoder().decode(modeBytes);
-    const name = new TextDecoder().decode(nameBytes);
+    const mode = DECODER.decode(modeBytes);
+    const name = DECODER.decode(nameBytes);
 
     entries.push({ mode, name, sha, offset });
     offset = shaEnd;
@@ -84,7 +87,7 @@ function parseTreeEntriesTolerant(raw: Uint8Array): {
  */
 function treeEntrySortKey(entry: TreeEntry): Uint8Array {
   const isDir = entry.mode === '40000' || entry.mode === '040000';
-  const nameBytes = new TextEncoder().encode(entry.name);
+  const nameBytes = ENCODER.encode(entry.name);
   if (!isDir) return nameBytes;
   const result = new Uint8Array(nameBytes.length + 1);
   result.set(nameBytes);
@@ -113,7 +116,7 @@ function checkNameFaults(name: string, strict: boolean): ReadonlyArray<TreeFindi
       severity: resolveSeverity(MSG_FULL_PATHNAME, strict),
     });
   }
-  const byteLength = new TextEncoder().encode(name).length;
+  const byteLength = ENCODER.encode(name).length;
   if (byteLength > MAX_NAME_BYTES) {
     findings.push({
       msgId: MSG_LARGE_PATHNAME,
