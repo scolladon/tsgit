@@ -128,8 +128,11 @@ async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void>
       try {
         const entries = await readReflog(ctx, ref);
         for (const entry of entries) {
-          roots.add(entry.oldId);
-          roots.add(entry.newId);
+          // ZERO_OID is the "no object" sentinel git writes for creation events
+          // (first reflog entry of any ref). It is not a real object reference
+          // and must never be treated as a reachability root.
+          if (entry.oldId !== ZERO_OID) roots.add(entry.oldId);
+          if (entry.newId !== ZERO_OID) roots.add(entry.newId);
         }
       } catch {
         // Unreadable reflog — tolerated

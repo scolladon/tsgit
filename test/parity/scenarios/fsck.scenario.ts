@@ -26,13 +26,13 @@ export const fsckScenario: Scenario<FsckScenarioResult> = {
   expected: {
     // One orphan blob written via writeObject — not pointed to by any tree.
     danglingCount: 1,
-    // The null OID (0000…) recorded in the reflog's initial entry is a root
-    // that does not exist in the object store → one `missing` finding.
-    missingCount: 1,
+    // The null OID (0000…) in the reflog's initial entry is the "no object"
+    // sentinel; it is never a real reference and must not produce a finding.
+    missingCount: 0,
     // The root commit produces one `root` finding.
     rootCount: 1,
-    // EXIT_MISSING (bit 2) fires because of the reflog null-OID `missing`.
-    exitCode: 2,
+    // No real missing objects → exit 0.
+    exitCode: 0,
   },
   run: async (repo, inputs) => {
     // Arrange — seed a healthy root commit so refs are established

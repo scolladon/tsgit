@@ -1272,3 +1272,36 @@ describe('Given HEAD pointing to unborn branch (no commits)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// REFLOG NULL-OID SENTINEL — zero oldId on initial commit must not produce
+// a spurious 'missing' finding (real git 2.54.0: exit 0, no output)
+// ---------------------------------------------------------------------------
+
+describe('Given a repo with one commit whose reflog first entry has the null-oid (0000…) as oldId', () => {
+  describe('When fsck runs', () => {
+    it('Then no missing finding is emitted for the null-oid and exit code is 0', async () => {
+      // Arrange — write a minimal healthy commit graph with refs
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      // Reflog initial entry: oldId is ZERO_OID (the null-oid sentinel git writes on creation)
+      const ZERO_OID_STR = '0000000000000000000000000000000000000000';
+      const reflogLine = `${ZERO_OID_STR} ${commitId} Ada <ada@example.com> 1700000000 +0000\tcommit (initial): first\n`;
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`, reflogLine);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — null-oid must never be treated as a missing object
+      const missingForZeroOid = result.findings.filter(
+        (f) => f.type === 'missing' && (f as { id: ObjectId }).id === ZERO_OID_STR,
+      );
+      expect(missingForZeroOid).toHaveLength(0);
+      // Clean repo → exit 0
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});

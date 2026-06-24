@@ -624,3 +624,56 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// Null-oid sentinel regression pin — a normal repo with commit + reflog
+// must produce exit 0 / no findings (git fsck 2.54.0: "0000…0" in the
+// initial reflog entry is the "no object" sentinel, never a real reference)
+// ---------------------------------------------------------------------------
+
+let reflogSentinelDir = '';
+let reflogSentinelCtx: Context;
+
+beforeAll(async () => {
+  reflogSentinelDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-reflogsentinel-'));
+  initRepo(reflogSentinelDir);
+  // Make a real commit via git so a reflog is written automatically.
+  // The initial reflog entry will have oldId = 0000…0 (the null-oid sentinel).
+  await writeFile(path.join(reflogSentinelDir, 'readme.txt'), 'hello\n');
+  runGit(['-C', reflogSentinelDir, 'add', 'readme.txt'], { env: SAFE_ENV });
+  runGit(['-C', reflogSentinelDir, 'commit', '-m', 'initial commit'], { env: SAFE_ENV });
+  reflogSentinelCtx = createNodeContext({ workDir: reflogSentinelDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (reflogSentinelDir !== '') await rm(reflogSentinelDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a normal repo with one commit (reflog initial entry has null-oid oldId)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then exit code 0 and no missing/broken-link findings (null-oid sentinel is not a root)', async () => {
+        // Arrange — real git's expected output (clean repo → exit 0, no output)
+        const gitResult = gitFsck(reflogSentinelDir);
+
+        // Act
+        const result = await fsck(reflogSentinelCtx);
+
+        // Assert — exit code 0 matches real git
+        expect(result.exitCode).toBe(0);
+        expect(gitResult.exitCode).toBe(0);
+
+        // Assert — no missing or broken-link findings (null-oid is not treated as a root)
+        const missingFindings = result.findings.filter((f) => f.type === 'missing');
+        expect(missingFindings).toHaveLength(0);
+
+        const brokenLinks = result.findings.filter((f) => f.type === 'broken-link');
+        expect(brokenLinks).toHaveLength(0);
+
+        // Assert — git produces no error output for a clean repo
+        expect(gitResult.stderr).toBe('');
+      });
+    });
+  },
+);
