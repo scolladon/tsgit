@@ -1,4 +1,4 @@
-import { indexOf } from '../objects/encoding.js';
+import { compareBytes, indexOf } from '../objects/encoding.js';
 import {
   MSG_BAD_FILEMODE,
   MSG_BAD_TREE,
@@ -90,16 +90,6 @@ function treeEntrySortKey(entry: TreeEntry): Uint8Array {
   result.set(nameBytes);
   result[nameBytes.length] = 0x2f;
   return result;
-}
-
-function compareBytes(a: Uint8Array, b: Uint8Array): number {
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len; i++) {
-    const ai = a[i]!;
-    const bi = b[i]!;
-    if (ai !== bi) return ai - bi;
-  }
-  return a.length - b.length;
 }
 
 function checkNameFaults(name: string, strict: boolean): ReadonlyArray<TreeFinding> {

@@ -115,9 +115,7 @@ function checkIdentityLine(line: string, strict: boolean): ReadonlyArray<CommitF
     return findings;
   }
 
-  const parts = afterGt.trim().split(/\s+/);
-  const timestamp = parts[0]!;
-  const timezone = parts[1] ?? '';
+  const [timestamp = '', timezone = ''] = afterGt.trim().split(/\s+/);
 
   const timestampFault = checkTimestamp(timestamp, strict);
   if (timestampFault !== undefined) {
@@ -149,11 +147,12 @@ function checkTreeAndParents(
 ): { readonly findings: ReadonlyArray<CommitFinding>; readonly nextIdx: number } {
   const findings: CommitFinding[] = [];
 
-  if (!lines[0]!.startsWith('tree ')) {
+  const firstLine = lines[0];
+  if (firstLine === undefined || !firstLine.startsWith('tree ')) {
     findings.push({ msgId: MSG_MISSING_TREE, severity: resolveSeverity(MSG_MISSING_TREE, strict) });
     return { findings, nextIdx: -1 };
   }
-  const treeVal = lines[0]!.slice(5);
+  const treeVal = firstLine.slice(5);
   if (!isValidSha(treeVal)) {
     findings.push({
       msgId: MSG_BAD_TREE_SHA1,
@@ -162,8 +161,10 @@ function checkTreeAndParents(
   }
 
   let i = 1;
-  while (i < lines.length && lines[i]!.startsWith('parent ')) {
-    const parentVal = lines[i]!.slice(7);
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line === undefined || !line.startsWith('parent ')) break;
+    const parentVal = line.slice(7);
     if (!isValidSha(parentVal)) {
       findings.push({
         msgId: MSG_BAD_PARENT_SHA1,
@@ -184,18 +185,19 @@ function checkAuthorAndCommitter(
   const findings: CommitFinding[] = [];
   let i = startIdx;
 
-  if (!lines[i]?.startsWith('author ')) {
+  const authorLine = lines[i];
+  if (authorLine === undefined || !authorLine.startsWith('author ')) {
     findings.push({
       msgId: MSG_MISSING_AUTHOR,
       severity: resolveSeverity(MSG_MISSING_AUTHOR, strict),
     });
     return findings;
   }
-  for (const f of checkIdentityLine(lines[i]!.slice(7), strict)) findings.push(f);
+  for (const f of checkIdentityLine(authorLine.slice(7), strict)) findings.push(f);
   i++;
 
   // detect multiple author lines
-  while (i < lines.length && lines[i]!.startsWith('author ')) {
+  while (i < lines.length && lines[i]?.startsWith('author ')) {
     findings.push({
       msgId: MSG_MULTIPLE_AUTHORS,
       severity: resolveSeverity(MSG_MULTIPLE_AUTHORS, strict),
@@ -203,16 +205,17 @@ function checkAuthorAndCommitter(
     i++;
   }
 
-  while (i < lines.length && !lines[i]!.startsWith('committer ')) i++;
+  while (i < lines.length && !lines[i]?.startsWith('committer ')) i++;
 
-  if (!lines[i]?.startsWith('committer ')) {
+  const committerLine = lines[i];
+  if (committerLine === undefined || !committerLine.startsWith('committer ')) {
     findings.push({
       msgId: MSG_MISSING_COMMITTER,
       severity: resolveSeverity(MSG_MISSING_COMMITTER, strict),
     });
     return findings;
   }
-  for (const f of checkIdentityLine(lines[i]!.slice(10), strict)) findings.push(f);
+  for (const f of checkIdentityLine(committerLine.slice(10), strict)) findings.push(f);
 
   return findings;
 }

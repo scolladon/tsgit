@@ -54,8 +54,7 @@ function checkTaggerLine(line: string, strict: boolean): ReadonlyArray<TagFindin
   const afterGt = line.slice(gtIdx + 1);
   if (!afterGt.startsWith(' ')) return [];
 
-  const parts = afterGt.trim().split(/\s+/);
-  const timestamp = parts[0] ?? '';
+  const [timestamp = ''] = afterGt.trim().split(/\s+/);
   if (/^\d+$/.test(timestamp) && isTaggerTimestampOverflow(timestamp)) {
     return [
       {
@@ -112,11 +111,12 @@ function checkTagAndTagger(
 ): ReadonlyArray<TagFinding> {
   const findings: TagFinding[] = [];
 
-  if (!lines[startIdx]?.startsWith('tag ')) {
+  const tagLine = lines[startIdx];
+  if (tagLine === undefined || !tagLine.startsWith('tag ')) {
     findings.push({ msgId: MSG_MISSING_TAG, severity: resolveSeverity(MSG_MISSING_TAG, strict) });
     return findings;
   }
-  const tagVal = lines[startIdx]!.slice(4);
+  const tagVal = tagLine.slice(4);
   if (tagVal === '') {
     findings.push({
       msgId: MSG_MISSING_TAG_ENTRY,
@@ -129,14 +129,15 @@ function checkTagAndTagger(
   }
 
   const taggerIdx = startIdx + 1;
-  if (!lines[taggerIdx]?.startsWith('tagger ')) {
+  const taggerLine = lines[taggerIdx];
+  if (taggerLine === undefined || !taggerLine.startsWith('tagger ')) {
     findings.push({
       msgId: MSG_MISSING_TAGGER_ENTRY,
       severity: resolveSeverity(MSG_MISSING_TAGGER_ENTRY, strict),
     });
     return findings;
   }
-  for (const f of checkTaggerLine(lines[taggerIdx]!.slice(7), strict)) findings.push(f);
+  for (const f of checkTaggerLine(taggerLine.slice(7), strict)) findings.push(f);
 
   return findings;
 }
