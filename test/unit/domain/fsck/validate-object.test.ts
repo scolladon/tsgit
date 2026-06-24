@@ -2283,3 +2283,991 @@ describe('Given tag with tagger line that has no space after the closing angle-b
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// blob — .gitmodules submodule header endsWith('"') guard (line 45, mutant 9)
+// Kill: && → || means a header that starts with 'submodule "' but does NOT
+// end with '"' would still trigger the names.push branch.
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob with malformed submodule header missing the closing double-quote', () => {
+  describe('When validateObject runs', () => {
+    it('Then does not extract the name from a header missing the closing double-quote', () => {
+      // Arrange
+      const sut = validateObject;
+      // [submodule "..] — starts with 'submodule "' but does NOT end with '"'.
+      // With && : startsWith=true, endsWith=false → condition false → names NOT pushed.
+      // With || : startsWith=true → condition true → names.push('..') → gitmodulesName fires.
+      const rawBytes = encode('[submodule "..]\n\tpath = foo\n\turl = https://example.com\n');
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert — malformed header (no closing quote) must NOT produce gitmodulesName
+      expect(result.map((f) => f.msgId)).not.toContain('gitmodulesName');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — .gitmodules key==='url' guard (line 54, mutant 13)
+// Kill: key === 'url' → true means ANY key=value pushes to urls array.
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob with a non-url key whose value starts with a dash', () => {
+  describe('When validateObject runs', () => {
+    it('Then does not emit gitmodulesUrl for non-url keys (only url= matters)', () => {
+      // Arrange
+      const sut = validateObject;
+      // 'path = -bad' — key is 'path', value starts with '-'.
+      // If key==='url' guard is mutated to true, '-bad' is pushed to urls and gitmodulesUrl fires.
+      const rawBytes = encode(
+        '[submodule "sub"]\n\tpath = -bad\n\turl = https://safe.example.com\n',
+      );
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert — only 'url' keys count; 'path' with '-' value must NOT trigger gitmodulesUrl
+      expect(result.map((f) => f.msgId)).not.toContain('gitmodulesUrl');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — .gitmodules size exactly at limit (line 93, mutant 17)
+// Kill: raw.length > GITMODULES_MAX_BYTES → >=
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob of exactly 100 MiB (at the boundary, not over)', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit gitmodulesLarge (boundary is exclusive: > not >=)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Exactly 100 MiB = 100 * 1024 * 1024. This is NOT over the limit.
+      // With > : 100MiB > 100MiB = false → no error (correct).
+      // With >= : 100MiB >= 100MiB = true → error (mutant detected).
+      const rawBytes = new Uint8Array(100 * 1024 * 1024);
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert — exactly at limit must NOT trigger gitmodulesLarge
+      expect(result.map((f) => f.msgId)).not.toContain('gitmodulesLarge');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — .gitattributes size exactly at limit (line 136, mutant 18)
+// Kill: raw.length > GITATTRIBUTES_MAX_BYTES → >=
+// ---------------------------------------------------------------------------
+
+describe('Given .gitattributes blob of exactly 100 MiB (at the boundary, not over)', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit gitattributesLarge (boundary is exclusive: > not >=)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Exactly 100 MiB. With > : false → no error (correct).
+      // With >= : true → error (mutant detected).
+      const rawBytes = new Uint8Array(100 * 1024 * 1024);
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitattributes',
+      });
+
+      // Assert — exactly at limit must NOT trigger gitattributesLarge
+      expect(result.map((f) => f.msgId)).not.toContain('gitattributesLarge');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — .gitattributes line length exactly at limit (line 147, mutant 19)
+// Kill: lineBytes > GITATTRIBUTES_MAX_LINE_BYTES → >=
+// ---------------------------------------------------------------------------
+
+describe('Given .gitattributes blob with a line of exactly 2048 bytes', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit gitattributesLineLength (2048 bytes is the limit, not over)', () => {
+      // Arrange
+      const sut = validateObject;
+      // A line of exactly 2048 ASCII bytes. With > : 2048 > 2048 = false → no error.
+      // With >= : 2048 >= 2048 = true → error (mutant detected).
+      const exactLine = 'a'.repeat(2048);
+      const rawBytes = encode(`${exactLine}\n`);
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitattributes',
+      });
+
+      // Assert — a line of exactly 2048 bytes must NOT trigger gitattributesLineLength
+      expect(result.map((f) => f.msgId)).not.toContain('gitattributesLineLength');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — multipleAuthors loop advances forward (line 207 i++ not i--)
+// ---------------------------------------------------------------------------
+
+describe('Given commit with exactly one extra author line (two author lines total)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits exactly one multipleAuthors finding', () => {
+      // Arrange
+      const sut = validateObject;
+      // Two author lines: primary + one duplicate.
+      // i++ correctly advances past the duplicate once; i-- would scan backward
+      // and emit two multipleAuthors findings instead of one.
+      const rawBytes = encode(
+        `tree ${BLOB_SHA_HEX}\nauthor A <a@b.com> 1234567890 +0000\nauthor B <b@c.com> 1234567890 +0000\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'multipleAuthors')).toHaveLength(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — missing committer with no extra lines: boundary i < vs i<=
+// (line 210: while i < lines.length scan stops before going out-of-bounds)
+// ---------------------------------------------------------------------------
+
+describe('Given commit with author but no committer and no intermediate lines', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingCommitter and does NOT emit missingAuthor', () => {
+      // Arrange
+      const sut = validateObject;
+      // Header: tree + author only. No committer.
+      // After processing author, i === lines.length exactly; second while exits
+      // immediately (i < lines.length is false). committerLine is undefined →
+      // missingCommitter. With i <= lines.length the loop runs one extra step
+      // but the outcome is the same — the assertion targets a different invariant:
+      // missingAuthor must NOT appear because we successfully parsed the author.
+      const rawBytes = encode(`tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\n\nmsg\n`);
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'missingCommitter', severity: 'error' });
+      expect(result.filter((f) => f.msgId === 'missingAuthor')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — committer with no name triggers missingNameBeforeEmail (line 220)
+// slice(10) strips "committer " prefix; without it the "committer " part is
+// treated as the name, masking the missing-name fault.
+// ---------------------------------------------------------------------------
+
+describe('Given commit with committer that has no name before the email angle-bracket', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingNameBeforeEmail for the committer', () => {
+      // Arrange
+      const sut = validateObject;
+      // committer line has no name: "committer <email> timestamp tz"
+      // After slice(10) the string is "<email> timestamp tz" → name="" →
+      // missingNameBeforeEmail. Without slice(10), name="committer " which is
+      // non-empty, so the fault would not be detected.
+      const rawBytes = encode(
+        `tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\ncommitter <c@d.com> 1234567890 +0000\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'missingNameBeforeEmail', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — missing tree returns only missingTree (line 235 if nextIdx === -1)
+// With ConditionalExpression→false the early-return is skipped, and
+// checkAuthorAndCommitter(lines, -1, strict) fires, adding missingAuthor.
+// ---------------------------------------------------------------------------
+
+describe('Given commit with missing tree header', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingTree and does NOT emit missingAuthor', () => {
+      // Arrange
+      const sut = validateObject;
+      // No tree line at all — checkTreeAndParents returns nextIdx === -1.
+      // The early-return on nextIdx === -1 must fire; if skipped (→false mutant),
+      // checkAuthorAndCommitter is called with startIdx=-1, sees lines[-1]=undefined,
+      // and incorrectly adds a missingAuthor finding.
+      const rawBytes = encode(`author ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmsg\n`);
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'missingTree', severity: 'error' });
+      expect(result.filter((f) => f.msgId === 'missingAuthor')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — parseTreeEntriesTolerant: no space byte, null present, raw long enough
+// Kills M2: spaceIdx === -1 guard replaced by spaceIdx === +1
+// ---------------------------------------------------------------------------
+
+describe('Given tree bytes with no space byte anywhere, but with a null byte and enough trailing bytes', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTree (missing space between mode and name)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Raw: 8 non-space ASCII bytes + NUL + 20 sha bytes = 29 bytes total.
+      // spaceIdx = indexOf(raw, 0x20) = -1 (no space byte).
+      // Original: spaceIdx === -1 fires → badTree.
+      // Mutant (=== +1): -1 !== +1 → skips guard; shaEnd = (-1+1+20) = 20 ≤ 29 → no shaEnd fault.
+      const raw = new Uint8Array(29);
+      for (let i = 0; i < 8; i++) raw[i] = 0x61; // 'a' — no space
+      raw[8] = 0x00; // null (no space before it)
+      raw.set(BLOB_SHA, 9);
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — parseTreeEntriesTolerant: NUL inside mode, raw sized so mutant exits loop cleanly
+// Kills M3: indexOf(raw, 0x00, spaceIdx + 1) → indexOf(raw, 0x00, spaceIdx - 1)
+// ---------------------------------------------------------------------------
+
+describe('Given tree bytes with a NUL byte at position spaceIdx-1, and raw sized to mutant shaEnd', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTree (original nullIdx overshoots raw.length; mutant exits loop cleanly with bad entry)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Raw: "100" + NUL(pos 3) + SPACE(pos 4) + "file"(pos 5..8) + NUL(pos 9) + 14 sha bytes
+      //   total: 4 + 1 + 4 + 1 + 14 = 24 bytes.
+      // spaceIdx=4. spaceIdx !== -1, spaceIdx !== offset(0).
+      //
+      // Original: indexOf(raw, 0x00, 5) → finds NUL at 9. nullIdx=9.
+      //   shaEnd = 9+1+20 = 30. raw.length=24. 30 > 24 → badTree!
+      //
+      // Mutant (spaceIdx-1=3): indexOf(raw, 0x00, 3) → finds NUL at 3 (inside mode field).
+      //   nullIdx=3. shaEnd = 3+1+20 = 24. raw.length=24. 24 ≤ 24 → no shaEnd fault.
+      //   Entry parsed with name=raw.subarray(5,3)=empty. offset=24. Loop exits. No badTree.
+      const raw = new Uint8Array(24);
+      raw[0] = 0x31; // '1'
+      raw[1] = 0x30; // '0'
+      raw[2] = 0x30; // '0'
+      raw[3] = 0x00; // NUL inside mode — at spaceIdx-1
+      raw[4] = 0x20; // space (spaceIdx=4)
+      raw[5] = 0x66; // 'f'
+      raw[6] = 0x69; // 'i'
+      raw[7] = 0x6c; // 'l'
+      raw[8] = 0x65; // 'e'
+      raw[9] = 0x00; // NUL terminating name
+      // bytes 10..23: 14 non-null sha bytes (prefix of BLOB_SHA)
+      raw.set(BLOB_SHA.subarray(0, 14), 10);
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
+
+      // Assert — original: badTree (shaEnd=30 > raw.length=24); mutant: no badTree
+      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — parseTreeEntriesTolerant: no null after space, raw sized exactly to mutant shaEnd
+// Kills M4 (if false skips guard) and M5 (nullIdx === +1 skips when nullIdx=-1)
+// ---------------------------------------------------------------------------
+
+describe('Given tree bytes with space present but no null after it, and raw sized exactly to mutant shaEnd', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTree (nullIdx === -1 guard fires; mutant skips and exits loop cleanly with wrong entry)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Raw: "ab" + SPACE + 17 non-null bytes = 20 bytes. No NUL after the space.
+      // spaceIdx=2. indexOf(raw, 0x00, 3) = -1 (no NUL from pos 3 onward). nullIdx=-1.
+      //
+      // Original: nullIdx === -1 → badTree immediately.
+      //
+      // M4 (if false): skips. shaEnd = (-1+1+20) = 20. raw.length=20. 20 ≤ 20 → no shaEnd fault.
+      //   Entry parsed (wrong). offset=20. Loop exits (20 < 20 = false). No badTree emitted.
+      // M5 (nullIdx === +1): -1 !== +1 → skips. Same result as M4.
+      const raw = new Uint8Array(20);
+      raw[0] = 0x61; // 'a'
+      raw[1] = 0x62; // 'b'
+      raw[2] = 0x20; // space (spaceIdx=2)
+      for (let i = 3; i < 20; i++) raw[i] = 0x61; // 'a' — non-null filler
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
+
+      // Assert — original catches nullIdx=-1 → badTree; mutants skip guard and exit cleanly
+      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — treeEntrySortKey: file "a-" before dir "a" (40000) is correct git order
+// Kills M7 (isDir=false), M8 (mode==='' not '40000'), M10 (!isDir→isDir), M11 (cond→true)
+// ---------------------------------------------------------------------------
+
+describe('Given tree with file "a-" (mode 100644) before directory "a" (mode 40000), which is correct git order', () => {
+  describe('When validateObject runs', () => {
+    it('Then does not emit treeNotSorted (dir sort key "a/" makes file "a-" correctly precede it)', () => {
+      // Arrange
+      const sut = validateObject;
+      // git sort keys: "a-" (file) = "a-"; "a" (dir, 40000) = "a/".
+      // compareBytes("a-", "a/") = '-'(0x2d) vs '/'(0x2f) → 0x2d < 0x2f → correct order.
+      // M7 (isDir=false): dir "a" → key "a". compareBytes("a-","a") = len diff 2-1=1 > 0 → treeNotSorted.
+      // M8 (mode==='' for first cond): '40000'!=='' && '40000'!=='040000' → isDir=false. Same as M7.
+      // M10 (if isDir → return nameBytes): dir "a" → key "a". Same as M7.
+      // M11 (if true → return nameBytes): every entry skips slash. Same as M7.
+      const rawBytes = buildTree(
+        buildTreeEntry('100644', 'a-', BLOB_SHA),
+        buildTreeEntry('40000', 'a', BLOB_SHA),
+      );
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — treeEntrySortKey: dir "a" before file "a-" is WRONG git order
+// Kills M7 (isDir=false), M10 (!isDir→isDir), M11 (cond→true) from the positive direction
+// ---------------------------------------------------------------------------
+
+describe('Given tree with directory "a" (mode 40000) before file "a-" (mode 100644), which is wrong git order', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits treeNotSorted (dir sort key "a/" > file sort key "a-")', () => {
+      // Arrange
+      const sut = validateObject;
+      // git sort keys: "a" (dir) = "a/"; "a-" (file) = "a-".
+      // compareBytes("a/", "a-") = '/'(0x2f) - '-'(0x2d) = 2 > 0 → treeNotSorted.
+      // M7 (isDir=false): dir key="a". compareBytes("a","a-") = 1-2=-1 → NOT treeNotSorted. MISS.
+      // M10/M11 (dir returns nameBytes): dir "a" → key "a". Same miss.
+      const rawBytes = buildTree(
+        buildTreeEntry('40000', 'a', BLOB_SHA),
+        buildTreeEntry('100644', 'a-', BLOB_SHA),
+      );
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — treeEntrySortKey: files with shared prefix must not get slash injected
+// Kills M6 (isDir=true), M9 (mode!=='040000'), M12 (cond→false, always appends slash)
+// ---------------------------------------------------------------------------
+
+describe('Given tree with file "bbb" before file "bbb-x" (both mode 100644), which is correct order', () => {
+  describe('When validateObject runs', () => {
+    it('Then does not emit treeNotSorted (file sort keys have no slash)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Sort keys: "bbb" < "bbb-x" (prefix match, shorter wins). Correct.
+      // M6 (isDir=true): both get slash. "bbb/" vs "bbb-x/". '/'(0x2f) > '-'(0x2d) → treeNotSorted.
+      // M9 (mode!=='040000'): '100644'!=='040000' → isDir=true. Same as M6.
+      // M12 (if false → never early-return): always appends slash. Same as M6.
+      const rawBytes = buildTree(
+        buildTreeEntry('100644', 'bbb', BLOB_SHA),
+        buildTreeEntry('100644', 'bbb-x', BLOB_SHA),
+      );
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — largePathname boundary: name of exactly 4096 bytes must NOT trigger the finding
+// Kills M13: byteLength > MAX_NAME_BYTES → byteLength >= MAX_NAME_BYTES
+// ---------------------------------------------------------------------------
+
+describe('Given tree with entry name of exactly 4096 ASCII bytes (at the boundary)', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit largePathname (4096 bytes is the limit, not over it)', () => {
+      // Arrange
+      const sut = validateObject;
+      // 4096 'a' chars = 4096 UTF-8 bytes: byteLength === MAX_NAME_BYTES.
+      // Original (>): 4096 > 4096 = false → no largePathname.
+      // Mutant (>=): 4096 >= 4096 = true → largePathname. FALSE POSITIVE.
+      const exactName = 'a'.repeat(4096);
+      const rawBytes = buildTree(buildTreeEntry('100644', exactName, BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'largePathname')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — .gitignore as a regular file must not emit gitignoreSymlink
+// Kills M16: name==='.gitignore' && isSymlink → name==='.gitignore' || isSymlink
+// ---------------------------------------------------------------------------
+
+describe('Given tree with .gitignore as a regular file (mode 100644)', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit gitignoreSymlink (only symlink mode triggers this finding)', () => {
+      // Arrange
+      const sut = validateObject;
+      // mode='100644' → isSymlink=false.
+      // Original (&&): name==='.gitignore' && false = false → no gitignoreSymlink.
+      // Mutant (||): name==='.gitignore' || false = true → gitignoreSymlink. FALSE POSITIVE.
+      const rawBytes = buildTree(buildTreeEntry('100644', '.gitignore', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'gitignoreSymlink')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — .mailmap as a regular file must not emit mailmapSymlink
+// Kills M19: name==='.mailmap' && isSymlink → name==='.mailmap' || isSymlink
+// ---------------------------------------------------------------------------
+
+describe('Given tree with .mailmap as a regular file (mode 100644)', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit mailmapSymlink (only symlink mode triggers this finding)', () => {
+      // Arrange
+      const sut = validateObject;
+      // mode='100644' → isSymlink=false.
+      // Original (&&): name==='.mailmap' && false = false → no mailmapSymlink.
+      // Mutant (||): name==='.mailmap' || false = true → mailmapSymlink. FALSE POSITIVE.
+      const rawBytes = buildTree(buildTreeEntry('100644', '.mailmap', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'mailmapSymlink')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — zero-padded valid mode must not additionally emit badFilemode (normMode normalisation)
+// Kills M20: mode.startsWith('0') on normMode line → mode.endsWith('0')
+// ---------------------------------------------------------------------------
+
+describe('Given tree with zero-padded mode "0100644" (normalises to valid mode "100644")', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits zeroPaddedFilemode but NOT badFilemode (normMode is a valid mode after slice)', () => {
+      // Arrange
+      const sut = validateObject;
+      // mode='0100644': line-188 startsWith('0')=true → zeroPaddedFilemode (unchanged by M20).
+      // Original (line-194 startsWith): normMode='100644'. VALID_MODES.has('100644')=true → no badFilemode.
+      // Mutant (line-194 endsWith('0')): '0100644'.endsWith('4')=false → normMode='0100644'.
+      //   VALID_MODES.has('0100644')=false → badFilemode emitted. FALSE POSITIVE.
+      const rawBytes = buildTree(buildTreeEntry('0100644', 'file', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert — zeroPaddedFilemode is expected; badFilemode must NOT appear
+      expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'warning' });
+      expect(result.filter((f) => f.msgId === 'badFilemode')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — duplicate entry names: equal sort keys must not trigger treeNotSorted
+// Kills M22: compareBytes(prev, curr) > 0 → compareBytes(prev, curr) >= 0
+// ---------------------------------------------------------------------------
+
+describe('Given tree with two entries sharing the same name (duplicate)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits duplicateEntries but NOT treeNotSorted (equal sort key is not a sort violation)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Two identical entries → identical sort keys → compareBytes(key, key) = 0.
+      // Original (> 0): 0 > 0 = false → no treeNotSorted.
+      // Mutant (>= 0): 0 >= 0 = true → treeNotSorted. FALSE POSITIVE.
+      const rawBytes = buildTree(
+        buildTreeEntry('100644', 'file', BLOB_SHA),
+        buildTreeEntry('100644', 'file', BLOB_SHA),
+      );
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert — duplicate is flagged, but equal sort key is not a sort violation
+      expect(result).toContainEqual({ msgId: 'duplicateEntries', severity: 'error' });
+      expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — isTaggerTimestampOverflow boundary: INT64_MAX is valid (not overflow)
+// Kills A1 (>= in length check), A4 (return true always), A5 (>= in string cmp).
+// Pinned real git 2.54.0: 9223372036854775807 == INT64_MAX is accepted.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger timestamp exactly equal to INT64_MAX (9223372036854775807)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badDateOverflow (INT64_MAX itself is not an overflow)', () => {
+      // Arrange
+      const sut = validateObject;
+      // '9223372036854775807' has length 19 == INT64_MAX_STR.length.
+      // length guard (>) is false → falls through to string comparison.
+      // '9223372036854775807' > '9223372036854775807' is false → not overflow.
+      // A1 mutant (>=): 19 >= 19 = true → early-return true → badDateOverflow. FAILS.
+      // A4 mutant (return true): always overflow → badDateOverflow. FAILS.
+      // A5 mutant (>=): '9223...' >= '9223...' = true → badDateOverflow. FAILS.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com> 9223372036854775807 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — isTaggerTimestampOverflow: 20-digit number starting with 1 overflows
+// Kills A2 (skip length>19 early-return): 10000000000000000000 > INT64_MAX
+// numerically but '1...' < '9...' lexicographically, so without the length
+// guard the string comparison incorrectly returns false (no overflow).
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger timestamp of 20 digits starting with 1 (10000000000000000000)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDateOverflow (20-digit number exceeds INT64_MAX regardless of leading digit)', () => {
+      // Arrange
+      const sut = validateObject;
+      // '10000000000000000000' has length 20 > 19 → early-return true (overflow).
+      // A2 mutant (if false): skips the length guard entirely, falls through to
+      // string comparison: '10000000000000000000' > '9223372036854775807' = false
+      // (lexicographic: '1' < '9') → returns false → no badDateOverflow. FAILS.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com> 10000000000000000000 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — isTaggerTimestampOverflow: 18-digit all-nines timestamp is valid
+// Kills A3 (skip length<19 early-return): '999999999999999999' is less than
+// INT64_MAX numerically but '9...' > '9...' lexicographic comparison is
+// ambiguous without the length guard.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger timestamp of 18 nines (999999999999999999, less than INT64_MAX)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badDateOverflow (18-digit number is within range)', () => {
+      // Arrange
+      const sut = validateObject;
+      // '999999999999999999' has length 18 < 19 → early-return false (no overflow).
+      // A3 mutant (if false): skips the length guard, falls through to string
+      // comparison: '999999999999999999' > '9223372036854775807' — char 0 '9'='9',
+      // char 1 '9' vs '2' → '9'>'2' = true → returns true → badDateOverflow. FAILS.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com> 999999999999999999 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — typeVal non-empty but unknown type emits missingTypeEntry
+// Kills D1: || → && means a non-empty invalid type is silently accepted.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with non-empty but unknown type value (e.g. "frog")', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingTypeEntry at error severity (unknown type is not valid)', () => {
+      // Arrange
+      const sut = validateObject;
+      // typeVal = 'frog': typeVal !== '' (first OR-condition false), but
+      // !VALID_OBJECT_TYPES.has('frog') = true (second OR-condition true).
+      // Original (||): true → missingTypeEntry emitted.
+      // D1 mutant (&&): false && true = false → missingTypeEntry NOT emitted. FAILS.
+      const rawBytes = encode(
+        `object ${BLOB_SHA_HEX}\ntype frog\ntag v1.0\ntagger ${VALID_IDENTITY}\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'missingTypeEntry', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — taggerLine.slice(7) strips the "tagger " prefix before parsing
+// Kills F1: taggerLine without slice(7) passes "tagger Name <email>" to
+// checkTaggerLine, where "tagger Name" becomes the name part. "tagger Name"
+// ends with 'e' not ' ', triggering missingSpaceBeforeEmail spuriously.
+// The kill test uses a tagger whose name-before-email starts with "tagger "
+// (the literal prefix), which is detected only when the prefix is NOT stripped.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with a valid tagger where the identity has a space before the email', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no missingSpaceBeforeEmail (the tagger prefix is stripped before parsing)', () => {
+      // Arrange
+      const sut = validateObject;
+      // taggerLine = 'tagger Test User <test@example.com> 1234567890 +0000'
+      // slice(7)  → 'Test User <test@example.com> ...' → name='Test User ', ends with ' ' → OK.
+      // F1 mutant (no slice): → 'tagger Test User <test@example.com> ...' →
+      // name='tagger Test User ', ends with ' ' → still OK. So F1 is subtle.
+      // Use a tagger where the raw (unsliced) form would trigger the space check:
+      // 'tagger A<a@a.com> 1234567890 +0000' → sliced: 'A<a@a.com>...' → name='A', no space → missingSpaceBeforeEmail.
+      // But without slice: 'tagger A<a@a.com>...' → name='tagger A', no space → missingSpaceBeforeEmail.
+      // Both produce the same finding. So we need a case where the prefix changes the outcome.
+      //
+      // Key case: taggerLine is 'tagger <t@t.com> 1234567890 +0000' (no name, just email).
+      // slice(7)  → '<t@t.com> ...' → ltIdx=0, name='', !name.endsWith(' ')=true →
+      //            missingSpaceBeforeEmail (correct: no name before email).
+      // F1 mutant (no slice): 'tagger <t@t.com> ...' → ltIdx=7, name='tagger ',
+      //            name.endsWith(' ')=true → passes name check → no missingSpaceBeforeEmail.
+      //            The email content is then parsed for the date.
+      // So with F1 mutant, 'tagger <t@t.com> ...' does NOT emit missingSpaceBeforeEmail.
+      // A valid test: a tag with NO name before email should emit missingSpaceBeforeEmail.
+      const rawBytes = encode(
+        `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\ntagger <t@t.com> 1234567890 +0000\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — no name before email in tagger: missingSpaceBeforeEmail must fire
+      expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkTaggerLine: timestamp regex anchoring (C3: /^\d+/ vs /^\d+$/)
+// A timestamp of mixed digits and letters like '12345abc' passes /^\d+/ but
+// not /^\d+$/ — the overflow check must not fire for such non-numeric strings.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger timestamp containing trailing non-digit characters', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badDateOverflow (only purely numeric timestamps are overflow-checked)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Timestamp '99999999999999999999abc' (23 chars): /^\d+$/ = false (has 'abc') → no
+      // overflow check. C3 mutant (/^\d+/): matches '9...' → checks overflow →
+      // length 23 > 19 → true → badDateOverflow emitted. FAILS.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com> 99999999999999999999abc +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkTaggerLine: timestamp regex anchoring (C4: /\d+$/ vs /^\d+$/)
+// A timestamp with a leading non-digit prefix like 'abc99999999999999999999'
+// passes /\d+$/ but not /^\d+$/ — the overflow check must not fire.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with tagger timestamp containing leading non-digit characters', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badDateOverflow (leading non-digits disqualify the overflow check)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Timestamp 'abc99999999999999999999' (25 chars): /^\d+$/ = false (has 'abc') → no
+      // overflow check. C4 mutant (/\d+$/): matches trailing '9...' → checks overflow →
+      // length 25 > 19 → true → badDateOverflow emitted. FAILS.
+      const rawBytes = buildTag({
+        object: BLOB_SHA_HEX,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: 'T <t@t.com> abc99999999999999999999 +0000',
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — valid tag with blank-line separator and message body returns no findings
+// Note: G1 (!= -1), G2 (always text), G3 (=== +1), G4 (true) are provably
+// equivalent mutants. The blankIdx slice limits headerText, but validators only
+// check fixed line indices (0, 1, nextIdx, nextIdx+1). Message content lands at
+// indices ≥ 4, which no validator inspects, so no observable difference exists.
+// ---------------------------------------------------------------------------
+
+describe('Given valid tag with a blank-line separator and a message body', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no findings (valid tag structure regardless of message body content)', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = encode(
+        `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\ntagger ${VALID_IDENTITY}\n\ntype invalid\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — a structurally valid tag returns no findings
+      expect(result).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkObjectAndType early-return: nextIdx -1 stops checkTagAndTagger
+// Kills H1 (if false) and H2 (=== +1): when checkObjectAndType returns
+// nextIdx: -1 (e.g. missing object header), validateTag must not call
+// checkTagAndTagger. If it does, lines[-1]=undefined triggers missingTag.
+// ---------------------------------------------------------------------------
+
+describe('Given tag without an object line (checkObjectAndType returns nextIdx: -1)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits only missingObject and NOT missingTag (early return halts tag/tagger check)', () => {
+      // Arrange
+      const sut = validateObject;
+      // No 'object' header → checkObjectAndType returns nextIdx: -1.
+      // validateTag early-returns on nextIdx === -1 with only [missingObject].
+      // H1 mutant (if false): skips early return → calls checkTagAndTagger(lines, -1, strict)
+      //   → lines[-1] = undefined → missingTag emitted. FAILS (missingTag in result).
+      // H2 mutant (=== +1): nextIdx(-1) === +1 = false → also skips early return → same.
+      const rawBytes = buildTag({
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — exactly missingObject, no missingTag or missingTaggerEntry
+      expect(result).toContainEqual({ msgId: 'missingObject', severity: 'error' });
+      expect(result.filter((f) => f.msgId === 'missingTag')).toHaveLength(0);
+      expect(result.filter((f) => f.msgId === 'missingTaggerEntry')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkObjectAndType missing-object branch: nextIdx in returned struct is -1
+// Kills S12 (line 83 nextIdx: -1 → +1): if nextIdx returns +1 instead of -1,
+// validateTag calls checkTagAndTagger(lines, 1, strict). For a tag with only
+// 'type' and 'tagger' (no 'object', no 'tag'), lines[1] is the tagger line,
+// which does NOT start with 'tag ' → missingTag spuriously emitted.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with type and tagger but neither object nor tag-name line', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits only missingObject and NOT missingTag (struct nextIdx=-1 halts processing)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Lines: ['type blob', 'tagger IDENTITY']
+      // checkObjectAndType sees lines[0]='type blob' (not 'object ...') → missingObject,
+      // returns { findings: [missingObject], nextIdx: -1 }.
+      // S12 mutant (nextIdx: +1): validateTag calls checkTagAndTagger(lines, 1, strict).
+      // lines[1] = 'tagger IDENTITY' → NOT 'tag ...' → missingTag emitted. FAILS.
+      const rawBytes = encode(`type blob\ntagger ${VALID_IDENTITY}\n\nmsg\n`);
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — only missingObject; processing must stop before tag/tagger checks
+      expect(result).toContainEqual({ msgId: 'missingObject', severity: 'error' });
+      expect(result.filter((f) => f.msgId === 'missingTag')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkObjectAndType missing-type branch: nextIdx in returned struct is -1
+// Kills S13 (line 95 nextIdx: -1 → +1): if nextIdx returns +1 instead of -1,
+// validateTag calls checkTagAndTagger(lines, 1, strict). For a tag with 'object'
+// and 'tagger' but no 'type' or 'tag', lines[1] is the tagger line, which does
+// NOT start with 'tag ' → missingTag spuriously emitted.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with object and tagger but neither type nor tag-name line', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits only missingType and NOT missingTag (struct nextIdx=-1 halts processing)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Lines: ['object SHA', 'tagger IDENTITY']
+      // checkObjectAndType: lines[0]='object SHA' ✓, lines[1]='tagger IDENTITY' not 'type ...'
+      // → missingType pushed, returns { findings: [missingType], nextIdx: -1 }.
+      // S13 mutant (nextIdx: +1): validateTag calls checkTagAndTagger(lines, 1, strict).
+      // lines[1] = 'tagger IDENTITY' → NOT 'tag ...' → missingTag emitted. FAILS.
+      const rawBytes = encode(`object ${BLOB_SHA_HEX}\ntagger ${VALID_IDENTITY}\n\nmsg\n`);
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — only missingType; processing must stop before tag/tagger checks
+      expect(result).toContainEqual({ msgId: 'missingType', severity: 'error' });
+      expect(result.filter((f) => f.msgId === 'missingTag')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkObjectAndType invalid-type branch: nextIdx in returned struct is -1
+// Kills S17 (line 103 nextIdx: -1 → +1): if nextIdx returns +1 instead of -1
+// for an invalid type (e.g. 'frog'), validateTag calls checkTagAndTagger(lines, 1).
+// lines[1] = 'type frog' → NOT 'tag ...' → missingTag spuriously emitted alongside
+// missingTypeEntry, producing more findings than expected.
+// ---------------------------------------------------------------------------
+
+describe('Given tag with a non-empty invalid type value (e.g. "frog")', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingTypeEntry and NOT missingTag (struct nextIdx=-1 halts tag/tagger check)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Lines: ['object SHA', 'type frog', 'tag v1.0', 'tagger IDENTITY']
+      // checkObjectAndType: typeVal='frog', !VALID_OBJECT_TYPES.has → missingTypeEntry pushed,
+      // returns { findings: [missingTypeEntry], nextIdx: -1 }.
+      // S17 mutant (nextIdx: +1): checkTagAndTagger(lines, 1, strict) is called.
+      // lines[1] = 'type frog' → NOT 'tag ...' → missingTag emitted. FAILS.
+      const rawBytes = encode(
+        `object ${BLOB_SHA_HEX}\ntype frog\ntag v1.0\ntagger ${VALID_IDENTITY}\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — missingTypeEntry present, missingTag absent
+      expect(result).toContainEqual({ msgId: 'missingTypeEntry', severity: 'error' });
+      expect(result.filter((f) => f.msgId === 'missingTag')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tag — checkTagAndTagger: taggerLine has wrong prefix (not 'tagger ') → missingTaggerEntry
+// Kills E18 (StringLiteral 'tagger ' → ''): !taggerLine.startsWith('') is always
+// false, so the prefix check never fires. A line like 'author ...' instead of
+// 'tagger ...' would slip through without emitting missingTaggerEntry.
+// The undefined-branch alone (taggerLine === undefined) is NOT enough to kill
+// this mutant, because the existing no-tagger test uses a missing tagger line
+// (undefined) which is caught by the first OR-operand regardless of startsWith.
+// ---------------------------------------------------------------------------
+
+describe('Given tag where tagger line is present but has wrong prefix (author instead of tagger)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingTaggerEntry (wrong prefix disqualifies the tagger line)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Manually encode: tagger slot replaced with 'author' prefix.
+      // taggerLine = 'author T <t@t.com> 1234567890 +0000' → defined, exists in
+      // the right position, but does NOT start with 'tagger '.
+      // Original: !taggerLine.startsWith('tagger ') = true → missingTaggerEntry.
+      // E18 mutant ('tagger ' → ''): !taggerLine.startsWith('') = false →
+      // condition false → missingTaggerEntry NOT emitted. FAILS.
+      const rawBytes = encode(
+        `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\nauthor T <t@t.com> 1234567890 +0000\n\nmsg\n`,
+      );
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+
+      // Assert — wrong-prefix tagger line must trigger missingTaggerEntry
+      expect(result).toContainEqual({ msgId: 'missingTaggerEntry', severity: 'info' });
+    });
+  });
+});

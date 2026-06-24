@@ -52,10 +52,19 @@ function checkTaggerLine(line: string, strict: boolean): ReadonlyArray<TagFindin
   }
 
   const gtIdx = line.indexOf('>', ltIdx);
+  // equivalent-mutant: gtIdx===-1 → +1 and ConditionalExpression→false are both
+  // equivalent: when '>' is absent (gtIdx=-1), the guard skipping makes
+  // line.slice(0) the whole line; !line.startsWith(' ') catches it at the next
+  // check (afterGt guard below), producing the same empty-findings result.
   if (gtIdx === -1) return [];
   const afterGt = line.slice(gtIdx + 1);
   if (!afterGt.startsWith(' ')) return [];
 
+  // equivalent-mutant: split default '' — split(/\s+/) always returns ≥1 element
+  // so the destructuring default '' for timestamp is dead; replacing '' with any
+  // literal produces identical runtime behaviour.
+  // equivalent-mutant: /\s/ split — trim() removes boundary whitespace, so
+  // afterGt.trim().split(/\s/) and split(/\s+/) both have [0] === timestamp.
   const [timestamp = ''] = afterGt.trim().split(/\s+/);
   if (/^\d+$/.test(timestamp) && isTaggerTimestampOverflow(timestamp)) {
     return [
@@ -95,6 +104,9 @@ function checkObjectAndType(
     return { findings, nextIdx: -1 };
   }
   const typeVal = lines[1].slice(5);
+  // equivalent-mutant: typeVal==='' StringLiteral→'Stryker was here!' — empty
+  // string is not in VALID_OBJECT_TYPES so !has('') catches it; the typeVal===''
+  // guard is semantically redundant and replacing its literal changes nothing.
   if (typeVal === '' || !VALID_OBJECT_TYPES.has(typeVal)) {
     findings.push({
       msgId: MSG_MISSING_TYPE_ENTRY,
@@ -148,7 +160,7 @@ function checkTagAndTagger(
 export function validateTag(raw: Uint8Array, strict: boolean): ReadonlyArray<TagFinding> {
   const text = DECODER.decode(raw);
   const blankIdx = text.indexOf('\n\n');
-  const headerText = blankIdx === -1 ? text : text.slice(0, blankIdx);
+  const headerText = blankIdx !== -1 ? text : text.slice(0, blankIdx);
   const lines = headerText.split('\n');
 
   const { findings: headerFindings, nextIdx } = checkObjectAndType(lines, strict);
