@@ -10,7 +10,13 @@ import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-cod
 import type { FsckFinding } from './types.js';
 
 type RawObjectResult =
-  | { readonly ok: true; readonly kind: FsckObjectType; readonly rawBody: Uint8Array }
+  | {
+      readonly ok: true;
+      readonly kind: FsckObjectType;
+      readonly rawBody: Uint8Array;
+      /** Full bytes (including header) for hash verification. */
+      readonly hashBytes: Uint8Array;
+    }
   | { readonly ok: false; readonly msgId: string };
 
 /**
@@ -19,10 +25,12 @@ type RawObjectResult =
  * For loose objects: inflate compressed bytes and return body (after the
  * git `<type> <size>\0` header). This preserves zero-padded file modes and
  * other normalisation-defeated bytes that tsgit's strict parsers reject.
+ * The full inflated bytes are also returned for hash verification.
  *
  * For pack objects: re-serialize the parsed object. Packs never contain
  * zero-padded modes (git normalises on pack write), so re-serialisation is
  * correct and all catalogue checks apply to packed objects.
+ * The re-serialized bytes are returned for hash verification.
  */
 async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
   const compressed = await looseCompressedBytes(ctx, id);
@@ -36,7 +44,12 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
     }
     try {
       const { type, contentOffset } = parseHeader(inflated);
-      return { ok: true, kind: type, rawBody: inflated.subarray(contentOffset) };
+      return {
+        ok: true,
+        kind: type,
+        rawBody: inflated.subarray(contentOffset),
+        hashBytes: inflated,
+      };
     } catch (err) {
       // Header-parse failure: inflated successfully but header is malformed.
       // Distinguish unknown type (unknownType) from missing NUL (unterminatedHeader).
@@ -54,7 +67,7 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
     const obj = await readObject(ctx, id, { verifyHash: false });
     const full = serializeObject(obj, ctx.hashConfig);
     const { contentOffset } = parseHeader(full);
-    return { ok: true, kind: obj.type, rawBody: full.subarray(contentOffset) };
+    return { ok: true, kind: obj.type, rawBody: full.subarray(contentOffset), hashBytes: full };
   } catch {
     return { ok: false, msgId: 'badType' };
   }
@@ -72,19 +85,14 @@ const SPECIAL_BLOB_NAMES: ReadonlySet<string> = new Set(['.gitmodules', '.gitatt
  * under multiple names, the last special name wins (precedence is
  * non-deterministic, but in practice each blob has one name).
  */
-export async function buildBlobFilenameMap(
-  ctx: Context,
+export function buildBlobFilenameMap(
   universe: ReadonlySet<ObjectId>,
-): Promise<ReadonlyMap<ObjectId, string>> {
+  objectCache: ReadonlyMap<ObjectId, import('./object-cache.js').CachedGitObject>,
+): ReadonlyMap<ObjectId, string> {
   const map = new Map<ObjectId, string>();
   for (const id of universe) {
-    let obj: Awaited<ReturnType<typeof readObject>>;
-    try {
-      obj = await readObject(ctx, id, { verifyHash: false });
-    } catch {
-      continue;
-    }
-    if (obj.type !== 'tree') continue;
+    const obj = objectCache.get(id);
+    if (obj == null || obj.type !== 'tree') continue;
     for (const entry of obj.entries) {
       if (SPECIAL_BLOB_NAMES.has(entry.name)) {
         map.set(entry.id, entry.name);
@@ -121,7 +129,7 @@ async function validateOneObject(
     return { findings, exitBit: EXIT_CORRUPT };
   }
 
-  const { kind, rawBody } = rawResult;
+  const { kind, rawBody, hashBytes } = rawResult;
 
   // For blobs, pass filename when the blob appears under a special name
   // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
@@ -134,16 +142,18 @@ async function validateOneObject(
     if (severity === 'error') exitBit |= EXIT_CONTENT_ERROR;
   }
 
-  // Hash check: verify separately (hash-mismatch does not preclude catalogue checks).
+  // Hash check: verify hash from the bytes already read (no second readObject).
+  // For loose objects hashBytes is the full inflated bytes (header + body).
+  // For pack objects hashBytes is the re-serialized canonical form.
+  // Hash-mismatch does not preclude catalogue checks above.
   try {
-    await readObject(ctx, id, { verifyHash: true });
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'OBJECT_HASH_MISMATCH') {
-      const actual = (err.data as { actual: ObjectId }).actual;
-      findings.push({ type: 'hash-mismatch', id, actual });
+    const computedHash = await ctx.hash.hashHex(hashBytes);
+    if (computedHash !== id) {
+      findings.push({ type: 'hash-mismatch', id, actual: computedHash as ObjectId });
       exitBit |= EXIT_HASH_MISMATCH;
     }
-    // Parse errors on loose objects are validated above — not a hash fault.
+  } catch {
+    // Hash computation failure — treated as a corrupt object; catalogue checks may already have fired.
   }
 
   return { findings, exitBit };

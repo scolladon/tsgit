@@ -7,6 +7,7 @@ import {
   runContentValidationPass,
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING } from './internal/fsck/exit-codes.js';
+import { buildObjectCache } from './internal/fsck/object-cache.js';
 import {
   buildInEdgeMap,
   buildReachableSet,
@@ -34,14 +35,20 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const allIds = await enumerateObjects(ctx, { includePacks: opts.full !== false });
   const universe = new Set(allIds);
 
+  // Build the shared object cache — every universe object is decoded exactly
+  // once here; all subsequent passes consume this map instead of re-reading.
+  const objectCache = await buildObjectCache(ctx, universe);
+
   // Build blob→filename map for special-file content checks (.gitmodules, .gitattributes).
   // Skipped when connectivityOnly since content checks are also skipped in that mode.
   const blobFilenames =
     opts.connectivityOnly === true
       ? (new Map() as ReadonlyMap<ObjectId, string>)
-      : await buildBlobFilenameMap(ctx, universe);
+      : buildBlobFilenameMap(universe, objectCache);
 
-  // Content validation pass (skipped when connectivityOnly)
+  // Content validation pass (skipped when connectivityOnly).
+  // Reads raw bytes separately (needed for malformed-object detection) and
+  // verifies hash from those bytes — no additional readObject calls.
   const contentResult =
     opts.connectivityOnly === true
       ? { findings: [] as FsckFinding[], exitBit: 0 }
@@ -50,15 +57,13 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // Refs-verify pass
   const refsResult = await runRefsVerifyPass(ctx, universe, opts.checkReferences !== false);
 
-  const [roots, inEdgePresent] = await Promise.all([
-    collectRoots(ctx, opts, universe),
-    buildInEdgeMap(ctx, universe),
-  ]);
+  const roots = await collectRoots(ctx, opts, universe);
+  const inEdgePresent = buildInEdgeMap(universe, objectCache);
 
-  const { reached, missingIds, brokenEdges, rootCommits, tagRefs } = await buildReachableSet(
-    ctx,
+  const { reached, missingIds, brokenEdges, rootCommits, tagRefs } = buildReachableSet(
     universe,
     roots,
+    objectCache,
   );
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
@@ -78,14 +83,14 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   }
 
   for (const id of missingIds) {
-    const objectType = missingTypeFromEdge.get(id) ?? (await resolveObjectType(ctx, id));
+    const objectType = missingTypeFromEdge.get(id) ?? resolveObjectType(id, objectCache);
     findings.push({ type: 'missing', id, objectType });
   }
   for (const edge of brokenEdges) {
     findings.push({ type: 'broken-link', ...edge });
   }
-  await collectTypeFindings(ctx, unreachable, 'unreachable', findings);
-  await collectTypeFindings(ctx, dangling, 'dangling', findings);
+  collectTypeFindings(unreachable, 'unreachable', findings, objectCache);
+  collectTypeFindings(dangling, 'dangling', findings, objectCache);
   for (const id of rootCommits) findings.push({ type: 'root', id });
   for (const { tagId, tagName, targetId, targetType } of tagRefs) {
     findings.push({ type: 'tagged', id: targetId, objectType: targetType, tagName, tag: tagId });

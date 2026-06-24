@@ -1,8 +1,7 @@
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import { FILE_MODE } from '../../../../domain/objects/file-mode.js';
 import type { GitObject, ObjectId } from '../../../../domain/objects/index.js';
-import type { Context } from '../../../../ports/context.js';
-import { readObject } from '../../../primitives/read-object.js';
+import type { CachedGitObject } from './object-cache.js';
 import type { FsckFinding } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -27,17 +26,15 @@ function recordOutEdges(obj: GitObject, inEdge: Set<ObjectId>): void {
  * from another present (universe) object. Separate scan so that
  * unreachable objects with internal edges are not misclassified as dangling.
  */
-export async function buildInEdgeMap(
-  ctx: Context,
+export function buildInEdgeMap(
   universe: ReadonlySet<ObjectId>,
-): Promise<Set<ObjectId>> {
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+): Set<ObjectId> {
   const inEdge = new Set<ObjectId>();
   for (const id of universe) {
-    try {
-      recordOutEdges(await readObject(ctx, id, { verifyHash: false }), inEdge);
-    } catch {
-      // Corrupt / unreadable — no edges recorded
-    }
+    const obj = objectCache.get(id);
+    if (obj != null) recordOutEdges(obj, inEdge);
+    // null (corrupt / unreadable) — no edges recorded
   }
   return inEdge;
 }
@@ -129,14 +126,8 @@ function processTag(state: BfsState, id: ObjectId, obj: GitObject & { type: 'tag
   }
 }
 
-async function visitObject(ctx: Context, state: BfsState, id: ObjectId): Promise<void> {
+function visitObject(state: BfsState, id: ObjectId, obj: GitObject): void {
   state.reached.add(id);
-  let obj: GitObject;
-  try {
-    obj = await readObject(ctx, id, { verifyHash: false });
-  } catch {
-    return; // Corrupt/unreadable — in reached, no further edges
-  }
   if (obj.type === 'commit') processCommit(state, id, obj);
   if (obj.type === 'tree') processTree(state, id, obj);
   if (obj.type === 'tag') processTag(state, id, obj);
@@ -146,11 +137,11 @@ async function visitObject(ctx: Context, state: BfsState, id: ObjectId): Promise
  * BFS over the reachable object graph starting from `seeds`.
  * Walks commit→(tree, parents), tree→entries (non-gitlink), tag→target.
  */
-export async function buildReachableSet(
-  ctx: Context,
+export function buildReachableSet(
   universe: ReadonlySet<ObjectId>,
   seeds: ReadonlySet<ObjectId>,
-): Promise<WalkResult> {
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+): WalkResult {
   const state: BfsState = {
     universe,
     reached: new Set(),
@@ -168,7 +159,13 @@ export async function buildReachableSet(
       state.missingIds.add(id);
       continue;
     }
-    await visitObject(ctx, state, id);
+    const obj = objectCache.get(id);
+    if (obj == null) {
+      // Corrupt/unreadable — mark reached, no further edges
+      state.reached.add(id);
+    } else {
+      visitObject(state, id, obj);
+    }
   }
 
   return {
@@ -203,30 +200,26 @@ export function classifyObjects(
 // Finding assembly helpers
 // ---------------------------------------------------------------------------
 
-export async function collectTypeFindings(
-  ctx: Context,
+export function collectTypeFindings(
   ids: ReadonlyArray<ObjectId>,
   type: 'unreachable' | 'dangling',
   findings: FsckFinding[],
-): Promise<void> {
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+): void {
   for (const id of ids) {
-    try {
-      const obj = await readObject(ctx, id, { verifyHash: false });
+    const obj = objectCache.get(id);
+    if (obj != null) {
       findings.push({ type, id, objectType: obj.type });
-    } catch {
-      // Unreadable — skip (already in reached/not reachable anyway)
     }
+    // null (unreadable) — skip (already in reached/not reachable anyway)
   }
 }
 
-/** Determine the object type for an oid by reading it lightly. */
-export async function resolveObjectType(
-  ctx: Context,
+/** Determine the object type for an oid from the cache. */
+export function resolveObjectType(
   id: ObjectId,
-): Promise<FsckObjectType | 'unknown'> {
-  try {
-    return (await readObject(ctx, id, { verifyHash: false })).type;
-  } catch {
-    return 'unknown';
-  }
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+): FsckObjectType | 'unknown' {
+  const obj = objectCache.get(id);
+  return obj != null ? obj.type : 'unknown';
 }
