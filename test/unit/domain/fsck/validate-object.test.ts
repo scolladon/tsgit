@@ -3271,3 +3271,316 @@ describe('Given tag where tagger line is present but has wrong prefix (author in
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// commit — isValidTimezone: TIMEZONE_RE bypass (line 38 ConditionalExpression→false)
+// Kills B1: if (!TIMEZONE_RE.test(tz)) return false → if (false) return false.
+// '+003a' fails TIMEZONE_RE (non-digit at position 4) but has numerically
+// plausible hours=0 and minutes=parseInt('3a')=3. With B1 the regex guard is
+// bypassed and isValidTimezone returns true → no badTimezone.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author with timezone containing a non-digit character that fails TIMEZONE_RE', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTimezone (regex guard rejects non-digit in tz field)', () => {
+      // Arrange
+      const sut = validateObject;
+      // '+003a' fails /^[+-]\d{4}$/ (position 4 is 'a').
+      // Original: !TIMEZONE_RE.test → return false → badTimezone.
+      // B1 mutant (if false): regex guard skipped → hours=0 <24, minutes=parseInt('3a')=3 <60
+      // → returns true → no badTimezone. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 1234567890 +003a',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — isValidTimezone: slice(1,3) and slice(3,5) mutations (lines 39-40)
+// Kills B2 (tz.slice(1,3) → tz) and B3 (tz.slice(3,5) → tz).
+// A valid timezone '+0230' (hours=2, minutes=30) must NOT emit badTimezone.
+// B2: hours = parseInt('+0230') = 230 ≥ 24 → returns false → badTimezone.
+// B3: minutes = parseInt('+0230') = 230 ≥ 60 → returns false → badTimezone.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author with a valid timezone offset of +0230', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badTimezone (hours=2 <24 and minutes=30 <60)', () => {
+      // Arrange
+      const sut = validateObject;
+      // '+0230': passes TIMEZONE_RE; hours=parseInt('02')=2 <24; minutes=parseInt('30')=30 <60.
+      // B2 mutant (slice(1,3)→tz): hours=parseInt('+0230')=230 ≥24 → false → badTimezone. FAILS.
+      // B3 mutant (slice(3,5)→tz): minutes=parseInt('+0230')=230 ≥60 → false → badTimezone. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 1234567890 +0230',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badTimezone' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — isTimestampOverflow length>19 guard (line 52 ConditionalExpression→false)
+// Kills C1: if (timestamp.length > 19) return true → if (false) return true.
+// '10000000000000000000' has 20 digits so the length guard fires (20>19=true).
+// C1 mutant (if false): falls through to string comparison.
+// '10000000000000000000' > '9223372036854775807' is false ('1' < '9') →
+// no overflow detected → no badDateOverflow.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author with 20-digit timestamp starting with 1 (10000000000000000000)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDateOverflow (20 digits exceeds INT64_MAX regardless of leading digit)', () => {
+      // Arrange
+      const sut = validateObject;
+      // length=20 > 19 → return true → badDateOverflow.
+      // C1 mutant (if false): '10000000000000000000'>'9223372036854775807'='1'<'9'→false → no overflow. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 10000000000000000000 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — isTimestampOverflow length<19 guard (line 53 ConditionalExpression→false)
+// Kills C2: if (timestamp.length < 19) return false → if (false) return false.
+// '999999999999999999' (18 nines) has length 18 < 19 → early-return false.
+// C2 mutant (if false): falls through to string comparison.
+// '999999999999999999' > '9223372036854775807': '9'='9', char 1 '9'>'2' → true
+// → spurious badDateOverflow.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author with 18-digit all-nines timestamp (999999999999999999)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no badDateOverflow (18-digit value is within INT64_MAX range)', () => {
+      // Arrange
+      const sut = validateObject;
+      // length=18 < 19 → return false → no overflow.
+      // C2 mutant (if false): '999999999999999999'>'9223372036854775807':'9'='9','9'>'2'→true → badDateOverflow. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 999999999999999999 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — checkTimestamp zeroPaddedDate guard (line 58 EqualityOperator >=1)
+// Kills D1: timestamp.length > 1 → timestamp.length >= 1.
+// Single-character '0' starts with '0' and has length 1.
+// Original (> 1): 1 > 1 = false → no zeroPaddedDate.
+// D1 mutant (>= 1): 1 >= 1 = true → zeroPaddedDate. FAILS.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author with single-character zero timestamp ("0")', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no zeroPaddedDate (single "0" is not a zero-padded date)', () => {
+      // Arrange
+      const sut = validateObject;
+      // '0': startsWith('0')=true, length=1. Original (>1): 1>1=false → no zeroPaddedDate.
+      // D1 mutant (>=1): 1>=1=true → zeroPaddedDate. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 0 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — '0' is a valid timestamp (epoch); must not trigger zeroPaddedDate
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'zeroPaddedDate' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — checkTimestamp badDate regex anchoring: missing ^ anchor (line 61 /\d+$/)
+// Kills E1: /^\d+$/ → /\d+$/.
+// 'abc123' ends with digits so /\d+$/ matches → !/\d+$/.test('abc123')=false → no badDate.
+// Original /^\d+$/: 'abc123' fails (starts with 'a') → badDate.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author timestamp with leading non-digit characters ("abc123")', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDate (timestamp must be all digits; leading letters disqualify it)', () => {
+      // Arrange
+      const sut = validateObject;
+      // 'abc123': /^\d+$/ = false → badDate.
+      // E1 mutant (/\d+$/): 'abc123' ends with '3' → matches → no badDate. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> abc123 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — checkTimestamp badDate regex anchoring: missing $ anchor (line 61 /^\d+/)
+// Kills E2: /^\d+$/ → /^\d+/.
+// '123abc' starts with digits so /^\d+/ matches → !/^\d+/.test('123abc')=false → no badDate.
+// Original /^\d+$/: '123abc' fails (ends with 'c') → badDate.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author timestamp with trailing non-digit characters ("123abc")', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badDate (timestamp must be all digits; trailing letters disqualify it)', () => {
+      // Arrange
+      const sut = validateObject;
+      // '123abc': /^\d+$/ = false → badDate.
+      // E2 mutant (/^\d+/): starts with '1' → matches → no badDate. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 123abc +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
+      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — checkIdentityLine ltIdx===-1 branch (line 80 Block/Unary/Conditional)
+// Kills F1 (block {}), F2 (ltIdx===+1), F3 (if false).
+// An identity string with '>' but no '<' has ltIdx=-1.
+// Original: if (ltIdx===-1) pushes missingEmail and returns early.
+// With any line-80 mutant: the block is skipped; gtIdx finds the '>'; the
+// date section parses without emitting missingEmail.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author identity with ">" but no "<" (opening angle-bracket absent)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits missingEmail (ltIdx===-1 guard fires on missing opening bracket)', () => {
+      // Arrange
+      const sut = validateObject;
+      // 'Test User> 1234567890 +0000': indexOf('<')=-1, indexOf('>')=9.
+      // Original: ltIdx===-1 → push missingEmail, return immediately.
+      // F1 mutant (block {}): skipped → gtIdx=9, date parses → no missingEmail. FAILS.
+      // F2 mutant (ltIdx===+1): -1!==+1=false → skipped → same. FAILS.
+      // F3 mutant (if false): → same as F1. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'Test User> 1234567890 +0000',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — checkIdentityLine split /\s+/ → /\s/ (line 120)
+// Kills G1: afterGt.trim().split(/\s+/) → split(/\s/).
+// Two consecutive tab characters between timestamp and timezone cause
+// split(/\s+/) to yield ['timestamp', 'tz'] while split(/\s/) yields
+// ['timestamp', '', 'tz'] — putting '' in the timezone slot and skipping
+// the timezone validity check.
+// ---------------------------------------------------------------------------
+
+describe('Given commit author with double-tab separator between timestamp and an invalid timezone', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTimezone (split /\\s+/ collapses consecutive whitespace correctly)', () => {
+      // Arrange
+      const sut = validateObject;
+      // afterGt = ' 1234567890\t\t+9900' (space after '>'; two tabs before tz).
+      // afterGt.startsWith(' ') = true. afterGt.trim() = '1234567890\t\t+9900'.
+      // split(/\s+/): ['1234567890', '+9900'] → tz='+9900' (hours=99≥24) → badTimezone.
+      // G1 mutant (/\s/): ['1234567890', '', '+9900'] → tz='' → no check → no badTimezone. FAILS.
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 1234567890\t\t+9900',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commit — parseHeaderLines StringLiteral '\n\n' → 'Stryker was here!' (line 142)
+// Kills H1: text.indexOf('\n\n') → text.indexOf('Stryker was here!').
+// With H1 the blank-line sentinel is never found (blankIdx=-1 always) so
+// messageBody is always '' — nullInCommit can never be detected.
+// ---------------------------------------------------------------------------
+
+describe('Given commit with a NUL byte in the body (after the blank-line separator)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits nullInCommit (NUL in body detected via messageBody check)', () => {
+      // Arrange
+      const sut = validateObject;
+      // NUL is only in the body; headerText has no NUL so nulInHeader does NOT fire.
+      // messageBody.includes('\x00') = true → nulInCommit.
+      // H1 mutant (indexOf('Stryker...')): blankIdx=-1 always → messageBody='' → no nulInCommit. FAILS.
+      const rawBytes = encode(
+        `tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\n\x00body`,
+      );
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — nulInCommit (warning), not nulInHeader, because the NUL is only in the body
+      expect(result).toContainEqual({ msgId: 'nulInCommit', severity: 'warning' });
+      expect(result.filter((f) => f.msgId === 'nulInHeader')).toHaveLength(0);
+    });
+  });
+});
