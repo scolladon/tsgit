@@ -826,3 +826,459 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// FIX A — per-edge-type broken-link + missing taxonomy
+//
+// Pinned real git 2.54.0: for EVERY edge type (tree→blob, tree→tree,
+// commit→tree, commit→parent, tag→target) git emits:
+//   "broken link from <fromType> <fromId>\n              to  <toType> <toId>"
+//   "missing <toType> <toId>"
+// exit 2 (bit 2 = missing/broken-link).
+// tsgit's structured findings must produce the same reconstruction.
+// ---------------------------------------------------------------------------
+
+// -- Shared helpers for connectivity pin scenarios --------------------------
+
+/**
+ * Format a "broken link from … to …" line the same way git prints it, for
+ * byte-equality assertion against real git stderr.
+ * git pads the "from" type to 6 chars and "to" type to 6 chars.
+ */
+function reconstructBrokenLink(
+  fromType: string,
+  fromId: string,
+  _toType: string,
+  _toId: string,
+): string {
+  // git fsck 2.54.0 format (stdout):
+  //   "broken link from    tree <sha>"
+  //   "              to    blob <sha>"
+  // The type name is right-padded in a field of width 8 (no space between "from" and field):
+  //   commit (6) → "  commit", tree (4) → "    tree", blob (4) → "    blob", tag (3) → "     tag"
+  return `broken link from${fromType.padStart(8)} ${fromId}`;
+}
+
+function reconstructMissing(objectType: string, id: string): string {
+  return `missing ${objectType} ${id}`;
+}
+
+// --- Connectivity scenario: tree → missing blob ----------------------------
+
+let connTreeBlobDir = '';
+let connTreeBlobCtx: Context;
+let connTreeBlobTreeSha = '';
+const CONN_MISSING_BLOB = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab';
+
+beforeAll(async () => {
+  connTreeBlobDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-treeb-'));
+  initRepo(connTreeBlobDir);
+
+  const blobShaBytes = Buffer.from(CONN_MISSING_BLOB, 'hex');
+  const treeBody = Buffer.concat([Buffer.from('100644 file.txt\0'), blobShaBytes]);
+  connTreeBlobTreeSha = await writeLooseObject(connTreeBlobDir, 'tree', treeBody);
+
+  const commitBody = Buffer.from(
+    `tree ${connTreeBlobTreeSha}\nauthor Test <t@t.com> 1700000000 +0000\ncommitter Test <t@t.com> 1700000000 +0000\n\ntree-miss-blob\n`,
+  );
+  const commitSha = await writeLooseObject(connTreeBlobDir, 'commit', commitBody);
+  await mkdir(path.join(connTreeBlobDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(path.join(connTreeBlobDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
+  await rm(path.join(connTreeBlobDir, '.git', 'logs'), { recursive: true, force: true });
+
+  connTreeBlobCtx = createNodeContext({ workDir: connTreeBlobDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (connTreeBlobDir !== '') await rm(connTreeBlobDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given tree referencing a missing blob (tree→missing-blob edge)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits broken-link + missing findings and exit code 2 matches real git', async () => {
+        // Arrange
+        // Pinned real git 2.54.0:
+        //   "broken link from    tree <treeSha>\n              to    blob <blobSha>"
+        //   "missing blob <blobSha>"
+        //   exit 2
+        const gitResult = gitFsck(connTreeBlobDir, '--no-reflogs');
+
+        // Act
+        const result = await fsck(connTreeBlobCtx, { reflogRoots: false });
+
+        // Assert — exit code 2
+        expect(result.exitCode).toBe(2);
+        expect(gitResult.exitCode).toBe(2);
+
+        // Assert — broken-link finding: tree → blob
+        const brokenLink = result.findings.find(
+          (f): f is FsckFinding & { type: 'broken-link' } =>
+            f.type === 'broken-link' &&
+            (f as { fromId: string }).fromId === connTreeBlobTreeSha &&
+            (f as { toId: string }).toId === CONN_MISSING_BLOB,
+        );
+        expect(brokenLink).toBeDefined();
+        expect(brokenLink).toMatchObject({ fromType: 'tree', toType: 'blob' });
+
+        // Reconstruct "broken link from tree ... to blob ..." line
+        // git fsck sends connectivity findings (broken link, missing) to stdout
+        if (brokenLink !== undefined) {
+          const fromId = (brokenLink as { fromId: string }).fromId;
+          const toId = (brokenLink as { toId: string }).toId;
+          const reconstructed = reconstructBrokenLink('tree', fromId, 'blob', toId);
+          expect(gitResult.stdout).toContain(reconstructed);
+        }
+
+        // Assert — missing blob finding
+        const missingBlob = result.findings.find(
+          (f): f is FsckFinding & { type: 'missing' } =>
+            f.type === 'missing' && (f as { id: string }).id === CONN_MISSING_BLOB,
+        );
+        expect(missingBlob).toBeDefined();
+        expect(missingBlob).toMatchObject({ objectType: 'blob' });
+
+        // Reconstruct "missing blob ..." line (stdout)
+        if (missingBlob !== undefined) {
+          const id = (missingBlob as { id: string }).id;
+          expect(gitResult.stdout).toContain(reconstructMissing('blob', id));
+        }
+      });
+    });
+  },
+);
+
+// --- Connectivity scenario: tree → missing sub-tree ------------------------
+
+let connTreeSubtreeDir = '';
+let connTreeSubtreeCtx: Context;
+let connTreeSubtreeTreeSha = '';
+const CONN_MISSING_SUBTREE = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc';
+
+beforeAll(async () => {
+  connTreeSubtreeDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-trees-'));
+  initRepo(connTreeSubtreeDir);
+
+  const subtreeShaBytes = Buffer.from(CONN_MISSING_SUBTREE, 'hex');
+  const treeBody = Buffer.concat([Buffer.from('40000 subdir\0'), subtreeShaBytes]);
+  connTreeSubtreeTreeSha = await writeLooseObject(connTreeSubtreeDir, 'tree', treeBody);
+
+  const commitBody = Buffer.from(
+    `tree ${connTreeSubtreeTreeSha}\nauthor Test <t@t.com> 1700000000 +0000\ncommitter Test <t@t.com> 1700000000 +0000\n\ntree-miss-subtree\n`,
+  );
+  const commitSha = await writeLooseObject(connTreeSubtreeDir, 'commit', commitBody);
+  await mkdir(path.join(connTreeSubtreeDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(path.join(connTreeSubtreeDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
+  await rm(path.join(connTreeSubtreeDir, '.git', 'logs'), { recursive: true, force: true });
+
+  connTreeSubtreeCtx = createNodeContext({ workDir: connTreeSubtreeDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (connTreeSubtreeDir !== '') await rm(connTreeSubtreeDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given tree referencing a missing sub-tree (tree→missing-tree edge)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits broken-link + missing findings and exit code 2 matches real git', async () => {
+        // Arrange
+        // Pinned real git 2.54.0:
+        //   "broken link from    tree <treeSha>\n              to    tree <subtreeSha>"
+        //   "missing tree <subtreeSha>"
+        //   exit 2
+        const gitResult = gitFsck(connTreeSubtreeDir, '--no-reflogs');
+
+        // Act
+        const result = await fsck(connTreeSubtreeCtx, { reflogRoots: false });
+
+        // Assert — exit code 2
+        expect(result.exitCode).toBe(2);
+        expect(gitResult.exitCode).toBe(2);
+
+        // Assert — broken-link finding: tree → tree
+        const brokenLink = result.findings.find(
+          (f): f is FsckFinding & { type: 'broken-link' } =>
+            f.type === 'broken-link' &&
+            (f as { fromId: string }).fromId === connTreeSubtreeTreeSha &&
+            (f as { toId: string }).toId === CONN_MISSING_SUBTREE,
+        );
+        expect(brokenLink).toBeDefined();
+        expect(brokenLink).toMatchObject({ fromType: 'tree', toType: 'tree' });
+
+        // Reconstruct "broken link from tree ... to tree ..." line (stdout)
+        if (brokenLink !== undefined) {
+          const fromId = (brokenLink as { fromId: string }).fromId;
+          const toId = (brokenLink as { toId: string }).toId;
+          const reconstructed = reconstructBrokenLink('tree', fromId, 'tree', toId);
+          expect(gitResult.stdout).toContain(reconstructed);
+        }
+
+        // Assert — missing tree finding
+        const missingTree = result.findings.find(
+          (f): f is FsckFinding & { type: 'missing' } =>
+            f.type === 'missing' && (f as { id: string }).id === CONN_MISSING_SUBTREE,
+        );
+        expect(missingTree).toBeDefined();
+        expect(missingTree).toMatchObject({ objectType: 'tree' });
+
+        if (missingTree !== undefined) {
+          const id = (missingTree as { id: string }).id;
+          expect(gitResult.stdout).toContain(reconstructMissing('tree', id));
+        }
+      });
+    });
+  },
+);
+
+// --- Connectivity scenario: commit → missing tree --------------------------
+
+let connCommitTreeDir = '';
+let connCommitTreeCtx: Context;
+let connCommitTreeCommitSha = '';
+const CONN_MISSING_TREE = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef0';
+
+beforeAll(async () => {
+  connCommitTreeDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-commt-'));
+  initRepo(connCommitTreeDir);
+
+  const commitBody = Buffer.from(
+    `tree ${CONN_MISSING_TREE}\nauthor Test <t@t.com> 1700000000 +0000\ncommitter Test <t@t.com> 1700000000 +0000\n\ncommit-miss-tree\n`,
+  );
+  connCommitTreeCommitSha = await writeLooseObject(connCommitTreeDir, 'commit', commitBody);
+  await mkdir(path.join(connCommitTreeDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(
+    path.join(connCommitTreeDir, '.git', 'refs', 'heads', 'main'),
+    `${connCommitTreeCommitSha}\n`,
+  );
+  await rm(path.join(connCommitTreeDir, '.git', 'logs'), { recursive: true, force: true });
+
+  connCommitTreeCtx = createNodeContext({ workDir: connCommitTreeDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (connCommitTreeDir !== '') await rm(connCommitTreeDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given commit referencing a missing tree (commit→missing-tree edge)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits broken-link + missing findings and exit code 2 matches real git', async () => {
+        // Arrange
+        // Pinned real git 2.54.0:
+        //   "broken link from  commit <commitSha>\n              to    tree <treeSha>"
+        //   "missing tree <treeSha>"
+        //   exit 2
+        const gitResult = gitFsck(connCommitTreeDir, '--no-reflogs');
+
+        // Act
+        const result = await fsck(connCommitTreeCtx, { reflogRoots: false });
+
+        // Assert — exit code 2
+        expect(result.exitCode).toBe(2);
+        expect(gitResult.exitCode).toBe(2);
+
+        // Assert — broken-link finding: commit → tree
+        const brokenLink = result.findings.find(
+          (f): f is FsckFinding & { type: 'broken-link' } =>
+            f.type === 'broken-link' &&
+            (f as { fromId: string }).fromId === connCommitTreeCommitSha &&
+            (f as { toId: string }).toId === CONN_MISSING_TREE,
+        );
+        expect(brokenLink).toBeDefined();
+        expect(brokenLink).toMatchObject({ fromType: 'commit', toType: 'tree' });
+
+        if (brokenLink !== undefined) {
+          const fromId = (brokenLink as { fromId: string }).fromId;
+          const toId = (brokenLink as { toId: string }).toId;
+          const reconstructed = reconstructBrokenLink('commit', fromId, 'tree', toId);
+          expect(gitResult.stdout).toContain(reconstructed);
+        }
+
+        // Assert — missing tree finding
+        const missingTree = result.findings.find(
+          (f): f is FsckFinding & { type: 'missing' } =>
+            f.type === 'missing' && (f as { id: string }).id === CONN_MISSING_TREE,
+        );
+        expect(missingTree).toBeDefined();
+        expect(missingTree).toMatchObject({ objectType: 'tree' });
+
+        if (missingTree !== undefined) {
+          const id = (missingTree as { id: string }).id;
+          expect(gitResult.stdout).toContain(reconstructMissing('tree', id));
+        }
+      });
+    });
+  },
+);
+
+// --- Connectivity scenario: commit → missing parent commit -----------------
+
+let connCommitParentDir = '';
+let connCommitParentCtx: Context;
+let connCommitParentCommitSha = '';
+const CONN_MISSING_PARENT = 'cccccccccccccccccccccccccccccccccccccccd';
+
+beforeAll(async () => {
+  connCommitParentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-commp-'));
+  initRepo(connCommitParentDir);
+
+  // Write an empty tree (4b825dc…) to the object store
+  const emptyTreeBody = Buffer.alloc(0);
+  const emptyTreeSha = await writeLooseObject(connCommitParentDir, 'tree', emptyTreeBody);
+
+  const commitBody = Buffer.from(
+    `tree ${emptyTreeSha}\nparent ${CONN_MISSING_PARENT}\nauthor Test <t@t.com> 1700000000 +0000\ncommitter Test <t@t.com> 1700000000 +0000\n\ncommit-miss-parent\n`,
+  );
+  connCommitParentCommitSha = await writeLooseObject(connCommitParentDir, 'commit', commitBody);
+  await mkdir(path.join(connCommitParentDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(
+    path.join(connCommitParentDir, '.git', 'refs', 'heads', 'main'),
+    `${connCommitParentCommitSha}\n`,
+  );
+  await rm(path.join(connCommitParentDir, '.git', 'logs'), { recursive: true, force: true });
+
+  connCommitParentCtx = createNodeContext({ workDir: connCommitParentDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (connCommitParentDir !== '') await rm(connCommitParentDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given commit referencing a missing parent commit (commit→missing-parent edge)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits broken-link + missing findings and exit code 2 matches real git', async () => {
+        // Arrange
+        // Pinned real git 2.54.0:
+        //   "broken link from  commit <commitSha>\n              to  commit <parentSha>"
+        //   "missing commit <parentSha>"
+        //   exit 2
+        const gitResult = gitFsck(connCommitParentDir, '--no-reflogs');
+
+        // Act
+        const result = await fsck(connCommitParentCtx, { reflogRoots: false });
+
+        // Assert — exit code 2
+        expect(result.exitCode).toBe(2);
+        expect(gitResult.exitCode).toBe(2);
+
+        // Assert — broken-link finding: commit → commit
+        const brokenLink = result.findings.find(
+          (f): f is FsckFinding & { type: 'broken-link' } =>
+            f.type === 'broken-link' &&
+            (f as { fromId: string }).fromId === connCommitParentCommitSha &&
+            (f as { toId: string }).toId === CONN_MISSING_PARENT,
+        );
+        expect(brokenLink).toBeDefined();
+        expect(brokenLink).toMatchObject({ fromType: 'commit', toType: 'commit' });
+
+        if (brokenLink !== undefined) {
+          const fromId = (brokenLink as { fromId: string }).fromId;
+          const toId = (brokenLink as { toId: string }).toId;
+          const reconstructed = reconstructBrokenLink('commit', fromId, 'commit', toId);
+          expect(gitResult.stdout).toContain(reconstructed);
+        }
+
+        // Assert — missing commit finding
+        const missingCommit = result.findings.find(
+          (f): f is FsckFinding & { type: 'missing' } =>
+            f.type === 'missing' && (f as { id: string }).id === CONN_MISSING_PARENT,
+        );
+        expect(missingCommit).toBeDefined();
+        expect(missingCommit).toMatchObject({ objectType: 'commit' });
+
+        if (missingCommit !== undefined) {
+          const id = (missingCommit as { id: string }).id;
+          expect(gitResult.stdout).toContain(reconstructMissing('commit', id));
+        }
+      });
+    });
+  },
+);
+
+// --- Connectivity scenario: tag → missing target ---------------------------
+
+let connTagTargetDir = '';
+let connTagTargetCtx: Context;
+let connTagTargetTagSha = '';
+const CONN_MISSING_TAG_TARGET = 'ddddddddddddddddddddddddddddddddddddddde';
+
+beforeAll(async () => {
+  connTagTargetDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-conn-tagt-'));
+  initRepo(connTagTargetDir);
+
+  const tagBody = Buffer.from(
+    `object ${CONN_MISSING_TAG_TARGET}\ntype commit\ntag v-missing\ntagger Test <t@t.com> 1700000000 +0000\n\ntag with missing target\n`,
+  );
+  connTagTargetTagSha = await writeLooseObject(connTagTargetDir, 'tag', tagBody);
+  await mkdir(path.join(connTagTargetDir, '.git', 'refs', 'tags'), { recursive: true });
+  await writeFile(
+    path.join(connTagTargetDir, '.git', 'refs', 'tags', 'v-missing'),
+    `${connTagTargetTagSha}\n`,
+  );
+  await rm(path.join(connTagTargetDir, '.git', 'logs'), { recursive: true, force: true });
+
+  connTagTargetCtx = createNodeContext({ workDir: connTagTargetDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (connTagTargetDir !== '') await rm(connTagTargetDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given annotated tag referencing a missing commit target (tag→missing-target edge)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits broken-link + missing findings and exit code 2 matches real git', async () => {
+        // Arrange
+        // Pinned real git 2.54.0:
+        //   "broken link from     tag <tagSha>\n              to  commit <targetSha>"
+        //   "missing commit <targetSha>"
+        //   exit 2
+        const gitResult = gitFsck(connTagTargetDir, '--no-reflogs');
+
+        // Act
+        const result = await fsck(connTagTargetCtx, { reflogRoots: false });
+
+        // Assert — exit code 2
+        expect(result.exitCode).toBe(2);
+        expect(gitResult.exitCode).toBe(2);
+
+        // Assert — broken-link finding: tag → commit
+        const brokenLink = result.findings.find(
+          (f): f is FsckFinding & { type: 'broken-link' } =>
+            f.type === 'broken-link' &&
+            (f as { fromId: string }).fromId === connTagTargetTagSha &&
+            (f as { toId: string }).toId === CONN_MISSING_TAG_TARGET,
+        );
+        expect(brokenLink).toBeDefined();
+        expect(brokenLink).toMatchObject({ fromType: 'tag', toType: 'commit' });
+
+        if (brokenLink !== undefined) {
+          const fromId = (brokenLink as { fromId: string }).fromId;
+          const toId = (brokenLink as { toId: string }).toId;
+          const reconstructed = reconstructBrokenLink('tag', fromId, 'commit', toId);
+          expect(gitResult.stdout).toContain(reconstructed);
+        }
+
+        // Assert — missing commit finding
+        const missingTarget = result.findings.find(
+          (f): f is FsckFinding & { type: 'missing' } =>
+            f.type === 'missing' && (f as { id: string }).id === CONN_MISSING_TAG_TARGET,
+        );
+        expect(missingTarget).toBeDefined();
+        expect(missingTarget).toMatchObject({ objectType: 'commit' });
+
+        if (missingTarget !== undefined) {
+          const id = (missingTarget as { id: string }).id;
+          expect(gitResult.stdout).toContain(reconstructMissing('commit', id));
+        }
+      });
+    });
+  },
+);

@@ -707,8 +707,21 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 
   const findings: FsckFinding[] = [...contentResult.findings, ...refsResult.findings];
 
+  // Build a map from absent-object id → type using the broken-edge records.
+  // Every broken edge carries the target type derived from the referring object
+  // (tree entry mode, commit field, tag object-type header).  Using this avoids
+  // a read of an object that is known to be absent while matching git's
+  // "missing <type> <sha>" output — git emits the type it expected from context.
+  const missingTypeFromEdge = new Map<ObjectId, FsckObjectType | 'unknown'>();
+  for (const edge of brokenEdges) {
+    if (!missingTypeFromEdge.has(edge.toId)) {
+      missingTypeFromEdge.set(edge.toId, edge.toType);
+    }
+  }
+
   for (const id of missingIds) {
-    findings.push({ type: 'missing', id, objectType: await resolveObjectType(ctx, id) });
+    const objectType = missingTypeFromEdge.get(id) ?? (await resolveObjectType(ctx, id));
+    findings.push({ type: 'missing', id, objectType });
   }
   for (const edge of brokenEdges) {
     findings.push({ type: 'broken-link', ...edge });
