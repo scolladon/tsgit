@@ -458,9 +458,9 @@ type FsckSeverity = 'error' | 'warning' | 'info';   // git's WARN/ERROR/INFO cla
 type FsckFinding =
   | { readonly type: 'dangling';     readonly objectType: FsckObjectType; readonly id: ObjectId }
   | { readonly type: 'unreachable';  readonly objectType: FsckObjectType; readonly id: ObjectId }
-  | { readonly type: 'missing';      readonly objectType: FsckObjectType; readonly id: ObjectId; readonly referencedBy?: ObjectId }
-  | { readonly type: 'broken-link';  readonly from: ObjectId; readonly fromType: FsckObjectType; readonly to: ObjectId; readonly toType: FsckObjectType }
-  | { readonly type: 'bad-object';   readonly id: ObjectId; readonly objectType: FsckObjectType; readonly msgId: string; readonly severity: FsckSeverity }
+  | { readonly type: 'missing';      readonly objectType: FsckObjectType | 'unknown'; readonly id: ObjectId }
+  | { readonly type: 'broken-link';  readonly fromId: ObjectId; readonly fromType: FsckObjectType; readonly toId: ObjectId; readonly toType: FsckObjectType | 'unknown' }
+  | { readonly type: 'bad-object';   readonly id: ObjectId; readonly objectType: FsckObjectType | 'unknown'; readonly msgId: string; readonly severity: FsckSeverity }
   | { readonly type: 'hash-mismatch'; readonly id: ObjectId; readonly actual: ObjectId }
   | { readonly type: 'bad-ref';      readonly ref: RefName; readonly msgId: string; readonly severity: FsckSeverity; readonly target?: ObjectId }
   | { readonly type: 'root';         readonly id: ObjectId }
