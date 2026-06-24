@@ -39,7 +39,8 @@ export type FsckFinding =
   | {
       readonly type: 'bad-object';
       readonly id: ObjectId;
-      readonly objectType: FsckObjectType;
+      /** 'unknown' when the object is undecodable and its type cannot be determined. */
+      readonly objectType: FsckObjectType | 'unknown';
       readonly msgId: string;
       readonly severity: FsckSeverity;
     }
@@ -300,13 +301,25 @@ type RawObjectResult =
 async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
   const compressed = await looseCompressedBytes(ctx, id);
   if (compressed !== undefined) {
+    let inflated: Uint8Array;
     try {
-      const inflated = await ctx.compressor.inflate(compressed);
+      inflated = await ctx.compressor.inflate(compressed);
+    } catch {
+      // Inflate failure: the compressed bytes are corrupt — type is unknown.
+      return { ok: false, msgId: 'unterminatedHeader' };
+    }
+    try {
       const { type, contentOffset } = parseHeader(inflated);
       return { ok: true, kind: type, rawBody: inflated.subarray(contentOffset) };
-    } catch {
-      // inflate or header parse failed → structural corruption
-      return { ok: false, msgId: 'unterminatedHeader' };
+    } catch (err) {
+      // Header-parse failure: inflated successfully but header is malformed.
+      // Distinguish unknown type (unknownType) from missing NUL (unterminatedHeader).
+      const reason =
+        err instanceof TsgitError && err.data.code === 'INVALID_OBJECT_HEADER'
+          ? (err.data as { reason: string }).reason
+          : '';
+      const msgId = reason.startsWith('unknown object type') ? 'unknownType' : 'unterminatedHeader';
+      return { ok: false, msgId };
     }
   }
 
@@ -321,9 +334,93 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
   }
 }
 
+/** Special filenames whose blob content triggers dedicated fsck checks. */
+const SPECIAL_BLOB_NAMES: ReadonlySet<string> = new Set(['.gitmodules', '.gitattributes']);
+
+/**
+ * Scan all tree objects in the universe and record blob OIDs that appear
+ * under a special filename (.gitmodules, .gitattributes) in any tree.
+ *
+ * Pinned real git 2.54.0: git checks .gitmodules/.gitattributes blob content
+ * at any tree depth — not only the root tree. If the same blob OID appears
+ * under multiple names, the last special name wins (precedence is
+ * non-deterministic, but in practice each blob has one name).
+ */
+async function buildBlobFilenameMap(
+  ctx: Context,
+  universe: ReadonlySet<ObjectId>,
+): Promise<ReadonlyMap<ObjectId, string>> {
+  const map = new Map<ObjectId, string>();
+  for (const id of universe) {
+    let obj: Awaited<ReturnType<typeof readObject>>;
+    try {
+      obj = await readObject(ctx, id, { verifyHash: false });
+    } catch {
+      continue;
+    }
+    if (obj.type !== 'tree') continue;
+    for (const entry of obj.entries) {
+      if (SPECIAL_BLOB_NAMES.has(entry.name)) {
+        map.set(entry.id, entry.name);
+      }
+    }
+  }
+  return map;
+}
+
 interface ContentValidationResult {
   readonly findings: ReadonlyArray<FsckFinding>;
   readonly exitBit: number;
+}
+
+/** Validate one object's content and hash, accumulating findings and an exit bit. */
+async function validateOneObject(
+  ctx: Context,
+  id: ObjectId,
+  strict: boolean,
+  blobFilenames: ReadonlyMap<ObjectId, string>,
+): Promise<ContentValidationResult> {
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
+
+  const rawResult = await tryGetRawObjectBody(ctx, id);
+  if (!rawResult.ok) {
+    findings.push({
+      type: 'bad-object',
+      id,
+      objectType: 'unknown',
+      msgId: rawResult.msgId,
+      severity: 'error',
+    });
+    return { findings, exitBit: EXIT_CORRUPT };
+  }
+
+  const { kind, rawBody } = rawResult;
+
+  // For blobs, pass the filename when the blob appears under a special name
+  // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
+  const fileName = kind === 'blob' ? blobFilenames.get(id) : undefined;
+  const catalogueFindings = validateObject(
+    fileName !== undefined ? { rawBody, kind, strict, fileName } : { rawBody, kind, strict },
+  );
+  for (const { msgId, severity } of catalogueFindings) {
+    findings.push({ type: 'bad-object', id, objectType: kind, msgId, severity });
+    if (severity === 'error') exitBit |= EXIT_CONTENT_ERROR;
+  }
+
+  // Hash check: verify separately (hash-mismatch does not preclude catalogue checks).
+  try {
+    await readObject(ctx, id, { verifyHash: true });
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'OBJECT_HASH_MISMATCH') {
+      const actual = (err.data as { actual: ObjectId }).actual;
+      findings.push({ type: 'hash-mismatch', id, actual });
+      exitBit |= EXIT_HASH_MISMATCH;
+    }
+    // Parse errors for loose objects are validated above — not a hash fault.
+  }
+
+  return { findings, exitBit };
 }
 
 /**
@@ -335,46 +432,20 @@ async function runContentValidationPass(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
   strict: boolean,
+  blobFilenames: ReadonlyMap<ObjectId, string>,
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
 
   for (const id of universe) {
-    // Step 1: get raw bytes (preserves zero-padded modes in loose objects)
-    const rawResult = await tryGetRawObjectBody(ctx, id);
-    if (!rawResult.ok) {
-      findings.push({
-        type: 'bad-object',
-        id,
-        objectType: 'blob',
-        msgId: rawResult.msgId,
-        severity: 'error',
-      });
-      exitBit |= EXIT_CORRUPT;
-      continue;
-    }
-
-    const { kind, rawBody } = rawResult;
-
-    // Step 2: run the msg-id catalogue validator on raw bytes
-    const catalogueFindings = validateObject({ rawBody, kind, strict });
-    for (const { msgId, severity } of catalogueFindings) {
-      findings.push({ type: 'bad-object', id, objectType: kind, msgId, severity });
-      if (severity === 'error') exitBit |= EXIT_CONTENT_ERROR;
-    }
-
-    // Step 3: verify hash separately (hash-mismatch does not preclude catalogue checks)
-    try {
-      await readObject(ctx, id, { verifyHash: true });
-    } catch (err) {
-      if (err instanceof TsgitError && err.data.code === 'OBJECT_HASH_MISMATCH') {
-        const actual = (err.data as { actual: ObjectId }).actual;
-        findings.push({ type: 'hash-mismatch', id, actual });
-        exitBit |= EXIT_HASH_MISMATCH;
-      }
-      // Parse errors (INVALID_FILE_MODE, INVALID_TREE_ENTRY, etc.) for loose objects
-      // whose raw bytes were already validated above — not a hash fault, ignore here.
-    }
+    const { findings: objFindings, exitBit: objBit } = await validateOneObject(
+      ctx,
+      id,
+      strict,
+      blobFilenames,
+    );
+    findings.push(...objFindings);
+    exitBit |= objBit;
   }
 
   return { findings, exitBit };
@@ -604,11 +675,18 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const allIds = await enumerateObjects(ctx, { includePacks: opts.full !== false });
   const universe = new Set(allIds);
 
+  // Build blob→filename map for special-file content checks (.gitmodules, .gitattributes).
+  // Skipped when connectivityOnly since content checks are also skipped in that mode.
+  const blobFilenames =
+    opts.connectivityOnly === true
+      ? (new Map() as ReadonlyMap<ObjectId, string>)
+      : await buildBlobFilenameMap(ctx, universe);
+
   // Content validation pass (skipped when connectivityOnly)
   const contentResult =
     opts.connectivityOnly === true
       ? { findings: [] as FsckFinding[], exitBit: 0 }
-      : await runContentValidationPass(ctx, universe, opts.strict === true);
+      : await runContentValidationPass(ctx, universe, opts.strict === true, blobFilenames);
 
   // Refs-verify pass: always checks absent OIDs; content-format check gated by checkReferences.
   // Runs before collectRoots so absent-OID refs are reported as bad-ref (not 'missing').

@@ -677,3 +677,152 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// FIX 1 — .gitmodules blob content checks (gitmodulesUrl / gitmodulesParse)
+// Pinned real git 2.54.0:
+//   gitmodulesUrl: stderr "error in blob <sha>: gitmodulesUrl: disallowed submodule url: ..."
+//   exit 1 (bit 1 = content-ERROR)
+//   gitmodulesParse: stderr "warning in blob <sha>: gitmodulesParse: could not parse gitmodules blob"
+//   exit 0 (INFO alone)
+// ---------------------------------------------------------------------------
+
+let gitmodulesUrlDir = '';
+let gitmodulesUrlCtx: Context;
+let gitmodulesUrlBlobSha = '';
+
+beforeAll(async () => {
+  gitmodulesUrlDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-gitmodulesUrl-'));
+  initRepo(gitmodulesUrlDir);
+
+  // Write .gitmodules blob with a disallowed URL (starts with '--')
+  const gitmodulesContent = Buffer.from(
+    '[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n',
+  );
+  gitmodulesUrlBlobSha = await writeLooseObject(gitmodulesUrlDir, 'blob', gitmodulesContent);
+
+  const blobShaBytes = Buffer.from(gitmodulesUrlBlobSha, 'hex');
+  const treeBody = Buffer.concat([Buffer.from('100644 .gitmodules\0'), blobShaBytes]);
+  const treeSha = await writeLooseObject(gitmodulesUrlDir, 'tree', treeBody);
+
+  const commitBody = Buffer.from(
+    `tree ${treeSha}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\nadd .gitmodules with evil url\n`,
+  );
+  const commitSha = await writeLooseObject(gitmodulesUrlDir, 'commit', commitBody);
+  await mkdir(path.join(gitmodulesUrlDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(path.join(gitmodulesUrlDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
+  await writeFile(path.join(gitmodulesUrlDir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+
+  gitmodulesUrlCtx = createNodeContext({ workDir: gitmodulesUrlDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (gitmodulesUrlDir !== '') await rm(gitmodulesUrlDir, { recursive: true, force: true });
+});
+
+let gitmodulesParseDir = '';
+let gitmodulesParseCtx: Context;
+let gitmodulesParseBlobSha = '';
+
+beforeAll(async () => {
+  gitmodulesParseDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-gitmodulesParse-'));
+  initRepo(gitmodulesParseDir);
+
+  // Write an unparseable .gitmodules blob (unclosed section header)
+  const gitmodulesContent = Buffer.from(
+    '[submodule "bad"\npath = evil\nurl = git://example.com/evil\n',
+  );
+  gitmodulesParseBlobSha = await writeLooseObject(gitmodulesParseDir, 'blob', gitmodulesContent);
+
+  const blobShaBytes = Buffer.from(gitmodulesParseBlobSha, 'hex');
+  const treeBody = Buffer.concat([Buffer.from('100644 .gitmodules\0'), blobShaBytes]);
+  const treeSha = await writeLooseObject(gitmodulesParseDir, 'tree', treeBody);
+
+  const commitBody = Buffer.from(
+    `tree ${treeSha}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\nbad gitmodules\n`,
+  );
+  const commitSha = await writeLooseObject(gitmodulesParseDir, 'commit', commitBody);
+  await mkdir(path.join(gitmodulesParseDir, '.git', 'refs', 'heads'), { recursive: true });
+  await writeFile(path.join(gitmodulesParseDir, '.git', 'refs', 'heads', 'main'), `${commitSha}\n`);
+  await writeFile(path.join(gitmodulesParseDir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+
+  gitmodulesParseCtx = createNodeContext({ workDir: gitmodulesParseDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (gitmodulesParseDir !== '') await rm(gitmodulesParseDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a .gitmodules blob with a disallowed URL (--upload-pack=evil)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits gitmodulesUrl bad-object finding and exit code matches real git (1)', async () => {
+        // Arrange — git's expected output
+        // Pinned real git 2.54.0: stderr "error in blob <sha>: gitmodulesUrl: disallowed submodule url: --upload-pack=evil", exit 1
+        const gitResult = gitFsck(gitmodulesUrlDir);
+
+        // Act
+        const result = await fsck(gitmodulesUrlCtx);
+
+        // Assert — exit code 1 matches real git
+        expect(result.exitCode).toBe(1);
+        expect(gitResult.exitCode).toBe(1);
+
+        // Assert — gitmodulesUrl finding present
+        const gitmodulesUrl = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' && f.msgId === 'gitmodulesUrl',
+        );
+        expect(gitmodulesUrl).toBeDefined();
+        expect(gitmodulesUrl?.id).toBe(gitmodulesUrlBlobSha);
+        expect(gitmodulesUrl?.objectType).toBe('blob');
+        expect(gitmodulesUrl?.severity).toBe('error');
+
+        // Reconstruct git's exact stderr line and assert byte-equality
+        // git: "error in blob <sha>: gitmodulesUrl: disallowed submodule url: --upload-pack=evil"
+        if (gitmodulesUrl !== undefined) {
+          const reconstructed = `error in blob ${gitmodulesUrl.id}: ${gitmodulesUrl.msgId}: disallowed submodule url:`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a .gitmodules blob that cannot be parsed (malformed INI)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits gitmodulesParse bad-object finding with info severity and exit code 0 (INFO alone)', async () => {
+        // Arrange — git's expected output
+        // Pinned real git 2.54.0: stderr "warning in blob <sha>: gitmodulesParse: could not parse gitmodules blob", exit 0
+        const gitResult = gitFsck(gitmodulesParseDir);
+
+        // Act
+        const result = await fsck(gitmodulesParseCtx);
+
+        // Assert — exit code 0 matches real git (INFO finding alone does not set exit bit)
+        expect(result.exitCode).toBe(0);
+        expect(gitResult.exitCode).toBe(0);
+
+        // Assert — gitmodulesParse finding present
+        const gitmodulesParse = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' && f.msgId === 'gitmodulesParse',
+        );
+        expect(gitmodulesParse).toBeDefined();
+        expect(gitmodulesParse?.id).toBe(gitmodulesParseBlobSha);
+        expect(gitmodulesParse?.objectType).toBe('blob');
+        expect(gitmodulesParse?.severity).toBe('info');
+
+        // Reconstruct git's exact stderr line and assert byte-equality
+        // git: "warning in blob <sha>: gitmodulesParse: could not parse gitmodules blob"
+        if (gitmodulesParse !== undefined) {
+          const reconstructed = `warning in blob ${gitmodulesParse.id}: ${gitmodulesParse.msgId}: could not parse gitmodules blob`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      });
+    });
+  },
+);

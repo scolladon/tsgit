@@ -1305,3 +1305,245 @@ describe('Given a repo with one commit whose reflog first entry has the null-oid
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// FIX 1 — .gitmodules blob content checks must fire when blob is named
+// .gitmodules in its parent tree (pinned real git 2.54.0: exit 1, stderr
+// "error in blob <sha>: gitmodulesUrl: disallowed submodule url: ...")
+// ---------------------------------------------------------------------------
+
+describe('Given a tree containing a .gitmodules blob with a disallowed URL (--upload-pack=evil)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits gitmodulesUrl bad-object finding with severity error and exit bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      // Blob content: valid .gitmodules INI with a disallowed url
+      const gitmodulesContent = enc.encode(
+        '[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n',
+      );
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: gitmodulesContent,
+      });
+      // Tree: blob named '.gitmodules'
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — gitmodulesUrl finding on the blob
+      // Pinned real git 2.54.0: stderr "error in blob <sha>: gitmodulesUrl: disallowed submodule url: --upload-pack=evil", exit 1
+      const gitmodulesUrl = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { msgId: string }).msgId === 'gitmodulesUrl',
+      );
+      expect(gitmodulesUrl).toBeDefined();
+      expect((gitmodulesUrl as { id: ObjectId }).id).toBe(blobId);
+      expect((gitmodulesUrl as { objectType: string }).objectType).toBe('blob');
+      expect((gitmodulesUrl as { severity: string }).severity).toBe('error');
+      // exit bit 1: content-ERROR finding
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a tree containing a .gitmodules blob that cannot be parsed (malformed INI)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits gitmodulesParse bad-object finding with severity info and exit 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      // Malformed .gitmodules: unclosed section header
+      const gitmodulesContent = enc.encode(
+        '[submodule "bad"\npath = evil\nurl = git://example.com/evil\n',
+      );
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: gitmodulesContent,
+      });
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — gitmodulesParse finding on the blob
+      // Pinned real git 2.54.0: "warning in blob <sha>: gitmodulesParse: could not parse gitmodules blob", exit 0
+      const gitmodulesParse = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { msgId: string }).msgId === 'gitmodulesParse',
+      );
+      expect(gitmodulesParse).toBeDefined();
+      expect((gitmodulesParse as { id: ObjectId }).id).toBe(blobId);
+      expect((gitmodulesParse as { objectType: string }).objectType).toBe('blob');
+      // gitmodulesParse is INFO severity
+      expect((gitmodulesParse as { severity: string }).severity).toBe('info');
+      // INFO alone → exit 0
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a tree containing a .gitmodules blob with a submodule named "../evil" (unsafe name)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits gitmodulesName bad-object finding with severity error and exit bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      const gitmodulesContent = enc.encode(
+        '[submodule "../evil"]\n\tpath = evil\n\turl = https://example.com/repo.git\n',
+      );
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: gitmodulesContent,
+      });
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — gitmodulesName finding on the blob
+      // Pinned real git 2.54.0: "error in blob <sha>: gitmodulesName: disallowed submodule name: ../evil", exit 1
+      const gitmodulesName = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { msgId: string }).msgId === 'gitmodulesName',
+      );
+      expect(gitmodulesName).toBeDefined();
+      expect((gitmodulesName as { id: ObjectId }).id).toBe(blobId);
+      expect((gitmodulesName as { severity: string }).severity).toBe('error');
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a blob named .gitmodules in a sub-tree (not the root tree)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits gitmodulesUrl finding (git checks .gitmodules at any tree level, not only root)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      // .gitmodules with bad URL — placed inside a subdirectory tree
+      // Pinned real git 2.54.0: git DOES check .gitmodules at any tree level
+      const gitmodulesContent = enc.encode(
+        '[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n',
+      );
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: gitmodulesContent,
+      });
+      // Inner tree: has .gitmodules blob
+      const innerTreeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+      );
+      // Root tree: has inner tree as a subdirectory
+      const rootTreeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.DIRECTORY, name: 'subdir', id: innerTreeId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(rootTreeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — gitmodulesUrl fires even for .gitmodules in a subdirectory
+      const gitmodulesUrl = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { msgId: string }).msgId === 'gitmodulesUrl',
+      );
+      expect(gitmodulesUrl).toBeDefined();
+      expect((gitmodulesUrl as { id: ObjectId }).id).toBe(blobId);
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 3 — corrupt-object msgId faithfulness
+// Inflate failure → objectType 'unknown', not 'blob'
+// Unknown type in header → msgId 'unknownType', objectType 'unknown'
+// ---------------------------------------------------------------------------
+
+describe('Given a loose object with undecodable compressed bytes (inflate failure)', () => {
+  describe('When fsck runs', () => {
+    it('Then bad-object objectType is unknown (not blob), msgId is unterminatedHeader, exit bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('to-corrupt'));
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      // Write bytes that cannot be deflate-decompressed
+      const garbage = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await ctx.fs.write(blobPath, garbage);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — corrupt object: objectType must not be hardcoded 'blob'
+      const corrupt = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(corrupt).toBeDefined();
+      // Inflate failure: type is unknown (we cannot read the header)
+      expect((corrupt as { objectType: string }).objectType).toBe('unknown');
+      expect((corrupt as { severity: string }).severity).toBe('error');
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a loose object whose raw header declares an unknown type (e.g. "bogus")', () => {
+  describe('When fsck runs', () => {
+    it('Then bad-object has msgId unknownType and objectType unknown, exit bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      // Build a loose object raw bytes: 'bogus 5\0hello' (unknown type)
+      const body = enc.encode('hello');
+      const header = enc.encode(`bogus ${body.length}\0`);
+      const rawBytes = new Uint8Array(header.length + body.length);
+      rawBytes.set(header);
+      rawBytes.set(body, header.length);
+      // Compute the OID (sha1 of raw bytes)
+      const oidHex = await ctx.hash.hashHex(rawBytes);
+      const compressed = await ctx.compressor.deflate(rawBytes);
+      const objPath = looseObjectPath(ctx.layout.gitDir, oidHex as ObjectId);
+      await ctx.fs.write(objPath, compressed);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — unknown-type object: msgId should be 'unknownType', objectType 'unknown'
+      // Pinned real git 2.54.0: stderr "error: unable to parse type from header 'bogus 5'", exit 1
+      const unknownType = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { id: ObjectId }).id === oidHex,
+      );
+      expect(unknownType).toBeDefined();
+      expect((unknownType as { msgId: string }).msgId).toBe('unknownType');
+      expect((unknownType as { objectType: string }).objectType).toBe('unknown');
+      expect((unknownType as { severity: string }).severity).toBe('error');
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});

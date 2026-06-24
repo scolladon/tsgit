@@ -1394,6 +1394,76 @@ describe('Given .gitmodules blob with invalid submodule name', () => {
 });
 
 // ---------------------------------------------------------------------------
+// blob — gitmodulesUrl (ERROR)
+// Pinned real git 2.54.0: URLs starting with '-' trigger gitmodulesUrl
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob with a disallowed URL (starts with --)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitmodulesUrl at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = encode('[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n');
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'gitmodulesUrl', severity: 'error' });
+    });
+  });
+});
+
+describe('Given .gitmodules blob with a single-dash URL (starts with -)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitmodulesUrl at error severity', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = encode('[submodule "sub"]\n\tpath = sub\n\turl = -evil-url\n');
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'gitmodulesUrl', severity: 'error' });
+    });
+  });
+});
+
+describe('Given .gitmodules blob with a safe URL (https://)', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit gitmodulesUrl', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = encode(
+        '[submodule "sub"]\n\tpath = sub\n\turl = https://example.com/repo.git\n',
+      );
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert — safe URL must not produce gitmodulesUrl
+      expect(result.map((f) => f.msgId)).not.toContain('gitmodulesUrl');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // blob — gitmodulesParse (INFO)
 // ---------------------------------------------------------------------------
 
@@ -1415,6 +1485,35 @@ describe('Given .gitmodules blob with parse error', () => {
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitmodulesParse', severity: 'info' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — .gitmodules line without '=' sign (silent skip branch)
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob with a bare key line (no = sign)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no findings (bare key is silently ignored)', () => {
+      // Arrange
+      const sut = validateObject;
+      // A line that is not a comment, not a section header, and has no '='
+      // exercises the silent-skip branch inside processGitmodulesLine.
+      const rawBytes = encode(
+        '[submodule "sub"]\n\tpath = sub\n\turl = https://example.com/repo.git\n\tbarekey\n',
+      );
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert — bare key does not trigger gitmodulesUrl or gitmodulesParse
+      expect(result).toHaveLength(0);
     });
   });
 });
