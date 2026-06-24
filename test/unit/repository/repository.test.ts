@@ -896,9 +896,9 @@ describe('openRepository — ctx fields', () => {
 
         // Assert
         expect(sut.ctx.signal).toBeDefined();
-        expect(sut.ctx.signal!.aborted).toBe(false);
+        expect(sut.ctx.signal?.aborted).toBe(false);
         controller.abort();
-        expect(sut.ctx.signal!.aborted).toBe(true);
+        expect(sut.ctx.signal?.aborted).toBe(true);
       });
     });
   });
@@ -914,7 +914,7 @@ describe('openRepository — ctx fields', () => {
 
         // Assert
         expect(sut.ctx.config).toBeDefined();
-        expect(sut.ctx.config!.parallelism).toBe(4);
+        expect(sut.ctx.config?.parallelism).toBe(4);
         expect(Object.isFrozen(sut.ctx.config)).toBe(true);
       });
     });
