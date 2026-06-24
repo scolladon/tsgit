@@ -128,7 +128,7 @@ let zeroPadCtx: Context;
 let zeroPadTreeSha = '';
 
 beforeAll(async () => {
-  zeroPadDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-zeropad-'));
+  zeroPadDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-zeroPad-'));
   initRepo(zeroPadDir);
 
   // Write a valid blob
@@ -209,7 +209,7 @@ beforeAll(async () => {
   await mkdir(refsDir, { recursive: true });
   await writeFile(path.join(refsDir, 'main'), `${commitForTree}\n`);
   // Point another ref to the bad-email commit
-  await writeFile(path.join(refsDir, 'bademail'), `${badEmailCommitSha}\n`);
+  await writeFile(path.join(refsDir, 'badEmail'), `${badEmailCommitSha}\n`);
 
   catalogueCtx = createNodeContext({ workDir: catalogueDir });
 }, SETUP_TIMEOUT);
@@ -259,7 +259,7 @@ let pathId = ''; // the oid whose PATH we use
 let actualId = ''; // the oid whose CONTENT is stored there
 
 beforeAll(async () => {
-  hashMismatchDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-hashmismatch-'));
+  hashMismatchDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-hashMismatch-'));
   initRepo(hashMismatchDir);
 
   const sha1 = runGit(['-C', hashMismatchDir, 'hash-object', '-w', '--stdin'], {
@@ -498,7 +498,7 @@ let refAbsentCtx: Context;
 const ABSENT_OID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 beforeAll(async () => {
-  refAbsentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-refabsent-'));
+  refAbsentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-refAbsent-'));
   initRepo(refAbsentDir);
   // Write a valid-format but absent OID to a loose ref (bypasses git's write-side check)
   await mkdir(path.join(refAbsentDir, '.git', 'refs', 'heads'), { recursive: true });
@@ -560,7 +560,7 @@ const BAD_CONTENT = 'not-a-valid-sha';
 const ZERO_OID_STR = '0000000000000000000000000000000000000000';
 
 beforeAll(async () => {
-  refBadContentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-refbadcontent-'));
+  refBadContentDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-refBadContent-'));
   initRepo(refBadContentDir);
   // Write malformed content to a loose ref (bypasses git's write-side check)
   await mkdir(path.join(refBadContentDir, '.git', 'refs', 'heads'), { recursive: true });
@@ -635,7 +635,7 @@ let reflogSentinelDir = '';
 let reflogSentinelCtx: Context;
 
 beforeAll(async () => {
-  reflogSentinelDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-reflogsentinel-'));
+  reflogSentinelDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-reflogSentinel-'));
   initRepo(reflogSentinelDir);
   // Make a real commit via git so a reflog is written automatically.
   // The initial reflog entry will have oldId = 0000…0 (the null-oid sentinel).

@@ -909,7 +909,15 @@
     "sbase",
     "shead",
     "unbarrelled",
-    "WORLDX"
+    "WORLDX",
+    "adoc",
+    "Dotdot",
+    "mktree",
+    "msgids",
+    "multiset",
+    "reconstructors",
+    "tagobj",
+    "togglable"
   ],
   "ignorePaths": [
     "node_modules",
