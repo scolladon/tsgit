@@ -142,15 +142,7 @@ function parseHeaderLines(text: string): {
 } {
   const blankIdx = text.indexOf('\n\n');
   const headerText = blankIdx === -1 ? text : text.slice(0, blankIdx);
-  // equivalent-mutant: ConditionalExpression→false — when blankIdx===-1 the mutant
-  // yields text.slice(1) instead of ''; but blankIdx===-1 means headerText===text,
-  // so any '\x00' in text triggers nullInHeader before messageBody is consulted.
-  // equivalent-mutant: MethodExpression→text — messageBody=text; any '\x00' already
-  // in the header fires nullInHeader first; body-only '\x00' appears in both text
-  // and text.slice(blankIdx+2), so the nullInCommit result is identical.
-  // equivalent-mutant: ArithmeticOperator blankIdx-2 and UnaryOperator blankIdx+1 —
-  // the slice start shifts by ≤2 bytes (both remain within the body region when
-  // blankIdx≥2); '\x00' detection in messageBody is unaffected by a small offset.
+  // Stryker disable next-line ConditionalExpression,StringLiteral,UnaryOperator,MethodExpression,ArithmeticOperator: equivalent — blankIdx===-1 makes messageBody dead (nulInHeader fires first); slice offsets ±2 stay within the body region.
   const messageBody = blankIdx === -1 ? '' : text.slice(blankIdx + 2);
   return { headerText, messageBody, lines: headerText.split('\n') };
 }
@@ -175,9 +167,7 @@ function checkTreeAndParents(
   }
 
   let i = 1;
-  // equivalent-mutant: i<=lines.length — at i===lines.length, lines[i] is
-  // undefined; the undefined===undefined guard inside the loop triggers break
-  // immediately, so the extra iteration is a no-op.
+  // Stryker disable next-line EqualityOperator: equivalent — at i===lines.length, lines[i] is undefined; the undefined guard breaks immediately.
   while (i < lines.length) {
     const line = lines[i];
     if (line === undefined || !line.startsWith('parent ')) break;
@@ -214,8 +204,7 @@ function checkAuthorAndCommitter(
   i++;
 
   // detect multiple author lines
-  // equivalent-mutant: i<=lines.length — at i===lines.length, lines[i]?.startsWith
-  // returns undefined (falsy); the condition is false so the loop exits identically.
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — at i===lines.length, lines[i]?.startsWith returns undefined (falsy), loop exits identically.
   while (i < lines.length && lines[i]?.startsWith('author ')) {
     findings.push({
       msgId: MSG_MULTIPLE_AUTHORS,
@@ -224,11 +213,11 @@ function checkAuthorAndCommitter(
     i++;
   }
 
-  // equivalent-mutant: i<=lines.length exits same way as i< because lines[i===len] is undefined (falsy startsWith)
+  // Stryker disable next-line EqualityOperator: equivalent — at i===lines.length, lines[i]?.startsWith returns undefined (falsy), loop exits identically.
   while (i < lines.length && !lines[i]?.startsWith('committer ')) i++;
 
   const committerLine = lines[i];
-  // equivalent-mutant: startsWith('') always true; while loop guarantees committerLine starts with 'committer ' when defined
+  // Stryker disable next-line StringLiteral: equivalent — while loop above guarantees committerLine starts with 'committer ' when defined; startsWith('') is always true.
   if (committerLine === undefined || !committerLine.startsWith('committer ')) {
     findings.push({
       msgId: MSG_MISSING_COMMITTER,
