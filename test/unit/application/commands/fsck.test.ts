@@ -1780,7 +1780,7 @@ describe('Given loose object with corrupt compressed bytes (inflate fails)', () 
   });
 });
 
-// Kill: content-validation.ts line 57 (isinstance TsgitError check for unknownType)
+// Kill: content-validation.ts line 57 (instanceof TsgitError check for unknownType)
 // When a loose object inflates fine but has an unknown type header, the
 // bad-object finding must report msgId = 'unknownType' (not 'unterminatedHeader').
 describe('Given loose object with inflatable but unknown-type header', () => {
@@ -2121,10 +2121,10 @@ describe('Given staged blob with indexRoot:false', () => {
       // Arrange
       const { STAGE0_FLAGS } = await import('../../../../src/domain/git-index/index-entry.js');
       const tempCtx = await initBareCtx();
-      const blobId = await writeObject(tempCtx, makeBlob('staged-indexroot'));
+      const blobId = await writeObject(tempCtx, makeBlob('staged-index-root'));
 
       const ctx = await buildSeededContext({
-        objects: [makeBlob('staged-indexroot')],
+        objects: [makeBlob('staged-index-root')],
         index: {
           version: 2,
           entries: [
