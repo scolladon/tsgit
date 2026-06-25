@@ -15,6 +15,7 @@ async function addRefRoots(
   const refNames = await enumerateRefs(ctx);
   for (const ref of refNames) {
     try {
+      // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
       const id = await resolveRef(ctx, ref, { peel: false });
       // Only add to roots if the OID is present in the universe.
       // Absent OIDs are reported as bad-ref(badRefOid) by the refs-verify pass
