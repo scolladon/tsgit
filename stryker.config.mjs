@@ -21,7 +21,6 @@ function scheduledConcurrency() {
   return !isWeekend && isWorkingHours ? '30%' : '100%';
 }
 
-/** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 export default {
   $schema: './node_modules/@stryker-mutator/core/schema/stryker-schema.json',
   testRunner: 'vitest',

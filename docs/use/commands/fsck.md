@@ -199,5 +199,5 @@ process.exit(result.exitCode);
 
 ## See also
 
-- Primitives: [`readObject`](../primitives/read-object.md), [`enumerateObjects`](../primitives/enumerate-objects.md), [`walkCommits`](../primitives/walk-commits.md)
+- Primitives: [`readObject`](../primitives/read-object.md), [`enumerateObjects`](../primitives/internals.md#enumerateobjects), [`walkCommits`](../primitives/walk-commits.md)
 - Related commands: [`catFile`](cat-file.md), [`revParse`](rev-parse.md)
