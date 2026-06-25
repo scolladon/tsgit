@@ -120,7 +120,7 @@ describe('enumerateObjects', () => {
   // entry.isFile → true
   // A subdirectory inside an objects prefix dir has isFile === false.
   // The mutant treats ALL entries as files, so a directory named 'subdir'
-  // inside objects/ab/ would be added as OID 'absubdir' (garbage).
+  // inside objects/ab/ would be added as OID 'ab' + 'subdir' (garbage).
   // This test verifies only real file OIDs appear in the result.
   // -------------------------------------------------------------------------
 
@@ -138,7 +138,7 @@ describe('enumerateObjects', () => {
         // Act
         const result = await sut(ctx);
 
-        // Assert — only the real blob OID; 'absubdir'-style garbage must not appear
+        // Assert — only the real blob OID; prefix+dirname garbage must not appear
         expect(result).toContain(blobId);
         expect(result.every((id) => id.length === 40)).toBe(true);
         expect(result).not.toContain(`${prefix}subdir`);
