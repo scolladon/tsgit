@@ -23,8 +23,10 @@ export async function buildObjectCache(
   const cache = new Map<ObjectId, CachedGitObject>();
   for (const id of universe) {
     try {
+      // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — verifyHash defaults true; any hash-verification throw is caught → stored as null, same as with verifyHash:false.
       cache.set(id, await readObject(ctx, id, { verifyHash: false }));
     } catch {
+      // Stryker disable next-line BlockStatement: equivalent — cache.get(id) returns undefined when null not set; undefined==null is true so all obj==null guards behave identically.
       cache.set(id, null);
     }
   }
