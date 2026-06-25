@@ -41,6 +41,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 
   // Build blob→filename map for special-file content checks (.gitmodules, .gitattributes).
   // Skipped when connectivityOnly since content checks are also skipped in that mode.
+  // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — blobFilenames is only consumed by runContentValidationPass which is independently gated by connectivityOnly at the next conditional.
   const blobFilenames =
     opts.connectivityOnly === true
       ? (new Map() as ReadonlyMap<ObjectId, string>)
