@@ -1159,6 +1159,50 @@ describe('Given commit with timezone that matches format but has out-of-range mi
 });
 
 // ---------------------------------------------------------------------------
+// commit — badTimezone boundary: hours === 24 (+2400) kills EqualityOperator mutant
+// ---------------------------------------------------------------------------
+
+describe('Given commit with timezone hours exactly 24 (+2400)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTimezone at error severity (24 is not a valid hour offset)', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 1234567890 +2400',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — hours must be strictly < 24; hours===24 is invalid
+      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
+    });
+  });
+});
+
+describe('Given commit with timezone minutes exactly 60 (+0060)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits badTimezone at error severity (60 is not a valid minute offset)', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildCommit({
+        tree: BLOB_SHA_HEX,
+        author: 'T <t@t.com> 1234567890 +0060',
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+
+      // Assert — minutes must be strictly < 60; minutes===60 is invalid
+      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // commit — missingSpaceBeforeDate (ERROR)
 // ---------------------------------------------------------------------------
 
@@ -1633,6 +1677,61 @@ describe('Given .gitmodules blob with a bare key line (no = sign)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// blob — .gitmodules with indented section header: trim() kills StringLiteral
+// mutant that removes trim() — without trim, leading tab prevents section
+// header recognition and the name is never parsed.
+// ---------------------------------------------------------------------------
+
+describe('Given .gitmodules blob with indented section header containing unsafe name', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitmodulesName at error severity (leading whitespace is stripped from section headers)', () => {
+      // Arrange
+      const sut = validateObject;
+      // The section header is indented with a tab — without rawLine.trim(), the leading
+      // '\t' prevents startsWith('[') from matching, and the submodule name is never parsed.
+      // With rawLine.trim(), the header is recognized, the name '..' is extracted, and
+      // isUnsafeSubmoduleName('..') returns true → gitmodulesName emitted.
+      const rawBytes = encode('\t[submodule ".."]\n\tpath = foo\n\turl = https://example.com\n');
+
+      // Act
+      const result = sut({
+        kind: 'blob',
+        rawBody: rawBytes,
+        strict: false,
+        fileName: '.gitmodules',
+      });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'gitmodulesName', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blob — non-.gitattributes blob with long line: filename guard must not fire
+// Kills ConditionalExpression mutant that makes the guard always-true.
+// ---------------------------------------------------------------------------
+
+describe('Given a regular blob (not .gitattributes) with a very long line', () => {
+  describe('When validateObject runs without fileName', () => {
+    it('Then does not emit gitattributesLineLength (gitattributes check must not run for non-special blobs)', () => {
+      // Arrange
+      const sut = validateObject;
+      // A blob with a line exceeding 2048 bytes. If the filename guard is mutated
+      // to always-true, gitattributesLineLength fires spuriously.
+      const longLine = 'x'.repeat(3000);
+      const rawBytes = encode(`${longLine}\n`);
+
+      // Act — no fileName; blob is not .gitattributes
+      const result = sut({ kind: 'blob', rawBody: rawBytes, strict: false });
+
+      // Assert — no gitattributes findings for a blob without the .gitattributes filename
+      expect(result.map((f) => f.msgId)).not.toContain('gitattributesLineLength');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // blob — gitattributesLineLength (ERROR)
 // ---------------------------------------------------------------------------
 
@@ -1943,6 +2042,78 @@ describe('Given tree with a file entry followed by a directory entry in correct 
 
       // Assert
       expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — treeEntrySortKey: dir-sort-key flips order (040000 mode kills mutant)
+// Kill: mode==='040000'→false — without dir treatment, 'a' < 'a!' is sorted;
+// with dir treatment, 'a/' > 'a!' is unsorted → treeNotSorted fires.
+// ---------------------------------------------------------------------------
+
+describe('Given tree with directory entry (040000) before file where dir sort key flips order', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits treeNotSorted (040000 mode gets "/" appended for sort key)', () => {
+      // Arrange
+      const sut = validateObject;
+      // Entry 'a' (040000, dir) before 'a!' (100644, file).
+      // Sort keys: 'a/' vs 'a!'. '/' (0x2f) > '!' (0x21) → dir AFTER file in sort → treeNotSorted.
+      // Without the dir treatment (mutant: mode==='040000' → false):
+      //   sort key 'a' vs 'a!'. 'a' < 'a!' (string comparison) → sorted → NO treeNotSorted.
+      // This difference kills the ConditionalExpression and StringLiteral mutants.
+      const rawBytes = buildTree(
+        buildTreeEntry('040000', 'a', BLOB_SHA),
+        buildTreeEntry('100644', 'a!', BLOB_SHA),
+      );
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert — dir sort key 'a/' > 'a!' triggers treeNotSorted
+      expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — gitmodulesBlob: 100755 (.gitmodules as executable) must NOT emit
+// Kill: StringLiteral mutant on REGULAR_FILE mode constants
+// ---------------------------------------------------------------------------
+
+describe('Given tree where .gitmodules is an executable file (mode 100755)', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit gitmodulesBlob (executable is a regular file variant)', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildTree(buildTreeEntry('100755', '.gitmodules', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert — 100755 is a regular file; must NOT emit gitmodulesBlob
+      expect(result.map((f) => f.msgId)).not.toContain('gitmodulesBlob');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — mailmapSymlink: only '.mailmap' triggers it, not other symlinks
+// Kill: StringLiteral mutant that changes '.mailmap' to ''
+// ---------------------------------------------------------------------------
+
+describe('Given tree with a symlink entry NOT named .mailmap', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit mailmapSymlink for a non-mailmap symlink', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBytes = buildTree(buildTreeEntry('120000', 'other-link', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert — mailmapSymlink must only fire for '.mailmap' specifically
+      expect(result.map((f) => f.msgId)).not.toContain('mailmapSymlink');
     });
   });
 });
