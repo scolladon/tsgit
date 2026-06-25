@@ -78,6 +78,7 @@ interface WalkState {
 function enqueueIfPresent(state: WalkState, id: ObjectId): void {
   if (!state.universe.has(id)) {
     state.missingIds.add(id);
+    // Stryker disable next-line ConditionalExpression: equivalent — already-reached ids pushed again are immediately skipped by the state.reached.has(id) guard in the main loop.
   } else if (!state.reached.has(id)) {
     state.worklist.push(id);
   }
