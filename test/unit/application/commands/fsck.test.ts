@@ -2246,3 +2246,91 @@ describe('Given packed ref with valid OID present in object universe', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Kill id 270: reachability.ts BlockStatement — corrupt object must be marked
+// as reached (not classified as unreachable/dangling).
+// If state.reached.add(id) is removed, the corrupt blob is unreachable.
+// ---------------------------------------------------------------------------
+
+describe('Given a corrupt loose blob with no in-edges in the universe', () => {
+  describe('When fsck runs', () => {
+    it('Then does NOT emit an unreachable finding for the corrupt blob', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('to-corrupt'));
+      // Overwrite with invalid zlib bytes (unreadable object)
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      const garbage = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await ctx.fs.write(blobPath, garbage);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — corrupt object is treated as reached, NOT unreachable/dangling
+      const unreachable = result.findings.filter(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(unreachable).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kill id 380: roots.ts universe.has(id) → false — ref OID must be added as
+// a root only when in the universe. This test verifies the positive case: a
+// ref pointing to an object IN the universe causes the object to be reached
+// (not unreachable).
+// ---------------------------------------------------------------------------
+
+describe('Given a repo with a commit reachable via a loose ref', () => {
+  describe('When fsck runs', () => {
+    it('Then the commit is NOT unreachable (ref adds it as a root)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      // The ref points to commitId which IS in the universe
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — commit is reached via the ref root, so NOT unreachable
+      const unreachable = result.findings.filter(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === commitId,
+      );
+      expect(unreachable).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kill: refs-verify.ts Regex /[\r\n]+$/ → /[\r\n]+/ (missing $)
+// A loose ref with trailing double-newline must be stripped completely to a
+// valid OID. Without the $-anchor the first \n is stripped but the trailing
+// \n remains, making the content "sha\n" which fails OID_RE → badRefContent.
+// ---------------------------------------------------------------------------
+
+describe('Given a loose ref with a valid OID followed by trailing double-newline', () => {
+  describe('When fsck runs', () => {
+    it('Then no badRefContent or badRefOid finding (trailing newlines fully stripped)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      // Ref content: valid 40-hex OID + two newlines (trailing double-newline).
+      // Original /[\r\n]+$/ strips all trailing newlines → valid OID.
+      // Mutant /[\r\n]+/ (no $) strips first \n from "sha\n\n" → "sha\n" → OID_RE fails.
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — no bad-ref findings for a doubly-newline-terminated ref
+      const badRefFindings = result.findings.filter((f) => f.type === 'bad-ref');
+      expect(badRefFindings).toHaveLength(0);
+      expect(result.exitCode & 10).toBe(0);
+    });
+  });
+});
