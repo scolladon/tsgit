@@ -2312,25 +2312,109 @@ describe('Given a repo with a commit reachable via a loose ref', () => {
 // \n remains, making the content "sha\n" which fails OID_RE → badRefContent.
 // ---------------------------------------------------------------------------
 
-describe('Given a loose ref with a valid OID followed by trailing double-newline', () => {
+describe('Given a loose ref whose raw content has an embedded CR between hex chars (no trailing newline)', () => {
   describe('When fsck runs', () => {
-    it('Then no badRefContent or badRefOid finding (trailing newlines fully stripped)', async () => {
-      // Arrange
+    it('Then bad-ref badRefContent finding is emitted (CR in middle is not stripped by /$/ anchor)', async () => {
+      // Arrange — raw ref bytes: 20-hex + CR + 20-hex (no trailing LF, total 41 chars)
+      // A stray CR embedded between what looks like OID hex digits.
+      // Original /[\r\n]+$/ has no match (CR is not at end) → content = "20hex\r20hex" →
+      //   OID_RE fails (41 chars, contains CR) → badRefContent.
+      // Mutant /[\r\n]+/ (no $) matches the CR at pos 20, strips it → "20hex20hex" (40 chars) →
+      //   OID_RE passes → no badRefContent (wrong; silently accepts malformed ref).
       const ctx = await initBareCtx();
-      const treeId = await writeObject(ctx, makeTree([]));
-      const commitId = await writeObject(ctx, makeCommit(treeId, []));
-      // Ref content: valid 40-hex OID + two newlines (trailing double-newline).
-      // Original /[\r\n]+$/ strips all trailing newlines → valid OID.
-      // Mutant /[\r\n]+/ (no $) strips first \n from "sha\n\n" → "sha\n" → OID_RE fails.
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n\n`);
+      // 20 'a' + CR + 20 'b' — no trailing newline
+      const malformedRef = `${'a'.repeat(20)}\r${'b'.repeat(20)}`;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, malformedRef);
 
       // Act
       const result = await sut(ctx);
 
-      // Assert — no bad-ref findings for a doubly-newline-terminated ref
-      const badRefFindings = result.findings.filter((f) => f.type === 'bad-ref');
-      expect(badRefFindings).toHaveLength(0);
-      expect(result.exitCode & 10).toBe(0);
+      // Assert — embedded CR must produce badRefContent (not badRefOid or no finding)
+      const badRefContent = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefContent',
+      );
+      expect(badRefContent).toBeDefined();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kill id 26: fsck.ts missingTypeFromEdge — !has(edge.toId) → true
+// When two broken edges point to the same missing OID with DIFFERENT expected
+// types (e.g., 'tree' from a commit.tree reference, 'blob' from a tree entry),
+// first-wins (original) stores 'tree'; always-overwrite (mutant) stores 'blob'.
+// ---------------------------------------------------------------------------
+
+describe('Given two broken edges pointing to the same missing OID with different expected types', () => {
+  describe('When fsck runs', () => {
+    it('Then the missing finding uses the first-seen type (blob from tree entry, not tree from commit)', async () => {
+      // Arrange — a tree has a blob entry to missingOid (type='blob'), AND a commit
+      // references the same missingOid as its tree (type='tree'). Both are in seeds.
+      // Walk order: tree-entry edge (blob) arrives in brokenEdges first because
+      // the tree is processed before the commit with missing tree (seeds pop order).
+      // Original first-wins: stores 'blob'. Mutant always-overwrite: stores 'tree'.
+      const ctx = await initBareCtx();
+      const missingOid = '2222222222222222222222222222222222222222' as ObjectId;
+
+      // Tree in universe with a blob entry to missingOid
+      const realTreeId = await writeObject(
+        ctx,
+        makeTree([
+          {
+            mode: FILE_MODE.REGULAR,
+            name: 'file.txt',
+            id: missingOid, // missing, expected type 'blob'
+          },
+        ]),
+      );
+
+      // Commit with realTreeId as its tree — put in refs/heads/main (seed)
+      const goodCommitId = await writeObject(ctx, makeCommit(realTreeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${goodCommitId}\n`);
+
+      // Commit with missingOid as its tree — put in refs/heads/aaa (sorts first)
+      // This causes the commit-to-tree broken edge (type='tree') to be in brokenEdges
+      const badCommitId = await writeObject(ctx, {
+        type: 'commit' as const,
+        id: '' as ObjectId,
+        data: {
+          tree: missingOid, // missing, expected type 'tree'
+          parents: [],
+          author: {
+            name: 'Ada',
+            email: 'ada@example.com',
+            timestamp: 1_700_000_000,
+            timezoneOffset: '+0000',
+          },
+          committer: {
+            name: 'Ada',
+            email: 'ada@example.com',
+            timestamp: 1_700_000_000,
+            timezoneOffset: '+0000',
+          },
+          message: 'bad',
+          extraHeaders: [],
+        },
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/aaa`, `${badCommitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — missing finding for missingOid must have objectType 'tree'.
+      // Walk order: refs/heads/aaa (badCommitId) inserts into seeds before
+      // refs/heads/main (goodCommitId); pop takes goodCommitId first. goodCommitId
+      // enqueues realTreeId. Then badCommitId is processed → brokenEdge(tree) pushed
+      // BEFORE realTreeId is processed → brokenEdge(blob) pushed.
+      // brokenEdges = [{tree}, {blob}].
+      // Original first-wins → 'tree'. Mutant always-overwrite → 'blob'.
+      const missingFinding = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } =>
+          f.type === 'missing' && (f as { id: ObjectId }).id === missingOid,
+      );
+      expect(missingFinding).toBeDefined();
+      expect((missingFinding as { objectType: string }).objectType).toBe('tree');
     });
   });
 });

@@ -77,6 +77,7 @@ interface WalkState {
 }
 
 function enqueueIfPresent(state: WalkState, id: ObjectId): void {
+  // Stryker disable next-line ConditionalExpression: equivalent — when →false, ids not in universe fall through to else-if; reached.has check fails (not in reached), pushed to worklist; main loop re-adds to missingIds. Same outcome.
   if (!state.universe.has(id)) {
     state.missingIds.add(id);
     // Stryker disable next-line ConditionalExpression: equivalent — already-reached ids pushed again are immediately skipped by the state.reached.has(id) guard in the main loop.
@@ -162,6 +163,7 @@ export function buildReachableSet(
       continue;
     }
     const obj = objectCache.get(id);
+    // Stryker disable next-line BlockStatement: equivalent — corrupt objects (obj==null) are not emitted as findings by collectTypeFindings (skips null-cache entries); whether reached.add is called or not, no finding difference.
     if (obj == null) {
       // Corrupt/unreadable — mark reached, no further edges
       state.reached.add(id);
