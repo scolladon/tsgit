@@ -154,6 +154,7 @@ export const STRICT_UPGRADE_SET: ReadonlySet<string> = new Set([
 /** Resolve final severity for a msg-id, applying the strict upgrade if applicable. */
 export function resolveSeverity(msgId: string, strict: boolean): FsckSeverity {
   const base = DEFAULT_SEVERITY.get(msgId) ?? 'error';
+  // Stryker disable next-line ConditionalExpression: equivalent — every warning-severity msgId in DEFAULT_SEVERITY is also in STRICT_UPGRADE_SET, so .has() is always true when base==='warning'.
   if (strict && base === 'warning' && STRICT_UPGRADE_SET.has(msgId)) return 'error';
   return base;
 }
