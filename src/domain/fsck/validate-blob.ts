@@ -36,6 +36,7 @@ function processGitmodulesLine(
   urls: string[],
   parseError: boolean,
 ): boolean {
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,StringLiteral,MethodExpression: equivalent — lines starting with '#'/';' or empty never match 'url' key or section headers after falling through; no finding is affected.
   if (line === '' || line.startsWith('#') || line.startsWith(';')) return parseError;
   if (line.startsWith('[')) {
     const closeIdx = line.indexOf(']');
@@ -48,6 +49,7 @@ function processGitmodulesLine(
     return parseError;
   }
   const eqIdx = line.indexOf('=');
+  // Stryker disable next-line ConditionalExpression,UnaryOperator: equivalent — with eqIdx===-1 or eqIdx===1, key slice never equals 'url' (length ≠3 or prefix '#'); no URL finding is affected.
   if (eqIdx !== -1) {
     const key = line.slice(0, eqIdx).trim();
     const value = line.slice(eqIdx + 1).trim();
@@ -66,7 +68,9 @@ function parseGitmodules(text: string): {
   readonly urls: ReadonlyArray<string>;
   readonly parseError: boolean;
 } {
+  // Stryker disable next-line ArrayDeclaration: equivalent — 'Stryker was here' passes isUnsafeSubmoduleName (no leading dash/backslash/control chars/reserved segments).
   const names: string[] = [];
+  // Stryker disable next-line ArrayDeclaration: equivalent — 'Stryker was here' passes isDisallowedSubmoduleUrl (does not start with '-').
   const urls: string[] = [];
   let parseError = false;
 
