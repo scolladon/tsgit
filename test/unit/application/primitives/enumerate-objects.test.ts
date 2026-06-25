@@ -114,4 +114,35 @@ describe('enumerateObjects', () => {
       });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Kill id 414: enumerate-objects.ts line 34 ConditionalExpression
+  // entry.isFile → true
+  // A subdirectory inside an objects prefix dir has isFile === false.
+  // The mutant treats ALL entries as files, so a directory named 'subdir'
+  // inside objects/ab/ would be added as OID 'absubdir' (garbage).
+  // This test verifies only real file OIDs appear in the result.
+  // -------------------------------------------------------------------------
+
+  describe('Given repo with a loose object and a subdirectory in the same prefix dir', () => {
+    describe('When enumerateObjects runs', () => {
+      it('Then only the actual object OID is returned (directory entry is excluded)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blob('real-object'));
+        // The OID prefix is blobId.slice(0,2); create a subdirectory inside that prefix dir
+        const prefix = blobId.slice(0, 2);
+        const prefixDir = `${ctx.layout.gitDir}/objects/${prefix}`;
+        await ctx.fs.mkdir(`${prefixDir}/subdir`);
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert — only the real blob OID; 'absubdir'-style garbage must not appear
+        expect(result).toContain(blobId);
+        expect(result.every((id) => id.length === 40)).toBe(true);
+        expect(result).not.toContain(`${prefix}subdir`);
+      });
+    });
+  });
 });

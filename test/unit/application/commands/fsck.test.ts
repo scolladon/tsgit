@@ -2334,3 +2334,70 @@ describe('Given a loose ref with a valid OID followed by trailing double-newline
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Kill id 45: fsck.ts connectivityBit — || → && (LogicalOperator)
+// missingIds.size > 0 || brokenEdges.length > 0
+// A reflog entry pointing to a non-existent OID adds that OID to missingIds
+// (via buildReachableSet's universe check) without creating any brokenEdges
+// (reflog roots bypass the per-edge push). The mutant (&&) would give
+// (1 > 0 && 0 > 0) = false → no EXIT_MISSING bit set.
+// ---------------------------------------------------------------------------
+
+describe('Given a reflog entry pointing to a non-existent OID with no graph edges broken', () => {
+  describe('When fsck runs', () => {
+    it('Then exitCode has EXIT_MISSING bit set (missingIds > 0 is sufficient)', async () => {
+      // Arrange — repo with HEAD and a reflog entry whose new-oid is not in universe
+      const ctx = await initBareCtx();
+      const missingOid = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as ObjectId;
+      const zeroOid = '0000000000000000000000000000000000000000';
+      // Write reflog entry: old=ZERO (creation), new=missingOid (not a real object)
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/logs/refs/heads/main`,
+        `${zeroOid} ${missingOid} Ada <ada@example.com> 1700000000 +0000\tcommit: initial\n`,
+      );
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — missingIds.size > 0, brokenEdges.length === 0 → EXIT_MISSING bit must be set
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kill id 75: content-validation.ts line 60 StringLiteral
+// reason.startsWith('unknown object type') → reason.startsWith('')
+// startsWith('') is always true → always returns 'unknownType' instead of
+// distinguishing 'unterminatedHeader' (missing NUL) vs 'unknownType' (bad type).
+// A header that inflates fine but has no NUL terminator produces
+// reason = 'missing null terminator' → original returns 'unterminatedHeader'.
+// The mutant (startsWith('')) returns 'unknownType' — distinguishable.
+// ---------------------------------------------------------------------------
+
+describe('Given loose object with inflated header missing NUL terminator', () => {
+  describe('When fsck runs', () => {
+    it('Then bad-object finding has msgId unterminatedHeader (not unknownType)', async () => {
+      // Arrange — bytes 'blob 5hello' (no \0 between header and body)
+      const ctx = await initBareCtx();
+      const rawBytes = new TextEncoder().encode('blob 5hello');
+      const oidHex = (await ctx.hash.hashHex(rawBytes)) as ObjectId;
+      const compressed = await ctx.compressor.deflate(rawBytes);
+      await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, oidHex), compressed);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — missing NUL → reason 'missing null terminator' → msgId 'unterminatedHeader'
+      // Mutant startsWith('') → 'unknownType' (wrong)
+      const badObj = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { id: ObjectId }).id === oidHex,
+      );
+      expect(badObj).toBeDefined();
+      expect((badObj as { msgId: string }).msgId).toBe('unterminatedHeader');
+    });
+  });
+});

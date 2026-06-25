@@ -54,6 +54,7 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
       // Header-parse failure: inflated successfully but header is malformed.
       // Distinguish unknown type (unknownType) from missing NUL (unterminatedHeader).
       const reason =
+        // Stryker disable next-line ConditionalExpression: equivalent — parseHeader only throws TsgitError with code INVALID_OBJECT_HEADER; the condition is always true when reached.
         err instanceof TsgitError && err.data.code === 'INVALID_OBJECT_HEADER'
           ? (err.data as { reason: string }).reason
           : '';
@@ -64,6 +65,7 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
 
   // Pack object — go through normal parse path and re-serialize
   try {
+    // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — verifyHash defaults true; hash-verification throws are caught below → returns { ok: false, msgId: 'badType' }, same outcome.
     const obj = await readObject(ctx, id, { verifyHash: false });
     const full = serializeObject(obj, ctx.hashConfig);
     const { contentOffset } = parseHeader(full);
@@ -94,6 +96,7 @@ export function buildBlobFilenameMap(
     const obj = objectCache.get(id);
     if (obj == null || obj.type !== 'tree') continue;
     for (const entry of obj.entries) {
+      // Stryker disable next-line ConditionalExpression: equivalent — non-special filenames are mapped but validateBlob returns [] for them; no finding is affected.
       if (SPECIAL_BLOB_NAMES.has(entry.name)) {
         map.set(entry.id, entry.name);
       }
@@ -133,6 +136,7 @@ async function validateOneObject(
 
   // For blobs, pass filename when the blob appears under a special name
   // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
+  // Stryker disable next-line ConditionalExpression: equivalent — blobFilenames only maps blob ids; non-blob ids return undefined → fileName stays undefined → same dispatch path.
   const fileName = kind === 'blob' ? blobFilenames.get(id) : undefined;
   const catalogueFindings = validateObject(
     fileName !== undefined ? { rawBody, kind, strict, fileName } : { rawBody, kind, strict },

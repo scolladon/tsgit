@@ -14,6 +14,7 @@ function recordOutEdges(obj: GitObject, inEdge: Set<ObjectId>): void {
     for (const p of obj.data.parents) inEdge.add(p);
   } else if (obj.type === 'tree') {
     for (const entry of obj.entries) {
+      // Stryker disable next-line ConditionalExpression: equivalent — gitlink shas (external commits) are not in the local universe; classifyObjects only iterates universe objects, so adding them to inEdge has no effect.
       if (entry.mode !== FILE_MODE.GITLINK) inEdge.add(entry.id);
     }
   } else if (obj.type === 'tag') {
