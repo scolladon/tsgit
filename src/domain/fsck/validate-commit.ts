@@ -92,9 +92,7 @@ function checkIdentityLine(line: string, strict: boolean): ReadonlyArray<CommitF
       severity: resolveSeverity(MSG_MISSING_SPACE_BEFORE_EMAIL, strict),
     });
   }
-  // equivalent-mutant: trimEnd→trimStart — for any string, trimEnd()==='' iff
-  // trimStart()==='' (both are '' iff the string is all-whitespace); the two
-  // methods produce the same boolean outcome in this === '' comparison.
+  // Stryker disable next-line MethodExpression: equivalent — trimEnd()==='' iff trimStart()==='' (both '' iff all-whitespace string); same boolean outcome.
   if (name.trimEnd() === '') {
     findings.push({
       msgId: MSG_MISSING_NAME_BEFORE_EMAIL,
