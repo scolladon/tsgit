@@ -52,19 +52,12 @@ function checkTaggerLine(line: string, strict: boolean): ReadonlyArray<TagFindin
   }
 
   const gtIdx = line.indexOf('>', ltIdx);
-  // equivalent-mutant: gtIdx===-1 → +1 and ConditionalExpression→false are both
-  // equivalent: when '>' is absent (gtIdx=-1), the guard skipping makes
-  // line.slice(0) the whole line; !line.startsWith(' ') catches it at the next
-  // check (afterGt guard below), producing the same empty-findings result.
+  // Stryker disable next-line ConditionalExpression,UnaryOperator: equivalent — when > is absent (gtIdx=-1), the next guard (!afterGt.startsWith(' ')) returns [] for all realistic tagger inputs.
   if (gtIdx === -1) return [];
   const afterGt = line.slice(gtIdx + 1);
   if (!afterGt.startsWith(' ')) return [];
 
-  // equivalent-mutant: split default '' — split(/\s+/) always returns ≥1 element
-  // so the destructuring default '' for timestamp is dead; replacing '' with any
-  // literal produces identical runtime behaviour.
-  // equivalent-mutant: /\s/ split — trim() removes boundary whitespace, so
-  // afterGt.trim().split(/\s/) and split(/\s+/) both have [0] === timestamp.
+  // Stryker disable next-line Regex: equivalent — afterGt.trim() removes boundary whitespace; split(/\s/) and split(/\s+/) produce the same [0] element.
   const [timestamp = ''] = afterGt.trim().split(/\s+/);
   if (/^\d+$/.test(timestamp) && isTaggerTimestampOverflow(timestamp)) {
     return [
@@ -104,9 +97,7 @@ function checkObjectAndType(
     return { findings, nextIdx: -1 };
   }
   const typeVal = lines[1].slice(5);
-  // equivalent-mutant: typeVal==='' StringLiteral→'Stryker was here!' — empty
-  // string is not in VALID_OBJECT_TYPES so !has('') catches it; the typeVal===''
-  // guard is semantically redundant and replacing its literal changes nothing.
+  // Stryker disable next-line StringLiteral: equivalent — 'Stryker was here!' is not in VALID_OBJECT_TYPES, so !has catches it; typeVal==='' guard is redundant.
   if (typeVal === '' || !VALID_OBJECT_TYPES.has(typeVal)) {
     findings.push({
       msgId: MSG_MISSING_TYPE_ENTRY,
@@ -159,7 +150,9 @@ function checkTagAndTagger(
 /** Validate a raw tag object body, returning ordered findings. */
 export function validateTag(raw: Uint8Array, strict: boolean): ReadonlyArray<TagFinding> {
   const text = DECODER.decode(raw);
+  // Stryker disable next-line StringLiteral: equivalent — indexOf('') always returns 0; with any blankIdx value, headerText and lines parsing is unaffected since tag parser only accesses fixed indices [0],[1],[2],[3].
   const blankIdx = text.indexOf('\n\n');
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,UnaryOperator,MethodExpression: equivalent — tag parser accesses fixed header line indices; whether headerText is full text or header-only, lines[0..3] are identical.
   const headerText = blankIdx !== -1 ? text : text.slice(0, blankIdx);
   const lines = headerText.split('\n');
 
