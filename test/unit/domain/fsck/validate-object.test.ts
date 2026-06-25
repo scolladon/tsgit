@@ -3584,3 +3584,31 @@ describe('Given commit with a NUL byte in the body (after the blank-line separat
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// tree — normMode calculation uses startsWith, not endsWith (line 194, M20)
+// Kill: mode.startsWith('0') → mode.endsWith('0')
+// '40000' ends with '0' but does NOT start with '0': endsWith mutant
+// strips the leading '4' instead of the leading '0', producing normMode='4000'.
+// VALID_MODES.has('4000') = false → badFilemode spuriously emitted.
+// Original startsWith: '40000' does NOT start with '0' → normMode='40000'.
+// VALID_MODES.has('40000') = true → no badFilemode.
+// ---------------------------------------------------------------------------
+
+describe('Given tree entry with canonical directory mode "40000"', () => {
+  describe('When validateObject runs', () => {
+    it('Then does NOT emit badFilemode (40000 is valid; endsWith mutant would strip wrong char)', () => {
+      // Arrange
+      const sut = validateObject;
+      // mode='40000': startsWith('0')=false → normMode='40000' → VALID_MODES ✓ → no badFilemode.
+      // M20 mutant (endsWith('0')): '40000'.endsWith('0')=true → normMode='4000' → VALID_MODES ✗ → badFilemode.
+      const rawBytes = buildTree(buildTreeEntry('40000', 'subdir', BLOB_SHA));
+
+      // Act
+      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'badFilemode')).toHaveLength(0);
+    });
+  });
+});

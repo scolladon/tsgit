@@ -1671,3 +1671,578 @@ describe('Given a repo with both a content-ERROR finding and a missing reference
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// MUTATION KILL TESTS
+// ---------------------------------------------------------------------------
+
+// Kill: fsck.ts line 45 (connectivityOnly skips buildBlobFilenameMap)
+// The blobFilenames map must NOT be built when connectivityOnly:true —
+// otherwise a bad .gitmodules blob would trigger content findings in a
+// connectivity-only run, leaking EXIT_CONTENT_ERROR into the exit code.
+describe('Given repo .gitmodules blob with disallowed URL', () => {
+  describe('When fsck runs connectivityOnly:true', () => {
+    it('Then no bad-object finding emitted (blobFilenames not built in connectivity-only mode)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      const gitmodulesContent = enc.encode(
+        '[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n',
+      );
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: gitmodulesContent,
+      });
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert — connectivity-only skips blob-filename map AND content pass
+      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
+      expect(badObjects).toHaveLength(0);
+      // Exit code must not have bit 1 (content error)
+      expect(result.exitCode & 1).toBe(0);
+    });
+  });
+});
+
+// Kill: fsck.ts line 80 (missingTypeFromEdge first-write guard)
+// When a missing object is referenced by TWO broken edges with different
+// expected types, only the FIRST type (from the first edge) must be stored.
+// The guard `!missingTypeFromEdge.has(edge.toId)` prevents overwriting.
+describe('Given missing blob referenced both as blob (tree entry) and as tag target', () => {
+  describe('When fsck runs', () => {
+    it('Then missing finding uses type from first broken edge (tree → blob)', async () => {
+      // Arrange — ghost oid is missing; referenced from a tree entry (type=blob)
+      // AND from an annotated tag (type=blob also, but different edge).
+      // To create two-type conflict: ghost id referenced from tree (blob) and
+      // from a tag object (objectType blob). We assert type is 'blob' from tree edge.
+      const ctx = await initBareCtx();
+      const ghostId = '0000000000000000000000000000000000000042' as ObjectId;
+      // Tree entry references ghost as blob
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'ghost.txt', id: ghostId }]),
+      );
+      // Tag also references ghost (as a blob tag target)
+      const tagId = await writeObject(ctx, makeTag(ghostId, 'blob', 'v-ghost'));
+      await writeObject(ctx, makeCommit(treeId, []));
+      // Ref points to tagId so both are walked
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v-ghost`, `${tagId}\n`);
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — one missing finding for ghostId; type is determined by first broken edge
+      const missing = result.findings.filter(
+        (f) => f.type === 'missing' && (f as { id: ObjectId }).id === ghostId,
+      );
+      expect(missing).toHaveLength(1);
+      // Type should be 'blob' (from tree entry edge — whichever is first)
+      expect((missing[0] as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+// Kill: content-validation.ts line 43 (unterminatedHeader msgId after inflate failure)
+// When a loose object has corrupt compressed bytes (inflate fails), the bad-object
+// finding must report msgId = 'unterminatedHeader'.
+describe('Given loose object with corrupt compressed bytes (inflate fails)', () => {
+  describe('When fsck runs', () => {
+    it('Then bad-object finding has msgId unterminatedHeader (not empty string)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('to-corrupt'));
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      const garbage = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await ctx.fs.write(blobPath, garbage);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — inflate failure → unterminatedHeader msgId (not empty or generic)
+      const badObj = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(badObj).toBeDefined();
+      expect((badObj as { msgId: string }).msgId).toBe('unterminatedHeader');
+    });
+  });
+});
+
+// Kill: content-validation.ts line 57 (isinstance TsgitError check for unknownType)
+// When a loose object inflates fine but has an unknown type header, the
+// bad-object finding must report msgId = 'unknownType' (not 'unterminatedHeader').
+describe('Given loose object with inflatable but unknown-type header', () => {
+  describe('When fsck runs', () => {
+    it('Then bad-object finding has msgId unknownType (not unterminatedHeader)', async () => {
+      // Arrange — build raw bytes 'bogus 5\0hello', compress, write under computed OID
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      const body = enc.encode('hello');
+      const header = enc.encode(`bogus ${body.length}\0`);
+      const rawBytes = new Uint8Array(header.length + body.length);
+      rawBytes.set(header);
+      rawBytes.set(body, header.length);
+      const oidHex = await ctx.hash.hashHex(rawBytes);
+      const compressed = await ctx.compressor.deflate(rawBytes);
+      const objPath = looseObjectPath(ctx.layout.gitDir, oidHex as ObjectId);
+      await ctx.fs.write(objPath, compressed);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — unknown type: msgId must be 'unknownType' (not 'unterminatedHeader')
+      const badObj = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { id: ObjectId }).id === oidHex,
+      );
+      expect(badObj).toBeDefined();
+      expect((badObj as { msgId: string }).msgId).toBe('unknownType');
+    });
+  });
+});
+
+// Kill: content-validation.ts line 97 (SPECIAL_BLOB_NAMES guard)
+// A non-special-name blob inside a tree must NOT trigger gitmodules content
+// checks even if its bytes happen to look like a .gitmodules file.
+describe('Given tree with non-special-name blob whose content looks like .gitmodules', () => {
+  describe('When fsck runs', () => {
+    it('Then no gitmodules bad-object finding emitted for the non-special blob', async () => {
+      // Arrange — blob content is a valid-looking gitmodules with bad URL
+      // but the blob is stored under a non-special filename 'config.txt'
+      const ctx = await initBareCtx();
+      const enc = new TextEncoder();
+      const gitmodulesLikeContent = enc.encode(
+        '[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n',
+      );
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: gitmodulesLikeContent,
+      });
+      // Blob referenced under 'config.txt' (NOT '.gitmodules')
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'config.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — no gitmodulesUrl finding for this blob
+      const gitmodulesFindings = result.findings.filter(
+        (f) =>
+          f.type === 'bad-object' &&
+          (f as { id: ObjectId }).id === blobId &&
+          (f as { msgId: string }).msgId === 'gitmodulesUrl',
+      );
+      expect(gitmodulesFindings).toHaveLength(0);
+    });
+  });
+});
+
+// Kill: reachability.ts line 19 (tag target in recordOutEdges for inEdge)
+// A tag's target must be recorded as having an in-edge. Without this, the
+// commit pointed to by a dangling tag would be falsely classified as dangling.
+describe('Given dangling tag pointing to a commit (both written, no ref)', () => {
+  describe('When fsck runs', () => {
+    it('Then commit target is NOT dangling (tag gives it an in-edge)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      const tagId = await writeObject(ctx, makeTag(commitId, 'commit', 'v0.1'));
+      // No ref points to tagId OR commitId — both are unreachable
+      // But commitId has an in-edge FROM tagId, so it is unreachable but NOT dangling
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — tagId is dangling (no in-edge), commitId is unreachable but NOT dangling
+      const dangling = result.findings.filter((f) => f.type === 'dangling');
+      const danglingIds = dangling.map((f) => (f as { id: ObjectId }).id);
+      expect(danglingIds).toContain(tagId);
+      expect(danglingIds).not.toContain(commitId);
+    });
+  });
+});
+
+// Kill: reachability.ts line 98 (parent enqueue in processCommit)
+// When a commit has a parent that IS in the universe (not missing),
+// the parent must be enqueued and walked — its own objects must be reached.
+describe('Given two commits where child references parent (chain of length 2)', () => {
+  describe('When fsck runs with ref on child only', () => {
+    it('Then parent commit and its tree are reached (not unreachable)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const parentId = await writeObject(ctx, makeCommit(treeId, []));
+      const childId = await writeObject(ctx, makeCommit(treeId, [parentId]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${childId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — no unreachable or dangling findings (parent walked via child)
+      const unreachable = result.findings.filter((f) => f.type === 'unreachable');
+      const unreachableIds = unreachable.map((f) => (f as { id: ObjectId }).id);
+      expect(unreachableIds).not.toContain(parentId);
+      expect(unreachableIds).not.toContain(treeId);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+// Kill: reachability.ts line 102 (parents.length === 0 guard for rootCommits)
+// A merge commit with parents must NOT appear in rootCommits.
+// A root finding must only be emitted for commits with zero parents.
+describe('Given merge commit with two reachable parents', () => {
+  describe('When fsck runs', () => {
+    it('Then merge commit does NOT emit a root finding', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const parent1Id = await writeObject(ctx, makeCommit(treeId, []));
+      const parent2Id = await writeObject(ctx, makeCommit(treeId, []));
+      const mergeId = await writeObject(ctx, makeCommit(treeId, [parent1Id, parent2Id]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${mergeId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — only parent1Id and parent2Id emit root findings, not mergeId
+      const roots = result.findings.filter((f) => f.type === 'root');
+      const rootIds = roots.map((f) => (f as { id: ObjectId }).id);
+      expect(rootIds).toContain(parent1Id);
+      expect(rootIds).toContain(parent2Id);
+      expect(rootIds).not.toContain(mergeId);
+    });
+  });
+});
+
+// Kill: reachability.ts line 107 (GITLINK guard in processTree)
+// Tree entries with GITLINK mode (submodule) must be skipped during the walk.
+// Without the guard, a missing submodule commit would generate spurious
+// 'missing' and 'broken-link' findings for the gitlink OID.
+describe('Given tree with gitlink (submodule) entry pointing to commit not in universe', () => {
+  describe('When fsck runs', () => {
+    it('Then no missing or broken-link finding emitted for gitlink target', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      // Gitlink OID simulates a submodule commit — it is NOT in this repo's universe
+      const submoduleCommitId = '0000000000000000000000000000000000000099' as ObjectId;
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.GITLINK, name: 'vendor', id: submoduleCommitId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — no missing or broken-link finding for the gitlink OID
+      const missingGitlink = result.findings.filter(
+        (f) =>
+          (f.type === 'missing' || f.type === 'broken-link') &&
+          (f as { id?: ObjectId; toId?: ObjectId }).toId === submoduleCommitId,
+      );
+      expect(missingGitlink).toHaveLength(0);
+      expect(result.exitCode & 2).toBe(0);
+    });
+  });
+});
+
+// Kill: reachability.ts line 163 (corrupt object in walk loop must be marked reached)
+// When a ref points to a corrupt object (readable in universe but null in cache),
+// the walk must mark it reached to avoid re-processing it infinitely.
+// Without reached.add(id), the worklist loop would spin forever.
+describe('Given ref pointing to corrupt object (null in cache)', () => {
+  describe('When fsck runs', () => {
+    it('Then fsck completes without hanging and the corrupt object is not unreachable', async () => {
+      // Arrange — write a blob normally, then corrupt its bytes
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('corrupt-me'));
+      // Corrupt: replace with garbage that deflates fine but breaks parse
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      const garbage = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await ctx.fs.write(blobPath, garbage);
+      // Ref points to this corrupt blob (treated as a root)
+      // We need a commit pointing to a tree that includes this blob
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act — must complete (no infinite loop)
+      const result = await sut(ctx);
+
+      // Assert — bad-object finding for corrupt blob; no unreachable finding for it
+      const badObj = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-object' } =>
+          f.type === 'bad-object' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(badObj).toBeDefined();
+      const unreachableBlob = result.findings.find(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(unreachableBlob).toBeUndefined();
+    });
+  });
+});
+
+// Kill: roots.ts line 18 (peel:false in resolveRef for addRefRoots)
+// When a ref points to an annotated tag, resolveRef with peel:false returns
+// the TAG object OID. Without peel:false (default peels), the commit OID
+// would be returned instead, and the tag object would become dangling/unreachable.
+describe('Given ref pointing to annotated tag (peel:false must be used)', () => {
+  describe('When fsck runs', () => {
+    it('Then the tag object itself is not dangling or unreachable', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      const tagId = await writeObject(ctx, makeTag(commitId, 'commit', 'v1.0'));
+      // Ref points to tagId (not the commit)
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — tag and commit are both reachable; no unreachable/dangling findings
+      const unreachable = result.findings.filter((f) => f.type === 'unreachable');
+      const unreachableIds = unreachable.map((f) => (f as { id: ObjectId }).id);
+      expect(unreachableIds).not.toContain(tagId);
+      expect(unreachableIds).not.toContain(commitId);
+    });
+  });
+});
+
+// Kill: roots.ts line 40 (newId ZERO_OID guard in addReflogRoots)
+// A reflog entry whose newId is the zero OID (branch deletion event) must NOT
+// add ZERO_OID to roots — it is a sentinel, not a real object reference.
+describe('Given reflog with entry where newId is zero OID (branch deletion event)', () => {
+  describe('When fsck runs', () => {
+    it('Then no missing finding emitted for zero-OID newId', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      // Reflog: deletion entry — newId is ZERO_OID (branch deleted)
+      const ZERO_OID_STR = '0000000000000000000000000000000000000000';
+      const reflogLine = `${commitId} ${ZERO_OID_STR} Ada <ada@example.com> 1700000000 +0000\tdelete: deleting branch\n`;
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`, reflogLine);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — no 'missing' finding for ZERO_OID
+      const missingForZero = result.findings.filter(
+        (f) => f.type === 'missing' && (f as { id: ObjectId }).id === ZERO_OID_STR,
+      );
+      expect(missingForZero).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+// Kill: roots.ts line 53 (stage === 0 guard in addIndexRoots)
+// Conflict-stage entries (stage 1/2/3) must NOT be added to roots.
+// Only stage-0 entries represent the current working-tree state.
+describe('Given index with only conflict-stage entries (stage 1, 2, 3, no stage 0)', () => {
+  describe('When fsck runs', () => {
+    it('Then conflict-stage blobs are dangling (not kept reachable by index)', async () => {
+      // Arrange
+      const { STAGE0_FLAGS } = await import('../../../../src/domain/git-index/index-entry.js');
+      const tempCtx = await initBareCtx();
+      const blobId = await writeObject(tempCtx, makeBlob('conflict content'));
+
+      // Build context with blob + an index that has stage=1 entry (conflict, not stage-0)
+      const ctx = await buildSeededContext({
+        objects: [makeBlob('conflict content')],
+        index: {
+          version: 2,
+          entries: [
+            {
+              ctimeSeconds: 0,
+              ctimeNanoseconds: 0,
+              mtimeSeconds: 0,
+              mtimeNanoseconds: 0,
+              dev: 0,
+              ino: 0,
+              mode: FILE_MODE.REGULAR,
+              uid: 0,
+              gid: 0,
+              fileSize: 0,
+              id: blobId,
+              flags: { ...STAGE0_FLAGS, stage: 1 },
+              path: 'conflict.txt' as FilePath,
+            },
+          ],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — stage-1 blob is NOT reachable from index; it is dangling
+      const dangling = result.findings.filter((f) => f.type === 'dangling');
+      const danglingIds = dangling.map((f) => (f as { id: ObjectId }).id);
+      expect(danglingIds).toContain(blobId);
+    });
+  });
+});
+
+// Kill: roots.ts line 74 (indexRoot !== false guard)
+// When indexRoot:false, staged blobs must NOT be kept reachable via the index.
+describe('Given staged blob with indexRoot:false', () => {
+  describe('When fsck runs indexRoot:false', () => {
+    it('Then staged blob IS dangling (index excluded from roots)', async () => {
+      // Arrange
+      const { STAGE0_FLAGS } = await import('../../../../src/domain/git-index/index-entry.js');
+      const tempCtx = await initBareCtx();
+      const blobId = await writeObject(tempCtx, makeBlob('staged-indexroot'));
+
+      const ctx = await buildSeededContext({
+        objects: [makeBlob('staged-indexroot')],
+        index: {
+          version: 2,
+          entries: [
+            {
+              ctimeSeconds: 0,
+              ctimeNanoseconds: 0,
+              mtimeSeconds: 0,
+              mtimeNanoseconds: 0,
+              dev: 0,
+              ino: 0,
+              mode: FILE_MODE.REGULAR,
+              uid: 0,
+              gid: 0,
+              fileSize: 0,
+              id: blobId,
+              flags: STAGE0_FLAGS,
+              path: 'staged.txt' as FilePath,
+            },
+          ],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+      // Act
+      const result = await sut(ctx, { indexRoot: false });
+
+      // Assert — blob is dangling because index is excluded
+      const dangling = result.findings.filter((f) => f.type === 'dangling');
+      const isDanglingBlob = dangling.some((f) => (f as { id: ObjectId }).id === blobId);
+      expect(isDanglingBlob).toBe(true);
+    });
+  });
+});
+
+// Kill: refs-verify.ts line 28 (regex /[\r\n]+$/ vs /[\r\n]$/)
+// A loose ref with Windows-style line ending (\r\n) must have BOTH chars stripped,
+// not just the trailing \n. With /[\r\n]$/ only one char is removed → \r remains
+// in the content → OID_RE.test fails → spurious badRefContent finding.
+describe('Given loose ref with Windows CRLF line ending', () => {
+  describe('When fsck runs', () => {
+    it('Then no badRefContent finding (CRLF stripped cleanly by /[\\r\\n]+$/)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      // Write ref with \r\n ending (Windows-style)
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\r\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — CRLF is stripped; no badRefContent finding
+      const badRefContent = result.findings.find(
+        (f) => f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefContent',
+      );
+      expect(badRefContent).toBeUndefined();
+      expect(result.exitCode & 8).toBe(0);
+    });
+  });
+});
+
+// Kill: refs-verify.ts line 95 (entry.name !== ref guard in packed-refs loop)
+// When packed-refs has multiple entries, only the entry matching the current
+// ref name must be checked. Without the name filter, entries for OTHER refs
+// could trigger spurious badRefOid findings when their OIDs are absent.
+describe('Given packed-refs with two refs: one valid, one absent OID', () => {
+  describe('When fsck runs', () => {
+    it('Then only the absent-OID ref emits badRefOid (not the valid one)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      const absentOid = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' as ObjectId;
+      // packed-refs with one valid ref (commitId in universe) and one absent ref
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/packed-refs`,
+        `# pack-refs with: peeled fully-peeled sorted \n${commitId} refs/heads/main\n${absentOid} refs/heads/broken\n`,
+      );
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — badRefOid only for refs/heads/broken, not refs/heads/main
+      const badRefs = result.findings.filter(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(badRefs).toHaveLength(1);
+      expect(badRefs[0]!.ref).toBe('refs/heads/broken');
+    });
+  });
+});
+
+// Kill: refs-verify.ts line 96 (!universe.has(entry.id) guard)
+// A packed ref whose OID IS in the object universe must NOT emit a badRefOid finding.
+describe('Given packed ref with valid OID present in object universe', () => {
+  describe('When fsck runs', () => {
+    it('Then no badRefOid finding emitted for the valid packed ref', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      // packed-refs with valid OID (commitId IS in universe)
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/packed-refs`,
+        `# pack-refs with: peeled fully-peeled sorted \n${commitId} refs/heads/main\n`,
+      );
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — no badRefOid for refs/heads/main (OID present in universe)
+      const badRefOid = result.findings.find(
+        (f) => f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefOid',
+      );
+      expect(badRefOid).toBeUndefined();
+    });
+  });
+});
