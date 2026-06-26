@@ -195,6 +195,7 @@ entries), `chksum` = unsigned byte-sum of the 512-byte header with the chksum fi
 filled with 8 spaces (verified `5137 == 5137`). Paths ≤100 bytes use the `name` field;
 100–255 bytes split into the ustar `prefix` field at a `/`; only >255 bytes need a pax
 `x` extended header (`path=` record) — an implementation edge, not a v1 blocker.
+**Pinned split rule (git 2.54.0):** the split picks the rightmost `/` that yields a non-empty name (1 ≤ nameLen ≤ 100); git never emits an empty `name` field — a directory path ending with `/` splits at the slash *before* the last component, not at the trailing slash.
 
 **P — pax global header (commit metadata, tar):** present **only** when the tree-ish
 resolves to a commit (annotated tag → its peeled commit). First 512-block: name

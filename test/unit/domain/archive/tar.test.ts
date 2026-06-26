@@ -506,3 +506,170 @@ describe('Given no explicit mtime in opts but result.commitTime is defined', () 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// mtime fallback: both opts.mtime and result.commitTime undefined → epoch 0
+// ---------------------------------------------------------------------------
+
+describe('Given no explicit mtime in opts and no result.commitTime', () => {
+  describe('When tarArchive is called', () => {
+    it('Then entry mtime falls back to 0', async () => {
+      // Arrange — both undefined → mtime = opts?.mtime ?? result.commitTime ?? 0 = 0
+      const entry = makeEntry('z.txt', '100644', new Uint8Array([1]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), {});
+
+      // Act
+      const result = await collectBytes(sut);
+      const header = result.slice(0, HEADER_SIZE);
+
+      // Assert
+      expect(readOctalField(header, OFF_MTIME, 12)).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// padTo512 early-return: content already aligned to 512 bytes
+// ---------------------------------------------------------------------------
+
+describe('Given a regular-file entry whose content is exactly 512 bytes', () => {
+  describe('When tarArchive is called', () => {
+    it('Then the data block is exactly 512 bytes (no extra padding appended)', async () => {
+      // Arrange — 512-byte content is already aligned; padTo512 returns it unchanged
+      const content = new Uint8Array(512).fill(0x41);
+      const entry = makeEntry('big.txt', '100644', content);
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      const result = await collectBytes(sut);
+
+      // Assert — header (512) + data (512) + EOF (1024) + padding to 10240
+      // Data block occupies bytes [512, 1024): it should equal the content exactly
+      const dataBlock = result.slice(HEADER_SIZE, HEADER_SIZE + BLOCK_SIZE);
+      expect(dataBlock).toEqual(content);
+      // The block after the data block should begin the EOF zeros
+      const firstEofByte = result[HEADER_SIZE + BLOCK_SIZE];
+      expect(firstEofByte).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EOF padding no-op: archive already a multiple of RECORD_SIZE (10240)
+// ---------------------------------------------------------------------------
+
+describe('Given a stream of 18 directory entries (no commit, no prefix)', () => {
+  describe('When tarArchive is called', () => {
+    it('Then the total output is exactly 10240 bytes with no trailing padding block', async () => {
+      // Arrange — 18 dir entries × 512 bytes each = 9216, + 1024 EOF = 10240.
+      // byteCount % RECORD_SIZE === 0 → the padding branch is NOT taken.
+      const entries = Array.from({ length: 18 }, (_, i) =>
+        makeEntry(`dir${i}`, '40000', undefined),
+      );
+      const sut = tarArchive(makeResult(entries, undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      const result = await collectBytes(sut);
+
+      // Assert — exactly one record, no extra padding emitted
+      expect(result.length).toBe(RECORD_SIZE);
+      // The last 1024 bytes are the two EOF zero blocks
+      const eof = result.slice(RECORD_SIZE - BLOCK_SIZE * 2);
+      expect(eof).toEqual(new Uint8Array(BLOCK_SIZE * 2));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// splitPath error paths: >256-byte path and unsplittable 101–256-byte path
+// ---------------------------------------------------------------------------
+
+describe('Given a regular-file entry whose path exceeds 256 bytes', () => {
+  describe('When tarArchive is called', () => {
+    it('Then it throws with a message indicating the path is too long for ustar', async () => {
+      // Arrange — 257-byte path: 'a'.repeat(257)
+      const longPath = 'a'.repeat(257);
+      const entry = makeEntry(longPath, '100644', new Uint8Array([1]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      let thrown: unknown;
+      try {
+        await collectBytes(sut);
+      } catch (err) {
+        thrown = err;
+      }
+
+      // Assert
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe(
+        `Path too long for ustar archive (>256 bytes): ${longPath}`,
+      );
+    });
+  });
+});
+
+describe('Given a regular-file entry whose 101–256-byte path has no slash yielding a 1–100-byte name', () => {
+  describe('When tarArchive is called', () => {
+    it('Then it throws with a message indicating the path cannot be split', async () => {
+      // Arrange — 'a/' + 'b'.repeat(154) = 156 bytes; the only slash at i=1
+      // yields nameLen = 154 > NAME_MAX, so no valid split exists
+      const unsplittablePath = `a/${'b'.repeat(154)}`;
+      const entry = makeEntry(unsplittablePath, '100644', new Uint8Array([1]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      let thrown: unknown;
+      try {
+        await collectBytes(sut);
+      } catch (err) {
+        thrown = err;
+      }
+
+      // Assert
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe(
+        `Cannot split path into ustar prefix+name: ${unsplittablePath}`,
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// splitPath: directory path with trailing slash skips empty-name split
+// ---------------------------------------------------------------------------
+
+describe('Given a directory entry whose path with trailing slash is 101–256 bytes', () => {
+  describe('When tarArchive is called', () => {
+    it('Then the name field contains the last component with its slash, not an empty string', async () => {
+      // Arrange — directory path (without trailing slash) = 109 bytes, which
+      // after buildEntryPath appends '/' becomes 110 bytes.
+      // The trailing slash at i=109 would yield nameLen=0 (skipped); the split
+      // falls back to i=98, yielding name='jjjjjjjjjj/' (11 bytes).
+      const dirComponents = [
+        'aaaaaaaaaa',
+        'bbbbbbbbbb',
+        'cccccccccc',
+        'dddddddddd',
+        'eeeeeeeeee',
+        'ffffffffff',
+        'gggggggggg',
+        'hhhhhhhhhh',
+        'iiiiiiiiii',
+        'jjjjjjjjjj',
+      ];
+      const dirPath = dirComponents.join('/');
+      const entry = makeEntry(dirPath, '40000', undefined);
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      const bytes = await collectBytes(sut);
+      const header = bytes.slice(0, HEADER_SIZE);
+
+      // Assert — name is 'jjjjjjjjjj/' (non-empty last component + slash)
+      expect(readField(header, OFF_NAME, 100)).toBe('jjjjjjjjjj/');
+      // And it is a directory entry
+      expect(header[OFF_TYPEFLAG]).toBe(TF_DIR);
+    });
+  });
+});

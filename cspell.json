@@ -941,7 +941,10 @@
     "togglable",
     "testpack",
     "danglingpack",
-    "worklist"
+    "worklist",
+    "unsplittable",
+    "neighbouring",
+    "commentlen"
   ],
   "ignorePaths": [
     "node_modules",

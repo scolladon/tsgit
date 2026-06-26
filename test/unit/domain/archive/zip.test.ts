@@ -895,6 +895,37 @@ describe('Given any entry', () => {
 // local-header offset in central directory
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// compressEntry: content absent on a non-dir entry → treated as empty blob
+// ---------------------------------------------------------------------------
+
+describe('Given a regular-file entry with no content field', () => {
+  describe('When zipArchive is called', () => {
+    it('Then it emits a stored (method 0) entry with size 0 and CRC 0', async () => {
+      // Arrange — content undefined on a non-dir mode; compressEntry falls back to empty Uint8Array
+      const entry: ArchiveEntry = {
+        path: 'empty.txt' as unknown as FilePath,
+        mode: '100644',
+        oid: FAKE_OID,
+        // content intentionally absent
+      };
+      const result = makeResult([entry]);
+      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
+
+      // Act
+      const bytes = await collectBytes(sut);
+      const parsed = parseZip(bytes);
+
+      // Assert — empty body → method 0, csize 0, usize 0, crc 0
+      const local = mustGet(parsed.locals);
+      expect(local.method).toBe(0);
+      expect(local.csize).toBe(0);
+      expect(local.usize).toBe(0);
+      expect(local.crc).toBe(0);
+    });
+  });
+});
+
 describe('Given two entries, the second entry follows the first', () => {
   describe('When central directory is emitted', () => {
     it('Then the second central entry carries the correct local-header offset', async () => {

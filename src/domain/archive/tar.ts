@@ -164,8 +164,8 @@ function writeBytes(buf: Uint8Array, offset: number, len: number, bytes: Uint8Ar
  */
 function computeChecksum(header: Uint8Array): number {
   let sum = 0;
-  for (let i = 0; i < HEADER_SIZE; i++) {
-    sum += i >= OFF_CHKSUM && i < OFF_CHKSUM + 8 ? 0x20 : (header[i] ?? 0);
+  for (const [i, byte] of header.entries()) {
+    sum += i >= OFF_CHKSUM && i < OFF_CHKSUM + 8 ? 0x20 : byte;
   }
   return sum;
 }
@@ -254,9 +254,13 @@ function splitPath(filePath: string): PathFields {
   if (filePath.length > PATH_MAX_USTAR) {
     throw new Error(`Path too long for ustar archive (>${PATH_MAX_USTAR} bytes): ${filePath}`);
   }
-  // Search from the latest valid split point toward the start
+  // Search from the latest valid split point toward the start.
+  // Require a non-empty name (1 ≤ nameLen ≤ NAME_MAX) so a trailing slash on
+  // a directory path is never used as the split point (git never emits an
+  // empty name — it splits before the last component instead).
   for (let i = Math.min(filePath.length - 1, PREFIX_MAX); i > 0; i--) {
-    if (filePath[i] === '/' && filePath.length - i - 1 <= NAME_MAX) {
+    const nameLen = filePath.length - i - 1;
+    if (filePath[i] === '/' && nameLen >= 1 && nameLen <= NAME_MAX) {
       return { name: filePath.slice(i + 1), prefixField: filePath.slice(0, i) };
     }
   }
@@ -280,10 +284,6 @@ function tarMode(mode: ArchiveEntry['mode'], umask: number): number {
       return MODE_MASKED_BASE & ~umask;
     case '120000':
       return MODE_SYMLINK;
-    default: {
-      const _: never = mode;
-      throw new Error(`Unknown git mode: ${_}`);
-    }
   }
 }
 
@@ -298,10 +298,6 @@ function modeTypeflag(mode: ArchiveEntry['mode']): number {
     case '40000':
     case '160000':
       return TYPEFLAG_DIR;
-    default: {
-      const _: never = mode;
-      throw new Error(`Unknown git mode: ${_}`);
-    }
   }
 }
 
@@ -319,9 +315,8 @@ function needsTrailingSlash(mode: ArchiveEntry['mode']): boolean {
 // Data block padding
 // ---------------------------------------------------------------------------
 
-/** Return `data` padded to the next multiple of 512, or empty for empty data. */
+/** Return `data` padded to the next multiple of 512. Caller ensures non-empty. */
 function padTo512(data: Uint8Array): Uint8Array {
-  if (data.length === 0) return new Uint8Array(0);
   const paddedSize = Math.ceil(data.length / BLOCK_SIZE) * BLOCK_SIZE;
   if (paddedSize === data.length) return data;
   const result = new Uint8Array(paddedSize);

@@ -382,10 +382,6 @@ function entryAttrs(entry: ArchiveEntry): EntryAttrs {
       return DIR_ATTRS;
     case '160000':
       return DIR_ATTRS;
-    default: {
-      const _: never = entry.mode;
-      throw new Error(`Unknown git mode: ${_}`);
-    }
   }
 }
 

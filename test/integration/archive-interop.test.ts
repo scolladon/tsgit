@@ -500,6 +500,102 @@ describe.skipIf(!GIT_AVAILABLE)('tar byte-faithfulness', () => {
 });
 
 // =============================================================================
+// tar deep-path byte-faithfulness: ustar prefix+name split for long paths
+//
+// Pinned rule (git 2.54.0, verified empirically):
+//   - Paths 100–256 bytes split at the last '/' that yields a non-empty name
+//     (1 ≤ nameLen ≤ 100). git NEVER emits an empty name field.
+//   - For a directory path ending with '/' (e.g. 'deep/dir/') the split skips
+//     the trailing slash and uses the slash before the last component instead,
+//     so name = '<last-component>/' (non-empty).
+// =============================================================================
+
+describe.skipIf(!GIT_AVAILABLE)('tar deep-path byte-faithfulness', () => {
+  let deepPair: PeerPair;
+
+  const COMMITTER_DATE_DEEP = '2005-04-07T22:13:13 +0200';
+
+  const buildCommitEnv = () => ({
+    ...runGitEnv(),
+    GIT_AUTHOR_NAME: 'Ada',
+    GIT_AUTHOR_EMAIL: 'ada@example.com',
+    GIT_AUTHOR_DATE: COMMITTER_DATE_DEEP,
+    GIT_COMMITTER_NAME: 'Ada',
+    GIT_COMMITTER_EMAIL: 'ada@example.com',
+    GIT_COMMITTER_DATE: COMMITTER_DATE_DEEP,
+  });
+
+  // Deep directory with 10 components of 10 chars each = 109 bytes (without
+  // trailing slash).  With the trailing slash added by buildEntryPath it is
+  // 110 bytes — well within the 101–256 ustar range.
+  // A file inside the deepest directory makes the file path 119 bytes total.
+  const DIR_COMPONENTS = [
+    'aaaaaaaaaa',
+    'bbbbbbbbbb',
+    'cccccccccc',
+    'dddddddddd',
+    'eeeeeeeeee',
+    'ffffffffff',
+    'gggggggggg',
+    'hhhhhhhhhh',
+    'iiiiiiiiii',
+    'jjjjjjjjjj',
+  ];
+  const DEEP_DIR = DIR_COMPONENTS.join('/'); // 109 bytes
+  const DEEP_FILE = `${DEEP_DIR}/kkkkk.txt`; // 119 bytes
+
+  beforeAll(async () => {
+    deepPair = await makePeerPair('archive-tar-deep');
+    const dir = deepPair.peer;
+
+    runGit(['-C', dir, 'init', '-q', '-b', 'main'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'commit.gpgsign', 'false'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'core.autocrlf', 'false'], { env: runGitEnv() });
+
+    // Create the deep directory structure and plant a file
+    mkdirSync(path.join(dir, DEEP_DIR), { recursive: true });
+    writeFileSync(path.join(dir, DEEP_FILE), 'deep content\n');
+
+    runGit(['-C', dir, 'add', '-A'], { env: runGitEnv() });
+    runGit(['-C', dir, 'commit', '-m', 'deep'], { env: buildCommitEnv() });
+  }, 60_000);
+
+  afterAll(async () => {
+    await deepPair.dispose();
+  });
+
+  describe('Given a tree with file and directory paths exceeding 100 bytes', () => {
+    it('Then the tar bytes are byte-equal to git archive --format=tar HEAD (ustar split is faithful)', async () => {
+      // Arrange
+      const ctx = createNodeContext({ workDir: deepPair.peer });
+      const result = await archive(ctx, { treeish: 'HEAD' });
+      const gitBytes = Buffer.from(
+        runGit(['-C', deepPair.peer, 'archive', '--format=tar', 'HEAD'], {
+          env: runGitEnv(),
+        }),
+        'binary',
+      );
+
+      // Act
+      const sut = tarArchive(result, {
+        umask: 0o0002,
+        uname: 'root',
+        gname: 'root',
+        ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+      });
+      const ourBytes = await collectTarBytes(sut);
+
+      // Assert — byte-equal: the 110-byte dir path uses name='jjjjjjjjjj/'
+      // (split before the trailing slash, not at it) and the 119-byte file path
+      // uses name='kkkkk.txt' (split at the last '/').
+      expect(ourBytes).toEqual(new Uint8Array(gitBytes));
+    });
+  });
+});
+
+// =============================================================================
 // zip serializer byte-equality vs `git archive --format=zip`
 // =============================================================================
 
