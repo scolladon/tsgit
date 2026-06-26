@@ -15,6 +15,12 @@ export type {
 export { type MergeAbortResult, mergeAbort } from './abort-merge.js';
 export { type AddOptions, type AddResult, add } from './add.js';
 export {
+  type ArchiveEntry,
+  type ArchiveOptions,
+  type ArchiveResult,
+  archive,
+} from './archive.js';
+export {
   type BlameLine,
   type BlameLineBase,
   type BlameOptions,

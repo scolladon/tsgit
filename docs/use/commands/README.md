@@ -1,10 +1,11 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 39 entries, alphabetical.
+Every method bound on a `Repository` handle. 40 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
 | [`add`](add.md) | Stage paths into `.git/index`. Literal paths or `all: true` bulk mode. |
+| [`archive`](archive.md) | Export a tree-ish as a structured entry stream (paths, raw modes, oids, blob bytes); no tar/zip bytes produced. |
 | [`blame`](blame.md) | Line-by-line authorship for a file at a revision; returns structured per-line data (no rendered line). |
 | [`branch`](branch.md) | List, create, or delete branches. |
 | [`catFile`](cat-file.md) | Batch read of git objects in strict input order. |
