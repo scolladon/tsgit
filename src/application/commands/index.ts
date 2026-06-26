@@ -103,6 +103,14 @@ export {
   fetchMissing,
 } from './fetch-missing.js';
 export {
+  type FsckFinding,
+  type FsckObjectType,
+  type FsckOptions,
+  type FsckResult,
+  type FsckSeverity,
+  fsck,
+} from './fsck.js';
+export {
   type GrepLineHit,
   type GrepOptions,
   type GrepPathResult,

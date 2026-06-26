@@ -16,6 +16,9 @@ Alphabetical.
 ### `computeChangeset`
 `compute-changeset.ts`. Tree-vs-working-tree diff for the dirty-tree guard. Used by [`checkout`](../commands/checkout.md), [`reset`](../commands/reset.md), [`status`](../commands/status.md).
 
+### `enumerateObjects`
+`enumerate-objects.ts`. Enumerate every object id in the database (loose ∪ pack-index), sorted and de-duplicated. Used by [`fsck`](../commands/fsck.md).
+
 ### `enumeratePushObjects`
 `enumerate-push-objects.ts`. Diff local vs remote heads to compute the push-pack object set. Used by [`push`](../commands/push.md).
 

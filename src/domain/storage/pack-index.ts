@@ -177,6 +177,16 @@ export function findByPrefix(index: PackIndex, prefix: string): ReadonlyArray<Ob
   return results;
 }
 
+export function allObjectIds(index: PackIndex): ReadonlyArray<ObjectId> {
+  const results: ObjectId[] = [];
+  for (let i = 0; i < index.objectCount; i++) {
+    const offset = IDX_SHA_TABLE_OFFSET + i * IDX_SHA_LENGTH;
+    const sha = index._bytes.subarray(offset, offset + IDX_SHA_LENGTH);
+    results.push(bytesToHex(sha) as ObjectId);
+  }
+  return results;
+}
+
 function findLowerBound(index: PackIndex, lo: number, hi: number, targetBytes: Uint8Array): number {
   let low = lo;
   let high = hi;

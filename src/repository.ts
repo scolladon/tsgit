@@ -197,6 +197,7 @@ export interface Repository {
   };
   readonly fetch: BindCtx<typeof commands.fetch>;
   readonly fetchMissing: BindCtx<typeof commands.fetchMissing>;
+  readonly fsck: BindCtx<typeof commands.fsck>;
   readonly grep: BindCtx<typeof commands.grep>;
   readonly init: BindCtx<typeof commands.init>;
   readonly log: BindCtx<typeof commands.log>;
@@ -501,6 +502,10 @@ export const openRepository = async (
       guard();
       return commands.fetchMissing(ctx, fetchMissingOpts);
     }) as Repository['fetchMissing'],
+    fsck: ((fsckOpts) => {
+      guard();
+      return commands.fsck(ctx, fsckOpts);
+    }) as Repository['fsck'],
     grep: ((grepOpts) => {
       guard();
       return commands.grep(ctx, grepOpts);

@@ -3,7 +3,7 @@ backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/serena.md
 gates:
-  slice: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files>"
+  part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files>"
   phase: "npm run validate"
   review-batch: "npm run check:spelling"
 phases:
