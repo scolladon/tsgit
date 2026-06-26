@@ -10,6 +10,7 @@
  *
  * Runtime imports: none (only type import from ./types.js).
  */
+import { FILE_MODE } from '../objects/file-mode.js';
 import type { ArchiveEntry, ArchiveResult } from './types.js';
 
 // Module-level TextEncoder instance; reuse to avoid repeated allocation.
@@ -129,11 +130,23 @@ const PATH_MAX_USTAR = NAME_MAX + 1 + PREFIX_MAX; // 256
 // Low-level field writers
 // ---------------------------------------------------------------------------
 
+/** Maximum value that fits in `len-1` octal digits (e.g. 11 digits → 8^11-1). */
+const MAX_OCTAL_VALUE = (len: number): number => 8 ** (len - 1) - 1;
+
 /**
  * Write `val` as a zero-padded octal string of `len-1` digits followed by
  * a NUL byte into `buf` starting at `offset`.
+ *
+ * Throws if `val` exceeds the `len-1`-digit octal range.  For the size field
+ * (len=12) the maximum is 8^11-1 = 8 589 934 591 bytes (~8 GiB); values
+ * above that would require a pax extended-header (out of scope for v1).
  */
 function writeOctal(buf: Uint8Array, offset: number, len: number, val: number): void {
+  if (val > MAX_OCTAL_VALUE(len)) {
+    throw new Error(
+      `Value ${val} exceeds the ${len - 1}-digit octal field capacity (max ${MAX_OCTAL_VALUE(len)})`,
+    );
+  }
   const str = val.toString(8).padStart(len - 1, '0');
   for (let i = 0; i < len - 1; i++) {
     buf[offset + i] = str.charCodeAt(i);
@@ -288,15 +301,15 @@ function splitPath(filePath: string): PathFields {
 /** Compute the tar unix permission bits for a given git mode and umask. */
 function tarMode(mode: ArchiveEntry['mode'], umask: number): number {
   switch (mode) {
-    case '100644':
+    case FILE_MODE.REGULAR:
       return MODE_REGULAR_BASE & ~umask;
-    case '100755':
+    case FILE_MODE.EXECUTABLE:
       return MODE_MASKED_BASE & ~umask;
-    case '40000':
+    case FILE_MODE.DIRECTORY:
       return MODE_MASKED_BASE & ~umask;
-    case '160000':
+    case FILE_MODE.GITLINK:
       return MODE_MASKED_BASE & ~umask;
-    case '120000':
+    case FILE_MODE.SYMLINK:
       return MODE_SYMLINK;
   }
 }
@@ -304,38 +317,38 @@ function tarMode(mode: ArchiveEntry['mode'], umask: number): number {
 /** Map a git mode to the ustar typeflag byte. */
 function modeTypeflag(mode: ArchiveEntry['mode']): number {
   switch (mode) {
-    case '100644':
-    case '100755':
+    case FILE_MODE.REGULAR:
+    case FILE_MODE.EXECUTABLE:
       return TYPEFLAG_REGULAR;
-    case '120000':
+    case FILE_MODE.SYMLINK:
       return TYPEFLAG_SYMLINK;
-    case '40000':
-    case '160000':
+    case FILE_MODE.DIRECTORY:
+    case FILE_MODE.GITLINK:
       return TYPEFLAG_DIR;
   }
 }
 
 /** True for modes that contribute a data block (regular and exec only). */
 function hasDataBlock(mode: ArchiveEntry['mode']): boolean {
-  return mode === '100644' || mode === '100755';
+  return mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 }
 
 /** True for modes whose tar name must carry a trailing '/'. */
 function needsTrailingSlash(mode: ArchiveEntry['mode']): boolean {
-  return mode === '40000' || mode === '160000';
+  return mode === FILE_MODE.DIRECTORY || mode === FILE_MODE.GITLINK;
 }
 
 // ---------------------------------------------------------------------------
-// Data block padding
+// Data block padding (zero-copy)
 // ---------------------------------------------------------------------------
 
-/** Return `data` padded to the next multiple of 512. Caller ensures non-empty. */
-function padTo512(data: Uint8Array): Uint8Array {
-  const paddedSize = Math.ceil(data.length / BLOCK_SIZE) * BLOCK_SIZE;
-  if (paddedSize === data.length) return data;
-  const result = new Uint8Array(paddedSize);
-  result.set(data);
-  return result;
+/**
+ * Compute the number of NUL-padding bytes needed to align `byteLen` to the
+ * next multiple of 512.  Returns 0 when `byteLen` is already aligned.
+ */
+function paddingNeeded(byteLen: number): number {
+  const rem = byteLen % BLOCK_SIZE;
+  return rem === 0 ? 0 : BLOCK_SIZE - rem;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +392,7 @@ function buildEntryHeader(
   gname: string,
 ): Uint8Array {
   const { nameBytes, prefixBytes } = splitPath(fullPath);
-  const isSymlink = entry.mode === '120000';
+  const isSymlink = entry.mode === FILE_MODE.SYMLINK;
   const linknameBytes =
     isSymlink && entry.content !== undefined ? entry.content : new Uint8Array(0);
   const size = hasDataBlock(entry.mode) && entry.content !== undefined ? entry.content.length : 0;
@@ -467,9 +480,13 @@ export async function* tarArchive(
     byteCount += BLOCK_SIZE;
 
     if (hasDataBlock(entry.mode) && entry.content !== undefined && entry.content.length > 0) {
-      const data = padTo512(entry.content);
-      yield data;
-      byteCount += data.length;
+      yield entry.content;
+      byteCount += entry.content.length;
+      const pad = paddingNeeded(entry.content.length);
+      if (pad > 0) {
+        yield new Uint8Array(pad);
+        byteCount += pad;
+      }
     }
   }
 

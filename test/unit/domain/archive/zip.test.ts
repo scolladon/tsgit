@@ -831,6 +831,32 @@ describe('Given mtime=1112904793 and tzOffsetMinutes=120 (+0200)', () => {
   });
 });
 
+describe('Given mtime=1112917800 (2005-04-07T23:50:00Z) and tzOffsetMinutes=15', () => {
+  describe('When DOS time fields are emitted', () => {
+    it('Then modDate advances by one day (day-rollover across midnight pinned)', async () => {
+      // Arrange — 1112917800 = 2005-04-07T23:50:00Z.
+      // With tzOffsetMinutes=15 (adds 900 s): adjusted UTC = 2005-04-08T00:05:00Z.
+      // DOS time: (0<<11)|(5<<5)|0 = 0x00A0
+      // DOS date: (25<<9)|(4<<5)|8  = 0x3288  (day 8, not 7)
+      const NEAR_MIDNIGHT = 1_112_917_800;
+      const result = makeResult([regularEntry('f.txt', new TextEncoder().encode('x'))]);
+      const sut = zipArchive(
+        result,
+        { deflateRaw: identityDeflateRaw },
+        { mtime: NEAR_MIDNIGHT, tzOffsetMinutes: 15 },
+      );
+
+      // Act
+      const bytes = await collectBytes(sut);
+      const local = mustGet(parseZip(bytes).locals);
+
+      // Assert — date rolled over to next day
+      expect(local.modTime).toBe(0x00a0);
+      expect(local.modDate).toBe(0x3288);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // UT extra: byte-identical in local and central
 // ---------------------------------------------------------------------------

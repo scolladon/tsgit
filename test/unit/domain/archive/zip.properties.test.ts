@@ -76,8 +76,8 @@ interface RoundTrippedEntry {
 }
 
 /**
- * Parse a zip buffer and return all local file entries.
- * Skips the prefix dir entry (name ending in '/') to match only original entries.
+ * Parse a zip buffer and return all local file entries (including dir/gitlink entries).
+ * The arbitraries in this file generate no prefix, so no synthetic prefix dir is emitted.
  * method-8 content is inflated via inflateRawSync; method-0 is read verbatim.
  */
 function parseZipEntries(buf: Uint8Array): RoundTrippedEntry[] {

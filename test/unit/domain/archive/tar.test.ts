@@ -639,6 +639,34 @@ describe('Given a regular-file entry whose 101–256-byte path has no slash yiel
 // splitPath: directory path with trailing slash skips empty-name split
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// writeOctal overflow guard: size field overflow for enormous blobs
+// ---------------------------------------------------------------------------
+
+describe('Given a regular-file entry whose content length exceeds the 11-digit octal capacity', () => {
+  describe('When tarArchive is called', () => {
+    it('Then it throws with a message indicating the octal field is too small', async () => {
+      // Arrange — fake a content whose .length exceeds 8^11-1 = 8_589_934_591.
+      // writeOctal is called before padTo512, so padTo512 is never reached.
+      const oversizedContent = { length: 9_000_000_000 } as unknown as Uint8Array;
+      const entry = makeEntry('big.bin', '100644', oversizedContent);
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      let thrown: unknown;
+      try {
+        await collectBytes(sut);
+      } catch (err) {
+        thrown = err;
+      }
+
+      // Assert
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toMatch(/exceeds the 11-digit octal field capacity/);
+    });
+  });
+});
+
 describe('Given a directory entry whose path with trailing slash is 101–256 bytes', () => {
   describe('When tarArchive is called', () => {
     it('Then the name field contains the last component with its slash, not an empty string', async () => {

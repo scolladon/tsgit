@@ -549,3 +549,7 @@ original "defer zip" recommendation.
 - **Trailing pathspec path-limiting** (`git archive HEAD <path>…` to restrict the
   archive to a subtree/paths) — v1 archives the whole resolved tree; `treeish` is the
   only input. A pathspec-limited surface is a follow-up.
+- **Unbounded tree walk and whole-blob buffering** — `archive` passes `Number.MAX_SAFE_INTEGER`
+  as `maxEntries` and `maxDepth` to `walkTree` (faithful to git's own unbounded behaviour)
+  and buffers each blob whole in memory.  Streaming defence-in-depth (chunked blob reads,
+  back-pressure on the entry iterable) is explicitly deferred.

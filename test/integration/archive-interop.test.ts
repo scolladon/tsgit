@@ -627,7 +627,7 @@ describe.skipIf(!GIT_AVAILABLE)('tar UTF-8 path byte-faithfulness', () => {
   // A directory whose name is 90 bytes of ASCII + 'ñ' (U+00F1, 2 UTF-8 bytes) = 92 UTF-8 bytes.
   // A file inside pushes the path over the 100-byte boundary, exercising
   // the ustar prefix+name split with a multi-byte character in play.
-  const LONG_ASCII_DIR = 'a'.repeat(90) + 'ñ'; // 92 UTF-8 bytes
+  const LONG_ASCII_DIR = `${'a'.repeat(90)}ñ`; // 92 UTF-8 bytes
   const SPLIT_FILE_NAME = 'data.txt'; // total: 92 + 1 + 8 = 101 UTF-8 bytes → must split
   const SPLIT_FILE = `${LONG_ASCII_DIR}/${SPLIT_FILE_NAME}`;
 
@@ -1126,8 +1126,10 @@ describe.skipIf(!GIT_AVAILABLE)('zip cross-adapter parity (node vs memory)', () 
       // Assert — same number of entries
       expect(nodeEntries.length).toBe(memEntries.length);
 
+      let methodEightSeen = 0;
       for (const [i, ne] of nodeEntries.entries()) {
         const me = memEntries[i];
+        expect(me).toBeDefined();
         if (!me) continue;
 
         // Names, CRC, uncompressed sizes are always identical
@@ -1143,12 +1145,15 @@ describe.skipIf(!GIT_AVAILABLE)('zip cross-adapter parity (node vs memory)', () 
         } else {
           // Method-8 entries: compressed bytes may differ (adapter-dependent)
           // but inflated content must be identical
+          methodEightSeen += 1;
           expect(me.inflated).toEqual(ne.inflated);
           // And framing (name, crc, sizes in headers) must match
           expect(me.crc).toBe(ne.crc);
           expect(me.usize).toBe(ne.usize);
         }
       }
+      // Ensure the fixture actually exercised method-8 (at least big.txt)
+      expect(methodEightSeen).toBeGreaterThan(0);
     });
   });
 });

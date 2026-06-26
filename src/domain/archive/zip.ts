@@ -10,6 +10,7 @@
  *
  * Runtime imports: crc32 from ../storage/crc32.js (in-tree, no new deps).
  */
+import { FILE_MODE } from '../objects/file-mode.js';
 import { crc32 } from '../storage/crc32.js';
 import type { ArchiveEntry, ArchiveResult } from './types.js';
 
@@ -18,7 +19,13 @@ import type { ArchiveEntry, ArchiveResult } from './types.js';
 // ---------------------------------------------------------------------------
 
 export interface ZipDeps {
-  /** Raw DEFLATE (RFC 1951) — no zlib header, no adler32. Injected by caller. */
+  /**
+   * Raw DEFLATE (RFC 1951) — no zlib header, no adler32.  Injected by caller.
+   *
+   * The callback MUST emit valid RFC-1951 raw DEFLATE that inflates back to
+   * `data` byte-for-byte.  The framer trusts this contract without verification
+   * in order to remain streaming; violating it silently corrupts the zip.
+   */
   readonly deflateRaw: (data: Uint8Array, level?: number) => Promise<Uint8Array>;
 }
 
@@ -372,15 +379,15 @@ const DIR_ATTRS: EntryAttrs = {
 
 function entryAttrs(entry: ArchiveEntry): EntryAttrs {
   switch (entry.mode) {
-    case '100644':
+    case FILE_MODE.REGULAR:
       return regularAttrs(entry.content);
-    case '100755':
+    case FILE_MODE.EXECUTABLE:
       return execAttrs(entry.content);
-    case '120000':
+    case FILE_MODE.SYMLINK:
       return SYMLINK_ATTRS;
-    case '40000':
+    case FILE_MODE.DIRECTORY:
       return DIR_ATTRS;
-    case '160000':
+    case FILE_MODE.GITLINK:
       return DIR_ATTRS;
   }
 }
@@ -403,7 +410,7 @@ interface EntryContent {
  * symlink regardless of how compressible the target string is.
  */
 function isCompressibleBlob(mode: ArchiveEntry['mode']): boolean {
-  return mode === '100644' || mode === '100755';
+  return mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 }
 
 /**
@@ -457,7 +464,7 @@ interface CdRecord {
 // ---------------------------------------------------------------------------
 
 function entryIsDir(mode: ArchiveEntry['mode']): boolean {
-  return mode === '40000' || mode === '160000';
+  return mode === FILE_MODE.DIRECTORY || mode === FILE_MODE.GITLINK;
 }
 
 function buildEntryName(entryPath: string, prefix: string, mode: ArchiveEntry['mode']): string {
