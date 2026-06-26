@@ -166,7 +166,7 @@ describe('Given an arbitrary ArchiveResult', () => {
           const bytes = await collectBytes(sut);
           const parsed = parseZipEntries(bytes);
 
-          // Find dir/gitlink entries in original
+          // Assert — dir/gitlink entries use method 0 with zero sizes
           const dirEntries = entries.filter((e) => e.mode === '40000' || e.mode === '160000');
 
           for (const dir of dirEntries) {
@@ -240,7 +240,7 @@ describe('Given an arbitrary ArchiveResult', () => {
           // Count local headers from parsed entries
           const parsed = parseZipEntries(bytes);
 
-          // Verify EOCD total includes all local entries
+          // Assert — EOCD total includes all local entries
           expect(eocdTotal).toBe(parsed.length);
         }),
         { numRuns: 200 },
@@ -270,7 +270,7 @@ describe('Given any ArchiveResult with a central-dir sig', () => {
             pos += 30 + nameLen + extraLen + csize;
           }
 
-          // Now at central dir
+          // Assert — every central-directory entry has version-needed 10 and flags 0
           while (pos + 4 <= bytes.length && readU32LE(bytes, pos) === CENTRAL_SIG) {
             const versionNeeded = readU16LE(bytes, pos + 6);
             const flags = readU16LE(bytes, pos + 8);
