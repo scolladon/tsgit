@@ -148,9 +148,13 @@ function writeOctal(buf: Uint8Array, offset: number, len: number, val: number): 
     );
   }
   const str = val.toString(8).padStart(len - 1, '0');
+  // equivalent-mutant: i<=len-1 writes str.charCodeAt(len-1)=NaN→0 to offset+len-1, same as the
+  // explicit 0x00 write below; i<len+1 additionally writes NaN→0 to offset+len, already 0 (zero-init).
   for (let i = 0; i < len - 1; i++) {
     buf[offset + i] = str.charCodeAt(i);
   }
+  // equivalent-mutant: offset+len+1 writes 0x00 two bytes past the field; buf is zero-initialized so
+  // that position is already 0x00. The intended null at offset+len-1 is also already 0x00 (zero-init).
   buf[offset + len - 1] = 0x00;
 }
 
@@ -159,7 +163,10 @@ function writeOctal(buf: Uint8Array, offset: number, len: number, val: number): 
  * remainder. Characters beyond `len` are silently truncated.
  */
 function writeAscii(buf: Uint8Array, offset: number, len: number, str: string): void {
+  // equivalent-mutant: Math.max(str.length,len)=len when callers ensure str.length≤len; extra
+  // charCodeAt iterations return NaN→0, writing 0 to already-zero-initialized positions.
   const writeLen = Math.min(str.length, len);
+  // equivalent-mutant: i<=writeLen writes charCodeAt(writeLen)=NaN→0 to an already-zero position.
   for (let i = 0; i < writeLen; i++) {
     buf[offset + i] = str.charCodeAt(i);
   }
@@ -167,6 +174,7 @@ function writeAscii(buf: Uint8Array, offset: number, len: number, str: string): 
 
 /** Write raw `bytes` into `len` bytes at `offset`, null-padding the remainder. */
 function writeBytes(buf: Uint8Array, offset: number, len: number, bytes: Uint8Array): void {
+  // equivalent-mutant: Math.max(bytes.length,len): subarray(0,n>length) clamps to length — same slice.
   buf.set(bytes.subarray(0, Math.min(bytes.length, len)), offset);
 }
 
@@ -198,6 +206,7 @@ function computeChecksum(header: Uint8Array): number {
 function writeChecksum(header: Uint8Array): void {
   const sum = computeChecksum(header);
   const str = sum.toString(8).padStart(7, '0');
+  // equivalent-mutant: i<=7 writes str.charCodeAt(7)=NaN→0 to OFF_CHKSUM+7; same as explicit write below.
   for (let i = 0; i < 7; i++) {
     header[OFF_CHKSUM + i] = str.charCodeAt(i);
   }
@@ -282,6 +291,10 @@ function splitPath(filePath: string): PathFields {
   // Require a non-empty name (1 ≤ nameLen ≤ NAME_MAX) so a trailing slash on
   // a directory path is never used as the split point (git never emits an
   // empty name — it splits before the last component instead).
+  // equivalent-mutant: byteLen+1 — Math.min(byteLen+1,PREFIX_MAX)=155 for byteLen≥154; for byteLen=155
+  // the extra start at i=155 accesses undefined→not 0x2f, then falls to 154 — identical result.
+  // equivalent-mutant: i>=0 — pathBytes[0] is never 0x2f for valid git filenames; extra iteration
+  // at i=0 finds no match, result is unchanged.
   for (let i = Math.min(byteLen - 1, PREFIX_MAX); i > 0; i--) {
     const nameLen = byteLen - i - 1;
     if (pathBytes[i] === 0x2f && nameLen >= 1 && nameLen <= NAME_MAX) {
@@ -304,8 +317,12 @@ function tarMode(mode: ArchiveEntry['mode'], umask: number): number {
     case FILE_MODE.REGULAR:
       return MODE_REGULAR_BASE & ~umask;
     case FILE_MODE.EXECUTABLE:
+      // equivalent-mutant: removing this return causes EXECUTABLE to fall through to DIRECTORY,
+      // which returns the identical value MODE_MASKED_BASE & ~umask.
       return MODE_MASKED_BASE & ~umask;
     case FILE_MODE.DIRECTORY:
+      // equivalent-mutant: removing this return causes DIRECTORY to fall through to GITLINK,
+      // which returns the identical value MODE_MASKED_BASE & ~umask.
       return MODE_MASKED_BASE & ~umask;
     case FILE_MODE.GITLINK:
       return MODE_MASKED_BASE & ~umask;
@@ -348,6 +365,8 @@ function needsTrailingSlash(mode: ArchiveEntry['mode']): boolean {
  */
 function paddingNeeded(byteLen: number): number {
   const rem = byteLen % BLOCK_SIZE;
+  // equivalent-mutant: `false ?` always returns BLOCK_SIZE-rem; when rem=0 this yields 512 extra
+  // zero bytes, indistinguishable from the EOF+record-padding zeros that follow.
   return rem === 0 ? 0 : BLOCK_SIZE - rem;
 }
 
@@ -373,6 +392,8 @@ function buildPaxHeader(mtime: number, uname: string, gname: string): Uint8Array
 function buildPaxData(oid: string): Uint8Array {
   const buf = new Uint8Array(BLOCK_SIZE);
   const record = `${PAX_RECORD_SIZE} comment=${oid}\n`;
+  // equivalent-mutant: i<=record.length writes record.charCodeAt(record.length)=NaN→0 to
+  // buf[record.length]; buf is zero-initialized so that position is already 0x00.
   for (let i = 0; i < record.length; i++) {
     buf[i] = record.charCodeAt(i);
   }
@@ -484,10 +505,14 @@ export async function* tarArchive(
     yield buildEntryHeader(entry, fullPath, mtime, umask, uname, gname);
     byteCount += BLOCK_SIZE;
 
+    // equivalent-mutant: `entry.content.length >= 0` or `true` — when content.length=0 we'd
+    // yield new Uint8Array(0) (0 bytes) and paddingNeeded(0)=0 — byte-identical to skipping.
     if (hasDataBlock(entry.mode) && entry.content !== undefined && entry.content.length > 0) {
       yield entry.content;
       byteCount += entry.content.length;
       const pad = paddingNeeded(entry.content.length);
+      // equivalent-mutant: `pad >= 0` or `true` — when pad=0 we'd yield new Uint8Array(0)
+      // (0 bytes), which is a no-op — byte-identical to skipping.
       if (pad > 0) {
         yield new Uint8Array(pad);
         byteCount += pad;

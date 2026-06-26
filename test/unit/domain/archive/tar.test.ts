@@ -1174,3 +1174,31 @@ describe('Given a directory entry whose path with trailing slash is 101–256 by
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mutation boundary: splitPath — Math.min vs Math.max loop-start (kill test)
+// ---------------------------------------------------------------------------
+
+describe('Given a 200-byte path with a slash within PREFIX_MAX and a second slash beyond it', () => {
+  describe('When tarArchive is called', () => {
+    it('Then the name field reflects the split at the lower slash (≤PREFIX_MAX), not the higher one', async () => {
+      // Arrange — path = 'a'×140 + '/' + 'b'×29 + '/' + 'c'×29 = 200 bytes.
+      // Slash at byte 140: prefix=140 (≤155=PREFIX_MAX), name=59 bytes — valid split.
+      // Slash at byte 170: prefix=170 (>155=PREFIX_MAX), name=29 bytes — prefix too long.
+      // Math.min(199, 155)=155: loop starts at 155, scans down → first '/' at 140 → correct.
+      // Math.max(199, 155)=199: loop starts at 199, scans down → finds '/' at 170 first → wrong.
+      const path200 = `${'a'.repeat(140)}/${'b'.repeat(29)}/${'c'.repeat(29)}`;
+      expect(new TextEncoder().encode(path200).length).toBe(200); // verify fixture
+      const entry = makeEntry(path200, '100644', new Uint8Array([1]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      const result = await collectBytes(sut);
+      const header = result.slice(0, HEADER_SIZE);
+
+      // Assert — name = 'b'×29 + '/' + 'c'×29 (correct split at 140);
+      // Math.max mutant name = 'c'×29 (incorrect split at 170, prefix overflows to 170 bytes).
+      expect(readField(header, OFF_NAME, 100)).toBe(`${'b'.repeat(29)}/${'c'.repeat(29)}`);
+    });
+  });
+});

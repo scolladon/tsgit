@@ -29,6 +29,8 @@ export class BrowserCompressor implements Compressor {
     // outside the faithfulness contract (equivalence-under-readback), so the
     // level is accepted to satisfy the port and silently ignored.
     try {
+      // equivalent-mutant: NoCoverage — CompressionStream unavailable in Node unit runner;
+      // deflateRaw correctness is covered by the browser e2e suite.
       const stream = new Blob([data as BlobPart])
         .stream()
         .pipeThrough(new CompressionStream('deflate-raw'));
