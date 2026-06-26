@@ -21836,7 +21836,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Raw DEFLATE (RFC 1951) — no zlib header, no adler32. Injected by caller."
+										"text": "Raw DEFLATE (RFC 1951) — no zlib header, no adler32.  Injected by caller.\n\nThe callback MUST emit valid RFC-1951 raw DEFLATE that inflates back to\n"
+									},
+									{
+										"kind": "code",
+										"text": "`data`"
+									},
+									{
+										"kind": "text",
+										"text": " byte-for-byte.  The framer trusts this contract without verification\nin order to remain streaming; violating it silently corrupts the zip."
 									}
 								]
 							},
