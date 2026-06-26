@@ -473,6 +473,46 @@ function buildEntryName(entryPath: string, prefix: string, mode: ArchiveEntry['m
 }
 
 // ---------------------------------------------------------------------------
+// Local-entry assembly — header + matching CdRecord
+// ---------------------------------------------------------------------------
+
+interface LocalEntryParams {
+  readonly nameBytes: Uint8Array;
+  readonly method: number;
+  readonly dosTime: DosTime;
+  readonly crc: number;
+  readonly csize: number;
+  readonly usize: number;
+  readonly internalAttr: number;
+  readonly externalAttr: number;
+  readonly versionMadeBy: number;
+  readonly localOffset: number;
+  readonly utExtra: Uint8Array;
+}
+
+function buildLocalEntry(params: LocalEntryParams): {
+  localHeader: Uint8Array;
+  record: CdRecord;
+} {
+  const { nameBytes, method, dosTime, crc, csize, usize, utExtra } = params;
+  const localHeader = buildLocalHeader(nameBytes, method, dosTime, crc, csize, usize, utExtra);
+  const record: CdRecord = {
+    name: nameBytes,
+    method,
+    dosTime,
+    crc,
+    csize,
+    usize,
+    internalAttr: params.internalAttr,
+    externalAttr: params.externalAttr,
+    versionMadeBy: params.versionMadeBy,
+    localOffset: params.localOffset,
+    utExtra,
+  };
+  return { localHeader, record };
+}
+
+// ---------------------------------------------------------------------------
 // Public: zipArchive
 // ---------------------------------------------------------------------------
 
@@ -505,10 +545,8 @@ export async function* zipArchive(
   // Synthesise prefix directory entry when prefix is non-empty
   if (prefix !== '') {
     const nameBytes = encodeName(prefix);
-    const localHeader = buildLocalHeader(nameBytes, METHOD_STORE, dosTime, 0, 0, 0, utExtra);
-    yield localHeader;
-    records.push({
-      name: nameBytes,
+    const { localHeader, record } = buildLocalEntry({
+      nameBytes,
       method: METHOD_STORE,
       dosTime,
       crc: 0,
@@ -520,6 +558,8 @@ export async function* zipArchive(
       localOffset,
       utExtra,
     });
+    yield localHeader;
+    records.push(record);
     localOffset += localHeader.length;
   }
 
@@ -531,19 +571,8 @@ export async function* zipArchive(
 
     const { method, compressed, contentCrc, usize } = await compressEntry(entry, deps, level);
     const csize = compressed.length;
-    const localHeader = buildLocalHeader(
+    const { localHeader, record } = buildLocalEntry({
       nameBytes,
-      method,
-      dosTime,
-      contentCrc,
-      csize,
-      usize,
-      utExtra,
-    );
-
-    yield localHeader;
-    records.push({
-      name: nameBytes,
       method,
       dosTime,
       crc: contentCrc,
@@ -555,6 +584,9 @@ export async function* zipArchive(
       localOffset,
       utExtra,
     });
+
+    yield localHeader;
+    records.push(record);
     localOffset += localHeader.length;
 
     if (csize > 0) {
