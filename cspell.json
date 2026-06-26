@@ -3,7 +3,9 @@
   "version": "0.2",
   "language": "en",
   "words": [
+    "bfinal",
     "bitstream",
+    "btype",
     "chksum",
     "csize",
     "devmajor",
