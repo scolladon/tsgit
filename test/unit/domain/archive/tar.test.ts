@@ -1061,32 +1061,27 @@ describe('Given a 256-byte path whose best valid split yields a 100-byte name', 
 // Mutation boundary: paddingNeeded rem === 0 ? 0 : BLOCK_SIZE - rem
 // ---------------------------------------------------------------------------
 
-describe('Given a regular-file entry whose content is exactly 512 bytes (rem=0)', () => {
+describe('Given a 512-aligned entry (rem=0) followed by a second entry', () => {
   describe('When tarArchive is called', () => {
     it('Then no extra padding block is emitted — paddingNeeded returns 0 for 512-aligned content', async () => {
-      // Arrange — 512-byte content: rem = 512 % 512 = 0 → paddingNeeded = 0 → no padding block.
-      // The `false ? 0 : BLOCK_SIZE - rem` mutant always returns BLOCK_SIZE-rem.
-      // When rem=0, it returns 512, yielding an extra 512-byte padding block.
-      const content = new Uint8Array(512).fill(0x41);
-      const entry = makeEntry('aligned.bin', '100644', content);
-      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+      // Arrange — first entry's content is exactly 512 bytes: rem = 512 % 512 = 0 → paddingNeeded = 0,
+      // so the second entry's header sits immediately after, at offset 2 * BLOCK_SIZE. The
+      // `rem === 0 ? 0 : BLOCK_SIZE - rem` → `false ? …` mutant returns BLOCK_SIZE for rem=0, inserting
+      // a spurious 512-byte block that shifts the second header. A single trailing entry cannot detect
+      // this (the extra zeros merge into the EOF/record padding; both pad to 10240) — two entries can.
+      const aligned = new Uint8Array(512).fill(0x41);
+      const first = makeEntry('aligned.bin', '100644', aligned);
+      const second = makeEntry('after.txt', '100644', new Uint8Array([0x42]));
+      const sut = tarArchive(makeResult([first, second], undefined, undefined), {
+        mtime: FIXED_MTIME,
+      });
 
       // Act
       const result = await collectBytes(sut);
 
-      // Assert — layout: header(512) + content(512) + EOF(1024) + record-padding = 10240 total.
-      // With the `false ? 0 : BLOCK_SIZE - rem` mutant: rem=0 returns BLOCK_SIZE=512 instead of 0,
-      // yielding an extra 512-byte pad block: header+content+pad+EOF = 2560 → padded to 10240.
-      // Wait — both are padded to 10240. So we need a more direct assertion.
-      // With correct code: BLOCK_SIZE = 512 aligned, pad=0, byteCount after loop = 512+512+1024 = 2048,
-      // remainder = 2048 % 10240 = 2048 ≠ 0 → pads to 10240. Total = 10240. ✓
-      // With mutant (extra 512 pad): byteCount = 2048+512 = 2560, remainder = 2560 → pads to 10240.
-      // Both produce 10240 bytes. So total-length is NOT a good discriminator here.
-      // Better: pin the actual content bytes — the data block at HEADER_SIZE must be exactly content.
-      const dataBlock = result.slice(HEADER_SIZE, HEADER_SIZE + BLOCK_SIZE);
-      expect(dataBlock).toEqual(content);
-      // And the byte right after the data block starts the EOF blocks (0x00), not more content.
-      expect(result[HEADER_SIZE + BLOCK_SIZE]).toBe(0x00);
+      // Assert — the second header sits flush after first header + 512-byte content (no padding block);
+      // the mutant's spurious block would leave zeros here instead of the second entry's name.
+      expect(readField(result, 2 * BLOCK_SIZE + OFF_NAME, 100)).toBe('after.txt');
     });
   });
 });

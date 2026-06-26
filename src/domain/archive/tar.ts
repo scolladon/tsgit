@@ -365,8 +365,6 @@ function needsTrailingSlash(mode: ArchiveEntry['mode']): boolean {
  */
 function paddingNeeded(byteLen: number): number {
   const rem = byteLen % BLOCK_SIZE;
-  // equivalent-mutant: `false ?` always returns BLOCK_SIZE-rem; when rem=0 this yields 512 extra
-  // zero bytes, indistinguishable from the EOF+record-padding zeros that follow.
   return rem === 0 ? 0 : BLOCK_SIZE - rem;
 }
 
