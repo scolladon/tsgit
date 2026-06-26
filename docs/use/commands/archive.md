@@ -99,10 +99,20 @@ console.log(tagResult.commitTime); // <committer epoch>
 ## Throws
 
 - `NOT_A_REPOSITORY` — `cwd` (or `gitDir`) does not point inside a git repository.
-- `OBJECT_NOT_FOUND` — `treeish` is an unresolvable expression or unborn HEAD.
-- `UNEXPECTED_OBJECT_TYPE` — `treeish` resolves to a blob; only tree/commit/tag are accepted.
+- `OBJECT_NOT_FOUND` — `treeish` is an unresolvable ref name, an unborn HEAD, or an abbreviated oid that matches no object.
+- `REVPARSE_UNRESOLVED` — `treeish` uses a reflog-selector form (`@{n}`, `@{date}`) that cannot be resolved (e.g. empty reflog).
+- `UNEXPECTED_OBJECT_TYPE` — `treeish` resolves to a blob; only tree, commit, and tag are accepted.
+
+## Serializers
+
+`tarArchive` and `zipArchive` are pure functions that consume an `ArchiveResult` and yield `AsyncIterable<Uint8Array>` bytes byte-equal to `git archive --format=tar` and `git archive --format=zip` respectively. They are exported from the package and documented at [`../serializers/archive.md`](../serializers/archive.md).
+
+```ts
+import { tarArchive, zipArchive } from '@scolladon/tsgit';
+```
 
 ## See also
 
+- Serializers: [`tarArchive` / `zipArchive`](../serializers/archive.md)
 - Primitives: [`walkTree`](../primitives/walk-tree.md), [`readBlob`](../primitives/read-blob.md), [`revParse`](rev-parse.md)
 - Related commands: [`catFile`](cat-file.md), [`readFileAt`](read-file-at.md)
