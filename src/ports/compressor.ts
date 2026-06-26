@@ -13,6 +13,13 @@ export interface Compressor {
    */
   readonly deflate: (data: Uint8Array, level?: number) => Promise<Uint8Array>;
 
+  /**
+   * Raw DEFLATE (compress) using bare RFC 1951 bitstream — no zlib (RFC 1950)
+   * 2-byte header and no adler32 trailer. `level` semantics match `deflate`.
+   * Used by zip archive serializer (method 8). Additive — `deflate` unchanged.
+   */
+  readonly deflateRaw: (data: Uint8Array, level?: number) => Promise<Uint8Array>;
+
   /** Inflate (decompress) zlib-compressed data. */
   readonly inflate: (data: Uint8Array) => Promise<Uint8Array>;
 

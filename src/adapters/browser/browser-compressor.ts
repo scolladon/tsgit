@@ -24,6 +24,20 @@ export class BrowserCompressor implements Compressor {
     }
   }
 
+  async deflateRaw(data: Uint8Array, _level?: number): Promise<Uint8Array> {
+    // Web CompressionStream exposes no level param; loose disk bytes are
+    // outside the faithfulness contract (equivalence-under-readback), so the
+    // level is accepted to satisfy the port and silently ignored.
+    try {
+      const stream = new Blob([data as BlobPart])
+        .stream()
+        .pipeThrough(new CompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch (err) {
+      throw compressFailed(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async inflate(data: Uint8Array): Promise<Uint8Array> {
     try {
       const stream = new Blob([data as BlobPart])
