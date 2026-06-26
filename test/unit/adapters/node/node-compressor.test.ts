@@ -331,6 +331,22 @@ describe('NodeCompressor', () => {
           expect(new Uint8Array(inflateRawSync(result))).toEqual(data);
         });
       });
+
+      describe('When deflateRaw with level=0 (raw stored-block format)', () => {
+        it('Then the first byte is 0x01 — BFINAL=1 BTYPE=00 raw stored block', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello');
+
+          // Act
+          const result = await sut.deflateRaw(data, 0);
+
+          // Assert — raw deflate level=0 uses stored blocks; first byte is BFINAL=1|BTYPE=00 = 0x01.
+          // Mutants that ignore `level` (true?, !==undefined, {}) default to Node level ≥ 1 and
+          // produce a first byte other than 0x01.
+          expect(result[0]).toBe(0x01);
+        });
+      });
     });
 
     describe('Given data with no level argument', () => {
