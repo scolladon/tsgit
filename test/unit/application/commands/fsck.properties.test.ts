@@ -124,6 +124,11 @@ describe('Given a healthy repo plus one orphan blob tip', () => {
           arbBlobContent(),
           arbBlobContent(),
           async (reachableContent, orphanContent) => {
+            // The orphan must be a distinct object: writeObject is content-addressed,
+            // so equal content yields the reachable blob's oid (which is referenced and
+            // therefore not dangling). Scope the property to a genuinely-orphan blob.
+            fc.pre(orphanContent !== reachableContent);
+
             // Arrange
             const ctx = await buildSeededContext();
             await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
