@@ -37,8 +37,7 @@
         "noExplicitAny": "error"
       },
       "style": {
-        "useConst": "error",
-        "noNonNullAssertion": "off"
+        "useConst": "error"
       },
       "complexity": {
         "noExcessiveCognitiveComplexity": {

@@ -171,8 +171,8 @@ describe('adapters/node NodeHookRunner — spawn wiring', () => {
         expect(calls[0]?.command).toBe(nodePath.join('/repo/.git/hooks', 'pre-push'));
         expect(calls[0]?.args).toEqual(['origin', 'url']);
         expect(calls[0]?.cwd).toBe('/repo');
-        expect(calls[0]?.env.GIT_DIR).toBe('/repo/.git');
-        expect(calls[0]?.env.GIT_INDEX_FILE).toBe('/repo/.git/index');
+        expect(calls[0]?.env['GIT_DIR']).toBe('/repo/.git');
+        expect(calls[0]?.env['GIT_INDEX_FILE']).toBe('/repo/.git/index');
         expect(child.stdinData).toBe('payload');
       });
     });
