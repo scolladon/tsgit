@@ -395,6 +395,11 @@ function buildEntryHeader(
   const isSymlink = entry.mode === FILE_MODE.SYMLINK;
   const linknameBytes =
     isSymlink && entry.content !== undefined ? entry.content : new Uint8Array(0);
+  if (linknameBytes.length > LEN_LINKNAME) {
+    throw new Error(
+      `Symlink target too long for ustar archive (>${LEN_LINKNAME} bytes): ${fullPath}`,
+    );
+  }
   const size = hasDataBlock(entry.mode) && entry.content !== undefined ? entry.content.length : 0;
   return buildHeader({
     nameBytes,

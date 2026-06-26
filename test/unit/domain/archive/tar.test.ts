@@ -667,6 +667,33 @@ describe('Given a regular-file entry whose content length exceeds the 11-digit o
   });
 });
 
+// ---------------------------------------------------------------------------
+// linkname guard: symlink target longer than the 100-byte ustar field
+// ---------------------------------------------------------------------------
+
+describe('Given a symlink entry whose target exceeds the 100-byte ustar linkname field', () => {
+  describe('When tarArchive is called', () => {
+    it('Then it throws indicating the symlink target is too long for ustar', async () => {
+      // Arrange — a 101-byte symlink target (pax extended linkname is out of scope).
+      const longTarget = new Uint8Array(101).fill(0x61);
+      const entry = makeEntry('link', '120000', longTarget);
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      let thrown: unknown;
+      try {
+        await collectBytes(sut);
+      } catch (err) {
+        thrown = err;
+      }
+
+      // Assert
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toMatch(/Symlink target too long for ustar archive/);
+    });
+  });
+});
+
 describe('Given a directory entry whose path with trailing slash is 101–256 bytes', () => {
   describe('When tarArchive is called', () => {
     it('Then the name field contains the last component with its slash, not an empty string', async () => {
