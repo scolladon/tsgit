@@ -396,7 +396,23 @@ interface EntryContent {
   readonly usize: number;
 }
 
-/** Compress or store entry content; always returns method-0 for dirs/gitlinks. */
+/**
+ * True for modes that git always stores (never deflates): dirs, gitlinks,
+ * and symlinks.  Only regular blobs (100644 / 100755) are candidates for
+ * deflate — verified: `git archive --format=zip` emits method=0 for every
+ * symlink regardless of how compressible the target string is.
+ */
+function isCompressibleBlob(mode: ArchiveEntry['mode']): boolean {
+  return mode === '100644' || mode === '100755';
+}
+
+/**
+ * Compress or store entry content.
+ *
+ * - Dirs and gitlinks → method-0, zero sizes (no content).
+ * - Symlinks → method-0, stored verbatim (git never deflates symlink targets).
+ * - Regular blobs → deflate when compressed size is smaller, else store.
+ */
 async function compressEntry(
   entry: ArchiveEntry,
   deps: ZipDeps,
@@ -408,6 +424,9 @@ async function compressEntry(
   const content = entry.content ?? new Uint8Array(0);
   const contentCrc = crc32(content);
   const usize = content.length;
+  if (!isCompressibleBlob(entry.mode)) {
+    return { method: METHOD_STORE, compressed: content, contentCrc, usize };
+  }
   const deflated = await deps.deflateRaw(content, level);
   if (deflated.length < content.length) {
     return { method: METHOD_DEFLATE, compressed: deflated, contentCrc, usize };

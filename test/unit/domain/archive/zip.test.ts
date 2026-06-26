@@ -405,6 +405,36 @@ describe('Given a single-byte regular entry and shrink deflateRaw', () => {
   });
 });
 
+describe('Given a symlink entry with a long, highly-compressible target and shrink deflateRaw', () => {
+  describe('When zipArchive is serialized', () => {
+    it('Then method is 0 (store) and csize === usize (git never deflates symlink targets)', async () => {
+      // Arrange — target is 400 bytes of 'a', highly compressible; shrinkDeflateRaw would
+      // return a smaller buffer — but symlinks must always be stored (method 0).
+      const target = new Uint8Array(400).fill(0x61); // 'a' × 400
+      const entry: ArchiveEntry = {
+        path: asPath('link'),
+        mode: '120000',
+        oid: asOid('cc'),
+        content: target,
+      };
+      const result = makeResult([entry]);
+      const sut = zipArchive(result, { deflateRaw: shrinkDeflateRaw });
+
+      // Act
+      const bytes = await collectBytes(sut);
+      const parsed = parseZip(bytes);
+      const local = mustGet(parsed.locals);
+      const central = mustGet(parsed.centrals);
+
+      // Assert — method 0; csize equals usize (stored verbatim)
+      expect(local.method).toBe(0);
+      expect(local.csize).toBe(400);
+      expect(local.usize).toBe(400);
+      expect(central.method).toBe(0);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Central directory: version-made-by + external-attr per kind
 // ---------------------------------------------------------------------------

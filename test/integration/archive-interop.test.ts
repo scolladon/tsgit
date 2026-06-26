@@ -596,6 +596,93 @@ describe.skipIf(!GIT_AVAILABLE)('tar deep-path byte-faithfulness', () => {
 });
 
 // =============================================================================
+// tar UTF-8 byte-faithfulness: non-ASCII paths in name and prefix fields
+//
+// Pinned rule (git 2.54.0, verified empirically):
+//   git archive --format=tar writes path bytes as raw UTF-8, NOT latin1.
+//   A file named 'café.txt' → name field bytes: 63 61 66 c3 a9 2e 74 78 74
+//   A path that crosses the 100-byte ustar split must carry the UTF-8 sequence
+//   split faithfully across prefix+name — NOT truncated at multi-byte boundaries.
+// =============================================================================
+
+describe.skipIf(!GIT_AVAILABLE)('tar UTF-8 path byte-faithfulness', () => {
+  let utf8Pair: PeerPair;
+
+  const COMMITTER_DATE_UTF8 = '2005-04-07T22:13:13 +0200';
+
+  const buildCommitEnv = () => ({
+    ...runGitEnv(),
+    GIT_AUTHOR_NAME: 'Ada',
+    GIT_AUTHOR_EMAIL: 'ada@example.com',
+    GIT_AUTHOR_DATE: COMMITTER_DATE_UTF8,
+    GIT_COMMITTER_NAME: 'Ada',
+    GIT_COMMITTER_EMAIL: 'ada@example.com',
+    GIT_COMMITTER_DATE: COMMITTER_DATE_UTF8,
+  });
+
+  // 'café.txt': the é character is U+00E9, UTF-8 bytes 0xC3 0xA9 (2 bytes).
+  // The path is 9 UTF-8 bytes — short enough to fit in name alone (<100 bytes).
+  const SHORT_NON_ASCII_FILE = 'café.txt';
+
+  // A directory whose name is 90 bytes of ASCII + 'ñ' (U+00F1, 2 UTF-8 bytes) = 92 UTF-8 bytes.
+  // A file inside pushes the path over the 100-byte boundary, exercising
+  // the ustar prefix+name split with a multi-byte character in play.
+  const LONG_ASCII_DIR = 'a'.repeat(90) + 'ñ'; // 92 UTF-8 bytes
+  const SPLIT_FILE_NAME = 'data.txt'; // total: 92 + 1 + 8 = 101 UTF-8 bytes → must split
+  const SPLIT_FILE = `${LONG_ASCII_DIR}/${SPLIT_FILE_NAME}`;
+
+  beforeAll(async () => {
+    utf8Pair = await makePeerPair('archive-tar-utf8');
+    const dir = utf8Pair.peer;
+
+    runGit(['-C', dir, 'init', '-q', '-b', 'main'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'commit.gpgsign', 'false'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'core.autocrlf', 'false'], { env: runGitEnv() });
+
+    // Short non-ASCII file in repo root
+    writeFileSync(path.join(dir, SHORT_NON_ASCII_FILE), 'hello\n');
+
+    // File inside a directory whose full path crosses the 100-byte ustar boundary
+    mkdirSync(path.join(dir, LONG_ASCII_DIR), { recursive: true });
+    writeFileSync(path.join(dir, SPLIT_FILE), 'split\n');
+
+    runGit(['-C', dir, 'add', '-A'], { env: runGitEnv() });
+    runGit(['-C', dir, 'commit', '-m', 'utf8'], { env: buildCommitEnv() });
+  }, 60_000);
+
+  afterAll(async () => {
+    await utf8Pair.dispose();
+  });
+
+  describe('Given a tree with non-ASCII filenames (UTF-8 multi-byte sequences)', () => {
+    it('Then the tar bytes are byte-equal to git archive --format=tar HEAD (UTF-8 paths faithfully encoded)', async () => {
+      // Arrange
+      const ctx = createNodeContext({ workDir: utf8Pair.peer });
+      const result = await archive(ctx, { treeish: 'HEAD' });
+      const gitBytes = runGitBinary(
+        ['-C', utf8Pair.peer, 'archive', '--format=tar', 'HEAD'],
+        runGitEnv(),
+      );
+
+      // Act
+      const sut = tarArchive(result, {
+        umask: 0o0002,
+        uname: 'root',
+        gname: 'root',
+        ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+      });
+      const ourBytes = await collectTarBytes(sut);
+
+      // Assert — byte-equal: café.txt name field carries 0xC3 0xA9 (not 0xE9)
+      // and the long-dir split preserves the UTF-8 ñ (0xC3 0xB1) across prefix+name
+      expect(ourBytes).toEqual(gitBytes);
+    });
+  });
+});
+
+// =============================================================================
 // zip serializer byte-equality vs `git archive --format=zip`
 // =============================================================================
 

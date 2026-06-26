@@ -12,6 +12,9 @@
  */
 import type { ArchiveEntry, ArchiveResult } from './types.js';
 
+// Module-level TextEncoder instance; reuse to avoid repeated allocation.
+const TEXT_ENCODER = new TextEncoder();
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -193,7 +196,7 @@ function writeChecksum(header: Uint8Array): void {
 // ---------------------------------------------------------------------------
 
 interface HeaderParams {
-  readonly name: string;
+  readonly nameBytes: Uint8Array;
   readonly mode: number;
   readonly size: number;
   readonly mtime: number;
@@ -201,11 +204,11 @@ interface HeaderParams {
   readonly linknameBytes: Uint8Array;
   readonly uname: string;
   readonly gname: string;
-  readonly prefixField: string;
+  readonly prefixBytes: Uint8Array;
 }
 
 function writeFixedFields(buf: Uint8Array, p: HeaderParams): void {
-  writeAscii(buf, OFF_NAME, LEN_NAME, p.name);
+  writeBytes(buf, OFF_NAME, LEN_NAME, p.nameBytes);
   writeOctal(buf, OFF_MODE, LEN_MODE, p.mode);
   writeOctal(buf, OFF_UID, LEN_UID, 0);
   writeOctal(buf, OFF_GID, LEN_GID, 0);
@@ -222,7 +225,7 @@ function writeUstarFields(buf: Uint8Array, p: HeaderParams): void {
   writeAscii(buf, OFF_GNAME, LEN_GNAME, p.gname);
   writeOctal(buf, OFF_DEVMAJOR, LEN_DEVMAJOR, 0);
   writeOctal(buf, OFF_DEVMINOR, LEN_DEVMINOR, 0);
-  writeAscii(buf, OFF_PREFIX_FIELD, LEN_PREFIX_FIELD, p.prefixField);
+  writeBytes(buf, OFF_PREFIX_FIELD, LEN_PREFIX_FIELD, p.prefixBytes);
 }
 
 function buildHeader(p: HeaderParams): Uint8Array {
@@ -234,34 +237,45 @@ function buildHeader(p: HeaderParams): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
-// Path splitting
+// Path splitting (byte-accurate UTF-8)
 // ---------------------------------------------------------------------------
 
 interface PathFields {
-  readonly name: string;
-  readonly prefixField: string;
+  readonly nameBytes: Uint8Array;
+  readonly prefixBytes: Uint8Array;
 }
 
 /**
- * Split a path into ustar `name` (≤100) and `prefix` (≤155) fields.
- * Paths ≤100 bytes go entirely into `name`. Paths 101–256 bytes are split
- * at a '/' boundary. Paths >256 bytes are out of scope (throws).
+ * Split a UTF-8 encoded path into ustar `name` (≤100 bytes) and `prefix`
+ * (≤155 bytes) fields.  All measurements are in **bytes**, not UTF-16 code
+ * units, so non-ASCII characters (é = 0xC3 0xA9 in UTF-8 = 2 bytes) are
+ * measured and written faithfully.
+ *
+ * Paths whose UTF-8 encoding is ≤100 bytes go entirely into `name`.
+ * Paths 101–256 bytes are split at a 0x2F ('/') byte boundary.
+ * Paths >256 bytes are out of scope (throws).
  */
 function splitPath(filePath: string): PathFields {
-  if (filePath.length <= NAME_MAX) {
-    return { name: filePath, prefixField: '' };
+  const pathBytes = TEXT_ENCODER.encode(filePath);
+  const byteLen = pathBytes.length;
+
+  if (byteLen <= NAME_MAX) {
+    return { nameBytes: pathBytes, prefixBytes: new Uint8Array(0) };
   }
-  if (filePath.length > PATH_MAX_USTAR) {
+  if (byteLen > PATH_MAX_USTAR) {
     throw new Error(`Path too long for ustar archive (>${PATH_MAX_USTAR} bytes): ${filePath}`);
   }
   // Search from the latest valid split point toward the start.
   // Require a non-empty name (1 ≤ nameLen ≤ NAME_MAX) so a trailing slash on
   // a directory path is never used as the split point (git never emits an
   // empty name — it splits before the last component instead).
-  for (let i = Math.min(filePath.length - 1, PREFIX_MAX); i > 0; i--) {
-    const nameLen = filePath.length - i - 1;
-    if (filePath[i] === '/' && nameLen >= 1 && nameLen <= NAME_MAX) {
-      return { name: filePath.slice(i + 1), prefixField: filePath.slice(0, i) };
+  for (let i = Math.min(byteLen - 1, PREFIX_MAX); i > 0; i--) {
+    const nameLen = byteLen - i - 1;
+    if (pathBytes[i] === 0x2f && nameLen >= 1 && nameLen <= NAME_MAX) {
+      return {
+        nameBytes: pathBytes.subarray(i + 1),
+        prefixBytes: pathBytes.subarray(0, i),
+      };
     }
   }
   throw new Error(`Cannot split path into ustar prefix+name: ${filePath}`);
@@ -329,9 +343,9 @@ function padTo512(data: Uint8Array): Uint8Array {
 // ---------------------------------------------------------------------------
 
 function buildPaxHeader(mtime: number, uname: string, gname: string): Uint8Array {
-  const { name, prefixField } = splitPath(PAX_GLOBAL_NAME);
+  const { nameBytes, prefixBytes } = splitPath(PAX_GLOBAL_NAME);
   return buildHeader({
-    name,
+    nameBytes,
     mode: PAX_MODE,
     size: PAX_RECORD_SIZE,
     mtime,
@@ -339,7 +353,7 @@ function buildPaxHeader(mtime: number, uname: string, gname: string): Uint8Array
     linknameBytes: new Uint8Array(0),
     uname,
     gname,
-    prefixField,
+    prefixBytes,
   });
 }
 
@@ -364,13 +378,13 @@ function buildEntryHeader(
   uname: string,
   gname: string,
 ): Uint8Array {
-  const { name, prefixField } = splitPath(fullPath);
+  const { nameBytes, prefixBytes } = splitPath(fullPath);
   const isSymlink = entry.mode === '120000';
   const linknameBytes =
     isSymlink && entry.content !== undefined ? entry.content : new Uint8Array(0);
   const size = hasDataBlock(entry.mode) && entry.content !== undefined ? entry.content.length : 0;
   return buildHeader({
-    name,
+    nameBytes,
     mode: tarMode(entry.mode, umask),
     size,
     mtime,
@@ -378,7 +392,7 @@ function buildEntryHeader(
     linknameBytes,
     uname,
     gname,
-    prefixField,
+    prefixBytes,
   });
 }
 
@@ -390,9 +404,9 @@ function buildPrefixDirHeader(
   uname: string,
   gname: string,
 ): Uint8Array {
-  const { name, prefixField } = splitPath(prefix);
+  const { nameBytes, prefixBytes } = splitPath(prefix);
   return buildHeader({
-    name,
+    nameBytes,
     mode: MODE_MASKED_BASE & ~umask,
     size: 0,
     mtime,
@@ -400,7 +414,7 @@ function buildPrefixDirHeader(
     linknameBytes: new Uint8Array(0),
     uname,
     gname,
-    prefixField,
+    prefixBytes,
   });
 }
 
