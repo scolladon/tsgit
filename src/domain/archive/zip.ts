@@ -331,6 +331,8 @@ function buildEocd(
  * Local scan; does not depend on diff-module internals.
  */
 function isText(content: Uint8Array): boolean {
+  // equivalent-mutant: i<=content.length — content[content.length] on a Uint8Array returns undefined;
+  // undefined===0 is false, so the extra iteration never triggers return false; same result.
   for (let i = 0; i < content.length; i++) {
     if (content[i] === 0) return false;
   }
@@ -386,6 +388,8 @@ function entryAttrs(entry: ArchiveEntry): EntryAttrs {
     case FILE_MODE.SYMLINK:
       return SYMLINK_ATTRS;
     case FILE_MODE.DIRECTORY:
+      // equivalent-mutant: removing this return causes DIRECTORY to fall through to GITLINK,
+      // which returns the identical DIR_ATTRS constant.
       return DIR_ATTRS;
     case FILE_MODE.GITLINK:
       return DIR_ATTRS;
@@ -425,6 +429,8 @@ async function compressEntry(
   deps: ZipDeps,
   level: number | undefined,
 ): Promise<EntryContent> {
+  // equivalent-mutant: `if (false)` or empty block body — for dirs, content=[] crc32([])=0 usize=0
+  // !isCompressibleBlob(dir)=true → fallthrough returns {method:0, compressed:[], crc:0, size:0} = same.
   if (entryIsDir(entry.mode)) {
     return { method: METHOD_STORE, compressed: new Uint8Array(0), contentCrc: 0, usize: 0 };
   }
@@ -589,6 +595,8 @@ export async function* zipArchive(
     records.push(record);
     localOffset += localHeader.length;
 
+    // equivalent-mutant: `true` or `csize >= 0` — when csize=0, compressed=new Uint8Array(0)
+    // yields 0 bytes (a no-op); localOffset+=0 is unchanged — byte-identical to skipping.
     if (csize > 0) {
       yield compressed;
       localOffset += csize;

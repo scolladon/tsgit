@@ -1001,3 +1001,50 @@ describe('Given two entries, the second entry follows the first', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mutation boundary: isCompressibleBlob — EXECUTABLE mode (kill test)
+// ---------------------------------------------------------------------------
+
+describe('Given an EXECUTABLE entry with compressible content', () => {
+  describe('When zipArchive is called with shrinkDeflateRaw', () => {
+    it('Then the entry uses method 8 (deflate) — EXECUTABLE is a compressible mode', async () => {
+      // Arrange — mode '100755' (EXECUTABLE); shrinkDeflateRaw returns shorter output → method 8.
+      // Mutant: `|| false` makes isCompressibleBlob return false for EXECUTABLE → method 0.
+      const content = new TextEncoder().encode('#!/bin/sh\necho hello\n');
+      const result = makeResult([regularEntry('run.sh', content, '100755')]);
+      const sut = zipArchive(result, { deflateRaw: shrinkDeflateRaw });
+
+      // Act
+      const bytes = await collectBytes(sut);
+      const parsed = parseZip(bytes);
+
+      // Assert — method 8 (deflate); mutant produces method 0 (store)
+      expect(mustGet(parsed.locals).method).toBe(8);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation boundary: localOffset += localHeader.length for prefix dir (kill test)
+// ---------------------------------------------------------------------------
+
+describe('Given prefix "pre/" and a regular entry "a.txt"', () => {
+  describe('When the central directory localOffset for the file entry is inspected', () => {
+    it('Then the file central-dir localOffset matches the file local-header byte offset', async () => {
+      // Arrange — prefix dir is emitted first; localOffset accumulates with +=.
+      // Mutant (-=): localOffset becomes negative after prefix dir; file central-dir offset is wrong.
+      const content = new TextEncoder().encode('data');
+      const result = makeResult([regularEntry('a.txt', content)]);
+      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw }, { prefix: 'pre/' });
+
+      // Act
+      const bytes = await collectBytes(sut);
+      const parsed = parseZip(bytes);
+
+      // Assert — two entries: prefix dir (idx 0) + file (idx 1).
+      // File central-dir.localOffset must equal the file local-header's byte offset in the stream.
+      expect(mustGet(parsed.centrals, 1).localOffset).toBe(mustGet(parsed.locals, 1).headerOffset);
+    });
+  });
+});
