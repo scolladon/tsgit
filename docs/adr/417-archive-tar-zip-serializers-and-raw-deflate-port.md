@@ -47,17 +47,31 @@ primitive each adapter already uses. This materially de-risks shipping zip now.
   **Zero new dependencies, no shim.**
 - Reuse the in-tree `crc32` for zip's CRC fields.
 
-**Byte-identity contract (faithfulness).** The DEFLATE *bitstream* is not guaranteed
-identical across zlib implementations. Node's zlib matches git's, so:
+**Byte-identity contract (faithfulness) — empirically pinned, NOT universal.** The DEFLATE
+*bitstream* is zlib-implementation-coupled: git's linked zlib and node's bundled zlib
+produce **different valid** raw-DEFLATE for some inputs. Verified against git 2.54.0: a
+highly-compressible blob (`20000×'A'`) coincides byte-for-byte (both 37 bytes), but a
+varied 69-byte `.gitmodules` **diverges** — git emits 64 bytes, node:zlib emits 67 (no
+level matches). git's own `git archive` output is likewise not stable across zlib/git
+versions. So perfect method-8 byte-faithfulness is **portably impossible** and is **not**
+the contract. The faithful, achievable contract — the same **equivalence-under-readback**
+precedent the loose-object compressors already document — is:
 
-- the **zip interop byte-for-byte test runs on the node adapter** — method-8 (compressed)
-  entries are byte-exact vs real `git archive --format=zip`;
-- **cross-adapter (browser/memory) parity is structural / round-trip**, the established
-  "loose disk bytes are outside the byte-identity contract, equivalence-under-readback"
-  precedent already documented in those compressors;
-- **method-0 (stored) entries and all framing** — local file headers, the central
-  directory, CRC32, sizes, extra fields, the end-of-central-directory record — are
-  **byte-identical on every adapter**, because none of it passes through DEFLATE.
+- **method-0 (stored) entries and ALL framing** — local file headers, the central
+  directory, CRC32, the *uncompressed* size, extra fields, external/internal attrs, the
+  end-of-central-directory record + commit-oid comment — are **byte-identical to git on
+  every adapter** (none of it passes through DEFLATE). The store-vs-deflate **method
+  decision** matches git.
+- **method-8 (compressed) entries are faithful by ROUND-TRIP, not by byte-identity**: the
+  payload is valid raw-DEFLATE that inflates to git's exact content. Its compressed bytes
+  (and hence that entry's `csize` field and the downstream byte offsets) match git's only
+  *incidentally*, when the two zlibs coincide for that input — never relied upon. This
+  holds equally for node-vs-git and for cross-adapter (browser/memory) — node is **not**
+  privileged.
+- The interop test therefore compares **structurally**: same entry set/order/method, same
+  CRC/usize/attrs/comment, method-0 payloads byte-equal, method-8 payloads round-trip to
+  git's content. A whole-archive byte-equality assertion is kept **only** for an
+  all-stored fixture (no DEFLATE in play), where it is robust.
 
 ## Consequences
 

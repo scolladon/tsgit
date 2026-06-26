@@ -278,7 +278,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive interop', () => {
 });
 
 // =============================================================================
-// Part 3 — tar serializer byte-equality vs `git archive --format=tar`
+// tar serializer byte-equality vs `git archive --format=tar`
 // =============================================================================
 
 /** Collect all Uint8Array chunks from an AsyncIterable into one buffer. */
@@ -500,7 +500,7 @@ describe.skipIf(!GIT_AVAILABLE)('tar byte-faithfulness', () => {
 });
 
 // =============================================================================
-// Part 4 — zip serializer byte-equality vs `git archive --format=zip`
+// zip serializer byte-equality vs `git archive --format=zip`
 // =============================================================================
 
 /** Collect all chunks from an AsyncIterable into one Uint8Array. */
@@ -584,8 +584,13 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
     binaryData[3] = 0x03;
     writeFileSync(path.join(dir, 'data.bin'), binaryData);
 
-    // .gitmodules for gitlink — 35 bytes, STORE (method-0) in both git and Node
-    writeFileSync(path.join(dir, '.gitmodules'), '[submodule "a"]\n\tpath = a\n\turl = x\n');
+    // .gitmodules for gitlink — long enough that git picks method-8 (deflate), and a
+    // verified zlib DIVERGENCE point: git emits 80 compressed bytes, node:zlib 81. This
+    // exercises the honest method-8 contract (round-trip, NOT byte-identity) below.
+    writeFileSync(
+      path.join(dir, '.gitmodules'),
+      '[submodule "a"]\n\tpath = a\n\turl = https://example.com/submodule-repo-a.git\n\tbranch = main\n',
+    );
 
     // Stage all regular content
     runGit(['-C', dir, 'add', '-A'], { env: runGitEnv() });
@@ -612,11 +617,12 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
   });
 
   // -------------------------------------------------------------------------
-  // HEAD commit: byte-equal to `git archive --format=zip HEAD` (under TZ=UTC)
+  // HEAD commit: structurally faithful to `git archive --format=zip HEAD` (TZ=UTC).
+  // method-0 + framing byte-exact; method-8 (big.txt, divergent .gitmodules) round-trips.
   // -------------------------------------------------------------------------
 
   describe('Given archive(ctx, HEAD) passed through zipArchive with tzOffsetMinutes=0', () => {
-    it('Then the zip bytes are byte-equal to git archive --format=zip HEAD (including method-8 big.txt)', async () => {
+    it('Then the zip is structurally faithful to git archive --format=zip HEAD (method-0 byte-exact, method-8 round-trips)', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: zipPair.peer });
       const result = await archive(ctx, { treeish: 'HEAD' });
@@ -636,17 +642,17 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
       );
       const ourBytes = await collectZipBytes(sut);
 
-      // Assert — byte-equality including method-8 (big.txt 20000×A)
-      expect(ourBytes).toEqual(gitBytes);
+      // Assert — method-0 + framing byte-exact; method-8 round-trips (not byte-pinned)
+      expectZipFaithfulToGit(ourBytes, gitBytes);
     });
   });
 
   // -------------------------------------------------------------------------
-  // --prefix=pre/: byte-equal to `git archive --format=zip --prefix=pre/ HEAD`
+  // --prefix=pre/: structurally faithful to `git archive --format=zip --prefix=pre/ HEAD`
   // -------------------------------------------------------------------------
 
   describe('Given archive(ctx, HEAD) passed through zipArchive with prefix=pre/', () => {
-    it('Then the zip bytes are byte-equal to git archive --format=zip --prefix=pre/ HEAD', async () => {
+    it('Then the zip is structurally faithful to git archive --format=zip --prefix=pre/ HEAD', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: zipPair.peer });
       const result = await archive(ctx, { treeish: 'HEAD' });
@@ -667,18 +673,18 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
       );
       const ourBytes = await collectZipBytes(sut);
 
-      // Assert
-      expect(ourBytes).toEqual(gitBytes);
+      // Assert — method-0 + framing byte-exact; method-8 round-trips (not byte-pinned)
+      expectZipFaithfulToGit(ourBytes, gitBytes);
     });
   });
 
   // -------------------------------------------------------------------------
-  // Bare tree: byte-equal to `git archive --format=zip --mtime=<date> <tree-oid>`
+  // Bare tree: structurally faithful to `git archive --format=zip --mtime=<date> <tree-oid>`
   // No commit oid in EOCD comment for bare tree.
   // -------------------------------------------------------------------------
 
   describe('Given archive(ctx, <tree-oid>) passed through zipArchive with fixed mtime', () => {
-    it('Then the zip bytes are byte-equal to git archive --format=zip --mtime=<date> <tree-oid>', async () => {
+    it('Then the zip is structurally faithful to git archive --format=zip --mtime=<date> <tree-oid> with an empty EOCD comment', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: zipPair.peer });
       const result = await archive(ctx, { treeish: treeOid });
@@ -695,15 +701,87 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
       );
       const ourBytes = await collectZipBytes(sut);
 
-      // Assert — no commit oid in EOCD comment
+      // Assert — no commit oid in EOCD comment; method-0 + framing byte-exact, method-8 round-trips
       expect(result.commit).toBeUndefined();
+      expectZipFaithfulToGit(ourBytes, gitBytes);
+    });
+  });
+});
+
+// =============================================================================
+// zip whole-archive byte-equality — all-stored fixture (no DEFLATE in play).
+// The robust interop proof of the central directory + EOCD + offset bytes; method-8
+// entries are zlib-implementation-coupled (covered structurally above), so a
+// whole-archive byte-equality only holds when every entry is stored.
+// =============================================================================
+
+describe.skipIf(!GIT_AVAILABLE)('zip whole-archive byte-equality (all-stored fixture)', () => {
+  let storedPair: PeerPair;
+  const STORED_COMMIT_DATE = '2005-04-07T22:13:13 +0200';
+  const gitStoredEnv = () => ({ ...runGitEnv(), TZ: 'UTC' });
+  const buildStoredCommitEnv = () => ({
+    ...runGitEnv(),
+    GIT_AUTHOR_NAME: 'Ada',
+    GIT_AUTHOR_EMAIL: 'ada@example.com',
+    GIT_AUTHOR_DATE: STORED_COMMIT_DATE,
+    GIT_COMMITTER_NAME: 'Ada',
+    GIT_COMMITTER_EMAIL: 'ada@example.com',
+    GIT_COMMITTER_DATE: STORED_COMMIT_DATE,
+    TZ: 'UTC',
+  });
+
+  beforeAll(async () => {
+    storedPair = await makePeerPair('archive-zip-stored');
+    const dir = storedPair.peer;
+    runGit(['-C', dir, 'init', '-q', '-b', 'main'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'commit.gpgsign', 'false'], { env: runGitEnv() });
+    runGit(['-C', dir, 'config', 'core.autocrlf', 'false'], { env: runGitEnv() });
+    // Small files only — none compresses below its size, so git stores every entry.
+    writeFileSync(path.join(dir, 'a.txt'), 'hello\n');
+    writeFileSync(path.join(dir, 'run.sh'), '#!/bin/sh\necho hi\n');
+    symlinkSync('a.txt', path.join(dir, 'link'));
+    mkdirSync(path.join(dir, 'nested'), { recursive: true });
+    writeFileSync(path.join(dir, 'nested', 'b.txt'), 'nested\n');
+    runGit(['-C', dir, 'add', '-A'], { env: runGitEnv() });
+    runGit(['-C', dir, 'update-index', '--chmod=+x', 'run.sh'], { env: runGitEnv() });
+    runGit(['-C', dir, 'commit', '-m', 'seed'], { env: buildStoredCommitEnv() });
+  }, 60_000);
+
+  afterAll(async () => {
+    await storedPair.dispose();
+  });
+
+  describe('Given an all-stored tree (regular, exec, symlink, nested) archived through zipArchive', () => {
+    it('Then the whole zip — local headers, central directory, EOCD — is byte-equal to git archive --format=zip HEAD', async () => {
+      // Arrange
+      const ctx = createNodeContext({ workDir: storedPair.peer });
+      const result = await archive(ctx, { treeish: 'HEAD' });
+      const gitBytes = runGitBinary(
+        ['-C', storedPair.peer, 'archive', '--format=zip', 'HEAD'],
+        gitStoredEnv(),
+      );
+
+      // Act
+      const sut = zipArchive(
+        result,
+        { deflateRaw: ctx.compressor.deflateRaw },
+        {
+          tzOffsetMinutes: 0,
+          ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+        },
+      );
+      const ourBytes = await collectZipBytes(sut);
+
+      // Assert — every entry stored ⇒ whole archive byte-identical to git
       expect(ourBytes).toEqual(gitBytes);
     });
   });
 });
 
 // =============================================================================
-// Part 4 — zip cross-adapter parity: NodeCompressor vs MemoryCompressor
+// zip cross-adapter parity: NodeCompressor vs MemoryCompressor
 // =============================================================================
 
 // ---------------------------------------------------------------------------
@@ -755,6 +833,41 @@ function parseZipForParity(buf: Uint8Array): ZipEntry[] {
   }
 
   return entries;
+}
+
+/**
+ * Assert our zip is faithful to git's under the equivalence-under-readback contract:
+ * method-0 (stored) entries + all local-header framing are byte-identical to git;
+ * method-8 (deflate) compressed bytes are zlib-implementation-coupled and NOT
+ * byte-faithful — they round-trip to git's exact content, and the header is byte-exact
+ * except the `csize` field (offset 18..22). A whole-archive byte-equality is asserted
+ * separately, only on an all-stored fixture where no DEFLATE is in play. The matrix MUST
+ * exercise method-8.
+ */
+function expectZipFaithfulToGit(ourBytes: Uint8Array, gitBytes: Uint8Array): void {
+  const ours = parseZipForParity(ourBytes);
+  const git = parseZipForParity(gitBytes);
+  expect(ours.map((e) => e.name)).toEqual(git.map((e) => e.name));
+
+  let methodEightSeen = 0;
+  for (const [i, ge] of git.entries()) {
+    const oe = ours[i];
+    expect(oe).toBeDefined();
+    if (!oe) continue;
+    expect(oe.method).toBe(ge.method);
+    expect(oe.crc).toBe(ge.crc);
+    expect(oe.usize).toBe(ge.usize);
+    if (ge.method === 0) {
+      expect(oe.headerBytes).toEqual(ge.headerBytes);
+      expect(oe.data).toEqual(ge.data);
+    } else {
+      methodEightSeen += 1;
+      expect(oe.inflated).toEqual(ge.inflated);
+      expect(oe.headerBytes.slice(0, 18)).toEqual(ge.headerBytes.slice(0, 18));
+      expect(oe.headerBytes.slice(22)).toEqual(ge.headerBytes.slice(22));
+    }
+  }
+  expect(methodEightSeen).toBeGreaterThan(0);
 }
 
 describe.skipIf(!GIT_AVAILABLE)('zip cross-adapter parity (node vs memory)', () => {

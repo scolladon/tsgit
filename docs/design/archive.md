@@ -273,20 +273,27 @@ fields from `mtime` at that offset; the interop test runs `git archive --format=
 under `TZ=UTC` so both sides break the time down in UTC → byte-identical. The `UT`
 extra-field timestamp is the raw epoch `commitTime` and is **TZ-independent**.
 
-**Byte-identity contract (ADR-417), empirically confirmed.** node:zlib `deflateRawSync`
-at the **default level** reproduces git's method-8 stream **byte-for-byte** (verified:
-`big.txt` 20000×`A` → git 37 bytes `edc1…f060`; node default / `-1` / `6` / `9` → the
-identical 37 bytes; level `1` diverges → 106 bytes). Therefore:
+**Byte-identity contract (ADR-417) — empirically pinned, method-8 byte-equality is NOT
+universal.** The raw-DEFLATE bitstream is zlib-implementation-coupled. Verified against
+git 2.54.0: a highly-compressible blob (`20000×'A'` → git 37 bytes `edc1…f060`) coincides
+with node:zlib at default/`-1`/`6`/`9`, **but** a varied 69-byte `.gitmodules` **diverges**
+— git 64 bytes, node:zlib 67 (no level matches). git's own `git archive` zip is not stable
+across zlib/git versions either, so perfect method-8 byte-faithfulness is **portably
+impossible** and is **not** the contract. The faithful, achievable contract (the same
+equivalence-under-readback precedent the loose-object compressors document) is:
 
-- **node adapter** — the zip interop test asserts **byte-equality** with
-  `git archive --format=zip`, **including method-8** entries;
-- **browser / memory adapters** (`CompressionStream('deflate-raw')`) — method-8 bytes are
-  **outside** the byte-identity contract (the established loose-bytes
-  equivalence-under-readback precedent in those compressors); asserted **structurally /
-  by round-trip** (`inflateRaw` of the entry data returns the original blob);
-- **method-0 (stored) entries and ALL framing** — local + central headers, CRC-32, sizes,
-  the `UT` extra field, external/internal attributes, the EOCD + comment — are
-  **byte-identical on every adapter**, because none of it passes through DEFLATE.
+- **method-0 (stored) entries and ALL framing** — local + central headers, CRC-32, the
+  *uncompressed* size, the `UT` extra field, external/internal attributes, the EOCD +
+  comment — are **byte-identical to git on every adapter**, because none of it passes
+  through DEFLATE; the store-vs-deflate **method decision** matches git;
+- **method-8 (compressed) entries are faithful by ROUND-TRIP, not byte-identity** (on
+  **every** adapter, node included — node is not privileged): the payload is valid
+  raw-DEFLATE that inflates to git's exact content; its compressed bytes (and that entry's
+  `csize` + downstream offsets) equal git's only *incidentally*, never relied upon;
+- the interop test compares **structurally** — same entry set/order/method, same
+  CRC/usize/attrs/comment, method-0 payloads byte-equal, method-8 payloads round-trip to
+  git's content — and keeps a whole-archive byte-equality assertion **only** for an
+  all-stored fixture (no DEFLATE in play), where it is robust.
 
 Note the mode divergence between formats: **tar applies `tar.umask` to a transformed base
 mode; zip writes the raw git mode (umask-free) in its external attributes.** A single data
