@@ -83,6 +83,19 @@ export const runGit = (
 /** Snapshot of the sanitised env, for tests that need to extend it. */
 export const runGitEnv = (): NodeJS.ProcessEnv => ({ ...SAFE_ENV });
 
+/**
+ * Spawn `git` and return the raw binary output as a Uint8Array.
+ * Unlike `runGit`, this never calls `.toString()` so binary data
+ * (e.g. zip archives) is never corrupted by UTF-8 decoding.
+ */
+export const runGitBytes = (
+  args: ReadonlyArray<string>,
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
+): Uint8Array => {
+  const env = options.env ?? SAFE_ENV;
+  return new Uint8Array(execFileSync('git', args as string[], { env }));
+};
+
 export const hasGit = (): boolean => {
   try {
     runGit(['--version']);
