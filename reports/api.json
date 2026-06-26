@@ -67543,7 +67543,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Skip object-content validation, links only."
+										"text": "Skip object-content validation, check links only."
 									}
 								]
 							},
@@ -95647,11 +95647,28 @@
 											"flags": {
 												"isReadonly": true
 											},
+											"comment": {
+												"summary": [
+													{
+														"kind": "text",
+														"text": "'unknown' when the object is undecodable and the type cannot be determined."
+													}
+												]
+											},
 											"type": {
-												"type": "reference",
-												"target": 1248,
-												"name": "FsckObjectType",
-												"package": "@scolladon/tsgit"
+												"type": "union",
+												"types": [
+													{
+														"type": "reference",
+														"target": 1248,
+														"name": "FsckObjectType",
+														"package": "@scolladon/tsgit"
+													},
+													{
+														"type": "literal",
+														"value": "unknown"
+													}
+												]
 											}
 										},
 										{
@@ -137588,222 +137605,222 @@
 		},
 		"1204": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckFinding"
 		},
 		"1205": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1206": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1207": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.id"
 		},
 		"1208": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.objectType"
 		},
 		"1209": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1210": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1211": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.id"
 		},
 		"1212": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.objectType"
 		},
 		"1213": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1214": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1215": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.id"
 		},
 		"1216": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.objectType"
 		},
 		"1217": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1218": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1219": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.fromId"
 		},
 		"1220": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.fromType"
 		},
 		"1221": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.toId"
 		},
 		"1222": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.toType"
 		},
 		"1223": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1224": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1225": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.id"
 		},
 		"1226": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.objectType"
 		},
 		"1227": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.msgId"
 		},
 		"1228": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.severity"
 		},
 		"1229": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1230": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1231": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.id"
 		},
 		"1232": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.actual"
 		},
 		"1233": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1234": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1235": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.ref"
 		},
 		"1236": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.msgId"
 		},
 		"1237": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.severity"
 		},
 		"1238": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.target"
 		},
 		"1239": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1240": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1241": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.id"
 		},
 		"1242": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type"
 		},
 		"1243": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.type"
 		},
 		"1244": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.id"
 		},
 		"1245": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.objectType"
 		},
 		"1246": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.tagName"
 		},
 		"1247": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "__type.tag"
 		},
 		"1248": {
@@ -137813,52 +137830,52 @@
 		},
 		"1249": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckOptions"
 		},
 		"1250": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckOptions.connectivityOnly"
 		},
 		"1251": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckOptions.reflogRoots"
 		},
 		"1252": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckOptions.indexRoot"
 		},
 		"1253": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckOptions.full"
 		},
 		"1254": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckOptions.strict"
 		},
 		"1255": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckOptions.checkReferences"
 		},
 		"1256": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckResult"
 		},
 		"1257": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckResult.findings"
 		},
 		"1258": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/commands/fsck.ts",
+			"packagePath": "src/application/commands/internal/fsck/types.ts",
 			"qualifiedName": "FsckResult.exitCode"
 		},
 		"1259": {
