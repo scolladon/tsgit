@@ -1,6 +1,7 @@
 import { archiveScenario } from './archive.scenario.ts';
 import { blameScenario } from './blame.scenario.ts';
 import { branchLifecycleScenario } from './branch-lifecycle.scenario.ts';
+import { bundleScenario } from './bundle.scenario.ts';
 import { cherryPickScenario } from './cherry-pick.scenario.ts';
 import { configScenario } from './config.scenario.ts';
 import { describeScenario } from './describe.scenario.ts';
@@ -33,6 +34,7 @@ import { writePipelineScenario } from './write-pipeline.scenario.ts';
 
 export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   archiveScenario,
+  bundleScenario,
   initAddCommitStatusScenario,
   branchLifecycleScenario,
   readPipelineScenario,

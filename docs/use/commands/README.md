@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 40 entries, alphabetical.
+Every method bound on a `Repository` handle. 41 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -8,6 +8,7 @@ Every method bound on a `Repository` handle. 40 entries, alphabetical.
 | [`archive`](archive.md) | Export a tree-ish as a structured entry stream (paths, raw modes, oids, blob bytes); no tar/zip bytes produced. |
 | [`blame`](blame.md) | Line-by-line authorship for a file at a revision; returns structured per-line data (no rendered line). |
 | [`branch`](branch.md) | List, create, or delete branches. |
+| [`bundle`](bundle.md) | Package and inspect git objects in a transportable bundle file. Nested-namespace surface (`repo.bundle.create/verify/listHeads`). |
 | [`catFile`](cat-file.md) | Batch read of git objects in strict input order. |
 | [`checkout`](checkout.md) | Switch branches or restore working-tree files. |
 | [`cherryPick`](cherry-pick.md) | Apply commits onto HEAD as new single-parent commits (single + `A..B` range), preserving author/message, with a git-faithful resumable sequencer. Nested-namespace surface (`repo.cherryPick.run/continue/skip/abort`). |

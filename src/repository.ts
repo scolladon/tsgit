@@ -172,6 +172,8 @@ export interface Repository {
   readonly blame: BindCtx<typeof commands.blame>;
   /** Nested `repo.branch.{list,create,delete,rename}` namespace. */
   readonly branch: commands.BranchNamespace;
+  /** Nested `repo.bundle.{create,verify,listHeads}` namespace. */
+  readonly bundle: commands.BundleNamespace;
   readonly catFile: BindCtx<typeof commands.catFile>;
   readonly checkout: BindCtx<typeof commands.checkout>;
   /** Nested `repo.cherryPick.{run,continue,skip,abort}` namespace. */
@@ -467,6 +469,7 @@ export const openRepository = async (
       return commands.blame(ctx, blamePath, blameOpts);
     }) as Repository['blame'],
     branch: commands.bindBranchNamespace(ctx, guard),
+    bundle: commands.bindBundleNamespace(ctx, guard),
     checkout: ((checkoutOpts) => {
       guard();
       return commands.checkout(ctx, checkoutOpts);
