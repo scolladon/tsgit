@@ -237,4 +237,85 @@ describe('Given parseBundleHeader', () => {
       expect(result.refs).toEqual([{ oid: OID_A, name: RefName.from('HEAD') }]);
     });
   });
+
+  describe('When a prerequisite line has no space (oid only, no comment)', () => {
+    it('Then parses the prerequisite with an empty comment', () => {
+      // Arrange
+      const sut = parseBundleHeader;
+      const bytes = encode(
+        `# v2 git bundle\n-${'a'.repeat(40)}\n${'b'.repeat(40)} refs/heads/main\n\n`,
+      );
+
+      // Act
+      const result = sut(bytes, 'no-comment-prereq.bundle');
+
+      // Assert
+      expect(result.prerequisites).toEqual([{ oid: OID_A, comment: '' }]);
+    });
+  });
+
+  describe('When a ref line contains no space (oid only, no refname)', () => {
+    it('Then throws bundleBadHeader with code BUNDLE_BAD_HEADER and reason malformed-header', () => {
+      // Arrange
+      const sut = parseBundleHeader;
+      const bytes = encode(`# v2 git bundle\n${'a'.repeat(40)}\n\n`);
+
+      // Act + Assert
+      try {
+        sut(bytes, 'no-space-ref.bundle');
+        expect.fail('should have thrown');
+      } catch (err: unknown) {
+        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
+          'BUNDLE_BAD_HEADER',
+        );
+        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
+          'malformed-header',
+        );
+      }
+    });
+  });
+
+  describe('When header starts with a blank line and has no magic line before the terminator', () => {
+    it('Then throws bundleBadHeader with code BUNDLE_BAD_HEADER and reason not-a-bundle', () => {
+      // Arrange
+      const sut = parseBundleHeader;
+      const headerBytes = encode('\n\n');
+      const packBytes = new Uint8Array([0x50, 0x41, 0x43, 0x4b]); // 'PACK'
+      const bytes = new Uint8Array(headerBytes.length + packBytes.length);
+      bytes.set(headerBytes, 0);
+      bytes.set(packBytes, headerBytes.length);
+
+      // Act + Assert
+      try {
+        sut(bytes, 'blank-start.bundle');
+        expect.fail('should have thrown');
+      } catch (err: unknown) {
+        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
+          'BUNDLE_BAD_HEADER',
+        );
+        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
+          'not-a-bundle',
+        );
+      }
+    });
+  });
+
+  describe('When header is v3 magic line with no blank line terminator', () => {
+    it('Then throws bundleUnsupportedVersion with code BUNDLE_UNSUPPORTED_VERSION and version 3', () => {
+      // Arrange
+      const sut = parseBundleHeader;
+      const bytes = encode('# v3 git bundle');
+
+      // Act + Assert
+      try {
+        sut(bytes, 'v3-no-blank.bundle');
+        expect.fail('should have thrown');
+      } catch (err: unknown) {
+        expect((err as { data: { code: string; version: number } }).data.code).toBe(
+          'BUNDLE_UNSUPPORTED_VERSION',
+        );
+        expect((err as { data: { code: string; version: number } }).data.version).toBe(3);
+      }
+    });
+  });
 });
