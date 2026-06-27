@@ -473,6 +473,14 @@ function extractDetail(data: TsgitErrorData): string {
       return `'${data.path}' contains modified or untracked files, use --force to delete it`;
     case 'NOT_A_WORKTREE':
       return `'${data.path}' is not a working tree`;
+    case 'BUNDLE_EMPTY':
+      return `refusing to create empty bundle: ${data.reason}`;
+    case 'BUNDLE_READ_FAILED':
+      return `could not open '${data.path}'`;
+    case 'BUNDLE_BAD_HEADER':
+      return `'${data.path}' does not look like a v2 or v3 bundle file`;
+    case 'BUNDLE_UNSUPPORTED_VERSION':
+      return `unsupported bundle version ${data.version} in '${data.path}'`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

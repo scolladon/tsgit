@@ -173,6 +173,10 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'WORKTREE_LOCKED':
     case 'WORKTREE_DIRTY':
     case 'NOT_A_WORKTREE':
+    case 'BUNDLE_EMPTY':
+    case 'BUNDLE_READ_FAILED':
+    case 'BUNDLE_BAD_HEADER':
+    case 'BUNDLE_UNSUPPORTED_VERSION':
       return;
     default: {
       const _exhaustive: never = data;

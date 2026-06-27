@@ -222,7 +222,15 @@ export type CommandError =
   | { readonly code: 'NO_ANNOTATED_NAMES'; readonly oid: ObjectId }
   | { readonly code: 'NO_REACHABLE_NAMES'; readonly oid: ObjectId }
   | { readonly code: 'NO_EXACT_MATCH'; readonly oid: ObjectId }
-  | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId };
+  | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId }
+  | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' | 'no-objects' }
+  | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
+  | { readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string; readonly reason: string }
+  | {
+      readonly code: 'BUNDLE_UNSUPPORTED_VERSION';
+      readonly path: string;
+      readonly version: number;
+    };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -656,3 +664,32 @@ export const noExactMatch = (oid: ObjectId): TsgitError =>
 // qualifying ref and `always` was not set (git: `cannot describe '<oid>'`).
 export const cannotDescribe = (oid: ObjectId): TsgitError =>
   new TsgitError({ code: 'CANNOT_DESCRIBE', oid });
+
+// `bundle create` refusals. `reason` discriminates between a zero-ref selection
+// (git `Refusing to create empty bundle.`) and a zero-object closure (same message
+// but triggered when all selected tips are identical to their exclusions).
+export const bundleEmpty = (reason: 'no-refs' | 'no-objects'): TsgitError =>
+  new TsgitError({ code: 'BUNDLE_EMPTY', reason });
+
+// `bundle verify`/`bundle list-heads` open-failure: the path does not exist or is
+// unreadable. `path` is caller-supplied and sanitised before embedding.
+// git: `error: could not open '<path>'`.
+export const bundleReadFailed = (path: string): TsgitError =>
+  new TsgitError({ code: 'BUNDLE_READ_FAILED', path: sanitizeForDisplay(path) });
+
+// `bundle verify`/`bundle list-heads` header-parse failure: the file opened but
+// its content does not conform to the bundle header grammar.
+// git: `error: '<path>' does not look like a v2 or v3 bundle file`.
+// `reason` is a short discriminator tag (`'not-a-bundle' | 'malformed-header'`).
+export const bundleBadHeader = (path: string, reason: string): TsgitError =>
+  new TsgitError({ code: 'BUNDLE_BAD_HEADER', path: sanitizeForDisplay(path), reason });
+
+// `bundle verify`/`bundle list-heads` version refusal: the magic line indicates
+// a bundle version tsgit does not support (currently v3 only).
+// git 2.54.0 reads v3-sha1; tsgit refuses (sanctioned divergence).
+export const bundleUnsupportedVersion = (path: string, version: number): TsgitError =>
+  new TsgitError({
+    code: 'BUNDLE_UNSUPPORTED_VERSION',
+    path: sanitizeForDisplay(path),
+    version,
+  });
