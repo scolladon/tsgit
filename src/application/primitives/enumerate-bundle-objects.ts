@@ -23,10 +23,11 @@
  * shared-subtrees) re-reads down to O(unique-trees) — critical for
  * incremental bundles where near-root subtrees appear in every commit.
  */
-import { operationAborted, TsgitError } from '../../domain/error.js';
+import { operationAborted } from '../../domain/error.js';
 import { treeDepthExceeded } from '../../domain/objects/error.js';
 import { type FileMode, isDirectory, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { type EmitState, resolveTagChain, tryEmit } from './internal/object-emit.js';
 import { readObject } from './read-object.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
 import { isGitlink } from './validators.js';
@@ -61,23 +62,10 @@ interface UninterestingClosure {
   readonly objects: Set<ObjectId>;
 }
 
-interface EmitState {
-  readonly emitted: Set<ObjectId>;
+// Bundle-local extension: adds boundary tracking for prerequisite commit detection.
+interface BundleEmitState extends EmitState {
   readonly boundary: Set<ObjectId>;
-  readonly cap: number;
 }
-
-const tryEmit = (state: EmitState, id: ObjectId): void => {
-  if (state.emitted.has(id)) return;
-  if (state.emitted.size >= state.cap) {
-    throw new TsgitError({
-      code: 'PACK_TOO_LARGE',
-      objectCount: state.emitted.size + 1,
-      limit: state.cap,
-    });
-  }
-  state.emitted.add(id);
-};
 
 // Walk a tree recursively, collecting all non-gitlink object ids into
 // `objects`. Subtrees already in `seenTrees` are skipped — their objects are
@@ -118,7 +106,7 @@ const emitTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,
   uninteresting: Set<ObjectId>,
-  state: EmitState,
+  state: BundleEmitState,
   seenTrees: Set<ObjectId>,
   depth = 0,
 ): Promise<void> => {
@@ -155,22 +143,11 @@ const collectUninteresting = async (
   return { commits, objects };
 };
 
-const resolveTagChain = async (ctx: Context, id: ObjectId, state: EmitState): Promise<ObjectId> => {
-  let current = id;
-  for (let depth = 0; depth < 16; depth += 1) {
-    const obj = await readObject(ctx, current);
-    if (obj.type !== 'tag') return current;
-    tryEmit(state, current);
-    current = obj.data.object;
-  }
-  return current;
-};
-
 const walkInteresting = async (
   ctx: Context,
   seeds: ReadonlyArray<ObjectId>,
   uninteresting: UninterestingClosure,
-  state: EmitState,
+  state: BundleEmitState,
   seenTrees: Set<ObjectId>,
 ): Promise<void> => {
   for await (const commit of walkCommits(ctx, {
@@ -191,7 +168,7 @@ export const enumerateBundleObjects = async (
   input: EnumerateBundleObjectsInput,
 ): Promise<BundleObjectClosure> => {
   if (input.wants.length === 0) return { objects: [], boundary: [] };
-  const state: EmitState = {
+  const state: BundleEmitState = {
     emitted: new Set<ObjectId>(),
     boundary: new Set<ObjectId>(),
     cap: input.maxObjects ?? MAX_PUSH_OBJECTS,
@@ -200,7 +177,11 @@ export const enumerateBundleObjects = async (
   const uninteresting = await collectUninteresting(ctx, input.haves, seenTrees);
   const seeds: ObjectId[] = [];
   for (const want of input.wants) {
-    seeds.push(await resolveTagChain(ctx, want, state));
+    seeds.push(
+      await resolveTagChain(ctx, want, (oid) => {
+        tryEmit(state, oid);
+      }),
+    );
   }
   await walkInteresting(ctx, seeds, uninteresting, state, seenTrees);
   return { objects: [...state.emitted], boundary: [...state.boundary] };

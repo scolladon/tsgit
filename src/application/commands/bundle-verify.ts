@@ -3,6 +3,7 @@ import type {
   BundlePrerequisite,
   BundleRef,
   BundleVersion,
+  ParsedBundleHeader,
 } from '../../domain/bundle/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { parseHeader, serializeObject } from '../../domain/objects/index.js';
@@ -46,12 +47,7 @@ export const bundleVerify = async (
 };
 
 const buildResult = (
-  header: {
-    version: BundleVersion;
-    hashAlgorithm: BundleHashAlgorithm;
-    refs: ReadonlyArray<BundleRef>;
-    prerequisites: ReadonlyArray<BundlePrerequisite>;
-  },
+  header: ParsedBundleHeader,
   missingPrerequisites: ReadonlyArray<ObjectId>,
 ): BundleVerifyResult => ({
   version: header.version,
