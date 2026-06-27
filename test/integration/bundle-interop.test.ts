@@ -675,10 +675,10 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
         caught = err;
       }
 
-      // Assert — a TsgitError is thrown; its code is NOT a BUNDLE_ code
+      // Assert — a TsgitError is thrown; its code is DECOMPRESS_FAILED (inflate failure on corrupt entry byte)
       expect(caught).toBeInstanceOf(TsgitError);
       const code = (caught as TsgitError).data.code;
-      expect(code).not.toMatch(/^BUNDLE_/);
+      expect(code).toBe('DECOMPRESS_FAILED');
     });
   });
 

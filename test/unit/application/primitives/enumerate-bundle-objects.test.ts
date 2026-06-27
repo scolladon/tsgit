@@ -327,7 +327,16 @@ describe('enumerateBundleObjects', () => {
           expect.unreachable('expected PACK_TOO_LARGE to be thrown');
         } catch (error) {
           expect(error).toBeInstanceOf(TsgitError);
-          expect((error as TsgitError).data.code).toBe('PACK_TOO_LARGE');
+          const data = (error as TsgitError).data as {
+            readonly code: string;
+            readonly objectCount: number;
+            readonly limit: number;
+          };
+          expect(data.code).toBe('PACK_TOO_LARGE');
+          // commit1 is emitted first (count reaches 1 = cap), then the cap fires
+          // when the tree would be emitted as the second object → objectCount = 2
+          expect(data.objectCount).toBe(2);
+          expect(data.limit).toBe(1);
         }
       });
     });

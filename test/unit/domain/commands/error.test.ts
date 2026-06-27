@@ -1480,6 +1480,22 @@ describe('domain commands error — extractDetail message formatting', () => {
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: -2 },
       'CONFIG_BAD_ZLIB_LEVEL: bad zlib compression level -2',
     ],
+    [
+      { code: 'BUNDLE_EMPTY', reason: 'no-refs' },
+      'BUNDLE_EMPTY: refusing to create empty bundle: no-refs',
+    ],
+    [
+      { code: 'BUNDLE_READ_FAILED', path: '/some/path.bundle' },
+      "BUNDLE_READ_FAILED: could not open '/some/path.bundle'",
+    ],
+    [
+      { code: 'BUNDLE_BAD_HEADER', path: '/bad.bundle', reason: 'not-a-bundle' },
+      "BUNDLE_BAD_HEADER: '/bad.bundle' does not look like a v2 or v3 bundle file",
+    ],
+    [
+      { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3, path: '/v3.bundle' },
+      "BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 in '/v3.bundle'",
+    ],
   ];
 
   describe('Given command error %j', () => {

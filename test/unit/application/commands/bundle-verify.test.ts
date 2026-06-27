@@ -235,7 +235,7 @@ describe('bundleVerify', () => {
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
         const tsErr = thrown as TsgitError;
-        expect(tsErr.data.code).not.toMatch(/^BUNDLE_/);
+        expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
       });
     });
   });
@@ -571,6 +571,138 @@ describe('bundleVerify', () => {
         const tsErr = thrown as TsgitError;
         expect(tsErr.data.code).toBe('BUNDLE_READ_FAILED');
         expect((tsErr.data as { path: string }).path).toBe(PERM_PATH);
+      });
+    });
+  });
+
+  // ── resolver: OBJECT_NOT_FOUND → undefined → INVALID_PACK_HEADER ─────────
+
+  describe('Given a bundle with all prerequisites present but the REF_DELTA base absent from the store', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then throws INVALID_PACK_HEADER for the unresolvable delta entry', async () => {
+        // Arrange — write a blob that serves as the prerequisite (present in store)
+        const ctx = await initRepo();
+        const prereqContent = enc.encode('prerequisite blob');
+        const prereqOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: prereqContent,
+        });
+
+        // Build a pack with a REF_DELTA whose base OID is NOT in the store.
+        // The base content is used only to compute the delta bytes; the absent
+        // base OID ensures the external resolver returns undefined.
+        const absentBaseId = `${'abcdef0123456789'.repeat(2)}01234567`; // 40 hex chars, never written
+        const baseContent = enc.encode('base content for delta computation');
+        const targetContent = enc.encode('derived content');
+        const { packBytes, ids } = await buildSyntheticPack(ctx, [
+          {
+            kind: 'ref-delta',
+            baseId: absentBaseId,
+            baseUncompressed: baseContent,
+            targetContent,
+          } as EntrySpec,
+        ]);
+
+        const headerBytes = serializeBundleHeader({
+          version: 2,
+          prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
+          refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
+        });
+        const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+        bundleBytes.set(headerBytes, 0);
+        bundleBytes.set(packBytes, headerBytes.length);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — resolver returns undefined (OBJECT_NOT_FOUND is swallowed);
+        // the entry stays unresolvable, triggering INVALID_PACK_HEADER
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
+        expect((tsErr.data as { readonly reason: string }).reason).toContain('unresolved');
+      });
+    });
+  });
+
+  // ── resolver: non-OBJECT_NOT_FOUND error → rethrow ────────────────────────
+
+  describe('Given a bundle where the REF_DELTA base object exists but is unreadable (PERMISSION_DENIED)', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then rethrows the PERMISSION_DENIED error from the external base resolver', async () => {
+        // Arrange — write two objects: blobA (prerequisite, always readable) and
+        // blobB (REF_DELTA base, read intercepted to throw PERMISSION_DENIED).
+        const ctx = await initRepo();
+
+        const prereqContent = enc.encode('prerequisite blob — always readable');
+        const prereqOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: prereqContent,
+        });
+
+        const baseContent = enc.encode('base blob for REF_DELTA');
+        const baseOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: baseContent,
+        });
+
+        const targetContent = enc.encode('derived content');
+        const { packBytes, ids } = await buildSyntheticPack(ctx, [
+          {
+            kind: 'ref-delta',
+            baseId: baseOid as string,
+            baseUncompressed: baseContent,
+            targetContent,
+          } as EntrySpec,
+        ]);
+
+        const headerBytes = serializeBundleHeader({
+          version: 2,
+          prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
+          refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
+        });
+        const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+        bundleBytes.set(headerBytes, 0);
+        bundleBytes.set(packBytes, headerBytes.length);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Intercept reads of blobB's loose object path to simulate PERMISSION_DENIED.
+        // The file still exists in the store (exists() returns true), but read() throws.
+        const baseLoosePath = `${ctx.layout.gitDir}/objects/${baseOid.slice(0, 2)}/${baseOid.slice(2)}`;
+        const spyCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (p: string): Promise<Uint8Array> => {
+              if (p === baseLoosePath) {
+                throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+              }
+              return ctx.fs.read(p);
+            },
+          },
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(spyCtx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — resolveExternalBase rethrows the non-OBJECT_NOT_FOUND error
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('PERMISSION_DENIED');
       });
     });
   });
