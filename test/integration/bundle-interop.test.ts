@@ -476,8 +476,8 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
 
       // Assert — same sorted prerequisites and byte-identical headers
       const threePrereqs = threeDot.prerequisites.map((p) => p.oid as string);
-      const explPrereqs = explicitExclude.prerequisites.map((p) => p.oid as string);
-      expect(explPrereqs).toEqual(threePrereqs);
+      const explicitPrereqs = explicitExclude.prerequisites.map((p) => p.oid as string);
+      expect(explicitPrereqs).toEqual(threePrereqs);
       expect(headerBytes(threeDot.bytes)).toEqual(headerBytes(explicitExclude.bytes));
     });
   });

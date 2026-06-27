@@ -160,9 +160,7 @@ describe('Given parseBundleHeader', () => {
     it('Then throws bundleBadHeader with reason malformed-header', () => {
       // Arrange
       const sut = parseBundleHeader;
-      const bytes = encode(
-        `# v2 git bundle\nzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz refs/heads/main\n\n`,
-      );
+      const bytes = encode(`# v2 git bundle\n${'z'.repeat(40)} refs/heads/main\n\n`);
 
       // Act + Assert
       try {
@@ -184,7 +182,7 @@ describe('Given parseBundleHeader', () => {
       // Arrange
       const sut = parseBundleHeader;
       const bytes = encode(
-        `# v2 git bundle\n-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz bad prereq\n${OID_B} refs/heads/main\n\n`,
+        `# v2 git bundle\n-${'z'.repeat(40)} bad prereq\n${OID_B} refs/heads/main\n\n`,
       );
 
       // Act + Assert
