@@ -951,7 +951,8 @@
     "hexdump",
     "pluralised",
     "sneakernet",
-    "unopenable"
+    "unopenable",
+    "prepass"
   ],
   "ignorePaths": [
     "node_modules",
