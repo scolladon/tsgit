@@ -1,3 +1,4 @@
+import { bundleUnsupportedSerializeVersion } from '../commands/error.js';
 import type { BundlePrerequisite, BundleRef, BundleVersion } from './types.js';
 
 const MAGIC_V2 = '# v2 git bundle\n';
@@ -24,6 +25,8 @@ export const serializeBundleHeader = (input: {
   readonly prerequisites: ReadonlyArray<BundlePrerequisite>;
   readonly refs: ReadonlyArray<BundleRef>;
 }): Uint8Array => {
+  if (input.version !== 2) throw bundleUnsupportedSerializeVersion(input.version);
+
   const sorted = sortByOidAscending(input.prerequisites);
 
   const parts: string[] = [MAGIC_V2];

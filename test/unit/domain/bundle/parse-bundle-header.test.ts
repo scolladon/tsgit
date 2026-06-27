@@ -316,4 +316,30 @@ describe('Given parseBundleHeader', () => {
       }
     });
   });
+
+  describe('When given a large payload with v2 magic but no blank-line terminator', () => {
+    it('Then throws malformed-header without needing to decode the full large pack body', () => {
+      // Arrange
+      const sut = parseBundleHeader;
+      const headerPart = encode(`# v2 git bundle\n${OID_A} refs/heads/main\n`);
+      // 1 MB of zeros simulating a large embedded packfile with no blank line in header
+      const packData = new Uint8Array(1_000_000);
+      const bytes = new Uint8Array(headerPart.length + packData.length);
+      bytes.set(headerPart, 0);
+      bytes.set(packData, headerPart.length);
+
+      // Act + Assert
+      try {
+        sut(bytes, 'large-no-blank.bundle');
+        expect.fail('should have thrown');
+      } catch (err: unknown) {
+        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
+          'BUNDLE_BAD_HEADER',
+        );
+        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
+          'malformed-header',
+        );
+      }
+    });
+  });
 });

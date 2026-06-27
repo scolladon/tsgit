@@ -21,14 +21,19 @@ const readOrThrow = async (ctx: Context, path: string): Promise<Uint8Array> => {
     return await ctx.fs.read(path);
   } catch (err) {
     if (!(err instanceof TsgitError)) throw err;
-    if (err.data.code === 'FILE_NOT_FOUND') throw bundleReadFailed(path);
-    if (err.data.code === 'PERMISSION_DENIED') throw await mapPermissionDenied(ctx, path);
+    if (err.data.code === 'FILE_NOT_FOUND' || err.data.code === 'PERMISSION_DENIED') {
+      throw await classifyReadFailure(ctx, path);
+    }
     throw err;
   }
 };
 
-const mapPermissionDenied = async (ctx: Context, path: string): Promise<TsgitError> => {
-  const stat = await ctx.fs.stat(path);
-  if (stat.isDirectory) return bundleBadHeader(path, 'not-a-bundle');
+const classifyReadFailure = async (ctx: Context, path: string): Promise<TsgitError> => {
+  try {
+    const stat = await ctx.fs.stat(path);
+    if (stat.isDirectory) return bundleBadHeader(path, 'not-a-bundle');
+  } catch {
+    // stat failed — path absent or unreadable; treat as generic read failure
+  }
   return bundleReadFailed(path);
 };

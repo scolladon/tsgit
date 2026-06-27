@@ -466,4 +466,112 @@ describe('bundleVerify', () => {
       });
     });
   });
+
+  // ── missing prereq + corrupt pack trailer ─────────────────────────────────
+
+  describe('Given a bundle with a missing prerequisite and a corrupt pack trailer', () => {
+    describe('When bundleVerify is called in a repo without the prerequisite', () => {
+      it('Then returns prerequisitesPresent:false without throwing despite corrupt pack trailer', async () => {
+        // Arrange
+        const { ctx: sourceCtx, commit1 } = await buildTwoCommitRepo();
+        const createResult = await bundleCreate(sourceCtx, {
+          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+        });
+        const corruptBytes = new Uint8Array(createResult.bytes);
+        // Corrupt the pack trailer (last 20 bytes = SHA-1 digest)
+        corruptBytes.set(new Uint8Array(20).fill(0xff), corruptBytes.length - 20);
+
+        const emptyCtx = await initRepo();
+        await emptyCtx.fs.write(BUNDLE_PATH, corruptBytes);
+
+        // Act — must NOT throw even though pack trailer is corrupt
+        const result = await sut(emptyCtx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.prerequisitesPresent).toBe(false);
+        expect(result.missingPrerequisites).toContain(commit1);
+        expect(result.missingPrerequisites).toHaveLength(1);
+      });
+    });
+  });
+
+  // ── read-failure: directory path via FILE_NOT_FOUND (memory/OPFS adapter) ─
+
+  describe('Given a path where read throws FILE_NOT_FOUND and stat reports a directory', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then throws BUNDLE_BAD_HEADER with the path', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const DIR_PATH = '/repo/some-dir';
+        const ctx: Context = {
+          ...baseCtx,
+          fs: {
+            ...baseCtx.fs,
+            read: async (p: string): Promise<Uint8Array> => {
+              if (p === DIR_PATH) throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });
+              return baseCtx.fs.read(p);
+            },
+            stat: async (p: string) => {
+              if (p === DIR_PATH) return { ...MOCK_STAT, isFile: false, isDirectory: true };
+              return baseCtx.fs.stat(p);
+            },
+          },
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(ctx, { path: DIR_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('BUNDLE_BAD_HEADER');
+        expect((tsErr.data as { path: string }).path).toBe(DIR_PATH);
+      });
+    });
+  });
+
+  // ── read-failure: PERMISSION_DENIED when stat also throws ─────────────────
+
+  describe('Given a path where read throws PERMISSION_DENIED and stat also throws', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then throws BUNDLE_READ_FAILED with the path', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const PERM_PATH = '/repo/unreadable.bundle';
+        const ctx: Context = {
+          ...baseCtx,
+          fs: {
+            ...baseCtx.fs,
+            read: async (p: string): Promise<Uint8Array> => {
+              if (p === PERM_PATH) throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+              return baseCtx.fs.read(p);
+            },
+            stat: async (p: string) => {
+              if (p === PERM_PATH) throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });
+              return baseCtx.fs.stat(p);
+            },
+          },
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(ctx, { path: PERM_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('BUNDLE_READ_FAILED');
+        expect((tsErr.data as { path: string }).path).toBe(PERM_PATH);
+      });
+    });
+  });
 });

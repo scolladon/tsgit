@@ -1,8 +1,8 @@
 import type { BundlePrerequisite, BundleRef, BundleVersion } from '../../domain/bundle/index.js';
 import { serializeBundleHeader } from '../../domain/bundle/index.js';
-import { bundleEmpty } from '../../domain/commands/error.js';
+import { bundleEmpty, bundlePrerequisiteNotCommit } from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
-import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { enumerateBundleObjects } from '../primitives/enumerate-bundle-objects.js';
@@ -176,8 +176,34 @@ const processRevArgs = async (
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Ref deduplication
+// ─────────────────────────────────────────────────────────────────────────────
+
+const deduplicateRefs = (refs: ReadonlyArray<BundleRef>): ReadonlyArray<BundleRef> => {
+  const seen = new Set<string>();
+  return refs.filter((r) => {
+    if (seen.has(r.name as string)) return false;
+    seen.add(r.name as string);
+    return true;
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Prerequisite builder
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Narrows a git object to Commit, throwing `BUNDLE_PREREQUISITE_NOT_COMMIT`
+ * if the object is not a commit. Boundary oids are always commits by
+ * construction (they come from `peel(ctx, oid, 'commit')`); this guard
+ * surfaces store corruption.
+ *
+ * Exported for direct unit testing of the invariant guard.
+ */
+export const assertBoundaryCommit = (obj: GitObject, oid: ObjectId): Commit => {
+  if (obj.type !== 'commit') throw bundlePrerequisiteNotCommit(oid, obj.type);
+  return obj;
+};
 
 const makePrerequisites = async (
   ctx: Context,
@@ -186,10 +212,10 @@ const makePrerequisites = async (
   Promise.all(
     [...boundary].sort().map(async (oid) => {
       const obj = await readObject(ctx, oid);
-      // boundary commits are always commits by invariant; git uses format_subject (%s),
-      // which folds the whole first paragraph (all non-blank lines before the first blank)
-      // into a single line, joining lines with one space
-      return { oid, comment: foldSubject((obj as Commit).data.message) };
+      // git uses format_subject (%s): folds the whole first paragraph
+      // (all non-blank lines before the first blank) into a single line
+      const commit = assertBoundaryCommit(obj, oid);
+      return { oid, comment: foldSubject(commit.data.message) };
     }),
   );
 
@@ -228,6 +254,8 @@ export const bundleCreate = async (
   const acc: Accumulator = { refs: [], wants: [], haves: [] };
   await expandPseudoRefs(ctx, opts, allRefs, acc);
   await processRevArgs(ctx, opts.revs ?? [], allRefs, acc);
+  const deduped = deduplicateRefs(acc.refs);
+  acc.refs.splice(0, acc.refs.length, ...deduped);
   if (acc.refs.length === 0) throw bundleEmpty('no-refs');
   const closure = await enumerateBundleObjects(ctx, { wants: acc.wants, haves: acc.haves });
   if (closure.objects.length === 0) throw bundleEmpty('no-objects');

@@ -35,11 +35,11 @@ export const bundleVerify = async (
   input: BundleVerifyInput,
 ): Promise<BundleVerifyResult> => {
   const { header, packBytes } = await readBundle(ctx, input.path);
-  await verifyPackTrailer(packBytes, ctx);
   const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);
   if (missingPrerequisites.length > 0) {
     return buildResult(header, missingPrerequisites);
   }
+  await verifyPackTrailer(packBytes, ctx);
   const resolver = header.prerequisites.length > 0 ? buildExternalBaseResolver(ctx) : undefined;
   await walkPackEntries(ctx, packBytes, resolver);
   return buildResult(header, []);

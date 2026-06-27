@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { serializeBundleHeader } from '../../../../src/domain/bundle/serialize-bundle-header.js';
 import type { BundlePrerequisite, BundleRef } from '../../../../src/domain/bundle/types.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/object-id.js';
 
 const OID_A = ObjectId.from('a'.repeat(40));
@@ -116,6 +117,27 @@ describe('Given serializeBundleHeader', () => {
       expect(text).toBe(
         `# v2 git bundle\n-${OID_A} first\n-${OID_B} second\n${OID_C} refs/heads/main\n${OID_D} HEAD\n\n`,
       );
+    });
+  });
+
+  describe('When called with version 3 (unsupported)', () => {
+    it('Then throws BUNDLE_UNSUPPORTED_VERSION with version 3', () => {
+      // Arrange
+      const sut = serializeBundleHeader;
+
+      // Act
+      let thrown: unknown;
+      try {
+        sut({ version: 3, prerequisites: [], refs: [] });
+      } catch (err) {
+        thrown = err;
+      }
+
+      // Assert
+      expect(thrown).toBeInstanceOf(TsgitError);
+      const tsErr = thrown as TsgitError;
+      expect(tsErr.data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
+      expect((tsErr.data as { version: number }).version).toBe(3);
     });
   });
 });

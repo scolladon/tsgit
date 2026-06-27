@@ -228,8 +228,13 @@ export type CommandError =
   | { readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string; readonly reason: string }
   | {
       readonly code: 'BUNDLE_UNSUPPORTED_VERSION';
-      readonly path: string;
+      readonly path?: string;
       readonly version: number;
+    }
+  | {
+      readonly code: 'BUNDLE_PREREQUISITE_NOT_COMMIT';
+      readonly oid: ObjectId;
+      readonly objectType: string;
     };
 
 const sanitizeForDisplay = (s: string): string => {
@@ -693,3 +698,14 @@ export const bundleUnsupportedVersion = (path: string, version: number): TsgitEr
     path: sanitizeForDisplay(path),
     version,
   });
+
+// `bundle create` version refusal: the caller requested a version that
+// `serializeBundleHeader` does not support (only v2 is supported for writing).
+export const bundleUnsupportedSerializeVersion = (version: number): TsgitError =>
+  new TsgitError({ code: 'BUNDLE_UNSUPPORTED_VERSION', version });
+
+// `bundle create` internal-invariant guard: a boundary oid resolved to a
+// non-commit object. Boundary oids are always commits by construction (they
+// come from `peel(ctx, oid, 'commit')`); this error surfaces store corruption.
+export const bundlePrerequisiteNotCommit = (oid: ObjectId, objectType: string): TsgitError =>
+  new TsgitError({ code: 'BUNDLE_PREREQUISITE_NOT_COMMIT', oid, objectType });

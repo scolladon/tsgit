@@ -177,6 +177,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'BUNDLE_READ_FAILED':
     case 'BUNDLE_BAD_HEADER':
     case 'BUNDLE_UNSUPPORTED_VERSION':
+    case 'BUNDLE_PREREQUISITE_NOT_COMMIT':
       return;
     default: {
       const _exhaustive: never = data;

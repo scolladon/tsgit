@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
+  assertBoundaryCommit,
   type BundleCreateOptions,
   type BundleCreateResult,
   bundleCreate,
@@ -12,6 +13,7 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   FileMode,
+  GitObject,
   ObjectId,
   Tag,
 } from '../../../../src/domain/objects/index.js';
@@ -540,6 +542,90 @@ describe('bundleCreate', () => {
         expect(result.refs[0]?.oid).toBe(tagOid); // tag-object oid
         expect(refNames).not.toContain('HEAD');
         expect(refNames.some((n) => (n as string).startsWith('refs/heads/'))).toBe(false);
+      });
+    });
+  });
+
+  // ── Ref deduplication (git 2.54.0 empirical golden) ──────────────────────
+  // git emits each refname at most once in argument/first-occurrence order.
+
+  describe('Given a repository where combined options would add the same ref twice', () => {
+    describe('When bundleCreate is called with branches:true and all:true', () => {
+      it('Then refs contain each refname exactly once (deduplicated by name, first-occurrence order)', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepo();
+
+        // Act
+        const result = await sut(ctx, { branches: true, all: true });
+
+        // Assert — no duplicate refnames
+        const refNames = result.refs.map((r) => r.name as string);
+        const uniqueNames = [...new Set(refNames)];
+        expect(refNames).toEqual(uniqueNames);
+      });
+    });
+  });
+
+  // ── Non-commit boundary object (invariant guard) ──────────────────────────
+  // assertBoundaryCommit is tested in a standalone describe below because
+  // triggering it through bundleCreate requires defeating readObject hash
+  // verification — the invariant (boundary oids always come from
+  // peel-to-commit) makes the branch structurally unreachable in normal use.
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// assertBoundaryCommit — invariant guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('assertBoundaryCommit', () => {
+  const FAKE_OID = 'a'.repeat(40) as ObjectId;
+
+  describe('Given a blob object', () => {
+    describe('When assertBoundaryCommit is called', () => {
+      it('Then throws BUNDLE_PREREQUISITE_NOT_COMMIT with the oid and objectType', () => {
+        // Arrange
+        const sut = assertBoundaryCommit;
+        const blob: GitObject = {
+          type: 'blob',
+          id: FAKE_OID,
+          content: new Uint8Array(),
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          sut(blob, FAKE_OID);
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('BUNDLE_PREREQUISITE_NOT_COMMIT');
+        expect((tsErr.data as { oid: string }).oid).toBe(FAKE_OID);
+        expect((tsErr.data as { objectType: string }).objectType).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given a commit object', () => {
+    describe('When assertBoundaryCommit is called', () => {
+      it('Then returns the commit object unchanged', async () => {
+        // Arrange
+        const sut = assertBoundaryCommit;
+        const { ctx, commit1 } = await buildTwoCommitRepo();
+        const { readObject } = await import(
+          '../../../../src/application/primitives/read-object.js'
+        );
+        const commitObj = await readObject(ctx, commit1 as ObjectId);
+
+        // Act
+        const result = sut(commitObj, commit1 as ObjectId);
+
+        // Assert
+        expect(result.type).toBe('commit');
+        expect(result.id).toBe(commit1);
       });
     });
   });

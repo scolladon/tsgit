@@ -97,7 +97,8 @@ const decodeHeaderLines = (
 };
 
 const throwMissingBlankLine = (bytes: Uint8Array, path: string): never => {
-  const headerText = new TextDecoder().decode(bytes);
+  const prefix = bytes.subarray(0, Math.min(bytes.length, 64));
+  const headerText = new TextDecoder().decode(prefix);
   const firstLine = headerText.split('\n')[0] as string;
   if (firstLine === MAGIC_V3) {
     throw bundleUnsupportedVersion(path, 3);
