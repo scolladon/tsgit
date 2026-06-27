@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-06-27
-- **Design:** docs/design/bundle.md · **Relates:** ADR-249 (structured output), ADR-423 (v2-only), ADR-425 (verify query)
+- **Design:** docs/design/bundle.md · **Relates:** ADR-249 (structured output), ADR-423 (v2-only), ADR-425 (verify query), ADR-428 (path read ops)
 - **Decision class:** D-ERROR adopted-as-recommended (no user judgment)
 
 ## Context
@@ -27,8 +27,11 @@ structured error carry the discriminating datum.
 
 ## Decision
 
-**Option 1 — adopted as the design recommended.** Three codes join the domain error union:
-`BUNDLE_EMPTY { reason }`, `BUNDLE_BAD_HEADER`, `BUNDLE_UNSUPPORTED_VERSION`. Each is wired
+**Option 1 — adopted as the design recommended.** A discriminated set joins the domain
+error union: `BUNDLE_EMPTY { reason }`, `BUNDLE_BAD_HEADER`, `BUNDLE_UNSUPPORTED_VERSION`,
+and — following the path-based read decision of ADR-428, which postdated this set —
+`BUNDLE_READ_FAILED { path }` for the library-owned open/read refusal (git's
+`could not open '<path>'`, discriminated from the malformed-bundle case). Each is wired
 into the union's exhaustiveness switches and, where barrel-exported, the exhaustive
 barrel-surface test.
 
