@@ -10,7 +10,7 @@
  *   surface:        bundleCreate, bundleVerify, bundleListHeads
  *   bucket:         cross-tool-interop
  *   unique:         v2 header byte-golden parity vs real git; oid-sorted
- *                   prerequisite lines; multi-line-subject subjectLine golden;
+ *                   prerequisite lines; multi-line-subject foldSubject prerequisite comment golden;
  *                   three-dot and criss-cross merge-base frontier parity;
  *                   object-closure set parity (prereq-blob exclusion verified);
  *                   cross-tool round-trips (tsgit→git, git→tsgit);
@@ -163,7 +163,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     // ──────────────────────────────────────────────────────────────────
     // Main repo: first→second→third→fourth on main; feature diverges at first.
     // Annotated tag v1.0 at second; lightweight tag 'light' at fourth.
-    // 'first' commit has a multi-line subject (to pin subjectLine vs foldSubject).
+    // 'first' commit has a multi-line subject (to pin foldSubject prerequisite comment parity with git).
     // ──────────────────────────────────────────────────────────────────
     const dir = pair.peer;
 
@@ -173,7 +173,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     runGit(['-C', dir, 'config', 'commit.gpgsign', 'false'], { env });
     runGit(['-C', dir, 'config', 'core.autocrlf', 'false'], { env });
 
-    // Commit 'first' — multi-line subject (disambiguates subjectLine vs foldSubject)
+    // Commit 'first' — multi-line subject (verifies foldSubject parity with git's format_subject)
     writeFileSync(path.join(dir, 'a.txt'), 'hello\n');
     writeFileSync(path.join(dir, 'b.txt'), 'world\n');
     runGit(['-C', dir, 'add', '-A'], { env });
@@ -362,7 +362,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   });
 
   describe('Given bundleCreate three-dot main...feature, When comparing to git bundle create main...feature', () => {
-    it('Then prerequisite OIDs and ref names match git; tsgit uses first-line-only subject (subjectLine), git folds the whole paragraph', async () => {
+    it('Then header bytes are byte-identical to git and prerequisite comment is the folded first paragraph', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
       const env = runGitEnv();
@@ -374,22 +374,14 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
         revs: [{ symmetricRange: ['main', 'feature'] }],
       });
 
-      // Assert — prerequisite OIDs match (byte comparison skipped: git folds the whole leading
-      // paragraph into the prerequisite comment using format_subject — producing
-      // "First line of subject Second line of subject" — while tsgit uses the first-line-only
-      // subjectLine behaviour, which gives "First line of subject". The headers therefore differ
-      // by exactly those 23 bytes. This is a known, documented divergence.)
-      const gitHdr = parseBundleHeader(gitBytes, '<git>');
-      const gitPrereqs = gitHdr.prerequisites.map((p) => p.oid as string);
+      // Assert — header bytes byte-identical; prerequisite comment matches git's format_subject (%s),
+      // which folds the whole first paragraph into a single line joined with spaces
+      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
       expect(sut.prerequisites).toHaveLength(1);
       expect(sut.prerequisites[0]?.oid).toBe(firstOid);
-      // subjectLine golden: tsgit uses the first line of the commit message
-      expect(sut.prerequisites[0]?.comment).toBe('First line of subject');
-      // Prove the distinction: git folds the leading paragraph (both non-blank lines)
-      expect(gitHdr.prerequisites[0]?.comment).toBe('First line of subject Second line of subject');
-      // OID parity: same prerequisite commit chosen by both tools
-      expect(sut.prerequisites.map((p) => p.oid as string)).toEqual(gitPrereqs);
+      expect(sut.prerequisites[0]?.comment).toBe('First line of subject Second line of subject');
       // Ref parity: same ref names and OIDs
+      const gitHdr = parseBundleHeader(gitBytes, '<git>');
       const gitRefs = gitHdr.refs.map((r) => `${r.name as string} ${r.oid as string}`);
       const tsRefs = sut.refs.map((r) => `${r.name as string} ${r.oid as string}`);
       expect(tsRefs).toEqual(gitRefs);

@@ -384,6 +384,40 @@ describe('bundleCreate', () => {
     });
   });
 
+  // ── Multi-line subject → folded prerequisite comment ─────────────────────
+
+  describe('Given a repository where the excluded commit has a multi-line subject paragraph', () => {
+    describe('When bundleCreate is called with that commit excluded', () => {
+      it('Then the prerequisite comment is the full first paragraph joined with spaces', async () => {
+        // Arrange — commit whose message has two non-blank subject lines, then a blank, then body
+        const ctx = await initRepo();
+        const tree1 = await writeTree(ctx, []);
+        const commit1 = await makeCommitObj(
+          ctx,
+          tree1,
+          [],
+          'First line of subject\nSecond line of subject\n\nBody paragraph here',
+          1,
+        );
+        const blob = await makeBlob(ctx, 'hello');
+        const tree2 = await writeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blob }]);
+        const commit2 = await makeCommitObj(ctx, tree2, [commit1], 'second commit', 2);
+        await setRef(ctx, 'refs/heads/main', commit2);
+        const opts: BundleCreateOptions = {
+          revs: [{ tip: 'refs/heads/main' }, { exclude: commit1 }],
+        };
+
+        // Act
+        const result = await sut(ctx, opts);
+
+        // Assert — the prerequisite comment must be the whole first paragraph, not just the first line
+        expect(result.prerequisites).toEqual([
+          { oid: commit1, comment: 'First line of subject Second line of subject' },
+        ]);
+      });
+    });
+  });
+
   // ── Range → prerequisite ──────────────────────────────────────────────────
 
   describe('Given a repository with two commits on main', () => {

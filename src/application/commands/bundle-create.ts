@@ -1,7 +1,7 @@
 import type { BundlePrerequisite, BundleRef, BundleVersion } from '../../domain/bundle/index.js';
 import { serializeBundleHeader } from '../../domain/bundle/index.js';
 import { bundleEmpty } from '../../domain/commands/error.js';
-import { subjectLine } from '../../domain/objects/commit-message.js';
+import { foldSubject } from '../../domain/objects/commit-message.js';
 import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
@@ -186,8 +186,10 @@ const makePrerequisites = async (
   Promise.all(
     [...boundary].sort().map(async (oid) => {
       const obj = await readObject(ctx, oid);
-      // boundary commits are always commits by invariant
-      return { oid, comment: subjectLine((obj as Commit).data.message) };
+      // boundary commits are always commits by invariant; git uses format_subject (%s),
+      // which folds the whole first paragraph (all non-blank lines before the first blank)
+      // into a single line, joining lines with one space
+      return { oid, comment: foldSubject((obj as Commit).data.message) };
     }),
   );
 
