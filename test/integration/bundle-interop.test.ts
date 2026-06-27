@@ -996,4 +996,68 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       expect(gitOut.stdout).toContain(reconstructed);
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Pin 10: tsgit verifies git-created incremental (thin) bundle
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe('Given a git-created incremental bundle (thin pack) with prerequisites present in the verifying repo', () => {
+    it('Then tsgit bundleVerify succeeds with prerequisitesPresent:true and git also accepts the bundle', async () => {
+      // Arrange — git creates an incremental bundle; its pack is thin (delta bases are
+      // prerequisite objects outside the pack body). Verify against the full repo where
+      // all prerequisite objects are present.
+      const ctx = createNodeContext({ workDir: pair.peer });
+      const env = runGitEnv();
+      const bundleFile = path.join(bundleDir, 'pin10-thin-present.bundle');
+      // main~2..main includes file modifications so git produces real deltas.
+      gitBundleCreate(pair.peer, bundleFile, ['main~2..main'], env);
+
+      // Act
+      const sut = await bundleVerify(ctx, { path: bundleFile });
+
+      // Assert — tsgit accepts the thin bundle
+      expect(sut.prerequisitesPresent).toBe(true);
+      expect(sut.missingPrerequisites).toHaveLength(0);
+      expect(sut.recordsCompleteHistory).toBe(false);
+      expect(sut.prerequisites).toHaveLength(1);
+      expect(sut.prerequisites[0]?.oid as string).toBe(secondOid);
+
+      // git also accepts the same bundle (verdicts match)
+      const gitResult = tryRunGit(['-C', pair.peer, 'bundle', 'verify', bundleFile], { env });
+      expect(gitResult.ok).toBe(true);
+      // git prints hash algorithm line in its verify output (stdout or stderr)
+      const gitOutput = gitResult.stdout + gitResult.stderr;
+      expect(gitOutput).toContain('The bundle uses this hash algorithm: sha1');
+    });
+  });
+
+  describe('Given a git-created incremental bundle (thin pack) with prerequisites absent from the verifying repo', () => {
+    it('Then tsgit bundleVerify reports prerequisitesPresent:false with missing oids and git also refuses', async () => {
+      // Arrange — create the incremental bundle in the full repo, then copy it
+      // to an initialised-but-empty scratch repo so both tsgit and git can run
+      // bundle verify from a valid (but object-less) git repository.
+      const env = runGitEnv();
+      const gitBundleFile = path.join(bundleDir, 'pin10-thin-absent-src.bundle');
+      const bundleBytes = gitBundleCreate(pair.peer, gitBundleFile, ['main~2..main'], env);
+      const bundleFile = path.join(pair.ours, 'pin10-thin-absent.bundle');
+      await writeFile(bundleFile, bundleBytes);
+
+      // Initialise pair.ours as a git repo so git bundle verify can run there
+      runGit(['init', '-q', '-b', 'main', pair.ours], { env });
+      const emptyCtx = createNodeContext({ workDir: pair.ours });
+
+      // Act
+      const result = await bundleVerify(emptyCtx, { path: bundleFile });
+
+      // Assert — tsgit reports missing prerequisite
+      expect(result.prerequisitesPresent).toBe(false);
+      expect(result.missingPrerequisites.length).toBeGreaterThan(0);
+      expect((result.missingPrerequisites as readonly string[]).includes(secondOid)).toBe(true);
+
+      // git also refuses (missing prerequisites)
+      const gitResult = tryRunGit(['-C', pair.ours, 'bundle', 'verify', bundleFile], { env });
+      expect(gitResult.ok).toBe(false);
+      expect(gitResult.stderr).toContain(secondOid);
+    });
+  });
 });

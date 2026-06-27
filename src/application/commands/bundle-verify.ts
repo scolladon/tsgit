@@ -5,9 +5,14 @@ import type {
   BundleVersion,
 } from '../../domain/bundle/index.js';
 import { TsgitError } from '../../domain/error.js';
+import { parseHeader, serializeObject } from '../../domain/objects/index.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { verifyPackTrailer, walkPackEntries } from '../primitives/fetch-pack.js';
+import {
+  type ExternalBaseResolver,
+  verifyPackTrailer,
+  walkPackEntries,
+} from '../primitives/fetch-pack.js';
 import { readObject } from '../primitives/read-object.js';
 import { readBundle } from './internal/read-bundle.js';
 
@@ -31,18 +36,46 @@ export const bundleVerify = async (
 ): Promise<BundleVerifyResult> => {
   const { header, packBytes } = await readBundle(ctx, input.path);
   await verifyPackTrailer(packBytes, ctx);
-  await walkPackEntries(ctx, packBytes);
   const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);
-  return {
-    version: header.version,
-    hashAlgorithm: header.hashAlgorithm,
-    refs: header.refs,
-    prerequisites: header.prerequisites,
-    missingPrerequisites,
-    prerequisitesPresent: missingPrerequisites.length === 0,
-    recordsCompleteHistory: header.prerequisites.length === 0,
-  };
+  if (missingPrerequisites.length > 0) {
+    return buildResult(header, missingPrerequisites);
+  }
+  const resolver = header.prerequisites.length > 0 ? buildExternalBaseResolver(ctx) : undefined;
+  await walkPackEntries(ctx, packBytes, resolver);
+  return buildResult(header, []);
 };
+
+const buildResult = (
+  header: {
+    version: BundleVersion;
+    hashAlgorithm: BundleHashAlgorithm;
+    refs: ReadonlyArray<BundleRef>;
+    prerequisites: ReadonlyArray<BundlePrerequisite>;
+  },
+  missingPrerequisites: ReadonlyArray<ObjectId>,
+): BundleVerifyResult => ({
+  version: header.version,
+  hashAlgorithm: header.hashAlgorithm,
+  refs: header.refs,
+  prerequisites: header.prerequisites,
+  missingPrerequisites,
+  prerequisitesPresent: missingPrerequisites.length === 0,
+  recordsCompleteHistory: header.prerequisites.length === 0,
+});
+
+const buildExternalBaseResolver =
+  (ctx: Context): ExternalBaseResolver =>
+  async (baseOid: ObjectId) => {
+    try {
+      const obj = await readObject(ctx, baseOid);
+      const raw = serializeObject(obj, ctx.hashConfig);
+      const { contentOffset } = parseHeader(raw);
+      return { type: obj.type, content: raw.subarray(contentOffset) };
+    } catch (err) {
+      if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return undefined;
+      throw err;
+    }
+  };
 
 const findMissingPrerequisites = async (
   ctx: Context,

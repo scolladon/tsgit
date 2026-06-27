@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { fetchPack } from '../../../../src/application/primitives/fetch-pack.js';
+import {
+  type ExternalBaseResolver,
+  fetchPack,
+  walkPackEntries,
+} from '../../../../src/application/primitives/fetch-pack.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
@@ -1976,6 +1980,105 @@ describe('fetchPack', () => {
           expect(sut.shallow).toEqual([shallowOid]);
           expect(sut.unshallow).toEqual([unshallowOid]);
         });
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// walkPackEntries — external base resolver (thin-pack completion)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('walkPackEntries', () => {
+  describe('Given a pack with a REF_DELTA whose base object is absent from the pack', () => {
+    const buildThinPack = async (ctx: ReturnType<typeof createMemoryContext>) => {
+      const baseContent = ENCODER.encode('base object content for thin-pack test');
+      const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+      const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+      baseRaw.set(baseHeader, 0);
+      baseRaw.set(baseContent, baseHeader.length);
+      const baseId = await ctx.hash.hashHex(baseRaw);
+      const targetContent = ENCODER.encode('derived content for thin-pack test');
+      const { packBytes } = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent,
+        } as EntrySpec,
+      ]);
+      return { packBytes, baseId, baseContent, targetContent };
+    };
+
+    describe('When walkPackEntries is called without an external resolver', () => {
+      it('Then throws INVALID_PACK_HEADER naming the unresolved REF_DELTA base', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, baseId } = await buildThinPack(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await walkPackEntries(ctx, packBytes);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const tsErr = caught as TsgitError;
+        expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
+        expect((tsErr.data as { reason: string }).reason).toContain('unresolved REF_DELTA');
+        expect((tsErr.data as { reason: string }).reason).toContain(baseId);
+      });
+    });
+
+    describe('When walkPackEntries is called with a resolver that returns the base', () => {
+      it('Then resolves the delta and returns the derived entry with its computed oid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, baseId, baseContent, targetContent } = await buildThinPack(ctx);
+
+        const sut: ExternalBaseResolver = async (oid) => {
+          if (oid !== baseId) return undefined;
+          return { type: 'blob', content: baseContent };
+        };
+
+        // Act
+        const result = await walkPackEntries(ctx, packBytes, sut);
+
+        // Assert — one derived entry, id matches the target blob sha
+        expect(result).toHaveLength(1);
+        const targetHeader = ENCODER.encode(`blob ${targetContent.length}\0`);
+        const targetRaw = new Uint8Array(targetHeader.length + targetContent.length);
+        targetRaw.set(targetHeader, 0);
+        targetRaw.set(targetContent, targetHeader.length);
+        const expectedId = await ctx.hash.hashHex(targetRaw);
+        expect(result[0]?.id).toBe(expectedId);
+      });
+    });
+
+    describe('When walkPackEntries is called with a resolver that returns undefined', () => {
+      it('Then still throws INVALID_PACK_HEADER because the base is unresolvable', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, baseId } = await buildThinPack(ctx);
+
+        const sut: ExternalBaseResolver = async (_oid) => undefined;
+
+        // Act
+        let caught: unknown;
+        try {
+          await walkPackEntries(ctx, packBytes, sut);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const tsErr = caught as TsgitError;
+        expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
+        expect((tsErr.data as { reason: string }).reason).toContain(baseId);
       });
     });
   });

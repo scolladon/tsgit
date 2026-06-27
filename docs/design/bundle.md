@@ -320,6 +320,20 @@ with what git's verify exercises. The refs/prerequisites the structured result
 reports still come from the **header**; the pack parse is the well-formedness
 gate, not the source of the reported data.
 
+**Thin-pack completion.** `git bundle create` with a range (incremental bundle)
+produces a **thin pack**: REF_DELTA entries whose base objects live outside the
+pack body, in the prerequisite commits. `walkPackEntries` accepts an optional
+`ExternalBaseResolver` callback; when a REF_DELTA base is absent from the pack,
+the callback is invoked to supply the base from the repository object store and
+the delta is applied normally. A base that is absent from both the pack and the
+resolver causes verify to fail (genuinely corrupt). `verify` enforces the
+following order: check prerequisite presence **first** (the existing CQS query);
+when any prerequisite is missing, return `prerequisitesPresent: false`
+immediately — completion is impossible and git's own verify also refuses at that
+point. When all prerequisites are present the full pack parse runs with the
+resolver backed by `readObject`. Non-thin callers (`fetchPack`, complete-history
+bundles) pass no resolver, so their behaviour is byte-identical to before.
+
 Refusals (the open/read refusals are now **owned by the library** — ADR-428):
 
 | Trigger | git stderr | exit | tsgit owner |

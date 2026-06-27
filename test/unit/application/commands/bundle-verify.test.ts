@@ -8,11 +8,13 @@ import {
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import { parseBundleHeader } from '../../../../src/domain/bundle/index.js';
+import { parseBundleHeader, serializeBundleHeader } from '../../../../src/domain/bundle/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { RefName } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
+import { buildSyntheticPack, type EntrySpec } from '../primitives/pack-fixture.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // System under test
@@ -371,6 +373,96 @@ describe('bundleVerify', () => {
         expect(tsErr.data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
         expect((tsErr.data as { version: number }).version).toBe(3);
         expect((tsErr.data as { path: string }).path).toBe(V3_PATH);
+      });
+    });
+  });
+
+  // ── thin-pack completion ──────────────────────────────────────────────────
+
+  describe('Given a bundle whose pack contains a REF_DELTA against a prerequisite blob', () => {
+    const buildThinBundle = async (ctx: Context, prereqOid: ObjectId): Promise<Uint8Array> => {
+      const baseContent = enc.encode('base blob from prereq commit');
+      const baseHeader = enc.encode(`blob ${baseContent.length}\0`);
+      const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+      baseRaw.set(baseHeader, 0);
+      baseRaw.set(baseContent, baseHeader.length);
+      const baseId = await ctx.hash.hashHex(baseRaw);
+
+      const targetContent = enc.encode('derived blob content');
+      const targetHeader = enc.encode(`blob ${targetContent.length}\0`);
+      const targetRaw = new Uint8Array(targetHeader.length + targetContent.length);
+      targetRaw.set(targetHeader, 0);
+      targetRaw.set(targetContent, targetHeader.length);
+      const targetId = await ctx.hash.hashHex(targetRaw);
+
+      const { packBytes } = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent,
+        } as EntrySpec,
+      ]);
+
+      const headerBytes = serializeBundleHeader({
+        version: 2,
+        prerequisites: [{ oid: prereqOid, comment: 'test prereq' }],
+        refs: [{ oid: targetId as ObjectId, name: 'refs/heads/main' as RefName }],
+      });
+
+      const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+      bundleBytes.set(headerBytes, 0);
+      bundleBytes.set(packBytes, headerBytes.length);
+      return bundleBytes;
+    };
+
+    describe('When bundleVerify is called in a repo where the prerequisite blob is present', () => {
+      it('Then prerequisitesPresent is true and verify completes without error', async () => {
+        // Arrange
+        const ctx = await initRepo();
+        // Write the base blob into the repo so the external resolver can find it
+        const baseContent = enc.encode('base blob from prereq commit');
+        const prereqOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: baseContent,
+        });
+        const bundleBytes = await buildThinBundle(ctx, prereqOid);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act
+        const result: BundleVerifyResult = await sut(ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.prerequisitesPresent).toBe(true);
+        expect(result.missingPrerequisites).toEqual([]);
+        expect(result.recordsCompleteHistory).toBe(false);
+      });
+    });
+
+    describe('When bundleVerify is called in a repo where the prerequisite is absent', () => {
+      it('Then prerequisitesPresent is false and no error is thrown (no pack walk attempted)', async () => {
+        // Arrange
+        const sourceCtx = await initRepo();
+        const baseContent = enc.encode('base blob from prereq commit');
+        const prereqOid = await writeObject(sourceCtx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: baseContent,
+        });
+        const bundleBytes = await buildThinBundle(sourceCtx, prereqOid);
+
+        // Fresh repo — prereq absent
+        const emptyCtx = await initRepo();
+        await emptyCtx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act — must NOT throw even though the pack is thin and would fail without resolver
+        const result: BundleVerifyResult = await sut(emptyCtx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.prerequisitesPresent).toBe(false);
+        expect(result.missingPrerequisites).toContain(prereqOid);
+        expect(result.missingPrerequisites).toHaveLength(1);
       });
     });
   });

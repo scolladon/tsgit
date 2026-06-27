@@ -37,6 +37,18 @@ import type { Context } from '../../ports/context.js';
 import type { HttpTransport } from '../../ports/http-transport.js';
 import { refreshPackRegistry } from './read-object.js';
 
+/**
+ * Resolves an object referenced by a REF_DELTA whose base is absent from the
+ * pack being walked. Used by `bundle verify` to complete thin packs against
+ * the local object store. Return `undefined` when the base is not available;
+ * the caller will treat the delta as unresolvable.
+ */
+export type ExternalBaseResolver = (
+  baseOid: ObjectId,
+) => Promise<
+  { readonly type: 'commit' | 'tree' | 'blob' | 'tag'; readonly content: Uint8Array } | undefined
+>;
+
 const TEXT_ENCODER = new TextEncoder();
 const PACK_HEADER_BYTES = 12;
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
@@ -301,9 +313,10 @@ interface ResolvedEntry {
 export const walkPackEntries = async (
   ctx: Context,
   packBytes: Uint8Array,
+  externalBaseResolver?: ExternalBaseResolver,
 ): Promise<ReadonlyArray<WalkedEntry>> => {
   const pending = await inflateAllEntries(ctx, packBytes);
-  const resolved = await resolveAllEntries(ctx, pending);
+  const resolved = await resolveAllEntries(ctx, pending, externalBaseResolver);
   // The sort below only orders the WalkedEntry array; nothing observable
   // depends on that order — `objectCount` reads `.length`, and `buildIdx`
   // feeds `serializePackIndex`, which re-sorts entries by SHA before writing.
@@ -357,6 +370,7 @@ const inflateAllEntries = async (
 const resolveAllEntries = async (
   ctx: Context,
   pending: ReadonlyArray<PendingEntry>,
+  externalBaseResolver?: ExternalBaseResolver,
 ): Promise<ReadonlyArray<ResolvedEntry>> => {
   const byOffset = new Map<number, ResolvedEntry>();
   const byId = new Map<string, ResolvedEntry>();
@@ -365,7 +379,7 @@ const resolveAllEntries = async (
     const next: PendingEntry[] = [];
     let progress = false;
     for (const entry of unresolved) {
-      const resolved = await tryResolveEntry(ctx, entry, byOffset, byId);
+      const resolved = await tryResolveEntry(ctx, entry, byOffset, byId, externalBaseResolver);
       if (resolved === undefined) {
         next.push(entry);
       } else {
@@ -409,6 +423,7 @@ const tryResolveEntry = async (
   entry: PendingEntry,
   byOffset: ReadonlyMap<number, ResolvedEntry>,
   byId: ReadonlyMap<string, ResolvedEntry>,
+  externalBaseResolver?: ExternalBaseResolver,
 ): Promise<ResolvedEntry | undefined> => {
   if (isBaseHeader(entry.header)) {
     const type = baseTypeName(entry.header.type);
@@ -426,10 +441,20 @@ const tryResolveEntry = async (
     if (base === undefined) return undefined;
     return resolveDelta(ctx, entry, base);
   }
-  // REF_DELTA — discriminated by the header.type union narrowing above.
-  const refBase = byId.get(entry.header.baseId);
-  if (refBase === undefined) return undefined;
-  return resolveDelta(ctx, entry, refBase);
+  // REF_DELTA — base may be in-pack or supplied by an external resolver.
+  const packBase = byId.get(entry.header.baseId);
+  if (packBase !== undefined) return resolveDelta(ctx, entry, packBase);
+  if (externalBaseResolver === undefined) return undefined;
+  const external = await externalBaseResolver(entry.header.baseId as ObjectId);
+  if (external === undefined) return undefined;
+  const syntheticBase: ResolvedEntry = {
+    id: entry.header.baseId,
+    type: external.type,
+    content: external.content,
+    crc32: 0,
+    offset: 0,
+  };
+  return resolveDelta(ctx, entry, syntheticBase);
 };
 
 const resolveDelta = async (
