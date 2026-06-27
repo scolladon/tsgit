@@ -7,16 +7,17 @@ import {
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type {
-  AuthorIdentity,
-  Blob,
-  FileMode,
-  ObjectId,
-  Tag,
-  TreeEntry,
+import {
+  type AuthorIdentity,
+  type Blob,
+  FILE_MODE,
+  type FileMode,
+  type ObjectId,
+  type Tag,
+  type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Test',
@@ -328,6 +329,43 @@ describe('enumerateBundleObjects', () => {
           expect(error).toBeInstanceOf(TsgitError);
           expect((error as TsgitError).data.code).toBe('PACK_TOO_LARGE');
         }
+      });
+    });
+  });
+
+  describe('Given two commits whose trees each contain the same shared subtree id', () => {
+    describe('When enumerateBundleObjects is called with wants=[commitB] haves=[]', () => {
+      it('Then the shared subtree object is read from the object store exactly once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const blobX = await makeBlob(base, 'X');
+        const sharedTree = await makeTree(base, [{ mode: BLOB_MODE, name: 'x.txt', id: blobX }]);
+        const blobA = await makeBlob(base, 'A');
+        const blobB = await makeBlob(base, 'B');
+        const treeA = await makeTree(base, [
+          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
+          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+        ]);
+        const treeB = await makeTree(base, [
+          { mode: BLOB_MODE, name: 'b.txt', id: blobB },
+          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+        ]);
+        const commitA = await makeCommit(base, treeA, [], 'A', 1);
+        const commitB = await makeCommit(base, treeB, [commitA], 'B', 2);
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commitB], haves: [] });
+
+        // Assert — object set is correct
+        expect(result.objects).toContain(sharedTree);
+        // Assert — shared subtree was read from disk exactly once (not once per commit)
+        const sharedPath = `${ctx.layout.gitDir}/objects/${sharedTree.slice(0, 2)}/${sharedTree.slice(2)}`;
+        const sharedReadCount = calls().filter(
+          (c) => c.method === 'read' && c.path === sharedPath,
+        ).length;
+        expect(sharedReadCount).toBe(1);
       });
     });
   });

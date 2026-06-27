@@ -574,4 +574,81 @@ describe('bundleVerify', () => {
       });
     });
   });
+
+  // ── memoized external-base resolver ────────────────────────────────────────
+
+  describe('Given a bundle with two REF_DELTA entries sharing the same external base blob', () => {
+    const buildTwoRefDeltaBundle = async (
+      ctx: Context,
+      prereqOid: ObjectId,
+      baseContent: Uint8Array,
+    ): Promise<Uint8Array> => {
+      const target1Content = enc.encode('derived 1');
+      const target2Content = enc.encode('derived 2');
+      const { packBytes, ids } = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId: prereqOid as string,
+          baseUncompressed: baseContent,
+          targetContent: target1Content,
+        },
+        {
+          kind: 'ref-delta',
+          baseId: prereqOid as string,
+          baseUncompressed: baseContent,
+          targetContent: target2Content,
+        },
+      ]);
+      const refs = ids.map((id, i) => ({
+        oid: id as ObjectId,
+        name: `refs/heads/branch${i + 1}` as RefName,
+      }));
+      const headerBytes = serializeBundleHeader({
+        version: 2,
+        prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
+        refs,
+      });
+      const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+      bundleBytes.set(headerBytes, 0);
+      bundleBytes.set(packBytes, headerBytes.length);
+      return bundleBytes;
+    };
+
+    describe('When bundleVerify is called in a repo where the base object is present', () => {
+      it('Then the external base object is read from the object store exactly twice — prereq check plus one memoized resolver lookup', async () => {
+        // Arrange
+        const ctx = await initRepo();
+        const baseContent = enc.encode('shared external base blob');
+        const prereqOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: baseContent,
+        });
+        const bundleBytes = await buildTwoRefDeltaBundle(ctx, prereqOid, baseContent);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        let baseReadCount = 0;
+        const baseLoosePath = `${ctx.layout.gitDir}/objects/${prereqOid.slice(0, 2)}/${prereqOid.slice(2)}`;
+        const spyCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (p: string): Promise<Uint8Array> => {
+              if (p === baseLoosePath) baseReadCount += 1;
+              return ctx.fs.read(p);
+            },
+          },
+        };
+
+        // Act
+        const result = await sut(spyCtx, { path: BUNDLE_PATH });
+
+        // Assert — verify succeeds with both prerequisites present
+        expect(result.prerequisitesPresent).toBe(true);
+        // Assert — base is read twice: once by the prereq check, once by the memoized
+        // resolver (second REF_DELTA entry hits cache — no extra read)
+        expect(baseReadCount).toBe(2);
+      });
+    });
+  });
 });

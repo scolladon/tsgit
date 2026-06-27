@@ -63,19 +63,27 @@ const buildResult = (
   recordsCompleteHistory: header.prerequisites.length === 0,
 });
 
-const buildExternalBaseResolver =
-  (ctx: Context): ExternalBaseResolver =>
-  async (baseOid: ObjectId) => {
-    try {
-      const obj = await readObject(ctx, baseOid);
-      const raw = serializeObject(obj, ctx.hashConfig);
-      const { contentOffset } = parseHeader(raw);
-      return { type: obj.type, content: raw.subarray(contentOffset) };
-    } catch (err) {
-      if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return undefined;
-      throw err;
-    }
+const resolveExternalBase = async (ctx: Context, baseOid: ObjectId) => {
+  try {
+    const obj = await readObject(ctx, baseOid);
+    const raw = serializeObject(obj, ctx.hashConfig);
+    const { contentOffset } = parseHeader(raw);
+    return { type: obj.type, content: raw.subarray(contentOffset) };
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return undefined;
+    throw err;
+  }
+};
+
+const buildExternalBaseResolver = (ctx: Context): ExternalBaseResolver => {
+  const cache = new Map<ObjectId, Awaited<ReturnType<ExternalBaseResolver>>>();
+  return async (baseOid: ObjectId) => {
+    if (cache.has(baseOid)) return cache.get(baseOid);
+    const resolved = await resolveExternalBase(ctx, baseOid);
+    cache.set(baseOid, resolved);
+    return resolved;
   };
+};
 
 const findMissingPrerequisites = async (
   ctx: Context,

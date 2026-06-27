@@ -17,15 +17,19 @@
  * boundary case: passing `haves` directly as the stop frontier would miss
  * ancestors of the exclude tips that are direct parents of interesting
  * commits, yielding an incorrect boundary set.
+ *
+ * A shared `seenTrees` Set is threaded across both phases so that any
+ * subtree already fully traversed is not re-read. This prunes O(commits ×
+ * shared-subtrees) re-reads down to O(unique-trees) — critical for
+ * incremental bundles where near-root subtrees appear in every commit.
  */
 import { TsgitError } from '../../domain/error.js';
-import type { ObjectId } from '../../domain/objects/index.js';
+import { type FileMode, isDirectory, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
 import { isGitlink } from './validators.js';
 import { walkCommits } from './walk-commits.js';
-import { walkTree } from './walk-tree.js';
 
 export interface EnumerateBundleObjectsInput {
   /** Positive endpoint oids — commits or annotated tags. */
@@ -70,9 +74,60 @@ const tryEmit = (state: EmitState, id: ObjectId): void => {
   state.emitted.add(id);
 };
 
+// Walk a tree recursively, collecting all non-gitlink object ids into
+// `objects`. Subtrees already in `seenTrees` are skipped — their objects are
+// already collected, so descending again would be redundant.
+const collectTreeObjects = async (
+  ctx: Context,
+  treeId: ObjectId,
+  objects: Set<ObjectId>,
+  seenTrees: Set<ObjectId>,
+): Promise<void> => {
+  if (seenTrees.has(treeId)) return;
+  seenTrees.add(treeId);
+  objects.add(treeId);
+  const treeObj = await readObject(ctx, treeId);
+  if (treeObj.type !== 'tree') return;
+  for (const entry of treeObj.entries) {
+    if (isGitlink(entry.mode)) continue;
+    if (!isDirectory(entry.mode as FileMode)) {
+      objects.add(entry.id);
+      continue;
+    }
+    await collectTreeObjects(ctx, entry.id, objects, seenTrees);
+  }
+};
+
+// Walk a tree recursively, emitting non-gitlink objects absent from
+// `uninteresting`. Subtrees already in `seenTrees` are skipped — either all
+// their objects are already in `uninteresting` (nothing to emit) or they were
+// already emitted during an earlier commit's walk.
+const emitTreeObjects = async (
+  ctx: Context,
+  treeId: ObjectId,
+  uninteresting: Set<ObjectId>,
+  state: EmitState,
+  seenTrees: Set<ObjectId>,
+): Promise<void> => {
+  if (seenTrees.has(treeId)) return;
+  seenTrees.add(treeId);
+  if (!uninteresting.has(treeId)) tryEmit(state, treeId);
+  const treeObj = await readObject(ctx, treeId);
+  if (treeObj.type !== 'tree') return;
+  for (const entry of treeObj.entries) {
+    if (isGitlink(entry.mode)) continue;
+    if (isDirectory(entry.mode as FileMode)) {
+      await emitTreeObjects(ctx, entry.id, uninteresting, state, seenTrees);
+      continue;
+    }
+    if (!uninteresting.has(entry.id)) tryEmit(state, entry.id);
+  }
+};
+
 const collectUninteresting = async (
   ctx: Context,
   haves: ReadonlyArray<ObjectId>,
+  seenTrees: Set<ObjectId>,
 ): Promise<UninterestingClosure> => {
   const commits = new Set<ObjectId>();
   const objects = new Set<ObjectId>();
@@ -80,10 +135,7 @@ const collectUninteresting = async (
   for await (const commit of walkCommits(ctx, { from: haves, ignoreMissing: true })) {
     commits.add(commit.id);
     objects.add(commit.id);
-    objects.add(commit.data.tree);
-    for await (const entry of walkTree(ctx, commit.data.tree, { recursive: true })) {
-      if (!isGitlink(entry.mode)) objects.add(entry.id);
-    }
+    await collectTreeObjects(ctx, commit.data.tree, objects, seenTrees);
   }
   return { commits, objects };
 };
@@ -104,6 +156,7 @@ const walkInteresting = async (
   seeds: ReadonlyArray<ObjectId>,
   uninteresting: UninterestingClosure,
   state: EmitState,
+  seenTrees: Set<ObjectId>,
 ): Promise<void> => {
   for await (const commit of walkCommits(ctx, {
     from: seeds,
@@ -111,11 +164,7 @@ const walkInteresting = async (
     ignoreMissing: true,
   })) {
     tryEmit(state, commit.id);
-    if (!uninteresting.objects.has(commit.data.tree)) tryEmit(state, commit.data.tree);
-    for await (const entry of walkTree(ctx, commit.data.tree, { recursive: true })) {
-      if (isGitlink(entry.mode) || uninteresting.objects.has(entry.id)) continue;
-      tryEmit(state, entry.id);
-    }
+    await emitTreeObjects(ctx, commit.data.tree, uninteresting.objects, state, seenTrees);
     for (const parent of commit.data.parents) {
       if (uninteresting.commits.has(parent)) state.boundary.add(parent);
     }
@@ -132,11 +181,12 @@ export const enumerateBundleObjects = async (
     boundary: new Set<ObjectId>(),
     cap: input.maxObjects ?? MAX_PUSH_OBJECTS,
   };
-  const uninteresting = await collectUninteresting(ctx, input.haves);
+  const seenTrees = new Set<ObjectId>();
+  const uninteresting = await collectUninteresting(ctx, input.haves, seenTrees);
   const seeds: ObjectId[] = [];
   for (const want of input.wants) {
     seeds.push(await resolveTagChain(ctx, want, state));
   }
-  await walkInteresting(ctx, seeds, uninteresting, state);
+  await walkInteresting(ctx, seeds, uninteresting, state, seenTrees);
   return { objects: [...state.emitted], boundary: [...state.boundary] };
 };
