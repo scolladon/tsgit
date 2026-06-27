@@ -9,6 +9,14 @@ export {
 } from './application/primitives/snapshot/join.js';
 export { requireSnapshot } from './application/primitives/snapshot/require-snapshot.js';
 export * from './application/primitives/snapshot-operators/index.js';
+export type { ArchiveEntry, ArchiveResult } from './domain/archive/index.js';
+export {
+  type TarOptions,
+  tarArchive,
+  type ZipDeps,
+  type ZipOptions,
+  zipArchive,
+} from './domain/archive/index.js';
 export { createContext } from './ports/context.js';
 export { noopLogger, wrapLoggerSanitizer } from './ports/logger.js';
 export { consoleProgress, noopProgress, type ProgressReporter } from './progress.js';

@@ -199,6 +199,7 @@ describe('openRepository — Repository binding integrity', () => {
         expect(Object.keys(sut).sort()).toEqual(
           [
             'add',
+            'archive',
             'blame',
             'branch',
             'catFile',

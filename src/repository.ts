@@ -168,6 +168,7 @@ export interface RuntimeFallback {
 export interface Repository {
   // Tier-1 commands — bound to ctx.
   readonly add: BindCtx<typeof commands.add>;
+  readonly archive: BindCtx<typeof commands.archive>;
   readonly blame: BindCtx<typeof commands.blame>;
   /** Nested `repo.branch.{list,create,delete,rename}` namespace. */
   readonly branch: commands.BranchNamespace;
@@ -457,6 +458,10 @@ export const openRepository = async (
       guard();
       return commands.add(ctx, paths, addOpts);
     }) as Repository['add'],
+    archive: ((archiveOpts) => {
+      guard();
+      return commands.archive(ctx, archiveOpts);
+    }) as Repository['archive'],
     blame: ((blamePath, blameOpts) => {
       guard();
       return commands.blame(ctx, blamePath, blameOpts);

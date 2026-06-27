@@ -294,6 +294,78 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given invalid input (not a Uint8Array) to deflateRaw', () => {
+      describe('When deflateRaw', () => {
+        it('Then throws COMPRESS_FAILED', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const bogus = 42 as unknown as Uint8Array;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.deflateRaw(bogus);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('COMPRESS_FAILED');
+        });
+      });
+    });
+
+    describe('Given data and an explicit level', () => {
+      describe('When deflateRaw with level=1', () => {
+        it('Then the level arm executes and output round-trips via raw-inflate', async () => {
+          // Arrange — exercises the `deflateRawSync(data, { level })` arm of the ternary.
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello deflateRaw with level');
+          const { inflateRawSync } = await import('node:zlib');
+
+          // Act
+          const result = await sut.deflateRaw(data, 1);
+
+          // Assert — verify round-trip via Node's inflateRawSync (test-side only)
+          expect(new Uint8Array(inflateRawSync(result))).toEqual(data);
+        });
+      });
+
+      describe('When deflateRaw with level=0 (raw stored-block format)', () => {
+        it('Then the first byte is 0x01 — BFINAL=1 BTYPE=00 raw stored block', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello');
+
+          // Act
+          const result = await sut.deflateRaw(data, 0);
+
+          // Assert — raw deflate level=0 uses stored blocks; first byte is BFINAL=1|BTYPE=00 = 0x01.
+          // Mutants that ignore `level` (true?, !==undefined, {}) default to Node level ≥ 1 and
+          // produce a first byte other than 0x01.
+          expect(result[0]).toBe(0x01);
+        });
+      });
+    });
+
+    describe('Given data with no level argument', () => {
+      describe('When deflateRaw', () => {
+        it('Then the no-level arm executes and output round-trips via raw-inflate', async () => {
+          // Arrange — exercises the `deflateRawSync(data)` arm of the ternary.
+          const sut = new NodeCompressor();
+          const data = new TextEncoder().encode('hello deflateRaw no level');
+          const { inflateRawSync } = await import('node:zlib');
+
+          // Act
+          const result = await sut.deflateRaw(data);
+
+          // Assert — verify round-trip
+          expect(new Uint8Array(inflateRawSync(result))).toEqual(data);
+        });
+      });
+    });
+
     describe('Given deflate with an explicit compression level', () => {
       describe('When level=9 (maximum compression)', () => {
         it('Then the output starts with zlib header 0x78 0xda', async () => {

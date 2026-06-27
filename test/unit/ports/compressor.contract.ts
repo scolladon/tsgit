@@ -98,5 +98,66 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       }
       expect(result).toEqual(data);
     });
+
+    it('Given data, When deflateRaw then raw-inflate, Then roundtrips (hello world)', async () => {
+      // Arrange
+      const sut = await createSut();
+      const data = new TextEncoder().encode('hello world');
+
+      // Act
+      const compressed = await sut.deflateRaw(data);
+      const result = await rawInflate(compressed);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given empty data, When deflateRaw then raw-inflate, Then roundtrips', async () => {
+      // Arrange
+      const sut = await createSut();
+      const data = new Uint8Array(0);
+
+      // Act
+      const compressed = await sut.deflateRaw(data);
+      const result = await rawInflate(compressed);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given large data (64KB), When deflateRaw then raw-inflate, Then roundtrips', async () => {
+      // Arrange
+      const sut = await createSut();
+      const data = new Uint8Array(64 * 1024);
+      for (let i = 0; i < data.length; i++) data[i] = i % 256;
+
+      // Act
+      const compressed = await sut.deflateRaw(data);
+      const result = await rawInflate(compressed);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given non-empty data, When deflateRaw vs deflate, Then outputs differ (no zlib wrapper)', async () => {
+      // Arrange — kills a mutant aliasing deflateRaw to deflate: deflate wraps with
+      // a 2-byte zlib header (0x78…) and a 4-byte adler32 trailer; deflateRaw omits both.
+      const sut = await createSut();
+      const data = new TextEncoder().encode('hello world');
+
+      // Act
+      const raw = await sut.deflateRaw(data);
+      const zlib = await sut.deflate(data);
+
+      // Assert
+      expect(raw).not.toEqual(zlib);
+    });
   });
+}
+
+async function rawInflate(data: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([data as BlobPart])
+    .stream()
+    .pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }

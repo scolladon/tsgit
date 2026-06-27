@@ -3,6 +3,13 @@ import { MemoryCompressor } from '../../../../src/adapters/memory/memory-compres
 import { TsgitError } from '../../../../src/domain/index.js';
 import { compressorContractTests } from '../../ports/compressor.contract.js';
 
+async function rawInflate(data: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([data as BlobPart])
+    .stream()
+    .pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 describe('MemoryCompressor', () => {
   compressorContractTests(async () => new MemoryCompressor());
 
@@ -184,6 +191,57 @@ describe('MemoryCompressor', () => {
           const inflatedWith = await sut.inflate(withLevel);
           expect(inflatedWith).toEqual(data);
           expect(withLevel).toEqual(withoutLevel);
+        });
+      });
+    });
+
+    describe('Given deflateRaw called with an explicit level', () => {
+      describe('When level=9 is passed', () => {
+        it('Then output round-trips via raw-inflate and equals deflateRaw with no level (level ignored)', async () => {
+          // Arrange — Web CompressionStream has no level param; accepted to satisfy the
+          // port, silently ignored (same precedent as deflate).
+          const sut = new MemoryCompressor();
+          const data = new TextEncoder().encode('memory deflateRaw ignores level');
+
+          // Act
+          const withLevel = await sut.deflateRaw(data, 9);
+          const withoutLevel = await sut.deflateRaw(data);
+
+          // Assert — both round-trip to original via raw inflate; output is identical
+          const inflatedWith = await rawInflate(withLevel);
+          expect(inflatedWith).toEqual(data);
+          expect(withLevel).toEqual(withoutLevel);
+        });
+      });
+    });
+
+    describe('Given CompressionStream constructor throws during deflateRaw', () => {
+      describe('When deflateRaw', () => {
+        it('Then rethrows as COMPRESS_FAILED', async () => {
+          // Arrange — build the compressor with real globals, then swap the constructor to a throwing one.
+          const sut = new MemoryCompressor();
+          class ThrowingCompressionStream {
+            constructor() {
+              throw new Error('boom from deflateRaw stream');
+            }
+          }
+          globals.CompressionStream = ThrowingCompressionStream;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.deflateRaw(new Uint8Array([1, 2, 3]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('COMPRESS_FAILED');
+          if (data.code === 'COMPRESS_FAILED') {
+            expect(data.reason).toContain('boom from deflateRaw stream');
+          }
         });
       });
     });

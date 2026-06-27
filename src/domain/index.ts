@@ -1,3 +1,4 @@
+export * from './archive/index.js';
 export * from './commands/index.js';
 export * from './diff/index.js';
 export type { AdapterError, ApplicationError, TsgitErrorData } from './error.js';
