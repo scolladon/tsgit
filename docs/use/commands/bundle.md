@@ -8,7 +8,7 @@ equivalent of `git bundle`. Exposed as a nested namespace: `repo.bundle.create`,
 metadata; the caller writes those bytes wherever it likes (no path argument).
 `verify` and `listHeads` are consumers — they take a `{ path }` and the library
 opens the file itself through `ctx.fs`. This split mirrors the `archive`
-producer-returns-bytes convention (ADR-422, ADR-428).
+producer-returns-bytes convention.
 
 ## Signature
 
@@ -48,7 +48,7 @@ interface BundleRef {
 
 interface BundlePrerequisite {
   readonly oid:     ObjectId;
-  readonly comment: string;  // first subject line of the boundary commit
+  readonly comment: string;  // boundary commit's git subject (first paragraph, whitespace-folded)
 }
 
 // --- verify ---
@@ -110,10 +110,14 @@ to a named ref — `create` throws `BUNDLE_EMPTY` `reason: 'no-refs'` otherwise
 |---|---|---|---|
 | `path` | `string` | (required) | Filesystem path to the `.bundle` file. |
 
-Reads the bundle header **and** performs a full embedded-pack parse (inflate
-every entry + verify the pack trailer). Missing prerequisites are surfaced in
-`missingPrerequisites` — this is not a thrown error (use `prerequisitesPresent`
-to gate an unbundle).
+Checks prerequisite presence first. When any prerequisite is absent the command
+returns immediately with `prerequisitesPresent: false` — the full pack parse is
+skipped. When all prerequisites are present, performs a full embedded-pack parse
+(inflate every entry + verify the pack trailer). For incremental bundles
+(git-produced range bundles), the pack parse resolves thin-pack REF_DELTA entries
+whose base objects live in the prerequisite commits via the repository object
+store. Use `prerequisitesPresent` to gate an unbundle; missing prerequisites are
+data in the result, not a thrown error.
 
 ### `listHeads`
 
@@ -139,9 +143,13 @@ do not.
 - **Object closure.** `create` excludes every object reachable from prerequisites.
   A `{ range: ['A', 'B'] }` bundle excludes A's blobs and trees; only B's new
   objects are packed.
-- **`verify` is a read-only query (ADR-425/CQS).** It does not import objects
-  into the repository. Use `missingPrerequisites` to decide whether the bundle
-  can be applied.
+- **`verify` is a read-only query.** It does not import objects into the
+  repository. Use `missingPrerequisites` to decide whether the bundle can be
+  applied.
+- **Ref deduplication in `create`.** When multiple inputs resolve to the same
+  ref name (e.g. a named `{ tip }` and `--branches` both resolve to the same
+  ref), the first occurrence is kept and later duplicates are dropped. The
+  `refs` field in `BundleCreateResult` reflects the deduplicated list.
 - **`create` returns bytes, not a path.** Write them wherever the caller prefers:
 
   ```ts
@@ -209,7 +217,10 @@ const filtered = await repo.bundle.listHeads({
 - `BUNDLE_READ_FAILED` — the file cannot be opened or read (missing or unreadable).
 - `BUNDLE_BAD_HEADER` — the file does not look like a v2 or v3 bundle (not a
   bundle file, or a directory path).
-- `BUNDLE_UNSUPPORTED_VERSION` — the file is a v3 bundle (not yet supported).
+- `BUNDLE_UNSUPPORTED_VERSION` — the file has a `# v3 git bundle` magic line.
+  This is a deliberate divergence from git: git 2.54.0 reads a forced
+  `# v3 git bundle`/sha1 file without error; tsgit refuses because it has no
+  faithful v3 producer and tsgit is SHA-1 only.
 - `INVALID_PACK_*` / `INVALID_DELTA` — (verify only) the embedded packfile is
   corrupt; thrown when a pack entry fails to inflate or the trailer is bad.
 
