@@ -259,7 +259,7 @@ const buildUploadPackUrl = (baseUrl: string): string => {
 const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
   caps.some((c) => SIDE_BAND_CAPS.has(c));
 
-const verifyPackTrailer = async (packBytes: Uint8Array, ctx: Context): Promise<string> => {
+export const verifyPackTrailer = async (packBytes: Uint8Array, ctx: Context): Promise<string> => {
   const trailerLen = ctx.hash.digestLength;
   if (packBytes.length < PACK_HEADER_BYTES + trailerLen) {
     throw invalidPackHeader('trailer mismatch: pack too short for header + trailer');
@@ -298,7 +298,7 @@ interface ResolvedEntry {
   readonly offset: number;
 }
 
-const walkPackEntries = async (
+export const walkPackEntries = async (
   ctx: Context,
   packBytes: Uint8Array,
 ): Promise<ReadonlyArray<WalkedEntry>> => {
