@@ -35,3 +35,12 @@ what git's verify exercises, rather than trusting the bytes after a trailer chec
   entry surfaces as a verify failure, not a silently-passing trailer.
 - The cost is a full-pack inflate per `verify`; acceptable for a verification operation and
   consistent with git's own behaviour.
+- **Thin packs (incremental bundles):** git emits a *thin* pack for a bundle with
+  prerequisites (`A..B`) — its deltas reference prerequisite objects that live outside the
+  pack. A faithful full parse must therefore *complete* the thin pack by resolving those
+  external delta bases from the current repository, exactly as git's own verify does (which
+  is why git requires the prerequisites to be present before it will verify). `verify`
+  checks prerequisite presence first; when present, the pack walk resolves an absent delta
+  base from the repo object store and continues. tsgit's own `create` emits a non-delta
+  (non-thin) pack, so this path is exercised only by externally-produced incremental
+  bundles — but supporting it is what makes `verify` faithful for git-created bundles.
