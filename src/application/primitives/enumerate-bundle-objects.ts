@@ -23,13 +23,18 @@
  * shared-subtrees) re-reads down to O(unique-trees) — critical for
  * incremental bundles where near-root subtrees appear in every commit.
  */
-import { TsgitError } from '../../domain/error.js';
+import { operationAborted, TsgitError } from '../../domain/error.js';
+import { treeDepthExceeded } from '../../domain/objects/error.js';
 import { type FileMode, isDirectory, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
 import { isGitlink } from './validators.js';
 import { walkCommits } from './walk-commits.js';
+
+// Same bound as walk-tree.ts's default maxDepth — prevents stack overflow on
+// pathologically deep tree structures.
+const MAX_TREE_DEPTH = 1024;
 
 export interface EnumerateBundleObjectsInput {
   /** Positive endpoint oids — commits or annotated tags. */
@@ -77,14 +82,21 @@ const tryEmit = (state: EmitState, id: ObjectId): void => {
 // Walk a tree recursively, collecting all non-gitlink object ids into
 // `objects`. Subtrees already in `seenTrees` are skipped — their objects are
 // already collected, so descending again would be redundant.
+//
+// No per-walk flat-entry cap is applied here: this is a prepass over LOCAL
+// repo objects on the create path, and the PACK_TOO_LARGE guard in tryEmit
+// already bounds the total number of emitted (interesting) objects.
 const collectTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,
   objects: Set<ObjectId>,
   seenTrees: Set<ObjectId>,
+  depth = 0,
 ): Promise<void> => {
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
+  if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  if (ctx.signal?.aborted) throw operationAborted();
   objects.add(treeId);
   const treeObj = await readObject(ctx, treeId);
   if (treeObj.type !== 'tree') return;
@@ -94,7 +106,7 @@ const collectTreeObjects = async (
       objects.add(entry.id);
       continue;
     }
-    await collectTreeObjects(ctx, entry.id, objects, seenTrees);
+    await collectTreeObjects(ctx, entry.id, objects, seenTrees, depth + 1);
   }
 };
 
@@ -108,16 +120,19 @@ const emitTreeObjects = async (
   uninteresting: Set<ObjectId>,
   state: EmitState,
   seenTrees: Set<ObjectId>,
+  depth = 0,
 ): Promise<void> => {
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
+  if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  if (ctx.signal?.aborted) throw operationAborted();
   if (!uninteresting.has(treeId)) tryEmit(state, treeId);
   const treeObj = await readObject(ctx, treeId);
   if (treeObj.type !== 'tree') return;
   for (const entry of treeObj.entries) {
     if (isGitlink(entry.mode)) continue;
     if (isDirectory(entry.mode as FileMode)) {
-      await emitTreeObjects(ctx, entry.id, uninteresting, state, seenTrees);
+      await emitTreeObjects(ctx, entry.id, uninteresting, state, seenTrees, depth + 1);
       continue;
     }
     if (!uninteresting.has(entry.id)) tryEmit(state, entry.id);

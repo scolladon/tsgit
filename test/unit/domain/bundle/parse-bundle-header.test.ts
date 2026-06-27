@@ -318,7 +318,7 @@ describe('Given parseBundleHeader', () => {
   });
 
   describe('When given a large payload with v2 magic but no blank-line terminator', () => {
-    it('Then throws malformed-header without needing to decode the full large pack body', () => {
+    it('Then throws BUNDLE_BAD_HEADER on a large no-terminator input', () => {
       // Arrange
       const sut = parseBundleHeader;
       const headerPart = encode(`# v2 git bundle\n${OID_A} refs/heads/main\n`);

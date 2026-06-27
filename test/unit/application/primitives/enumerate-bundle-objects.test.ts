@@ -379,3 +379,79 @@ describe('enumerateBundleObjects', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Safety rails: depth guard and abort signal
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — tree-walk safety rails', () => {
+  describe('Given a commit pointing to a tree nested 1025 levels deep', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED, not a RangeError', async () => {
+        // Arrange — build 1025 wrapper trees around a phantom sub-tree ID.
+        // The phantom is never read from storage; the guard fires before the
+        // readObject call at depth 1025 (> MAX_TREE_DEPTH 1024).
+        const ctx = await buildSeededContext();
+        const PHANTOM_ID = 'a'.repeat(40) as ObjectId;
+        let current: ObjectId = PHANTOM_ID;
+        for (let i = 0; i < 1025; i++) {
+          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
+        }
+        const commit = await makeCommit(ctx, current, [], 'deep', 1);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('TREE_DEPTH_EXCEEDED');
+      });
+    });
+  });
+
+  describe('Given a commit with a two-level tree and a signal aborted while reading the root tree', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then throws OPERATION_ABORTED (per-entry cancellation in the tree walk)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await makeBlob(ctx, 'leaf content');
+        const sub = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: blob }]);
+        const root = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'dir', id: sub }]);
+        const commit = await makeCommit(ctx, root, [], 'root', 1);
+
+        const controller = new AbortController();
+        const rootLoosePath = `${ctx.layout.gitDir}/objects/${root.slice(0, 2)}/${root.slice(2)}`;
+        const spyCtx: Context = {
+          ...ctx,
+          signal: controller.signal,
+          fs: {
+            ...ctx.fs,
+            read: async (p: string): Promise<Uint8Array> => {
+              // Abort on the root-tree read; the next recursion (sub-tree)
+              // will detect ctx.signal.aborted and throw OPERATION_ABORTED.
+              if (p === rootLoosePath) controller.abort();
+              return ctx.fs.read(p);
+            },
+          },
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          await enumerateBundleObjects(spyCtx, { wants: [commit], haves: [] });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+});

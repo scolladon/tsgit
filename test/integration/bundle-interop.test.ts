@@ -658,7 +658,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // ─────────────────────────────────────────────────────────────────────
 
   describe('Given a bundle with a corrupt pack entry byte and a recomputed (valid) SHA-1 trailer', () => {
-    it('Then bundleVerify throws a pack-format error (not a BUNDLE_ code), proving walkPackEntries inflates entries', async () => {
+    it('Then bundleVerify throws DECOMPRESS_FAILED (pack-entry inflate failure)', async () => {
       // Arrange — valid bundle, then flip one byte in pack data and fix the trailer
       const ctx = createNodeContext({ workDir: pair.peer });
       const result = await bundleCreate(ctx, { all: true });

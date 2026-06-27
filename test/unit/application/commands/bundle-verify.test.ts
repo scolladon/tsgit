@@ -208,11 +208,53 @@ describe('bundleVerify', () => {
     });
   });
 
+  // ── isMissingObject: non-OBJECT_NOT_FOUND error → rethrow ────────────────
+
+  describe('Given a range bundle whose prerequisite object exists but is unreadable (PERMISSION_DENIED)', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then rethrows PERMISSION_DENIED (isMissingObject does not swallow non-OBJECT_NOT_FOUND errors)', async () => {
+        // Arrange — build a two-commit repo, create a range bundle so commit1
+        // is a prerequisite, then intercept reads of commit1's loose path.
+        const { ctx, commit1 } = await buildTwoCommitRepo();
+        const createResult = await bundleCreate(ctx, {
+          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+        });
+        await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
+
+        const prereqLoosePath = `${ctx.layout.gitDir}/objects/${commit1.slice(0, 2)}/${commit1.slice(2)}`;
+        const spyCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (p: string): Promise<Uint8Array> => {
+              if (p === prereqLoosePath) {
+                throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+              }
+              return ctx.fs.read(p);
+            },
+          },
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(spyCtx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — isMissingObject rethrows the PERMISSION_DENIED error
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
   // ── full pack parse (corrupt pack) ────────────────────────────────────────
 
   describe('Given bundle bytes with a flipped byte in the pack body', () => {
     describe('When bundleVerify is called', () => {
-      it('Then throws a pack-malformation error that is NOT a BUNDLE_ code', async () => {
+      it('Then throws INVALID_PACK_HEADER (pack-header parse failure)', async () => {
         // Arrange
         const { ctx } = await buildSingleCommitRepo();
         const createResult = await bundleCreate(ctx, { all: true });

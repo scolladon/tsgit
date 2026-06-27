@@ -18,7 +18,7 @@ const encodeRef = (ref: BundleRef): string => `${ref.oid} ${ref.name}\n`;
  *
  * Emits: magic line, prerequisite lines sorted by oid ascending (the sort is
  * applied here so callers cannot forget), ref lines in the given order, and a
- * single blank terminating line. Always emits v2.
+ * single blank terminating line. Emits v2; refuses any other requested version.
  */
 export const serializeBundleHeader = (input: {
   readonly version: BundleVersion;

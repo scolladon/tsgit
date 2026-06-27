@@ -1496,6 +1496,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3, path: '/v3.bundle' },
       "BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 in '/v3.bundle'",
     ],
+    [
+      { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3 },
+      'BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 for serialization',
+    ],
   ];
 
   describe('Given command error %j', () => {

@@ -547,21 +547,25 @@ describe('bundleCreate', () => {
   });
 
   // ── Ref deduplication (git 2.54.0 empirical golden) ──────────────────────
+  // Verified against real git 2.54.0:
+  //   git bundle create test.bundle --branches --all
+  //   git bundle list-heads test.bundle
+  //   → refs/heads/main (from --branches, first occurrence)
+  //   → HEAD            (from --all, added after refs/* dedup)
   // git emits each refname at most once in argument/first-occurrence order.
 
   describe('Given a repository where combined options would add the same ref twice', () => {
     describe('When bundleCreate is called with branches:true and all:true', () => {
-      it('Then refs contain each refname exactly once (deduplicated by name, first-occurrence order)', async () => {
+      it('Then refs are deduplicated in first-occurrence order: refs/heads/main then HEAD', async () => {
         // Arrange
         const { ctx } = await buildSingleCommitRepo();
 
         // Act
         const result = await sut(ctx, { branches: true, all: true });
 
-        // Assert — no duplicate refnames
+        // Assert — explicit ordered golden from real git 2.54.0
         const refNames = result.refs.map((r) => r.name as string);
-        const uniqueNames = [...new Set(refNames)];
-        expect(refNames).toEqual(uniqueNames);
+        expect(refNames).toEqual(['refs/heads/main', 'HEAD']);
       });
     });
   });
