@@ -946,7 +946,14 @@
     "worklist",
     "unsplittable",
     "neighbouring",
-    "commentlen"
+    "commentlen",
+    "formedness",
+    "hexdump",
+    "pluralised",
+    "sneakernet",
+    "unopenable",
+    "prepass",
+    "uncatchable"
   ],
   "ignorePaths": [
     "node_modules",

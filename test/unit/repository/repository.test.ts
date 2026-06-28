@@ -202,6 +202,7 @@ describe('openRepository — Repository binding integrity', () => {
             'archive',
             'blame',
             'branch',
+            'bundle',
             'catFile',
             'checkout',
             'cherryPick',
@@ -287,6 +288,7 @@ describe('openRepository — Repository binding integrity', () => {
         const sut = await open();
         // CRUD-family bindings are nested-namespace objects, not functions.
         const namespaceKeys = new Set([
+          'bundle',
           'config',
           'remote',
           'branch',

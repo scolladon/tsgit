@@ -6,6 +6,10 @@ import {
   blockedHost,
   branchExists,
   branchNotFound,
+  bundleBadHeader,
+  bundleEmpty,
+  bundleReadFailed,
+  bundleUnsupportedVersion,
   type CommandError,
   cannotDeleteCheckedOutBranch,
   cannotDescribe,
@@ -1476,6 +1480,34 @@ describe('domain commands error — extractDetail message formatting', () => {
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: -2 },
       'CONFIG_BAD_ZLIB_LEVEL: bad zlib compression level -2',
     ],
+    [
+      { code: 'BUNDLE_EMPTY', reason: 'no-refs' },
+      'BUNDLE_EMPTY: refusing to create empty bundle: no-refs',
+    ],
+    [
+      { code: 'BUNDLE_READ_FAILED', path: '/some/path.bundle' },
+      "BUNDLE_READ_FAILED: could not open '/some/path.bundle'",
+    ],
+    [
+      { code: 'BUNDLE_BAD_HEADER', path: '/bad.bundle', reason: 'not-a-bundle' },
+      "BUNDLE_BAD_HEADER: '/bad.bundle' does not look like a v2 or v3 bundle file",
+    ],
+    [
+      { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3, path: '/v3.bundle' },
+      "BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 in '/v3.bundle'",
+    ],
+    [
+      { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3 },
+      'BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 for serialization',
+    ],
+    [
+      {
+        code: 'BUNDLE_PREREQUISITE_NOT_COMMIT',
+        oid: 'a'.repeat(40),
+        objectType: 'tree',
+      } as unknown as CommandError,
+      `BUNDLE_PREREQUISITE_NOT_COMMIT: boundary object ${'a'.repeat(40)} is not a commit (got tree)`,
+    ],
   ];
 
   describe('Given command error %j', () => {
@@ -1486,6 +1518,77 @@ describe('domain commands error — extractDetail message formatting', () => {
 
         // Assert
         expect(sut.message).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the bundleEmpty error helper', () => {
+    describe('When called with reason no-refs', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(bundleEmpty('no-refs').data).toEqual({
+          code: 'BUNDLE_EMPTY',
+          reason: 'no-refs',
+        });
+      });
+    });
+
+    describe('When called with reason no-objects', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(bundleEmpty('no-objects').data).toEqual({
+          code: 'BUNDLE_EMPTY',
+          reason: 'no-objects',
+        });
+      });
+    });
+  });
+
+  describe('Given the bundleReadFailed error helper', () => {
+    describe('When called with a path', () => {
+      it('Then data contains the sanitised path', () => {
+        // Arrange + Assert
+        expect(bundleReadFailed('/some/path.bundle').data).toEqual({
+          code: 'BUNDLE_READ_FAILED',
+          path: '/some/path.bundle',
+        });
+      });
+    });
+  });
+
+  describe('Given the bundleBadHeader error helper', () => {
+    describe('When called with path and not-a-bundle reason', () => {
+      it('Then data contains the path and reason', () => {
+        // Arrange + Assert
+        expect(bundleBadHeader('/bad.bundle', 'not-a-bundle').data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'not-a-bundle',
+        });
+      });
+    });
+
+    describe('When called with malformed-header reason', () => {
+      it('Then data contains the malformed-header reason', () => {
+        // Arrange + Assert
+        expect(bundleBadHeader('/bad.bundle', 'malformed-header').data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'malformed-header',
+        });
+      });
+    });
+  });
+
+  describe('Given the bundleUnsupportedVersion error helper', () => {
+    describe('When called with path and version 3', () => {
+      it('Then data contains the path and version', () => {
+        // Arrange + Assert
+        expect(bundleUnsupportedVersion('/v3.bundle', 3).data).toEqual({
+          code: 'BUNDLE_UNSUPPORTED_VERSION',
+          path: '/v3.bundle',
+          version: 3,
+        });
       });
     });
   });

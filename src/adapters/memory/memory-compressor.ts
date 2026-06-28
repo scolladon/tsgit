@@ -1,5 +1,6 @@
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+import { adler32 } from '../adler32.js';
 
 /**
  * Safety cap on input size for the progressive-prefix streamInflate scan.
@@ -61,7 +62,16 @@ export class MemoryCompressor implements Compressor {
       const attempt = slice.subarray(0, end);
       try {
         const output = await runTransform(attempt, new DecompressionStream('deflate'));
-        return { output, bytesConsumed: end };
+        // A zlib stream ends with a 4-byte big-endian adler32 of the
+        // uncompressed data (RFC 1950). Some runtimes (Deno, Workers) accept a
+        // truncated prefix before those 4 bytes; guard against that by only
+        // accepting `end` when the trailing 4 bytes match adler32(output).
+        if (
+          end >= 4 &&
+          new DataView(slice.buffer, slice.byteOffset + end - 4, 4).getUint32(0) === adler32(output)
+        ) {
+          return { output, bytesConsumed: end };
+        }
       } catch {
         // Not yet a complete zlib stream — keep growing.
       }
@@ -78,16 +88,19 @@ async function runTransform(
   data: Uint8Array,
   transform: TransformStream<Uint8Array, Uint8Array> | CompressionStream | DecompressionStream,
 ): Promise<Uint8Array> {
+  const ts = transform as unknown as TransformStream<Uint8Array, Uint8Array>;
   const source = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(data);
       controller.close();
     },
   });
-  const stream = source.pipeThrough(
-    transform as unknown as TransformStream<Uint8Array, Uint8Array>,
-  );
-  const reader = stream.getReader();
+  // pipeTo instead of pipeThrough so we hold the writable-side promise and can
+  // attach a no-op rejection handler. pipeThrough keeps that promise internal —
+  // on workerd, closing a DecompressionStream with incomplete data rejects the
+  // writable side, which lands as an uncaught rejection that crashes the worker.
+  const pumped = source.pipeTo(ts.writable).catch(() => {});
+  const reader = ts.readable.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
@@ -96,6 +109,7 @@ async function runTransform(
     chunks.push(value);
     total += value.length;
   }
+  await pumped;
   const out = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {

@@ -473,6 +473,18 @@ function extractDetail(data: TsgitErrorData): string {
       return `'${data.path}' contains modified or untracked files, use --force to delete it`;
     case 'NOT_A_WORKTREE':
       return `'${data.path}' is not a working tree`;
+    case 'BUNDLE_EMPTY':
+      return `refusing to create empty bundle: ${data.reason}`;
+    case 'BUNDLE_READ_FAILED':
+      return `could not open '${data.path}'`;
+    case 'BUNDLE_BAD_HEADER':
+      return `'${data.path}' does not look like a v2 or v3 bundle file`;
+    case 'BUNDLE_UNSUPPORTED_VERSION':
+      return data.path !== undefined
+        ? `unsupported bundle version ${data.version} in '${data.path}'`
+        : `unsupported bundle version ${data.version} for serialization`;
+    case 'BUNDLE_PREREQUISITE_NOT_COMMIT':
+      return `boundary object ${data.oid} is not a commit (got ${data.objectType})`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

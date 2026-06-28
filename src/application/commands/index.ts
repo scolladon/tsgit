@@ -1,4 +1,10 @@
 export type {
+  BundleHashAlgorithm,
+  BundlePrerequisite,
+  BundleRef,
+  BundleVersion,
+} from '../../domain/bundle/index.js';
+export type {
   AddChange,
   CopyChange,
   DeleteChange,
@@ -43,6 +49,22 @@ export {
   branchList,
   branchRename,
 } from './branch.js';
+export {
+  type BundleCreateOptions,
+  type BundleCreateResult,
+  type BundleRevArg,
+  bundleCreate,
+} from './bundle-create.js';
+export {
+  type BundleListHeadsInput,
+  type BundleListHeadsResult,
+  bundleListHeads,
+} from './bundle-list-heads.js';
+export {
+  type BundleVerifyInput,
+  type BundleVerifyResult,
+  bundleVerify,
+} from './bundle-verify.js';
 export {
   type CatFileBatchEntry,
   type CatFileInput,
@@ -125,6 +147,10 @@ export {
 } from './grep.js';
 export { type InitOptions, type InitResult, init } from './init.js';
 export { type BranchNamespace, bindBranchNamespace } from './internal/branch-namespace.js';
+export {
+  type BundleNamespace,
+  bindBundleNamespace,
+} from './internal/bundle-namespace.js';
 export {
   bindCherryPickNamespace,
   type CherryPickNamespace,

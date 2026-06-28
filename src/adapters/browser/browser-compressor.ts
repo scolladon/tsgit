@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+import { adler32 } from '../adler32.js';
 
 /**
  * Safety cap on input size for the progressive-prefix streamInflate scan.
@@ -42,10 +43,18 @@ export class BrowserCompressor implements Compressor {
 
   async inflate(data: Uint8Array): Promise<Uint8Array> {
     try {
-      const stream = new Blob([data as BlobPart])
+      // pipeTo instead of pipeThrough so the writable-side promise is in scope
+      // and can receive a no-op rejection handler. On workerd, closing a
+      // DecompressionStream with incomplete data rejects the writable side as
+      // an uncaught rejection that crashes the worker.
+      const ds = new DecompressionStream('deflate');
+      const pumped = new Blob([data as BlobPart])
         .stream()
-        .pipeThrough(new DecompressionStream('deflate'));
-      return new Uint8Array(await new Response(stream).arrayBuffer());
+        .pipeTo(ds.writable)
+        .catch(() => {});
+      const output = new Uint8Array(await new Response(ds.readable).arrayBuffer());
+      await pumped;
+      return output;
     } catch (err) {
       throw decompressFailed(err instanceof Error ? err.message : String(err));
     }
@@ -63,11 +72,23 @@ export class BrowserCompressor implements Compressor {
     for (let end = 1; end <= slice.length; end += 1) {
       const attempt = slice.subarray(0, end);
       try {
-        const stream = new Blob([attempt as BlobPart])
+        const ds = new DecompressionStream('deflate');
+        const pumped = new Blob([attempt as BlobPart])
           .stream()
-          .pipeThrough(new DecompressionStream('deflate'));
-        const output = new Uint8Array(await new Response(stream).arrayBuffer());
-        return { output, bytesConsumed: end };
+          .pipeTo(ds.writable)
+          .catch(() => {});
+        const output = new Uint8Array(await new Response(ds.readable).arrayBuffer());
+        await pumped;
+        // A zlib stream ends with a 4-byte big-endian adler32 of the
+        // uncompressed data (RFC 1950). Some runtimes (Deno, Workers) accept a
+        // truncated prefix before those 4 bytes; guard against that by only
+        // accepting `end` when the trailing 4 bytes match adler32(output).
+        if (
+          end >= 4 &&
+          new DataView(slice.buffer, slice.byteOffset + end - 4, 4).getUint32(0) === adler32(output)
+        ) {
+          return { output, bytesConsumed: end };
+        }
       } catch {
         // Not yet complete — grow.
       }
