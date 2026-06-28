@@ -2,7 +2,7 @@
  * Notes parity scenario — seeds a single commit, attaches a note, reads it
  * back, lists all notes, then removes it and verifies absence.
  *
- * Notes commits embed a committer timestamp from `Date.now()` (non-deterministic),
+ * Notes commits embed a committer timestamp from the system clock (non-deterministic),
  * so only the decoded content, list length, and null-read-after-remove are
  * included in the expected golden — not the notes-commit oids.
  *

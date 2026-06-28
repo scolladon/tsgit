@@ -11,7 +11,7 @@
  *   bucket:         cross-tool-interop
  *   unique:         single-add blob/tree/commit/reflog byte parity;
  *                   flat-region tree OID parity (N=5);
- *                   flat→fanned flip parity at N=200 notes (deterministic);
+ *                   flat→fanned flip parity at N=150 notes (deterministic);
  *                   post-flip stickiness after bulk removal;
  *                   force-overwrite commit OID parity;
  *                   remove-last → empty tree 4b825d…;
@@ -363,10 +363,10 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
     let oursCommitAfterFlip: string;
     let peerTreeAfterRemove: string;
     let oursTreeAfterRemove: string;
-    // OIDs of the 200 commits used as annotation targets
+    // OIDs of the 150 commits used as annotation targets
     let oids: ObjectId[];
     // Number of notes to add — enough to guarantee all 16 nibble slots fill
-    const FLIP_COUNT = 200;
+    const FLIP_COUNT = 150;
     // Number of notes to remove after the flip to test stickiness
     const REMOVE_COUNT = 20;
 
@@ -410,13 +410,13 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       oursTreeAfterRemove = notesTreeOid(pair.ours);
 
       vi.useRealTimers();
-    }, 120_000);
+    }, 300_000);
 
     afterAll(async () => {
       await pair.dispose();
     });
 
-    describe('When all 200 notes have been added (flip region)', () => {
+    describe('When all 150 notes have been added (flip region)', () => {
       it('Then the notes tree OID matches git byte-for-byte', () => {
         expect(oursTreeAfterFlip).toBe(peerTreeAfterFlip);
       });

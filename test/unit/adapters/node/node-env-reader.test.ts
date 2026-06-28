@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { NodeEnvReader } from '../../../../src/adapters/node/node-env-reader.js';
 import { envReaderContractTests } from '../../ports/env-reader.contract.js';
 
@@ -9,20 +9,15 @@ describe('NodeEnvReader', () => {
   envReaderContractTests(() => new NodeEnvReader());
 
   describe('Given a variable set in process.env', () => {
-    let sut: NodeEnvReader;
-
-    beforeEach(() => {
-      sut = new NodeEnvReader();
-      process.env[TEST_VAR] = TEST_VALUE;
-    });
-
     afterEach(() => {
       delete process.env[TEST_VAR];
     });
 
     describe('When get is called with that name', () => {
       it('Then returns the set value', () => {
-        // Arrange (done in beforeEach)
+        // Arrange
+        const sut = new NodeEnvReader();
+        process.env[TEST_VAR] = TEST_VALUE;
 
         // Act
         const result = sut.get(TEST_VAR);

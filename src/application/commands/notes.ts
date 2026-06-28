@@ -34,7 +34,7 @@ const OID_RE = /^[0-9a-f]{40}$/;
 // Commit messages match git byte-for-byte: git appends \n to notes commit bodies.
 const NOTES_ADD_MESSAGE = "Notes added by 'git notes add'\n";
 const NOTES_REMOVE_MESSAGE = "Notes removed by 'git notes remove'\n";
-// Reflog messages do NOT carry the trailing \n (the reflog serialiser adds its own).
+// Reflog messages do NOT carry the trailing \n (the reflog writer adds its own).
 const NOTES_ADD_REFLOG = "notes: Notes added by 'git notes add'";
 const NOTES_REMOVE_REFLOG = "notes: Notes removed by 'git notes remove'";
 
