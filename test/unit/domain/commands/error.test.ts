@@ -1500,6 +1500,14 @@ describe('domain commands error — extractDetail message formatting', () => {
       { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3 },
       'BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 for serialization',
     ],
+    [
+      {
+        code: 'BUNDLE_PREREQUISITE_NOT_COMMIT',
+        oid: 'a'.repeat(40),
+        objectType: 'tree',
+      } as unknown as CommandError,
+      `BUNDLE_PREREQUISITE_NOT_COMMIT: boundary object ${'a'.repeat(40)} is not a commit (got tree)`,
+    ],
   ];
 
   describe('Given command error %j', () => {

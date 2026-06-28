@@ -81,15 +81,19 @@ const collectTreeObjects = async (
   seenTrees: Set<ObjectId>,
   depth = 0,
 ): Promise<void> => {
+  // equivalent-mutant: ConditionalExpression→false — git objects form a DAG with no cycles; seenTrees is a performance guard, not a correctness one
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
   if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  // equivalent-mutant: ConditionalExpression→false — resolveObject (inside readObject) checks ctx.signal.aborted before each disk read; abort is caught at the next readObject call
   if (ctx.signal?.aborted) throw operationAborted();
   objects.add(treeId);
   const treeObj = await readObject(ctx, treeId);
   if (treeObj.type !== 'tree') return;
   for (const entry of treeObj.entries) {
+    // equivalent-mutant: ConditionalExpression→false — isDirectory('160000')=false so the gitlink falls to objects.add at the next branch; L121 in emitTreeObjects independently guards gitlinks on the wants side
     if (isGitlink(entry.mode)) continue;
+    // equivalent-mutant: BlockStatement→{} / ConditionalExpression→false — recursive collectTreeObjects calls objects.add(treeId) at the top for any id, including non-tree ones; final uninteresting set is the same
     if (!isDirectory(entry.mode as FileMode)) {
       objects.add(entry.id);
       continue;
@@ -113,12 +117,15 @@ const emitTreeObjects = async (
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
   if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  // equivalent-mutant: ConditionalExpression→false — resolveObject (inside readObject) checks ctx.signal.aborted before each disk read; abort is caught at the next readObject call
   if (ctx.signal?.aborted) throw operationAborted();
+  // equivalent-mutant: ConditionalExpression→true — any uninteresting tree was walked in the haves phase and is already in seenTrees; the seenTrees guard at the top returns before reaching this line for those trees
   if (!uninteresting.has(treeId)) tryEmit(state, treeId);
   const treeObj = await readObject(ctx, treeId);
   if (treeObj.type !== 'tree') return;
   for (const entry of treeObj.entries) {
     if (isGitlink(entry.mode)) continue;
+    // equivalent-mutant: ConditionalExpression→true — all entries recurse into emitTreeObjects; blobs are emitted via the tryEmit call at the top of the recursive invocation before the type-check return; final emitted set is identical
     if (isDirectory(entry.mode as FileMode)) {
       await emitTreeObjects(ctx, entry.id, uninteresting, state, seenTrees, depth + 1);
       continue;

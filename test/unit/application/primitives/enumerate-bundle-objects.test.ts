@@ -381,11 +381,149 @@ describe('enumerateBundleObjects', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Haves-side tree walk: isDirectory guard in collectTreeObjects
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — haves-side isDirectory guard', () => {
+  describe('Given a haves commit whose tree contains a subdirectory with a blob', () => {
+    describe('When the wants commit references the same subdirectory and the haves commit is excluded', () => {
+      it('Then the blob inside the shared subdirectory is absent from objects', async () => {
+        // Arrange — haves tree has a subdirectory containing blobX; wants tree
+        // shares that same subtree ID plus an extra blobY.  Without the
+        // !isDirectory guard, the subtree is added to uninteresting but its
+        // contents (blobX) are never collected, so blobX leaks into the bundle.
+        const ctx = await buildSeededContext();
+        const blobX = await makeBlob(ctx, 'X');
+        const subTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'x.txt', id: blobX }]);
+        const haveTree = await makeTree(ctx, [
+          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: subTree },
+        ]);
+        const blobY = await makeBlob(ctx, 'Y');
+        const wantTree = await makeTree(ctx, [
+          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: subTree },
+          { mode: BLOB_MODE, name: 'y.txt', id: blobY },
+        ]);
+        const haveCommit = await makeCommit(ctx, haveTree, [], 'have', 1);
+        const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommit] });
+
+        // Assert
+        expect(result.objects).not.toContain(blobX);
+        expect(result.objects).toContain(blobY);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wants-side tree walk: isGitlink guard in emitTreeObjects
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — wants-side gitlink guard', () => {
+  describe('Given a wants commit whose tree contains a gitlink entry', () => {
+    describe('When enumerateBundleObjects is called with haves=[]', () => {
+      it('Then the gitlink submodule OID is absent from objects', async () => {
+        // Arrange — gitlinks are external submodule references; they must NOT
+        // be emitted as objects in the bundle.  Without the isGitlink guard,
+        // the mode-'160000' entry would pass the isDirectory check and be
+        // emitted via tryEmit.
+        const ctx = await buildSeededContext();
+        const GITLINK_OID = 'c'.repeat(40) as ObjectId;
+        const blobA = await makeBlob(ctx, 'A');
+        const tree = await makeTree(ctx, [
+          { mode: FILE_MODE.GITLINK, name: 'sub', id: GITLINK_OID },
+          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
+        ]);
+        const commit = await makeCommit(ctx, tree, [], 'with-gitlink', 1);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commit], haves: [] });
+
+        // Assert
+        expect(result.objects).not.toContain(GITLINK_OID);
+        expect(result.objects).toContain(blobA);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ignoreMissing: missing parents do not abort the walk
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
+  describe('Given a haves commit that references a non-existent parent', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then completes without error and still excludes the haves commit from objects', async () => {
+        // Arrange — ignoreMissing:true in collectUninteresting; without it the
+        // walk would throw when it cannot resolve the phantom parent.
+        const ctx = await buildSeededContext();
+        const PHANTOM_PARENT = 'd'.repeat(40) as ObjectId;
+        const blobA = await makeBlob(ctx, 'A');
+        const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blobA }]);
+        const haveCommit = await makeCommit(ctx, tree1, [PHANTOM_PARENT], 'have', 1);
+        const blobB = await makeBlob(ctx, 'B');
+        const tree2 = await makeTree(ctx, [
+          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
+          { mode: BLOB_MODE, name: 'b.txt', id: blobB },
+        ]);
+        const wantCommit = await makeCommit(ctx, tree2, [haveCommit], 'want', 2);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        let thrown: unknown;
+        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommit] }).catch((err) => {
+          thrown = err;
+          return null;
+        });
+
+        // Assert — no error; haveCommit excluded as boundary
+        expect(thrown).toBeUndefined();
+        expect(result).not.toBeNull();
+        expect(result!.objects).not.toContain(haveCommit);
+        expect(result!.objects).toContain(blobB);
+      });
+    });
+  });
+
+  describe('Given a wants commit that references a non-existent parent', () => {
+    describe('When enumerateBundleObjects is called with haves=[]', () => {
+      it('Then completes without error and emits the wants commit', async () => {
+        // Arrange — ignoreMissing:true in walkInteresting; without it the walk
+        // would throw when it cannot resolve the phantom parent.
+        const ctx = await buildSeededContext();
+        const PHANTOM_PARENT = 'e'.repeat(40) as ObjectId;
+        const blobA = await makeBlob(ctx, 'A');
+        const tree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blobA }]);
+        const wantCommit = await makeCommit(ctx, tree, [PHANTOM_PARENT], 'want', 1);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        let thrown: unknown;
+        const result = await sut(ctx, { wants: [wantCommit], haves: [] }).catch((err) => {
+          thrown = err;
+          return null;
+        });
+
+        // Assert — no error; wantCommit and its objects are emitted
+        expect(thrown).toBeUndefined();
+        expect(result).not.toBeNull();
+        expect(result!.objects).toContain(wantCommit);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Safety rails: depth guard and abort signal
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('enumerateBundleObjects — tree-walk safety rails', () => {
-  describe('Given a commit pointing to a tree nested 1025 levels deep', () => {
+  describe('Given a wants commit pointing to a tree nested 1025 levels deep', () => {
     describe('When enumerateBundleObjects is called', () => {
       it('Then throws TREE_DEPTH_EXCEEDED, not a RangeError', async () => {
         // Arrange — build 1025 wrapper trees around a phantom sub-tree ID.
@@ -410,6 +548,107 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
         expect((thrown as TsgitError).data.code).toBe('TREE_DEPTH_EXCEEDED');
+      });
+    });
+  });
+
+  describe('Given a wants commit pointing to a tree nested exactly 1025 levels deep with a real leaf blob', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then succeeds without throwing TREE_DEPTH_EXCEEDED (depth 1024 is the last allowed level)', async () => {
+        // Arrange — build 1024 wrapper trees around a real blob-containing tree.
+        // The blob-containing tree sits at depth 1024; the depth guard fires only
+        // at depth > 1024.  A depth>=1024 mutant would throw prematurely here.
+        const ctx = await buildSeededContext();
+        const leafBlob = await makeBlob(ctx, 'leaf');
+        let current: ObjectId = await makeTree(ctx, [
+          { mode: BLOB_MODE, name: 'f.txt', id: leafBlob },
+        ]);
+        for (let i = 0; i < 1024; i++) {
+          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
+        }
+        const commit = await makeCommit(ctx, current, [], 'at-limit', 1);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        let thrown: unknown;
+        const result = await sut(ctx, { wants: [commit], haves: [] }).catch((err) => {
+          thrown = err;
+          return null;
+        });
+
+        // Assert — no TREE_DEPTH_EXCEEDED; all objects present
+        expect(thrown).toBeUndefined();
+        expect(result).not.toBeNull();
+        expect(result!.objects).toContain(leafBlob);
+      });
+    });
+  });
+
+  describe('Given a haves commit pointing to a tree nested 1026 levels deep', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED from the haves-side collectTreeObjects walk', async () => {
+        // Arrange — build 1025 real wrapper trees around a phantom child.
+        // collectTreeObjects (haves side) reaches depth 1025 when visiting the
+        // phantom and throws.  A ConditionalExpression→false or depth-1 mutant
+        // on the guard would never fire, yielding a different error instead.
+        const ctx = await buildSeededContext();
+        const PHANTOM_ID = 'b'.repeat(40) as ObjectId;
+        let current: ObjectId = PHANTOM_ID;
+        for (let i = 0; i < 1025; i++) {
+          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
+        }
+        const haveCommit = await makeCommit(ctx, current, [], 'too-deep-have', 1);
+        const wantBlob = await makeBlob(ctx, 'want');
+        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(ctx, { wants: [wantCommit], haves: [haveCommit] });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('TREE_DEPTH_EXCEEDED');
+      });
+    });
+  });
+
+  describe('Given a haves commit pointing to a tree nested exactly 1025 levels deep with a real leaf blob', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then succeeds without throwing TREE_DEPTH_EXCEEDED (depth 1024 is the last allowed level)', async () => {
+        // Arrange — build 1024 wrapper trees around a real blob-containing tree.
+        // collectTreeObjects reaches depth 1024 for the innermost tree (depth
+        // guard fires at depth > 1024).  A depth>=1024 mutant would throw here.
+        const ctx = await buildSeededContext();
+        const leafBlob = await makeBlob(ctx, 'leaf-have');
+        let current: ObjectId = await makeTree(ctx, [
+          { mode: BLOB_MODE, name: 'f.txt', id: leafBlob },
+        ]);
+        for (let i = 0; i < 1024; i++) {
+          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
+        }
+        const haveCommit = await makeCommit(ctx, current, [], 'have-at-limit', 1);
+        const wantBlob = await makeBlob(ctx, 'new');
+        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'n.txt', id: wantBlob }]);
+        const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        let thrown: unknown;
+        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommit] }).catch((err) => {
+          thrown = err;
+          return null;
+        });
+
+        // Assert — no TREE_DEPTH_EXCEEDED
+        expect(thrown).toBeUndefined();
+        expect(result).not.toBeNull();
+        expect(result!.objects).toContain(wantBlob);
       });
     });
   });

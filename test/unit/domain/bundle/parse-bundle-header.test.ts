@@ -317,6 +317,45 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
+  describe('When a ref line has 41 chars and no space (valid-hex-40 prefix plus one extra char)', () => {
+    it('Then throws BUNDLE_BAD_HEADER with reason malformed-header', () => {
+      // Arrange — 41-char string, first 40 chars are valid hex; no space present.
+      // Without the spaceIdx===-1 guard, slice(0,-1) yields 40 valid hex chars and
+      // the line would be misread as a valid ref line instead of throwing.
+      const sut = parseBundleHeader;
+      const bytes = encode(`# v2 git bundle\n${'a'.repeat(40)}b\n\n`);
+
+      // Act + Assert
+      try {
+        sut(bytes, 'no-space-41.bundle');
+        expect.fail('should have thrown');
+      } catch (err: unknown) {
+        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
+          'BUNDLE_BAD_HEADER',
+        );
+        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
+          'malformed-header',
+        );
+      }
+    });
+  });
+
+  describe('When a ref line has a valid oid and a refname ending with @', () => {
+    it('Then parses successfully without throwing', () => {
+      // Arrange — a refname ending in @ is valid; the startsWith('@') guard at the
+      // line-type dispatch only fires when the WHOLE line starts with @.
+      const sut = parseBundleHeader;
+      const bytes = encode(`# v2 git bundle\n${'a'.repeat(40)} refs/heads/main@\n\n`);
+
+      // Act
+      const result = sut(bytes, 'at-suffix.bundle');
+
+      // Assert
+      expect(result.refs).toHaveLength(1);
+      expect(result.refs[0]!.name).toBe('refs/heads/main@');
+    });
+  });
+
   describe('When given a large payload with v2 magic but no blank-line terminator', () => {
     it('Then throws BUNDLE_BAD_HEADER on a large no-terminator input', () => {
       // Arrange

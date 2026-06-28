@@ -537,6 +537,70 @@ describe('bundleVerify', () => {
     });
   });
 
+  // ── read-failure: unexpected TsgitError code is rethrown unchanged ──────────
+
+  describe('Given a path where read throws a TsgitError with an unexpected code', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then rethrows the unexpected TsgitError without reclassifying it', async () => {
+        // Arrange — inject an error code that is neither FILE_NOT_FOUND nor
+        // PERMISSION_DENIED; readOrThrow must rethrow it unchanged.
+        const baseCtx = createMemoryContext();
+        const SOME_PATH = '/repo/some.bundle';
+        const ctx: Context = {
+          ...baseCtx,
+          fs: {
+            ...baseCtx.fs,
+            read: async (p: string): Promise<Uint8Array> => {
+              if (p === SOME_PATH)
+                throw new TsgitError({ code: 'OBJECT_NOT_FOUND', oid: 'a'.repeat(40) } as never);
+              return baseCtx.fs.read(p);
+            },
+          },
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(ctx, { path: SOME_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — original unexpected TsgitError is rethrown, not reclassified
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+  });
+
+  // ── read-failure: directory path with reason field ────────────────────────
+
+  describe('Given a path that is a directory (PERMISSION_DENIED + stat.isDirectory)', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then throws BUNDLE_BAD_HEADER with reason not-a-bundle', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const DIR_PATH = '/repo/some-dir-b';
+        const ctx = withReadPermissionDenied(baseCtx, DIR_PATH, true);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut(ctx, { path: DIR_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — classifyReadFailure sets reason='not-a-bundle' for a directory path
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('BUNDLE_BAD_HEADER');
+        expect((tsErr.data as { reason: string }).reason).toBe('not-a-bundle');
+      });
+    });
+  });
+
   // ── read-failure: directory path via FILE_NOT_FOUND (memory/OPFS adapter) ─
 
   describe('Given a path where read throws FILE_NOT_FOUND and stat reports a directory', () => {
