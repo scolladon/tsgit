@@ -30,10 +30,14 @@ const paintReachable = async (
   let head = 0;
   while (head < queue.length) {
     const id = queue[head++]!;
+    // equivalent-mutant (if false): Map.set is idempotent; re-processing id writes the
+    // same entry; finite DAG + head++ guarantee termination; final Map is identical.
     if (visited.has(id)) continue;
     const entry = await readCommitEntry(ctx, id);
     visited.set(id, entry);
     for (const parent of entry.parents) {
+      // equivalent-mutant (if true): extra pushes of already-visited parents create
+      // no-op iterations (line above still skips on re-pop); same final Map.
       if (!visited.has(parent)) queue.push(parent);
     }
   }
@@ -50,6 +54,9 @@ const paintReachable = async (
  */
 type WalkEntry = { readonly id: ObjectId; readonly date: number; readonly ins: number };
 
+// equivalent-mutant (a.date===b.date variants and a.ins<=b.ins): newly enqueued entries
+// always receive the highest ins value; a.ins < b.ins never fires when a is new; FIFO
+// ordering is preserved by insertion order regardless of the tie-break sub-expression.
 const entryPrecedes = (a: WalkEntry, b: WalkEntry): boolean =>
   a.date > b.date || (a.date === b.date && a.ins < b.ins);
 
@@ -93,6 +100,8 @@ const walkCandidatesNewestFirst = async (
   const visited = new Set<ObjectId>();
   const newestFirst: WalkNode[] = [];
   const walkQueue: WalkEntry[] = [];
+  // equivalent-mutant (ins--): both post-fix operators return 0 for bad's entry (ins starts at 0);
+  // subsequent parents use ins++ from the modified value, preserving relative ordering.
   enqueueWalkEntry(walkQueue, { id: bad, date: badDate, ins: ins++ });
 
   while (walkQueue.length > 0) {

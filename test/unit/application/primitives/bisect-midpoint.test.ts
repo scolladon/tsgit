@@ -212,8 +212,36 @@ describe('bisectMidpoint', () => {
           expect.fail('should have thrown');
         } catch (err) {
           expect(err).toBeInstanceOf(TsgitError);
-          expect((err as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
+          const tErr = err as TsgitError;
+          expect(tErr.data.code).toBe('INVALID_WALK_INPUT');
+          expect(tErr.data.code === 'INVALID_WALK_INPUT' && tErr.data.reason).toBe(
+            `bisectMidpoint: ${blobId} is not a commit`,
+          );
         }
+      });
+    });
+  });
+
+  describe('Given a diamond with a shared in-set ancestor reachable from two candidate branches', () => {
+    describe('When bisectMidpoint runs', () => {
+      it('Then shared ancestor is counted once — candidateCount=4 (not 5)', async () => {
+        // Arrange: root (good) → shared(ts=101) → pa(ts=102), pb(ts=103) → bad(ts=104)
+        // shared is reachable from both pa and pb; without walk-dedup it would appear twice.
+        const sut = bisectMidpoint;
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const root = await commitAt(ctx, treeId, 100, []);
+        const shared = await commitAt(ctx, treeId, 101, [root]);
+        const pa = await commitAt(ctx, treeId, 102, [shared]);
+        const pb = await commitAt(ctx, treeId, 103, [shared]);
+        const bad = await commitAt(ctx, treeId, 104, [pa, pb]);
+
+        // Act — candidates = {shared, pa, pb, bad}; root is good-reachable
+        const result = await sut(ctx, [root], bad);
+
+        // Assert — shared must appear exactly once in the walk
+        expect(result).not.toBeUndefined();
+        expect(result?.candidateCount).toBe(4);
       });
     });
   });

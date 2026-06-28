@@ -352,6 +352,33 @@ describe('findBisection', () => {
     });
   });
 
+  describe('Given all=7 with a merge at approxHalfway followed by a single-strand sc also at approxHalfway, When finding bisection', () => {
+    it('Then mergeWeights early-return fires at the merge (reaches=3), not at the downstream sc (reaches=4)', () => {
+      // Arrange — [s1, s2, merge(→s1,s2), sc(→merge), u1(→sc), u2(→u1), u3(→u2)]; all=7.
+      // seedWeights:  s1=1, s2=1.
+      // mergeWeights: countDistance(merge)={merge,s1,s2}=3; approxHalfway(3,7)=|6-7|=1 → FIRES.
+      // Without early-return: fillWeights would assign sc.weight=4;
+      //   approxHalfway(4,7)=|8-7|=1 would fire for sc instead → wrong nextCommit.
+      const sut = findBisection;
+      const s1 = c('s1', []);
+      const s2 = c('s2', []);
+      const merge = c('mg', ['s1', 's2']);
+      const sc = c('sc', ['mg']);
+      const u1 = c('u1', ['sc']);
+      const u2 = c('u2', ['u1']);
+      const u3 = c('u3', ['u2']);
+      const candidates = [s1, s2, merge, sc, u1, u2, u3];
+
+      // Act
+      const result = sut(candidates);
+
+      // Assert — merge is chosen by mergeWeights before fillWeights can fire at sc
+      expect(result?.nextCommit).toBe(merge.id);
+      expect(result?.reaches).toBe(3);
+      expect(result?.candidateCount).toBe(7);
+    });
+  });
+
   // ─── strict-`>` tie-break isolation ─────────────────────────────────────────
 
   describe('Given two candidates with equal distance, first in list vs second, When finding bisection', () => {

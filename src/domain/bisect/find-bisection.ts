@@ -22,6 +22,9 @@ const bestBisection = (
   all: number,
 ): BestResult => {
   // Seed from candidates[0] — caller guarantees non-empty (findBisection guards).
+  // equivalent-mutant (all + firstWeight): candidates[0] is always the oldest commit in the set
+  // (oldest-first order) → it has no in-set parents → seeded with weight=1; for all≥2
+  // Math.min(1, all-1)=1=Math.min(1, all+1); for all=1 the loop is empty.
   const first = candidates[0]!;
   const firstWeight = weights.get(first.id) as number;
   let bestId = first.id;
@@ -80,6 +83,9 @@ const tryFillOne = (
   weights: Map<ObjectId, number>,
   all: number,
 ): Bisection | null | undefined => {
+  // equivalent-mutant (c.parents.length !== 1 → false): if mergeWeights returned early we
+  // never reach fillWeights; if not, all multi-parent commits already have weights from
+  // mergeWeights, so weights.has(c.id) catches them before the length guard.
   if (weights.has(c.id) || c.parents.length !== 1) return undefined;
   const parentWeight = weights.get(c.parents[0] as ObjectId);
   if (parentWeight === undefined) return undefined;

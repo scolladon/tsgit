@@ -20,10 +20,15 @@ export const countDistance = (
   const stack: ObjectId[] = [startId];
   while (stack.length > 0) {
     const id = stack.pop() as ObjectId;
+    // equivalent-mutant (if false): visited is a Set (idempotent add); duplicate pops
+    // re-visit nodes but the push guard below prevents stack growth beyond DAG size;
+    // same final Set.size.
     if (visited.has(id)) continue;
     const candidate = byId.get(id) as BisectCandidate;
     visited.add(id);
     for (const parentId of candidate.parents) {
+      // equivalent-mutant (if true): always-push creates duplicate stack entries;
+      // the dedup guard above skips re-processed nodes; same final Set.size.
       if (!visited.has(parentId)) {
         stack.push(parentId);
       }
