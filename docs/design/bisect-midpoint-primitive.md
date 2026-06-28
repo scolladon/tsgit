@@ -263,14 +263,10 @@ exactly one place.
 ## Public surface
 
 ```ts
-repo.primitives.bisectMidpoint(opts: BisectMidpointOptions): Promise<BisectMidpoint | undefined>;
-
-interface BisectMidpointOptions {
-  /** Commit-ish for the bad tip (full rev grammar). */
-  readonly bad: string;
-  /** One or more commit-ish good tips. */
-  readonly good: ReadonlyArray<string>;
-}
+repo.primitives.bisectMidpoint(
+  good: ReadonlyArray<ObjectId>,
+  bad: ObjectId,
+): Promise<BisectMidpoint | undefined>;
 
 interface BisectMidpoint {
   readonly nextCommit: ObjectId;       // the commit to test next; caller abbreviates
