@@ -175,6 +175,56 @@ describe('MemoryCompressor', () => {
       });
     });
 
+    describe('Given a buffer where DecompressionStream succeeds on a truncated prefix (simulating Deno/Workers)', () => {
+      describe('When streamInflate', () => {
+        it('Then returns bytesConsumed at the adler32-validated boundary, not the truncated boundary', async () => {
+          // Arrange
+          // Build a real zlib stream so we know the real boundary and the adler32.
+          const sut = new MemoryCompressor();
+          const payload = new Uint8Array([1, 2, 3]);
+          const fullStream = await sut.deflate(payload);
+          // A zlib stream ends with 4 adler32 bytes. Deno/Workers accept the
+          // stream without those trailing bytes ("truncated" at fullStream.length-4).
+          const truncatedLen = fullStream.length - 4;
+
+          // Mock DecompressionStream to also succeed at the truncated length (≥ truncatedLen),
+          // simulating Deno/Workers behaviour. Under this mock the old code would return
+          // bytesConsumed = truncatedLen; the adler32-guarded code returns fullStream.length.
+          const capturedPayload = payload;
+          const capturedTruncLen = truncatedLen;
+          globals.DecompressionStream = class MockDenoDecompressionStream {
+            private inner: TransformStream<Uint8Array, Uint8Array>;
+            constructor(_format: string) {
+              const minLen = capturedTruncLen;
+              const out = capturedPayload;
+              this.inner = new TransformStream<Uint8Array, Uint8Array>({
+                transform(chunk, controller) {
+                  if (chunk.length < minLen) {
+                    controller.error(new Error('incomplete zlib stream'));
+                  } else {
+                    controller.enqueue(out);
+                  }
+                },
+              });
+            }
+            get readable() {
+              return this.inner.readable;
+            }
+            get writable() {
+              return this.inner.writable;
+            }
+          };
+
+          // Act
+          const result = await sut.streamInflate(fullStream, 0);
+
+          // Assert — must reach the adler32-validated boundary, not the early one
+          expect(result.bytesConsumed).toBe(fullStream.length);
+          expect(Array.from(result.output)).toEqual([1, 2, 3]);
+        });
+      });
+    });
+
     describe('Given deflate called with an explicit level', () => {
       describe('When level=9 is passed', () => {
         it('Then output round-trips correctly and equals deflate with no level (level ignored)', async () => {

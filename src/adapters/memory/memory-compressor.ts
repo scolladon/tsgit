@@ -1,5 +1,6 @@
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+import { adler32 } from '../adler32.js';
 
 /**
  * Safety cap on input size for the progressive-prefix streamInflate scan.
@@ -61,7 +62,16 @@ export class MemoryCompressor implements Compressor {
       const attempt = slice.subarray(0, end);
       try {
         const output = await runTransform(attempt, new DecompressionStream('deflate'));
-        return { output, bytesConsumed: end };
+        // A zlib stream ends with a 4-byte big-endian adler32 of the
+        // uncompressed data (RFC 1950). Some runtimes (Deno, Workers) accept a
+        // truncated prefix before those 4 bytes; guard against that by only
+        // accepting `end` when the trailing 4 bytes match adler32(output).
+        if (
+          end >= 4 &&
+          new DataView(slice.buffer, slice.byteOffset + end - 4, 4).getUint32(0) === adler32(output)
+        ) {
+          return { output, bytesConsumed: end };
+        }
       } catch {
         // Not yet a complete zlib stream — keep growing.
       }
