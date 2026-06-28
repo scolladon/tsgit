@@ -52,24 +52,25 @@ const buildLinear = async (
 describe('bisectMidpoint', () => {
   describe('Given a linear 10-commit chain, good=c[0], bad=c[9]', () => {
     describe('When bisectMidpoint runs', () => {
-      it('Then returns structured midpoint at c[5] with correct counts', async () => {
+      it('Then returns structured midpoint at c[4] with correct counts', async () => {
         // Arrange
+        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const commits = await buildLinear(ctx, 10);
         const good = commits[0]!;
         const bad = commits[9]!;
 
         // Act
-        const sut = await bisectMidpoint(ctx, [good], bad);
+        const result = await sut(ctx, [good], bad);
 
         // Assert — 9 candidates {c[1]..c[9]}; fill-phase fires at c[4] (weight=4,
         // approxHalfway(4,9): 2*4−9=−1 ∈ [−1,1] → early return before tie-break)
-        expect(sut).not.toBeUndefined();
-        expect(sut?.nextCommit).toBe(commits[4]);
-        expect(sut?.candidateCount).toBe(9);
-        expect(sut?.remainingIfGood).toBe(4); // 9 - 4 - 1
-        expect(sut?.remainingIfBad).toBe(3); // 4 - 1
-        expect(sut?.remainingSteps).toBe(2); // estimateSteps(9)
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(commits[4]);
+        expect(result?.candidateCount).toBe(9);
+        expect(result?.remainingIfGood).toBe(4); // 9 - 4 - 1
+        expect(result?.remainingIfBad).toBe(3); // 4 - 1
+        expect(result?.remainingSteps).toBe(2); // estimateSteps(9)
       });
     });
   });
@@ -78,21 +79,22 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then returns a single-candidate result with remainingIfGood=-1', async () => {
         // Arrange
+        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const commits = await buildLinear(ctx, 2);
         const good = commits[0]!;
         const bad = commits[1]!;
 
         // Act
-        const sut = await bisectMidpoint(ctx, [good], bad);
+        const result = await sut(ctx, [good], bad);
 
-        // Assert — 1 candidate {c[1]}; reaches=1 → remainingIfGood=-1
-        expect(sut).not.toBeUndefined();
-        expect(sut?.nextCommit).toBe(bad);
-        expect(sut?.candidateCount).toBe(1);
-        expect(sut?.remainingIfGood).toBe(-1);
-        expect(sut?.remainingIfBad).toBe(0);
-        expect(sut?.remainingSteps).toBe(0);
+        // Assert — 1 candidate {c[1]}; reaches=1 → remainingIfGood=-1 faithful passthrough
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(bad);
+        expect(result?.candidateCount).toBe(1);
+        expect(result?.remainingIfGood).toBe(-1);
+        expect(result?.remainingIfBad).toBe(0);
+        expect(result?.remainingSteps).toBe(0);
       });
     });
   });
@@ -101,16 +103,40 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then returns undefined (empty candidate set)', async () => {
         // Arrange — good=c[1] (descendant of bad=c[0]) → c[0] reachable from good
+        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const commits = await buildLinear(ctx, 2);
         const good = commits[1]!;
         const bad = commits[0]!;
 
         // Act
-        const sut = await bisectMidpoint(ctx, [good], bad);
+        const result = await sut(ctx, [good], bad);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given good=[] (no good tips)', () => {
+    describe('When bisectMidpoint runs', () => {
+      it('Then candidate set is everything reachable from bad', async () => {
+        // Arrange — 3-commit linear chain: root→mid→bad; no good → all 3 are candidates
+        const sut = bisectMidpoint;
+        const ctx = await buildSeededContext();
+        const commits = await buildLinear(ctx, 3);
+        const bad = commits[2]!;
+
+        // Act — empty good array: candidates = {root, mid, bad}
+        const result = await sut(ctx, [], bad);
+
+        // Assert — all=3, fill fires at mid (weight=2, approxHalfway(2,3)=1 ∈ {-1,0,1})
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(commits[1]);
+        expect(result?.candidateCount).toBe(3);
+        expect(result?.remainingIfGood).toBe(0); // 3 - 2 - 1
+        expect(result?.remainingIfBad).toBe(1); // 2 - 1
+        expect(result?.remainingSteps).toBe(1); // estimateSteps(3)
       });
     });
   });
@@ -119,6 +145,7 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs with good=A, bad=D', () => {
       it('Then returns B as midpoint (older sibling wins tie, candidateCount=3)', async () => {
         // Arrange
+        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
         const a = await commitAt(ctx, treeId, 100, []);
@@ -127,15 +154,15 @@ describe('bisectMidpoint', () => {
         const d = await commitAt(ctx, treeId, 104, [b, c]);
 
         // Act — candidates: {B, C, D} = 3; B weight=1, C weight=1, D weight=3
-        const sut = await bisectMidpoint(ctx, [a], d);
+        const result = await sut(ctx, [a], d);
 
-        // Assert — B wins (older → first in date-asc list, ties with C at dist=1)
-        expect(sut).not.toBeUndefined();
-        expect(sut?.nextCommit).toBe(b);
-        expect(sut?.candidateCount).toBe(3);
-        expect(sut?.remainingIfGood).toBe(1); // 3 - 1 - 1
-        expect(sut?.remainingIfBad).toBe(0); // 1 - 1
-        expect(sut?.remainingSteps).toBe(1); // estimateSteps(3)
+        // Assert — B wins (older → date-asc puts B before C → B first in list → wins tie)
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(b);
+        expect(result?.candidateCount).toBe(3);
+        expect(result?.remainingIfGood).toBe(1); // 3 - 1 - 1
+        expect(result?.remainingIfBad).toBe(0); // 1 - 1
+        expect(result?.remainingSteps).toBe(1); // estimateSteps(3)
       });
     });
   });
@@ -144,6 +171,7 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then excludes all good-reachable commits from candidates', async () => {
         // Arrange: root → A(ts=101) and root → B(ts=102) are both good; bad=C(ts=103)→[A,B]
+        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
         const root = await commitAt(ctx, treeId, 100, []);
@@ -152,14 +180,14 @@ describe('bisectMidpoint', () => {
         const c = await commitAt(ctx, treeId, 103, [a, b]);
 
         // Act — candidates = bad-reachable minus good-reachable = {C} only
-        const sut = await bisectMidpoint(ctx, [a, b], c);
+        const result = await sut(ctx, [a, b], c);
 
         // Assert
-        expect(sut).not.toBeUndefined();
-        expect(sut?.nextCommit).toBe(c);
-        expect(sut?.candidateCount).toBe(1);
-        expect(sut?.remainingIfGood).toBe(-1);
-        expect(sut?.remainingIfBad).toBe(0);
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(c);
+        expect(result?.candidateCount).toBe(1);
+        expect(result?.remainingIfGood).toBe(-1);
+        expect(result?.remainingIfBad).toBe(0);
       });
     });
   });
@@ -168,6 +196,7 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then throws INVALID_WALK_INPUT', async () => {
         // Arrange
+        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const blobId = await writeObject(ctx, {
           type: 'blob',
@@ -179,7 +208,7 @@ describe('bisectMidpoint', () => {
 
         // Act + Assert
         try {
-          await bisectMidpoint(ctx, [good], blobId as ObjectId);
+          await sut(ctx, [good], blobId as ObjectId);
           expect.fail('should have thrown');
         } catch (err) {
           expect(err).toBeInstanceOf(TsgitError);

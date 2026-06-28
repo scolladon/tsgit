@@ -102,59 +102,103 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
 
     it('Then tsgit nextCommit matches git rev-list --bisect-vars bisect_rev', async () => {
       // Arrange
+      const sut = bisectMidpoint;
       const good = commits[0]!;
       const bad = commits[9]!;
       const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
       const expected = parseBisectVars(gitOut);
 
       // Act
-      const sut = await bisectMidpoint(ctx, [good as never], bad as never);
+      const result = await sut(ctx, [good as never], bad as never);
 
       // Assert
-      expect(sut).not.toBeUndefined();
-      expect(sut?.nextCommit).toBe(expected.rev);
+      expect(result).not.toBeUndefined();
+      expect(result?.nextCommit).toBe(expected.rev);
     });
 
     it('Then tsgit structured counts match git rev-list --bisect-vars', async () => {
       // Arrange
+      const sut = bisectMidpoint;
       const good = commits[0]!;
       const bad = commits[9]!;
       const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
       const expected = parseBisectVars(gitOut);
 
       // Act
-      const sut = await bisectMidpoint(ctx, [good as never], bad as never);
+      const result = await sut(ctx, [good as never], bad as never);
 
       // Assert
-      expect(sut?.candidateCount).toBe(expected.all);
-      expect(sut?.remainingIfGood).toBe(expected.good);
-      expect(sut?.remainingIfBad).toBe(expected.bad);
-      expect(sut?.remainingSteps).toBe(expected.steps);
+      expect(result?.candidateCount).toBe(expected.all);
+      expect(result?.remainingIfGood).toBe(expected.good);
+      expect(result?.remainingIfBad).toBe(expected.bad);
+      expect(result?.remainingSteps).toBe(expected.steps);
+    });
+
+    /**
+     * all=1 edge case: good=c8, bad=c9 → 1 candidate {c9}.
+     * bisect_good=-1 is the faithful git passthrough (not clamped to 0).
+     */
+    it('Then all=1 row returns remainingIfGood=-1 matching bisect_good=-1', async () => {
+      // Arrange
+      const sut = bisectMidpoint;
+      const good = commits[8]!;
+      const bad = commits[9]!;
+      const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
+      const expected = parseBisectVars(gitOut);
+
+      // Act
+      const result = await sut(ctx, [good as never], bad as never);
+
+      // Assert — bisect_good=-1 is the faithful passthrough for all=1
+      expect(result?.nextCommit).toBe(expected.rev);
+      expect(result?.candidateCount).toBe(1);
+      expect(result?.remainingIfGood).toBe(-1);
+      expect(result?.remainingIfGood).toBe(expected.good);
+      expect(result?.remainingIfBad).toBe(0);
+      expect(result?.remainingSteps).toBe(0);
+    });
+
+    /**
+     * good=[] empty-good case: candidates = full history reachable from bad.
+     * git rev-list --bisect <bad> accepts no ^good and returns the midpoint.
+     */
+    it('Then good=[] uses all bad-reachable commits as candidates', async () => {
+      // Arrange — all 10 commits are candidates (c0..c9), bad=c9
+      const sut = bisectMidpoint;
+      const bad = commits[9]!;
+      const gitWinner = git(dir, 'rev-list', '--bisect', bad).trim();
+
+      // Act
+      const result = await sut(ctx, [], bad as never);
+
+      // Assert — nextCommit matches git rev-list --bisect with no exclusions
+      expect(result).not.toBeUndefined();
+      expect(result?.nextCommit).toBe(gitWinner);
+      expect(result?.candidateCount).toBe(10);
     });
   });
 
   /**
-   * Diamond (octopus-union weight) regression guard.
+   * Diamond (unequal dates) regression guard.
    * Topology: c_root ← c_a1 ← c_a2 ─┐
-   *                                    c_bad (merge)
+   *                                    c_bad (merge, on branch-b, merges branch-a)
    *           c_root ← c_b1 ← c_b2 ─┘
    *
-   * Timestamps: c_a2(ts=+3) is older than c_b2(ts=+4).
-   * 5 candidates sorted date-asc: [c_a1, c_b1, c_a2, c_b2, c_bad]
+   * Timestamps: c_a2(ts=+3) is older than c_b2(ts=+4) — distinct dates.
+   * 5 candidates walk order (oldest-first): [a1, b1, a2, b2, bad]
    *
-   * Named regression: A2 must win the distance-2 tie over B2 because A2 is
-   * older (ts=+3 < ts=+4) → appears first in the date-asc list → fill-phase
-   * early-return fires at A2 (weight=2, approxHalfway(2,5)=-1 ∈ [-1,1]).
+   * A2 must win the distance-2 tie over B2 because A2 is older (ts=+3 < ts=+4)
+   * → appears first in the oldest-first list → fill-phase early-return fires at A2.
    * Matches git rev-list --bisect output exactly.
    */
-  describe('Given a diamond with A2 older than B2 (distance-2 tie)', () => {
+  describe('Given a diamond with A2 older than B2 (unequal-date tie)', () => {
     let dir = '';
     let ctx: Context;
     let cRoot: string;
     let cBad: string;
 
     beforeAll(async () => {
-      dir = await makeRepo('diamond');
+      dir = await makeRepo('diamond-unequal');
       ctx = createNodeContext({ workDir: dir });
 
       cRoot = addCommit(dir, 'root', 1_700_000_000);
@@ -169,40 +213,182 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
       addCommit(dir, 'b1', 1_700_000_002);
       addCommit(dir, 'b2', 1_700_000_004);
 
-      // Merge A into B → bad commit (ts=+5)
+      // Merge A into B → bad commit (ts=+5); M's parents are [b2, a2]
       cBad = mergeCommit(dir, 'branch-a', 1_700_000_005, 'merge');
     }, SETUP_TIMEOUT);
 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
-    it('Then tsgit nextCommit matches git rev-list --bisect bisect winner (A2)', async () => {
+    it('Then tsgit nextCommit matches git rev-list --bisect winner (A2)', async () => {
       // Arrange
+      const sut = bisectMidpoint;
       const gitWinner = git(dir, 'rev-list', '--bisect', cBad, `^${cRoot}`).trim();
       const gitOut = git(dir, 'rev-list', '--bisect-vars', cBad, `^${cRoot}`);
       const expected = parseBisectVars(gitOut);
 
       // Act
-      const sut = await bisectMidpoint(ctx, [cRoot as never], cBad as never);
+      const result = await sut(ctx, [cRoot as never], cBad as never);
 
-      // Assert — winner from both git and tsgit should be A2 (older, first in date-asc list)
-      expect(sut).not.toBeUndefined();
-      expect(sut?.nextCommit).toBe(gitWinner);
-      expect(sut?.nextCommit).toBe(expected.rev);
+      // Assert — A2 wins (older → first in oldest-first list → fill fires at A2)
+      expect(result).not.toBeUndefined();
+      expect(result?.nextCommit).toBe(gitWinner);
+      expect(result?.nextCommit).toBe(expected.rev);
     });
 
     it('Then tsgit structured counts match git rev-list --bisect-vars', async () => {
       // Arrange
+      const sut = bisectMidpoint;
       const gitOut = git(dir, 'rev-list', '--bisect-vars', cBad, `^${cRoot}`);
       const expected = parseBisectVars(gitOut);
 
       // Act
-      const sut = await bisectMidpoint(ctx, [cRoot as never], cBad as never);
+      const result = await sut(ctx, [cRoot as never], cBad as never);
 
       // Assert
-      expect(sut?.candidateCount).toBe(expected.all);
-      expect(sut?.remainingIfGood).toBe(expected.good);
-      expect(sut?.remainingIfBad).toBe(expected.bad);
-      expect(sut?.remainingSteps).toBe(expected.steps);
+      expect(result?.candidateCount).toBe(expected.all);
+      expect(result?.remainingIfGood).toBe(expected.good);
+      expect(result?.remainingIfBad).toBe(expected.bad);
+      expect(result?.remainingSteps).toBe(expected.steps);
+    });
+  });
+
+  /**
+   * Equal-date diamond — b-first merge direction.
+   *
+   * Topology: root ← a1(ts=+1) ← a2(ts=+3) ─┐
+   *                                             bad (merge on branch-b, merges branch-a)
+   *           root ← b1(ts=+2) ← b2(ts=+3) ─┘
+   *
+   * a2 and b2 share the same committer-date (ts=+3).  M's first parent = b2,
+   * second parent = a2.  git's FIFO-stable priority-queue pops b2 before a2
+   * (b2 was enqueued first from M's parent[0]).  After limit_list reversal,
+   * the oldest-first list is [a1, b1, a2, b2, bad].  Fill fires at a2
+   * (weight=2, approxHalfway(2,5)=-1) — git picks a2.
+   *
+   * The naive oid-ascending tie-break would pick whichever of a2/b2 has the
+   * smaller oid — a coin flip that diverges from git on half of all repo
+   * contents.  This fixture verifies the FIFO-stable walk fixes that.
+   */
+  describe('Given an equal-date diamond where M merges branch-a into branch-b (b-first)', () => {
+    let dir = '';
+    let ctx: Context;
+    let cRoot: string;
+    let cBad: string;
+
+    beforeAll(async () => {
+      dir = await makeRepo('equal-date-bfirst');
+      ctx = createNodeContext({ workDir: dir });
+
+      cRoot = addCommit(dir, 'root', 1_700_000_000);
+
+      git(dir, 'checkout', '-b', 'branch-a');
+      addCommit(dir, 'a1', 1_700_000_001);
+      addCommit(dir, 'a2', 1_700_000_003); // same ts as b2
+
+      git(dir, 'checkout', '-b', 'branch-b', cRoot);
+      addCommit(dir, 'b1', 1_700_000_002);
+      addCommit(dir, 'b2', 1_700_000_003); // same ts as a2
+
+      // Merge branch-a INTO branch-b → M's parents = [b2 (HEAD), a2]
+      cBad = mergeCommit(dir, 'branch-a', 1_700_000_005, 'merge');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    it('Then tsgit nextCommit matches git rev-list --bisect (FIFO walk, not oid-asc)', async () => {
+      // Arrange
+      const sut = bisectMidpoint;
+      const gitWinner = git(dir, 'rev-list', '--bisect', cBad, `^${cRoot}`).trim();
+
+      // Act
+      const result = await sut(ctx, [cRoot as never], cBad as never);
+
+      // Assert — git picks a2 (FIFO: b2 inserted first → pops first → list [a1,b1,a2,b2,bad] → fill at a2)
+      expect(result).not.toBeUndefined();
+      expect(result?.nextCommit).toBe(gitWinner);
+    });
+
+    it('Then tsgit structured counts match git rev-list --bisect-vars', async () => {
+      // Arrange
+      const sut = bisectMidpoint;
+      const gitOut = git(dir, 'rev-list', '--bisect-vars', cBad, `^${cRoot}`);
+      const expected = parseBisectVars(gitOut);
+
+      // Act
+      const result = await sut(ctx, [cRoot as never], cBad as never);
+
+      // Assert
+      expect(result?.candidateCount).toBe(expected.all);
+      expect(result?.remainingIfGood).toBe(expected.good);
+      expect(result?.remainingIfBad).toBe(expected.bad);
+      expect(result?.remainingSteps).toBe(expected.steps);
+    });
+  });
+
+  /**
+   * Equal-date diamond — a-first merge direction.
+   *
+   * Same topology but M's first parent = a2, second parent = b2.
+   * FIFO: a2 is enqueued first → pops first → oldest-first list [a1, b1, b2, a2, bad]
+   * → fill fires at b2 → git picks b2.
+   *
+   * Together with the b-first fixture this pins both directions, ensuring the
+   * oid-ascending tie-break would fail at least one of the two.
+   */
+  describe('Given an equal-date diamond where M merges branch-b into branch-a (a-first)', () => {
+    let dir = '';
+    let ctx: Context;
+    let cRoot: string;
+    let cBad: string;
+
+    beforeAll(async () => {
+      dir = await makeRepo('equal-date-afirst');
+      ctx = createNodeContext({ workDir: dir });
+
+      cRoot = addCommit(dir, 'root', 1_700_000_000);
+
+      git(dir, 'checkout', '-b', 'branch-a');
+      addCommit(dir, 'a1', 1_700_000_001);
+      addCommit(dir, 'a2', 1_700_000_003); // same ts as b2
+
+      git(dir, 'checkout', '-b', 'branch-b', cRoot);
+      addCommit(dir, 'b1', 1_700_000_002);
+      addCommit(dir, 'b2', 1_700_000_003); // same ts as a2
+
+      // Merge branch-b INTO branch-a → M's parents = [a2 (HEAD), b2]
+      git(dir, 'checkout', 'branch-a');
+      cBad = mergeCommit(dir, 'branch-b', 1_700_000_005, 'merge');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    it('Then tsgit nextCommit matches git rev-list --bisect (FIFO walk, not oid-asc)', async () => {
+      // Arrange
+      const sut = bisectMidpoint;
+      const gitWinner = git(dir, 'rev-list', '--bisect', cBad, `^${cRoot}`).trim();
+
+      // Act
+      const result = await sut(ctx, [cRoot as never], cBad as never);
+
+      // Assert — git picks b2 (FIFO: a2 inserted first → pops first → list [a1,b1,b2,a2,bad] → fill at b2)
+      expect(result).not.toBeUndefined();
+      expect(result?.nextCommit).toBe(gitWinner);
+    });
+
+    it('Then tsgit structured counts match git rev-list --bisect-vars', async () => {
+      // Arrange
+      const sut = bisectMidpoint;
+      const gitOut = git(dir, 'rev-list', '--bisect-vars', cBad, `^${cRoot}`);
+      const expected = parseBisectVars(gitOut);
+
+      // Act
+      const result = await sut(ctx, [cRoot as never], cBad as never);
+
+      // Assert
+      expect(result?.candidateCount).toBe(expected.all);
+      expect(result?.remainingIfGood).toBe(expected.good);
+      expect(result?.remainingIfBad).toBe(expected.bad);
+      expect(result?.remainingSteps).toBe(expected.steps);
     });
   });
 
@@ -224,14 +410,15 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
 
     it('Then bisectMidpoint returns undefined', async () => {
       // Arrange — good=HEAD (c1), bad=c0 (ancestor of good)
+      const sut = bisectMidpoint;
       const head = git(dir, 'rev-parse', 'HEAD').trim();
       const c0 = git(dir, 'rev-parse', 'HEAD~1').trim();
 
       // Act
-      const sut = await bisectMidpoint(ctx, [head as never], c0 as never);
+      const result = await sut(ctx, [head as never], c0 as never);
 
       // Assert
-      expect(sut).toBeUndefined();
+      expect(result).toBeUndefined();
     });
   });
 });
