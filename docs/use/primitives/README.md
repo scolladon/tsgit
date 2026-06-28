@@ -2,10 +2,11 @@
 
 The composable building blocks every Tier-1 command is built from. Same `Context` users get — you can compose them into custom workflows that don't fit the command surface.
 
-26 primitives bound on `repo.primitives.*`, alphabetical:
+27 primitives bound on `repo.primitives.*`, alphabetical:
 
 | Primitive | Summary |
 |---|---|
+| [`bisectMidpoint`](bisect-midpoint.md) | Halve a bisect candidate set; returns structured midpoint data (`nextCommit`, counts, steps). |
 | [`catFileBatch`](cat-file-batch.md) | Streaming object reader; `AsyncIterable<CatFileBatchEntry>` in input order. |
 | [`createCommit`](create-commit.md) | Create a commit object from tree + parents. |
 | [`diffTrees`](diff-trees.md) | Compare two tree iterables; returns a structured diff. |

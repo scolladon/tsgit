@@ -256,6 +256,7 @@ describe('openRepository — Repository binding integrity', () => {
         // Assert
         expect(Object.keys(sut.primitives).sort()).toEqual(
           [
+            'bisectMidpoint',
             'catFileBatch',
             'createCommit',
             'diffTrees',

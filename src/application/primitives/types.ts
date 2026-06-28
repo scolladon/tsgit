@@ -304,3 +304,25 @@ export interface WalkSubmodulesOptions {
 }
 
 export type { TreeDiff };
+
+/**
+ * Structured result returned by `bisectMidpoint`.
+ *
+ * Field semantics are faithful to `git rev-list --bisect-vars`:
+ *  - `candidateCount` = `bisect_all`
+ *  - `remainingIfGood` = `bisect_good` = candidateCount − reaches − 1
+ *    (negative sentinel −1 when candidateCount = 1, meaning "no candidates
+ *     remain if the midpoint tests good").
+ *  - `remainingIfBad` = `bisect_bad` = reaches − 1
+ *  - `remainingSteps` = `bisect_steps` = estimateSteps(candidateCount)
+ */
+export interface BisectMidpoint {
+  readonly nextCommit: ObjectId;
+  readonly candidateCount: number;
+  /** Candidates still to test if `nextCommit` proves good; −1 when candidateCount = 1. */
+  readonly remainingIfGood: number;
+  /** Candidates still to test if `nextCommit` proves bad. */
+  readonly remainingIfBad: number;
+  /** Rough number of test rounds remaining; mirrors `git bisect_steps`. */
+  readonly remainingSteps: number;
+}

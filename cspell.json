@@ -953,7 +953,13 @@
     "sneakernet",
     "unopenable",
     "prepass",
-    "uncatchable"
+    "uncatchable",
+    "randomised",
+    "licence",
+    "TREESAME",
+    "maximising",
+    "afirst",
+    "bfirst"
   ],
   "ignorePaths": [
     "node_modules",

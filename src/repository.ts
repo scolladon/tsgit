@@ -253,9 +253,10 @@ export interface Repository {
   /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
   readonly worktree: commands.WorktreeNamespace;
 
-  // Tier-2 primitives (22) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (23) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
+    readonly bisectMidpoint: BindCtx<typeof primitives.bisectMidpoint>;
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
     readonly diffTrees: BindCtx<typeof primitives.diffTrees>;
@@ -598,6 +599,10 @@ export const openRepository = async (
     }) as Repository['whatchanged'],
     worktree: commands.bindWorktreeNamespace(ctx, guard),
     primitives: Object.freeze({
+      bisectMidpoint: ((good, bad) => {
+        guard();
+        return primitives.bisectMidpoint(ctx, good, bad);
+      }) as Repository['primitives']['bisectMidpoint'],
       catFileBatch: ((ids, options) => {
         guard();
         return primitives.catFileBatch(ctx, ids, options);
