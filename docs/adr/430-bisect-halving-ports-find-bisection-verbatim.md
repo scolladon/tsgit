@@ -73,3 +73,8 @@ user judgment was escalated:
 
 - A consumer that wants git's skip behaviour composes it on top by filtering the set before
   the call; this remains additive and outside the library surface.
+- Candidate enumeration (`collectCandidatesOldestFirst`) uses a dedicated FIFO-stable
+  priority queue with an insertion counter (`ins`) as the equal-date tie-break. The shared
+  `priority-queue.ts` breaks equal-date ties by oid instead, which is faithful only for
+  order-independent consumers (merge-base, blame). Bisect's candidate-list order is
+  order-sensitive, so the local FIFO walk is required and intentionally not shared.
