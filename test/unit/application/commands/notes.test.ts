@@ -104,7 +104,7 @@ describe('notes', () => {
         const obj = await readObject(ctx, result.notesCommit);
         expect(obj.type).toBe('commit');
         if (obj.type === 'commit') {
-          expect(obj.data.message).toBe("Notes added by 'git notes add'");
+          expect(obj.data.message).toBe("Notes added by 'git notes add'\n");
         }
       });
     });
@@ -198,7 +198,7 @@ describe('notes', () => {
         // Assert
         const obj = await readObject(ctx, result.notesCommit);
         if (obj.type === 'commit') {
-          expect(obj.data.message).toBe("Notes added by 'git notes add'");
+          expect(obj.data.message).toBe("Notes added by 'git notes add'\n");
         }
       });
     });
@@ -405,7 +405,7 @@ describe('notes', () => {
         // Assert
         const obj = await readObject(ctx, result.notesCommit);
         if (obj.type === 'commit') {
-          expect(obj.data.message).toBe("Notes removed by 'git notes remove'");
+          expect(obj.data.message).toBe("Notes removed by 'git notes remove'\n");
         }
       });
     });

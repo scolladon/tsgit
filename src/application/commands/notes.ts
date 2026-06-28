@@ -31,10 +31,12 @@ const FULL_HEX = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 /** Matches a SHA-1 oid (40 hex) for object resolution, as tagCreate does. */
 const OID_RE = /^[0-9a-f]{40}$/;
 
-const NOTES_ADD_MESSAGE = "Notes added by 'git notes add'";
-const NOTES_REMOVE_MESSAGE = "Notes removed by 'git notes remove'";
-const NOTES_ADD_REFLOG = `notes: ${NOTES_ADD_MESSAGE}`;
-const NOTES_REMOVE_REFLOG = `notes: ${NOTES_REMOVE_MESSAGE}`;
+// Commit messages match git byte-for-byte: git appends \n to notes commit bodies.
+const NOTES_ADD_MESSAGE = "Notes added by 'git notes add'\n";
+const NOTES_REMOVE_MESSAGE = "Notes removed by 'git notes remove'\n";
+// Reflog messages do NOT carry the trailing \n (the reflog serialiser adds its own).
+const NOTES_ADD_REFLOG = "notes: Notes added by 'git notes add'";
+const NOTES_REMOVE_REFLOG = "notes: Notes removed by 'git notes remove'";
 
 // ─── Input / Result shapes ────────────────────────────────────────────────────
 
