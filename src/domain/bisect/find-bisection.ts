@@ -21,12 +21,14 @@ const bestBisection = (
   weights: ReadonlyMap<ObjectId, number>,
   all: number,
 ): BestResult => {
-  // Initialise with an empty sentinel — the loop always overwrites on first iteration
-  // because dist >= 0 > bestDist = -1.
-  let bestId: ObjectId = '' as ObjectId;
-  let bestDist = -1;
-  let bestWeight = 0;
-  for (const c of candidates) {
+  // Seed from candidates[0] — caller guarantees non-empty (findBisection guards).
+  const first = candidates[0]!;
+  const firstWeight = weights.get(first.id) as number;
+  let bestId = first.id;
+  let bestDist = Math.min(firstWeight, all - firstWeight);
+  let bestWeight = firstWeight;
+  for (let i = 1; i < candidates.length; i += 1) {
+    const c = candidates[i]!;
     const w = weights.get(c.id) as number;
     const dist = Math.min(w, all - w);
     if (dist > bestDist) {
