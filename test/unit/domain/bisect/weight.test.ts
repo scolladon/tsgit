@@ -69,6 +69,26 @@ describe('countDistance', () => {
     });
   });
 
+  describe('Given a merge commit that shares an ancestor (diamond base) with both parents, When counting distance from merge', () => {
+    it('Then shared ancestor is counted once (union, not sum)', () => {
+      // Arrange — topology: base → a → merge, base → b → merge
+      // base is an in-set ancestor of both a and b; shared by all paths from merge.
+      const sut = countDistance;
+      const base = makeCandidate('base', []);
+      const a = makeCandidate('a', ['base']);
+      const b = makeCandidate('b', ['base']);
+      const merge = makeCandidate('merge', ['a', 'b']);
+      const candidates = [base, a, b, merge];
+      const byId = new Map(candidates.map((c) => [c.id, c]));
+
+      // Act
+      const result = sut(merge.id, byId);
+
+      // Assert — union of {merge,a,base} and {merge,b,base} = {merge,a,b,base} = 4
+      expect(result).toBe(4);
+    });
+  });
+
   describe('Given an octopus merge with 3 in-set parents each with 1 ancestor, When counting distance from the octopus', () => {
     it('Then weight is 7 (octopus + 3 parents + 3 grandparents, union)', () => {
       // Arrange

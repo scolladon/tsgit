@@ -256,22 +256,18 @@ describe('findBisection', () => {
 
   describe('Given all=4 with a merge of weight=3 (diff=2), When finding bisection', () => {
     it('Then approx_halfway does NOT fire (diff=2 outside {-1,0,1}) and falls to best_bisection', () => {
-      // Arrange — three single-parent chain [a, b, c, d] where no halfway fires:
-      // a: seed weight=1, diff=2*1-4=-2; b: weight=2, diff=0 ← BUT we want to test
-      // non-halfway. Use a merge whose weight=3 doesn't hit halfway.
+      // Arrange — topology: root1, root2, merge(root1,root2), top(merge); all=4.
+      // root1: seed weight=1, diff=2*1-4=-2 → not halfway
+      // root2: seed weight=1, diff=-2 → not halfway
+      // merge: 2 in-set parents → mergeWeights path, countDistance=3, diff=2*3-4=2 → not halfway
+      // top:   fill from merge(w=3) → weight=4, diff=2*4-4=4 → not halfway
+      // best_bisection: root1 dist=min(1,3)=1, root2 dist=1, merge dist=min(3,1)=1, top dist=0
+      // root1 is first in list → wins the three-way tie
       const sut = findBisection;
-      // hand-build: root1, root2, merge, top
-      //   root1.parents=[], root2.parents=[],
-      //   merge.parents=[root1, root2], top.parents=[merge]
-      // Oldest-first: [root1, root2, merge, top]
       const root1 = c('r1', []);
       const root2 = c('r2', []);
       const merge = c('mg', ['r1', 'r2']);
       const top = c('tp', ['mg']);
-      // all=4, merge.weight=3 → diff=2 → not halfway
-      // top.weight=4 → diff=4 → not halfway
-      // best_bisection: root1 dist=1, root2 dist=1, merge dist=1, top dist=0
-      // root1 comes first → result is root1
       const candidates = [root1, root2, merge, top];
 
       // Act
@@ -326,6 +322,33 @@ describe('findBisection', () => {
       expect(result?.nextCommit).toBe(b2.id);
       expect(result?.reaches).toBe(1);
       expect(result?.candidateCount).toBe(4);
+    });
+  });
+
+  // ─── mergeWeights early-return (approx_halfway fires during merge phase) ─────
+
+  describe('Given all=5 with a merge whose countDistance lands in the halfway band, When finding bisection', () => {
+    it('Then mergeWeights fires approx_halfway and returns the merge (reaches=3, diff=1)', () => {
+      // Arrange — candidates [s1, s2, merge(s1,s2), u1, u2] oldest-first; all=5.
+      // s1: seed weight=1; s2: seed weight=1.
+      // merge: ≥2 in-set parents → mergeWeights path;
+      //   countDistance(merge) = {merge,s1,s2} = 3;
+      //   approxHalfway(3,5) = 2*3-5=1 ∈ {-1,0,1} → EARLY RETURN.
+      const sut = findBisection;
+      const s1 = c('s1', []);
+      const s2 = c('s2', []);
+      const merge = c('mg', ['s1', 's2']);
+      const u1 = c('u1', ['mg']);
+      const u2 = c('u2', ['u1']);
+      const candidates = [s1, s2, merge, u1, u2];
+
+      // Act
+      const result = sut(candidates);
+
+      // Assert — merge short-circuits in mergeWeights phase before fill/best
+      expect(result?.nextCommit).toBe(merge.id);
+      expect(result?.reaches).toBe(3);
+      expect(result?.candidateCount).toBe(5);
     });
   });
 
