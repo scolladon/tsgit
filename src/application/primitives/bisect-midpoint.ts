@@ -59,43 +59,41 @@ const enqueueWalkEntry = (queue: WalkEntry[], entry: WalkEntry): void => {
   queue.splice(i, 0, entry);
 };
 
-/**
- * Collect commits reachable from `bad` that are NOT in `goodReachable`, in
- * git's faithful rev-list order: FIFO-stable priority-queue (newest-first,
- * equal-date FIFO), parents enumerated first-parent-first.  The returned
- * array is oldest-first (reversed), matching `do_find_bisection`'s expected
- * input order.
- *
- * Mirrors git's `limit_list`: UNINTERESTING commits (good-reachable) are
- * skipped; the collected newest-first list is reversed before return.
- */
-const collectCandidatesOldestFirst = async (
-  ctx: Context,
-  bad: ObjectId,
-  goodReachable: ReadonlyMap<ObjectId, CommitEntry>,
-): Promise<ReadonlyArray<BisectCandidate>> => {
-  const commitCache = new Map<ObjectId, CommitEntry>();
-  const getEntry = async (id: ObjectId): Promise<CommitEntry> => {
-    const cached = commitCache.get(id);
+type WalkNode = {
+  readonly id: ObjectId;
+  readonly date: number;
+  readonly parents: ReadonlyArray<ObjectId>;
+};
+
+/** Per-walk memoizing commit reader (each commit is read at most once). */
+const makeEntryReader = (ctx: Context): ((id: ObjectId) => Promise<CommitEntry>) => {
+  const cache = new Map<ObjectId, CommitEntry>();
+  return async (id) => {
+    const cached = cache.get(id);
     if (cached !== undefined) return cached;
     const entry = await readCommitEntry(ctx, id);
-    commitCache.set(id, entry);
+    cache.set(id, entry);
     return entry;
   };
+};
 
-  const badEntry = await getEntry(bad); // throws if bad is not a commit
-  if (goodReachable.has(bad)) return [];
-
+/**
+ * Walk from `bad` in git's faithful rev-list order — FIFO-stable
+ * priority-queue (newest-first, equal-date FIFO), parents enumerated
+ * first-parent-first — skipping UNINTERESTING (good-reachable) commits.
+ * Returns the visited commits newest-first.
+ */
+const walkCandidatesNewestFirst = async (
+  getEntry: (id: ObjectId) => Promise<CommitEntry>,
+  bad: ObjectId,
+  badDate: number,
+  goodReachable: ReadonlyMap<ObjectId, CommitEntry>,
+): Promise<ReadonlyArray<WalkNode>> => {
   let ins = 0;
   const visited = new Set<ObjectId>();
-  const newestFirst: Array<{
-    readonly id: ObjectId;
-    readonly date: number;
-    readonly parents: ReadonlyArray<ObjectId>;
-  }> = [];
+  const newestFirst: WalkNode[] = [];
   const walkQueue: WalkEntry[] = [];
-
-  enqueueWalkEntry(walkQueue, { id: bad, date: badEntry.date, ins: ins++ });
+  enqueueWalkEntry(walkQueue, { id: bad, date: badDate, ins: ins++ });
 
   while (walkQueue.length > 0) {
     const { id } = walkQueue.shift()!;
@@ -104,22 +102,45 @@ const collectCandidatesOldestFirst = async (
     const entry = await getEntry(id);
     newestFirst.push({ id, date: entry.date, parents: entry.parents });
     for (const parent of entry.parents) {
-      if (!visited.has(parent) && !goodReachable.has(parent)) {
-        const pe = await getEntry(parent);
-        enqueueWalkEntry(walkQueue, { id: parent, date: pe.date, ins: ins++ });
-      }
+      if (visited.has(parent) || goodReachable.has(parent)) continue;
+      const pe = await getEntry(parent);
+      enqueueWalkEntry(walkQueue, { id: parent, date: pe.date, ins: ins++ });
     }
   }
+  return newestFirst;
+};
 
-  const inSet = new Set(newestFirst.map((e) => e.id));
+/** Reverse to oldest-first and keep only in-set parents (git's `limit_list` projection). */
+const projectOldestFirst = (
+  newestFirst: ReadonlyArray<WalkNode>,
+): ReadonlyArray<BisectCandidate> => {
+  const inSet = new Set<ObjectId>();
+  for (const node of newestFirst) inSet.add(node.id);
   return newestFirst
     .slice()
     .reverse()
-    .map((e) => ({
-      id: e.id,
-      parents: e.parents.filter((p) => inSet.has(p)),
-      date: e.date,
+    .map((node) => ({
+      id: node.id,
+      parents: node.parents.filter((p) => inSet.has(p)),
+      date: node.date,
     }));
+};
+
+/**
+ * Collect commits reachable from `bad` that are NOT in `goodReachable`, in
+ * git's faithful rev-list order (oldest-first), matching `do_find_bisection`'s
+ * expected input order.
+ */
+const collectCandidatesOldestFirst = async (
+  ctx: Context,
+  bad: ObjectId,
+  goodReachable: ReadonlyMap<ObjectId, CommitEntry>,
+): Promise<ReadonlyArray<BisectCandidate>> => {
+  const getEntry = makeEntryReader(ctx);
+  const badEntry = await getEntry(bad); // throws if bad is not a commit
+  if (goodReachable.has(bad)) return [];
+  const newestFirst = await walkCandidatesNewestFirst(getEntry, bad, badEntry.date, goodReachable);
+  return projectOldestFirst(newestFirst);
 };
 
 const deriveMidpoint = (

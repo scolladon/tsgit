@@ -120,7 +120,6 @@ describe('primitives barrel', () => {
           'loadSparseMatcher',
           'materializeTree',
           'materializeWorktreeFromHead',
-
           'MAX_SPARSE_PATTERN_FILE_BYTES',
           'mergeBase',
           'parseIniSections',
