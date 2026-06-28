@@ -286,31 +286,28 @@ describe('findBisection', () => {
 
   // ─── Diamond: best_bisection tie-break (list-order, strict >) ────────────────
 
-  describe(
-    'Given diamond all=6 (base→A1→A2 ∥ base→B1→B2 →M→top, good=base), ' + 'When finding bisection',
-    () => {
-      it('Then midpoint is B2 (list-order tie-break over A2, both distance=2)', () => {
-        // Arrange — oldest-first list: B1, A1, B2, A2, M, top
-        // B2 appears before A2 so strict-`>` keeps B2 as winner.
-        const sut = findBisection;
-        const b1 = c('B1', []);
-        const a1 = c('A1', []);
-        const b2 = c('B2', ['B1']);
-        const a2 = c('A2', ['A1']);
-        const m = c('M', ['A2', 'B2']);
-        const top = c('top', ['M']);
-        const candidates = [b1, a1, b2, a2, m, top];
+  describe('Given diamond all=6 (base→A1→A2 ∥ base→B1→B2 →M→top, good=base), When finding bisection', () => {
+    it('Then midpoint is B2 (list-order tie-break over A2, both distance=2)', () => {
+      // Arrange — oldest-first list: B1, A1, B2, A2, M, top
+      // B2 appears before A2 so strict-`>` keeps B2 as winner.
+      const sut = findBisection;
+      const b1 = c('B1', []);
+      const a1 = c('A1', []);
+      const b2 = c('B2', ['B1']);
+      const a2 = c('A2', ['A1']);
+      const m = c('M', ['A2', 'B2']);
+      const top = c('top', ['M']);
+      const candidates = [b1, a1, b2, a2, m, top];
 
-        // Act
-        const result = sut(candidates);
+      // Act
+      const result = sut(candidates);
 
-        // Assert
-        expect(result?.nextCommit).toBe(b2.id);
-        expect(result?.reaches).toBe(2);
-        expect(result?.candidateCount).toBe(6);
-      });
-    },
-  );
+      // Assert
+      expect(result?.nextCommit).toBe(b2.id);
+      expect(result?.reaches).toBe(2);
+      expect(result?.candidateCount).toBe(6);
+    });
+  });
 
   describe('Given diamond all=4 (good=A1,B1: candidates=B2,A2,M,top), When finding bisection', () => {
     it('Then midpoint is B2 with reaches=1 (list-order tie-break)', () => {
@@ -334,25 +331,50 @@ describe('findBisection', () => {
 
   // ─── strict-`>` tie-break isolation ─────────────────────────────────────────
 
-  describe(
-    'Given two candidates with equal distance, first in list vs second, ' +
-      'When finding bisection',
-    () => {
-      it('Then the FIRST candidate (earlier in list) wins — strict > keeps earlier', () => {
-        // Arrange — a=seed, b=seed, all=2; both have dist=min(1,1)=1
-        // strict `>` means the first one found wins; a comes before b in the list.
+  describe('Given two candidates with equal distance, first in list vs second, When finding bisection', () => {
+    it('Then the FIRST candidate (earlier in list) wins — strict > keeps earlier', () => {
+      // Arrange — a=seed, b=seed, all=2; both have dist=min(1,1)=1
+      // strict `>` means the first one found wins; a comes before b in the list.
+      const sut = findBisection;
+      const a = c('aa', []);
+      const b = c('bb', []);
+      const candidates = [a, b]; // a is earlier
+
+      // Act
+      const result = sut(candidates);
+
+      // Assert — a wins (first in list when tied)
+      expect(result?.nextCommit).toBe(a.id);
+      expect(result?.reaches).toBe(1);
+    });
+  });
+
+  // ─── Fill convergence: deferred-parent path ───────────────────────────────
+
+  describe('Given a reversed-order linear chain (children before parents), When finding bisection', () => {
+    it(
+      'Then fill defers the grandchild on the first pass and completes on the second, ' +
+        'returning the middle commit via approx_halfway',
+      () => {
+        // Arrange — [child3, child2, child1] reversed: grandchild first, root last.
+        // child1: no in-set parents → seeded (weight=1).
+        // fill pass 1: child3 deferred (child2 not yet weighted, parent-weight undefined);
+        //              child2 filled from seeded child1 → weight=2;
+        //              approx_halfway(2,3)=|4-3|=1 fires → returned immediately.
         const sut = findBisection;
-        const a = c('aa', []);
-        const b = c('bb', []);
-        const candidates = [a, b]; // a is earlier
+        const child1 = c('ch1', []);
+        const child2 = c('ch2', ['ch1']);
+        const child3 = c('ch3', ['ch2']);
+        const candidates = [child3, child2, child1]; // reverse order
 
         // Act
         const result = sut(candidates);
 
-        // Assert — a wins (first in list when tied)
-        expect(result?.nextCommit).toBe(a.id);
-        expect(result?.reaches).toBe(1);
-      });
-    },
-  );
+        // Assert — child2 is the midpoint: weight=2, candidateCount=3
+        expect(result?.nextCommit).toBe(child2.id);
+        expect(result?.reaches).toBe(2);
+        expect(result?.candidateCount).toBe(3);
+      },
+    );
+  });
 });

@@ -21,8 +21,7 @@ export const countDistance = (
   while (stack.length > 0) {
     const id = stack.pop() as ObjectId;
     if (visited.has(id)) continue;
-    const candidate = byId.get(id);
-    if (candidate === undefined) continue;
+    const candidate = byId.get(id) as BisectCandidate;
     visited.add(id);
     for (const parentId of candidate.parents) {
       if (!visited.has(parentId)) {

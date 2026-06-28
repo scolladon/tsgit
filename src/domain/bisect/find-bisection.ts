@@ -27,7 +27,7 @@ const bestBisection = (
   let bestDist = -1;
   let bestWeight = 0;
   for (const c of candidates) {
-    const w = weights.get(c.id) ?? 0;
+    const w = weights.get(c.id) as number;
     const dist = Math.min(w, all - w);
     if (dist > bestDist) {
       bestDist = dist;
@@ -79,9 +79,7 @@ const tryFillOne = (
   all: number,
 ): Bisection | null | undefined => {
   if (weights.has(c.id) || c.parents.length !== 1) return undefined;
-  const parentId: ObjectId | undefined = c.parents[0];
-  if (parentId === undefined) return undefined;
-  const parentWeight = weights.get(parentId);
+  const parentWeight = weights.get(c.parents[0] as ObjectId);
   if (parentWeight === undefined) return undefined;
   const w = parentWeight + 1;
   weights.set(c.id, w);

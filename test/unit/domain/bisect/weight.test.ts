@@ -48,55 +48,47 @@ describe('countDistance', () => {
     });
   });
 
-  describe(
-    'Given a diamond merge where M has parents A2 and B2 each with depth 2, ' +
-      'When counting distance from M',
-    () => {
-      it('Then weight is 5 (M + A2 + A1 + B2 + B1, union — not a sum)', () => {
-        // Arrange
-        const sut = countDistance;
-        const a1 = makeCandidate('a1', []);
-        const b1 = makeCandidate('b1', []);
-        const a2 = makeCandidate('a2', ['a1']);
-        const b2 = makeCandidate('b2', ['b1']);
-        // M has two in-set parents: A2 and B2
-        const m = makeCandidate('m', ['a2', 'b2']);
-        const candidates = [a1, b1, a2, b2, m];
-        const byId = new Map(candidates.map((c) => [c.id, c]));
+  describe('Given a diamond merge where M has parents A2 and B2 each with depth 2, When counting distance from M', () => {
+    it('Then weight is 5 (M + A2 + A1 + B2 + B1, union — not a sum)', () => {
+      // Arrange
+      const sut = countDistance;
+      const a1 = makeCandidate('a1', []);
+      const b1 = makeCandidate('b1', []);
+      const a2 = makeCandidate('a2', ['a1']);
+      const b2 = makeCandidate('b2', ['b1']);
+      // M has two in-set parents: A2 and B2
+      const m = makeCandidate('m', ['a2', 'b2']);
+      const candidates = [a1, b1, a2, b2, m];
+      const byId = new Map(candidates.map((c) => [c.id, c]));
 
-        // Act
-        const result = sut(m.id, byId);
+      // Act
+      const result = sut(m.id, byId);
 
-        // Assert — union of {M,A2,A1} and {M,B2,B1} = {M,A2,A1,B2,B1} = 5
-        expect(result).toBe(5);
-      });
-    },
-  );
+      // Assert — union of {M,A2,A1} and {M,B2,B1} = {M,A2,A1,B2,B1} = 5
+      expect(result).toBe(5);
+    });
+  });
 
-  describe(
-    'Given an octopus merge with 3 in-set parents each with 1 ancestor, ' +
-      'When counting distance from the octopus',
-    () => {
-      it('Then weight is 7 (octopus + 3 parents + 3 grandparents, union)', () => {
-        // Arrange
-        const sut = countDistance;
-        const g1 = makeCandidate('g1', []);
-        const g2 = makeCandidate('g2', []);
-        const g3 = makeCandidate('g3', []);
-        const p1 = makeCandidate('p1', ['g1']);
-        const p2 = makeCandidate('p2', ['g2']);
-        const p3 = makeCandidate('p3', ['g3']);
-        // octopus merge with 3 parents
-        const oct = makeCandidate('oct', ['p1', 'p2', 'p3']);
-        const candidates = [g1, g2, g3, p1, p2, p3, oct];
-        const byId = new Map(candidates.map((c) => [c.id, c]));
+  describe('Given an octopus merge with 3 in-set parents each with 1 ancestor, When counting distance from the octopus', () => {
+    it('Then weight is 7 (octopus + 3 parents + 3 grandparents, union)', () => {
+      // Arrange
+      const sut = countDistance;
+      const g1 = makeCandidate('g1', []);
+      const g2 = makeCandidate('g2', []);
+      const g3 = makeCandidate('g3', []);
+      const p1 = makeCandidate('p1', ['g1']);
+      const p2 = makeCandidate('p2', ['g2']);
+      const p3 = makeCandidate('p3', ['g3']);
+      // octopus merge with 3 parents
+      const oct = makeCandidate('oct', ['p1', 'p2', 'p3']);
+      const candidates = [g1, g2, g3, p1, p2, p3, oct];
+      const byId = new Map(candidates.map((c) => [c.id, c]));
 
-        // Act
-        const result = sut(oct.id, byId);
+      // Act
+      const result = sut(oct.id, byId);
 
-        // Assert — oct + p1+g1 + p2+g2 + p3+g3 = 7
-        expect(result).toBe(7);
-      });
-    },
-  );
+      // Assert — oct + p1+g1 + p2+g2 + p3+g3 = 7
+      expect(result).toBe(7);
+    });
+  });
 });
