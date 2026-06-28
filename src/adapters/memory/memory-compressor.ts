@@ -88,16 +88,19 @@ async function runTransform(
   data: Uint8Array,
   transform: TransformStream<Uint8Array, Uint8Array> | CompressionStream | DecompressionStream,
 ): Promise<Uint8Array> {
+  const ts = transform as unknown as TransformStream<Uint8Array, Uint8Array>;
   const source = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(data);
       controller.close();
     },
   });
-  const stream = source.pipeThrough(
-    transform as unknown as TransformStream<Uint8Array, Uint8Array>,
-  );
-  const reader = stream.getReader();
+  // pipeTo instead of pipeThrough so we hold the writable-side promise and can
+  // attach a no-op rejection handler. pipeThrough keeps that promise internal —
+  // on workerd, closing a DecompressionStream with incomplete data rejects the
+  // writable side, which lands as an uncaught rejection that crashes the worker.
+  const pumped = source.pipeTo(ts.writable).catch(() => {});
+  const reader = ts.readable.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
@@ -106,6 +109,7 @@ async function runTransform(
     chunks.push(value);
     total += value.length;
   }
+  await pumped;
   const out = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {

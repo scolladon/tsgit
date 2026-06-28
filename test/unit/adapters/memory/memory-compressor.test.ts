@@ -225,6 +225,81 @@ describe('MemoryCompressor', () => {
       });
     });
 
+    describe('Given a DecompressionStream whose writable.close() rejects on incomplete data (simulating workerd)', () => {
+      describe('When streamInflate', () => {
+        it('Then produces no unhandled rejection and returns the adler32-validated bytesConsumed', async () => {
+          // Arrange — build a real zlib stream so we have a known valid boundary
+          const sut = new MemoryCompressor();
+          const payload = new Uint8Array([4, 5, 6]);
+          const fullStream = await sut.deflate(payload);
+          const streamLen = fullStream.length;
+
+          // workerd rejects writable.close() on incomplete data; simulate it so
+          // the mock only succeeds when it receives the full stream (length = streamLen).
+          const capturedPayload = payload;
+          const capturedStreamLen = streamLen;
+          globals.DecompressionStream = class WorkerdLikeDecompressionStream {
+            private readonly _readable: ReadableStream<Uint8Array>;
+            private readonly _writable: WritableStream<Uint8Array>;
+            constructor(_format: string) {
+              const out = capturedPayload;
+              const minLen = capturedStreamLen;
+              let totalLen = 0;
+              let readableCtrl!: ReadableStreamDefaultController<Uint8Array>;
+              this._readable = new ReadableStream<Uint8Array>({
+                start(ctrl) {
+                  readableCtrl = ctrl;
+                },
+              });
+              this._writable = new WritableStream<Uint8Array>({
+                write(chunk) {
+                  totalLen += chunk.length;
+                },
+                close(): Promise<void> {
+                  if (totalLen < minLen) {
+                    const err = new TypeError(
+                      'Called close() on a decompression stream with incomplete data',
+                    );
+                    readableCtrl.error(err);
+                    // Reject the close() promise — this is the uncaught rejection
+                    // workerd produces when using pipeThrough (writable side is hidden).
+                    return Promise.reject(err);
+                  }
+                  readableCtrl.enqueue(out);
+                  readableCtrl.close();
+                  return Promise.resolve();
+                },
+              });
+            }
+            get readable() {
+              return this._readable;
+            }
+            get writable() {
+              return this._writable;
+            }
+          };
+
+          // Track any unhandled rejections that fire during the call
+          const unhandled: unknown[] = [];
+          const onUnhandled = (reason: unknown) => {
+            unhandled.push(reason);
+          };
+          process.on('unhandledRejection', onUnhandled);
+
+          // Act
+          const result = await sut.streamInflate(fullStream, 0);
+          // Yield to the microtask queue so any suppressed-but-leaked rejections surface
+          await Promise.resolve();
+
+          // Assert — correct result, zero unhandled rejections
+          process.off('unhandledRejection', onUnhandled);
+          expect(result.bytesConsumed).toBe(fullStream.length);
+          expect(Array.from(result.output)).toEqual([4, 5, 6]);
+          expect(unhandled).toHaveLength(0);
+        });
+      });
+    });
+
     describe('Given deflate called with an explicit level', () => {
       describe('When level=9 is passed', () => {
         it('Then output round-trips correctly and equals deflate with no level (level ignored)', async () => {
