@@ -93,7 +93,7 @@ refs/notes/<name>   ──▶  commit ──▶ tree ──▶ entries
   explicit `ref` → `GIT_NOTES_REF` → `core.notesRef` → default (ADR-433, §10).
 - The notes **tree** maps an annotated object's oid → its note blob. git keeps
   the tree **flat** (one entry `100644 <full-hex> <note-blob>`) until a
-  distribution-dependent point, then reorganises it into a recursive **one-byte
+  distribution-dependent point, then reorganizes it into a recursive **one-byte
   (two-hex) fanout** (`XX/<remaining-hex>`). tsgit reproduces **both** layouts
   byte-for-byte, reading and writing, via the trie algorithm in §11.
 - Every mutation (add/force/remove) **commits a new notes commit** whose parent
@@ -124,7 +124,7 @@ notes commit:
 
     Notes added by 'git notes add'           ← fixed message (affects the commit oid)
 tree <T>:
-    100644 blob <noteblob>   388733f5…  (full-hex annotated oid, FLAT)
+    100644 blob <note-blob>   388733f5…  (full-hex annotated oid, FLAT)
 note blob bytes:  h e l l o   n o t e \n     ← exactly the input + git's one trailing \n (porcelain, §5)
 ```
 
@@ -172,8 +172,8 @@ remove the LAST note:         tree becomes the empty tree 4b825dc642cb6eb9a060e5
 ### 4.5 Ref selection (ADR-433)
 
 `GIT_NOTES_REF=refs/notes/custom git notes add …` writes `refs/notes/custom`;
-`git config core.notesRef refs/notes/viaconfig` then `git notes add …` writes
-`refs/notes/viaconfig`; an explicit `git notes --ref=…` argument overrides both.
+`git config core.notesRef refs/notes/via-config` then `git notes add …` writes
+`refs/notes/via-config`; an explicit `git notes --ref=…` argument overrides both.
 Precedence (pinned working): **explicit arg > `GIT_NOTES_REF` env > `core.notesRef`
 config > default `refs/notes/commits`** (§10).
 
@@ -188,8 +188,8 @@ $ git notes show <obj>       ← the note blob content
 
 ```
 N annotated objects, flat until a threshold, then a recursive one-byte fanout:
-  flat:    100644 <40-hex>            <noteblob>
-  fanned:  040000 <2-hex>/            <subtree>   →  100644 <38-hex> <noteblob>  (recursive)
+  flat:    100644 <40-hex>            <note-blob>
+  fanned:  040000 <2-hex>/            <subtree>   →  100644 <38-hex> <note-blob>  (recursive)
 flip point:  distribution-dependent (observed N=80 for one oid set, N=99 for another), NOT a fixed count
 stickiness:  removing notes back below the flip does NOT collapse fanned → flat (the fanout is sticky)
 ```
@@ -475,7 +475,7 @@ pass should sanity-check the capability for minimality (ADR-433 flags this).
 ## 11. The full faithful fanout algorithm (ADR-432)
 
 git keeps a notes tree **flat** until a distribution-dependent point, then
-reorganises it into a recursive one-byte fanout; the flip is **sticky** (§4.7).
+reorganizes it into a recursive one-byte fanout; the flip is **sticky** (§4.7).
 This is git's in-memory 16-way nibble-trie + `determine_fanout` heuristic
 (`notes.c`). tsgit reproduces the **behaviour** byte-for-byte at all N, reading
 and writing, across add/remove/force sequences. The model below is the

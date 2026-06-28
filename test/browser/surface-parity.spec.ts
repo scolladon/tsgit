@@ -34,6 +34,13 @@ interface BrowserRepo {
   init: () => Promise<unknown>;
   add: (paths: ReadonlyArray<string>) => Promise<unknown>;
   commit: (opts: { message: string; author: Author }) => Promise<{ id: string; branch?: string }>;
+  config: {
+    set: (input: {
+      key: string;
+      value: string;
+      scope: string;
+    }) => Promise<{ key: string; value: string; scope: string }>;
+  };
   log: () => Promise<ReadonlyArray<LogEntry>>;
   branch: {
     create: (input: { name: string }) => Promise<{ name: string; id: string }>;
@@ -41,6 +48,19 @@ interface BrowserRepo {
     delete: (input: { name: string }) => Promise<{ name: string }>;
   };
   checkout: (opts: { rev: string }) => Promise<unknown>;
+  notes: {
+    add: (input: {
+      object: string;
+      content: Uint8Array;
+    }) => Promise<{ notesCommit: string; note: string }>;
+    read: (input: { object: string }) => Promise<{
+      object: string;
+      note: string;
+      content: Uint8Array;
+    } | null>;
+    list: (input?: { ref?: string }) => Promise<ReadonlyArray<{ object: string; note: string }>>;
+    remove: (input: { object: string }) => Promise<{ notesCommit: string }>;
+  };
   tag: {
     create: (input: { name: string }) => Promise<{ name: string; id: string }>;
     list: () => Promise<{ tags: ReadonlyArray<TagInfo> }>;
@@ -242,6 +262,65 @@ test.describe('surface parity', () => {
       await test.step('delete removes v1', () => {
         expect(result.deleted.name).toBe('refs/tags/v1');
         expect(result.remaining.tags.map((info) => info.name)).not.toContain('refs/tags/v1');
+      });
+    });
+  });
+
+  test.describe('notes', () => {
+    test('Given a seeded repo, When add→list→read→remove a note, Then the note lifecycle is observable', async ({
+      readyPage,
+    }) => {
+      const seed = await seedRepo(readyPage);
+
+      const result = await readyPage.evaluate(async (commitId) => {
+        const tsgit = (window as unknown as { __tsgit: Tsgit }).__tsgit;
+        const rootHandle = await navigator.storage.getDirectory();
+        const repo = await tsgit.openRepository({ rootHandle });
+        try {
+          await repo.config.set({ key: 'user.name', value: 'tsgit Parity', scope: 'local' });
+          await repo.config.set({
+            key: 'user.email',
+            value: 'parity@tsgit.dev',
+            scope: 'local',
+          });
+
+          const content = new TextEncoder().encode('browser note');
+          await repo.notes.add({ object: commitId, content });
+
+          const listedAfterAdd = await repo.notes.list();
+          const readEntry = await repo.notes.read({ object: commitId });
+          const contentAfterAdd =
+            readEntry !== null ? new TextDecoder().decode(readEntry.content) : null;
+
+          await repo.notes.remove({ object: commitId });
+          const readAfterRemove = await repo.notes.read({ object: commitId });
+          const listedAfterRemove = await repo.notes.list();
+
+          return {
+            listLenAfterAdd: listedAfterAdd.length,
+            contentAfterAdd,
+            readAfterRemoveIsNull: readAfterRemove === null,
+            listLenAfterRemove: listedAfterRemove.length,
+          };
+        } finally {
+          await repo.dispose();
+        }
+      }, seed.commitId);
+
+      await test.step('list has one entry after add', () => {
+        expect(result.listLenAfterAdd).toBe(1);
+      });
+
+      await test.step('read returns the note content', () => {
+        expect(result.contentAfterAdd).toBe('browser note');
+      });
+
+      await test.step('read returns null after remove', () => {
+        expect(result.readAfterRemoveIsNull).toBe(true);
+      });
+
+      await test.step('list is empty after remove', () => {
+        expect(result.listLenAfterRemove).toBe(0);
       });
     });
   });

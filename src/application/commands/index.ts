@@ -158,6 +158,10 @@ export {
 export { bindConfigNamespace, type ConfigNamespace } from './internal/config-namespace.js';
 export { bindMergeNamespace, type MergeNamespace } from './internal/merge-namespace.js';
 export {
+  bindNotesNamespace,
+  type NotesNamespace,
+} from './internal/notes-namespace.js';
+export {
   bindRebaseNamespace,
   type RebaseNamespace,
 } from './internal/rebase-namespace.js';
@@ -196,6 +200,20 @@ export {
   type NameRevStep,
   nameRev,
 } from './name-rev.js';
+export {
+  type NotesAddInput,
+  type NotesAddResult,
+  type NotesListInput,
+  type NotesListResult,
+  type NotesReadInput,
+  type NotesReadResult,
+  type NotesRemoveInput,
+  type NotesRemoveResult,
+  notesAdd,
+  notesList,
+  notesRead,
+  notesRemove,
+} from './notes.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
 export {

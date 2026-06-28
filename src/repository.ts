@@ -208,6 +208,8 @@ export interface Repository {
   readonly merge: commands.MergeNamespace;
   readonly mv: BindCtx<typeof commands.mv>;
   readonly nameRev: BindCtx<typeof commands.nameRev>;
+  /** Nested `repo.notes.{add,read,list,remove}` namespace. */
+  readonly notes: commands.NotesNamespace;
   readonly pull: BindCtx<typeof commands.pull>;
   readonly push: BindCtx<typeof commands.push>;
   readonly readFileAt: BindCtx<typeof commands.readFileAt>;
@@ -536,6 +538,7 @@ export const openRepository = async (
       guard();
       return commands.nameRev(ctx, rev, nameRevOpts);
     }) as Repository['nameRev'],
+    notes: commands.bindNotesNamespace(ctx, guard),
     pull: ((pullOpts) => {
       guard();
       return commands.pull(ctx, pullOpts);

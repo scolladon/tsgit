@@ -15,6 +15,7 @@ import { mergeContinueScenario } from './merge-continue.scenario.ts';
 import { mergeFfScenario } from './merge-ff.scenario.ts';
 import { mvScenario } from './mv.scenario.ts';
 import { nameRevScenario } from './name-rev.scenario.ts';
+import { notesScenario } from './notes.scenario.ts';
 import { phase202PrimitivesScenario } from './phase-20-2-primitives.scenario.ts';
 import { rangeDiffScenario } from './range-diff.scenario.ts';
 import { readPipelineScenario } from './read-pipeline.scenario.ts';
@@ -64,6 +65,7 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   rangeDiffScenario,
   whatchangedScenario,
   nameRevScenario,
+  notesScenario,
   worktreeScenario,
   grepScenario,
   fsckScenario,
