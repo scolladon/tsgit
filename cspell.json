@@ -952,7 +952,8 @@
     "pluralised",
     "sneakernet",
     "unopenable",
-    "prepass"
+    "prepass",
+    "uncatchable"
   ],
   "ignorePaths": [
     "node_modules",
