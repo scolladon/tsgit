@@ -1,6 +1,6 @@
 export type { ApplyChangesetOpts, ApplyChangesetResult } from './apply-changeset.js';
 export { applyChangeset, isWorkingTreeDirty } from './apply-changeset.js';
-export { bisectMidpoint, MAX_BISECT_CANDIDATES } from './bisect-midpoint.js';
+export { bisectMidpoint } from './bisect-midpoint.js';
 export type { BuildIndexFromTreeOpts } from './build-index-from-tree.js';
 export { buildIndexFromTree } from './build-index-from-tree.js';
 export type { BuildPackInput, BuildPackResult } from './build-pack.js';

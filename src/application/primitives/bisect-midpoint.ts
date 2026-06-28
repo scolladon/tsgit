@@ -6,9 +6,6 @@ import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
 import type { BisectMidpoint } from './types.js';
 
-/** Hard cap: prevents unbounded heap growth on degenerate histories. */
-export const MAX_BISECT_CANDIDATES = 1_000_000;
-
 type CommitEntry = {
   readonly date: number;
   readonly parents: ReadonlyArray<ObjectId>;
@@ -20,15 +17,19 @@ const readCommitEntry = async (ctx: Context, id: ObjectId): Promise<CommitEntry>
   return { date: obj.data.committer.timestamp, parents: obj.data.parents };
 };
 
+/**
+ * BFS-paint all commits reachable from `roots` into a Map.
+ * Uses an index-pointer cursor (O(N) traversal; no queue.shift()).
+ */
 const paintReachable = async (
   ctx: Context,
   roots: ReadonlyArray<ObjectId>,
 ): Promise<Map<ObjectId, CommitEntry>> => {
   const visited = new Map<ObjectId, CommitEntry>();
   const queue: ObjectId[] = [...roots];
-  for (;;) {
-    const id = queue.shift();
-    if (id === undefined) break;
+  let head = 0;
+  while (head < queue.length) {
+    const id = queue[head++]!;
     if (visited.has(id)) continue;
     const entry = await readCommitEntry(ctx, id);
     visited.set(id, entry);
@@ -39,29 +40,86 @@ const paintReachable = async (
   return visited;
 };
 
-const byDateAsc = (a: ObjectId, b: ObjectId, map: ReadonlyMap<ObjectId, CommitEntry>): number => {
-  const diff = (map.get(a)?.date ?? 0) - (map.get(b)?.date ?? 0);
-  if (diff !== 0) return diff;
-  return a < b ? -1 : a > b ? 1 : 0;
+/**
+ * FIFO-stable priority-queue entry for the bisect candidate walk.
+ * Equal-date tie-break: smaller `ins` (earlier insertion) = higher priority → FIFO.
+ * This replicates git's `prio_queue` insertion-counter tie-break, which is the
+ * only ordering faithful to `do_find_bisection`'s list-order tie-break.
+ * The shared `priority-queue.ts` uses oid as the tie-break (faithful for
+ * order-independent consumers like merge-base/blame) and must NOT be changed.
+ */
+type WalkEntry = { readonly id: ObjectId; readonly date: number; readonly ins: number };
+
+const entryPrecedes = (a: WalkEntry, b: WalkEntry): boolean =>
+  a.date > b.date || (a.date === b.date && a.ins < b.ins);
+
+const enqueueWalkEntry = (queue: WalkEntry[], entry: WalkEntry): void => {
+  let i = 0;
+  while (i < queue.length && !entryPrecedes(entry, queue[i]!)) i += 1;
+  queue.splice(i, 0, entry);
 };
 
-const buildCandidates = (
-  badReachable: Map<ObjectId, CommitEntry>,
-  goodReachable: ReadonlySet<ObjectId>,
-): ReadonlyArray<BisectCandidate> => {
-  const ids = [...badReachable.keys()].filter((id) => !goodReachable.has(id));
-  if (ids.length > MAX_BISECT_CANDIDATES) {
-    throw invalidWalkInput(
-      `bisectMidpoint: candidate count ${ids.length} exceeds MAX_BISECT_CANDIDATES`,
-    );
+/**
+ * Collect commits reachable from `bad` that are NOT in `goodReachable`, in
+ * git's faithful rev-list order: FIFO-stable priority-queue (newest-first,
+ * equal-date FIFO), parents enumerated first-parent-first.  The returned
+ * array is oldest-first (reversed), matching `do_find_bisection`'s expected
+ * input order.
+ *
+ * Mirrors git's `limit_list`: UNINTERESTING commits (good-reachable) are
+ * skipped; the collected newest-first list is reversed before return.
+ */
+const collectCandidatesOldestFirst = async (
+  ctx: Context,
+  bad: ObjectId,
+  goodReachable: ReadonlyMap<ObjectId, CommitEntry>,
+): Promise<ReadonlyArray<BisectCandidate>> => {
+  const commitCache = new Map<ObjectId, CommitEntry>();
+  const getEntry = async (id: ObjectId): Promise<CommitEntry> => {
+    const cached = commitCache.get(id);
+    if (cached !== undefined) return cached;
+    const entry = await readCommitEntry(ctx, id);
+    commitCache.set(id, entry);
+    return entry;
+  };
+
+  const badEntry = await getEntry(bad); // throws if bad is not a commit
+  if (goodReachable.has(bad)) return [];
+
+  let ins = 0;
+  const visited = new Set<ObjectId>();
+  const newestFirst: Array<{
+    readonly id: ObjectId;
+    readonly date: number;
+    readonly parents: ReadonlyArray<ObjectId>;
+  }> = [];
+  const walkQueue: WalkEntry[] = [];
+
+  enqueueWalkEntry(walkQueue, { id: bad, date: badEntry.date, ins: ins++ });
+
+  while (walkQueue.length > 0) {
+    const { id } = walkQueue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const entry = await getEntry(id);
+    newestFirst.push({ id, date: entry.date, parents: entry.parents });
+    for (const parent of entry.parents) {
+      if (!visited.has(parent) && !goodReachable.has(parent)) {
+        const pe = await getEntry(parent);
+        enqueueWalkEntry(walkQueue, { id: parent, date: pe.date, ins: ins++ });
+      }
+    }
   }
-  ids.sort((a, b) => byDateAsc(a, b, badReachable));
-  const inSet = new Set(ids);
-  return ids.map((id) => ({
-    id,
-    parents: (badReachable.get(id)?.parents ?? []).filter((p) => inSet.has(p)),
-    date: badReachable.get(id)?.date ?? 0,
-  }));
+
+  const inSet = new Set(newestFirst.map((e) => e.id));
+  return newestFirst
+    .slice()
+    .reverse()
+    .map((e) => ({
+      id: e.id,
+      parents: e.parents.filter((p) => inSet.has(p)),
+      date: e.date,
+    }));
 };
 
 const deriveMidpoint = (
@@ -88,11 +146,8 @@ export const bisectMidpoint = async (
   good: ReadonlyArray<ObjectId>,
   bad: ObjectId,
 ): Promise<BisectMidpoint | undefined> => {
-  const [badReachable, goodReachable] = await Promise.all([
-    paintReachable(ctx, [bad]),
-    paintReachable(ctx, good),
-  ]);
-  const candidates = buildCandidates(badReachable, new Set(goodReachable.keys()));
+  const goodReachable = await paintReachable(ctx, good);
+  const candidates = await collectCandidatesOldestFirst(ctx, bad, goodReachable);
   const bisection = findBisection(candidates);
   return bisection === undefined ? undefined : deriveMidpoint(bisection);
 };
