@@ -1,8 +1,8 @@
 import fc from 'fast-check';
 import { assert, describe, expect, it } from 'vitest';
-import type { BisectCandidate } from '../../../../src/domain/bisect/bisect.js';
-import { findBisection } from '../../../../src/domain/bisect/bisect.js';
 import { estimateSteps } from '../../../../src/domain/bisect/estimate-steps.js';
+import { findBisection } from '../../../../src/domain/bisect/find-bisection.js';
+import type { BisectCandidate } from '../../../../src/domain/bisect/types.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { arbAll, arbCandidateDag } from './arbitraries.js';
 

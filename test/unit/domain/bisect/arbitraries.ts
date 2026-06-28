@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import type { BisectCandidate } from '../../../../src/domain/bisect/bisect.js';
+import type { BisectCandidate } from '../../../../src/domain/bisect/types.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { BisectCandidate } from '../../../../src/domain/bisect/bisect.js';
+import type { BisectCandidate } from '../../../../src/domain/bisect/types.js';
 import { countDistance } from '../../../../src/domain/bisect/weight.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { BisectCandidate } from '../../../../src/domain/bisect/bisect.js';
-import { findBisection } from '../../../../src/domain/bisect/bisect.js';
+import { findBisection } from '../../../../src/domain/bisect/find-bisection.js';
+import type { BisectCandidate } from '../../../../src/domain/bisect/types.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
 const oid = (s: string): ObjectId => s.padStart(40, '0') as ObjectId;
