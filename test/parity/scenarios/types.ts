@@ -17,4 +17,10 @@ export interface Scenario<TResult> {
   readonly inputs: ScenarioInputs;
   readonly expected: TResult;
   readonly run: (repo: Repository, inputs: ScenarioInputs) => Promise<TResult>;
+  /**
+   * Runtimes this scenario is intentionally skipped on, with the reason
+   * documented in the scenario itself. Example: `['workers']` for scenarios
+   * that rely on lenient DecompressionStream behaviour not available in workerd.
+   */
+  readonly unsupportedRuntimes?: readonly string[];
 }

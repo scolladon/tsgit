@@ -383,6 +383,21 @@ exit: 0
 missing/unreadable file fails with `error: could not open '<path>'`, exit 1.
 Unlike `verify`, `list-heads` is **header-only** — it does not parse the pack.
 
+## 4.3a. Runtime limitation — `verify` unsupported on Cloudflare Workers
+
+`verify`'s full per-entry pack walk (ADR-427) uses `streamInflate`'s
+progressive-prefix scan, which feeds `DecompressionStream` truncated deflate
+prefixes by design. Cloudflare's workerd runtime throws an internal exception that
+cannot be caught (`Called close() on a decompression stream with incomplete data`)
+whenever a `DecompressionStream` is closed before the stream is complete.
+
+This is not fixable without vendoring a pure-JS inflate implementation, which was
+considered and declined. Accordingly, `bundle.verify` is a deliberate capability
+limitation on the Cloudflare Workers runtime. The parity scenario is scoped out
+of the workers runner via `unsupportedRuntimes: ['workers']`; it continues to run
+on Node, Deno, Bun, and browsers, where `DecompressionStream` handles early close
+gracefully. `bundle.create` and `bundle.listHeads` are unaffected on all runtimes.
+
 ## 5. A note on pack bytes vs the byte-identity contract
 
 The header bytes (magic, prerequisite lines, ref lines, blank line) are part of

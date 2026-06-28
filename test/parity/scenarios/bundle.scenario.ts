@@ -21,6 +21,13 @@ interface BundleScenarioResult {
 
 export const bundleScenario: Scenario<BundleScenarioResult> = {
   name: 'bundle',
+  // verify's full per-entry pack walk feeds DecompressionStream truncated deflate
+  // prefixes by design (progressive-prefix scan). workerd rejects incomplete
+  // streams with an uncatchable internal exception ("Called close() on a
+  // decompression stream with incomplete data"), crashing the worker. Vendoring
+  // a pure-JS inflate was declined. The scenario runs on Node/Deno/Bun/browsers
+  // where DecompressionStream is lenient about early close.
+  unsupportedRuntimes: ['workers'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     // --all on a fresh single-commit repo: HEAD + refs/heads/main

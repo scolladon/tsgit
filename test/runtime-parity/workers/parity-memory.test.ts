@@ -27,7 +27,12 @@ const stageFiles = (inputs: ScenarioInputs): Readonly<Record<string, Uint8Array>
   return files;
 };
 
-describe.each(SCENARIOS)('Given the $name scenario', (scenario) => {
+const WORKERS_RUNTIME = 'workers';
+
+const supported = SCENARIOS.filter((s) => !s.unsupportedRuntimes?.includes(WORKERS_RUNTIME));
+const skipped = SCENARIOS.filter((s) => s.unsupportedRuntimes?.includes(WORKERS_RUNTIME));
+
+describe.each(supported)('Given the $name scenario', (scenario) => {
   describe('When the Workers driver runs it', () => {
     it('Then the result matches the scenario expected golden', async () => {
       // Arrange
@@ -38,6 +43,16 @@ describe.each(SCENARIOS)('Given the $name scenario', (scenario) => {
 
       // Assert
       expect(sut).toEqual(scenario.expected);
+    });
+  });
+});
+
+// Scenarios intentionally excluded from the workers runner are listed here so
+// the exclusion is visible in test output rather than silently dropped.
+describe.each(skipped)('Given the $name scenario', (scenario) => {
+  describe.skip(`When the Workers driver runs it [SKIPPED — unsupported on ${WORKERS_RUNTIME}: see scenario for reason]`, () => {
+    it('Then the result matches the scenario expected golden', () => {
+      expect(scenario.expected).toBeDefined();
     });
   });
 });

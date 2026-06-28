@@ -224,6 +224,19 @@ const filtered = await repo.bundle.listHeads({
 - `INVALID_PACK_*` / `INVALID_DELTA` — (verify only) the embedded packfile is
   corrupt; thrown when a pack entry fails to inflate or the trailer is bad.
 
+## Runtime support
+
+`bundle.create` and `bundle.listHeads` work on all adapters and runtimes (Node,
+Deno, Bun, browsers, Cloudflare Workers).
+
+`bundle.verify` performs a full per-entry pack walk that feeds `DecompressionStream`
+truncated deflate prefixes by design. Node, Deno, Bun, and browsers handle early
+stream close gracefully. Cloudflare Workers (workerd) throws an internal exception
+that cannot be caught (`Called close() on a decompression stream with incomplete
+data`) whenever a `DecompressionStream` is closed with an incomplete stream, so
+`bundle.verify` is **unsupported on Cloudflare Workers**. Use `bundle.listHeads`
+as a header-only alternative on that runtime.
+
 ## See also
 
 - Related commands: [`archive`](archive.md), [`catFile`](cat-file.md)
