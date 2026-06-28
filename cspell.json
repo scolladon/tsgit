@@ -957,7 +957,9 @@
     "randomised",
     "licence",
     "TREESAME",
-    "maximising"
+    "maximising",
+    "afirst",
+    "bfirst"
   ],
   "ignorePaths": [
     "node_modules",
