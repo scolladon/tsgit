@@ -12,7 +12,7 @@ import { AUTHOR } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 
 interface BisectMidpointResult {
-  readonly nextCommitDefined: boolean;
+  readonly nextCommit: string;
   readonly candidateCount: number;
   readonly remainingIfGood: number;
   readonly remainingIfBad: number;
@@ -23,7 +23,8 @@ export const bisectMidpointScenario: Scenario<BisectMidpointResult> = {
   name: 'bisect-midpoint',
   inputs: { files: [], author: AUTHOR, message: 'seed' },
   expected: {
-    nextCommitDefined: true,
+    // mid commit: root→mid→bad linear chain; mid is the exact halving point.
+    nextCommit: 'abf61ec362a9da85f809d8bcb7f2471b84574d46',
     candidateCount: 2,
     remainingIfGood: 0,
     remainingIfBad: 0,
@@ -51,7 +52,7 @@ export const bisectMidpointScenario: Scenario<BisectMidpointResult> = {
 
     const result = await repo.primitives.bisectMidpoint([root], bad);
     return {
-      nextCommitDefined: result !== undefined,
+      nextCommit: result?.nextCommit ?? '',
       candidateCount: result?.candidateCount ?? 0,
       remainingIfGood: result?.remainingIfGood ?? 0,
       remainingIfBad: result?.remainingIfBad ?? 0,
