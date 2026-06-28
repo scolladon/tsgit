@@ -14,6 +14,8 @@ export interface ParsedConfig {
     readonly attributesFile?: string;
     readonly logAllRefUpdates?: boolean | 'always';
     readonly hooksPath?: string;
+    /** `core.notesRef` — default notes ref when neither explicit arg nor `GIT_NOTES_REF` is set. */
+    readonly notesRef?: string;
     readonly sparseCheckout?: boolean;
     readonly sparseCheckoutCone?: boolean;
     readonly looseCompression?: number;
@@ -1025,6 +1027,7 @@ type MutableCore = {
   attributesFile?: string;
   logAllRefUpdates?: boolean | 'always';
   hooksPath?: string;
+  notesRef?: string;
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
   looseCompression?: number;
@@ -1075,6 +1078,7 @@ const applyCoreEntry = (
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
   if (lowered === 'attributesfile') return { ...core, attributesFile: value };
   if (lowered === 'hookspath') return { ...core, hooksPath: value };
+  if (lowered === 'notesref') return { ...core, notesRef: value };
   if (lowered === 'loosecompression' || lowered === 'compression') {
     return applyLooseCompressionEntry(core, lowered, value);
   }
@@ -1300,6 +1304,7 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
     ...(core.attributesFile !== undefined ? { attributesFile: core.attributesFile } : {}),
     ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
     ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
+    ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
     ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
     ...(core.sparseCheckoutCone !== undefined
       ? { sparseCheckoutCone: core.sparseCheckoutCone }

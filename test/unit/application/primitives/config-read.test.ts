@@ -258,6 +258,40 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given [core] notesRef set', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.notesRef carries the value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  notesRef = refs/notes/custom\n');
+        const sut = readConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.core?.notesRef).toBe('refs/notes/custom');
+      });
+    });
+  });
+
+  describe('Given [core] notesref in lowercase', () => {
+    describe('When readConfig', () => {
+      it('Then key match is case-insensitive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  notesref = refs/notes/custom\n');
+        const sut = readConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.core?.notesRef).toBe('refs/notes/custom');
+      });
+    });
+  });
+
   describe('Given a config with [user] name and email', () => {
     describe('When readConfig', () => {
       it('Then parsed.user is populated', async () => {

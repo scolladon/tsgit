@@ -235,7 +235,9 @@ export type CommandError =
       readonly code: 'BUNDLE_PREREQUISITE_NOT_COMMIT';
       readonly oid: ObjectId;
       readonly objectType: string;
-    };
+    }
+  | { readonly code: 'NOTES_ALREADY_EXIST'; readonly object: ObjectId }
+  | { readonly code: 'NOTES_OBJECT_HAS_NONE'; readonly object: ObjectId };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -709,3 +711,13 @@ export const bundleUnsupportedSerializeVersion = (version: number): TsgitError =
 // come from `peel(ctx, oid, 'commit')`); this error surfaces store corruption.
 export const bundlePrerequisiteNotCommit = (oid: ObjectId, objectType: string): TsgitError =>
   new TsgitError({ code: 'BUNDLE_PREREQUISITE_NOT_COMMIT', oid, objectType });
+
+// `notes add` refusal when a note already exists and `force` was not set.
+// git: `error: Cannot add notes. Found existing notes for object <oid>.`
+export const notesAlreadyExist = (object: ObjectId): TsgitError =>
+  new TsgitError({ code: 'NOTES_ALREADY_EXIST', object });
+
+// `notes remove` refusal when the target object carries no note.
+// git: `error: Object <oid> has no note`
+export const notesObjectHasNone = (object: ObjectId): TsgitError =>
+  new TsgitError({ code: 'NOTES_OBJECT_HAS_NONE', object });

@@ -40,6 +40,8 @@ import {
   nonFastForward,
   noOperationInProgress,
   noReachableNames,
+  notesAlreadyExist,
+  notesObjectHasNone,
   nothingToCommit,
   noUpstreamConfigured,
   operationInProgress,
@@ -1589,6 +1591,36 @@ describe('domain commands error — extractDetail message formatting', () => {
           path: '/v3.bundle',
           version: 3,
         });
+      });
+    });
+  });
+
+  describe('Given the notesAlreadyExist error helper', () => {
+    describe('When called with an object oid', () => {
+      it('Then data contains the object oid and message contains oid', () => {
+        // Arrange
+        const sut = notesAlreadyExist;
+        // Act
+        const result = sut(OID1);
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'NOTES_ALREADY_EXIST', object: OID1 });
+        expect(result.message).toContain(OID1);
+      });
+    });
+  });
+
+  describe('Given the notesObjectHasNone error helper', () => {
+    describe('When called with an object oid', () => {
+      it('Then data contains the object oid and message contains oid', () => {
+        // Arrange
+        const sut = notesObjectHasNone;
+        // Act
+        const result = sut(OID1);
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'NOTES_OBJECT_HAS_NONE', object: OID1 });
+        expect(result.message).toContain(OID1);
       });
     });
   });

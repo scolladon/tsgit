@@ -41,6 +41,8 @@ export type {
   IsIgnoredQuery,
 } from './is-ignored.js';
 export { isIgnored } from './is-ignored.js';
+export type { LoadedNotesTree } from './load-notes-tree.js';
+export { loadNotesTree } from './load-notes-tree.js';
 export type { MaterializeTreeOpts, MaterializeTreeResult } from './materialize-tree.js';
 export { materializeTree } from './materialize-tree.js';
 export { materializeWorktreeFromHead } from './materialize-worktree-from-head.js';
@@ -66,6 +68,7 @@ export {
   reflogExists,
   writeReflog,
 } from './reflog-store.js';
+export { DEFAULT_NOTES_REF, resolveNotesRef } from './resolve-notes-ref.js';
 export { resolveRef } from './resolve-ref.js';
 export { type HookInput, runHook, runInformationalHook } from './run-hook.js';
 export { readShallow, updateShallow } from './shallow-file.js';
@@ -92,6 +95,8 @@ export { walkCommitsByDate } from './walk-commits-by-date.js';
 export { walkSubmodules } from './walk-submodules.js';
 export { walkTree } from './walk-tree.js';
 export { walkWorkingTree } from './walk-working-tree.js';
+export type { WriteNotesTreeInput } from './write-notes-tree.js';
+export { writeNotesTree } from './write-notes-tree.js';
 export { writeObject } from './write-object.js';
 export { writeSparsePatternText } from './write-sparse-checkout.js';
 export { writeTree } from './write-tree.js';
