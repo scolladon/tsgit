@@ -378,8 +378,21 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       initBothRepos(pair.peer, pair.ours);
       const env = pinnedEnv();
 
-      oids = makeCommits(pair.peer, FLIP_COUNT, env);
-      makeCommits(pair.ours, FLIP_COUNT, env);
+      // Cheap annotation targets: notes annotate any object, so batch-create the blobs
+      // in one `git hash-object -w` spawn per repo instead of FLIP_COUNT commits — this
+      // keeps the heavy flip hook's subprocess count low enough to finish under the
+      // CPU contention of a full concurrent `validate` run.
+      const makeBlobs = async (dir: string): Promise<ObjectId[]> => {
+        const paths: string[] = [];
+        for (let i = 0; i < FLIP_COUNT; i++) {
+          paths.push(await writeTempNote(`flip-blob-${i}`, `blob-${i}\n`));
+        }
+        return runGit(['-C', dir, 'hash-object', '-w', ...paths])
+          .trim()
+          .split('\n') as ObjectId[];
+      };
+      oids = await makeBlobs(pair.peer);
+      await makeBlobs(pair.ours);
 
       const ctx = createNodeContext({ workDir: pair.ours });
 
