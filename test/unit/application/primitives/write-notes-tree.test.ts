@@ -186,4 +186,54 @@ describe('Given writeNotesTree', () => {
       }
     });
   });
+
+  describe('When writing a trie that emits a multi-segment (slashed) entry name', () => {
+    it('Then the bridge regroups it into a nested subtree, never a slash-named entry', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const innerBlob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('fanned note'),
+      });
+      const readmeBlob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('readme'),
+      });
+      // A fanout subtree '00/' holding a note leaf plus a non-note 'README' (preserved verbatim).
+      const subtreeOid = await writeTree(ctx, [
+        { id: innerBlob, mode: FILE_MODE.REGULAR, name: '0'.repeat(38) },
+        { id: readmeBlob, mode: FILE_MODE.REGULAR, name: 'README' },
+      ]);
+      const trie = loadTrieRoot([{ id: subtreeOid, mode: FILE_MODE.DIRECTORY, name: '00' }]);
+      const read: SubtreeReader = async (oid) => {
+        const obj = await readObject(ctx, oid);
+        return obj.type === 'tree' ? obj.entries : [];
+      };
+      const sut = writeNotesTree;
+
+      // Act
+      const notesCommitOid = await sut(ctx, {
+        trie,
+        read,
+        prevCommitOid: undefined,
+        message: "Notes added by 'git notes add'",
+        author: IDENTITY,
+      });
+
+      // Assert
+      const commit = await readObject(ctx, notesCommitOid);
+      expect(commit.type).toBe('commit');
+      if (commit.type === 'commit') {
+        const root = await readObject(ctx, commit.data.tree);
+        expect(root.type).toBe('tree');
+        if (root.type === 'tree') {
+          const grouped = root.entries.find((entry) => entry.name === '00');
+          expect(grouped?.mode).toBe(FILE_MODE.DIRECTORY);
+          expect(root.entries.every((entry) => !entry.name.includes('/'))).toBe(true);
+        }
+      }
+    });
+  });
 });

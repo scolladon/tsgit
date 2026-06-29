@@ -652,6 +652,45 @@ describe('notes', () => {
     });
   });
 
+  describe('Given a notes tree whose full-oid-named entry is a directory, not a blob', () => {
+    describe('When notesList', () => {
+      it('Then the directory entry is not listed as a note', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const noteBlob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: encoder.encode('note'),
+        });
+        const noteName = 'a'.repeat(40);
+        const dirName = 'c'.repeat(40);
+        const innerTree = await writeTree(ctx, [
+          { id: noteBlob, mode: FILE_MODE.REGULAR, name: 'inner' },
+        ]);
+        const rootTree = await writeTree(ctx, [
+          { id: noteBlob, mode: FILE_MODE.REGULAR, name: noteName },
+          { id: innerTree, mode: FILE_MODE.DIRECTORY, name: dirName },
+        ]);
+        const notesCommit = await createCommit(ctx, {
+          tree: rootTree,
+          parents: [],
+          author,
+          committer: author,
+          message: "Notes added by 'git notes add'",
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/notes/commits`, `${notesCommit}\n`);
+        const sut = notesList;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.object).toBe(noteName);
+      });
+    });
+  });
+
   describe('Given the object is a ref name rather than a full oid', () => {
     describe('When notesAdd with object "HEAD"', () => {
       it('Then it resolves HEAD to its commit and annotates it', async () => {

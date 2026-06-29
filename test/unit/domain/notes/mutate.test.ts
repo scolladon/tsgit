@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InternalSlot, NoteSlot, SubtreeReader } from '../../../../src/domain/notes/index.js';
 import {
+  chainGap,
   createEmptyTrie,
+  EMPTY_SLOT,
   insert,
   lookup,
   remove,
@@ -264,6 +266,16 @@ describe('Given a removal from the notes trie', () => {
       expect(read).toHaveBeenCalledWith(subtreeOid);
       expect(await lookup(result, insideKey, subtreeReader())).toBeUndefined();
     });
+
+    it('Then the emptied slot collapses to empty, not a hollow internal node', async () => {
+      // Arrange
+      const sut = remove;
+      const read = subtreeReader();
+      // Act
+      const result = await sut(lazyTrie(), insideKey, read);
+      // Assert
+      expect(result.slots[1]).toEqual(EMPTY_SLOT);
+    });
   });
 
   describe('When the key shares a slot with a subtree it is not under', () => {
@@ -294,6 +306,22 @@ describe('Given a removal from the notes trie', () => {
       expect(read).toHaveBeenCalledWith(subtreeOid);
       expect((result.slots[1] as InternalSlot).kind).toBe('internal');
       expect(await lookup(result, insideKey, subtreeReader())).toBeUndefined();
+    });
+  });
+});
+
+describe('Given the subtree chain-gap builder', () => {
+  describe('When the prefix spans more nibbles than the entry depth consumes', () => {
+    it('Then it nests one single-child internal per consumed nibble down to the node', () => {
+      // Arrange
+      const sut = chainGap;
+      // Act
+      const result = sut(createEmptyTrie(), '1a2b', 0);
+      // Assert
+      expect(result.kind).toBe('internal');
+      if (result.kind === 'internal') {
+        expect(result.node.slots[10]?.kind).toBe('internal');
+      }
     });
   });
 });

@@ -106,6 +106,17 @@ describe('Given the notes fanout heuristic', () => {
       expect(result).toBe(0);
     });
   });
+
+  describe('When n equals twice a fanout of two and every slot is a branch', () => {
+    it('Then it deepens the fanout to three', () => {
+      // Arrange
+      const sut = determineFanout;
+      // Act
+      const result = sut(fill(subtreeSlot('00')), 2, 2);
+      // Assert
+      expect(result).toBe(3);
+    });
+  });
 });
 
 describe('Given an annotated oid path constructor', () => {

@@ -161,3 +161,27 @@ describe('Given a notes trie with a preserved non-note entry', () => {
     });
   });
 });
+
+describe('Given an internal node wrapping a stray subtree', () => {
+  describe('When the writer recurses into the internal slot', () => {
+    it('Then it threads the deeper child depth so the nested subtree is unpacked', async () => {
+      // Arrange
+      const sut = planWrite;
+      const subtreeOid = oid40('f');
+      const innerBlob = oid40('a');
+      const innerNode = setSlot(createEmptyTrie(), 0, {
+        kind: 'subtree',
+        prefix: '00',
+        oid: subtreeOid,
+      });
+      const trie = setSlot(createEmptyTrie(), 0, { kind: 'internal', node: innerNode });
+      const read = vi.fn<SubtreeReader>(async () => [
+        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
+      ]);
+      // Act
+      await sut(trie, read);
+      // Assert
+      expect(read).toHaveBeenCalledWith(subtreeOid);
+    });
+  });
+});

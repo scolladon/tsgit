@@ -1606,7 +1606,9 @@ describe('domain commands error — extractDetail message formatting', () => {
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'NOTES_ALREADY_EXIST', object: OID1 });
-        expect(result.message).toContain(OID1);
+        expect(result.message).toBe(
+          `NOTES_ALREADY_EXIST: Cannot add notes. Found existing notes for object ${OID1}. Use '-f' to overwrite existing notes`,
+        );
       });
     });
   });
