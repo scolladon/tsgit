@@ -23,21 +23,11 @@ const IDENTITY: AuthorIdentity = {
 
 const noopRead: SubtreeReader = async () => [];
 
-const seedConfig = async (
-  ctx: ReturnType<typeof createMemoryContext>,
-  content: string,
-): Promise<void> => {
-  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
-};
-
-const userConfig = '[user]\n  name = Test User\n  email = test@example.com\n';
-
 describe('Given writeNotesTree', () => {
   describe('When writing an empty trie without a previous commit', () => {
     it('Then creates a notes commit pointing at the empty tree', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await seedConfig(ctx, userConfig);
       const trie = createEmptyTrie();
       const sut = writeNotesTree;
 
@@ -47,6 +37,7 @@ describe('Given writeNotesTree', () => {
         read: noopRead,
         prevCommitOid: undefined,
         message: "Notes removed by 'git notes remove'",
+        author: IDENTITY,
       });
 
       // Assert
@@ -67,7 +58,6 @@ describe('Given writeNotesTree', () => {
     it('Then creates a notes commit with the previous commit as parent', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await seedConfig(ctx, userConfig);
 
       // Create a previous notes commit
       const prevTreeOid = await writeTree(ctx, []);
@@ -96,6 +86,7 @@ describe('Given writeNotesTree', () => {
         read: noopRead,
         prevCommitOid,
         message: "Notes added by 'git notes add'",
+        author: IDENTITY,
       });
 
       // Assert
@@ -121,7 +112,6 @@ describe('Given writeNotesTree', () => {
     it('Then creates nested subtree entries in git tree-entry sort order', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await seedConfig(ctx, userConfig);
 
       // Fanout=1 oid: ab + 38 more hex chars
       const noteOid = ObjectId.from(`ab${'0'.repeat(38)}`);
@@ -143,6 +133,7 @@ describe('Given writeNotesTree', () => {
         read: noopRead,
         prevCommitOid: undefined,
         message: "Notes added by 'git notes add'",
+        author: IDENTITY,
       });
 
       // Assert: notes commit written
@@ -163,10 +154,15 @@ describe('Given writeNotesTree', () => {
   });
 
   describe('When writing a trie, the notes commit author and committer', () => {
-    it('Then uses the identity from ctx config', async () => {
+    it('Then uses the caller-provided identity for both', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await seedConfig(ctx, '[user]\n  name = Notes Author\n  email = notes@example.com\n');
+      const provided: AuthorIdentity = {
+        name: 'Notes Author',
+        email: 'notes@example.com',
+        timestamp: 1767225600,
+        timezoneOffset: '+0000',
+      };
       const trie = createEmptyTrie();
       const sut = writeNotesTree;
 
@@ -176,6 +172,7 @@ describe('Given writeNotesTree', () => {
         read: noopRead,
         prevCommitOid: undefined,
         message: "Notes added by 'git notes add'",
+        author: provided,
       });
 
       // Assert

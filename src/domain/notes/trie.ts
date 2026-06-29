@@ -1,4 +1,3 @@
-import type { TreeEntry } from '../objects/index.js';
 import type { NoteSlot, NotesTrie, Slot, SubtreeSlot } from './types.js';
 import { EMPTY_SLOT, SLOT_COUNT } from './types.js';
 
@@ -12,11 +11,6 @@ export const internalSlot = (node: NotesTrie): Slot => ({ kind: 'internal', node
 export const setSlot = (trie: NotesTrie, index: number, slot: Slot): NotesTrie => ({
   ...trie,
   slots: trie.slots.map((current, i) => (i === index ? slot : current)),
-});
-
-export const addPreserved = (trie: NotesTrie, entry: TreeEntry): NotesTrie => ({
-  ...trie,
-  preserved: [...trie.preserved, entry],
 });
 
 /** The hex nibble value (0–15) of `hex` at depth `n`. */

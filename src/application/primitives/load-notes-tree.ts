@@ -19,6 +19,13 @@ export interface LoadedNotesTree {
   readonly notesTreeOid: ObjectId | undefined;
 }
 
+/** Reads one subtree's entries, asserting it is actually a tree object. */
+async function readSubtreeEntries(ctx: Context, oid: ObjectId): Promise<ReadonlyArray<TreeEntry>> {
+  const obj = await readObject(ctx, oid);
+  if (obj.type !== 'tree') throw unexpectedObjectType('tree', obj.type, oid);
+  return obj.entries;
+}
+
 /**
  * Resolves a notes ref to its commit, reads the commit's tree, and builds a
  * `NotesTrie` via the domain's `loadTrieRoot`. Returns an empty trie when the
@@ -28,10 +35,16 @@ export interface LoadedNotesTree {
  * the domain's write-plan walker lets it unpack fanout subtrees on demand.
  */
 export async function loadNotesTree(ctx: Context, ref: RefName): Promise<LoadedNotesTree> {
-  const read: SubtreeReader = async (oid: ObjectId): Promise<ReadonlyArray<TreeEntry>> => {
-    const obj = await readObject(ctx, oid);
-    if (obj.type !== 'tree') throw unexpectedObjectType('tree', obj.type, oid);
-    return obj.entries;
+  // Memoize per-operation subtree reads so a `lookup` followed by `insert`/
+  // `remove` does not re-decode the same fanout subtree (mirrors read-object's
+  // in-flight dedup, but kept for the whole operation).
+  const subtreeCache = new Map<ObjectId, Promise<ReadonlyArray<TreeEntry>>>();
+  const read: SubtreeReader = (oid: ObjectId): Promise<ReadonlyArray<TreeEntry>> => {
+    const cached = subtreeCache.get(oid);
+    if (cached !== undefined) return cached;
+    const pending = readSubtreeEntries(ctx, oid);
+    subtreeCache.set(oid, pending);
+    return pending;
   };
 
   const commitOid = await resolveRef(ctx, ref).catch((err: unknown) => {

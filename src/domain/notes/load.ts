@@ -1,6 +1,6 @@
 import type { TreeEntry } from '../objects/index.js';
 import { isDirectory, ObjectId } from '../objects/index.js';
-import { addPreserved, createEmptyTrie, placeLeaf } from './trie.js';
+import { createEmptyTrie, placeLeaf } from './trie.js';
 import type { NoteSlot, NotesTrie, SubtreeReader, SubtreeSlot } from './types.js';
 
 const FULL_HEX = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -20,12 +20,23 @@ export const classifyEntry = (entry: TreeEntry, prefix: string): NoteSlot | Subt
   return null;
 };
 
-/** Builds one trie level from a tree's entries, classified at byte-prefix `prefix`. */
-export const classifyEntries = (entries: ReadonlyArray<TreeEntry>, prefix: string): NotesTrie =>
-  entries.reduce<NotesTrie>((trie, entry) => {
+/**
+ * Builds one trie level from a tree's entries, classified at byte-prefix
+ * `prefix`. Non-note entries are gathered in a single pass and attached once,
+ * so preserving P entries costs O(P) rather than rebuilding the list each step.
+ */
+export const classifyEntries = (entries: ReadonlyArray<TreeEntry>, prefix: string): NotesTrie => {
+  const preserved: TreeEntry[] = [];
+  const trie = entries.reduce<NotesTrie>((acc, entry) => {
     const leaf = classifyEntry(entry, prefix);
-    return leaf === null ? addPreserved(trie, entry) : placeLeaf(trie, leaf, prefix.length);
+    if (leaf === null) {
+      preserved.push(entry);
+      return acc;
+    }
+    return placeLeaf(acc, leaf, prefix.length);
   }, createEmptyTrie());
+  return { ...trie, preserved };
+};
 
 /** Loads a root notes tree's entries into a trie; subtrees stay lazy (unread). */
 export const loadTrieRoot = (entries: ReadonlyArray<TreeEntry>): NotesTrie =>

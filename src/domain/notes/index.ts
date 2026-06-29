@@ -7,7 +7,6 @@ export {
 export { classifyEntries, classifyEntry, loadTrieRoot, unpackSubtree } from './load.js';
 export { insert, lookup, remove } from './mutate.js';
 export {
-  addPreserved,
   chainGap,
   createEmptyTrie,
   internalSlot,

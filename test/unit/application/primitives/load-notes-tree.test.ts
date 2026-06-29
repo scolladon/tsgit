@@ -155,6 +155,37 @@ describe('Given loadNotesTree', () => {
       expect(entries[0]?.id).toBe(noteOid);
     });
   });
+
+  describe('When the same subtree oid is read twice', () => {
+    it('Then the second read returns the memoized promise', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const noteOid = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('memoized'),
+      });
+      const leafOid = ObjectId.from(`cd${'0'.repeat(38)}`);
+      const subtreeTreeOid = await writeTree(ctx, [
+        { id: noteOid, mode: FILE_MODE.REGULAR, name: leafOid },
+      ]);
+      const rootTreeOid = await writeTree(ctx, [
+        { id: subtreeTreeOid, mode: FILE_MODE.DIRECTORY, name: 'cd' as ObjectId },
+      ]);
+      const commitOid = await makeNotesCommit(ctx, rootTreeOid);
+      await seedRef(ctx, NOTES_REF, commitOid);
+      const sut = loadNotesTree;
+      const result = await sut(ctx, NOTES_REF);
+
+      // Act
+      const first = result.read(subtreeTreeOid);
+      const second = result.read(subtreeTreeOid);
+
+      // Assert
+      expect(second).toBe(first);
+      expect((await second).length).toBe(1);
+    });
+  });
 });
 
 describe('Given loadNotesTree trie structure', () => {

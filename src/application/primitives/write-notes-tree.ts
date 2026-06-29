@@ -1,10 +1,8 @@
-import { authorUnconfigured } from '../../domain/commands/error.js';
 import type { NotesTrie, SubtreeReader, WritePlanEntry } from '../../domain/notes/types.js';
 import { planWrite } from '../../domain/notes/write-plan.js';
 import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { FILE_MODE, sortTreeEntries } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from './config-read.js';
 import { createCommit } from './create-commit.js';
 import { writeTree } from './write-tree.js';
 
@@ -17,44 +15,31 @@ export interface WriteNotesTreeInput {
   readonly prevCommitOid: ObjectId | undefined;
   /** The notes commit message (caller owns the verb, e.g. "Notes added by 'git notes add'"). */
   readonly message: string;
+  /** The identity used as both author and committer of the notes commit. */
+  readonly author: AuthorIdentity;
 }
 
 /**
  * Converts a notes trie into a git commit:
  *   1. Walks the trie to produce a flat write-plan.
  *   2. Converts the flat plan into a real git tree hierarchy (bottom-up).
- *   3. Creates a notes commit (author == committer == configured user identity).
+ *   3. Creates a notes commit (author == committer == the caller-resolved identity).
  *
- * The caller is responsible for updating the notes ref and reflog after this returns.
+ * Identity resolution lives in the calling command (`resolveCurrentIdentity`);
+ * this primitive stays config-free. The caller is responsible for updating the
+ * notes ref and reflog after this returns.
  */
 export async function writeNotesTree(ctx: Context, input: WriteNotesTreeInput): Promise<ObjectId> {
   const plan = await planWrite(input.trie, input.read);
   const rootTreeOid = await buildTree(ctx, plan.entries);
-  const identity = await resolveIdentity(ctx);
 
   return createCommit(ctx, {
     tree: rootTreeOid,
     parents: input.prevCommitOid !== undefined ? [input.prevCommitOid] : [],
-    author: identity,
-    committer: identity,
+    author: input.author,
+    committer: input.author,
     message: input.message,
   });
-}
-
-/**
- * Reads user identity from config and throws `AUTHOR_UNCONFIGURED` when
- * `user.name` or `user.email` is absent.
- */
-async function resolveIdentity(ctx: Context): Promise<AuthorIdentity> {
-  const config = await readConfig(ctx);
-  const user = config.user;
-  if (user?.name === undefined || user?.email === undefined) throw authorUnconfigured();
-  return {
-    name: user.name,
-    email: user.email,
-    timestamp: Math.floor(Date.now() / 1000),
-    timezoneOffset: '+0000',
-  };
 }
 
 /**
@@ -71,16 +56,12 @@ async function buildTree(ctx: Context, entries: ReadonlyArray<WritePlanEntry>): 
   for (const entry of entries) {
     const slashIdx = entry.name.indexOf('/');
     if (slashIdx === -1) {
-      direct.push({ id: entry.oid as ObjectId, mode: entry.mode, name: entry.name });
+      direct.push({ id: entry.oid, mode: entry.mode, name: entry.name });
     } else {
       const prefix = entry.name.slice(0, slashIdx);
       const rest = entry.name.slice(slashIdx + 1);
       const group = groups.get(prefix) ?? [];
-      const child: WritePlanEntry =
-        entry.oid !== undefined
-          ? { name: rest, mode: entry.mode, oid: entry.oid }
-          : { name: rest, mode: entry.mode };
-      group.push(child);
+      group.push({ name: rest, mode: entry.mode, oid: entry.oid });
       groups.set(prefix, group);
     }
   }

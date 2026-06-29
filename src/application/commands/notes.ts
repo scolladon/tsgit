@@ -22,6 +22,7 @@ import { updateRef } from '../primitives/update-ref.js';
 import { walkTree } from '../primitives/walk-tree.js';
 import { writeNotesTree } from '../primitives/write-notes-tree.js';
 import { writeObject } from '../primitives/write-object.js';
+import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
 /** Matches a full-length annotated-object oid (SHA-1 or SHA-256). */
@@ -108,11 +109,13 @@ export const notesAdd = async (ctx: Context, input: NotesAddInput): Promise<Note
   const note = await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: input.content });
   const newTrie = await insert(trie, objectOid, note, read);
 
+  const author = await resolveCurrentIdentity(ctx);
   const notesCommit = await writeNotesTree(ctx, {
     trie: newTrie,
     read,
     prevCommitOid: notesCommitOid,
     message: NOTES_ADD_MESSAGE,
+    author,
   });
 
   await updateRef(ctx, ref, notesCommit, { reflogMessage: NOTES_ADD_REFLOG });
@@ -185,11 +188,13 @@ export const notesRemove = async (
 
   const newTrie = await remove(trie, objectOid, read);
 
+  const author = await resolveCurrentIdentity(ctx);
   const notesCommit = await writeNotesTree(ctx, {
     trie: newTrie,
     read,
     prevCommitOid: notesCommitOid,
     message: NOTES_REMOVE_MESSAGE,
+    author,
   });
 
   await updateRef(ctx, ref, notesCommit, { reflogMessage: NOTES_REMOVE_REFLOG });

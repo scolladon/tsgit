@@ -39,8 +39,7 @@ export interface NotesTrie {
 export interface WritePlanEntry {
   readonly name: string;
   readonly mode: FileMode;
-  readonly oid?: ObjectId;
-  readonly child?: WritePlan;
+  readonly oid: ObjectId;
 }
 
 export interface WritePlan {
