@@ -64,7 +64,12 @@ repo.notes: NotesNamespace;
 
 ## Behaviour
 
-Notes are stored under `refs/notes/commits` by default. A different notes ref is selected via the `ref` option (explicit override → `GIT_NOTES_REF` env var → `core.notesRef` config → default). The ref is never deleted, even when the last note is removed — an empty-tree commit is written instead, matching canonical git behaviour.
+Notes are stored under `refs/notes/commits` by default. A different notes ref is selected via the `ref` option (explicit override → `GIT_NOTES_REF` env var → `core.notesRef` config → default). The three sources are handled exactly as canonical git does:
+
+- An explicit `ref` is **expanded** into the notes namespace (git's `--ref`): `build` becomes `refs/notes/build`, `notes/x` becomes `refs/notes/x`, and even `refs/heads/main` becomes `refs/notes/refs/heads/main` — an explicit value can never escape `refs/notes/`.
+- `GIT_NOTES_REF` and `core.notesRef` are used **verbatim** and **refused** with `NOTES_REF_OUTSIDE` when the value is not under `refs/notes/`.
+
+The ref is never deleted, even when the last note is removed — an empty-tree commit is written instead, matching canonical git behaviour.
 
 Note content is stored verbatim — no trailing-newline insertion or normalisation is applied by the library. Callers supply and receive raw `Uint8Array` bytes.
 
@@ -99,7 +104,8 @@ await repo.notes.add({ object: 'HEAD', content: enc.encode('ok'), ref: 'refs/not
 
 - `NOTES_ALREADY_EXIST` — `add` on an object that already has a note and `force` is not set.
 - `NOTES_OBJECT_HAS_NONE` — `remove` on an object that has no note, or when the notes ref is absent.
-- `INVALID_REF` — the supplied `ref` violates git ref syntax.
+- `NOTES_REF_OUTSIDE` — `GIT_NOTES_REF` or `core.notesRef` names a ref outside `refs/notes/` (the data carries the offending `ref`). An explicit `ref` option is expanded into the namespace instead, so it never triggers this.
+- `INVALID_REF` — the resolved notes ref (after expansion) violates git ref syntax.
 
 ## See also
 

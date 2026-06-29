@@ -14,7 +14,6 @@ import { planWrite } from '../../domain/notes/write-plan.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { ObjectId } from '../../domain/objects/object-id.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { loadNotesTree } from '../primitives/load-notes-tree.js';
 import { readBlob } from '../primitives/read-blob.js';
@@ -88,10 +87,6 @@ export interface NotesRemoveResult {
 const resolveObject = async (ctx: Context, object: string): Promise<ObjectId> =>
   OID_RE.test(object) ? (object as ObjectId) : resolveRef(ctx, object as RefName);
 
-/** Converts an optional user-supplied ref string into a RefName for resolveNotesRef. */
-const toRefName = (ref: string | undefined): RefName | undefined =>
-  ref !== undefined ? validateRefName(ref) : undefined;
-
 // ─── Verbs ────────────────────────────────────────────────────────────────────
 
 /**
@@ -102,7 +97,7 @@ export const notesAdd = async (ctx: Context, input: NotesAddInput): Promise<Note
   await assertOperationalRepository(ctx);
 
   const objectOid = await resolveObject(ctx, input.object);
-  const ref = await resolveNotesRef(ctx, toRefName(input.ref));
+  const ref = await resolveNotesRef(ctx, input.ref);
   const { trie, read, notesCommitOid } = await loadNotesTree(ctx, ref);
 
   const existing = await lookup(trie, objectOid, read);
@@ -133,7 +128,7 @@ export const notesRead = async (ctx: Context, input: NotesReadInput): Promise<No
   await assertOperationalRepository(ctx);
 
   const objectOid = await resolveObject(ctx, input.object);
-  const ref = await resolveNotesRef(ctx, toRefName(input.ref));
+  const ref = await resolveNotesRef(ctx, input.ref);
   const { trie, read } = await loadNotesTree(ctx, ref);
 
   const noteOid = await lookup(trie, objectOid, read);
@@ -151,7 +146,7 @@ export const notesRead = async (ctx: Context, input: NotesReadInput): Promise<No
 export const notesList = async (ctx: Context, input?: NotesListInput): Promise<NotesListResult> => {
   await assertOperationalRepository(ctx);
 
-  const ref = await resolveNotesRef(ctx, toRefName(input?.ref));
+  const ref = await resolveNotesRef(ctx, input?.ref);
   const { trie, read } = await loadNotesTree(ctx, ref);
 
   const plan = await planWrite(trie, read);
@@ -180,7 +175,7 @@ export const notesRemove = async (
   await assertOperationalRepository(ctx);
 
   const objectOid = await resolveObject(ctx, input.object);
-  const ref = await resolveNotesRef(ctx, toRefName(input.ref));
+  const ref = await resolveNotesRef(ctx, input.ref);
   const { trie, read, notesCommitOid } = await loadNotesTree(ctx, ref);
 
   if (notesCommitOid === undefined) throw notesObjectHasNone(objectOid);

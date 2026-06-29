@@ -42,6 +42,7 @@ import {
   noReachableNames,
   notesAlreadyExist,
   notesObjectHasNone,
+  notesRefOutside,
   nothingToCommit,
   noUpstreamConfigured,
   operationInProgress,
@@ -1621,6 +1622,21 @@ describe('domain commands error — extractDetail message formatting', () => {
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'NOTES_OBJECT_HAS_NONE', object: OID1 });
         expect(result.message).toContain(OID1);
+      });
+    });
+  });
+
+  describe('Given the notesRefOutside error helper', () => {
+    describe('When called with a ref outside refs/notes/', () => {
+      it('Then data carries the raw ref and the message names it', () => {
+        // Arrange
+        const sut = notesRefOutside;
+        // Act
+        const result = sut('refs/heads/main');
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'NOTES_REF_OUTSIDE', ref: 'refs/heads/main' });
+        expect(result.message).toContain('refs/heads/main');
       });
     });
   });

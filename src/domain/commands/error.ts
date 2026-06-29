@@ -237,7 +237,8 @@ export type CommandError =
       readonly objectType: string;
     }
   | { readonly code: 'NOTES_ALREADY_EXIST'; readonly object: ObjectId }
-  | { readonly code: 'NOTES_OBJECT_HAS_NONE'; readonly object: ObjectId };
+  | { readonly code: 'NOTES_OBJECT_HAS_NONE'; readonly object: ObjectId }
+  | { readonly code: 'NOTES_REF_OUTSIDE'; readonly ref: string };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -721,3 +722,9 @@ export const notesAlreadyExist = (object: ObjectId): TsgitError =>
 // git: `error: Object <oid> has no note`
 export const notesObjectHasNone = (object: ObjectId): TsgitError =>
   new TsgitError({ code: 'NOTES_OBJECT_HAS_NONE', object });
+
+// notes-ref refusal when GIT_NOTES_REF / core.notesRef names a ref outside
+// refs/notes/. git uses env/config values verbatim (no expansion) and refuses:
+// `fatal: refusing to <subcommand> notes in <ref> (outside of refs/notes/)`.
+export const notesRefOutside = (ref: string): TsgitError =>
+  new TsgitError({ code: 'NOTES_REF_OUTSIDE', ref });

@@ -30,6 +30,96 @@ describe('Given resolveNotesRef', () => {
     });
   });
 
+  describe('When an explicit bare name is provided', () => {
+    it('Then expands it under refs/notes/ (git --ref semantics)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = resolveNotesRef;
+
+      // Act
+      const result = await sut(ctx, 'build');
+
+      // Assert
+      expect(result).toBe('refs/notes/build');
+    });
+  });
+
+  describe('When an explicit notes/-prefixed name is provided', () => {
+    it('Then only prepends refs/ (git --ref semantics)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = resolveNotesRef;
+
+      // Act
+      const result = await sut(ctx, 'notes/x');
+
+      // Assert
+      expect(result).toBe('refs/notes/x');
+    });
+  });
+
+  describe('When an explicit ref in another namespace is provided', () => {
+    it('Then nests it under refs/notes/ rather than hijacking the namespace', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const sut = resolveNotesRef;
+
+      // Act
+      const result = await sut(ctx, 'refs/heads/evil');
+
+      // Assert
+      expect(result).toBe('refs/notes/refs/heads/evil');
+    });
+  });
+
+  describe('When GIT_NOTES_REF is set outside refs/notes/', () => {
+    it('Then refuses with NOTES_REF_OUTSIDE carrying the raw ref', async () => {
+      // Arrange
+      const env = {
+        get: (name: string) => (name === 'GIT_NOTES_REF' ? 'refs/heads/main' : undefined),
+      };
+      const ctx = createMemoryContext({ env });
+      const sut = resolveNotesRef;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; ref: string };
+      expect(data.code).toBe('NOTES_REF_OUTSIDE');
+      expect(data.ref).toBe('refs/heads/main');
+    });
+  });
+
+  describe('When core.notesRef is configured outside refs/notes/', () => {
+    it('Then refuses with NOTES_REF_OUTSIDE carrying the raw ref', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedConfig(ctx, '[core]\n  notesRef = build\n');
+      const sut = resolveNotesRef;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; ref: string };
+      expect(data.code).toBe('NOTES_REF_OUTSIDE');
+      expect(data.ref).toBe('build');
+    });
+  });
+
   describe('When no explicit ref but GIT_NOTES_REF is set in env', () => {
     it('Then returns the env ref', async () => {
       // Arrange
@@ -76,10 +166,12 @@ describe('Given resolveNotesRef', () => {
     });
   });
 
-  describe('When the resolved ref is invalid', () => {
+  describe('When the resolved ref is inside refs/notes/ but malformed', () => {
     it('Then throws TsgitError with INVALID_REF code', async () => {
       // Arrange
-      const env = { get: (name: string) => (name === 'GIT_NOTES_REF' ? '//invalid//' : undefined) };
+      const env = {
+        get: (name: string) => (name === 'GIT_NOTES_REF' ? 'refs/notes//bad' : undefined),
+      };
       const ctx = createMemoryContext({ env });
       const sut = resolveNotesRef;
 

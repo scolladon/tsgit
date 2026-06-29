@@ -180,6 +180,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'BUNDLE_PREREQUISITE_NOT_COMMIT':
     case 'NOTES_ALREADY_EXIST':
     case 'NOTES_OBJECT_HAS_NONE':
+    case 'NOTES_REF_OUTSIDE':
       return;
     default: {
       const _exhaustive: never = data;

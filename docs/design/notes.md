@@ -177,6 +177,21 @@ remove the LAST note:         tree becomes the empty tree 4b825dc642cb6eb9a060e5
 Precedence (pinned working): **explicit arg > `GIT_NOTES_REF` env > `core.notesRef`
 config > default `refs/notes/commits`** (§10).
 
+The three sources differ in handling (pinned, real `git` 2.54.0):
+
+| source | input | result | exit |
+| --- | --- | --- | --- |
+| `--ref` | `build` | `refs/notes/build` | 0 |
+| `--ref` | `notes/x` | `refs/notes/x` | 0 |
+| `--ref` | `refs/heads/evil` | `refs/notes/refs/heads/evil` (no branch created) | 0 |
+| `GIT_NOTES_REF` / `core.notesRef` | `build` | `fatal: refusing to add notes in build (outside of refs/notes/)` | 128 |
+| `GIT_NOTES_REF` / `core.notesRef` | `notes/x` | `fatal: refusing to … notes in notes/x (outside of refs/notes/)` | 128 |
+| `GIT_NOTES_REF` / `core.notesRef` | `refs/notes/build` | writes `refs/notes/build` | 0 |
+
+So `--ref` is **expanded** into the namespace (`expand_notes_ref`), while
+env/config are taken **verbatim** and **refused** when outside `refs/notes/` (the
+refusal verb tracks the subcommand: `add`/`list`/`show`/…). §10/§9.
+
 ### 4.6 List / read shapes
 
 ```
@@ -411,6 +426,7 @@ never a pre-rendered git line.
 | --- | --- | --- | --- |
 | `NOTES_ALREADY_EXIST` | `{ object: ObjectId }` | `add` (no force, note present) | `error: Cannot add notes. Found existing notes for object <oid>. Use '-f' to overwrite existing notes` |
 | `NOTES_OBJECT_HAS_NONE` | `{ object: ObjectId }` | `remove` (no note) | `Object <oid> has no note` |
+| `NOTES_REF_OUTSIDE` | `{ ref: string }` | any verb (`GIT_NOTES_REF`/`core.notesRef` outside `refs/notes/`, §10) | `fatal: refusing to <subcommand> notes in <ref> (outside of refs/notes/)` |
 
 Mapping notes:
 - `add`'s existence check is computed directly (fanout-aware trie lookup), so the
@@ -422,9 +438,12 @@ Mapping notes:
   midpoint"). The caller reconstructs git's `error: no note found …` if it wants
   the porcelain.
 - An unresolvable `object` propagates the existing `resolveRef`/object-read error
-  (`REF_NOT_FOUND` / unexpected-type) — no new code. An invalid notes-ref value
-  (from any precedence source, §10) propagates the existing ref-name validation
-  error — no new code.
+  (`REF_NOT_FOUND` / unexpected-type) — no new code. A malformed notes-ref value
+  (from any precedence source, §10) still propagates the existing ref-name
+  validation error. The one new code, `NOTES_REF_OUTSIDE`, is the env/config
+  out-of-namespace refusal (§10): explicit `--ref` values are expanded into
+  `refs/notes/` so they never trigger it; only verbatim `GIT_NOTES_REF`/
+  `core.notesRef` values can.
 
 There is **no** fanout-related error: the fanout is reproduced faithfully on
 write (ADR-432), so there is no boundary to refuse.
@@ -437,20 +456,32 @@ write (ADR-432), so there is no boundary to refuse.
 explicit `ref` arg  →  GIT_NOTES_REF (env)  →  core.notesRef (config)  →  refs/notes/commits
 ```
 
-Each verb resolves its ref once, before touching the store:
+Each verb resolves its ref once, before touching the store. The three sources are
+**not** treated alike — this asymmetry is git's, pinned against real `git` 2.54.0,
+not a tsgit choice:
 
-1. If `input.ref` is given, use it.
-2. Else read `GIT_NOTES_REF` via the new env capability; if present (defined),
-   use it.
+1. If `input.ref` is given (git's `--ref`), **expand** it with git's
+   `expand_notes_ref`: a `refs/notes/…` value is kept; a `notes/…` value only
+   gains the `refs/` prefix; anything else is nested under `refs/notes/`. So
+   `build → refs/notes/build`, `notes/x → refs/notes/x`, and even
+   `refs/heads/evil → refs/notes/refs/heads/evil`. An explicit value can therefore
+   **never escape** the notes namespace (no branch-hijack via `--ref`).
+2. Else read `GIT_NOTES_REF` via the env capability; if defined, use it
+   **verbatim** (git does not expand env/config) and **refuse** when it does not
+   start with `refs/notes/`.
 3. Else read `core.notesRef` via `readConfigEntry`/`loadConfigEntry`; if present,
-   use it.
+   use it **verbatim** and **refuse** when outside `refs/notes/`.
 4. Else the default `refs/notes/commits`.
 
-The chosen value (from any source) is validated as a `RefName` before use; an
-invalid value refuses with the existing ref-name validation error (§9). "Present"
-for the env var means **defined** (`string | undefined`): an unset
-`GIT_NOTES_REF` falls through to config/default — the faithful outcome where the
-environment has no such variable.
+The refusal in steps 2–3 reproduces git's
+`fatal: refusing to <subcommand> notes in <ref> (outside of refs/notes/)`
+(exit 128) — surfaced as the structured `NOTES_REF_OUTSIDE` code carrying the raw
+ref (§9); the per-verb subcommand word is the caller's to render (ADR-249). The
+expanded/verbatim value is then validated as a `RefName`; a malformed (but
+inside-`refs/notes/`) value still refuses with the existing ref-name validation
+error (§9). "Present" for the env var means **defined** (`string | undefined`): an
+unset `GIT_NOTES_REF` falls through to config/default — the faithful outcome where
+the environment has no such variable.
 
 **The environment capability (a new port).** `Context` exposes **no** process-env
 accessor today, and tsgit is portable (browser/memory have no `process.env`).

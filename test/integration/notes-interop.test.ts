@@ -763,5 +763,133 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
         vi.useRealTimers();
       });
     });
+
+    describe('When an explicit --ref-style name is used', () => {
+      it.each([
+        ['build', 'refs/notes/build'],
+        ['notes/x', 'refs/notes/x'],
+      ])('Then %s expands to %s matching git', async (given, expanded) => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(PINNED_UNIX * 1000);
+
+        const noteFile = await writeTempNote(`expand-${given.replace(/\//g, '-')}`, 'expand\n');
+        runGit(['-C', pair.peer, 'notes', '--ref', given, 'add', '-F', noteFile, annotatedOid], {
+          env: pinnedEnv(),
+        });
+
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await notesAdd(ctx, {
+          object: annotatedOid,
+          content: new TextEncoder().encode('expand\n'),
+          ref: given,
+        });
+
+        const peerCommit = tryRunGit(['-C', pair.peer, 'rev-parse', expanded]);
+        const oursCommit = tryRunGit(['-C', pair.ours, 'rev-parse', expanded]);
+        expect(peerCommit.ok).toBe(true);
+        expect(oursCommit.ok).toBe(true);
+        expect(oursCommit.stdout.trim()).toBe(peerCommit.stdout.trim());
+
+        vi.useRealTimers();
+      });
+
+      it('Then a refs/heads/ name nests under refs/notes/, never creating a branch', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(PINNED_UNIX * 1000);
+
+        const noteFile = await writeTempNote('expand-evil-branch', 'evil\n');
+        runGit(
+          [
+            '-C',
+            pair.peer,
+            'notes',
+            '--ref',
+            'refs/heads/evil',
+            'add',
+            '-F',
+            noteFile,
+            annotatedOid,
+          ],
+          { env: pinnedEnv() },
+        );
+
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await notesAdd(ctx, {
+          object: annotatedOid,
+          content: new TextEncoder().encode('evil\n'),
+          ref: 'refs/heads/evil',
+        });
+
+        const nested = 'refs/notes/refs/heads/evil';
+        const peerNested = tryRunGit(['-C', pair.peer, 'rev-parse', nested]);
+        const oursNested = tryRunGit(['-C', pair.ours, 'rev-parse', nested]);
+        expect(oursNested.ok).toBe(true);
+        expect(oursNested.stdout.trim()).toBe(peerNested.stdout.trim());
+        // The branch namespace stays untouched in both tools.
+        expect(tryRunGit(['-C', pair.peer, 'rev-parse', '--verify', 'refs/heads/evil']).ok).toBe(
+          false,
+        );
+        expect(tryRunGit(['-C', pair.ours, 'rev-parse', '--verify', 'refs/heads/evil']).ok).toBe(
+          false,
+        );
+
+        vi.useRealTimers();
+      });
+    });
+
+    describe('When GIT_NOTES_REF names a ref outside refs/notes/', () => {
+      it('Then both git and tsgit refuse', async () => {
+        const gitResult = tryRunGit(['-C', pair.peer, 'notes', 'add', '-m', 'x', annotatedOid], {
+          env: { ...pinnedEnv(), GIT_NOTES_REF: 'build' },
+        });
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toContain('outside of refs/notes/');
+
+        process.env.GIT_NOTES_REF = 'build';
+        let thrown: unknown;
+        try {
+          const ctx = createNodeContext({ workDir: pair.ours });
+          await notesAdd(ctx, {
+            object: annotatedOid,
+            content: new TextEncoder().encode('x\n'),
+          });
+        } catch (err) {
+          thrown = err;
+        } finally {
+          delete process.env.GIT_NOTES_REF;
+        }
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('NOTES_REF_OUTSIDE');
+        expect((thrown as TsgitError).data).toMatchObject({ ref: 'build' });
+      });
+    });
+
+    describe('When core.notesRef names a ref outside refs/notes/', () => {
+      it('Then both git and tsgit refuse', async () => {
+        const gitResult = tryRunGit(
+          ['-C', pair.peer, '-c', 'core.notesRef=build', 'notes', 'add', '-m', 'x', annotatedOid],
+          { env: pinnedEnv() },
+        );
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toContain('outside of refs/notes/');
+
+        runGit(['-C', pair.ours, 'config', 'core.notesRef', 'build'], { env: pinnedEnv() });
+        let thrown: unknown;
+        try {
+          const ctx = createNodeContext({ workDir: pair.ours });
+          await notesAdd(ctx, {
+            object: annotatedOid,
+            content: new TextEncoder().encode('x\n'),
+          });
+        } catch (err) {
+          thrown = err;
+        } finally {
+          runGit(['-C', pair.ours, 'config', '--unset', 'core.notesRef'], { env: pinnedEnv() });
+        }
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('NOTES_REF_OUTSIDE');
+        expect((thrown as TsgitError).data).toMatchObject({ ref: 'build' });
+      });
+    });
   });
 });

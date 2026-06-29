@@ -35,8 +35,22 @@ process environment). The capability is scoped to what notes-ref selection needs
 env bag — so the new port surface stays small and the browser portability invariant holds
 (env is simply always-absent there, a faithful "unset" result).
 
-A given `ref` (from any precedence source) is validated as a ref name before use; an invalid
-value refuses with the existing ref-name validation error.
+The three sources are handled the way real `git` 2.54.0 does — an asymmetry that is the
+faithful realization of "match git exactly", not a separate decision:
+
+- An **explicit `ref`** (git's `--ref`) is **expanded** via `expand_notes_ref`: kept if it
+  already starts with `refs/notes/`; given a `refs/` prefix if it starts with `notes/`;
+  otherwise nested under `refs/notes/`. So `build → refs/notes/build` and
+  `refs/heads/evil → refs/notes/refs/heads/evil` — an explicit value can never escape the
+  notes namespace (closing a branch-hijack vector).
+- **`GIT_NOTES_REF` and `core.notesRef`** are used **verbatim** (git does not expand them)
+  and **refused** when the value does not start with `refs/notes/`, reproducing git's
+  `fatal: refusing to <subcommand> notes in <ref> (outside of refs/notes/)` (exit 128). This
+  surfaces as a structured `NOTES_REF_OUTSIDE` code carrying the raw ref; the per-verb
+  subcommand word is the caller's to render (ADR-249).
+
+The expanded/verbatim value is then validated as a ref name; a malformed (but
+inside-`refs/notes/`) value refuses with the existing ref-name validation error.
 
 ## Consequences
 
@@ -44,6 +58,9 @@ value refuses with the existing ref-name validation error.
 - Full git-faithful notes-ref selection, including the env override real users rely on.
 - The env capability is reusable by any later command that needs a specific env var, added once
   here behind a clean port.
+- The expand-on-`--ref` / refuse-on-env-config asymmetry closes a namespace-hijack vector: a
+  `--ref=refs/heads/main` (or `GIT_NOTES_REF=refs/heads/main`) can never rewrite a branch — the
+  former nests under `refs/notes/`, the latter is refused.
 
 ### Negative
 - A new port + three adapter implementations (node real, browser/in-memory stub) — more surface

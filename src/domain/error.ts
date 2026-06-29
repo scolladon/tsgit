@@ -489,6 +489,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `Cannot add notes. Found existing notes for object ${data.object}. Use '-f' to overwrite existing notes`;
     case 'NOTES_OBJECT_HAS_NONE':
       return `Object ${data.object} has no note`;
+    case 'NOTES_REF_OUTSIDE':
+      return `refusing to use notes ref ${data.ref} (outside of refs/notes/)`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
