@@ -106,13 +106,14 @@ describe('notes', () => {
         const content = encoder.encode('hello note');
 
         // Act
-        const sut = await notesAdd(ctx, { object: commitId, content });
+        const sut = notesAdd;
+        const result = await sut(ctx, { object: commitId, content });
 
         // Assert
-        expect(typeof sut.notesCommit).toBe('string');
-        expect(sut.notesCommit).toHaveLength(40);
-        expect(typeof sut.note).toBe('string');
-        expect(sut.note).toHaveLength(40);
+        expect(typeof result.notesCommit).toBe('string');
+        expect(result.notesCommit).toHaveLength(40);
+        expect(typeof result.note).toBe('string');
+        expect(result.note).toHaveLength(40);
       });
     });
 
@@ -124,12 +125,13 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId, content });
 
         // Act
-        const sut = await notesRead(ctx, { object: commitId });
+        const sut = notesRead;
+        const result = await sut(ctx, { object: commitId });
 
         // Assert
-        expect(sut).not.toBeNull();
-        expect(sut?.object).toBe(commitId);
-        expect(sut?.content).toEqual(content);
+        expect(result).not.toBeNull();
+        expect(result?.object).toBe(commitId);
+        expect(result?.content).toEqual(content);
       });
     });
 
@@ -211,14 +213,15 @@ describe('notes', () => {
         const first = await notesAdd(ctx, { object: commitId, content: encoder.encode('first') });
 
         // Act
-        const sut = await notesAdd(ctx, {
+        const sut = notesAdd;
+        const result = await sut(ctx, {
           object: commitId,
           content: encoder.encode('overwritten'),
           force: true,
         });
 
         // Assert
-        expect(sut.notesCommit).not.toBe(first.notesCommit);
+        expect(result.notesCommit).not.toBe(first.notesCommit);
         const note = await notesRead(ctx, { object: commitId });
         expect(new TextDecoder().decode(note?.content)).toBe('overwritten');
       });
@@ -320,13 +323,14 @@ describe('notes', () => {
         const added = await notesAdd(ctx, { object: commitId, content });
 
         // Act
-        const sut = await notesRead(ctx, { object: commitId });
+        const sut = notesRead;
+        const result = await sut(ctx, { object: commitId });
 
         // Assert
-        expect(sut).not.toBeNull();
-        expect(sut?.object).toBe(commitId);
-        expect(sut?.note).toBe(added.note);
-        expect(sut?.content).toEqual(content);
+        expect(result).not.toBeNull();
+        expect(result?.object).toBe(commitId);
+        expect(result?.note).toBe(added.note);
+        expect(result?.content).toEqual(content);
       });
     });
   });
@@ -339,10 +343,11 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId1, content: encoder.encode('only for c1') });
 
         // Act
-        const sut = await notesRead(ctx, { object: commitId2 });
+        const sut = notesRead;
+        const result = await sut(ctx, { object: commitId2 });
 
         // Assert
-        expect(sut).toBeNull();
+        expect(result).toBeNull();
       });
     });
   });
@@ -354,10 +359,11 @@ describe('notes', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await notesRead(ctx, { object: commitId });
+        const sut = notesRead;
+        const result = await sut(ctx, { object: commitId });
 
         // Assert
-        expect(sut).toBeNull();
+        expect(result).toBeNull();
       });
     });
 
@@ -367,10 +373,11 @@ describe('notes', () => {
         const { ctx } = await seedWithCommit();
 
         // Act
-        const sut = await notesList(ctx);
+        const sut = notesList;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -384,11 +391,12 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId2, content: encoder.encode('n2') });
 
         // Act
-        const sut = await notesList(ctx);
+        const sut = notesList;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toHaveLength(2);
-        const oids = sut.map((e) => e.object);
+        expect(result).toHaveLength(2);
+        const oids = result.map((e) => e.object);
         // Must be sorted ascending
         const sorted = [...oids].sort((a, b) => (a < b ? -1 : 1));
         expect(oids).toEqual(sorted);
@@ -407,12 +415,13 @@ describe('notes', () => {
         const added = await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
 
         // Act
-        const sut = await notesList(ctx);
+        const sut = notesList;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.object).toBe(commitId);
-        expect(sut[0]?.note).toBe(added.note);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.object).toBe(commitId);
+        expect(result[0]?.note).toBe(added.note);
       });
     });
   });
@@ -425,11 +434,12 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId, content: encoder.encode('to remove') });
 
         // Act
-        const sut = await notesRemove(ctx, { object: commitId });
+        const sut = notesRemove;
+        const result = await sut(ctx, { object: commitId });
 
         // Assert
-        expect(typeof sut.notesCommit).toBe('string');
-        expect(sut.notesCommit).toHaveLength(40);
+        expect(typeof result.notesCommit).toBe('string');
+        expect(result.notesCommit).toHaveLength(40);
         const note = await notesRead(ctx, { object: commitId });
         expect(note).toBeNull();
       });
@@ -471,7 +481,7 @@ describe('notes', () => {
 
   describe('Given the last note is removed', () => {
     describe('When notesRemove', () => {
-      it('Then list is empty and ref still exists', async () => {
+      it('Then the list becomes empty', async () => {
         // Arrange
         const { ctx, commitId } = await seedWithCommit();
         await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
@@ -482,6 +492,17 @@ describe('notes', () => {
         // Assert
         const list = await notesList(ctx);
         expect(list).toEqual([]);
+      });
+
+      it('Then the notes ref still exists', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
+
+        // Act
+        await notesRemove(ctx, { object: commitId });
+
+        // Assert
         const refExists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/notes/commits`);
         expect(refExists).toBe(true);
       });
@@ -592,6 +613,60 @@ describe('notes', () => {
         for (const oid of expected) {
           expect(oids).toContain(oid);
         }
+      });
+    });
+  });
+
+  describe('Given a notes tree with a non-note entry alongside a note', () => {
+    describe('When notesList', () => {
+      it('Then the non-note entry is skipped', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const noteBlob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: encoder.encode('note'),
+        });
+        const noteName = 'a'.repeat(40);
+        const rootTree = await writeTree(ctx, [
+          { id: noteBlob, mode: FILE_MODE.REGULAR, name: 'README' },
+          { id: noteBlob, mode: FILE_MODE.REGULAR, name: noteName },
+        ]);
+        const notesCommit = await createCommit(ctx, {
+          tree: rootTree,
+          parents: [],
+          author,
+          committer: author,
+          message: "Notes added by 'git notes add'",
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/notes/commits`, `${notesCommit}\n`);
+        const sut = notesList;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.object).toBe(noteName);
+      });
+    });
+  });
+
+  describe('Given the object is a ref name rather than a full oid', () => {
+    describe('When notesAdd with object "HEAD"', () => {
+      it('Then it resolves HEAD to its commit and annotates it', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+
+        // Act
+        const sut = notesAdd;
+        await sut(ctx, { object: 'HEAD', content: encoder.encode('on head') });
+
+        // Assert
+        const note = await notesRead(ctx, { object: commitId });
+        expect(note).not.toBeNull();
+        expect(note?.object).toBe(commitId);
+        expect(new TextDecoder().decode(note?.content)).toBe('on head');
       });
     });
   });
