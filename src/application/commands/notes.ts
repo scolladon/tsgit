@@ -10,7 +10,6 @@
  */
 import { notesAlreadyExist, notesObjectHasNone } from '../../domain/commands/error.js';
 import { insert, lookup, remove } from '../../domain/notes/mutate.js';
-import { planWrite } from '../../domain/notes/write-plan.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { ObjectId } from '../../domain/objects/object-id.js';
@@ -20,6 +19,7 @@ import { readBlob } from '../primitives/read-blob.js';
 import { resolveNotesRef } from '../primitives/resolve-notes-ref.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
+import { walkTree } from '../primitives/walk-tree.js';
 import { writeNotesTree } from '../primitives/write-notes-tree.js';
 import { writeObject } from '../primitives/write-object.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -139,25 +139,25 @@ export const notesRead = async (ctx: Context, input: NotesReadInput): Promise<No
 };
 
 /**
- * Enumerates every `(annotated-object, note-blob)` pair in the notes ref.
- * Returns an empty array when the ref is absent. Skips non-note tree entries.
- * Sorted by annotated-object oid ascending (git tree order).
+ * Enumerates every `(annotated-object, note-blob)` pair in the notes ref by
+ * walking the real notes tree, recursing through every fanout level. Returns an
+ * empty array when the ref is absent. Skips non-note entries (directories and
+ * any leaf whose de-slashed path is not a full-hex oid). Sorted by
+ * annotated-object oid ascending (git tree order).
  */
 export const notesList = async (ctx: Context, input?: NotesListInput): Promise<NotesListResult> => {
   await assertOperationalRepository(ctx);
 
   const ref = await resolveNotesRef(ctx, input?.ref);
-  const { trie, read } = await loadNotesTree(ctx, ref);
+  const { notesTreeOid } = await loadNotesTree(ctx, ref);
+  if (notesTreeOid === undefined) return [];
 
-  const plan = await planWrite(trie, read);
   const notes: { object: ObjectId; note: ObjectId }[] = [];
-
-  for (const entry of plan.entries) {
+  for await (const entry of walkTree(ctx, notesTreeOid)) {
     if (entry.mode !== FILE_MODE.REGULAR) continue;
-    if (entry.oid === undefined) continue;
-    const flatOid = entry.name.split('/').join('');
+    const flatOid = entry.path.split('/').join('');
     if (!FULL_HEX.test(flatOid)) continue;
-    notes.push({ object: ObjectId.from(flatOid), note: entry.oid });
+    notes.push({ object: ObjectId.from(flatOid), note: entry.id });
   }
 
   return notes.sort((a, b) => (a.object < b.object ? -1 : 1));

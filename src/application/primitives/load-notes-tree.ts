@@ -15,6 +15,8 @@ export interface LoadedNotesTree {
   readonly read: SubtreeReader;
   /** The commit oid the notes ref resolved to, or `undefined` if the ref did not exist. */
   readonly notesCommitOid: ObjectId | undefined;
+  /** The notes commit's root tree oid, or `undefined` if the ref did not exist. */
+  readonly notesTreeOid: ObjectId | undefined;
 }
 
 /**
@@ -38,7 +40,7 @@ export async function loadNotesTree(ctx: Context, ref: RefName): Promise<LoadedN
   });
 
   if (commitOid === undefined) {
-    return { trie: loadTrieRoot([]), read, notesCommitOid: undefined };
+    return { trie: loadTrieRoot([]), read, notesCommitOid: undefined, notesTreeOid: undefined };
   }
 
   const commitObj = await readObject(ctx, commitOid);
@@ -46,11 +48,12 @@ export async function loadNotesTree(ctx: Context, ref: RefName): Promise<LoadedN
     throw unexpectedObjectType('commit', commitObj.type, commitOid);
   }
 
-  const treeObj = await readObject(ctx, commitObj.data.tree);
+  const treeOid = commitObj.data.tree;
+  const treeObj = await readObject(ctx, treeOid);
   if (treeObj.type !== 'tree') {
-    throw unexpectedObjectType('tree', treeObj.type, commitObj.data.tree);
+    throw unexpectedObjectType('tree', treeObj.type, treeOid);
   }
 
   const trie = loadTrieRoot(treeObj.entries);
-  return { trie, read, notesCommitOid: commitOid };
+  return { trie, read, notesCommitOid: commitOid, notesTreeOid: treeOid };
 }

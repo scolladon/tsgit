@@ -10,10 +10,14 @@ import {
   notesRemove,
 } from '../../../../src/application/commands/notes.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, RefName, TreeEntry } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
 
 const encoder = new TextEncoder();
 
@@ -49,6 +53,44 @@ const seedWithTwoCommits = async () => {
   await add(ctx, ['b.txt']);
   const c2 = await commit(ctx, { message: 'second', author });
   return { ctx, commitId1: c1.id, commitId2: c2.id };
+};
+
+const FANNED_LEAF = '0'.repeat(38);
+
+/**
+ * Builds an on-disk notes tree whose root has all 16 nibble slots populated as
+ * fanout subtrees (`XX/` → 38-hex leaf) — a genuinely fanned tree the WRITE
+ * walker would leave as opaque directory placeholders. Seeds refs/notes/commits
+ * to a notes commit over it; returns the annotated oids it encodes.
+ */
+const seedFannedNotesRef = async (
+  ctx: ReturnType<typeof createMemoryContext>,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const noteBlob = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: encoder.encode('fanned'),
+  });
+  const rootEntries: TreeEntry[] = [];
+  const oids: ObjectId[] = [];
+  for (let nibble = 0; nibble < 16; nibble += 1) {
+    const dir = `${nibble.toString(16)}0`;
+    const subtreeOid = await writeTree(ctx, [
+      { id: noteBlob, mode: FILE_MODE.REGULAR, name: FANNED_LEAF },
+    ]);
+    rootEntries.push({ id: subtreeOid, mode: FILE_MODE.DIRECTORY, name: dir });
+    oids.push(ObjectId.from(`${dir}${FANNED_LEAF}`));
+  }
+  const rootTreeOid = await writeTree(ctx, rootEntries);
+  const commitOid = await createCommit(ctx, {
+    tree: rootTreeOid,
+    parents: [],
+    author,
+    committer: author,
+    message: "Notes added by 'git notes add'",
+  });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/notes/commits`, `${commitOid}\n`);
+  return oids;
 };
 
 describe('notes', () => {
@@ -529,6 +571,27 @@ describe('notes', () => {
         expect(new TextDecoder().decode(readResult?.content)).toBe('custom ref note');
         expect(listResult).toHaveLength(1);
         expect(listResult[0]?.object).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a fanned notes tree (all 16 root slots are subtrees)', () => {
+    describe('When notesList', () => {
+      it('Then returns every fanned note, not an empty list', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const expected = await seedFannedNotesRef(ctx);
+        const sut = notesList;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toHaveLength(16);
+        const oids = result.map((entry) => entry.object);
+        for (const oid of expected) {
+          expect(oids).toContain(oid);
+        }
       });
     });
   });

@@ -443,6 +443,16 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
         expect(hasSubtrees).toBe(true);
       });
     });
+
+    describe('When notesList is called on the fanned ref', () => {
+      it('Then it enumerates every note, matching git notes list', async () => {
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const entries = await notesList(ctx);
+        const reconstructed = reconstructNotesList(entries);
+        const gitOut = runGit(['-C', pair.peer, 'notes', 'list']);
+        expect(reconstructed).toBe(gitOut);
+      });
+    });
   });
 
   // ── Scenario 7: remove last note → empty tree ─────────────────────────────
