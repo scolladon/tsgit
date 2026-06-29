@@ -6,6 +6,7 @@ import { type Context, createContext, type RepositoryLayout } from '../../ports/
 import { noopProgress } from '../../progress.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
+import { NodeEnvReader } from './node-env-reader.js';
 import { NodeFileSystem } from './node-file-system.js';
 import { NodeHashService } from './node-hash-service.js';
 import { NodeHookRunner } from './node-hook-runner.js';
@@ -65,6 +66,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.hooks === false ? {} : { hooks: new NodeHookRunner() }),
     ...(options.command === false ? {} : { command: new NodeCommandRunner() }),
+    env: new NodeEnvReader(),
   };
   return createContext(parts);
 }

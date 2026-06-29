@@ -2,6 +2,7 @@ import { SHA1_CONFIG, SHA256_CONFIG } from '../../domain/objects/hash-config.js'
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
+import type { EnvReader } from '../../ports/env-reader.js';
 import type { HookRunner } from '../../ports/hook-runner.js';
 import { noopProgress } from '../../progress.js';
 import { MemoryCompressor } from './memory-compressor.js';
@@ -24,6 +25,8 @@ export interface MemoryAdapterOptions {
   readonly hooks?: HookRunner;
   /** Optional command runner exposed via `ctx.command` (default: undefined — drivers fall back). */
   readonly command?: CommandRunner;
+  /** Optional environment-variable reader exposed via `ctx.env` (default: undefined — every var is unset). */
+  readonly env?: EnvReader;
   /** Override for `fs.homedir()` (default: `'/home/user'`). */
   readonly home?: string;
   /** Override for `fs.xdgConfigHome()` (default: `'/home/user/.config'`). */
@@ -74,6 +77,7 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
     ...(options.command !== undefined ? { command: options.command } : {}),
+    ...(options.env !== undefined ? { env: options.env } : {}),
   };
   return createContext(parts);
 }

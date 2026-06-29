@@ -5,9 +5,9 @@ import { assertNoValuelessConfig } from '../../primitives/internal/valueless-con
 import { resolveCommitter } from './commit-message.js';
 
 /**
- * The current identity (config `user.name`/`user.email` + the current time) used
- * as the committer of a cherry-pick and as the author **and** committer of a
- * revert. Falls back to `resolveCommitter`'s default when `[user]` is unset.
+ * The current identity (config `user.name`/`user.email` + the current time),
+ * used as author and/or committer by the commands that create commits without an
+ * explicit identity. Falls back to `resolveCommitter`'s default when `[user]` is unset.
  */
 export const resolveCurrentIdentity = async (ctx: Context): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);

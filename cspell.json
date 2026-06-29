@@ -694,6 +694,7 @@
     "execve",
     "extensionless",
     "hookspath",
+    "notesref",
     "msys",
     "runnability",
     "sanitisation",

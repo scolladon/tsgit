@@ -3,6 +3,7 @@ import type { RefName } from '../domain/objects/object-id.js';
 import type { LruCache } from '../domain/storage/lru-cache.js';
 import type { CommandRunner } from './command-runner.js';
 import type { Compressor } from './compressor.js';
+import type { EnvReader } from './env-reader.js';
 import type { FileSystem } from './file-system.js';
 import type { HashService } from './hash-service.js';
 import type { HookRunner } from './hook-runner.js';
@@ -125,6 +126,11 @@ export interface Context {
    */
   readonly command?: CommandRunner;
   /**
+   * Optional environment-variable reader. Absent ⇒ every variable is unset (browser /
+   * memory, where there is no process env). Notes-ref selection reads GIT_NOTES_REF through it.
+   */
+  readonly env?: EnvReader;
+  /**
    * Optional promisor-remote capability. Populated by `openRepository`;
    * `readObject` consults it to lazy-fetch an object a partial clone omitted.
    */
@@ -155,6 +161,7 @@ export interface CreateContextParts {
   readonly signal?: AbortSignal;
   readonly hooks?: HookRunner;
   readonly command?: CommandRunner;
+  readonly env?: EnvReader;
 }
 
 /** Assemble a frozen Context from its constituent ports + layout. */
