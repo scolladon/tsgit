@@ -177,6 +177,7 @@ describe('Given writeNotesTree', () => {
 
       // Assert
       const commit = await readObject(ctx, notesCommitOid);
+      expect(commit.type).toBe('commit');
       if (commit.type === 'commit') {
         expect(commit.data.author.name).toBe('Notes Author');
         expect(commit.data.author.email).toBe('notes@example.com');

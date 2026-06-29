@@ -397,12 +397,10 @@ describe('notes', () => {
         // Assert
         expect(result).toHaveLength(2);
         const oids = result.map((e) => e.object);
-        // Must be sorted ascending
-        const sorted = [...oids].sort((a, b) => (a < b ? -1 : 1));
-        expect(oids).toEqual(sorted);
-        // Both commits must appear
-        expect(oids).toContain(commitId1);
-        expect(oids).toContain(commitId2);
+        // Ascending oid order, against an order computed independently of the SUT's comparator
+        const [smaller, larger] =
+          commitId1 < commitId2 ? [commitId1, commitId2] : [commitId2, commitId1];
+        expect(oids).toEqual([smaller, larger]);
       });
     });
   });
@@ -483,11 +481,12 @@ describe('notes', () => {
     describe('When notesRemove', () => {
       it('Then the list becomes empty', async () => {
         // Arrange
+        const sut = notesRemove;
         const { ctx, commitId } = await seedWithCommit();
         await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
 
         // Act
-        await notesRemove(ctx, { object: commitId });
+        await sut(ctx, { object: commitId });
 
         // Assert
         const list = await notesList(ctx);
@@ -496,11 +495,12 @@ describe('notes', () => {
 
       it('Then the notes ref still exists', async () => {
         // Arrange
+        const sut = notesRemove;
         const { ctx, commitId } = await seedWithCommit();
         await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
 
         // Act
-        await notesRemove(ctx, { object: commitId });
+        await sut(ctx, { object: commitId });
 
         // Assert
         const refExists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/notes/commits`);
