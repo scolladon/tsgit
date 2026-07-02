@@ -72,3 +72,18 @@ const httpUrlArb = (): fc.Arbitrary<string> =>
 /** Raw remote-URL strings spanning the ssh://, scp-like, and http(s) grammars. */
 export const remoteUrlArb = (): fc.Arbitrary<string> =>
   fc.oneof(sshUrlArb(), scpUrlArb(), httpUrlArb());
+
+// Printable ASCII (space through tilde) — every byte in this range round-trips
+// through a POSIX single-quoted shell token, including quotes and spaces.
+const PRINTABLE_ASCII_MIN = 0x20;
+const PRINTABLE_ASCII_MAX = 0x7e;
+const PRINTABLE_ASCII = Array.from(
+  { length: PRINTABLE_ASCII_MAX - PRINTABLE_ASCII_MIN + 1 },
+  (_, i) => String.fromCharCode(PRINTABLE_ASCII_MIN + i),
+);
+
+/** Arbitrary path-like string, incl. embedded quotes and spaces, for the sqQuote round-trip property. */
+export const pathArb = (): fc.Arbitrary<string> =>
+  fc
+    .array(fc.constantFrom(...PRINTABLE_ASCII), { minLength: 0, maxLength: 24 })
+    .map((chars) => chars.join(''));
