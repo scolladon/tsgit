@@ -15,15 +15,11 @@ import {
   CLIENT_CAPABILITIES_PUSH,
   negotiateCapabilities as negotiateProtocolCapabilities,
 } from '../../../domain/protocol/index.js';
-import type { Context } from '../../../ports/context.js';
-import type { HttpTransport } from '../../../ports/http-transport.js';
+import type { GitServiceSession } from './git-service-session.js';
 import { discoverRefsForService } from './refs-discovery.js';
 
-export const discoverReceivePackRefs = async (
-  ctx: Context,
-  transport: HttpTransport,
-  url: string,
-): Promise<Advertisement> => discoverRefsForService(ctx, transport, url, 'git-receive-pack');
+export const discoverReceivePackRefs = async (session: GitServiceSession): Promise<Advertisement> =>
+  discoverRefsForService(session, 'git-receive-pack');
 
 /**
  * The agent slot is always appended client-side — the server does not need

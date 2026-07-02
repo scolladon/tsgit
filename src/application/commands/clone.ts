@@ -14,7 +14,7 @@ import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { updateConfigEntries } from '../primitives/update-config.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
-import { withDefaults } from './internal/network-pipeline.js';
+import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import {
   advertisesFilter,
   discoverRefs,
@@ -102,14 +102,22 @@ const fetchAndPropagate = async (
   gitDir: FilePath,
   filterSpec: string | undefined,
 ): Promise<CloneResult> => {
-  // withDefaults composes withRetry around ctx.transport. We omit `logger`
-  // here because the transport-tier Logger shape (event-based) differs from
-  // the ports Logger shape on ctx.logger (level-based). Hooking the two up
-  // is wiring work better suited to a dedicated adapter in.x.
-  const transport = withDefaults(ctx, {
-    ...(ctx.config?.auth !== undefined ? { auth: ctx.config.auth } : {}),
-  });
-  const advertisement = await discoverRefs(ctx, transport, opts.url);
+  const session = openGitSession(ctx, opts.url, 'git-upload-pack');
+  try {
+    return await negotiateAndWritePack(ctx, opts, gitDir, filterSpec, session);
+  } finally {
+    await session.close();
+  }
+};
+
+const negotiateAndWritePack = async (
+  ctx: Context,
+  opts: CloneOptions,
+  gitDir: FilePath,
+  filterSpec: string | undefined,
+  session: GitServiceSession,
+): Promise<CloneResult> => {
+  const advertisement = await discoverRefs(session);
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A filtered clone needs the server to advertise the `filter` capability;
   // fail before the pack POST when it does not.
@@ -118,11 +126,10 @@ const fetchAndPropagate = async (
   }
   const capabilities = selectFetchCapabilities(advertisement.capabilities);
   const wants = uniqueRefOids(advertisement.refs);
-  const packResult = await fetchPack(ctx, transport, {
+  const packResult = await fetchPack(ctx, session.exchange, {
     wants,
     haves: [],
     capabilities,
-    url: opts.url,
     progressOp: CLONE_WRITE_OBJECTS_OP,
     // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ depth: opts.depth }`; `fetchPack` gates on `input.depth !== undefined`, so `depth: undefined` and the empty spread produce identical request bodies.
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),

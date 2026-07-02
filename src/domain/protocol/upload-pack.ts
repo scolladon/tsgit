@@ -234,13 +234,26 @@ const collectRefs = async (
   return { capabilities: capabilities ?? [], refs: acc.refs };
 };
 
+export interface ParseAdvertisedRefsOptions {
+  /**
+   * Whether the source carries the HTTP discovery `# service=...\n0000`
+   * prologue. SSH's `git-upload-pack`/`git-receive-pack` advertisement has no
+   * such prologue — the ref/capability pkt-lines start immediately. Defaults
+   * to `true` (HTTP shape) for backward compatibility.
+   */
+  readonly servicePrologue?: boolean;
+}
+
 export const parseAdvertisedRefs = async (
   source: AsyncIterable<PktLine>,
   expectedService: Service,
+  options?: ParseAdvertisedRefsOptions,
 ): Promise<Advertisement> => {
   const iter = source[Symbol.asyncIterator]();
   try {
-    await consumeServiceHeader(iter, expectedService);
+    if (options?.servicePrologue ?? true) {
+      await consumeServiceHeader(iter, expectedService);
+    }
     const { capabilities, refs } = await collectRefs(iter);
     const head = findHead(capabilities, refs);
     return head ? { capabilities, refs, head } : { capabilities, refs };

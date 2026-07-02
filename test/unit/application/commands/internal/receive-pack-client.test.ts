@@ -6,20 +6,17 @@
  *  - selectPushCapabilities intersects + appends the agent slot.
  */
 import { describe, expect, it } from 'vitest';
-
-import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import type { GitServiceSession } from '../../../../../src/application/commands/internal/git-service-session.js';
 import {
   discoverReceivePackRefs,
   selectPushCapabilities,
 } from '../../../../../src/application/commands/internal/receive-pack-client.js';
-import { TsgitError } from '../../../../../src/domain/index.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/index.js';
-import { encodePktStream } from '../../../../../src/domain/protocol/pkt-line.js';
-import type {
-  HttpRequest,
-  HttpResponse,
-  HttpTransport,
-} from '../../../../../src/ports/http-transport.js';
+import {
+  decodePktStream,
+  encodePktStream,
+  type PktLine,
+} from '../../../../../src/domain/protocol/pkt-line.js';
 
 const ENCODER = new TextEncoder();
 const OID_A = OID.from('a'.repeat(40));
@@ -35,74 +32,31 @@ const successAdvertisement = (): Uint8Array => {
   return out;
 };
 
-const fakeTransport = (
-  statusCode: number,
-  body: Uint8Array,
-): { transport: HttpTransport; requests: HttpRequest[] } => {
-  const requests: HttpRequest[] = [];
-  const transport: HttpTransport = {
-    request: async (req): Promise<HttpResponse> => {
-      requests.push(req);
-      return {
-        statusCode,
-        headers: {},
-        body: new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(body.slice());
-            controller.close();
-          },
-        }),
-      };
-    },
-  };
-  return { transport, requests };
+const asyncBytes = async function* (chunks: ReadonlyArray<Uint8Array>): AsyncIterable<Uint8Array> {
+  for (const chunk of chunks) yield chunk;
 };
+
+const fakeSession = (body: Uint8Array): GitServiceSession => ({
+  advertisement: (): Promise<AsyncIterable<PktLine>> =>
+    Promise.resolve(decodePktStream(asyncBytes([body]))),
+  exchange: () => Promise.reject(new Error('not implemented')),
+  close: () => Promise.resolve(),
+  servicePrologue: true,
+});
 
 describe('discoverReceivePackRefs', () => {
   describe('Given a 200 response with a valid receive-pack advertisement', () => {
     describe('When discoverReceivePackRefs runs', () => {
       it('Then the Advertisement is parsed', async () => {
         // Arrange
-        const ctx = createMemoryContext();
-        const { transport, requests } = fakeTransport(200, successAdvertisement());
+        const session = fakeSession(successAdvertisement());
 
         // Act
-        const sut = await discoverReceivePackRefs(ctx, transport, 'https://example.com/r.git');
-
-        // Assert — request shape pins service parameter end-to-end.
-        expect(requests[0]?.url).toContain('service=git-receive-pack');
-        expect(requests[0]?.headers.accept).toBe('application/x-git-receive-pack-advertisement');
-        expect(sut.refs).toHaveLength(1);
-        expect(sut.refs[0]?.name).toBe('refs/heads/main');
-      });
-    });
-  });
-
-  describe('Given a 401 response', () => {
-    describe('When discoverReceivePackRefs runs', () => {
-      it('Then throws HTTP_ERROR mentioning receive-pack', async () => {
-        // Arrange — kills the StringLiteral mutant on `git-receive-pack` reason.
-        const ctx = createMemoryContext();
-        const { transport } = fakeTransport(401, new Uint8Array(0));
-
-        // Act
-        let caught: unknown;
-        try {
-          await discoverReceivePackRefs(ctx, transport, 'https://example.com/r.git');
-        } catch (err) {
-          caught = err;
-        }
+        const sut = await discoverReceivePackRefs(session);
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          statusCode?: number;
-          reason?: string;
-        };
-        expect(data.code).toBe('HTTP_ERROR');
-        expect(data.statusCode).toBe(401);
-        expect(data.reason).toContain('git-receive-pack');
+        expect(sut.refs).toHaveLength(1);
+        expect(sut.refs[0]?.name).toBe('refs/heads/main');
       });
     });
   });

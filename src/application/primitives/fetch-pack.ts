@@ -11,13 +11,12 @@
  * negotiation, ref-update propagation.
  */
 import { sanitize } from '../../domain/commands/error.js';
-import { httpError, TsgitError } from '../../domain/error.js';
+import { TsgitError } from '../../domain/error.js';
 import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import {
   buildUploadPackRequest,
-  decodePktStream,
-  invalidBaseUrl,
+  type GitExchange,
   parseUploadPackResponse,
 } from '../../domain/protocol/index.js';
 import {
@@ -32,9 +31,7 @@ import {
   parsePackHeader,
   serializePackIndex,
 } from '../../domain/storage/index.js';
-import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
-import type { HttpTransport } from '../../ports/http-transport.js';
 import { refreshPackRegistry } from './read-object.js';
 
 /**
@@ -75,8 +72,6 @@ export interface FetchPackInput {
   readonly haves: ReadonlyArray<ObjectId>;
   /** Negotiated capabilities (intersection of advertised + supported). */
   readonly capabilities: ReadonlyArray<string>;
-  /** Base remote URL (the same URL passed to clone). */
-  readonly url: string;
   /** Progress op label — clone uses 'clone:write-objects', fetch uses 'fetch:write-objects'. */
   readonly progressOp: string;
   /**
@@ -118,12 +113,12 @@ interface PackDownload {
 
 export const fetchPack = async (
   ctx: Context,
-  transport: HttpTransport,
+  exchange: GitExchange,
   input: FetchPackInput,
 ): Promise<FetchPackResult> => {
   ctx.progress.start(input.progressOp);
   try {
-    const download = await downloadPack(ctx, transport, input);
+    const download = await downloadPack(ctx, exchange, input);
     // git-upload-pack returns a zero-byte body when the client's `have` set
     // already covers every wanted oid. This is a legitimate protocol state
     // (the server has nothing to send), not an error. Surface it as an
@@ -164,7 +159,7 @@ export const fetchPack = async (
 
 const downloadPack = async (
   ctx: Context,
-  transport: HttpTransport,
+  exchange: GitExchange,
   input: FetchPackInput,
 ): Promise<PackDownload> => {
   const requestBody = buildUploadPackRequest({
@@ -181,21 +176,7 @@ const downloadPack = async (
     // Stryker disable next-line ConditionalExpression: equivalent — `buildUploadPackRequest` treats `filter: undefined` like an absent field, so spreading unconditionally emits no `filter` line.
     ...(input.filter !== undefined ? { filter: input.filter } : {}),
   });
-  const uploadUrl = buildUploadPackUrl(input.url);
-  const response = await transport.request({
-    url: uploadUrl,
-    method: 'POST',
-    headers: {
-      'content-type': 'application/x-git-upload-pack-request',
-      accept: 'application/x-git-upload-pack-result',
-    },
-    body: requestBody,
-    ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
-  });
-  if (response.statusCode !== 200) {
-    throw httpError(response.statusCode, `git-upload-pack returned ${response.statusCode}`);
-  }
-  const pktSource = decodePktStream(readableStreamToAsyncIterable(response.body));
+  const pktSource = await exchange(requestBody);
   const parsed = await parseUploadPackResponse(pktSource, {
     sideBand: hasSideBand(input.capabilities),
     // Sanitize sideband-2 text BEFORE it crosses the ProgressReporter port:
@@ -255,18 +236,6 @@ const drainPackBodyBounded = async (
  */
 const packTooLargeBytes = (limit: number): TsgitError =>
   new TsgitError({ code: 'PACK_TOO_LARGE', objectCount: 0, limit });
-
-const buildUploadPackUrl = (baseUrl: string): string => {
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw invalidBaseUrl('invalid URL');
-  }
-  if (parsed.hash !== '') throw invalidBaseUrl('fragment must not be set');
-  const path = parsed.pathname.endsWith('/') ? parsed.pathname.slice(0, -1) : parsed.pathname;
-  return `${parsed.protocol}//${parsed.host}${path}/git-upload-pack${parsed.search}`;
-};
 
 const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
   caps.some((c) => SIDE_BAND_CAPS.has(c));

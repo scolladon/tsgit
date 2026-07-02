@@ -36,7 +36,7 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { withDefaults } from './internal/network-pipeline.js';
+import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
   advertisesFilter,
@@ -81,55 +81,76 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);
   try {
-    const transport = withDefaults(
-      ctx,
-      ctx.config?.auth !== undefined ? { auth: ctx.config.auth } : {},
-    );
-    const advertisement = await discoverRefs(ctx, transport, url);
-    if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
-    // A partial repo's fetch must re-apply its filter; the server must still
-    // advertise the `filter` capability.
-    if (filter !== undefined && !advertisesFilter(advertisement.capabilities)) {
-      throw remoteFilterUnsupported();
-    }
-
-    const capabilities = selectFetchCapabilities(advertisement.capabilities);
-    const wants = uniqueRefOids(advertisement.refs);
-    const haves = await deriveHaves(ctx, remoteName);
-
-    const packResult = await fetchPack(ctx, transport, {
-      wants,
-      haves,
-      capabilities,
-      url,
-      progressOp: FETCH_WRITE_OBJECTS_OP,
-      // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
-      ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
-      // A partial repo re-applies its stored filter and re-marks the pack promisor.
-      ...(filter !== undefined ? { filter, promisor: true } : {}),
-    });
-
-    if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
-      await updateShallow(ctx, {
-        shallow: packResult.shallow,
-        unshallow: packResult.unshallow,
-      });
-    }
-
-    const updatedRefs = await applyRemoteRefs(ctx, remoteName, advertisement);
-    const prunedRefs = opts.prune === true ? await prune(ctx, remoteName, advertisement) : [];
-
-    return {
-      remote: remoteName,
-      url,
-      updatedRefs,
-      prunedRefs,
-      shallow: packResult.shallow,
-      unshallow: packResult.unshallow,
-    };
+    return await fetchViaSession(ctx, opts, remoteName, url, filter);
   } finally {
     ctx.progress.end(FETCH_NEGOTIATE_OP);
   }
+};
+
+const fetchViaSession = async (
+  ctx: Context,
+  opts: FetchOptions,
+  remoteName: string,
+  url: string,
+  filter: string | undefined,
+): Promise<FetchResult> => {
+  const session = openGitSession(ctx, url, 'git-upload-pack');
+  try {
+    return await negotiateAndApply(ctx, opts, remoteName, url, filter, session);
+  } finally {
+    await session.close();
+  }
+};
+
+const negotiateAndApply = async (
+  ctx: Context,
+  opts: FetchOptions,
+  remoteName: string,
+  url: string,
+  filter: string | undefined,
+  session: GitServiceSession,
+): Promise<FetchResult> => {
+  const advertisement = await discoverRefs(session);
+  if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
+  // A partial repo's fetch must re-apply its filter; the server must still
+  // advertise the `filter` capability.
+  if (filter !== undefined && !advertisesFilter(advertisement.capabilities)) {
+    throw remoteFilterUnsupported();
+  }
+
+  const capabilities = selectFetchCapabilities(advertisement.capabilities);
+  const wants = uniqueRefOids(advertisement.refs);
+  const haves = await deriveHaves(ctx, remoteName);
+
+  const packResult = await fetchPack(ctx, session.exchange, {
+    wants,
+    haves,
+    capabilities,
+    progressOp: FETCH_WRITE_OBJECTS_OP,
+    // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
+    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+    // A partial repo re-applies its stored filter and re-marks the pack promisor.
+    ...(filter !== undefined ? { filter, promisor: true } : {}),
+  });
+
+  if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
+    await updateShallow(ctx, {
+      shallow: packResult.shallow,
+      unshallow: packResult.unshallow,
+    });
+  }
+
+  const updatedRefs = await applyRemoteRefs(ctx, remoteName, advertisement);
+  const prunedRefs = opts.prune === true ? await prune(ctx, remoteName, advertisement) : [];
+
+  return {
+    remote: remoteName,
+    url,
+    updatedRefs,
+    prunedRefs,
+    shallow: packResult.shallow,
+    unshallow: packResult.unshallow,
+  };
 };
 
 const resolveRemoteUrl = async (

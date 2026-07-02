@@ -21,15 +21,11 @@ import {
   CLIENT_CAPABILITIES_FETCH,
   negotiateCapabilities as negotiateProtocolCapabilities,
 } from '../../../domain/protocol/index.js';
-import type { Context } from '../../../ports/context.js';
-import type { HttpTransport } from '../../../ports/http-transport.js';
+import type { GitServiceSession } from './git-service-session.js';
 import { discoverRefsForService } from './refs-discovery.js';
 
-export const discoverRefs = async (
-  ctx: Context,
-  transport: HttpTransport,
-  url: string,
-): Promise<Advertisement> => discoverRefsForService(ctx, transport, url, 'git-upload-pack');
+export const discoverRefs = async (session: GitServiceSession): Promise<Advertisement> =>
+  discoverRefsForService(session, 'git-upload-pack');
 
 /**
  * Drop client capabilities.x cannot honor end-to-end (see
