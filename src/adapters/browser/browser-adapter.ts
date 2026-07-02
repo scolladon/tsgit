@@ -40,6 +40,7 @@ export function createBrowserContext(options: BrowserAdapterOptions): Context {
       gitDir: `${ROOT_WORK_DIR}${gitDirName}`,
       bare: options.bare ?? false,
     },
+    runtime: 'browser',
     hashConfig: SHA1_CONFIG,
     deltaCache,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),

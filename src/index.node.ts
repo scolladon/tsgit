@@ -9,10 +9,12 @@ import * as nodePath from 'node:path';
 
 import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
 import { NodeCompressor } from './adapters/node/node-compressor.js';
+import { NodeEnvReader } from './adapters/node/node-env-reader.js';
 import { NodeFileSystem } from './adapters/node/node-file-system.js';
 import { NodeHashService } from './adapters/node/node-hash-service.js';
 import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
+import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { commonAncestor } from './repository/common-ancestor.js';
@@ -69,6 +71,8 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     transport,
     hooks: new NodeHookRunner(),
     command: new NodeCommandRunner(),
+    env: new NodeEnvReader(),
+    ssh: new NodeSshTransport(),
     runtime: 'node' as const,
     layout,
     hashConfig: SHA1_CONFIG,

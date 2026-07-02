@@ -72,6 +72,7 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
     transport,
     progress: noopProgress,
     layout,
+    runtime: 'memory' as const,
     hashConfig,
     deltaCache,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),

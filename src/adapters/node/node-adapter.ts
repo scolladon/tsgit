@@ -61,6 +61,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     transport,
     progress: noopProgress,
     layout,
+    runtime: 'node' as const,
     hashConfig: SHA1_CONFIG,
     deltaCache,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),

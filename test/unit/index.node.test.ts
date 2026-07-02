@@ -12,6 +12,7 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
 import { openRepository } from '../../src/index.node.js';
 
 let tmpdir: string;
@@ -113,6 +114,26 @@ describe('Node shim — discoverLayout bare flag', () => {
           // Assert — discoverLayout found the parent .git and reported bare:false.
           expect(sut.ctx.layout.bare).toBe(false);
           expect(sut.ctx.layout.gitDir).toContain('.git');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — ssh/env/runtime context wiring', () => {
+  describe('Given a Node-runtime repository', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.ssh is a NodeSshTransport, ctx.env is defined, and ctx.runtime is node', async () => {
+        // Arrange & Act
+        const sut = await openRepository({ cwd: tmpdir });
+
+        try {
+          // Assert
+          expect(sut.ctx.ssh).toBeInstanceOf(NodeSshTransport);
+          expect(sut.ctx.env).toBeDefined();
+          expect(sut.ctx.runtime).toBe('node');
         } finally {
           await sut.dispose();
         }
