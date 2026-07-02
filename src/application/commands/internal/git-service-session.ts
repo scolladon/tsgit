@@ -4,12 +4,12 @@
  *
  * The HTTP session wraps today's discovery GET (`info/refs?service=...`) and
  * exchange POST (`git-upload-pack` / `git-receive-pack`) helpers verbatim —
- * wire bytes are unchanged. SSH is not wired here: opening a session against
- * an `ssh://` or scp-like URL refuses inertly; spawning a real channel is a
- * later part.
+ * wire bytes are unchanged. The SSH session spawns one persistent duplex
+ * channel that serves BOTH `advertisement()` and `exchange()` — see
+ * `SshGitServiceSession` below.
  */
 import { adapterUnavailable } from '../../../domain/commands/error.js';
-import { httpError } from '../../../domain/error.js';
+import { httpError, networkError } from '../../../domain/error.js';
 import {
   buildDiscoveryUrl,
   decodePktStream,
@@ -20,8 +20,11 @@ import {
 } from '../../../domain/protocol/index.js';
 import { readableStreamToAsyncIterable } from '../../../operators/readable-stream.js';
 import type { Context } from '../../../ports/context.js';
+import type { SshChannel, SshTransport } from '../../../ports/ssh-channel.js';
 import { withDefaults } from './network-pipeline.js';
-import { parseRemoteUrl } from './remote-url.js';
+import { parseRemoteUrl, type RemoteUrl } from './remote-url.js';
+import { buildSshArgs } from './ssh-argv.js';
+import { resolveSshCommand } from './ssh-command.js';
 
 export interface GitServiceSession {
   readonly advertisement: () => Promise<AsyncIterable<PktLine>>;
@@ -49,15 +52,17 @@ const ADVERTISEMENT_ACCEPT: Readonly<Record<Service, string>> = {
 
 /**
  * Open a session against `url` for `service`. HTTP(S) URLs get the existing
- * discovery/exchange wire shape; SSH URLs (`ssh://`, scp-like) refuse inertly
- * — real SSH transport lands in a later part.
+ * discovery/exchange wire shape. SSH URLs (`ssh://`, scp-like) spawn a real
+ * channel when the runtime supplies `ctx.ssh`; browser/memory (no `ctx.ssh`)
+ * refuse inertly.
  */
 export const openGitSession = (ctx: Context, url: string, service: Service): GitServiceSession => {
   const remote = parseRemoteUrl(url);
-  if (remote.kind === 'ssh') {
+  if (remote.kind === 'http') return createHttpSession(ctx, remote.url, service);
+  if (ctx.ssh === undefined) {
     throw adapterUnavailable(ctx.runtime, 'ssh: transport unavailable in this runtime');
   }
-  return createHttpSession(ctx, remote.url, service);
+  return new SshGitServiceSession(ctx, ctx.ssh, remote, service);
 };
 
 interface PktRequest {
@@ -118,4 +123,115 @@ const buildExchangeUrl = (baseUrl: string, service: Service): string => {
   if (parsed.hash !== '') throw invalidBaseUrl('fragment must not be set');
   const path = parsed.pathname.endsWith('/') ? parsed.pathname.slice(0, -1) : parsed.pathname;
   return `${parsed.protocol}//${parsed.host}${path}/${service}${parsed.search}`;
+};
+
+type SshRemoteUrl = Extract<RemoteUrl, { kind: 'ssh' }>;
+
+/**
+ * SSH `GitServiceSession`: one spawned duplex channel serves BOTH
+ * `advertisement()` and `exchange()` — unlike HTTP's independent
+ * request/response pairs, ssh has no service prologue and no per-call
+ * connection. The channel and its decoded pkt-line iterator are materialised
+ * lazily on first use and shared across every call; each call hands back an
+ * inert "view" whose own `return()` never tears down the shared reader —
+ * only `close()` does, by killing the child process.
+ */
+class SshGitServiceSession implements GitServiceSession {
+  readonly servicePrologue = false;
+  private readonly ctx: Context;
+  private readonly ssh: SshTransport;
+  private readonly remote: SshRemoteUrl;
+  private readonly service: Service;
+  private channel: Promise<SshChannel> | undefined;
+  private lines: Promise<AsyncIterator<PktLine>> | undefined;
+
+  constructor(ctx: Context, ssh: SshTransport, remote: SshRemoteUrl, service: Service) {
+    this.ctx = ctx;
+    this.ssh = ssh;
+    this.remote = remote;
+    this.service = service;
+  }
+
+  advertisement = (): Promise<AsyncIterable<PktLine>> => this.continuation();
+
+  exchange: GitExchange = async (requestBytes: Uint8Array): Promise<AsyncIterable<PktLine>> => {
+    const channel = await this.openChannel();
+    await writeToStdin(channel.stdin, requestBytes);
+    return this.continuation();
+  };
+
+  close = async (): Promise<void> => {
+    if (this.channel === undefined) return;
+    const channel = await this.channel;
+    await channel.close();
+  };
+
+  private openChannel(): Promise<SshChannel> {
+    this.channel ??= spawnChannel(this.ctx, this.ssh, this.remote, this.service);
+    return this.channel;
+  }
+
+  private async continuation(): Promise<AsyncIterable<PktLine>> {
+    const channel = await this.openChannel();
+    const iterator = await this.sharedIterator(channel);
+    return { [Symbol.asyncIterator]: () => wrapInert(iterator, channel) };
+  }
+
+  private sharedIterator(channel: SshChannel): Promise<AsyncIterator<PktLine>> {
+    this.lines ??= Promise.resolve(
+      decodePktStream(readableStreamToAsyncIterable(channel.stdout))[Symbol.asyncIterator](),
+    );
+    return this.lines;
+  }
+}
+
+const spawnChannel = async (
+  ctx: Context,
+  ssh: SshTransport,
+  remote: SshRemoteUrl,
+  service: Service,
+): Promise<SshChannel> => {
+  const resolved = await resolveSshCommand(ctx);
+  const args = buildSshArgs({ service, parsed: remote, baseArgs: resolved.baseArgs });
+  return ssh.open({
+    command: resolved.program,
+    args,
+    env: {},
+    ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+  });
+};
+
+const writeToStdin = async (
+  stdin: WritableStream<Uint8Array>,
+  bytes: Uint8Array,
+): Promise<void> => {
+  const writer = stdin.getWriter();
+  try {
+    await writer.write(bytes);
+  } finally {
+    writer.releaseLock();
+  }
+};
+
+/**
+ * Wrap the shared decode iterator so an early consumer `return()` (e.g.
+ * `parseAdvertisedRefs`'s cleanup after the advertisement's terminating
+ * flush) never cancels the underlying channel reader. Only a natural `done`
+ * — the channel's stdout truly closing — checks the process exit code.
+ */
+const wrapInert = (
+  iterator: AsyncIterator<PktLine>,
+  channel: SshChannel,
+): AsyncIterator<PktLine> => ({
+  next: async (): Promise<IteratorResult<PktLine>> => {
+    const result = await iterator.next();
+    if (result.done) await assertCleanExit(channel);
+    return result;
+  },
+  return: async (): Promise<IteratorResult<PktLine>> => ({ done: true, value: undefined }),
+});
+
+const assertCleanExit = async (channel: SshChannel): Promise<void> => {
+  const code = await channel.exit;
+  if (code !== 0) throw networkError(`ssh exited with code ${code}`);
 };

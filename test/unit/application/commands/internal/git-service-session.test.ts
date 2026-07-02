@@ -1,21 +1,27 @@
 /**
  * Unit tests for the `GitServiceSession` seam: the HTTP implementation wraps
- * today's discovery GET / exchange POST wire shape verbatim, and opening a
- * session against an SSH URL refuses inertly (real SSH transport is a later
- * part).
+ * today's discovery GET / exchange POST wire shape verbatim. Opening a
+ * session against an SSH URL with no `ctx.ssh` refuses inertly; with
+ * `ctx.ssh` present, it spawns a real channel shared across
+ * `advertisement()` and `exchange()`.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { openGitSession } from '../../../../../src/application/commands/internal/git-service-session.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/index.js';
-import { encodePktStream } from '../../../../../src/domain/protocol/pkt-line.js';
+import { encodePktStream, type PktLine } from '../../../../../src/domain/protocol/pkt-line.js';
 import type {
   HttpRequest,
   HttpResponse,
   HttpTransport,
 } from '../../../../../src/ports/http-transport.js';
+import type {
+  SshChannel,
+  SshSpawnRequest,
+  SshTransport,
+} from '../../../../../src/ports/ssh-channel.js';
 
 const ENCODER = new TextEncoder();
 const OID_A = OID.from('a'.repeat(40));
@@ -61,6 +67,69 @@ const fakeTransport = (
 const contextWith = (transport: HttpTransport) => {
   const base = createMemoryContext();
   return { ...base, transport };
+};
+
+/**
+ * Mirrors how a real advertisement consumer (`parseAdvertisedRefs`) drains a
+ * pkt-line stream: read until the terminating flush, then `return()` in a
+ * `finally` — never draining to the source's own `done`. Proves the SSH
+ * session's shared iterator survives that early cleanup.
+ */
+async function collectUntilFlush(source: AsyncIterable<PktLine>): Promise<PktLine[]> {
+  const iterator = source[Symbol.asyncIterator]();
+  const out: PktLine[] = [];
+  try {
+    while (true) {
+      const { done, value } = await iterator.next();
+      if (done) return out;
+      out.push(value);
+      if (value.kind === 'flush') return out;
+    }
+  } finally {
+    await iterator.return?.();
+  }
+}
+
+const fakeChannel = (opts: {
+  readonly chunks?: ReadonlyArray<Uint8Array>;
+  readonly exitCode?: number;
+}): {
+  readonly channel: SshChannel;
+  readonly stdinWrites: Uint8Array[];
+  readonly closeSpy: ReturnType<typeof vi.fn>;
+} => {
+  const stdinWrites: Uint8Array[] = [];
+  const stdout = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of opts.chunks ?? []) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const stdin = new WritableStream<Uint8Array>({
+    write(chunk) {
+      stdinWrites.push(chunk);
+    },
+  });
+  const closeSpy = vi.fn(async () => undefined);
+  const channel: SshChannel = {
+    stdin,
+    stdout,
+    exit: Promise.resolve(opts.exitCode ?? 0),
+    close: closeSpy,
+  };
+  return { channel, stdinWrites, closeSpy };
+};
+
+const fakeSshTransport = (
+  channel: SshChannel,
+): { readonly ssh: SshTransport; readonly openSpy: ReturnType<typeof vi.fn> } => {
+  const openSpy = vi.fn(async (_req: SshSpawnRequest) => channel);
+  return { ssh: { open: openSpy }, openSpy };
+};
+
+const contextWithSsh = (ssh: SshTransport) => {
+  const base = createMemoryContext();
+  return { ...base, ssh };
 };
 
 describe('openGitSession — http', () => {
@@ -453,6 +522,183 @@ describe('GitServiceSession.exchange — response decoding', () => {
         expect(dataPkts).toHaveLength(1);
         const [pkt] = dataPkts;
         expect(pkt?.kind === 'data' ? pkt.payload : undefined).toEqual(nakPayload);
+      });
+    });
+  });
+});
+
+describe('openGitSession — ssh (real channel)', () => {
+  describe('Given ctx.ssh is a real transport', () => {
+    describe('When openGitSession runs with an ssh:// url', () => {
+      it('Then the session reports servicePrologue: false', () => {
+        // Arrange
+        const { channel } = fakeChannel({});
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+
+        // Act
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Assert
+        expect(sut.servicePrologue).toBe(false);
+      });
+    });
+
+    describe('When advertisement() runs', () => {
+      it('Then it spawns the resolved ssh program with the service argv', async () => {
+        // Arrange
+        const { channel } = fakeChannel({});
+        const { ssh, openSpy } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        await collectUntilFlush(await sut.advertisement());
+
+        // Assert
+        expect(openSpy).toHaveBeenCalledWith({
+          command: 'ssh',
+          args: ['git@example.com', "git-upload-pack '/repo.git'"],
+          env: {},
+        });
+      });
+    });
+  });
+});
+
+describe('GitServiceSession.advertisement (ssh)', () => {
+  describe('Given an ssh channel carrying a ref advertisement with no service prologue', () => {
+    describe('When advertisement() runs', () => {
+      it('Then it decodes the ref advertisement pkt-lines', async () => {
+        // Arrange
+        const refLine = ENCODER.encode(`${OID_A} refs/heads/main\0ofs-delta\n`);
+        const { channel } = fakeChannel({ chunks: [encodePktStream([refLine])] });
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        const pkts = await collectUntilFlush(await sut.advertisement());
+        const dataPkts = pkts.filter((p) => p.kind === 'data');
+
+        // Assert
+        expect(dataPkts).toHaveLength(1);
+        expect(dataPkts[0]?.kind === 'data' ? dataPkts[0].payload : undefined).toEqual(refLine);
+      });
+    });
+  });
+});
+
+describe('GitServiceSession.exchange (ssh)', () => {
+  describe('Given an already-consumed advertisement on the same persistent channel', () => {
+    describe('When exchange() runs', () => {
+      it('Then it writes the request bytes to the channel stdin', async () => {
+        // Arrange
+        const advertisementBytes = encodePktStream([ENCODER.encode(`${OID_A} refs/heads/main\n`)]);
+        const exchangeBytes = encodePktStream([ENCODER.encode('NAK\n')]);
+        const { channel, stdinWrites } = fakeChannel({
+          chunks: [advertisementBytes, exchangeBytes],
+        });
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+        await collectUntilFlush(await sut.advertisement());
+        const requestBytes = ENCODER.encode('0011want abc\n0000');
+
+        // Act
+        await sut.exchange(requestBytes);
+
+        // Assert
+        expect(stdinWrites).toEqual([requestBytes]);
+      });
+
+      it('Then it continues decoding the shared stream from where the advertisement left off', async () => {
+        // Arrange
+        const advertisementBytes = encodePktStream([ENCODER.encode(`${OID_A} refs/heads/main\n`)]);
+        const exchangeBytes = encodePktStream([ENCODER.encode('NAK\n')]);
+        const { channel } = fakeChannel({ chunks: [advertisementBytes, exchangeBytes] });
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+        await collectUntilFlush(await sut.advertisement());
+
+        // Act
+        const pkts = await collect(await sut.exchange(new Uint8Array(0)));
+        const dataPkts = pkts.filter((p) => p.kind === 'data');
+
+        // Assert
+        expect(dataPkts).toHaveLength(1);
+        expect(dataPkts[0]?.kind === 'data' ? dataPkts[0].payload : undefined).toEqual(
+          ENCODER.encode('NAK\n'),
+        );
+      });
+    });
+  });
+});
+
+describe('GitServiceSession.close (ssh)', () => {
+  describe('Given the channel was opened by a prior advertisement() call', () => {
+    describe('When close() runs', () => {
+      it('Then it closes the underlying channel exactly once', async () => {
+        // Arrange
+        const { channel, closeSpy } = fakeChannel({});
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+        await collectUntilFlush(await sut.advertisement());
+
+        // Act
+        await sut.close();
+
+        // Assert
+        expect(closeSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given the channel was never opened', () => {
+    describe('When close() runs', () => {
+      it('Then it resolves without ever spawning a channel', async () => {
+        // Arrange
+        const { channel, closeSpy } = fakeChannel({});
+        const { ssh, openSpy } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        await sut.close();
+
+        // Assert
+        expect(openSpy).not.toHaveBeenCalled();
+        expect(closeSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('GitServiceSession — ssh non-zero exit', () => {
+  describe('Given the ssh channel exits non-zero with no bytes on stdout', () => {
+    describe('When advertisement() is consumed', () => {
+      it('Then it throws NETWORK_ERROR carrying the exit code', async () => {
+        // Arrange
+        const { channel } = fakeChannel({ exitCode: 128 });
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(await sut.advertisement());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('NETWORK_ERROR');
+        expect(data.reason).toContain('128');
       });
     });
   });
