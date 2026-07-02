@@ -963,7 +963,14 @@
     "TREESAME",
     "maximising",
     "afirst",
-    "bfirst"
+    "bfirst",
+    "canonicalising",
+    "leadingdash",
+    "mismodels",
+    "sanitiser",
+    "tortoiseplink",
+    "userless",
+    "WHATWG"
   ],
   "ignorePaths": [
     "node_modules",
@@ -977,5 +984,7 @@
     "*.tsbuildinfo",
     "test/fixtures/clone-source/source.git/**"
   ],
-  "ignoreRegExpList": ["[a-f0-9]{40}"]
+  "ignoreRegExpList": [
+    "[a-f0-9]{40}"
+  ]
 }
