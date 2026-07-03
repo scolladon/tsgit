@@ -1,19 +1,12 @@
 import type { Service } from '../../../domain/protocol/index.js';
+import { sqQuote } from '../../primitives/internal/shell-quote.js';
 import { combineUserHost, type RemoteUrl } from './remote-url.js';
 
 type SshRemoteUrl = Extract<RemoteUrl, { kind: 'ssh' }>;
 
-const SINGLE_QUOTE = "'";
-const ESCAPED_SINGLE_QUOTE = "'\\''";
 const PORT_FLAG = '-p';
 
-/**
- * git's `sq_quote_buf`: wrap `s` in single quotes, replacing each embedded
- * `'` with `'\''` (close quote, escaped literal quote, reopen quote). Used to
- * build the one-token remote command the ssh server hands to its shell.
- */
-export const sqQuote = (s: string): string =>
-  `${SINGLE_QUOTE}${s.split(SINGLE_QUOTE).join(ESCAPED_SINGLE_QUOTE)}${SINGLE_QUOTE}`;
+export { sqQuote };
 
 /**
  * Assemble the argv passed to the resolved ssh program: `baseArgs` from
