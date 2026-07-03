@@ -840,4 +840,83 @@ describe('GitServiceSession — ssh duplex exchange', () => {
       });
     });
   });
+
+  describe('Given a persistent ssh channel', () => {
+    describe('When exchange() runs twice on the same session', () => {
+      it('Then both writes land — the stdin writer lock is released between writes', async () => {
+        // Arrange
+        const { channel, stdinWrites } = fakeChannel({
+          chunks: [encodePktStream([ENCODER.encode('NAK\n')])],
+        });
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        await sut.exchange(ENCODER.encode('first'));
+        await sut.exchange(ENCODER.encode('second'));
+
+        // Assert — a retained lock would make the second getWriter() throw.
+        expect(stdinWrites).toHaveLength(2);
+        expect(stdinWrites[1]).toEqual(ENCODER.encode('second'));
+      });
+    });
+  });
+});
+
+describe('GitServiceSession — spawn request shape', () => {
+  describe('Given a context without an abort signal', () => {
+    describe('When the ssh channel is spawned', () => {
+      it('Then the spawn request carries no signal key at all', async () => {
+        // Arrange
+        const { channel } = fakeChannel({ chunks: [] });
+        const { ssh, openSpy } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        await sut.advertisement();
+
+        // Assert — key absence, not undefined-value equality.
+        expect(Object.keys(openSpy.mock.calls[0]?.[0] as object)).not.toContain('signal');
+      });
+    });
+  });
+
+  describe('Given a context carrying an abort signal', () => {
+    describe('When the ssh channel is spawned', () => {
+      it('Then the spawn request carries that exact signal instance', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const { channel } = fakeChannel({ chunks: [] });
+        const { ssh, openSpy } = fakeSshTransport(channel);
+        const ctx = { ...contextWithSsh(ssh), signal: controller.signal };
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        await sut.advertisement();
+
+        // Assert
+        const request = openSpy.mock.calls[0]?.[0] as { signal?: AbortSignal };
+        expect(request.signal).toBe(controller.signal);
+      });
+    });
+  });
+
+  describe('Given an http remote', () => {
+    describe('When the advertisement GET is issued', () => {
+      it('Then the request carries no body key at all', async () => {
+        // Arrange
+        const { transport, requests } = fakeTransport(200, successAdvertisement());
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        await sut.advertisement();
+
+        // Assert — key absence, not undefined-value equality.
+        expect(Object.keys(requests[0] as object)).not.toContain('body');
+      });
+    });
+  });
 });

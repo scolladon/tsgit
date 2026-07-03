@@ -61,6 +61,7 @@ export const anonymizeRemoteUrl = (raw: string): string => {
   const prefixLength = separatorIndex + SCHEME_SEPARATOR.length;
   const firstSlash = raw.indexOf('/', prefixLength);
   // scheme form: an `@` after the path's first slash is path data, not userinfo.
+  // Stryker disable next-line EqualityOperator: equivalent — `firstSlash` indexes a `/` and `atIndex` an `@`, so they can never be equal; `<` vs `<=` is unobservable.
   if (firstSlash !== -1 && firstSlash < atIndex) return raw;
   return `${raw.slice(0, prefixLength)}${raw.slice(atIndex + 1)}`;
 };
@@ -96,6 +97,7 @@ const isScpLike = (raw: string): boolean => {
   const colonIndex = raw.indexOf(':');
   if (colonIndex === -1) return false;
   const slashIndex = raw.indexOf('/');
+  // Stryker disable next-line EqualityOperator: equivalent — `colonIndex` indexes a `:` and `slashIndex` a `/`, so they can never be equal; `<` vs `<=` is unobservable.
   const colonBeforeSlash = slashIndex === -1 || colonIndex < slashIndex;
   return colonBeforeSlash && !raw.includes(SCHEME_SEPARATOR);
 };
@@ -123,6 +125,7 @@ const collapseTildePathname = (pathname: string): string =>
 
 /** WHATWG `hostname` keeps IPv6 brackets (`[::1]`); ssh expects the bare address, as git passes it. */
 const stripIpv6Brackets = (hostname: string): string =>
+  // Stryker disable next-line LogicalOperator,StringLiteral: equivalent — the WHATWG URL parser never yields a half-bracketed hostname (a lone `[` or `]` makes `new URL` throw), so mutants differ only on unreachable inputs.
   hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
 
 const parseScpForm = (raw: string): RemoteUrl => {

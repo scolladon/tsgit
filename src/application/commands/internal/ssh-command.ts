@@ -58,5 +58,6 @@ const extractWord = (match: RegExpMatchArray): string => {
   const [, single, double, bare] = match;
   if (single !== undefined) return single;
   if (double !== undefined) return double.replace(/\\(["\\])/g, '$1');
+  // Stryker disable next-line StringLiteral,LogicalOperator: equivalent — a SHELL_SEGMENT match always defines exactly one group, so when `single` and `double` are undefined, `bare` is defined and the `??` fallback is unreachable.
   return (bare ?? '').replace(/\\(.)/g, '$1');
 };

@@ -691,5 +691,31 @@ describe('internal/remote-url', () => {
         expect(result).toBe('ssh://[::1]:22/x.git');
       });
     });
+
+    describe('When a scp-like path starts with @ right after the colon', () => {
+      it('Then the URL is left untouched (nothing after the @ carries a colon)', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('example.com:@x.git');
+
+        // Assert
+        expect(result).toBe('example.com:@x.git');
+      });
+    });
+
+    describe('When a scheme URL carries a user but no path slash', () => {
+      it('Then the userinfo is still stripped', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('ssh://git@example.com');
+
+        // Assert
+        expect(result).toBe('ssh://example.com');
+      });
+    });
   });
 });

@@ -235,4 +235,40 @@ describe('resolveSshCommand', () => {
       });
     });
   });
+
+  describe('Given GIT_SSH_COMMAND with an escaped double quote inside double quotes', () => {
+    describe('When resolving the ssh command', () => {
+      it('Then the backslash is consumed and the quote kept', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          env: envOf({ GIT_SSH_COMMAND: 'ssh "a\\"b"' }),
+        });
+        const sut = resolveSshCommand;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ program: 'ssh', baseArgs: ['a"b'] });
+      });
+    });
+  });
+
+  describe('Given GIT_SSH_COMMAND with an escaped backslash inside double quotes', () => {
+    describe('When resolving the ssh command', () => {
+      it('Then the pair collapses to a single backslash', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          env: envOf({ GIT_SSH_COMMAND: 'ssh "x\\\\y"' }),
+        });
+        const sut = resolveSshCommand;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ program: 'ssh', baseArgs: ['x\\y'] });
+      });
+    });
+  });
 });
