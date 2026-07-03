@@ -45,18 +45,43 @@ const sshPathnameOf = (mode: TildeMode, path: string): string => {
 const authorityOf = (user: string | undefined, host: string): string =>
   user === undefined ? host : `${user}@${host}`;
 
+const HEX_ALPHABET = ['0', '1', '9', 'a', 'f'] as const;
+
+const arbHexGroup = (): fc.Arbitrary<string> =>
+  fc.array(fc.constantFrom(...HEX_ALPHABET), { minLength: 1, maxLength: 4 }).map((c) => c.join(''));
+
+const arbHexGroups = (min: number, max: number): fc.Arbitrary<string> =>
+  fc.array(arbHexGroup(), { minLength: min, maxLength: max }).map((g) => g.join(':'));
+
+/**
+ * Valid-subset IPv6 literals: `::`-compressed head/tail forms plus the full
+ * 8-group form. WHATWG canonicalises these on parse (zero compression,
+ * lowercase hex), which the canonicalising round-trip property absorbs.
+ */
+const arbIpv6Host = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    arbHexGroups(1, 3).map((tail) => `::${tail}`),
+    fc
+      .record({ head: arbHexGroups(1, 3), tail: arbHexGroups(1, 2) })
+      .map(({ head, tail }) => `${head}::${tail}`),
+    arbHexGroups(8, 8),
+  );
+
+/** IPv6 hosts must be bracketed inside a URL authority; bare hostnames pass through. */
+const urlHostOf = (host: string): string => (host.includes(':') ? `[${host}]` : host);
+
 const sshUrlArb = (): fc.Arbitrary<string> =>
   fc
     .record({
       user: arbMaybeUser(),
-      host: arbHost(),
+      host: fc.oneof(arbHost(), arbIpv6Host()),
       port: fc.option(fc.integer({ min: 1, max: 65535 }), { nil: undefined }),
       tildeMode: arbTildeMode(),
       path: arbPath(),
     })
     .map(({ user, host, port, tildeMode, path }) => {
       const portSuffix = port === undefined ? '' : `:${port}`;
-      return `ssh://${authorityOf(user, host)}${portSuffix}${sshPathnameOf(tildeMode, path)}`;
+      return `ssh://${authorityOf(user, urlHostOf(host))}${portSuffix}${sshPathnameOf(tildeMode, path)}`;
     });
 
 const scpUrlArb = (): fc.Arbitrary<string> =>
