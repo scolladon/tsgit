@@ -139,6 +139,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_TAG` | `reason` | Tag object failed validation. |
 | `NOTHING_TO_COMMIT` | — | `commit` called when the index matches HEAD's tree (no changes to commit). |
 | `OPERATION_IN_PROGRESS` | `operation` | Another long-running operation (merge / rebase / cherry-pick) is pending. |
+| `SIGNING_FAILED` | `reason` | `commit` / `tag` requested signing but the signing program failed or is unavailable (off-node, no `gpg`, bad key, or `gpg.format=x509` which is unsupported). Nothing is written. |
 
 ### Network, transport, partial clone
 
@@ -169,6 +170,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REMOTE_FILTER_UNSUPPORTED` | — | Server's capabilities lack `filter`. |
 | `REMOTE_NOT_CONFIGURED` | `name` | `[remote "<name>"]` not in `.git/config`. |
 | `SIDEBAND_FATAL` | `message` | Server emitted a sideband fatal-error line. |
+| `SIGNED_PUSH_UNSUPPORTED` | — | `push({ signed: 'yes' })` but the server does not advertise the `push-cert` capability. Nothing is sent. (`'if-asked'` falls back to an unsigned push.) |
 | `TOO_MANY_ADVERTISED_REFS` | `count, limit` | Server advertised more refs than the cap. |
 | `TOO_MANY_REDIRECTS` | `count, limit` | HTTP redirect loop / overflow. |
 | `UNKNOWN_ACK_STATUS` | `status` | want/have negotiation returned an unrecognised ack. |
