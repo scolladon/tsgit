@@ -8,6 +8,15 @@ import { readConfig } from './config-read.js';
 const FALLBACK_NAME = 'tsgit';
 const FALLBACK_EMAIL = 'tsgit@localhost';
 
+// A `user.signingKey`-only config (no name/email) does not count as an
+// identity — reflog entries still fall back to the portable identity.
+const resolveNameEmail = (
+  user: { name?: string; email?: string } | undefined,
+): { name: string; email: string } =>
+  user?.name !== undefined && user?.email !== undefined
+    ? { name: user.name, email: user.email }
+    : { name: FALLBACK_NAME, email: FALLBACK_EMAIL };
+
 /**
  * Committer identity for reflog entries: config `user.*` plus a fresh
  * timestamp, or a portable fallback when `user.*` is unset. Never throws —
@@ -15,10 +24,10 @@ const FALLBACK_EMAIL = 'tsgit@localhost';
  */
 export async function resolveReflogIdentity(ctx: Context): Promise<AuthorIdentity> {
   const config = await readConfig(ctx);
-  const user = config.user;
+  const { name, email } = resolveNameEmail(config.user);
   return {
-    name: user === undefined ? FALLBACK_NAME : user.name,
-    email: user === undefined ? FALLBACK_EMAIL : user.email,
+    name,
+    email,
     timestamp: Math.floor(Date.now() / 1000),
     timezoneOffset: '+0000',
   };

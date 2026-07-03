@@ -93,7 +93,9 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   if (opts.author === undefined && configUser === undefined) {
-    // equivalent-mutant: configUser is undefined iff config.user is undefined (toAuthor returns undefined for undefined); when configUser is defined all keys are valued so the guard is a no-op
+    // No explicit author and no usable config identity (unset, signingKey-only,
+    // or a valueless name/email) — surface a valueless key as CONFIG_MISSING_VALUE
+    // before falling back to the default identity.
     await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']);
   }
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
@@ -260,9 +262,12 @@ const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
 };
 
 const toAuthor = (
-  user: { readonly name: string; readonly email: string } | undefined,
+  user:
+    | { readonly name?: string; readonly email?: string; readonly signingKey?: string }
+    | undefined,
 ): AuthorIdentity | undefined => {
-  if (user === undefined) return undefined;
+  // A signingKey-only user (no name/email) is not an identity.
+  if (user?.name === undefined || user?.email === undefined) return undefined;
   return {
     name: user.name,
     email: user.email,

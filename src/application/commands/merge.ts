@@ -709,14 +709,16 @@ export const resolveMergeAuthor = async (
   opts: MergeRunInput,
 ): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);
-  const cfgUser = config.user
-    ? {
-        name: config.user.name,
-        email: config.user.email,
-        timestamp: Math.floor(Date.now() / 1000),
-        timezoneOffset: '+0000',
-      }
-    : undefined;
+  // A signingKey-only `[user]` (no name/email) is not an identity.
+  const cfgUser =
+    config.user?.name !== undefined && config.user?.email !== undefined
+      ? {
+          name: config.user.name,
+          email: config.user.email,
+          timestamp: Math.floor(Date.now() / 1000),
+          timezoneOffset: '+0000',
+        }
+      : undefined;
   const authorInput: { explicit?: AuthorIdentity; configUser?: AuthorIdentity } = {};
   if (opts.author !== undefined) authorInput.explicit = opts.author;
   if (cfgUser !== undefined) authorInput.configUser = cfgUser;

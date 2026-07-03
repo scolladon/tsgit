@@ -325,6 +325,56 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a config with [user] signingKey', () => {
+    describe('When readConfig', () => {
+      it('Then user.signingKey is the configured value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  signingKey = ABCD1234\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.user?.signingKey).toBe('ABCD1234');
+      });
+    });
+  });
+
+  describe('Given [user] signingKey with no name/email', () => {
+    describe('When readConfig', () => {
+      it('Then user is { signingKey } and name/email are undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  signingKey = ABCD1234\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.user).toEqual({ signingKey: 'ABCD1234' });
+        expect(sut.user?.name).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [user] name and email but no signingKey', () => {
+    describe('When readConfig', () => {
+      it('Then user is { name, email } and signingKey is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.user).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
+        expect(sut.user?.signingKey).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a [remote "origin"] section with url', () => {
     describe('When readConfig', () => {
       it('Then parsed.remote.get("origin")?.url is set', async () => {
@@ -5743,6 +5793,201 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           // Assert
           expect(result?.key).toBe('core.compression');
         });
+      });
+    });
+  });
+
+  describe('Given [commit] gpgsign = true', () => {
+    describe('When readConfig', () => {
+      it('Then commit.gpgSign is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[commit]\n  gpgsign = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.commit?.gpgSign).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [commit] gpgsign = false', () => {
+    describe('When readConfig', () => {
+      it('Then commit.gpgSign is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[commit]\n  gpgsign = false\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.commit?.gpgSign).toBe(false);
+      });
+    });
+  });
+
+  describe('Given [tag] gpgSign = true', () => {
+    describe('When readConfig', () => {
+      it('Then tag.gpgSign is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[tag]\n  gpgSign = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.tag?.gpgSign).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [push] gpgSign = true', () => {
+    describe('When readConfig', () => {
+      it("Then push.gpgSign is 'true'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  gpgSign = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.gpgSign).toBe('true');
+      });
+    });
+  });
+
+  describe('Given [push] gpgSign = false', () => {
+    describe('When readConfig', () => {
+      it("Then push.gpgSign is 'false'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  gpgSign = false\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.gpgSign).toBe('false');
+      });
+    });
+  });
+
+  describe('Given [push] gpgSign = if-asked', () => {
+    describe('When readConfig', () => {
+      it("Then push.gpgSign is 'if-asked'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  gpgSign = if-asked\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.gpgSign).toBe('if-asked');
+      });
+    });
+  });
+
+  describe('Given [gpg] format = openpgp', () => {
+    describe('When readConfig', () => {
+      it("Then gpg.format is 'openpgp'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  format = openpgp\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.gpg?.format).toBe('openpgp');
+      });
+    });
+  });
+
+  describe('Given [gpg] format = ssh', () => {
+    describe('When readConfig', () => {
+      it("Then gpg.format is 'ssh'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  format = ssh\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.gpg?.format).toBe('ssh');
+      });
+    });
+  });
+
+  describe('Given [gpg] format = x509', () => {
+    describe('When readConfig', () => {
+      it("Then gpg.format is 'x509'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  format = x509\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.gpg?.format).toBe('x509');
+      });
+    });
+  });
+
+  describe('Given [gpg] program = /usr/bin/gpg2', () => {
+    describe('When readConfig', () => {
+      it("Then gpg.program is '/usr/bin/gpg2'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  program = /usr/bin/gpg2\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.gpg?.program).toBe('/usr/bin/gpg2');
+      });
+    });
+  });
+
+  describe('Given [gpg "ssh"] program = /usr/bin/ssh-keygen', () => {
+    describe('When readConfig', () => {
+      it("Then gpg.ssh.program is '/usr/bin/ssh-keygen'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg "ssh"]\n  program = /usr/bin/ssh-keygen\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.gpg?.ssh?.program).toBe('/usr/bin/ssh-keygen');
+      });
+    });
+  });
+
+  describe('Given a config with none of the signing keys', () => {
+    describe('When readConfig', () => {
+      it('Then commit/tag/push/gpg are all undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.commit).toBeUndefined();
+        expect(sut.tag).toBeUndefined();
+        expect(sut.push).toBeUndefined();
+        expect(sut.gpg).toBeUndefined();
       });
     });
   });
