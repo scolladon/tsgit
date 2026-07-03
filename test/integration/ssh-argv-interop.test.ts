@@ -178,6 +178,60 @@ describe.skipIf(!GIT_AVAILABLE)('ssh argv interop', () => {
     });
   });
 
+  describe('Given a dash-prefixed host in an ssh:// remote URL', () => {
+    describe('When both real git and tsgit evaluate the URL', () => {
+      it('Then both refuse it with a strange-hostname guard', () => {
+        // Arrange
+        const url = 'ssh://-oProxyCommand=evil/repo.git';
+
+        // Act
+        const gitResult = tryRunGit(['ls-remote', '--', url], { env: runGitEnv() });
+        let caught: unknown;
+        try {
+          parseRemoteUrl(url);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toContain('blocked');
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_URL',
+          reason: expect.stringContaining('blocked'),
+        });
+      });
+    });
+  });
+
+  describe('Given a dash-prefixed path in a scp-like remote URL', () => {
+    describe('When both real git and tsgit evaluate the URL', () => {
+      it('Then both refuse it with a strange-pathname guard', () => {
+        // Arrange
+        const url = 'git@example.invalid:-leadingdash/repo.git';
+
+        // Act
+        const gitResult = tryRunGit(['ls-remote', '--', url], { env: runGitEnv() });
+        let caught: unknown;
+        try {
+          parseRemoteUrl(url);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toContain('blocked');
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_URL',
+          reason: expect.stringContaining('blocked'),
+        });
+      });
+    });
+  });
+
   describe('Given a normal scp-like remote URL with no dash-prefixed tokens', () => {
     describe('When both real git and tsgit evaluate the URL', () => {
       it('Then neither refuses it via the dash guard', () => {

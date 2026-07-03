@@ -157,10 +157,10 @@ describe('GitServiceSession.advertisement (http)', () => {
         // Arrange
         const { transport, requests } = fakeTransport(200, successAdvertisement());
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
-        const pkts = await collect(await session.advertisement());
+        const pkts = await collect(await sut.advertisement());
 
         // Assert
         expect(requests[0]?.url).toBe(
@@ -179,10 +179,10 @@ describe('GitServiceSession.advertisement (http)', () => {
         // Arrange
         const { transport, requests } = fakeTransport(200, encodePktStream([]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
 
         // Act
-        await session.advertisement();
+        await sut.advertisement();
 
         // Assert
         expect(requests[0]?.headers.accept).toBe('application/x-git-receive-pack-advertisement');
@@ -198,12 +198,12 @@ describe('GitServiceSession.advertisement (http)', () => {
         // Arrange
         const { transport } = fakeTransport(statusCode, new Uint8Array(0));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
         let caught: unknown;
         try {
-          await session.advertisement();
+          await sut.advertisement();
         } catch (err) {
           caught = err;
         }
@@ -230,10 +230,10 @@ describe('GitServiceSession.advertisement (http)', () => {
         const controller = new AbortController();
         const { transport, requests } = fakeTransport(200, successAdvertisement());
         const ctx = { ...contextWith(transport), signal: controller.signal };
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
-        await session.advertisement();
+        await sut.advertisement();
 
         // Assert
         expect(requests[0]?.signal).toBe(controller.signal);
@@ -247,10 +247,10 @@ describe('GitServiceSession.advertisement (http)', () => {
         // Arrange
         const { transport, requests } = fakeTransport(200, successAdvertisement());
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
-        await session.advertisement();
+        await sut.advertisement();
 
         // Assert
         expect(requests[0] && 'signal' in requests[0]).toBe(false);
@@ -267,11 +267,11 @@ describe('GitServiceSession.exchange (http)', () => {
         const responseBody = encodePktStream([ENCODER.encode('NAK\n')]);
         const { transport, requests } = fakeTransport(200, responseBody);
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
         const requestBytes = ENCODER.encode('0032want aaaa\n0000');
 
         // Act
-        const pkts = await collect(await session.exchange(requestBytes));
+        const pkts = await collect(await sut.exchange(requestBytes));
 
         // Assert
         expect(requests[0]?.url).toBe('https://example.com/r.git/git-upload-pack');
@@ -290,10 +290,10 @@ describe('GitServiceSession.exchange (http)', () => {
         // Arrange
         const { transport, requests } = fakeTransport(200, encodePktStream([]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
 
         // Act
-        await session.exchange(new Uint8Array(0));
+        await sut.exchange(new Uint8Array(0));
 
         // Assert
         expect(requests[0]?.url).toBe('https://example.com/r.git/git-receive-pack');
@@ -309,12 +309,12 @@ describe('GitServiceSession.exchange (http)', () => {
         // Arrange
         const { transport } = fakeTransport(200, encodePktStream([]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git#frag', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git#frag', 'git-upload-pack');
 
         // Act
         let caught: unknown;
         try {
-          await session.exchange(new Uint8Array(0));
+          await sut.exchange(new Uint8Array(0));
         } catch (err) {
           caught = err;
         }
@@ -334,12 +334,12 @@ describe('GitServiceSession.exchange (http)', () => {
         // Arrange
         const { transport } = fakeTransport(200, encodePktStream([]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://', 'git-upload-pack');
 
         // Act
         let caught: unknown;
         try {
-          await session.exchange(new Uint8Array(0));
+          await sut.exchange(new Uint8Array(0));
         } catch (err) {
           caught = err;
         }
@@ -359,10 +359,10 @@ describe('GitServiceSession.exchange (http)', () => {
         // Arrange
         const { transport, requests } = fakeTransport(200, encodePktStream([]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git/', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git/', 'git-upload-pack');
 
         // Act
-        await session.exchange(new Uint8Array(0));
+        await sut.exchange(new Uint8Array(0));
 
         // Assert
         expect(requests[0]?.url).toBe('https://example.com/r.git/git-upload-pack');
@@ -378,12 +378,12 @@ describe('GitServiceSession.exchange (http)', () => {
         // Arrange
         const { transport } = fakeTransport(statusCode, new Uint8Array(0));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
         let caught: unknown;
         try {
-          await session.exchange(new Uint8Array(0));
+          await sut.exchange(new Uint8Array(0));
         } catch (err) {
           caught = err;
         }
@@ -411,10 +411,10 @@ describe('GitServiceSession.exchange (http)', () => {
         const controller = new AbortController();
         const { transport, requests } = fakeTransport(200, encodePktStream([]));
         const ctx = { ...contextWith(transport), signal: controller.signal };
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
-        await session.exchange(new Uint8Array(0));
+        await sut.exchange(new Uint8Array(0));
 
         // Assert
         expect(requests[0]?.signal).toBe(controller.signal);
@@ -428,10 +428,10 @@ describe('GitServiceSession.exchange (http)', () => {
         // Arrange
         const { transport, requests } = fakeTransport(200, encodePktStream([]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
-        await session.exchange(new Uint8Array(0));
+        await sut.exchange(new Uint8Array(0));
 
         // Assert
         expect(requests[0] && 'signal' in requests[0]).toBe(false);
@@ -447,10 +447,10 @@ describe('GitServiceSession.close (http)', () => {
         // Arrange
         const { transport } = fakeTransport(200, encodePktStream([]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act & Assert
-        await expect(session.close()).resolves.toBeUndefined();
+        await expect(sut.close()).resolves.toBeUndefined();
       });
     });
   });
@@ -512,10 +512,10 @@ describe('GitServiceSession.exchange — response decoding', () => {
         const nakPayload = ENCODER.encode('NAK\n');
         const { transport } = fakeTransport(200, encodePktStream([nakPayload]));
         const ctx = contextWith(transport);
-        const session = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
         // Act
-        const pkts = await collect(await session.exchange(new Uint8Array(0)));
+        const pkts = await collect(await sut.exchange(new Uint8Array(0)));
         const dataPkts = pkts.filter((p) => p.kind === 'data');
 
         // Assert

@@ -250,135 +250,141 @@ describe.skipIf(SKIP_REASON !== false)('ssh transport — end-to-end over a fake
   });
 
   describe('Given a bare repo served through the fake ssh bridge', () => {
-    it('Then clone, fetch, pull, and push all drive real git-upload-pack / git-receive-pack over ssh://', async () => {
-      // Arrange
-      const { root, bareRepoPath } = await createFreshBareRepo();
-      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-clone-'));
-      const url = `ssh://git@localhost${bareRepoPath}`;
-      const repo = await openRepository({ cwd: workDir });
+    describe('When the full clone→fetch→pull→push lifecycle runs sequentially over ssh://', () => {
+      it('Then every stage drives real git-upload-pack / git-receive-pack to the expected state (one sequential lifecycle: each operation builds on the previous)', async () => {
+        // Arrange
+        const { root, bareRepoPath } = await createFreshBareRepo();
+        const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-clone-'));
+        const url = `ssh://git@localhost${bareRepoPath}`;
+        const repo = await openRepository({ cwd: workDir });
 
-      try {
-        // Act — clone.
-        const cloneResult: CloneResult = await repo.clone({ url });
+        try {
+          // Act — clone.
+          const cloneResult: CloneResult = await repo.clone({ url });
 
-        // Assert — clone.
-        const headOid = (await readFile(HEAD_OID_FILE, 'utf8')).trim();
-        expect(cloneResult.head).toBe('refs/heads/main' as RefName);
-        expect(cloneResult.fetchedRefs).toContainEqual({
-          name: 'refs/heads/main' as RefName,
-          id: headOid,
-        });
-        const clonedMain = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
-        expect(clonedMain).toBe(headOid);
+          // Assert — clone.
+          const headOid = (await readFile(HEAD_OID_FILE, 'utf8')).trim();
+          expect(cloneResult.head).toBe('refs/heads/main' as RefName);
+          expect(cloneResult.fetchedRefs).toContainEqual({
+            name: 'refs/heads/main' as RefName,
+            id: headOid,
+          });
+          const clonedMain = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
+          expect(clonedMain).toBe(headOid);
 
-        // Arrange — fetch: publish a new commit to the bare repo.
-        await wireOriginRemote(repo, url);
-        const afterFetchTip = await addCommitToBare(bareRepoPath, 'fetched-commit');
+          // Arrange — fetch: publish a new commit to the bare repo.
+          await wireOriginRemote(repo, url);
+          const afterFetchTip = await addCommitToBare(bareRepoPath, 'fetched-commit');
 
-        // Act — fetch.
-        const fetchResult = await repo.fetch({ remote: 'origin' });
+          // Act — fetch.
+          const fetchResult = await repo.fetch({ remote: 'origin' });
 
-        // Assert — fetch.
-        expect(fetchResult.updatedRefs.map((r) => r.newId)).toContain(afterFetchTip);
-        const trackingRef = (
-          await readFile(path.join(repo.ctx.layout.gitDir, 'refs/remotes/origin/main'), 'utf8')
-        ).trim();
-        expect(trackingRef).toBe(afterFetchTip);
+          // Assert — fetch.
+          expect(fetchResult.updatedRefs.map((r) => r.newId)).toContain(afterFetchTip);
+          const trackingRef = (
+            await readFile(path.join(repo.ctx.layout.gitDir, 'refs/remotes/origin/main'), 'utf8')
+          ).trim();
+          expect(trackingRef).toBe(afterFetchTip);
 
-        // Arrange — pull: publish yet another commit to the bare repo.
-        const afterPullTip = await addCommitToBare(bareRepoPath, 'pulled-commit');
+          // Arrange — pull: publish yet another commit to the bare repo.
+          const afterPullTip = await addCommitToBare(bareRepoPath, 'pulled-commit');
 
-        // Act — pull.
-        await repo.pull({ remote: 'origin', ref: 'main' });
+          // Act — pull.
+          await repo.pull({ remote: 'origin', ref: 'main' });
 
-        // Assert — pull fast-forwarded local main.
-        const localMainAfterPull = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
-        expect(localMainAfterPull).toBe(afterPullTip);
+          // Assert — pull fast-forwarded local main.
+          const localMainAfterPull = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
+          expect(localMainAfterPull).toBe(afterPullTip);
 
-        // Arrange — push: commit locally on top of the pulled tip.
-        const newHead = await commitLocalChange(repo, 'pushed-over-ssh');
+          // Arrange — push: commit locally on top of the pulled tip.
+          const newHead = await commitLocalChange(repo, 'pushed-over-ssh');
 
-        // Act — push.
-        const pushResult = await repo.push({
-          remote: 'origin',
-          refspecs: ['refs/heads/main:refs/heads/main'],
-        });
+          // Act — push.
+          const pushResult = await repo.push({
+            remote: 'origin',
+            refspecs: ['refs/heads/main:refs/heads/main'],
+          });
 
-        // Assert — push.
-        expect(pushResult.pushedRefs).toHaveLength(1);
-        expect(pushResult.pushedRefs[0]).toMatchObject({
-          name: 'refs/heads/main' as RefName,
-          newId: newHead,
-          status: 'ok',
-        });
-        const bareTip = runGit(['-C', bareRepoPath, 'rev-parse', 'main']).trim();
-        expect(bareTip).toBe(newHead);
-      } finally {
-        await repo.dispose();
-        await rm(workDir, { recursive: true, force: true });
-        await rm(root, { recursive: true, force: true });
-      }
-    }, 60_000);
+          // Assert — push.
+          expect(pushResult.pushedRefs).toHaveLength(1);
+          expect(pushResult.pushedRefs[0]).toMatchObject({
+            name: 'refs/heads/main' as RefName,
+            newId: newHead,
+            status: 'ok',
+          });
+          const bareTip = runGit(['-C', bareRepoPath, 'rev-parse', 'main']).trim();
+          expect(bareTip).toBe(newHead);
+        } finally {
+          await repo.dispose();
+          await rm(workDir, { recursive: true, force: true });
+          await rm(root, { recursive: true, force: true });
+        }
+      }, 60_000);
+    });
 
-    it('Then a multi-megabyte push completes without deadlocking the duplex pipes', async () => {
-      // Arrange — an incompressible blob far beyond the OS pipe buffers, so
-      // the pack write and the side-band response must interleave.
-      const { root, bareRepoPath } = await createFreshBareRepo();
-      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-bigpush-'));
-      const url = `ssh://git@localhost${bareRepoPath}`;
-      const repo = await openRepository({ cwd: workDir });
+    describe('When pushing a multi-megabyte pack over the bridge', () => {
+      it('Then the push completes without deadlocking the duplex pipes', async () => {
+        // Arrange — an incompressible blob far beyond the OS pipe buffers, so
+        // the pack write and the side-band response must interleave.
+        const { root, bareRepoPath } = await createFreshBareRepo();
+        const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-bigpush-'));
+        const url = `ssh://git@localhost${bareRepoPath}`;
+        const repo = await openRepository({ cwd: workDir });
 
-      try {
-        await repo.clone({ url });
-        await wireOriginRemote(repo, url);
-        const newHead = await commitFileChange(
-          repo,
-          'big.bin',
-          pseudoRandomBytes(4 * 1024 * 1024),
-          'large push',
-        );
+        try {
+          await repo.clone({ url });
+          await wireOriginRemote(repo, url);
+          const newHead = await commitFileChange(
+            repo,
+            'big.bin',
+            pseudoRandomBytes(4 * 1024 * 1024),
+            'large push',
+          );
 
-        // Act
-        const result = await repo.push({
-          remote: 'origin',
-          refspecs: ['refs/heads/main:refs/heads/main'],
-        });
+          // Act
+          const result = await repo.push({
+            remote: 'origin',
+            refspecs: ['refs/heads/main:refs/heads/main'],
+          });
 
-        // Assert
-        expect(result.pushedRefs[0]).toMatchObject({
-          name: 'refs/heads/main' as RefName,
-          newId: newHead,
-          status: 'ok',
-        });
-        const bareTip = runGit(['-C', bareRepoPath, 'rev-parse', 'main']).trim();
-        expect(bareTip).toBe(newHead);
-      } finally {
-        await repo.dispose();
-        await rm(workDir, { recursive: true, force: true });
-        await rm(root, { recursive: true, force: true });
-      }
-    }, 60_000);
+          // Assert
+          expect(result.pushedRefs[0]).toMatchObject({
+            name: 'refs/heads/main' as RefName,
+            newId: newHead,
+            status: 'ok',
+          });
+          const bareTip = runGit(['-C', bareRepoPath, 'rev-parse', 'main']).trim();
+          expect(bareTip).toBe(newHead);
+        } finally {
+          await repo.dispose();
+          await rm(workDir, { recursive: true, force: true });
+          await rm(root, { recursive: true, force: true });
+        }
+      }, 60_000);
+    });
 
-    it('Then clone also succeeds through a scp-like remote URL', async () => {
-      // Arrange
-      const { root, bareRepoPath } = await createFreshBareRepo();
-      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-scp-clone-'));
-      const url = `git@localhost:${bareRepoPath}`;
-      const repo = await openRepository({ cwd: workDir });
+    describe('When cloning through a scp-like remote URL', () => {
+      it('Then the clone succeeds against the same bridge', async () => {
+        // Arrange
+        const { root, bareRepoPath } = await createFreshBareRepo();
+        const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-scp-clone-'));
+        const url = `git@localhost:${bareRepoPath}`;
+        const repo = await openRepository({ cwd: workDir });
 
-      try {
-        // Act
-        await repo.clone({ url });
+        try {
+          // Act
+          await repo.clone({ url });
 
-        // Assert
-        const headOid = (await readFile(HEAD_OID_FILE, 'utf8')).trim();
-        const clonedMain = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
-        expect(clonedMain).toBe(headOid);
-      } finally {
-        await repo.dispose();
-        await rm(workDir, { recursive: true, force: true });
-        await rm(root, { recursive: true, force: true });
-      }
-    }, 60_000);
+          // Assert
+          const headOid = (await readFile(HEAD_OID_FILE, 'utf8')).trim();
+          const clonedMain = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
+          expect(clonedMain).toBe(headOid);
+        } finally {
+          await repo.dispose();
+          await rm(workDir, { recursive: true, force: true });
+          await rm(root, { recursive: true, force: true });
+        }
+      }, 60_000);
+    });
   });
 });
