@@ -985,7 +985,21 @@
     "WHATWG",
     "foobarbaz",
     "cmdline",
-    "bigpush"
+    "bigpush",
+    "gpgsm",
+    "bsau",
+    "pushee",
+    "PUSHEE",
+    "hmac",
+    "userinfo",
+    "bisectability",
+    "unwidened",
+    "neutralises",
+    "ccertificate",
+    "dpusher",
+    "enonce",
+    "epush",
+    "lnbm"
   ],
   "ignorePaths": [
     "node_modules",
