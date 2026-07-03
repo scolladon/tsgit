@@ -243,7 +243,8 @@ export type CommandError =
       readonly code: 'SIGNING_FAILED';
       readonly reason: 'off-node' | 'unsupported-format' | 'signer-failed';
       readonly format?: 'openpgp' | 'ssh' | 'x509';
-    };
+    }
+  | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -746,3 +747,9 @@ export const signingFailed = (
       ? { code: 'SIGNING_FAILED', reason }
       : { code: 'SIGNING_FAILED', reason, format },
   );
+
+// Refusal: `--signed` (mode 'yes') was requested but the receiving end's
+// capability advertisement carries no `push-cert` token. Thrown before any
+// signing attempt or wire exchange — the push is aborted, nothing is sent.
+export const signedPushUnsupported = (remote: string): TsgitError =>
+  new TsgitError({ code: 'SIGNED_PUSH_UNSUPPORTED', remote });

@@ -40,6 +40,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
+import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -1682,6 +1683,394 @@ describe('push — tag refspec tracking cache', () => {
         expect(sut.pushedRefs[0]?.status).toBe('ok');
         const remotesDirExists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes`);
         expect(remotesDirExists).toBe(false);
+      });
+    });
+  });
+});
+
+describe('push — signed', () => {
+  const CERT_NONCE = '1783074575-95af4e9c6ffb06f947a839725a37638bb13f649f';
+  const SIGNED_CAPS = [
+    'report-status',
+    'ofs-delta',
+    'atomic',
+    'delete-refs',
+    `push-cert=${CERT_NONCE}`,
+  ];
+  const armor = (): string =>
+    '-----BEGIN PGP SIGNATURE-----\n\nZmFrZXNpZw==\n-----END PGP SIGNATURE-----\n';
+
+  const writeSignedPushConfig = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    opts: { userExtra?: string; otherExtra?: string; url?: string } = {},
+  ): Promise<void> => {
+    const url = opts.url ?? 'https://example.com/r.git';
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[remote "origin"]\n  url = ${url}\n` +
+        `[user]\n  name = A\n  email = a@a\n${opts.userExtra ?? ''}` +
+        `${opts.otherExtra ?? ''}`,
+    );
+    __resetConfigCacheForTests();
+  };
+
+  const seedSignedPush = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    configOpts: { userExtra?: string; otherExtra?: string; url?: string } = {},
+  ): Promise<{ parent: BuiltCommit; tip: BuiltCommit }> => {
+    const parent = await seedCommit(ctx, [], 'gen-1');
+    const tip = await seedCommit(ctx, [parent.id], 'gen-2');
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+    await writeSignedPushConfig(ctx, configOpts);
+    return { parent, tip };
+  };
+
+  describe('Given signed "yes" and the server advertises push-cert=<nonce>', () => {
+    describe('When push runs', () => {
+      it('Then it sends a signed certificate and the ref is accepted', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = createMemoryContext({ command: runner });
+        const { parent, tip } = await seedSignedPush(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const sut = await push({ ...ctx, transport }, { signed: 'yes' });
+
+        // Assert
+        expect(sut.pushedRefs[0]).toMatchObject({
+          name: 'refs/heads/main',
+          status: 'ok',
+          newId: tip.id,
+        });
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).toContain('push-cert  report-status');
+        expect(body).toContain('certificate version 0.1');
+        expect(body).toMatch(/pusher A <a@a> \d+ [+-]\d{4}/);
+        expect(body).toContain('pushee https://example.com/r.git');
+        expect(body).toContain(`nonce ${CERT_NONCE}`);
+        expect(body).toContain('push-cert-end');
+        expect(body).toContain('BEGIN PGP SIGNATURE');
+        expect(body).not.toContain('push-cert=');
+        expect(runner.calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given signed "yes" and the server does NOT advertise push-cert', () => {
+    describe('When push runs', () => {
+      it('Then it throws SIGNED_PUSH_UNSUPPORTED and nothing beyond discovery is sent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport }, { signed: 'yes' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const error = caught as TsgitError;
+        expect(error.data).toEqual({ code: 'SIGNED_PUSH_UNSUPPORTED', remote: 'origin' });
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe('Given signed "if-asked" and the server does NOT advertise push-cert', () => {
+    describe('When push runs off-node (no CommandRunner)', () => {
+      it('Then it falls back to a normal unsigned push and succeeds', async () => {
+        // Arrange — no ctx.command: an attempted signature would throw off-node.
+        const ctx = createMemoryContext();
+        const { parent, tip } = await seedSignedPush(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const sut = await push({ ...ctx, transport }, { signed: 'if-asked' });
+
+        // Assert
+        expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).not.toContain('push-cert');
+      });
+    });
+  });
+
+  describe('Given signed "if-asked" and the server advertises push-cert=<nonce>', () => {
+    describe('When push runs', () => {
+      it('Then it sends a signed certificate', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = createMemoryContext({ command: runner });
+        const { parent } = await seedSignedPush(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { signed: 'if-asked' });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).toContain('push-cert-end');
+        expect(runner.calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given push.gpgSign=true in config and opts.signed is undefined', () => {
+    describe('When the server advertises push-cert', () => {
+      it('Then it signs — the config default applies', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = createMemoryContext({ command: runner });
+        const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = true\n' });
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).toContain('push-cert-end');
+        expect(runner.calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given push.gpgSign="if-asked" in config and opts.signed is undefined', () => {
+    describe('When the server does NOT advertise push-cert', () => {
+      it('Then it falls back to an unsigned push', async () => {
+        // Arrange — off-node: an attempted signature would throw.
+        const ctx = createMemoryContext();
+        const { parent, tip } = await seedSignedPush(ctx, {
+          otherExtra: '[push]\n  gpgSign = if-asked\n',
+        });
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const sut = await push({ ...ctx, transport });
+
+        // Assert
+        expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
+      });
+    });
+  });
+
+  describe('Given push.gpgSign is unset and opts.signed is undefined', () => {
+    describe('When the server advertises push-cert', () => {
+      it('Then it does not sign — the default mode is "no"', async () => {
+        // Arrange — off-node: an attempted signature would throw.
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).not.toContain('push-cert');
+      });
+    });
+  });
+
+  describe('Given opts.signed is "no" and push.gpgSign=true in config', () => {
+    describe('When the server advertises push-cert', () => {
+      it('Then it does not sign — the explicit "no" overrides the config default', async () => {
+        // Arrange — off-node: an attempted signature would throw.
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = true\n' });
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { signed: 'no' });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).not.toContain('push-cert');
+      });
+    });
+  });
+
+  describe('Given user.signingKey is configured', () => {
+    describe('When push signs', () => {
+      it('Then the cert pusher line uses the signing key, not the identity string', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = createMemoryContext({ command: runner });
+        const { parent } = await seedSignedPush(ctx, {
+          userExtra: '  signingKey = 5763ECD93FFE5F79\n',
+        });
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { signed: 'yes' });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).toMatch(/pusher 5763ECD93FFE5F79 \d+ [+-]\d{4}/);
+        expect(body).not.toContain('pusher A <a@a>');
+        expect(runner.calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given the remote URL carries user:pass@ credentials', () => {
+    describe('When push signs', () => {
+      it('Then the cert pushee strips the credentials', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = createMemoryContext({ command: runner });
+        const credUrl = 'https://alice:s3cr3t@example.com/r.git';
+        const { parent } = await seedSignedPush(ctx, { url: credUrl });
+        const { transport, requestBodies } = fakeServer({
+          url: credUrl,
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { signed: 'yes' });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).toContain('pushee https://example.com/r.git');
+        expect(body).not.toContain('s3cr3t');
+        expect(runner.calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given signed "yes" and the signer exits non-zero', () => {
+    describe('When push runs', () => {
+      it('Then it throws SIGNING_FAILED reason signer-failed and nothing beyond discovery is sent', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ exitCode: 1 });
+        const ctx = createMemoryContext({ command: runner });
+        const { parent } = await seedSignedPush(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport }, { signed: 'yes' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const error = caught as TsgitError;
+        expect(error.data).toEqual({
+          code: 'SIGNING_FAILED',
+          reason: 'signer-failed',
+          format: 'openpgp',
+        });
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe('Given signed "yes" but the context has no CommandRunner (off-node)', () => {
+    describe('When the server advertises push-cert', () => {
+      it('Then it throws SIGNING_FAILED reason off-node and nothing beyond discovery is sent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport }, { signed: 'yes' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const error = caught as TsgitError;
+        expect(error.data).toEqual({ code: 'SIGNING_FAILED', reason: 'off-node' });
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe('Given signed "no" and the context has no CommandRunner (off-node)', () => {
+    describe('When the server advertises push-cert', () => {
+      it('Then it still pushes successfully, unsigned', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { parent, tip } = await seedSignedPush(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const sut = await push({ ...ctx, transport }, { signed: 'no' });
+
+        // Assert
+        expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
       });
     });
   });

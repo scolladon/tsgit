@@ -58,6 +58,7 @@ import {
   revparseAmbiguous,
   revparseUnresolved,
   sanitize,
+  signedPushUnsupported,
   signingFailed,
   sparsePatternFileTooLarge,
   stashApplyWouldOverwrite,
@@ -1688,6 +1689,20 @@ describe('domain commands error — extractDetail message formatting', () => {
           reason: 'unsupported-format',
           format: 'x509',
         });
+      });
+    });
+  });
+
+  describe('Given the signedPushUnsupported error helper', () => {
+    describe('When called with a remote name', () => {
+      it('Then data carries code and remote', () => {
+        // Arrange
+        const sut = signedPushUnsupported;
+        // Act
+        const result = sut('origin');
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'SIGNED_PUSH_UNSUPPORTED', remote: 'origin' });
       });
     });
   });

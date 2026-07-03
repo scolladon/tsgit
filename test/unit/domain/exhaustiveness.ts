@@ -182,6 +182,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'NOTES_OBJECT_HAS_NONE':
     case 'NOTES_REF_OUTSIDE':
     case 'SIGNING_FAILED':
+    case 'SIGNED_PUSH_UNSUPPORTED':
       return;
     default: {
       const _exhaustive: never = data;

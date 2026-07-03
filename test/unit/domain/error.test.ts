@@ -5,6 +5,7 @@ import {
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
   worktreeFileAbsent,
@@ -1238,6 +1239,22 @@ describe('signingFailed error', () => {
 
         // Assert
         expect(sut.message).toMatch(/^SIGNING_FAILED: gpg failed to sign the data \(/);
+      });
+    });
+  });
+});
+
+describe('signedPushUnsupported error', () => {
+  describe('Given signedPushUnsupported factory with a remote name', () => {
+    describe('When reading .message', () => {
+      it('Then message states the receiving end does not support --signed push', () => {
+        // Arrange & Act
+        const sut = signedPushUnsupported('origin');
+
+        // Assert
+        expect(sut.message).toBe(
+          'SIGNED_PUSH_UNSUPPORTED: the receiving end does not support --signed push',
+        );
       });
     });
   });

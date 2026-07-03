@@ -14,6 +14,7 @@ import {
   AGENT,
   CLIENT_CAPABILITIES_PUSH,
   negotiateCapabilities as negotiateProtocolCapabilities,
+  PUSH_CERT,
 } from '../../../domain/protocol/index.js';
 import type { GitServiceSession } from './git-service-session.js';
 import { discoverRefsForService } from './refs-discovery.js';
@@ -32,8 +33,10 @@ export const discoverReceivePackRefs = async (session: GitServiceSession): Promi
  */
 export const selectPushCapabilities = (
   advertised: ReadonlyArray<string>,
+  signing = false,
 ): ReadonlyArray<string> => {
-  const clientWants = CLIENT_CAPABILITIES_PUSH.filter((c) => c !== AGENT);
+  const base = CLIENT_CAPABILITIES_PUSH.filter((c) => c !== AGENT);
+  const clientWants = signing ? [...base, PUSH_CERT] : base;
   const intersected = negotiateProtocolCapabilities(advertised, clientWants);
   return [...intersected, AGENT];
 };
