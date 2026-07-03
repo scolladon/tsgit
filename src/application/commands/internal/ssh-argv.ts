@@ -1,5 +1,5 @@
 import type { Service } from '../../../domain/protocol/index.js';
-import type { RemoteUrl } from './remote-url.js';
+import { combineUserHost, type RemoteUrl } from './remote-url.js';
 
 type SshRemoteUrl = Extract<RemoteUrl, { kind: 'ssh' }>;
 
@@ -29,14 +29,11 @@ export const buildSshArgs = (input: {
 }): ReadonlyArray<string> => [
   ...input.baseArgs,
   ...portFlag(input.parsed.port),
-  hostToken(input.parsed),
+  combineUserHost(input.parsed.user, input.parsed.host),
   remoteCommand(input.service, input.parsed.path),
 ];
 
 const portFlag = (port: number | undefined): ReadonlyArray<string> =>
   port === undefined ? [] : [PORT_FLAG, String(port)];
-
-const hostToken = (parsed: SshRemoteUrl): string =>
-  parsed.user === undefined ? parsed.host : `${parsed.user}@${parsed.host}`;
 
 const remoteCommand = (service: Service, path: string): string => `${service} ${sqQuote(path)}`;

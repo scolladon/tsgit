@@ -116,7 +116,8 @@ const splitUserHost = (token: string): { readonly user?: string; readonly host: 
   return at === -1 ? { host: token } : { user: token.slice(0, at), host: token.slice(at + 1) };
 };
 
-const combineUserHost = (user: string | undefined, host: string): string =>
+/** Single source of the destination token bytes seen by BOTH the dash-guard and the spawned ssh argv — the lockstep is security-load-bearing. */
+export const combineUserHost = (user: string | undefined, host: string): string =>
   user === undefined ? host : `${user}@${host}`;
 
 const sshPathname = (path: string): string => (path.startsWith(TILDE) ? `/${path}` : path);
