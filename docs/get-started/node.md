@@ -59,6 +59,16 @@ await repo.commit({
 
 Note the explicit `timestamp` and `timezoneOffset`. tsgit refuses to call `new Date()` for you — commit hashes are deterministic on the inputs they advertise. If you want "now", compute it at the call site.
 
+## SSH remotes
+
+`clone` / `fetch` / `pull` / `push` accept `ssh://[user@]host[:port]/path` and scp-like `[user@]host:path` remotes alongside `https://`. Node wires an `SshTransport` by default and spawns the system `ssh` binary — key resolution, agent forwarding, and `known_hosts` are entirely delegated to it; tsgit never reads a private key.
+
+Command resolution follows git's order: `GIT_SSH_COMMAND` → `core.sshCommand` → `GIT_SSH` → `ssh` on `PATH`. Argv is built OpenSSH-style only (`-p <port>` for a non-default port); other SSH clients get the same OpenSSH-shaped flags until variant detection lands ([ADR-441](../adr/441-openssh-only-argv-variant-detection-deferred.md)).
+
+There's no per-call opt-out on `openRepository` — SSH is always wired. The lower-level `createNodeContext` (`@scolladon/tsgit/adapters/node`) accepts `{ ssh: false }` to build a context without it.
+
+Browser and the in-memory adapter wire no `SshTransport` — see [Browser](browser.md) / [In-memory](memory.md).
+
 ## Cancel and clean up
 
 ```ts

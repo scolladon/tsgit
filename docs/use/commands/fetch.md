@@ -61,12 +61,13 @@ console.log(result.prunedRefs);
 
 - `REMOTE_NOT_CONFIGURED` — `remote` is not in `.git/config`.
 - `CONFIG_MISSING_VALUE` — `remote.<name>.url` is present but valueless (git NULL); carries `{ key, source, line }`. Distinct from the absent case (`REMOTE_NOT_CONFIGURED`).
-- `INVALID_URL` — remote URL failed SSRF validation.
-- `NETWORK_ERROR` — transport failure (reason varies).
+- `INVALID_URL` — malformed remote URL; HTTP: failed SSRF validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
+- `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
+- `NETWORK_ERROR` — transport failure (reason varies; SSH surfaces the `ssh` child's exit code).
 - `REFSPEC_INVALID` — refspec syntactically invalid.
 
 ## See also
 
 - Primitives: [`fetchPack`](../primitives/internals.md#fetchpack), [`enumerateRefs`](../primitives/internals.md#enumeraterefs), [`readShallow`](../primitives/internals.md#readshallow), [`updateShallow`](../primitives/internals.md#updateshallow)
 - Related commands: [`clone`](clone.md), [`fetchMissing`](fetch-missing.md), [`push`](push.md)
-- ADRs: [009](../../adr/009-fetch-shallow-where.md), [010](../../adr/010-fetch-haves-strategy.md), [011](../../adr/011-fetch-ref-update-tx.md), [012](../../adr/012-fetch-prune-semantics.md)
+- ADRs: [009](../../adr/009-fetch-shallow-where.md), [010](../../adr/010-fetch-haves-strategy.md), [011](../../adr/011-fetch-ref-update-tx.md), [012](../../adr/012-fetch-prune-semantics.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md)

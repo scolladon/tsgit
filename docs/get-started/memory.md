@@ -1,6 +1,6 @@
 # Get started — In-memory
 
-The in-memory adapter is a first-class test fixture, not a fallback. Same surface as Node and Browser, no filesystem, deterministic, fast. Use it for unit tests that need a real repo without touching disk.
+The in-memory adapter is a first-class test fixture, not a fallback. Same surface as Node and Browser, no filesystem, deterministic, fast — the one exception is SSH remotes: only Node wires an `SshTransport`, so `ssh://` and scp-like remotes throw `ADAPTER_UNAVAILABLE` here too, same as Browser. Use it for unit tests that need a real repo without touching disk.
 
 ## Prerequisites
 

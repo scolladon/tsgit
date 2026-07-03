@@ -67,6 +67,7 @@ await openRepository({ rootHandle, gitDirName: 'git' });
 ## What doesn't
 
 - **Hooks.** The browser adapter has no hook runner; `pre-commit` / `commit-msg` / `pre-push` are inert.
+- **SSH remotes.** The browser wires no `SshTransport`; `ssh://` and scp-like remotes throw `ADAPTER_UNAVAILABLE` — see [errors](../use/errors.md) and [Node get-started](node.md#ssh-remotes) for what Node supports.
 - **Native filesystem access outside OPFS.** All writes stay inside the origin's sandbox.
 
 ## Cleanup

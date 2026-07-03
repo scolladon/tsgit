@@ -201,6 +201,18 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-253 — `show` on a merge carries `perParent` diffs](../adr/253-show-merge-perparent.md) — one `TreeDiff` per parent; combined diff is test-only reconstruction
 - Design: [`docs/design/cosmetic-output-sweep.md`](../design/cosmetic-output-sweep.md)
 
+## SSH transport (Phase 25.1)
+
+- [ADR-434 — `GitServiceSession` seam unifies HTTP and SSH dispatch](../adr/434-git-service-session-transport-seam.md) — one interface both transports implement; commands pick by parsed remote kind
+- [ADR-435 — SSH port is a thin duplex command spawner](../adr/435-ssh-port-thin-duplex-spawner.md) — argv building, quoting, and command resolution stay pure application code; the adapter only spawns
+- [ADR-436 — SSH channel uses web streams](../adr/436-ssh-channel-web-streams.md) — `WritableStream<Uint8Array>` / `ReadableStream<Uint8Array>`, matching `HttpTransport`'s shape
+- [ADR-437 — Browser inertness via absent `ctx.ssh` capability](../adr/437-browser-inert-via-absent-ssh-capability.md) — mirrors the existing `CommandRunner`/`HookRunner` idiom
+- [ADR-438 — SSH refusals reuse the existing error taxonomy](../adr/438-ssh-refusal-error-taxonomy.md) — `ADAPTER_UNAVAILABLE` for inert runtimes, `INVALID_URL` for the dash-guard and malformed remotes; no new error codes
+- [ADR-439 — Protocol v0/v1 over SSH only](../adr/439-ssh-protocol-v0-v1-only.md) — `GIT_PROTOCOL` is never set; v2 stays out of scope for both transports
+- [ADR-440 — `parseRemoteUrl` owns ssh/scp parsing; SSRF validation stays HTTP-only](../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md) — the dash-guard is the SSH analog of the HTTP SSRF guard; DNS validation doesn't apply since `ssh` resolves its own destination
+- [ADR-441 — OpenSSH-only argv, variant detection deferred](../adr/441-openssh-only-argv-variant-detection-deferred.md) — a documented faithfulness deferral (ADR-226): PuTTY/plink/tortoiseplink get OpenSSH-shaped flags for now
+- Design: [`docs/design/ssh-transport.md`](../design/ssh-transport.md)
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.
