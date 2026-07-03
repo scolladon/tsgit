@@ -5,10 +5,18 @@
 > `tag.gpgSign`), and signed pushes (`push --signed` / `push.gpgSign`). The read
 > side (verification: `--verify`, `%G?`/`%GK`/`%GS`, `allowedSignersFile`) already
 > partially exists on the object model and is **not** in this backlog. Signature
-> transport is delegated to the system signing program (`gpg` / `ssh-keygen` /
-> `gpgsm`), exactly as canonical git delegates it. Sibling 25.1 (SSH transport)
-> just landed and is the structural precedent for a new external-program surface.
-> Status: draft → self-reviewed ×3 → accepted
+> transport is delegated to the system signing program (`gpg` / `ssh-keygen`),
+> exactly as canonical git delegates it. Sibling 25.1 (SSH transport) just landed
+> and is the structural precedent for a new external-program surface.
+> Status: draft → self-reviewed ×3 → accepted → **revised against ADRs 442–449**.
+
+> **Revision note.** The eight load-bearing choices below were ratified as
+> **ADR-442…449** and are no longer open candidates. Seven adopted the design's
+> recommendation; **ADR-444 deviates** — signed push (push certificates) is now
+> **in scope for v1**, not deferred. This revision folds that expansion in: the
+> signed-push section is a full design (not a deferral), and every other section
+> is reconciled to its ADR. The ratified decisions are summarised in
+> §Ratified decisions.
 
 ## Context
 
@@ -45,44 +53,58 @@ different execution contract:
 | textconv | `primitives/apply-textconv.ts` | payload to a **temp file under `gitDir`**, path as `argv[1]`, result on **stdout**, `finally` cleanup |
 | merge driver | `primitives/run-merge-driver.ts` | three temp files, placeholder substitution, result read back from the `%A` file |
 
-A GPG signer follows the **same resolve-program-from-config → invoke** shape. As
+A GPG signer follows the **same resolve-program-from-config → invoke** shape, and
+**ADR-442 ratifies reusing `CommandRunner`** rather than adding a `Signer` port. As
 the pinned matrix (§Design) shows, signing spans **two** of these contracts at
-once: `gpg`/`gpgsm` are stdin→stdout (like the filter driver); `ssh-keygen` is
-temp-file-in → `<file>.sig`-out (a fourth contract, close to textconv/merge).
+once: `gpg` is stdin→stdout (like the filter driver); `ssh-keygen` is
+temp-file-in → `<file>.sig`-out (close to textconv/merge).
 
 **The tag object carries a faithfulness trap.** `src/domain/objects/tag.ts`
 models `gpgSignature` as a `gpgsig` **header** (`serializeTagContent`,
 `tag.ts:143-145`) — the same shape as a commit. That is **wrong for tags** (pinned
 below: git appends the signature to the tag *message body*, never as a header).
-The field is effectively dead / actively misleading for signing (§Design, T-pins).
+**ADR-448** removes that header path and redesigns serialize/parse as a
+body-append round-trip pair.
 
 **Annotated tags are not created today.** `tagCreate`
 (`src/application/commands/tag.ts:63`) only writes a **lightweight** tag —
 `updateRef` pointing straight at the target OID. There is no `create-tag`
 primitive, no tagger/message capture, no tag-object write anywhere in the
 application tier (only `serializeTagContent` in the domain, reachable via reads).
-Signed tags (`tag -s`) are inherently **annotated** — so 25.2 must build the
-annotated-tag creation path before it can sign one (scope decision D8).
+Signed tags (`tag -s`) are inherently **annotated** — **ADR-449** builds the
+annotated-tag creation path in this item, sequenced as its own part(s) before the
+signing part.
 
 **Signing config is entirely unparsed.** `readConfig`
 (`src/application/primitives/config-read.ts`) parses **only** `[user] name/email`
 (`config-read.ts:1108` `mergeUser`) and `[remote]` url/pushUrl/fetch. None of
 `user.signingkey`, `commit.gpgsign`, `tag.gpgSign`, `push.gpgSign`, `gpg.format`,
-`gpg.program`, `gpg.ssh.program`, `gpg.x509.program` is parsed — all are new.
+`gpg.program`, `gpg.ssh.program` is parsed — all are new.
 
-**Signed push does not exist.** `src/application/commands/push.ts` has no
-`--signed` / push-certificate / nonce path (clean grep: zero hits for
-`signed`/`push-cert`/`nonce`/`certificate`).
+**Signed push does not exist, but the seam is precise.**
+`src/application/commands/push.ts` has no `--signed` / push-certificate / nonce
+path (clean grep: zero hits for `signed`/`push-cert`/`nonce`/`certificate`). The
+exact injection points are identified in §Signed push: the advertisement parse
+(`push.ts:115`), capability selection (`selectPushCapabilities`,
+`receive-pack-client.ts:33`), and request construction (`sendUpdates`,
+`push.ts:296` → `buildReceivePackRequest`, `receive-pack.ts:37`).
 
 ### Constraining decisions (FIXED — not re-litigated)
 
 | Source | Binding constraint |
 |---|---|
-| ADR-226 / CLAUDE.md (git-faithfulness) | Object SHAs, ref/reflog contents, on-disk state, refusal conditions match canonical `git` **byte-for-byte**. Every pin below is against real `git 2.55.0`, scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, isolated `HOME`, a throwaway `GNUPGHOME`, in a `mktemp -d`; each becomes a `test/integration/*-interop.test.ts` case. |
-| ADR-249 (structured-data-only) | The signer yields the **armored signature bytes** and the surfaces yield structured results (`CommitResult`, a tag result, a push report); no rendered-text knobs, no pre-rendered `error: gpg failed…` string. git's stderr is reconstructed **in the interop test** from the structured error, not emitted by the library. |
-| CLAUDE.md (hexagonal) | `repository → commands → primitives → domain`; the signing **port interface** lives in `src/ports`, process-spawn in `src/adapters/node`, the domain stays platform-free. Reuse `CommandRunner` (ADR-407) unless a dedicated port earns its place (D1). |
-| ADR-407 / ADR-408 (driver ports) | An external program invoked from config is the same trust model as merge/textconv/filter drivers and hooks; off-node (no runner) **falls back inertly** — but for *signing* "inert" must be a faithful **refusal**, not a silent unsigned write (D5, pinned F-pins). |
-| ADR-435–438 (SSH transport) | Precedent for a new-external-program surface: thin platform spawner in an adapter, all faithfulness logic pure and tested once, browser inert via an absent optional `Context` field, a typed refusal taxonomy. |
+| ADR-226 / CLAUDE.md (git-faithfulness) | Object SHAs, ref/reflog contents, on-disk state, refusal conditions, **and the push-cert wire bytes** match canonical `git` **byte-for-byte**. Every pin below is against real `git 2.55.0`, scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, isolated `HOME`, a throwaway `GNUPGHOME`, in a `mktemp -d`; each becomes a `test/integration/*-interop.test.ts` case. |
+| ADR-249 (structured-data-only) | The signer yields the **armored signature bytes** and the surfaces yield structured results (`CommitResult`, a tag result, a `PushResult`); no rendered-text knobs, no pre-rendered `error: gpg failed…` string. git's stderr is reconstructed **in the interop test** from the structured error, not emitted by the library. |
+| CLAUDE.md (hexagonal) | `repository → commands → primitives → domain`; process-spawn stays in `src/adapters/node`, the domain stays platform-free. |
+| **ADR-442** (signer = CommandRunner) | The signer is a **pure application primitive** over the existing `CommandRunner` port — **no new port**. Off-node behaviour is governed by ADR-447. |
+| **ADR-443** (formats) | v1 = `gpg.format` ∈ {`openpgp`, `ssh`}. `x509`/`gpgsm` is out; requesting it yields a **typed unsupported-format error**, never a silent fallback. `gpg.format` defaults to `openpgp`. |
+| **ADR-444** (signed push in scope) | Push certificates ship in v1. The nonce handshake, envelope construction, and `push-cert` capability negotiation are all designed here and pinned below. |
+| **ADR-445** (commit guard) | The `gpgSignature` injection guard is narrowed to reject **only NUL/CR**; the blank line + trailing newline that valid armor requires are permitted (the continuation encoder neutralises interior LFs). |
+| **ADR-446** (success detection) | Signing success = **exit-0 ∧ well-formed armor block** on stdout. `CommandRunner` is **not** widened for stderr/`SIG_CREATED`. |
+| **ADR-447** (off-node) | Signing requested with no `ctx.command` **hard-refuses** with a typed error; never a silent unsigned write. |
+| **ADR-448** (tag body-append) | A tag's `gpgSignature` is **appended to the body** on serialize and **peeled** on parse — a round-trip pair; the `gpgsig`-header path is removed. |
+| **ADR-449** (annotated creation) | Annotated-tag creation (`tag -a`) is a hard prerequisite delivered in this item, as its own TDD part(s) before signing. |
+| ADR-434–441 (SSH transport) | Precedent for a new-external-program surface + the transport the push cert rides over `ssh://`; thin platform spawner in an adapter, faithfulness logic pure and tested once, browser inert via an absent optional `Context` field, a typed refusal taxonomy. |
 
 Prior-art docs mirrored for structure: `docs/design/ssh-transport.md` (new
 external-program surface, browser-inert, pinned invocation matrix) and
@@ -104,34 +126,43 @@ When this ships, all of the following are verifiable:
    whose armored signature is **appended to the message body** (never a header),
    byte-identical to git; the signed payload is the unsigned tag object ending in
    `<message>\n` (R-T1/T2). Building the annotated tag object (tagger, message,
-   object/type) is included since it does not exist yet.
+   object/type) is included (ADR-449).
 4. Signature **placement is format-independent**: OpenPGP and SSH (both pinned)
    use the `gpgsig` header for commits and the body-append for tags; only the
    armor block content differs (`-----BEGIN PGP SIGNATURE-----` vs
-   `-----BEGIN SSH SIGNATURE-----`). x509/gpgsm is expected to follow the same
-   placement, but its armor literal is **not pinned here** (deferred, D2).
+   `-----BEGIN SSH SIGNATURE-----`). `gpg.format=x509` is **rejected with a typed
+   unsupported-format error** (ADR-443), not signed.
 5. Program **resolution honours git's order**: `gpg.format` selects the family
-   (`openpgp`→`gpg.program`||`gpg`; `ssh`→`gpg.ssh.program`||`ssh-keygen`;
-   `x509`→`gpg.x509.program`||`gpgsm`); `user.signingkey` selects the key; a
-   per-invocation `-S<keyid>` overrides config (R-X).
-6. The **execution contract per family is faithful**: `gpg`/`gpgsm` receive the
-   payload on **stdin** and the armor on **stdout** (`--status-fd=2 -bsau <key>`);
+   (`openpgp`→`gpg.program`‖`gpg`; `ssh`→`gpg.ssh.program`‖`ssh-keygen`);
+   `user.signingkey` selects the key; a per-invocation `-S<keyid>` overrides
+   config (R-X).
+6. The **execution contract per family is faithful**: `gpg` receives the payload
+   on **stdin** and the armor on **stdout** (`--status-fd=2 -bsau <key>`);
    `ssh-keygen` receives the payload as a **temp-file argument** and the armor
    from `<file>.sig` (`-Y sign -n git -f <key> <file>`) (R-X, pinned X-matrix).
 7. **Signing failure is fatal and atomic**: a signer that is absent, exits
-   non-zero, or emits no valid signature **refuses the whole operation** — no
-   object written, no ref moved, no reflog entry — reproducing git's
+   non-zero, or emits no valid armor **refuses the whole operation** — no object
+   written, no ref moved, no reflog entry — reproducing git's
    `error: gpg failed to sign the data` / `fatal` (a **typed** structured error;
-   no rendered string) (R-F1).
+   no rendered string) (R-F1, ADR-446).
 8. **Off-node (browser / no `ctx.command`) with signing requested refuses**
    faithfully (a typed error), and never silently produces an unsigned object
-   (R-F2, D5).
+   (R-F2, ADR-447).
 9. The **default (unsigned) path is byte- and cost-identical to today**: no
-   signer is resolved, no config beyond `[user]` is read, `commit`/`tag` behave
-   exactly as before when signing is neither requested nor configured.
-10. Signed push (`push --signed`) is **either** faithful to the pinned
-    push-certificate wire format **or** explicitly deferred (D3); if deferred,
-    requesting it refuses with a typed error rather than pushing unsigned.
+   signer is resolved, no config beyond `[user]` is read, `commit`/`tag`/`push`
+   behave exactly as before when signing is neither requested nor configured.
+10. `push --signed` (or `push.gpgSign=true`) sends a **push certificate**
+    byte-faithful to git's version-0.1 wire format (R-P1): the client parses the
+    server-advertised `push-cert=<nonce>` capability, echoes the nonce verbatim,
+    frames the pinned envelope in pkt-lines, and signs the pinned payload via the
+    same `signPayload` primitive (ADR-442/444).
+11. Push **negotiation is faithful** (R-P2): the client adds a bare `push-cert`
+    token to the receive-pack capability list only when signing; the ref-update
+    lines inside a signed cert carry **no** capability tail (caps ride the
+    `push-cert\0…` opener instead). `--signed` against a server that does **not**
+    advertise `push-cert` **refuses** (`the receiving end does not support
+    --signed push`; nothing sent); `--signed=if-asked` / `push.gpgSign=if-asked`
+    falls back to a normal **unsigned** push instead of refusing (R-P3, pinned).
 
 ## Design
 
@@ -139,9 +170,10 @@ When this ships, all of the following are verifiable:
 
 Pinned in a `mktemp -d` throwaway: isolated `HOME`, throwaway `GNUPGHOME`,
 `GIT_CONFIG_NOSYSTEM=1`, all `GIT_*` scrubbed, fixed author/committer dates. A
-recorder script installed via `gpg.program` / `gpg.ssh.program` /
-`gpg.x509.program` (and a `--receive-pack` wrapper for push) captured the exact
-argv, stdin payload, and object bytes. Every row becomes an interop assertion.
+recorder script installed via `gpg.program` / `gpg.ssh.program` captured the exact
+argv + stdin; a `--receive-pack` wrapper `tee`d the receive-pack stdin to capture
+the certificate bytes; `receive.certNonceSeed` on the bare server made it
+advertise a nonce. Every row becomes an interop assertion.
 
 **C — signed commit object (all formats).** The signature is a `gpgsig`
 continuation header after `committer`; the object SHA is computed over it.
@@ -167,8 +199,8 @@ gpgsig -----BEGIN PGP SIGNATURE-----
   tree …\nparent …\nauthor …\ncommitter …\n\n<message>
   ```
   ≡ `serializeCommitContent(unsigned CommitData)`.
-- SSH commits and x509 commits use the **same** `gpgsig` header placement — only
-  the armor block header changes (`-----BEGIN SSH SIGNATURE-----`, etc.).
+- SSH commits use the **same** `gpgsig` header placement — only the armor block
+  header changes (`-----BEGIN SSH SIGNATURE-----`).
 
 **T — signed annotated tag object (all formats). THE TRAP.** The signature is
 **appended to the message body**, NOT a header:
@@ -194,20 +226,20 @@ tagger <ident> <ts> <tz>
 - **Final object** = payload **concatenated** with the armor block; the armor
   ends with a single trailing `\n` and is the last thing in the object (pinned:
   final 30 bytes = `…-----END PGP SIGNATURE-----\n`).
-- Format-independent: SSH/x509 tags append their armor to the body identically.
-- **Consequence:** `serializeTagContent`'s `gpgsig`-header branch
-  (`tag.ts:143-145`) is **not** git's tag encoding and must not be used for
-  signing. D7 chooses how the domain model represents the body-appended armor.
+- Format-independent: SSH tags append their armor to the body identically.
+- **Consequence (ADR-448):** `serializeTagContent`'s `gpgsig`-header branch
+  (`tag.ts:143-145`) is **not** git's tag encoding and is removed; serialize
+  **appends** and parse **peels**.
 
 **X — signer invocation and execution contract (per `gpg.format`).**
 
 | `gpg.format` | program (config key ‖ default) | argv | payload in | armor out |
 |---|---|---|---|---|
 | `openpgp` (default) | `gpg.program` ‖ `gpg` | `--status-fd=2 -bsau <keyid>` | **stdin** | **stdout** |
-| `x509` | `gpg.x509.program` ‖ `gpgsm` | `--status-fd=2 -bsau <keyid>` | **stdin** | **stdout** |
 | `ssh` | `gpg.ssh.program` ‖ `ssh-keygen` | `-Y sign -n git -f <keyfile> <payload-tempfile>` | **temp-file arg** | **`<payload-tempfile>.sig`** |
+| `x509` | — (ADR-443: out of scope) | — | typed `UNSUPPORTED_SIGNING_FORMAT` refusal, no spawn | — |
 
-- The `-u <selector>` for openpgp/x509 is `user.signingkey` when set, else the
+- The `-u <selector>` for openpgp is `user.signingkey` when set, else the
   **committer identity string** `Name <email>` (pinned: with no `user.signingkey`,
   git's argv was `--status-fd=2 -bsau Test Signer <signer@example.com>` — it never
   omits `-u`, it falls back to the committer ident). A per-invocation `-S<keyid>`
@@ -215,58 +247,115 @@ tagger <ident> <ts> <tz>
 - For ssh, `user.signingkey` is a **key file path** (or a literal key blob git
   writes to a temp file); the signer writes the payload to a buffer file
   (git uses `<tmp>/.git_signing_buffer_tmpXXXX`) and reads `<file>.sig` back.
-- git detects success by parsing `[GNUPG:] SIG_CREATED` from the program's
-  **status-fd (fd 2 / stderr)** *and* a zero exit. tsgit's minimal faithful
-  detector is exit-0 **plus** a well-formed armor block on the output; whether to
-  also parse the status line is D4.
+- **Success detection (ADR-446):** exit 0 **and** a well-formed armor block
+  (`-----BEGIN … SIGNATURE-----` … `-----END … SIGNATURE-----`) on the output.
+  tsgit does **not** parse the `[GNUPG:] SIG_CREATED` status line; `CommandRunner`
+  is left unwidened.
 
 **F — failure and off-node semantics.**
 
-| # | Situation | git outcome |
+| # | Situation | git outcome / tsgit-faithful analog |
 |---|---|---|
-| F1 | `gpg.program` fails / is absent, `commit -S` | stderr `error: gpg failed to sign the data:` then `fatal: failed to write commit object`; **exit 128**; **nothing committed** (HEAD unchanged) |
-| F2 | same for `tag -s` | symmetric fatal; **no tag object, no ref** |
-| F3 | off-node (no signer available) | tsgit-specific: must **refuse** with a typed error (git always has a signer; the faithful analog off-node is a refusal, not a silent unsigned write) |
+| F1 | `gpg.program` fails / is absent, `commit -S` | git: stderr `error: gpg failed to sign the data:` then `fatal: failed to write commit object`; **exit 128**; **nothing committed** (HEAD unchanged). tsgit: typed `SIGNING_FAILED`, no object/ref/reflog write (ADR-446). |
+| F2 | same for `tag -s` | symmetric fatal; **no tag object, no ref**. |
+| F3 | off-node (no signer available), signing requested | tsgit-specific: **refuse** with a typed off-node error (ADR-447) — git always has a signer; the faithful analog off-node is a refusal, not a silent unsigned write. |
 
-**P — signed-push certificate wire format** (pinned by recording the
-`receive-pack` stdin over the file transport, `receive.certNonceSeed` set on the
-bare repo). Sent in place of the normal command list, framed in pkt-lines:
+**P — signed-push certificate wire format (ADR-444, pinned byte-for-byte).**
+Pinned by `tee`-capturing the `receive-pack` stdin over the local transport with
+`receive.certNonceSeed` set. Sent in place of the normal command list.
+
+*P.0 — nonce advertisement (server → client).* When `receive.certNonceSeed` is
+set, the receive-pack ref advertisement's first-ref capability list carries
+`push-cert=<nonce>` where `nonce = <unix-ts>-<40-hex-hmac>`, e.g.
+`push-cert=1783074740-93c86f6a5e26b7182145edeab182347ba36c39ee`. Observed
+alongside `atomic report-status-v2 side-band-64k quiet object-format=sha1
+agent=git/2.55.0-Darwin`. Absent when the seed is unset (⇒ signed push refuses).
+
+*P.1 — certificate envelope (client → server), each line its own pkt-line.*
+Pinned example (`<len-prefix>` `payload`):
 
 ```
-push-cert\0<capabilities>              ← opens the cert (NUL-separated caps)
-certificate version 0.1
-pusher <ident> <ts> <tz>
-pushee <remote-url>
-nonce <nonce-from-server-advertisement>
-<blank>
-<old-oid> <new-oid> <refname>          ← one line per pushed ref
------BEGIN PGP SIGNATURE-----
-<armor…>
------END PGP SIGNATURE-----
-push-cert-end
-0000
+005e  push-cert\0 report-status-v2 side-band-64k quiet object-format=sha1 agent=git/2.55.0-Darwin
+001c  certificate version 0.1\n
+002d  pusher 5763ECD93FFE5F79 1783074575 +0200\n
+0056  pushee <anonymized-remote-url>\n
+003e  nonce 1783074575-95af4e9c6ffb06f947a839725a37638bb13f649f\n
+0005  \n                                              ← LF-only pkt = blank line
+0066  <old-oid> <new-oid> refs/heads/main\n           ← one per ref; NO caps tail
+0022  -----BEGIN PGP SIGNATURE-----\n
+0005  \n
+0045  <base64 armor line>\n                           ← armor body, one pkt per line
+ …
+0020  -----END PGP SIGNATURE-----\n
+0012  push-cert-end\n
+0000                                                  ← flush-pkt
+PACK…                                                 ← packfile bytes follow
 ```
 
-- The **signed payload** = `certificate version 0.1` through the last ref-update
-  line, inclusive of the trailing `\n` (everything before the armor and
-  `push-cert-end`).
-- The **nonce** is issued by the server in its receive-pack advertisement
-  (`push-cert=<nonce>` capability, derived from `receive.certNonceSeed`) and must
-  be echoed verbatim — a nonce handshake the current push path does not perform.
-- This couples signing to push negotiation and the advertised-capability parse;
-  see D3 for whether it ships in v1.
+Load-bearing framing facts (all byte-verified):
+- The **opener** `push-cert\0<caps>` has **NO trailing LF**; the capabilities
+  follow the NUL with a **leading space** and are the *negotiated* caps (server ∩
+  client), including a bare `push-cert` token (the nonce value is stripped — the
+  opener sends `push-cert`, not `push-cert=<nonce>`).
+- The **ref-update lines inside the cert carry NO capability tail** — unlike a
+  normal push where the first ref-update line carries `\0<caps>`. In a signed
+  push the caps ride the opener instead.
+- The **blank line** and the armor's interior blank line are each an `0005`
+  LF-only pkt-line.
+- The cert is terminated by a `push-cert-end\n` pkt-line, then a flush-pkt
+  `0000`, then the packfile bytes.
+
+*P.2 — signed payload (fed to the signer on stdin, `-bsau <key>`)* = certificate
+lines P.1#2–#7 as **raw text, no pkt framing**, inclusive of every trailing `\n`:
+
+```
+certificate version 0.1\n
+pusher <selector> <ts> <tz>\n
+pushee <anonymized-remote-url>\n
+nonce <nonce>\n
+\n
+<old-oid> <new-oid> <refname>\n
+```
+
+- **`pusher` selector rule (pinned both cases):** `<selector>` =
+  `get_signing_key()` = `user.signingkey` when set (e.g. the key id
+  `5763ECD93FFE5F79`), else the committer identity string `Name <email>` (pinned:
+  unset ⇒ `pusher Bob NoKey <bob@example.com> …`). **Identical fallback to the
+  commit `-u` selector** in the X-matrix — one rule, two call sites.
+- **`pushee`** = the remote URL after git's `transport_anonymize_url` (strips any
+  `user:pass@` userinfo); for a plain path/https URL it is verbatim.
+- The armor and the `push-cert\0…` opener are **not** in the signed payload.
+
+*P.3 — negotiation refusal / if-asked (pinned).*
+
+| Config / argv | Server advertises `push-cert`? | git outcome |
+|---|---|---|
+| `--signed` / `push.gpgSign=true` (required) | **yes** | build + send the cert (P.1) |
+| `--signed` / `push.gpgSign=true` (required) | **no** | `fatal: the receiving end does not support --signed push` + `fatal: the remote end hung up unexpectedly`; **exit ≠ 0; nothing sent** |
+| `--signed=if-asked` / `push.gpgSign=if-asked` | yes | build + send the cert |
+| `--signed=if-asked` / `push.gpgSign=if-asked` | **no** | fall back to a **normal unsigned push**; exit 0; ref updated |
+| `--no-signed` / `push.gpgSign=false` (default) | either | normal unsigned push |
 
 ### Component shape
 
 Faithfulness-bearing logic lives in the **pure application/domain tier** and is
-tested once; the platform adapter is a dumb spawner (SSH-transport idiom).
+tested once; the platform adapter is a dumb spawner (SSH-transport idiom). No new
+port (ADR-442).
 
 **Domain (`src/domain/objects/`).** The signed-payload builders are pure:
 - Commit: reuse `serializeCommitContent(unsigned CommitData)` verbatim as the
   payload; the existing `gpgsig` header path already renders the final object.
-- Tag: a faithful `serializeTagContent` that **appends** the armor to the body
-  (D7). Whichever representation D7 picks, the *unsigned payload* builder
-  (object/type/tag/tagger/blank/`message\n`) is new and pure.
+- Tag (ADR-448): `serializeTagContent` **appends** a set `gpgSignature` to the
+  body and `parseTagContent` **peels** a trailing armor block back into
+  `gpgSignature` — a round-trip pair, property-tested. The *unsigned payload*
+  builder (object/type/tag/tagger/blank/`message\n`) is new and pure.
+
+**Domain (`src/domain/protocol/`).** A new `buildSignedReceivePackRequest`
+sibling to `buildReceivePackRequest` (`receive-pack.ts:37`) frames the P.1
+envelope in pkt-lines and — crucially — routes ref-updates through a **no-caps**
+variant of `updateLine` (`receive-pack.ts:32`), because the caps ride the opener.
+A pure `buildPushCertPayload({ pusher, pushee, nonce, updates })` yields the P.2
+bytes for the signer.
 
 **Config (`src/application/primitives/config-read.ts`).** `ParsedConfig` gains:
 ```
@@ -274,36 +363,32 @@ user?:   { …, signingkey?: string }
 commit?: { gpgsign?: boolean }
 tag?:    { gpgSign?: boolean }
 push?:   { gpgSign?: 'true' | 'false' | 'if-asked' }   // git's tri-state
-gpg?:    { format?: 'openpgp' | 'ssh' | 'x509';
-           program?: string; ssh?: { program?: string }; x509?: { program?: string } }
+gpg?:    { format?: 'openpgp' | 'ssh' | 'x509';        // x509 parsed, refused at use (ADR-443)
+           program?: string; ssh?: { program?: string } }
 ```
 All boolean/enum keys are read local-only (repo memory: `readConfig` is
 local-only). New `merge*` arms in `dispatchSection`, mirroring `mergeUser`.
 
-**Port + adapter (D1).** The signer needs stdin, stdout capture, and — for the
-ssh family — a temp-file + `.sig` read. `CommandRunner` already carries stdin and
-stdout capture; the ssh temp-file dance is expressible in a primitive exactly as
-`apply-textconv` does. So reuse is mechanically possible (D1=reuse). The
-alternative is a dedicated `Signer` port (`sign(payload, keySpec) => armor`) whose
-adapter hides the per-family mechanics (D1=new port). D1 is surfaced, not decided.
-
-**Primitive (`src/application/primitives/sign-payload.ts`, new).** Resolves the
-family from `gpg.format`, builds argv + key spec, runs via the chosen seam, and
-returns the armor bytes or a typed failure:
+**Signer primitive (`src/application/primitives/sign-payload.ts`, new).** Resolves
+the family from `gpg.format`, builds argv + key spec, invokes `ctx.command`
+(`CommandRunner`, ADR-442), and returns the armor or a typed failure:
 ```
 signPayload(ctx, payload: Uint8Array, keyOverride?: string)
   => { ok: true; armor: string } | { ok: false; reason }   // CQS query; caller refuses
 ```
-- openpgp/x509: `runner.run({ command: `${program} --status-fd=2 -bsau ${key}`,
+- openpgp: `runner.run({ command: `${program} --status-fd=2 -bsau ${key}`,
   stdin: payload, … })`; armor = `result.stdout`; success = exit 0 ∧ well-formed
-  armor (D4).
+  armor (ADR-446).
 - ssh: write `payload` to a temp file under `gitDir` (mirroring `apply-textconv`),
   run `${program} -Y sign -n git -f ${key} ${tmp}`, read `${tmp}.sig` via
   `ctx.fs`, `finally`-cleanup both files.
-- No signer (`ctx.command === undefined`) or failure → `{ ok: false }`; the
-  **caller** turns that into the atomic refusal (F1/F3), so no partial write.
+- `gpg.format=x509` → `{ ok: false, reason: UNSUPPORTED_SIGNING_FORMAT }` with no
+  spawn (ADR-443).
+- No signer (`ctx.command === undefined`) → `{ ok: false, reason: OFF_NODE }`
+  (ADR-447). Non-zero exit / malformed armor → `{ ok: false }`. The **caller**
+  turns any `!ok` into the atomic refusal, so no partial write.
 
-### Commit signing flow (and the validator conflict — D6)
+### Commit signing flow (ADR-445)
 
 `commit` (`commands/commit.ts:131`) builds `commitData` (unsigned) and calls
 `createCommit`. Signing is on when the new `opts.sign` (`-S`) is set, **or**
@@ -319,147 +404,251 @@ call:
    at `commit.ts:131-133` renders the final object; `writeObject` computes the SHA
    over the signed bytes.
 
-**D6 — validator conflict (load-bearing, discovered):** `createCommit` runs
-`hasHeaderInjectionChars(input.gpgSignature)` (`create-commit.ts:32`;
-predicate `validators.ts:61`). That guard returns `true` for any value containing
-`\n\n`, or a leading/trailing `\n`. **A genuine OpenPGP armor contains both** — a
-blank line after `-----BEGIN PGP SIGNATURE-----` (`\n\n`) and a trailing `\n`. So
-`createCommit` **as written rejects every real signature** with
-`REASON_GPG_SIGNATURE_INJECTION`. The guard's own comment concedes the
-continuation encoder space-prefixes interior LFs (making them safe); the `\n\n`
-and trailing-`\n` rejections are conservative defense-in-depth that, for a
-**self-produced** signature routed through `formatContinuationHeader`, block a
-legitimate value. D6 chooses the resolution (narrow the guard for signatures vs a
-trusted internal write path vs normalise the armor); it must be resolved or the
-implement phase cannot pass a real signature through `createCommit`.
+**The injection-guard resolution (ADR-445):** `createCommit` runs
+`hasHeaderInjectionChars(input.gpgSignature)` (`create-commit.ts:32`; predicate
+`validators.ts:61`). As written it returns `true` for any value containing `\n\n`,
+a leading `\n`, or a trailing `\n` — and **a genuine OpenPGP armor contains both**
+(a blank line after `-----BEGIN PGP SIGNATURE-----` and a trailing `\n`), so it
+rejects every real signature with `REASON_GPG_SIGNATURE_INJECTION`. ADR-445
+**narrows the `gpgSignature` check to reject only NUL/CR** — the only characters
+that can inject a spurious header once `formatContinuationHeader` space-prefixes
+interior LFs. The narrowing is scoped to the `gpgSignature` field; author /
+committer / message / `extraHeaders` keep their existing validation. Guard tests
+per condition: NUL rejected, CR rejected, a real armor accepted.
 
-### Tag signing flow (annotated creation + body-append — D7, D8)
+### Tag signing flow (ADR-448 body-append + ADR-449 annotated creation)
 
-Because annotated tags are not created today (D8), the signed-tag path is:
+Because annotated tags are not created today, the tag work is sequenced as
+annotated-creation part(s) **before** the signing part (ADR-449). The signed-tag
+path is:
 1. Resolve the tagged object (`tagCreate`'s target resolution already exists,
    `tag.ts:66-69`) and its `type`.
 2. Build the **unsigned annotated tag payload**: `object`/`type`/`tag`/`tagger`
    (identity from `[user]`, timestamp), blank line, `<message>\n`.
 3. `sig = signPayload(ctx, payload, key)`; `!sig.ok` → **throw** (no object, no
    ref).
-4. **Append** the armor to the body per T-pins, serialize the final tag object,
-   `writeObject`, then `updateRef` to the tag object OID (annotated), not the
-   target (lightweight).
+4. **Append** the armor to the body per T-pins (ADR-448), serialize the final tag
+   object, `writeObject`, then `updateRef` to the tag object OID (annotated), not
+   the target (lightweight).
 
-**D7 — how the domain models the body-appended armor:** (a) fold the armor into
-`TagData.message` (`message = plainMessage + '\n' + armor`) and stop using the
-`gpgSignature` header field; (b) redesign `serializeTagContent` so a set
-`gpgSignature` is **appended to the body** (faithful placement) and make
-`parseTagContent` peel a trailing armor back out; (c) a dedicated signed-tag
-serializer in the primitive. D7 is surfaced. **D8 — scope of tag work:** signed
-tags require the annotated-tag creation path; either build `tag -a` (annotated,
-unsigned) + `-s` together in 25.2, or treat annotated creation as a prerequisite
-carved out first. Surfaced, not decided.
+The tag command exposes structured fields only (ADR-249) — no render options. The
+`serializeTagContent`/`parseTagContent` redesign is a round-trip pair with a
+`*.properties.test.ts` sibling (`parse(serialize(x)) ≡ x`; one appended armor ↔
+one peeled signature).
 
-### Signed push (D3)
+### Signed push (ADR-444) — full design
 
-The pinned P-matrix shows signed push needs: parse the server's advertised
-`push-cert=<nonce>` capability; build the version-0.1 certificate body
-(pusher/pushee/nonce/ref-updates); `signPayload` it; emit the
-`push-cert\0<caps>` … `push-cert-end` pkt-line envelope in place of the command
-list. This couples to `push.ts`'s negotiation and the advertisement parser — a
-materially larger surface than commit/tag. D3 chooses: defer (recommended;
-land commit+tag now, `push --signed` refuses with a typed error until a follow-up)
-vs include in v1. The `signPayload` primitive is shaped so push can adopt it
-unchanged when it lands.
+Signed push is object-external: it couples signing to push negotiation and the
+receive-pack wire. The signer (`signPayload`) is **reused unchanged** — the push
+path adds only envelope construction + capability wiring. The certificate is a
+plain request-body byte string, so it is **transport-agnostic**: it rides
+smart-HTTP (`createHttpSession`) and `ssh://` (`SshGitServiceSession`, ADR-434)
+identically through `session.exchange` (`git-service-session.ts:157/104`).
 
-### Failure and off-node semantics (D4, D5)
+**Surface.** `PushOptions` (`push.ts:50`) gains
+`readonly signed?: 'yes' | 'no' | 'if-asked'` (git's `--signed` /
+`--no-signed` / `--signed=if-asked`). Effective mode = `opts.signed` when set,
+else `push.gpgSign` from config (tri-state, §Config), else `'no'`.
 
-- A signing failure (`!sig.ok`: absent runner, non-zero exit, or malformed armor)
-  makes the **caller** throw a typed `SIGNING_FAILED` structured error **before**
-  any object/ref write — reproducing git's atomic refusal (F1/F2). No reflog, no
-  `MERGE_HEAD` churn, no partial index.
-- **D5 — off-node:** with `ctx.command === undefined` and signing requested, the
-  recommended behaviour is the **same hard refusal** (a repo cannot be faithfully
-  produced unsigned when the user asked for a signature); the alternative (silently
-  skip signing) diverges from git and is called out as rejected. Surfaced.
-- **D4 — success detection / stderr:** git parses `SIG_CREATED` from the signer's
-  status-fd (fd 2). tsgit's `CommandRunner` captures stdout but not stderr.
-  Option (a): rely on exit-0 + well-formed armor on stdout (no port change);
-  option (b): extend `CommandRunner`/`CommandResult` with captured `stderr` and
-  parse the status line for exact parity. Surfaced.
+**Wiring seam (exact).**
+1. **Advertisement + nonce parse** — `negotiateAndSend` (`push.ts:107`) already
+   fetches `adv` via `discoverReceivePackRefs(session)` (`push.ts:115`);
+   `adv.capabilities` (`parseAdvertisedRefs`, `upload-pack.ts:247` →
+   `parseCapabilities`, `capabilities.ts:37`) now also carries `push-cert=<nonce>`
+   when advertised. Extract the nonce (the token after `push-cert=`) in
+   `sendUpdates` (`push.ts:296`).
+2. **Mode resolution / refusal (P.3)** — before building the request: if mode is
+   `yes` (required) and no `push-cert` cap is advertised → **throw** a typed
+   `SIGNED_PUSH_UNSUPPORTED` error (git's `the receiving end does not support
+   --signed push`), nothing sent. If mode is `if-asked` and unadvertised → fall
+   through to the existing **unsigned** path (`buildReceivePackRequest`). Off-node
+   with mode ≠ `no` → ADR-447 hard-refuse.
+3. **Capability selection** — `selectPushCapabilities` (`receive-pack-client.ts:33`,
+   intersecting `CLIENT_CAPABILITIES_PUSH` `capabilities.ts:17`) gains a bare
+   `push-cert` in `clientWants` **only when signing** and only when the server
+   advertised it; the opener sends the bare token (nonce stripped).
+4. **Envelope + payload construction** — `buildPushCertPayload` yields the P.2
+   bytes; `signPayload(ctx, payload)` (ADR-442) signs them; the pusher selector is
+   `user.signingkey ?? committerIdent` (P.2 rule); `pushee` is the anonymized
+   remote URL. `buildSignedReceivePackRequest` frames the P.1 pkt-lines (opener
+   with negotiated caps, no-caps ref-update lines, armor lines, `push-cert-end`,
+   flush) and appends the packfile — replacing the `buildReceivePackRequest` call
+   at `push.ts:312` when signing.
+5. **Send / report** — unchanged: `session.exchange(requestBody)` (`push.ts:317`)
+   and `parseReceivePackResponse` (`receive-pack.ts:83`); `report-status` /
+   side-band handling is untouched.
+
+**Config `push.gpgSign` semantics (git tri-state).** `true` ⇒ required (refuse if
+unadvertised); `false` ⇒ never sign (default); `if-asked` ⇒ sign iff the server
+advertises `push-cert`, else unsigned. `--signed`/`--no-signed`/`--signed=if-asked`
+override the config per-invocation.
+
+### Failure and off-node semantics (ADR-446, ADR-447)
+
+- A signing failure (`!sig.ok`: absent runner, non-zero exit, malformed armor,
+  unsupported format) makes the **caller** throw a typed `SIGNING_FAILED`
+  structured error **before** any object/ref write — reproducing git's atomic
+  refusal (F1/F2). No reflog, no `MERGE_HEAD` churn, no partial index; for push,
+  nothing is sent.
+- **Off-node (ADR-447):** with `ctx.command === undefined` and signing requested,
+  the operation **hard-refuses** with a typed error; a repo cannot be faithfully
+  produced unsigned when the user asked for a signature. Silent-skip is rejected.
+- **Success detection (ADR-446):** exit-0 + a well-formed armor block on stdout;
+  `CommandRunner` is not widened for stderr / `SIG_CREATED`.
 
 ### Faithfulness scope note
 
-Per ADR-249, faithfulness binds the **object bytes, SHAs, refs, and refusal
-conditions** — all pinned above and interop-tested. The signer **argv** is a
-delegation detail (not a git wire artifact) but is pinned and tested anyway
-because a wrong argv changes *whether a valid signature is produced at all* and
-*which key signs* — correctness- and security-load-bearing.
+Per ADR-249, faithfulness binds the **object bytes, SHAs, refs, refusal
+conditions, and the push-cert wire bytes** — all pinned above and interop-tested.
+The signer **argv** is a delegation detail (not a git wire artifact) but is pinned
+and tested anyway because a wrong argv changes *whether a valid signature is
+produced at all* and *which key signs* — correctness- and security-load-bearing.
 
-## Decision candidates
+## Ratified decisions
 
-The user decides each in the ADR phase; the designer only recommends.
+The user ratified each in the ADR phase; the designer only recommended. Seven
+adopted the recommendation; **ADR-444 deviated** (push in scope, not deferred).
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| D1 | Signer abstraction | (a) **Reuse `CommandRunner`** — resolve program from config, invoke; ssh temp-file dance in the primitive (à la `apply-textconv`). (b) **New dedicated `Signer` port** (`sign(payload, keySpec) => armor`); adapter hides per-family mechanics. (c) Reuse `CommandRunner` but add a `stderr` capture field. | **(a)** | `CommandRunner` already carries stdin + stdout capture (ADR-407) and is the established filter-driver precedent that postdates the backlog's "new port" wording; the three execution contracts (gpg stdin/stdout, gpgsm stdin/stdout, ssh tempfile+`.sig`) are all expressible in a pure primitive. (b) is cleaner if D4=(b) or D2 grows many families; (c) is the middle path if only stderr parsing is missing. |
-| D2 | Signing-format scope for v1 | (a) **OpenPGP only** (`gpg`). (b) **OpenPGP + SSH** (`gpg` + `ssh-keygen`). (c) All three (+ `x509`/`gpgsm`). | **(b)** | OpenPGP is the default and highest-value; SSH signing is topical now that SSH transport (25.1) just landed and its exec contract is fully pinned here. x509/gpgsm is niche and adds a third contract for little demand — best as a follow-up. The format is a pinned enum, so adding x509 later is additive. |
-| D3 | Signed-push scope | (a) **Defer** push certificates to a follow-up; land commit+tag now; `push --signed` refuses with a typed error. (b) **Include** the push-cert nonce handshake + envelope in v1. | **(a)** | Push certs are wire-protocol-coupled (nonce advertisement parse, cert envelope, receive-pack coupling) — a materially larger surface than the object-local commit/tag signing. The P-matrix is pinned so the follow-up starts from a firm spec, and `signPayload` is shaped to be reused unchanged. |
-| D4 | Signing success detection / `CommandRunner` stderr | (a) **exit-0 + well-formed armor** on stdout; no port change. (b) **Extend the port with captured `stderr`** and parse git's `SIG_CREATED` status line for exact parity. (c) exit-0 only (trust the program). | **(a)** | Exit code plus a validated armor block is a faithful, minimal detector that needs no port change; git's `SIG_CREATED` parse is belt-and-braces the armor check already approximates. (b) if a family emits exit-0 with no usable signature; (c) is too lax (an empty stdout would pass). |
-| D5 | Off-node (browser / no `ctx.command`) when signing is requested | (a) **Hard-refuse** with a typed error (no unsigned write). (b) **Silently skip** signing and write unsigned. (c) Refuse only in-browser; elsewhere fall back. | **(a)** | git never silently drops a requested signature; producing an unsigned object when the user asked for a signed one is a faithfulness *and* security divergence. Mirrors ADR-438's typed-refusal taxonomy. (b) is explicitly rejected; (c) adds runtime-sniffing complexity for no faithful gain. |
-| D6 | Let a genuine armor through `createCommit`'s injection guard | (a) **Narrow `hasHeaderInjectionChars` for the signature** to reject only NUL/CR (the continuation encoder space-prefixes interior/leading/trailing LFs, neutralising boundary smuggle). (b) **Trusted internal write path** for signed commits that bypasses the `gpgSignature` guard (build `Commit` + `writeObject` directly), keeping the guard for external `extraHeaders`. (c) **Normalise the armor** (strip the trailing `\n`, keep interior) before passing it. | **(a)** | The guard's own comment concedes interior LFs are made safe by `formatContinuationHeader`; for a self-produced, continuation-encoded signature the `\n\n`/trailing-`\n` rejections are false positives. Narrowing to NUL/CR is faithful and preserves the real defense. (b) is safest if the guard must stay untouched for `extraHeaders`; (c) risks a byte-mismatch vs git's stored armor. **Must** be resolved — otherwise no real signature can be stored. |
-| D7 | Domain model for the body-appended tag signature | (a) **Fold the armor into `TagData.message`** (`message = plain + '\n' + armor`); deprecate the `gpgSignature` header field for tags. (b) **Redesign `serializeTagContent`** to append a set `gpgSignature` to the body (faithful placement) and teach `parseTagContent` to peel it. (c) **Dedicated signed-tag serializer** in the primitive; leave the domain object untouched. | **(b)** | The current `gpgsig`-header path (`tag.ts:143-145`) is a latent faithfulness bug — a tag with `gpgSignature` set serialises to bytes git never produces. (b) fixes the object model at its root and keeps parse/serialize a faithful round-trip pair (property-test lens). (a) conflates message and signature; (c) leaves the misleading header field live. |
-| D8 | Scope of tag-object work in 25.2 | (a) **Build annotated tag creation (`tag -a`) + signing (`-s`) together** in 25.2. (b) **Carve annotated creation out first** as a prerequisite, then sign. (c) Sign only, assuming annotated creation lands elsewhere. | **(a)** | Signed tags are inherently annotated and no annotated-creation path exists (`tagCreate` is lightweight-only, `tag.ts:63`); the tagger/message/object-write machinery is a hard dependency of `-s`, so bundling them is the smallest coherent deliverable. (b) is fine if the plan prefers two commits; (c) is impossible today. |
+| ADR | Decision | Outcome vs. recommendation |
+|---|---|---|
+| 442 | Signer = pure primitive over the existing `CommandRunner` port; **no new port**. | as recommended |
+| 443 | v1 formats = `openpgp` + `ssh`; `x509` out, **typed unsupported error** on request. | as recommended |
+| 444 | **Signed push (push certificates) IN scope for v1.** | **deviation** — design recommended deferring; user included it. Triggers this scope-fold revision. |
+| 445 | Narrow the commit `gpgSignature` injection guard to **NUL/CR only**. | as recommended |
+| 446 | Signing success = **exit-0 + well-formed armor**; `CommandRunner` unchanged. | as recommended |
+| 447 | Off-node (no `ctx.command`) signing request → **typed hard-refuse**, never unsigned. | as recommended |
+| 448 | Tag signature **appended to the body**; serialize/parse redesigned as a round-trip pair; `gpgsig`-header path removed. | as recommended |
+| 449 | Annotated-tag creation is a **prerequisite delivered in this item**, sequenced before signing. | as recommended |
+
+## Implementation parts (partition sketch)
+
+Dependency order: **config → signer → commit signing → tag (annotated → signing)
+→ push cert.** Each part is one atomic commit with its own TDD; the signer and
+config precede all three surfaces; push cert is last (widest blast radius).
+
+**Part 1 — signing config keys.**
+- Files: `src/application/primitives/config-read.ts` (new `merge*` arms in
+  `dispatchSection`, mirroring `mergeUser` `config-read.ts:1108`); `ParsedConfig`
+  type.
+- Adds: `user.signingkey`, `commit.gpgsign`, `tag.gpgSign`,
+  `push.gpgSign` (tri-state), `gpg.format`, `gpg.program`, `gpg.ssh.program`.
+- Tests: per-key parse + default/absent ≡ today; property lens N/A (flat keys).
+
+**Part 2 — `signPayload` primitive.**
+- Files: `src/application/primitives/sign-payload.ts` (new); reuse
+  `ctx.command` (`CommandRunner`, `src/ports/command-runner.ts`) and `ctx.fs`.
+- Signature: `signPayload(ctx, payload: Uint8Array, keyOverride?: string) =>
+  Promise<{ ok: true; armor: string } | { ok: false; reason }>`.
+- Behaviour: openpgp stdin→stdout; ssh tempfile→`.sig` (mirror
+  `apply-textconv.ts`); x509 → `UNSUPPORTED_SIGNING_FORMAT`; no runner →
+  `OFF_NODE`; exit≠0 / malformed armor → `{ok:false}` (ADR-443/446/447).
+- Fixtures: a fake signer script (canned armor / failing) installed via
+  `gpg.program`; `MemoryCommandRunner` (`memory-command-runner.ts`) for units.
+- Tests: unit over a fake `CommandRunner` (both contracts, both failure classes,
+  abort threading); error assertions specific (reason + code).
+
+**Part 3 — commit signing + guard narrowing (ADR-445).**
+- Files: `src/application/commands/commit.ts` (`CommitOptions` `commit.ts:46` gains
+  `sign`/`signKey`; signed flow before `createCommit` `commit.ts:131`);
+  `src/application/primitives/create-commit.ts:32` + `validators.ts:61`
+  (`hasHeaderInjectionChars` narrowed for the signature field).
+- Reuse: `serializeCommitContent` (`commit.ts:120`) as the unsigned payload.
+- Tests: guard per char class (NUL/CR rejected, armor accepted); commit-object
+  bytes/SHA; atomic refusal on signer failure (HEAD unchanged); interop C-matrix.
+
+**Part 4 — annotated tag creation (ADR-449, unsigned).**
+- Files: `src/application/commands/tag.ts` (`TagCreateInput` `tag.ts:25`,
+  `tagCreate` `tag.ts:63` gains an annotated path: tagger/message capture,
+  tag-object `writeObject`, `updateRef` to the tag OID); `src/domain/objects/tag.ts`
+  (unsigned annotated serialize).
+- Tests: annotated tag bytes/SHA vs git; lightweight path unchanged.
+
+**Part 5 — tag body-append serialize/parse (ADR-448) + tag signing.**
+- Files: `src/domain/objects/tag.ts` (`serializeTagContent` `tag.ts:143-145`
+  appends armor to body; `parseTagContent` peels it; remove the `gpgsig`-header
+  branch); `src/application/commands/tag.ts` (signed flow on `-s`/`tag.gpgSign`).
+- Tests: example test pins T-matrix bytes; `tag.properties.test.ts` round-trip
+  (`parse(serialize(x)) ≡ x`, one-armor↔one-signature count); interop T-matrix;
+  atomic refusal.
+
+**Part 6 — push certificate (ADR-444).**
+- Files: `src/domain/protocol/receive-pack.ts` (new
+  `buildSignedReceivePackRequest` beside `buildReceivePackRequest`
+  `receive-pack.ts:37`; no-caps `updateLine` variant `receive-pack.ts:32`; new
+  `buildPushCertPayload` for P.2); `src/domain/protocol/capabilities.ts:17`
+  (`push-cert` token); `src/application/commands/internal/receive-pack-client.ts:33`
+  (`selectPushCapabilities` adds `push-cert` when signing); `src/application/commands/push.ts`
+  (`PushOptions` `push.ts:50` gains `signed`; nonce parse + mode resolution in
+  `sendUpdates` `push.ts:296`; signed-request branch at `push.ts:312`).
+- Reuse: `signPayload` (Part 2) unchanged; `session.exchange` (`push.ts:317`)
+  unchanged (HTTP + SSH both carry the cert).
+- Fixtures: bare server with `receive.certNonceSeed`; a `--receive-pack` wrapper
+  capturing stdin; the fake signer from Part 2.
+- Tests: unit for `buildSignedReceivePackRequest` (exact P.1 framing incl. opener
+  no-LF, no-caps ref lines, `push-cert-end`, flush) and `buildPushCertPayload`
+  (exact P.2); refusal + if-asked (P.3); interop P-matrix (recorded cert bytes,
+  nonce echo, pusher selector both cases).
 
 ## Test strategy
 
 - **Unit (pure, 100% + mutation):**
-  - `sign-payload` over a fake `CommandRunner`: openpgp/x509 stdin→stdout happy
-    path (armor returned); ssh temp-file → `.sig` read path (assert temp file
-    written, `.sig` read, both cleaned in `finally`); non-zero exit → `{ok:false}`;
-    absent runner → `{ok:false}`; malformed/empty stdout → `{ok:false}` (D4). Abort
-    threads through. Error/branch assertions specific (code + reason, per the
-    mutation-resistant convention).
-  - Config parse: each new key (`user.signingkey`, `commit.gpgsign`,
-    `tag.gpgSign`, `push.gpgSign` tri-state, `gpg.format`, `gpg.program`,
-    `gpg.ssh.program`, `gpg.x509.program`); default/absent → today's behaviour.
+  - `sign-payload` over a fake `CommandRunner`: openpgp stdin→stdout happy path;
+    ssh temp-file → `.sig` read path (assert temp file written, `.sig` read, both
+    cleaned in `finally`); non-zero exit / absent runner / malformed stdout /
+    x509-unsupported → `{ok:false}` with the specific reason; abort threads
+    through. Error/branch assertions specific (code + reason, mutation-resistant).
+  - Config parse: each new key incl. `push.gpgSign` tri-state; default/absent ≡
+    today's behaviour.
   - Tag payload builder + `serializeTagContent`/`parseTagContent` **round-trip**
-    (property lens, per the parser/serializer rule): `parse(serialize(x)) ≡ x` for
-    a signed tag (armor appended to body), and the count invariant (one appended
-    armor ↔ one peeled signature). Example tests pin the literal git bytes from the
-    T-matrix.
-  - `hasHeaderInjectionChars` post-D6: a real armored signature passes; NUL/CR
-    still rejected; isolated guard tests per rejected char class.
+    (property lens): `parse(serialize(x)) ≡ x` for a signed tag; count invariant
+    (one appended armor ↔ one peeled signature). Example tests pin literal
+    T-matrix bytes.
+  - `hasHeaderInjectionChars` post-ADR-445: a real armor passes; NUL/CR rejected;
+    isolated guard tests per rejected char class.
+  - Push cert: `buildSignedReceivePackRequest` frames P.1 exactly (opener with
+    negotiated caps + leading space + no trailing LF; ref lines with no caps tail;
+    `0005` blank pkts; `push-cert-end`; flush before pack). `buildPushCertPayload`
+    yields P.2 exactly for both pusher-selector cases. Mode resolution + refusal
+    (P.3) unit-tested at the command seam over a fake session.
 - **Integration (node):** a fake signer installed via `gpg.program` /
-  `gpg.ssh.program` (a script that returns a canned armor / a failing script)
-  drives `commit -S` and `tag -s`; assert object bytes, SHA, ref/reflog, and the
-  atomic refusal on failure (nothing written). Reuses the interop env hardening
-  (scrubbed `GIT_*`, isolated `HOME`).
+  `gpg.ssh.program` drives `commit -S` and `tag -s`; assert object bytes, SHA,
+  ref/reflog, and atomic refusal on failure (nothing written). Reuses the interop
+  env hardening (scrubbed `GIT_*`, isolated `HOME`).
 - **Interop (`test/integration/*-interop.test.ts`, the faithfulness gate):**
   twin real-`git` vs tsgit in a `mktemp -d` with a throwaway `GNUPGHOME` + a
   generated unprotected key; **skipIf** signer unavailable; one shared `beforeAll`;
   60s timeout (interop load→validate flake note). Pin: C (signed commit object +
   SHA + no-gpgsig payload), T (signed tag body-append + payload), X (ssh vs gpg
   argv + contract), F1/F2 (failure refusal — reconstruct git's stderr from the
-  structured error per ADR-249, do **not** byte-match stderr). Because signatures
-  are non-deterministic, assert the **structural** object shape (header placement,
+  structured error per ADR-249, do **not** byte-match stderr), **P (push-cert wire
+  bytes: nonce advertisement parse, envelope framing, signed payload, pusher
+  selector both cases, refusal + if-asked)** via the `--receive-pack` capture
+  wrapper + `receive.certNonceSeed` server. Because signatures are
+  non-deterministic, assert the **structural** shape (framing, header placement,
   SHA over reconstructed bytes with a fixed canned signature via the fake signer)
   rather than a frozen golden SHA for the real-gpg path.
 - **Cross-adapter parity:** memory/browser (no `ctx.command`) with signing
-  requested → the typed refusal (D5); parity is cross-adapter only and does **not**
-  prove faithfulness (the interop files do).
-- **Browser (playwright surface):** `commit -S` / `tag -s` raise the inert
-  refusal; extend the browser-surface audit.
+  requested → the typed refusal (ADR-447); parity is cross-adapter only and does
+  **not** prove faithfulness (the interop files do).
+- **Browser (playwright surface):** `commit -S` / `tag -s` / `push --signed` raise
+  the inert refusal; extend the browser-surface audit.
 
 ## Out of scope
 
 - **Signature verification** — `--verify`, `%G?`/`%GK`/`%GS` pretty tokens,
   `gpg.ssh.allowedSignersFile`, trust evaluation. Read-side; a separate follow-up.
   This backlog is produce-side only.
-- **Signed push / push certificates** — deferred per D3 (recommended); the
-  P-matrix is pinned so the follow-up starts firm. If D3=(b) it moves in-scope.
-- **x509 / `gpgsm`** — deferred per D2 (recommended); the enum + contract are
-  pinned (same as `gpg`), so it is additive later.
+- **x509 / `gpgsm`** — out per ADR-443; the enum is parsed and a typed
+  `UNSUPPORTED_SIGNING_FORMAT` error is raised on request. The encoding + argv are
+  the same shape as `gpg`, so it is additive later (one argv arm + one interop
+  pin).
 - **`gpg-agent` / key management / passphrase prompting / pinentry** — fully
   delegated to the spawned signer (git's model); tsgit parses no keys and drives
   no agent, exactly as SSH transport delegates to `ssh`.
 - **`ssh-keygen` allowed-signers / principals beyond `-n git`** — verification-side.
+- **Push options / `--atomic` interaction with the cert beyond the pinned
+  framing** — the cert rides the existing atomic/report-status path unchanged;
+  push-option lines (`receive.advertisePushOptions`) are not added in this item.
 - **The unrelated housekeeping edit** moving backlog item 25.1a into the Parking
-  lot section is a docs/backlog-only change handled at the implement/docs phase,
-  not a design concern (noted, not designed).
+  lot section is a docs/backlog-only change handled at the docs phase, not a
+  design concern (noted, not designed).
