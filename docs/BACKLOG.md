@@ -377,7 +377,7 @@ v3.0 ships when Phase 24 completes. Perf pass covered in **26**.
 
 ## Phase 25 — Transport & signing (v4)
 
-- [ ] **25.1** SSH transport — new port; key resolution delegated, browser stays inert.
+- [x] **25.1** SSH transport — new port; key resolution delegated, browser stays inert. · ADRs 434–441 · design/ssh-transport.md
 - [ ] **25.2** GPG signing — new port; signed commits (`-S`), signed tags, signed pushes.
 - [ ] **25.3** Smart-HTTP v2. Must deliver **incremental fetch negotiation**: tsgit's v1 upload-pack client strips `multi_ack_detailed` and runs a single round, so it cannot fetch new objects when the client holds a base (`want C1 / have C0 / done` returns no pack — `clone` and no-op fetch work, "remote advanced → fetch new" does not). v2's `fetch` command (`ack`/`ready`/`done`) subsumes this; alternatively a focused v1 `multi_ack_detailed` round can be hoisted earlier if real incremental `fetch`/`pull` is needed before v2. Surfaced by 21.1 — `pull`'s over-the-wire fast-forward/merge composes for free once this lands (no `pull` change); FF/merge/conflict are unit-proven against a local graph until then.
 
