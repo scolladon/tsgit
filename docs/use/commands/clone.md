@@ -1,6 +1,6 @@
 # `clone`
 
-Clone a remote repository over smart-HTTP. Supports shallow clone (`depth`), partial clone (`filter`), and bare clones. The SSRF guard (DNS resolver, `http://` and private-network policy) is configured once on `openRepository`, not per call — see [security](../../understand/security.md).
+Clone a remote repository over smart-HTTP, or over SSH (`ssh://[user@]host[:port]/path` and scp-like `[user@]host:path`, Node only — see [Node get-started](../../get-started/node.md#ssh-remotes)). Supports shallow clone (`depth`), partial clone (`filter`), and bare clones. The SSRF guard (DNS resolver, `http://` and private-network policy) applies to HTTP(S) remotes and is configured once on `openRepository`, not per call; SSH remotes delegate connection security entirely to the system `ssh` — see [security](../../understand/security.md).
 
 ## Signature
 
@@ -26,7 +26,7 @@ interface CloneResult {
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `url` | `string` | (required) | `https://…` or `http://…` repository URL. |
+| `url` | `string` | (required) | `https://…`/`http://…`, or (Node only) `ssh://[user@]host[:port]/path` and scp-like `[user@]host:path`. |
 | `bare` | `boolean` | `false` | Build a bare repository (no working tree). |
 | `initialBranch` | `string` | (server `HEAD`) | Override the branch `HEAD` points at after clone. |
 | `depth` | `number` | (full clone) | Shallow clone depth. Persists boundaries to `.git/shallow`. |
@@ -36,7 +36,7 @@ interface CloneResult {
 
 ## Behaviour
 
-`clone` creates the `.git` skeleton, performs smart-HTTP v1 discovery, fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags). It does **not** materialise the working tree — follow up with `repo.checkout({ rev: result.head })`.
+`clone` creates the `.git` skeleton, opens a session against the resolved transport (smart-HTTP v1 discovery over HTTP, or a single duplex channel over SSH), fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags). It does **not** materialise the working tree — follow up with `repo.checkout({ rev: result.head })`.
 
 A `filter` records `origin` as a *promisor remote* in `.git/config`. Objects omitted by the filter are fetched transparently on the first read — every command built on `readObject` works unchanged on a partial clone.
 
@@ -65,13 +65,14 @@ await repo.clone({ url: 'https://github.com/owner/repo.git', depth: 1 });
 
 - `TARGET_DIRECTORY_NOT_EMPTY` — `.git/HEAD` already exists in `cwd`.
 - `REMOTE_ADVERTISES_NO_REFS` — server returned an empty ref list (or `url === ''`).
-- `INVALID_URL` — URL failed SSRF / DNS validation.
+- `INVALID_URL` — malformed remote URL; HTTP: failed SSRF / DNS validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
+- `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
 - `REMOTE_FILTER_UNSUPPORTED` — server's capabilities lack `filter` for a partial clone.
-- `NETWORK_ERROR` — transport failure (reason: `'connection-reset' | 'dns' | 'tls' | 'http-status' | 'aborted' | 'timeout'`).
+- `NETWORK_ERROR` — transport failure (HTTP reason: `'connection-reset' | 'dns' | 'tls' | 'http-status' | 'aborted' | 'timeout'`; SSH: the `ssh` child's exit code).
 
 ## See also
 
 - Primitives: [`fetchPack`](../primitives/internals.md#fetchpack), [`recordRefUpdate`](../primitives/internals.md#recordrefupdate), [`updateShallow`](../primitives/internals.md#updateshallow), [`updateConfigEntries`](../primitives/internals.md#setconfigentry--setcoreconfigentry--updateconfigentries--updatecoreconfig)
 - Related commands: [`fetch`](fetch.md), [`fetchMissing`](fetch-missing.md), [`checkout`](checkout.md)
 - Recipes: [clone + checkout](../recipes.md#clone-and-checkout), [partial clone with lazy-fetch](../recipes.md#partial-clone)
-- ADRs: [005](../../adr/005-clone-protocol-v1.md), [006](../../adr/006-clone-pack-storage-layout.md), [007](../../adr/007-clone-resume-semantics.md), [008](../../adr/008-clone-defer-shallow.md), [078](../../adr/078-partial-clone-filter-scope.md), [081](../../adr/081-promisor-remote-port.md)
+- ADRs: [005](../../adr/005-clone-protocol-v1.md), [006](../../adr/006-clone-pack-storage-layout.md), [007](../../adr/007-clone-resume-semantics.md), [008](../../adr/008-clone-defer-shallow.md), [078](../../adr/078-partial-clone-filter-scope.md), [081](../../adr/081-promisor-remote-port.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md)

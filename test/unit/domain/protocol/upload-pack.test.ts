@@ -266,6 +266,95 @@ describe('parseAdvertisedRefs — happy path', () => {
   });
 });
 
+describe('parseAdvertisedRefs — servicePrologue option', () => {
+  describe('Given a prologue-less (SSH-style) discovery body', () => {
+    describe('When parsed with servicePrologue: false', () => {
+      it('Then capabilities and refs deep-equal without expecting the service header', async () => {
+        // Arrange — SSH transport never sends the `# service=...` line the HTTP
+        // discovery prologue carries; only the ref/capability pkt-lines stream.
+        const body = encodePktStream([
+          bytesOf(`${OID1} HEAD\0multi_ack_detailed side-band-64k\n`),
+          bytesOf(`${OID1} refs/heads/main\n`),
+        ]);
+
+        // Act
+        const sut = await parseAdvertisedRefs(
+          decodePktStream(asyncBytes([body])),
+          'git-upload-pack',
+          {
+            servicePrologue: false,
+          },
+        );
+
+        // Assert
+        expect(sut.capabilities).toEqual(['multi_ack_detailed', 'side-band-64k']);
+        expect(sut.refs).toHaveLength(2);
+        expect(sut.head?.name).toBe('HEAD');
+        expect(sut.head?.id).toBe(OID1);
+      });
+    });
+  });
+
+  describe('Given an empty-repo prologue-less advertisement (zero-oid capabilities^{} line)', () => {
+    describe('When parsed with servicePrologue: false', () => {
+      it('Then the zero-oid line parses as a ref without a HEAD match', async () => {
+        // Arrange — the empty-repo advertisement is a single zero-oid
+        // `capabilities^{}` line carrying only capabilities.
+        const zero = '0'.repeat(40);
+        const body = encodePktStream([bytesOf(`${zero} capabilities^{}\0report-status\n`)]);
+
+        // Act
+        const sut = await parseAdvertisedRefs(
+          decodePktStream(asyncBytes([body])),
+          'git-upload-pack',
+          {
+            servicePrologue: false,
+          },
+        );
+
+        // Assert
+        expect(sut.capabilities).toEqual(['report-status']);
+        expect(sut.refs).toHaveLength(1);
+        expect(sut.refs[0]?.name).toBe('capabilities^{}');
+        expect(sut.head).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an HTTP-style discovery body with the service prologue', () => {
+    describe('When parsed with the default options (servicePrologue omitted)', () => {
+      it('Then the prologue is consumed and the result matches explicit servicePrologue: true', async () => {
+        // Arrange
+        const body = buildDiscoveryBody({
+          service: 'git-upload-pack',
+          capabilities: ['multi_ack_detailed', 'side-band-64k'],
+          refs: [
+            { name: 'HEAD', id: OID1 },
+            { name: 'refs/heads/main', id: OID1 },
+          ],
+        });
+
+        // Act
+        const defaulted = await parseAdvertisedRefs(
+          decodePktStream(asyncBytes([body])),
+          'git-upload-pack',
+        );
+        const explicit = await parseAdvertisedRefs(
+          decodePktStream(asyncBytes([body])),
+          'git-upload-pack',
+          {
+            servicePrologue: true,
+          },
+        );
+
+        // Assert
+        expect(defaulted).toEqual(explicit);
+        expect(defaulted.refs).toHaveLength(2);
+      });
+    });
+  });
+});
+
 describe('parseAdvertisedRefs — service header validation', () => {
   describe('Given a stream advertising the wrong service', () => {
     describe('When parsed with expected upload-pack', () => {

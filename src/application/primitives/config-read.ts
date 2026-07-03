@@ -19,6 +19,8 @@ export interface ParsedConfig {
     readonly sparseCheckout?: boolean;
     readonly sparseCheckoutCone?: boolean;
     readonly looseCompression?: number;
+    /** `core.sshCommand` — shell string resolved by `resolveSshCommand` ahead of `GIT_SSH`. */
+    readonly sshCommand?: string;
   };
   readonly user?: { readonly name: string; readonly email: string };
   readonly remote?: ReadonlyMap<
@@ -1031,6 +1033,7 @@ type MutableCore = {
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
   looseCompression?: number;
+  sshCommand?: string;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -1079,6 +1082,7 @@ const applyCoreEntry = (
   if (lowered === 'attributesfile') return { ...core, attributesFile: value };
   if (lowered === 'hookspath') return { ...core, hooksPath: value };
   if (lowered === 'notesref') return { ...core, notesRef: value };
+  if (lowered === 'sshcommand') return { ...core, sshCommand: value };
   if (lowered === 'loosecompression' || lowered === 'compression') {
     return applyLooseCompressionEntry(core, lowered, value);
   }
@@ -1310,6 +1314,7 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
       ? { sparseCheckoutCone: core.sparseCheckoutCone }
       : {}),
     ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
+    ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
   };
 };
 

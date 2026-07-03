@@ -6,6 +6,15 @@ export type PktLine =
   | { readonly kind: 'delim' }
   | { readonly kind: 'response-end' };
 
+/**
+ * One request/response round-trip against a git service (`git-upload-pack` /
+ * `git-receive-pack`), transport-agnostic. Lives in `domain/protocol` (rather
+ * than the `GitServiceSession` seam that defines it) because primitives —
+ * which may not import from `application/commands` — need to accept it as a
+ * parameter.
+ */
+export type GitExchange = (requestBytes: Uint8Array) => Promise<AsyncIterable<PktLine>>;
+
 export const MAX_PKT_LINE_PAYLOAD = 65516;
 
 const ENCODER = new TextEncoder();

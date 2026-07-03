@@ -110,4 +110,19 @@ describe('browser shim — openRepository', () => {
       });
     });
   });
+
+  describe('Given the browser runtime', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.ssh and ctx.env stay undefined and ctx.runtime is browser', async () => {
+        // Arrange / Act — the browser shim cannot spawn a process or read
+        // real environment variables, so it wires neither `ssh` nor `env`.
+        const sut = await openRepository({ rootHandle: fakeHandle });
+
+        // Assert
+        expect(sut.ctx.ssh).toBeUndefined();
+        expect(sut.ctx.env).toBeUndefined();
+        expect(sut.ctx.runtime).toBe('browser');
+      });
+    });
+  });
 });

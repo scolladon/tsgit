@@ -17,7 +17,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { createPackRegistry, type PackRegistry } from '../primitives/pack-registry.js';
 import { looseObjectPath } from '../primitives/path-layout.js';
-import { withDefaults } from './internal/network-pipeline.js';
+import { openGitSession } from './internal/git-service-session.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { discoverRefs, selectFetchCapabilities } from './internal/upload-pack-client.js';
 
@@ -93,27 +93,27 @@ const fetchMissingInternal = async (
     return { kind: 'fetched', remote: remoteName, requested: oids.length, fetched: 0 };
   }
 
-  const transport = withDefaults(
-    ctx,
-    ctx.config?.auth !== undefined ? { auth: ctx.config.auth } : {},
-  );
-  const advertisement = await discoverRefs(ctx, transport, url);
-  const capabilities = selectFetchCapabilities(advertisement.capabilities);
+  const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
-    // No `filter`: a lazy-fetch requests exact oids (ADR-080).
-    await fetchPack(ctx, transport, {
-      wants: missing,
-      haves: [],
-      capabilities,
-      url,
-      progressOp: FETCH_MISSING_OP,
-      promisor: true,
-    });
-  } catch (err) {
-    // Packs are content-addressed (`pack-<sha>.*`), so any FILE_EXISTS from
-    // `fetchPack` — on the `.pack`, `.idx`, or `.promisor` write — means a
-    // concurrent fetch already landed byte-identical artifacts. Tolerate it.
-    if (!isFileExists(err)) throw err;
+    const advertisement = await discoverRefs(session);
+    const capabilities = selectFetchCapabilities(advertisement.capabilities);
+    try {
+      // No `filter`: a lazy-fetch requests exact oids (ADR-080).
+      await fetchPack(ctx, session.exchange, {
+        wants: missing,
+        haves: [],
+        capabilities,
+        progressOp: FETCH_MISSING_OP,
+        promisor: true,
+      });
+    } catch (err) {
+      // Packs are content-addressed (`pack-<sha>.*`), so any FILE_EXISTS from
+      // `fetchPack` — on the `.pack`, `.idx`, or `.promisor` write — means a
+      // concurrent fetch already landed byte-identical artifacts. Tolerate it.
+      if (!isFileExists(err)) throw err;
+    }
+  } finally {
+    await session.close();
   }
   return { kind: 'fetched', remote: remoteName, requested: oids.length, fetched: missing.length };
 };

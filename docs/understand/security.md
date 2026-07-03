@@ -51,9 +51,19 @@ A `RESOURCE_LOCKED` error fires when another writer holds the lock. Stale-lock b
 - **Private networks are rejected by default.** RFC1918 / loopback / link-local destinations require `config.allowPrivateNetworks: true`. Off by default. `http://` likewise requires `config.allowInsecure: true`.
 - **Redirect cap.** Maximum redirect chain length enforced; `TOO_MANY_REDIRECTS` fires beyond the cap.
 
+## SSH transport (Node only)
+
+`clone` / `fetch` / `pull` / `push` accept `ssh://[user@]host[:port]/path` and scp-like `[user@]host:path` remotes by spawning the system `ssh` binary. Delegation is total: tsgit reads no private key, parses no `~/.ssh/config` or `known_hosts`, and talks to no agent — the spawned `ssh` does all of it. `stderr` is inherited, never captured, so no credential ever passes through tsgit's own error or logging paths.
+
+Command resolution follows git's order — `GIT_SSH_COMMAND` → `core.sshCommand` → `GIT_SSH` → `ssh` on `PATH` — and only OpenSSH-style argv is built (`-p <port>`); other SSH clients get the same flags until variant detection lands ([ADR-441](../adr/441-openssh-only-argv-variant-detection-deferred.md)).
+
+The SSH analog of the HTTP SSRF guard is the **dash-guard**: a host token or remote path beginning with `-` is refused as `INVALID_URL` before spawn (the CVE-2017-1000117 argv-injection class), and the remote path is single-quoted in the built argv. DNS resolution and the private-network / `allowInsecure` policy are **HTTP-only** — the spawned `ssh` process performs its own resolution (through `~/.ssh/config` aliases, `ProxyJump`, etc.), so a pre-pinned IP would prove nothing about what `ssh` actually contacts ([ADR-440](../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md)).
+
+Browser and Memory wire no `SshTransport`; an `ssh://`/scp-like remote there throws `ADAPTER_UNAVAILABLE` ([ADR-437](../adr/437-browser-inert-via-absent-ssh-capability.md)).
+
 ## Error sanitisation
 
-`extractDetail` strips directory components from path-bearing error messages via a platform-agnostic `basename`. The `NETWORK_ERROR.reason` field is a static string drawn from a closed enum (`'connection-reset' | 'dns' | 'tls' | 'http-status' | 'aborted' | 'timeout'`), never raw `errno`. Goal: error messages never leak repo-local paths or kernel-level identifiers to upstream loggers.
+`extractDetail` strips directory components from path-bearing error messages via a platform-agnostic `basename`. For HTTP transport failures, `NETWORK_ERROR.reason` is a static string drawn from a closed enum (`'connection-reset' | 'dns' | 'tls' | 'http-status' | 'aborted' | 'timeout'`), never raw `errno`. SSH transport failures also surface as `NETWORK_ERROR`, with `reason` naming the `ssh` child process's exit code (e.g. `'ssh exited with code 128'`) — never the inherited stderr or any credential. Goal: error messages never leak repo-local paths or kernel-level identifiers to upstream loggers.
 
 ## Defensive copying (Memory adapter)
 
@@ -119,7 +129,7 @@ Caller-supplied `signal: AbortSignal` is composed via `AbortSignal.any` so exter
 ## What tsgit does NOT do
 
 - **GPG signing** of commits or tags — roadmap (Phase 25.2).
-- **SSH transport** — roadmap (Phase 25.1). HTTPS only in v1.
-- **Smart-HTTP v2** — roadmap (Phase 25.3). v0/v1 only in v1.
+- **SSH-variant argv (PuTTY / plink / tortoiseplink)** — only OpenSSH-style flags are built; a documented faithfulness deferral ([ADR-441](../adr/441-openssh-only-argv-variant-detection-deferred.md)).
+- **Smart-HTTP/SSH protocol v2** — roadmap (Phase 25.3). v0/v1 only in v1, over both HTTP and SSH.
 
 These omissions are documented to set expectations, not as a recommendation against using tsgit in security-sensitive contexts. For the curtain-up checklist before deploying tsgit in such contexts, also see `SECURITY.md` and the operator playbook in `RUNBOOK.md`.

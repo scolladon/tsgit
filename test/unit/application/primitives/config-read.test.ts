@@ -1479,6 +1479,39 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a `[core]` section with only sshCommand', () => {
+    describe('When readConfig', () => {
+      it('Then `sshCommand` is set and `bare` is absent from core', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  sshCommand = ssh -v\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — sshCommand round-trips verbatim; no `bare` key when unconfigured.
+        expect(sut.core?.sshCommand).toBe('ssh -v');
+        expect('bare' in (sut.core ?? {})).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a `[core]` section with a valueless sshCommand key', () => {
+    describe('When readConfig', () => {
+      it('Then `sshCommand` is absent from core', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  sshCommand\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — a valueless key is treated as absent for the string-typed field.
+        expect('sshCommand' in (sut.core ?? {})).toBe(false);
+      });
+    });
+  });
+
   describe('Given a config with no `[remote]` section', () => {
     describe('When readConfig', () => {
       it('Then `remote` is absent from the result', async () => {

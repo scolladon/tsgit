@@ -11,6 +11,7 @@ import type { HttpTransport } from './http-transport.js';
 import type { Logger } from './logger.js';
 import type { ProgressReporter } from './progress-reporter.js';
 import type { PromisorRemote } from './promisor.js';
+import type { SshTransport } from './ssh-channel.js';
 
 /**
  * Repository physical layout — where the working tree and.git directory live.
@@ -107,6 +108,8 @@ export interface Context {
   readonly layout: RepositoryLayout;
   /** User-supplied working directory (may be a sub-path of layout.workDir). Defaults to layout.workDir when not set by the facade. */
   readonly cwd: string;
+  /** The runtime this context was built for — names the adapter set in refusal messages. */
+  readonly runtime: 'node' | 'browser' | 'memory';
   /** Object serialization parameters (sha1 vs sha256 digest+hex sizes). */
   readonly hashConfig: HashConfig;
   /** Shared delta-base LRU cache; consumed by primitives' iterative delta walker. */
@@ -131,6 +134,11 @@ export interface Context {
    */
   readonly env?: EnvReader;
   /**
+   * Optional SSH transport. Absent ⇒ ssh/scp remotes refuse — browser/memory
+   * cannot spawn a process.
+   */
+  readonly ssh?: SshTransport;
+  /**
    * Optional promisor-remote capability. Populated by `openRepository`;
    * `readObject` consults it to lazy-fetch an object a partial clone omitted.
    */
@@ -154,6 +162,7 @@ export interface CreateContextParts {
   readonly progress: ProgressReporter;
   readonly layout: RepositoryLayout;
   readonly cwd?: string;
+  readonly runtime: 'node' | 'browser' | 'memory';
   readonly hashConfig: HashConfig;
   readonly deltaCache: LruCache<Uint8Array>;
   readonly config?: RepositoryConfig;
@@ -162,6 +171,7 @@ export interface CreateContextParts {
   readonly hooks?: HookRunner;
   readonly command?: CommandRunner;
   readonly env?: EnvReader;
+  readonly ssh?: SshTransport;
 }
 
 /** Assemble a frozen Context from its constituent ports + layout. */

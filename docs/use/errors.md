@@ -37,7 +37,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 
 | Code | Payload | Raised when |
 |---|---|---|
-| `ADAPTER_UNAVAILABLE` | `runtime, adapter` | A runtime-specific adapter is missing in the current environment. |
+| `ADAPTER_UNAVAILABLE` | `runtime, reason` | A runtime-specific adapter is missing in the current environment — e.g. an `ssh://`/scp-like remote on Browser or Memory, which wire no `SshTransport`. |
 | `DIRECTORY_NOT_EMPTY` | `path` | A directory delete on a non-empty target. |
 | `FILE_EXISTS` | `path` | Write attempted with `wx` flag against an existing file. |
 | `FILE_NOT_FOUND` | `path` | Read against a path that does not exist. |
@@ -153,11 +153,11 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_PKT_LENGTH` | `value` | Wire-protocol pkt-line length invalid. |
 | `INVALID_REPORT_STATUS` | `reason` | `receive-pack` report malformed. |
 | `INVALID_SIDEBAND_CHANNEL` | `channel` | Unrecognised sideband channel byte. |
-| `INVALID_URL` | `url, reason` | URL failed validation (scheme, DNS, structure). |
+| `INVALID_URL` | `reason` | URL failed validation. HTTP: scheme / DNS / structure. SSH or scp-like: a control character, or the host/path begins with `-` (argv-injection guard). |
 | `MAX_REFSPECS_EXCEEDED` | `count, limit` | Too many refspecs in one call. |
 | `MISSING_CAPABILITIES` | `expected, advertised` | Server's capabilities list lacks a required entry. |
 | `MISSING_SERVICE_HEADER` | — | Smart-HTTP discovery response missing the service line. |
-| `NETWORK_ERROR` | `reason` | Transport failure (`'connection-reset' \| 'dns' \| 'tls' \| 'http-status' \| 'aborted' \| 'timeout'`). |
+| `NETWORK_ERROR` | `reason` | Transport failure. HTTP: `'connection-reset' \| 'dns' \| 'tls' \| 'http-status' \| 'aborted' \| 'timeout'`. SSH: free-form text naming the `ssh` child process's exit code (e.g. `'ssh exited with code 128'`). |
 | `NO_PROMISOR_REMOTE` | — | `fetchMissing` against a non-partial repo. |
 | `NON_FAST_FORWARD` | `name` | `push` would not fast-forward and no `force` / `forceWithLease`. |
 | `PKT_LENGTH_RESERVED` | `value` | pkt-line length in the reserved range. |

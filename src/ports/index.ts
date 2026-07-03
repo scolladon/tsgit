@@ -28,6 +28,7 @@ export type {
   WorkdirEnumerator,
   WorkdirEnumOptions,
 } from './snapshot-resolvers.js';
+export type { SshChannel, SshSpawnRequest, SshTransport } from './ssh-channel.js';
 export type { WriteEventEmitter } from './write-event-emitter.js';
 export type { Disposable, WriteEventStream } from './write-event-stream.js';
 export type { WriteScope } from './write-scope.js';

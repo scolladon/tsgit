@@ -4,23 +4,20 @@
  * see kills against each individual line.
  */
 import { describe, expect, it } from 'vitest';
-
-import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import type { GitServiceSession } from '../../../../../src/application/commands/internal/git-service-session.js';
 import {
   advertisesFilter,
   discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
 } from '../../../../../src/application/commands/internal/upload-pack-client.js';
-import { TsgitError } from '../../../../../src/domain/index.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/index.js';
-import { encodePktStream } from '../../../../../src/domain/protocol/pkt-line.js';
-import type {
-  HttpRequest,
-  HttpResponse,
-  HttpTransport,
-} from '../../../../../src/ports/http-transport.js';
+import {
+  decodePktStream,
+  encodePktStream,
+  type PktLine,
+} from '../../../../../src/domain/protocol/pkt-line.js';
 
 const ENCODER = new TextEncoder();
 const OID_A = OID.from('a'.repeat(40));
@@ -35,129 +32,31 @@ const successAdvertisement = (): Uint8Array => {
   return out;
 };
 
-const fakeTransport = (
-  statusCode: number,
-  body: Uint8Array,
-): { transport: HttpTransport; requests: HttpRequest[] } => {
-  const requests: HttpRequest[] = [];
-  const transport: HttpTransport = {
-    request: async (req): Promise<HttpResponse> => {
-      requests.push(req);
-      return {
-        statusCode,
-        headers: {},
-        body: new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(body.slice());
-            controller.close();
-          },
-        }),
-      };
-    },
-  };
-  return { transport, requests };
+const asyncBytes = async function* (chunks: ReadonlyArray<Uint8Array>): AsyncIterable<Uint8Array> {
+  for (const chunk of chunks) yield chunk;
 };
+
+const fakeSession = (body: Uint8Array): GitServiceSession => ({
+  advertisement: (): Promise<AsyncIterable<PktLine>> =>
+    Promise.resolve(decodePktStream(asyncBytes([body]))),
+  exchange: () => Promise.reject(new Error('not implemented')),
+  close: () => Promise.resolve(),
+  servicePrologue: true,
+});
 
 describe('discoverRefs', () => {
   describe('Given a 200 response carrying a valid advertisement', () => {
     describe('When discoverRefs runs', () => {
       it('Then the Advertisement is returned', async () => {
         // Arrange
-        const ctx = createMemoryContext();
-        const { transport } = fakeTransport(200, successAdvertisement());
+        const session = fakeSession(successAdvertisement());
 
         // Act
-        const sut = await discoverRefs(ctx, transport, 'https://example.com/r.git');
+        const sut = await discoverRefs(session);
 
         // Assert
         expect(sut.refs.length).toBe(1);
         expect(sut.refs[0]?.name).toBe('refs/heads/main');
-      });
-    });
-  });
-
-  describe('Given a non-200 response (status %s)', () => {
-    describe('When discoverRefs runs', () => {
-      it.each([
-        401, 403, 404, 500, 502, 503,
-      ] as const)('Then throws HTTP_ERROR with the status code and a discovery-tagged reason', async (statusCode) => {
-        // Arrange — kills `if (response.statusCode !== 200) throw httpError` AND
-        // the StringLiteral mutant on the `discovery returned ...` reason text
-        // (the message must mention `discovery` so callers can distinguish a
-        // discovery failure from a pack POST failure).
-        const ctx = createMemoryContext();
-        const { transport } = fakeTransport(statusCode, new Uint8Array(0));
-
-        // Act
-        let caught: unknown;
-        try {
-          await discoverRefs(ctx, transport, 'https://example.com/r.git');
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          statusCode?: number;
-          reason?: string;
-        };
-        expect(data.code).toBe('HTTP_ERROR');
-        expect(data.statusCode).toBe(statusCode);
-        expect(data.reason).toContain('discovery');
-        expect(data.reason).toContain(String(statusCode));
-      });
-    });
-  });
-
-  describe('Given the request', () => {
-    describe('When discoverRefs runs', () => {
-      it('Then the `accept` header equals `application/x-git-upload-pack-advertisement`', async () => {
-        // Arrange — kills the `{ accept: '...' }` → `{}` ObjectLiteral mutant
-        // and the StringLiteral mutant on the accept value.
-        const ctx = createMemoryContext();
-        const { transport, requests } = fakeTransport(200, successAdvertisement());
-
-        // Act
-        await discoverRefs(ctx, transport, 'https://example.com/r.git');
-
-        // Assert
-        expect(requests[0]?.headers.accept).toBe('application/x-git-upload-pack-advertisement');
-      });
-    });
-  });
-
-  describe('Given a ctx with a signal', () => {
-    describe('When discoverRefs runs', () => {
-      it('Then the request carries the signal', async () => {
-        // Arrange — kills the `ctx.signal !== undefined ? { signal } : {}` mutant.
-        const baseCtx = createMemoryContext();
-        const controller = new AbortController();
-        const ctx = { ...baseCtx, signal: controller.signal };
-        const { transport, requests } = fakeTransport(200, successAdvertisement());
-
-        // Act
-        await discoverRefs(ctx, transport, 'https://example.com/r.git');
-
-        // Assert
-        expect(requests[0]?.signal).toBe(controller.signal);
-      });
-    });
-  });
-
-  describe('Given a ctx without a signal', () => {
-    describe('When discoverRefs runs', () => {
-      it('Then the request omits the signal field entirely', async () => {
-        // Arrange — pins the false branch of the same ternary.
-        const ctx = createMemoryContext();
-        const { transport, requests } = fakeTransport(200, successAdvertisement());
-
-        // Act
-        await discoverRefs(ctx, transport, 'https://example.com/r.git');
-
-        // Assert
-        expect(requests[0] && 'signal' in requests[0]).toBe(false);
       });
     });
   });

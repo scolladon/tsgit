@@ -66,6 +66,7 @@ interface BrowserRepo {
     list: () => Promise<{ tags: ReadonlyArray<TagInfo> }>;
     delete: (input: { name: string }) => Promise<{ name: string }>;
   };
+  clone: (input: { url: string }) => Promise<unknown>;
   dispose: () => Promise<void>;
 }
 
@@ -321,6 +322,35 @@ test.describe('surface parity', () => {
 
       await test.step('list is empty after remove', () => {
         expect(result.listLenAfterRemove).toBe(0);
+      });
+    });
+  });
+
+  test.describe('Given an ssh remote in the browser build', () => {
+    test('When cloning over ssh, Then the inert refusal is the typed ADAPTER_UNAVAILABLE', async ({
+      readyPage,
+    }) => {
+      const result = await readyPage.evaluate(async () => {
+        const tsgit = (window as unknown as { __tsgit: Tsgit }).__tsgit;
+        const rootHandle = await navigator.storage.getDirectory();
+        const repo = await tsgit.openRepository({ rootHandle });
+        try {
+          await repo.clone({ url: 'ssh://git@example.invalid/repo.git' });
+          return { threw: false, code: null as string | null };
+        } catch (error) {
+          const data = (error as { data?: { code?: string } }).data;
+          return { threw: true, code: data?.code ?? null };
+        } finally {
+          await repo.dispose();
+        }
+      });
+
+      await test.step('the ssh remote is refused without touching the network', () => {
+        expect(result.threw).toBe(true);
+      });
+
+      await test.step('the refusal carries the inert capability code', () => {
+        expect(result.code).toBe('ADAPTER_UNAVAILABLE');
       });
     });
   });

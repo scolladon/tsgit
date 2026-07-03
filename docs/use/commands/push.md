@@ -69,7 +69,9 @@ for (const r of result.pushedRefs) {
 - `PUSH_REJECTED` — server returned `ng` for at least one ref (also covers `forceWithLease` mismatch). Surfaces in `pushedRefs[i].status`.
 - `NON_FAST_FORWARD` — non-fast-forward refspec without `force` / `forceWithLease`.
 - `HOOK_FAILED` — `pre-push` returned non-zero exit (when hooks are enabled).
-- `NETWORK_ERROR` — transport failure.
+- `INVALID_URL` — malformed remote URL; HTTP: failed SSRF validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
+- `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
+- `NETWORK_ERROR` — transport failure (SSH surfaces the `ssh` child's exit code).
 - `REMOTE_NOT_CONFIGURED` — `remote` is not in `.git/config`.
 - `CONFIG_MISSING_VALUE` — `remote.<name>.pushurl` or `remote.<name>.url` is present but valueless (git NULL); carries `{ key, source, line }`. Push resolves `pushUrl ?? url`, and refuses on whichever is valueless before that fallback substitutes. Distinct from the absent case (`REMOTE_NOT_CONFIGURED`).
 
@@ -77,4 +79,4 @@ for (const r of result.pushedRefs) {
 
 - Primitives: [`enumeratePushObjects`](../primitives/internals.md#enumeratepushobjects), [`buildPack`](../primitives/internals.md#buildpack)
 - Related commands: [`fetch`](fetch.md), [`branch`](branch.md), [`tag`](tag.md)
-- ADRs: [013](../../adr/013-push-pack-encoding.md), [014](../../adr/014-push-refspec-scope.md), [015](../../adr/015-push-force-with-lease.md), [016](../../adr/016-push-atomic-tx.md)
+- ADRs: [013](../../adr/013-push-pack-encoding.md), [014](../../adr/014-push-refspec-scope.md), [015](../../adr/015-push-force-with-lease.md), [016](../../adr/016-push-atomic-tx.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md)

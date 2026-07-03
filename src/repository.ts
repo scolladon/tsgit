@@ -18,6 +18,7 @@ import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
 import type { Context, RepositoryConfig } from './ports/context.js';
+import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
 import type { HashService } from './ports/hash-service.js';
 import type { HookRunner } from './ports/hook-runner.js';
@@ -25,6 +26,7 @@ import type { HttpTransport } from './ports/http-transport.js';
 import { type Logger, wrapLoggerSanitizer } from './ports/logger.js';
 import type { ProgressReporter } from './ports/progress-reporter.js';
 import type { PromisorRemote } from './ports/promisor.js';
+import type { SshTransport } from './ports/ssh-channel.js';
 import { noopProgress } from './progress.js';
 import { composeAdapters } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
@@ -146,6 +148,10 @@ export interface RuntimeFallback {
   readonly hooks?: HookRunner;
   /** Optional runtime-default command runner (Node supplies one; others omit it). */
   readonly command?: CommandRunner;
+  /** Optional runtime-default environment reader (Node supplies one; others omit it). */
+  readonly env?: EnvReader;
+  /** Optional runtime-default SSH transport (Node supplies one; others omit it). */
+  readonly ssh?: SshTransport;
   readonly runtime: 'node' | 'browser' | 'memory';
   readonly layout: RepositoryLayoutInput;
   readonly hashConfig: Context['hashConfig'];
@@ -331,6 +337,31 @@ const buildSnapshotFactory = (ctx: Context): SnapshotFactory => {
 
 type DisposeState = 'OPEN' | 'DISPOSING' | 'DISPOSED';
 
+/** The subset of `Context` fields that are absent unless explicitly resolved. */
+interface OptionalCtxInputs {
+  readonly config: RepositoryConfig | undefined;
+  readonly logger: Logger | undefined;
+  readonly hooks: HookRunner | undefined;
+  readonly command: CommandRunner | undefined;
+  readonly env: EnvReader | undefined;
+  readonly ssh: SshTransport | undefined;
+}
+
+/**
+ * Picks each optional runtime-fallback field into the shape `Context` expects
+ * — `exactOptionalPropertyTypes` forbids `{ key: undefined }`, so an absent
+ * value must omit the key entirely rather than carry it as `undefined`.
+ * Extracted from `openRepository` to keep that function's branching count low.
+ */
+const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
+  ...(inputs.config !== undefined ? { config: inputs.config } : {}),
+  ...(inputs.logger !== undefined ? { logger: inputs.logger } : {}),
+  ...(inputs.hooks !== undefined ? { hooks: inputs.hooks } : {}),
+  ...(inputs.command !== undefined ? { command: inputs.command } : {}),
+  ...(inputs.env !== undefined ? { env: inputs.env } : {}),
+  ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
+});
+
 /**
  * Factory for the Repository handle. The runtime fallback (adapters + layout)
  * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
@@ -391,6 +422,7 @@ export const openRepository = async (
     progress: opts.progress ?? noopProgress,
     layout: fallback.layout,
     cwd,
+    runtime: fallback.runtime,
     hashConfig: fallback.hashConfig,
     deltaCache: fallback.deltaCache,
     signal,
@@ -413,10 +445,14 @@ export const openRepository = async (
   };
   const ctx: Context = Object.freeze({
     ...baseCtx,
-    ...(config !== undefined ? { config } : {}),
-    ...(sanitizedLogger !== undefined ? { logger: sanitizedLogger } : {}),
-    ...(hooks !== undefined ? { hooks } : {}),
-    ...(command !== undefined ? { command } : {}),
+    ...buildOptionalCtxFields({
+      config,
+      logger: sanitizedLogger,
+      hooks,
+      command,
+      env: fallback.env,
+      ssh: fallback.ssh,
+    }),
     promisor,
   });
   promisorCtx = ctx;

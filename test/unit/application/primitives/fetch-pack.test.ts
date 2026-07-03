@@ -9,9 +9,14 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { TsgitError } from '../../../../src/domain/index.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
-import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
+import {
+  decodePktStream,
+  encodePktStream,
+  type GitExchange,
+} from '../../../../src/domain/protocol/pkt-line.js';
 import { parsePackHeader } from '../../../../src/domain/storage/pack-entry.js';
 import { lookupPackIndex, parsePackIndex } from '../../../../src/domain/storage/pack-index.js';
+import { readableStreamToAsyncIterable } from '../../../../src/operators/readable-stream.js';
 import type {
   HttpRequest,
   HttpResponse,
@@ -144,6 +149,26 @@ const captureRequestsChunked = (
   return { transport, requests };
 };
 
+/**
+ * Adapt a fake `HttpTransport` fixture into the `GitExchange` shape `fetchPack`
+ * now takes directly — URL/method/header building is the session's job (see
+ * `git-service-session.test.ts`), this only bridges the request/response wire.
+ */
+const toExchange =
+  (transport: HttpTransport): GitExchange =>
+  async (requestBytes) => {
+    const response = await transport.request({
+      url: UPLOAD_PACK_URL,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-git-upload-pack-request',
+        accept: 'application/x-git-upload-pack-result',
+      },
+      body: requestBytes,
+    });
+    return decodePktStream(readableStreamToAsyncIterable(response.body));
+  };
+
 type MemCtx = ReturnType<typeof createMemoryContext>;
 
 const withConfig = (ctx: MemCtx, patch: Partial<NonNullable<MemCtx['config']>>): MemCtx =>
@@ -244,11 +269,10 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -297,11 +321,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, transport, {
+          await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
           const sut = await readObject(ctx, blobId);
@@ -326,11 +349,10 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, transport, {
+          await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta', 'filter'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
             filter: 'blob:none',
           });
@@ -353,11 +375,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
             promisor: true,
           });
@@ -381,11 +402,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -405,11 +425,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(new Uint8Array(0));
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: ['a'.repeat(40) as ObjectId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
             promisor: true,
           });
@@ -440,11 +459,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -476,11 +494,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -511,11 +528,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [normal.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -566,11 +582,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -611,11 +626,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [unknownBaseId as ObjectId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -644,11 +658,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [],
               haves: [],
               capabilities: [],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -682,11 +695,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -724,11 +736,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -759,11 +770,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -810,11 +820,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -854,11 +863,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -894,11 +902,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -933,11 +940,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -973,11 +979,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1000,11 +1005,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(tightCtx, transport, {
+          const sut = await fetchPack(tightCtx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1025,11 +1029,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(exactCtx, transport, {
+          const sut = await fetchPack(exactCtx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1052,11 +1055,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(overCtx, transport, {
+            await fetchPack(overCtx, toExchange(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -1089,11 +1091,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: [], // no side-band advertised
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1117,11 +1118,10 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, transport, {
+          await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1137,167 +1137,6 @@ describe('fetchPack', () => {
           expect(decoded).toContain('done\n');
           // The first want line is the blob id.
           expect(decoded).toContain(`want ${blobId}`);
-        });
-      });
-    });
-
-    describe('Given a non-200 server response', () => {
-      describe('When fetchPack runs', () => {
-        it('Then throws HTTP_ERROR with the status code', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          const dummyId = (await computeBlobId(ctx, ENCODER.encode('boom\n'))) as ObjectId;
-          const transport: HttpTransport = {
-            request: async (): Promise<HttpResponse> => ({
-              statusCode: 503,
-              headers: {},
-              body: new ReadableStream<Uint8Array>({
-                start(controller) {
-                  controller.close();
-                },
-              }),
-            }),
-          };
-
-          // Act
-          let caught: unknown;
-          try {
-            await fetchPack(ctx, transport, {
-              wants: [dummyId],
-              haves: [],
-              capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
-              progressOp: 'test:write-objects',
-            });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as {
-            code: string;
-            statusCode?: number;
-            reason?: string;
-          };
-          expect(data.code).toBe('HTTP_ERROR');
-          expect(data.statusCode).toBe(503);
-          expect(data.reason).toContain('503');
-        });
-      });
-    });
-
-    describe('Given a ctx.signal', () => {
-      describe('When fetchPack runs', () => {
-        it('Then the signal is forwarded on the HttpRequest', async () => {
-          // Arrange
-          const controller = new AbortController();
-          const baseCtx = createMemoryContext();
-          const ctx = { ...baseCtx, signal: controller.signal };
-          const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'signal\n');
-          const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
-          const { transport, requests } = captureRequests(body);
-
-          // Act
-          await fetchPack(ctx, transport, {
-            wants: [blobId],
-            haves: [],
-            capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
-            progressOp: 'test:write-objects',
-          });
-
-          // Assert — signal flows through to req.signal exactly.
-          expect(requests[0]?.signal).toBe(controller.signal);
-        });
-      });
-    });
-
-    describe('Given a base URL with a fragment', () => {
-      describe('When fetchPack runs', () => {
-        it('Then throws INVALID_BASE_URL', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          const dummyId = (await computeBlobId(ctx, ENCODER.encode('frag\n'))) as ObjectId;
-          const { transport } = captureRequests(new Uint8Array(0));
-
-          // Act
-          let caught: unknown;
-          try {
-            await fetchPack(ctx, transport, {
-              wants: [dummyId],
-              haves: [],
-              capabilities: ['side-band-64k'],
-              url: `${REMOTE_URL}#frag`,
-              progressOp: 'test:write-objects',
-            });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as { code: string; reason?: string };
-          expect(data.code).toBe('INVALID_BASE_URL');
-          expect(data.reason).toContain('fragment');
-        });
-      });
-    });
-
-    describe('Given a malformed URL', () => {
-      describe('When fetchPack runs', () => {
-        it('Then throws INVALID_BASE_URL', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          const dummyId = (await computeBlobId(ctx, ENCODER.encode('bad\n'))) as ObjectId;
-          const { transport } = captureRequests(new Uint8Array(0));
-
-          // Act
-          let caught: unknown;
-          try {
-            await fetchPack(ctx, transport, {
-              wants: [dummyId],
-              haves: [],
-              capabilities: ['side-band-64k'],
-              url: 'not a url',
-              progressOp: 'test:write-objects',
-            });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          const data = (caught as TsgitError).data as { code: string; reason?: string };
-          expect(data.code).toBe('INVALID_BASE_URL');
-          expect(data.reason).toContain('invalid URL');
-        });
-      });
-    });
-
-    describe('Given a ctx with no signal', () => {
-      describe('When fetchPack runs', () => {
-        it('Then the request object omits the signal key entirely', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          // ctx.signal is undefined by default in createMemoryContext.
-          const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'no signal\n');
-          const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
-          const { transport, requests } = captureRequests(body);
-
-          // Act
-          await fetchPack(ctx, transport, {
-            wants: [blobId],
-            haves: [],
-            capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
-            progressOp: 'test:write-objects',
-          });
-
-          // Assert — the spread guard `ctx.signal !== undefined` must omit the
-          // signal key entirely when ctx has no signal. `'signal' in req` returning
-          // false pins the guard; flipping it to always-true would spread
-          // `{ signal: undefined }`, making `'signal' in req` true.
-          expect(requests[0] && 'signal' in requests[0]).toBe(false);
         });
       });
     });
@@ -1325,11 +1164,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1337,30 +1175,6 @@ describe('fetchPack', () => {
           const written = await ctx.fs.read(sut.packPath);
           expect(written).toEqual(packBytes);
           expect(sut.objectCount).toBe(1);
-        });
-      });
-    });
-
-    describe('Given a base URL with a trailing slash', () => {
-      describe('When fetchPack runs', () => {
-        it('Then the POST URL is normalized (no doubled slash)', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'trailing slash\n');
-          const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
-          const { transport, requests } = captureRequests(body);
-
-          // Act
-          await fetchPack(ctx, transport, {
-            wants: [blobId],
-            haves: [],
-            capabilities: ['side-band-64k'],
-            url: `${REMOTE_URL}/`,
-            progressOp: 'test:write-objects',
-          });
-
-          // Assert
-          expect(requests[0]?.url).toBe(UPLOAD_PACK_URL);
         });
       });
     });
@@ -1386,11 +1200,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1437,11 +1250,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -1502,11 +1314,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -1551,11 +1362,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -1607,11 +1417,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -1670,11 +1479,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
             });
           } catch (err) {
@@ -1708,11 +1516,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1739,11 +1546,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, transport, {
+          await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'clone:write-objects',
           });
 
@@ -1768,11 +1574,10 @@ describe('fetchPack', () => {
 
           // Act
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'clone:write-objects',
             });
           } catch {
@@ -1803,11 +1608,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, transport, {
+          await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'clone:write-objects',
           });
 
@@ -1835,11 +1639,10 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
           });
 
@@ -1863,11 +1666,10 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
             depth: 1,
           });
@@ -1896,11 +1698,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
             depth: 1,
           });
@@ -1932,11 +1733,10 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, transport, {
+            await fetchPack(ctx, toExchange(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
-              url: REMOTE_URL,
               progressOp: 'test:write-objects',
               depth: 1,
             });
@@ -1967,11 +1767,10 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, transport, {
+          const sut = await fetchPack(ctx, toExchange(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
-            url: REMOTE_URL,
             progressOp: 'test:write-objects',
             depth: 3,
           });

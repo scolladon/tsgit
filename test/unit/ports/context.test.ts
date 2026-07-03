@@ -15,6 +15,7 @@ const sentinelCompressor = {} as Compressor;
 const sentinelTransport = {} as HttpTransport;
 const sentinelProgress = {} as ProgressReporter;
 const sentinelLayout: RepositoryLayout = { workDir: '/w', gitDir: '/w/.git', bare: false };
+const sentinelRuntime = 'node' as const;
 const sentinelHashConfig = SHA1_CONFIG;
 const sentinelDeltaCache = createLruCache<Uint8Array>(1024);
 
@@ -30,6 +31,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });
@@ -45,6 +47,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });
@@ -60,6 +63,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });
@@ -75,6 +79,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });
@@ -90,6 +95,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });
@@ -110,6 +116,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });
@@ -130,6 +137,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });
@@ -151,6 +159,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
           signal: ac.signal,
@@ -172,6 +181,7 @@ describe('Context', () => {
           transport: sentinelTransport,
           progress: sentinelProgress,
           layout: sentinelLayout,
+          runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
         });

@@ -18,6 +18,9 @@ import type {
   GenerationView,
   IndexResolver,
   ResolveOptions,
+  SshChannel,
+  SshSpawnRequest,
+  SshTransport,
   TreeResolver,
   WalkIgnorePredicate,
   WorkdirEnumerator,
@@ -73,6 +76,9 @@ describe('Given the Step 1.1 type surface', () => {
         workdirEnumerator: undefined as unknown as WorkdirEnumerator,
         workdirEnumOpts: undefined as unknown as WorkdirEnumOptions,
         ignorePredicate: undefined as unknown as WalkIgnorePredicate,
+        sshSpawnRequest: undefined as unknown as SshSpawnRequest,
+        sshChannel: undefined as unknown as SshChannel,
+        sshTransport: undefined as unknown as SshTransport,
       };
 
       // Act

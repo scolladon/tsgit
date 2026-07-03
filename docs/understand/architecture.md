@@ -18,7 +18,7 @@ Dependencies flow one way, inward. The domain core has zero `import` statements 
 |---|---|---|
 | **Domain** | `src/domain/` | Git objects (blob / tree / commit / tag), refs, git-index v2/v3, packfile storage, delta resolution. Pure, zero outward deps. Branded types (`ObjectId`, `RefName`, `FilePath`, `FileMode`) enforce domain invariants. |
 | **Application** | `src/application/` | Use cases. Commands (Tier 1) orchestrate primitives (Tier 2). |
-| **Ports** | `src/ports/` | Interfaces only: `FileSystem`, `HashService`, `Compressor`, `HttpTransport`, `ProgressReporter`, `HookRunner`, `PromisorRemote`, plus a `Context` record aggregating them all. |
+| **Ports** | `src/ports/` | Interfaces only: `FileSystem`, `HashService`, `Compressor`, `HttpTransport`, `SshTransport`, `ProgressReporter`, `HookRunner`, `PromisorRemote`, plus a `Context` record aggregating them all. |
 | **Adapters** | `src/adapters/` | Platform implementations: `Node.js` (real filesystem with realpath-based path containment), `Browser` (OPFS + SubtleCrypto + fetch), `Memory` (first-class test fixture with defensive copying). |
 
 ## Tiered API
@@ -77,7 +77,7 @@ Every command and primitive takes a `Context` — a frozen record that carries:
 - The hash configuration (SHA-1 today; SHA-256 reserved for v4)
 - The delta cache (LRU, configurable)
 - The promisor remote (partial-clone lazy-fetch)
-- Optionally the hook runner and config logger
+- Optionally the hook runner, config logger, and (Node only) an SSH transport
 
 `openRepository` constructs one `Context`, validates every option once, and binds every command to it. Subsequent calls inherit the configured state — no per-call `{ fs, dir }` re-derivation.
 
