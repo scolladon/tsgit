@@ -379,6 +379,9 @@ describe.skipIf(SKIP_REASON !== false)('ssh transport — end-to-end over a fake
           const headOid = (await readFile(HEAD_OID_FILE, 'utf8')).trim();
           const clonedMain = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
           expect(clonedMain).toBe(headOid);
+          const headLog = await readFile(path.join(repo.ctx.layout.gitDir, 'logs/HEAD'), 'utf8');
+          expect(headLog).toContain(`clone: from localhost:${bareRepoPath}`);
+          expect(headLog).not.toContain('from git@');
         } finally {
           await repo.dispose();
           await rm(workDir, { recursive: true, force: true });

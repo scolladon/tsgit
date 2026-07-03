@@ -52,8 +52,15 @@ export const anonymizeRemoteUrl = (raw: string): string => {
   const atIndex = raw.indexOf('@');
   if (atIndex === -1) return raw;
   const separatorIndex = raw.indexOf(SCHEME_SEPARATOR);
-  const prefixLength = separatorIndex === -1 ? 0 : separatorIndex + SCHEME_SEPARATOR.length;
+  if (separatorIndex === -1) {
+    // scp form: git keeps the URL literal when nothing after the `@` carries
+    // the host:path colon — such an `@` is path data, not userinfo.
+    if (!raw.slice(atIndex + 1).includes(':')) return raw;
+    return raw.slice(atIndex + 1);
+  }
+  const prefixLength = separatorIndex + SCHEME_SEPARATOR.length;
   const firstSlash = raw.indexOf('/', prefixLength);
+  // scheme form: an `@` after the path's first slash is path data, not userinfo.
   if (firstSlash !== -1 && firstSlash < atIndex) return raw;
   return `${raw.slice(0, prefixLength)}${raw.slice(atIndex + 1)}`;
 };

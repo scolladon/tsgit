@@ -627,7 +627,7 @@ describe('internal/remote-url', () => {
     });
 
     describe('When a scp-like remote has an @ only in the path', () => {
-      it('Then the URL is left untouched (the @ is after the first slash)', () => {
+      it('Then the URL is left untouched (no colon after the @, so it is path data)', () => {
         // Arrange
         const sut = anonymizeRemoteUrl;
 
@@ -636,6 +636,59 @@ describe('internal/remote-url', () => {
 
         // Assert
         expect(result).toBe('example.com:pa/th@x.git');
+      });
+    });
+
+    describe('When a scp-like path carries an @ before its first slash', () => {
+      it('Then the URL is left untouched, matching real git byte-for-byte', () => {
+        // Arrange — pinned against real git: `clone localhost:foo@bar/baz.git`
+        // records the URL literally (transport_anonymize_url literal-copy).
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('localhost:foo@bar/baz.git');
+
+        // Assert
+        expect(result).toBe('localhost:foo@bar/baz.git');
+      });
+    });
+
+    describe('When a slash-free scp remote carries a user', () => {
+      it('Then the user@ prefix is stripped (the colon after @ marks it as userinfo)', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('git@example.com:repo.git');
+
+        // Assert
+        expect(result).toBe('example.com:repo.git');
+      });
+    });
+
+    describe('When the https userinfo is password-only', () => {
+      it('Then the whole userinfo is stripped', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('https://:secret@example.com/x.git');
+
+        // Assert
+        expect(result).toBe('https://example.com/x.git');
+      });
+    });
+
+    describe('When an ssh URL has a user and an IPv6 host', () => {
+      it('Then only the user is stripped, brackets and port kept', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('ssh://user@[::1]:22/x.git');
+
+        // Assert
+        expect(result).toBe('ssh://[::1]:22/x.git');
       });
     });
   });
