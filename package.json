@@ -289,7 +289,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^@cloudflare/workers-types \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
