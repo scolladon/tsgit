@@ -560,6 +560,7 @@ describe('internal/remote-url', () => {
     });
   });
 
+  // secretlint-disable @secretlint/secretlint-rule-basicauth
   describe('Given anonymizeRemoteUrl for a reflog message', () => {
     describe('When the https URL carries user and password', () => {
       it('Then the userinfo is stripped, keeping the scheme and host', () => {
