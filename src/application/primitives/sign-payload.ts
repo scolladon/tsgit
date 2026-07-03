@@ -1,6 +1,7 @@
 import { TsgitError } from '../../domain/error.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
+import { sqQuote } from './internal/shell-quote.js';
 
 const DEFAULT_OPENPGP_PROGRAM = 'gpg';
 const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
@@ -69,7 +70,7 @@ const signWithOpenpgp = async (
 ): Promise<SignPayloadResult> => {
   const program = req.program ?? DEFAULT_OPENPGP_PROGRAM;
   const result = await runner.run({
-    command: `${program} --status-fd=2 -bsau ${req.selector}`,
+    command: `${sqQuote(program)} --status-fd=2 -bsau ${sqQuote(req.selector)}`,
     cwd: ctx.layout.workDir,
     env: { GIT_DIR: ctx.layout.gitDir },
     stdin: payload,
@@ -93,7 +94,7 @@ const signWithSsh = async (
   await ctx.fs.write(tmp, payload);
   try {
     const result = await runner.run({
-      command: `${program} -Y sign -n git -f ${req.selector} ${tmp}`,
+      command: `${sqQuote(program)} -Y sign -n git -f ${sqQuote(req.selector)} ${sqQuote(tmp)}`,
       cwd: ctx.layout.workDir,
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
