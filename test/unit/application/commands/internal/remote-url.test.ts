@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  anonymizeRemoteUrl,
   formatRemoteUrl,
   parseRemoteUrl,
   type RemoteUrl,
@@ -555,6 +556,86 @@ describe('internal/remote-url', () => {
 
         // Assert
         expect(result).toEqual(first);
+      });
+    });
+  });
+
+  describe('Given anonymizeRemoteUrl for a reflog message', () => {
+    describe('When the https URL carries user and password', () => {
+      it('Then the userinfo is stripped, keeping the scheme and host', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('https://user:secret@example.com/x.git');
+
+        // Assert
+        expect(result).toBe('https://example.com/x.git');
+      });
+    });
+
+    describe('When the ssh URL carries a user', () => {
+      it('Then the user is stripped from the authority', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('ssh://git@example.com:2222/x.git');
+
+        // Assert
+        expect(result).toBe('ssh://example.com:2222/x.git');
+      });
+    });
+
+    describe('When the remote is scp-like with a user', () => {
+      it('Then the user@ prefix is stripped, leaving host:path', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('git@example.com:path/to/repo.git');
+
+        // Assert
+        expect(result).toBe('example.com:path/to/repo.git');
+      });
+    });
+
+    describe('When the URL has no userinfo', () => {
+      it('Then it is returned unchanged', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('https://example.com/x.git');
+
+        // Assert
+        expect(result).toBe('https://example.com/x.git');
+      });
+    });
+
+    describe('When the @ sits in the path, not the authority', () => {
+      it('Then the URL is left untouched (git keeps a path @ literal)', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('https://example.com/a@b.git');
+
+        // Assert
+        expect(result).toBe('https://example.com/a@b.git');
+      });
+    });
+
+    describe('When a scp-like remote has an @ only in the path', () => {
+      it('Then the URL is left untouched (the @ is after the first slash)', () => {
+        // Arrange
+        const sut = anonymizeRemoteUrl;
+
+        // Act
+        const result = sut('example.com:pa/th@x.git');
+
+        // Assert
+        expect(result).toBe('example.com:pa/th@x.git');
       });
     });
   });

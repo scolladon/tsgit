@@ -101,12 +101,12 @@ describe.skipIf(SKIP_REASON !== false)(
           // Arrange
           const gitDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-interop-git-'));
           const tsgitDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-interop-tsgit-'));
-          // No userinfo in the URL: real git's clone reflog message strips a
-          // ssh:// URL's userinfo before recording it, which tsgit's clone
-          // does not (out of scope for this transport work) — omitting the
-          // user here keeps this assertion about the ssh session, not that
-          // pre-existing, unrelated reflog-formatting divergence.
-          const url = `ssh://localhost${bareRepoPath}`;
+          // The URL carries userinfo (`git@`): real git strips it from the
+          // clone reflog message (transport_anonymize_url) and tsgit now
+          // reproduces that byte-for-byte, so both reflogs record the
+          // anonymized `ssh://localhost<path>` form.
+          const url = `ssh://git@localhost${bareRepoPath}`;
+          const anonymizedUrl = `ssh://localhost${bareRepoPath}`;
           const gitEnv = { ...runGitEnv(), GIT_SSH_COMMAND: bridgeScriptPath };
 
           try {
@@ -124,7 +124,7 @@ describe.skipIf(SKIP_REASON !== false)(
             const gitReflogSubject = topReflogSubject(gitDir, 'HEAD');
             const tsgitReflogSubject = topReflogSubject(tsgitDir, 'HEAD');
             expect(tsgitReflogSubject).toBe(gitReflogSubject);
-            expect(tsgitReflogSubject).toBe(`clone: from ${url}`);
+            expect(tsgitReflogSubject).toBe(`clone: from ${anonymizedUrl}`);
 
             // Act — bring tsgit's side to working-tree parity: `clone` only
             // fetches objects and updates refs (Tier-1/Tier-2 composition —

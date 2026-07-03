@@ -15,6 +15,7 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { updateConfigEntries } from '../primitives/update-config.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import {
   advertisesFilter,
   discoverRefs,
@@ -146,8 +147,9 @@ const negotiateAndWritePack = async (
       unshallow: packResult.unshallow,
     });
   }
-  const fetchedRefs = await writeFetchedRefs(ctx, advertisement, opts.url);
-  const head = await applyRemoteHead(ctx, advertisement, opts.url);
+  const reflogUrl = anonymizeRemoteUrl(opts.url);
+  const fetchedRefs = await writeFetchedRefs(ctx, advertisement, reflogUrl);
+  const head = await applyRemoteHead(ctx, advertisement, reflogUrl);
   await writeCloneConfig(ctx, opts.url, headTrackedBranch(advertisement), filterSpec);
   return { path: gitDir, head, fetchedRefs };
 };
@@ -201,7 +203,7 @@ const writeCloneConfig = async (
 const writeFetchedRefs = async (
   ctx: Context,
   advertisement: Advertisement,
-  url: string,
+  reflogUrl: string,
 ): Promise<ReadonlyArray<{ readonly name: RefName; readonly id: ObjectId }>> => {
   const headBranch = headTrackedBranch(advertisement);
   const written: Array<{ name: RefName; id: ObjectId }> = [];
@@ -210,19 +212,19 @@ const writeFetchedRefs = async (
     if (ref.name.startsWith('refs/heads/')) {
       const branch = ref.name.slice('refs/heads/'.length);
       const remoteRef = `refs/remotes/origin/${branch}` as RefName;
-      await writeRef(ctx, remoteRef, ref.id, url);
+      await writeRef(ctx, remoteRef, ref.id, reflogUrl);
       written.push({ name: remoteRef, id: ref.id });
       // Stryker disable next-line ConditionalExpression: the left-operand mutant (`headBranch !== undefined` -> true) is equivalent — `branch` is `ref.name.slice(...)`, always a string, so `branch === headBranch` is `false` whenever `headBranch` is `undefined`, identical to the short-circuited original. The whole-condition mutants remain covered by the non-HEAD-branch tests.
       if (headBranch !== undefined && branch === headBranch) {
         const localRef = ref.name as RefName;
-        await writeRef(ctx, localRef, ref.id, url);
+        await writeRef(ctx, localRef, ref.id, reflogUrl);
         written.push({ name: localRef, id: ref.id });
       }
       continue;
     }
     if (ref.name.startsWith('refs/tags/')) {
       const tagRef = ref.name as RefName;
-      await writeRef(ctx, tagRef, ref.id, url);
+      await writeRef(ctx, tagRef, ref.id, reflogUrl);
       written.push({ name: tagRef, id: ref.id });
       continue;
     }
@@ -238,10 +240,15 @@ const writeFetchedRefs = async (
  * self-gates: only default-loggable refs (heads, remotes) actually log; tags
  * are skipped under the default config.
  */
-const writeRef = async (ctx: Context, name: RefName, id: ObjectId, url: string): Promise<void> => {
+const writeRef = async (
+  ctx: Context,
+  name: RefName,
+  id: ObjectId,
+  reflogUrl: string,
+): Promise<void> => {
   const refPath = `${ctx.layout.gitDir}/${name}`;
   await ctx.fs.writeUtf8(refPath, `${id}\n`);
-  await recordRefUpdate(ctx, name, ZERO_OID, id, `clone: from ${url}`);
+  await recordRefUpdate(ctx, name, ZERO_OID, id, `clone: from ${reflogUrl}`);
 };
 
 const headTrackedBranch = (ad: Advertisement): string | undefined => {
@@ -253,7 +260,7 @@ const headTrackedBranch = (ad: Advertisement): string | undefined => {
 const applyRemoteHead = async (
   ctx: Context,
   advertisement: Advertisement,
-  url: string,
+  reflogUrl: string,
 ): Promise<RefName | undefined> => {
   const branch = headTrackedBranch(advertisement);
   // `advertisement.head` carries HEAD's oid in both the symref and the
@@ -262,7 +269,7 @@ const applyRemoteHead = async (
   if (branch !== undefined) {
     const ref = `refs/heads/${branch}` as RefName;
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `ref: ${ref}\n`);
-    await logClonedHead(ctx, headOid, url);
+    await logClonedHead(ctx, headOid, reflogUrl);
     return ref;
   }
   // Detached HEAD — write the HEAD oid directly. The advertisement carries it
@@ -270,7 +277,7 @@ const applyRemoteHead = async (
   // expose the symref capability).
   if (advertisement.head !== undefined) {
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${advertisement.head.id}\n`);
-    await logClonedHead(ctx, headOid, url);
+    await logClonedHead(ctx, headOid, reflogUrl);
     return undefined;
   }
   return undefined;
@@ -280,8 +287,8 @@ const applyRemoteHead = async (
 const logClonedHead = async (
   ctx: Context,
   headOid: ObjectId | undefined,
-  url: string,
+  reflogUrl: string,
 ): Promise<void> => {
   if (headOid === undefined) return;
-  await recordRefUpdate(ctx, 'HEAD' as RefName, ZERO_OID, headOid, `clone: from ${url}`);
+  await recordRefUpdate(ctx, 'HEAD' as RefName, ZERO_OID, headOid, `clone: from ${reflogUrl}`);
 };

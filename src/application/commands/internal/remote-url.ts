@@ -39,6 +39,25 @@ export const parseRemoteUrl = (raw: string): RemoteUrl => {
   return form === 'sshUrl' ? parseSshUrlForm(raw) : parseScpForm(raw);
 };
 
+/**
+ * Strip the userinfo (`[user[:password]]@`) from a remote URL for display in
+ * reflog messages, reproducing git's `transport_anonymize_url`: drop
+ * everything up to and including the first `@` when that `@` sits in the
+ * authority, keep the scheme prefix, and leave the URL untouched when there
+ * is no userinfo or the `@` sits in the path. Keeps embedded credentials out
+ * of the on-disk reflog while preserving the real URL for the transport and
+ * for `remote.<name>.url`.
+ */
+export const anonymizeRemoteUrl = (raw: string): string => {
+  const atIndex = raw.indexOf('@');
+  if (atIndex === -1) return raw;
+  const separatorIndex = raw.indexOf(SCHEME_SEPARATOR);
+  const prefixLength = separatorIndex === -1 ? 0 : separatorIndex + SCHEME_SEPARATOR.length;
+  const firstSlash = raw.indexOf('/', prefixLength);
+  if (firstSlash !== -1 && firstSlash < atIndex) return raw;
+  return `${raw.slice(0, prefixLength)}${raw.slice(atIndex + 1)}`;
+};
+
 /** Inverse of `parseRemoteUrl`, used by the round-trip property. */
 export const formatRemoteUrl = (parsed: RemoteUrl): string => {
   if (parsed.kind === 'http') return parsed.url;
