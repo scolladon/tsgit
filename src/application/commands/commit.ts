@@ -1,4 +1,4 @@
-import { mergeHasConflicts, signingFailed } from '../../domain/commands/error.js';
+import { mergeHasConflicts } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { Commit, CommitData } from '../../domain/objects/commit.js';
@@ -16,11 +16,6 @@ import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
-import {
-  resolveSigningSelector,
-  type SignRequest,
-  signPayload,
-} from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { clearCherryPickHead, readCherryPickHead } from './internal/cherry-pick-state.js';
@@ -48,6 +43,7 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
+import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -160,29 +156,6 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
 };
 
 /**
- * Resolve the signer invocation from config — the openpgp `-u` selector
- * falls back through override → `user.signingKey` → the committer identity
- * string; the ssh `-f` key-file selector has no ident fallback.
- */
-const resolveSignRequest = (
-  config: ParsedConfig,
-  committer: AuthorIdentity,
-  signKey: string | undefined,
-): SignRequest => {
-  const format = config.gpg?.format ?? 'openpgp';
-  const program = format === 'ssh' ? config.gpg?.ssh?.program : config.gpg?.program;
-  const selector =
-    format === 'ssh'
-      ? (signKey ?? config.user?.signingKey ?? '')
-      : resolveSigningSelector({
-          ...(config.user?.signingKey !== undefined ? { signingKey: config.user.signingKey } : {}),
-          ...(signKey !== undefined ? { keyOverride: signKey } : {}),
-          fallbackIdent: `${committer.name} <${committer.email}>`,
-        });
-  return { format, selector, ...(program !== undefined ? { program } : {}) };
-};
-
-/**
  * Sign the unsigned commit payload (the commit object without a `gpgsig`
  * header). Throws `SIGNING_FAILED` atomically on any signer refusal — the
  * caller must not proceed to `createCommit` when this throws.
@@ -197,19 +170,12 @@ const signCommit = async (
   const request = resolveSignRequest(config, committer, signKey);
   const unsigned: Commit = { type: 'commit', id: '' as ObjectId, data };
   const payload = serializeCommitContent(unsigned);
-  const result = await signPayload(ctx, payload, request);
-  if (!result.ok) {
-    // off-node means no CommandRunner exists at all — the format we would
-    // have signed with was never actually attempted, so it is omitted.
-    throw result.reason === 'off-node'
-      ? signingFailed(result.reason)
-      : signingFailed(result.reason, request.format);
-  }
+  const armor = await signOrThrow(ctx, payload, request);
   // Signers terminate their armor block with a trailing newline; the header
   // encoder (formatContinuationHeader) treats a trailing newline in a header
   // value as an extra blank continuation line rather than a line terminator,
   // so it is stripped here to match the stored gpgSignature convention.
-  return result.armor.endsWith('\n') ? result.armor.slice(0, -1) : result.armor;
+  return armor.endsWith('\n') ? armor.slice(0, -1) : armor;
 };
 
 /**

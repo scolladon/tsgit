@@ -189,6 +189,7 @@ export interface CreateTagInput {
   readonly tagName: string;
   readonly tagger: AuthorIdentity;
   readonly message: string;
+  readonly gpgSignature?: string;
   readonly extraHeaders?: ReadonlyArray<ExtraHeader>;
 }
 

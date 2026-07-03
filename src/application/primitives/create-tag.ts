@@ -23,6 +23,7 @@ export async function createTag(ctx: Context, input: CreateTagInput): Promise<Ob
       tagName: input.tagName,
       tagger: input.tagger,
       message: input.message,
+      ...(input.gpgSignature !== undefined ? { gpgSignature: input.gpgSignature } : {}),
       extraHeaders: input.extraHeaders ?? [],
     },
   };
