@@ -65,6 +65,18 @@ export function hasHeaderInjectionChars(value: string): boolean {
   return false;
 }
 
+/**
+ * Narrower sibling of `hasHeaderInjectionChars` for the `gpgSignature` field
+ * only: a genuine OpenPGP/SSH armor block contains a blank line after its
+ * `-----BEGIN … SIGNATURE-----` marker and a trailing `\n`, both of which the
+ * broader guard rejects. Only NUL and CR can actually inject a spurious
+ * header once `formatContinuationHeader` space-prefixes interior LFs, so
+ * those are the only characters this predicate rejects.
+ */
+export function hasSignatureInjectionChars(value: string): boolean {
+  return value.includes('\0') || value.includes('\r');
+}
+
 export function exceedsMaxCommitMessageBytes(message: string): boolean {
   return new TextEncoder().encode(message).byteLength > MAX_COMMIT_MESSAGE_BYTES;
 }

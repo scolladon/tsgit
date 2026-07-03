@@ -206,29 +206,34 @@ describe('createCommit', () => {
     });
   });
 
-  describe('Given gpgSignature containing bare LF-LF', () => {
+  describe('Given a gpgSignature with a genuine PGP armor (blank line after BEGIN, trailing LF)', () => {
     describe('When createCommit is called', () => {
-      it('Then throws INVALID_COMMIT /gpgSignature/', async () => {
+      it('Then it succeeds and the armor roundtrips verbatim on the commit object', async () => {
         // Arrange
-        // Bare LF-LF in gpgSignature would forge the header/message boundary,
-        // letting an attacker inject a fake message body.
+        // A real armor block carries a blank line after -----BEGIN... and a
+        // trailing LF — the gpgSignature guard only rejects NUL/CR, so this
+        // must be accepted and stored byte-for-byte.
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
-        try {
-          await createCommit(ctx, {
-            tree,
-            parents: [],
-            author: AUTHOR,
-            committer: AUTHOR,
-            message: 'm',
-            gpgSignature: '-----BEGIN\n\nfake message body',
-          });
-          // Assert
+        const armor = '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n';
+
+        // Act
+        const id = await createCommit(ctx, {
+          tree,
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'm',
+          gpgSignature: armor,
+        });
+
+        // Assert
+        const read = await readObject(ctx, id);
+        if (read.type !== 'commit') {
           expect.unreachable();
-        } catch (error) {
-          expect((error as TsgitError).data.code).toBe('INVALID_COMMIT');
-          expect((error as TsgitError).message).toMatch(/gpgSignature/);
+          return;
         }
+        expect(read.data.gpgSignature).toBe(armor);
       });
     });
   });

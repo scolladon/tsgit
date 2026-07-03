@@ -5,6 +5,7 @@ import {
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  signingFailed,
   smudgeFilterFailed,
   worktreeFileAbsent,
 } from '../../../src/domain/commands/error.js';
@@ -1197,6 +1198,46 @@ describe('smudgeFilterFailed error', () => {
         expect(sut.message).toContain('lfs-smudge');
         expect(sut.message).toContain('photo.png');
         expect(sut.message).toContain('2');
+      });
+    });
+  });
+});
+
+describe('signingFailed error', () => {
+  describe('Given signingFailed factory with reason "signer-failed" and format "openpgp"', () => {
+    describe('When reading .message', () => {
+      it('Then message contains the reason and the format', () => {
+        // Arrange & Act
+        const sut = signingFailed('signer-failed', 'openpgp');
+
+        // Assert
+        expect(sut.message).toContain('signer-failed');
+        expect(sut.message).toContain('openpgp');
+      });
+    });
+  });
+
+  describe('Given signingFailed factory with reason "off-node" and no format', () => {
+    describe('When reading .message', () => {
+      it('Then message contains the reason and omits any format suffix', () => {
+        // Arrange & Act
+        const sut = signingFailed('off-node');
+
+        // Assert
+        expect(sut.message).toContain('off-node');
+        expect(sut.message).not.toContain('format=');
+      });
+    });
+  });
+
+  describe('Given signingFailed factory', () => {
+    describe('When reading .message prefix', () => {
+      it('Then message starts with "gpg failed to sign the data" (not a fall-through case)', () => {
+        // Arrange & Act
+        const sut = signingFailed('unsupported-format', 'x509');
+
+        // Assert
+        expect(sut.message).toMatch(/^SIGNING_FAILED: gpg failed to sign the data \(/);
       });
     });
   });

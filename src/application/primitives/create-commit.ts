@@ -9,6 +9,7 @@ import type { CreateCommitInput } from './types.js';
 import {
   exceedsMaxCommitMessageBytes,
   hasHeaderInjectionChars,
+  hasSignatureInjectionChars,
   isInvalidExtraHeaderKey,
   messageContainsNul,
   REASON_EXTRA_HEADER_INJECTION,
@@ -26,10 +27,10 @@ export async function createCommit(ctx: Context, input: CreateCommitInput): Prom
   if (exceedsMaxCommitMessageBytes(input.message)) {
     throw invalidCommit(REASON_MESSAGE_EXCEEDS_MAX);
   }
-  // Reject NUL / bare-LF-LF in gpgSignature and extraHeaders values — those
-  // characters would break the object wire-format's header/message boundary and
-  // enable commit-object content injection.
-  if (input.gpgSignature !== undefined && hasHeaderInjectionChars(input.gpgSignature)) {
+  // gpgSignature uses the narrower predicate (NUL/CR only) — a genuine armor
+  // block legitimately contains a blank line and a trailing LF. extraHeaders
+  // values keep the broader guard since they have no such structural exception.
+  if (input.gpgSignature !== undefined && hasSignatureInjectionChars(input.gpgSignature)) {
     throw invalidCommit(REASON_GPG_SIGNATURE_INJECTION);
   }
   if (input.extraHeaders !== undefined) {

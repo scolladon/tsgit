@@ -491,6 +491,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `Object ${data.object} has no note`;
     case 'NOTES_REF_OUTSIDE':
       return `refusing to use notes ref ${data.ref} (outside of refs/notes/)`;
+    case 'SIGNING_FAILED':
+      return `gpg failed to sign the data (${data.reason}${data.format !== undefined ? `, format=${data.format}` : ''})`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

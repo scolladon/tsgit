@@ -48,6 +48,7 @@
     "commitlint",
     "cspell",
     "depcruise",
+    "gpg",
     "husky",
     "jscpd",
     "knip",

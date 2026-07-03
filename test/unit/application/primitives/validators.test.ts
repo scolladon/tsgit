@@ -10,6 +10,7 @@ import {
   exceedsMaxWalkSeeds,
   hasDeclaredId,
   hasHeaderInjectionChars,
+  hasSignatureInjectionChars,
   isContainedRefSegment,
   isEmptyFrom,
   isGitlink,
@@ -762,6 +763,59 @@ describe('hasHeaderInjectionChars', () => {
         // Arrange
         // No NUL/CR, no `\n\n`, not leading/trailing — every guard must be false.
         const sut = hasHeaderInjectionChars('a\nb');
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+});
+
+describe('hasSignatureInjectionChars', () => {
+  describe('Given a value containing NUL', () => {
+    describe('When hasSignatureInjectionChars', () => {
+      it('Then returns true', () => {
+        // Arrange
+        const sut = hasSignatureInjectionChars('a\0b');
+
+        // Assert
+        expect(sut).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a value containing CR', () => {
+    describe('When hasSignatureInjectionChars', () => {
+      it('Then returns true', () => {
+        // Arrange
+        const sut = hasSignatureInjectionChars('a\rb');
+
+        // Assert
+        expect(sut).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a genuine PGP armor block with a blank line after BEGIN and a trailing LF', () => {
+    describe('When hasSignatureInjectionChars', () => {
+      it('Then returns false — real armor carries no NUL/CR', () => {
+        // Arrange
+        // This exact shape (interior \n\n + trailing \n) trips the broader
+        // hasHeaderInjectionChars guard — this narrower predicate must accept it.
+        const armor = '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n';
+        const sut = hasSignatureInjectionChars(armor);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a value with an interior double LF but no NUL/CR', () => {
+    describe('When hasSignatureInjectionChars', () => {
+      it('Then returns false — the double-LF rule does not apply to this predicate', () => {
+        // Arrange
+        const sut = hasSignatureInjectionChars('a\n\nb');
 
         // Assert
         expect(sut).toBe(false);

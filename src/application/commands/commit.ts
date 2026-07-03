@@ -1,12 +1,13 @@
-import { mergeHasConflicts } from '../../domain/commands/error.js';
+import { mergeHasConflicts, signingFailed } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
-import type { CommitData } from '../../domain/objects/commit.js';
+import type { Commit, CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
-import { ZERO_OID } from '../../domain/objects/index.js';
+import { serializeCommitContent, ZERO_OID } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
@@ -15,6 +16,11 @@ import { readObject } from '../primitives/read-object.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
+import {
+  resolveSigningSelector,
+  type SignRequest,
+  signPayload,
+} from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { clearCherryPickHead, readCherryPickHead } from './internal/cherry-pick-state.js';
@@ -51,6 +57,14 @@ export interface CommitOptions {
   readonly allowEmptyMessage?: boolean;
   /** Skip the `pre-commit` and `commit-msg` hooks (git's `--no-verify`). */
   readonly noVerify?: boolean;
+  /**
+   * Sign the commit (git's `-S`). Tri-state against `commit.gpgsign`: an
+   * explicit `true`/`false` here always wins; leaving it `undefined` falls
+   * back to `commit.gpgsign` from config.
+   */
+  readonly sign?: boolean;
+  /** Signing key/identity override (git's `-S<keyid>`); falls back to `user.signingKey`. */
+  readonly signKey?: string;
 }
 
 export interface CommitResult {
@@ -130,7 +144,11 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
     message,
     extraHeaders: [],
   };
-  const id = await createCommit(ctx, commitData);
+  const gpgSignature = await resolveGpgSignature(ctx, config, commitData, committer, opts);
+  const id = await createCommit(ctx, {
+    ...commitData,
+    ...(gpgSignature !== undefined ? { gpgSignature } : {}),
+  });
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   const reflogMessage = commitReflogMessage(message, parentId, mergeHead, cherryPickHead);
   await writeCommitRef(ctx, { branch, id, parentId, reflogMessage });
@@ -139,6 +157,76 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // abort it (git ignores its exit code).
   await runInformationalHook(ctx, 'post-commit');
   return { id, tree: treeId, branch, parents };
+};
+
+/**
+ * Resolve the signer invocation from config — the openpgp `-u` selector
+ * falls back through override → `user.signingKey` → the committer identity
+ * string; the ssh `-f` key-file selector has no ident fallback.
+ */
+const resolveSignRequest = (
+  config: ParsedConfig,
+  committer: AuthorIdentity,
+  signKey: string | undefined,
+): SignRequest => {
+  const format = config.gpg?.format ?? 'openpgp';
+  const program = format === 'ssh' ? config.gpg?.ssh?.program : config.gpg?.program;
+  const selector =
+    format === 'ssh'
+      ? (signKey ?? config.user?.signingKey ?? '')
+      : resolveSigningSelector({
+          ...(config.user?.signingKey !== undefined ? { signingKey: config.user.signingKey } : {}),
+          ...(signKey !== undefined ? { keyOverride: signKey } : {}),
+          fallbackIdent: `${committer.name} <${committer.email}>`,
+        });
+  return { format, selector, ...(program !== undefined ? { program } : {}) };
+};
+
+/**
+ * Sign the unsigned commit payload (the commit object without a `gpgsig`
+ * header). Throws `SIGNING_FAILED` atomically on any signer refusal — the
+ * caller must not proceed to `createCommit` when this throws.
+ */
+const signCommit = async (
+  ctx: Context,
+  config: ParsedConfig,
+  data: CommitData,
+  committer: AuthorIdentity,
+  signKey: string | undefined,
+): Promise<string> => {
+  const request = resolveSignRequest(config, committer, signKey);
+  const unsigned: Commit = { type: 'commit', id: '' as ObjectId, data };
+  const payload = serializeCommitContent(unsigned);
+  const result = await signPayload(ctx, payload, request);
+  if (!result.ok) {
+    // off-node means no CommandRunner exists at all — the format we would
+    // have signed with was never actually attempted, so it is omitted.
+    throw result.reason === 'off-node'
+      ? signingFailed(result.reason)
+      : signingFailed(result.reason, request.format);
+  }
+  // Signers terminate their armor block with a trailing newline; the header
+  // encoder (formatContinuationHeader) treats a trailing newline in a header
+  // value as an extra blank continuation line rather than a line terminator,
+  // so it is stripped here to match the stored gpgSignature convention.
+  return result.armor.endsWith('\n') ? result.armor.slice(0, -1) : result.armor;
+};
+
+/**
+ * Tri-state signing decision: an explicit `opts.sign` always wins; leaving it
+ * `undefined` falls back to `commit.gpgsign` from config. Returns `undefined`
+ * when signing is off, otherwise the resolved armor (or throws).
+ */
+const resolveGpgSignature = async (
+  ctx: Context,
+  config: ParsedConfig,
+  commitData: CommitData,
+  committer: AuthorIdentity,
+  opts: CommitOptions,
+): Promise<string | undefined> => {
+  const wantSign = opts.sign ?? config.commit?.gpgSign === true;
+  if (!wantSign) return undefined;
+  return signCommit(ctx, config, commitData, committer, opts.signKey);
 };
 
 interface CommitRefUpdate {
