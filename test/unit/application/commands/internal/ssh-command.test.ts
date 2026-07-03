@@ -199,4 +199,40 @@ describe('resolveSshCommand', () => {
       });
     });
   });
+
+  describe('Given GIT_SSH_COMMAND with adjacent quoted and bare segments in one word', () => {
+    describe('When resolving the ssh command', () => {
+      it('Then contiguous segments concatenate into a single word, as POSIX splits them', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          env: envOf({ GIT_SSH_COMMAND: 'foo"bar"baz -v' }),
+        });
+        const sut = resolveSshCommand;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ program: 'foobarbaz', baseArgs: ['-v'] });
+      });
+    });
+  });
+
+  describe('Given GIT_SSH_COMMAND mixing quote styles inside one argument', () => {
+    describe('When resolving the ssh command', () => {
+      it('Then "x"y\'z\' collapses to one argument, not three', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          env: envOf({ GIT_SSH_COMMAND: `ssh "x"y'z'` }),
+        });
+        const sut = resolveSshCommand;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ program: 'ssh', baseArgs: ['xyz'] });
+      });
+    });
+  });
 });

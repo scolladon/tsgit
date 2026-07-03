@@ -9,7 +9,7 @@
  * `SshGitServiceSession` below.
  */
 import { adapterUnavailable } from '../../../domain/commands/error.js';
-import { httpError, networkError } from '../../../domain/error.js';
+import { httpError, networkError, operationAborted } from '../../../domain/error.js';
 import {
   buildDiscoveryUrl,
   decodePktStream,
@@ -156,8 +156,7 @@ class SshGitServiceSession implements GitServiceSession {
 
   exchange: GitExchange = async (requestBytes: Uint8Array): Promise<AsyncIterable<PktLine>> => {
     const channel = await this.openChannel();
-    await writeToStdin(channel.stdin, requestBytes);
-    return this.continuation();
+    return this.continuation(startStdinWrite(channel.stdin, requestBytes));
   };
 
   close = async (): Promise<void> => {
@@ -171,10 +170,11 @@ class SshGitServiceSession implements GitServiceSession {
     return this.channel;
   }
 
-  private async continuation(): Promise<AsyncIterable<PktLine>> {
+  private async continuation(awaitWrite?: () => Promise<void>): Promise<AsyncIterable<PktLine>> {
     const channel = await this.openChannel();
     const iterator = await this.sharedIterator(channel);
-    return { [Symbol.asyncIterator]: () => wrapInert(iterator, channel) };
+    const signal = this.ctx.signal;
+    return { [Symbol.asyncIterator]: () => wrapInert({ iterator, channel, signal, awaitWrite }) };
   }
 
   private sharedIterator(channel: SshChannel): Promise<AsyncIterator<PktLine>> {
@@ -214,24 +214,60 @@ const writeToStdin = async (
 };
 
 /**
+ * Begin the stdin write WITHOUT awaiting it: the caller must be free to drain
+ * stdout concurrently, otherwise a request larger than the OS pipe buffer
+ * deadlocks the duplex channel (the server blocks writing side-band progress
+ * to its full stdout, stops draining stdin, and the client write never
+ * resolves). A write failure is parked and re-surfaced by the returned thunk
+ * at the natural end of the response stream, so it is never swallowed.
+ */
+const startStdinWrite = (
+  stdin: WritableStream<Uint8Array>,
+  bytes: Uint8Array,
+): (() => Promise<void>) => {
+  let failure: unknown;
+  const settled = writeToStdin(stdin, bytes).catch((error: unknown) => {
+    failure = error;
+  });
+  return async () => {
+    await settled;
+    if (failure !== undefined) throw failure;
+  };
+};
+
+/**
  * Wrap the shared decode iterator so an early consumer `return()` (e.g.
  * `parseAdvertisedRefs`'s cleanup after the advertisement's terminating
  * flush) never cancels the underlying channel reader. Only a natural `done`
  * — the channel's stdout truly closing — checks the process exit code.
  */
-const wrapInert = (
-  iterator: AsyncIterator<PktLine>,
-  channel: SshChannel,
-): AsyncIterator<PktLine> => ({
+interface InertWrap {
+  readonly iterator: AsyncIterator<PktLine>;
+  readonly channel: SshChannel;
+  readonly signal?: AbortSignal | undefined;
+  readonly awaitWrite?: (() => Promise<void>) | undefined;
+}
+
+const wrapInert = ({
+  iterator,
+  channel,
+  signal,
+  awaitWrite,
+}: InertWrap): AsyncIterator<PktLine> => ({
   next: async (): Promise<IteratorResult<PktLine>> => {
     const result = await iterator.next();
-    if (result.done) await assertCleanExit(channel);
+    if (result.done) {
+      await assertCleanExit(channel, signal);
+      await awaitWrite?.();
+    }
     return result;
   },
   return: async (): Promise<IteratorResult<PktLine>> => ({ done: true, value: undefined }),
 });
 
-const assertCleanExit = async (channel: SshChannel): Promise<void> => {
+const assertCleanExit = async (channel: SshChannel, signal?: AbortSignal): Promise<void> => {
   const code = await channel.exit;
-  if (code !== 0) throw networkError(`ssh exited with code ${code}`);
+  if (code === 0) return;
+  if (signal?.aborted === true) throw operationAborted();
+  throw networkError(`ssh exited with code ${code}`);
 };

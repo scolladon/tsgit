@@ -2,8 +2,8 @@ import { invalidUrl, sanitize } from '../../../domain/commands/error.js';
 
 /**
  * A remote URL classified into one of git's transport shapes. `kind: 'http'`
- * covers both `http:` and `https:` — the HTTP session (Part 4) parses the
- * scheme itself from the verbatim url string.
+ * covers both `http:` and `https:` — the HTTP session parses the scheme
+ * itself from the verbatim url string.
  */
 export type RemoteUrl =
   | { readonly kind: 'http'; readonly url: string }
@@ -42,10 +42,16 @@ export const parseRemoteUrl = (raw: string): RemoteUrl => {
 /** Inverse of `parseRemoteUrl`, used by the round-trip property. */
 export const formatRemoteUrl = (parsed: RemoteUrl): string => {
   if (parsed.kind === 'http') return parsed.url;
-  const authority = combineUserHost(parsed.user, parsed.host);
-  if (parsed.port === undefined) return `${authority}:${parsed.path}`;
-  return `${SSH_URL_PREFIX}${authority}:${parsed.port}${sshPathname(parsed.path)}`;
+  const authority = combineUserHost(parsed.user, bracketIpv6Host(parsed.host));
+  if (parsed.port === undefined && !isIpv6Host(parsed.host)) return `${authority}:${parsed.path}`;
+  const portSuffix = parsed.port === undefined ? '' : `:${parsed.port}`;
+  return `${SSH_URL_PREFIX}${authority}${portSuffix}${sshPathname(parsed.path)}`;
 };
+
+/** The scp-like form cannot carry a colon-bearing host, so an IPv6 host always formats as an ssh URL. */
+const isIpv6Host = (host: string): boolean => host.includes(':');
+
+const bracketIpv6Host = (host: string): string => (isIpv6Host(host) ? `[${host}]` : host);
 
 const rejectControlChars = (raw: string): void => {
   if (CONTROL_CHAR_PATTERN.test(raw)) {
@@ -71,7 +77,7 @@ const isScpLike = (raw: string): boolean => {
 const parseSshUrlForm = (raw: string): RemoteUrl => {
   const url = parseAsUrl(raw);
   const user = url.username === '' ? undefined : url.username;
-  const host = url.hostname;
+  const host = stripIpv6Brackets(url.hostname);
   const port = url.port === '' ? undefined : Number(url.port);
   const path = collapseTildePathname(url.pathname);
   applyDashGuard(combineUserHost(user, host), path);
@@ -88,6 +94,10 @@ const parseAsUrl = (raw: string): URL => {
 
 const collapseTildePathname = (pathname: string): string =>
   pathname.startsWith(TILDE_PATHNAME_PREFIX) ? pathname.slice(1) : pathname;
+
+/** WHATWG `hostname` keeps IPv6 brackets (`[::1]`); ssh expects the bare address, as git passes it. */
+const stripIpv6Brackets = (hostname: string): string =>
+  hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
 
 const parseScpForm = (raw: string): RemoteUrl => {
   const { hostToken, path } = splitScpLike(raw);

@@ -12,6 +12,7 @@ import { NodeFileSystem } from '../../../../src/adapters/node/node-file-system.j
 import { NodeHashService } from '../../../../src/adapters/node/node-hash-service.js';
 import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
+import { NodeSshTransport } from '../../../../src/adapters/node/node-ssh-transport.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 
 describe('createNodeContext', () => {
@@ -151,6 +152,30 @@ describe('createNodeContext', () => {
 
         // Assert — the explicit opt-out detaches the runner.
         expect(sut.command).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given default options (ssh transport)', () => {
+    describe('When creating context', () => {
+      it('Then ctx.ssh is a NodeSshTransport', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ssh-on' });
+
+        // Assert — node contexts can reach ssh/scp remotes out of the box.
+        expect(sut.ssh).toBeInstanceOf(NodeSshTransport);
+      });
+    });
+  });
+
+  describe('Given ssh: false', () => {
+    describe('When creating context', () => {
+      it('Then ctx.ssh is undefined', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ssh-off', ssh: false });
+
+        // Assert — the explicit opt-out makes ssh remotes refuse as unavailable.
+        expect(sut.ssh).toBeUndefined();
       });
     });
   });

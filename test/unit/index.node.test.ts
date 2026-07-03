@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
+import { TsgitError } from '../../src/domain/index.js';
 import { openRepository } from '../../src/index.node.js';
 
 let tmpdir: string;
@@ -136,6 +137,40 @@ describe('Node shim — ssh/env/runtime context wiring', () => {
           expect(sut.ctx.runtime).toBe('node');
         } finally {
           await sut.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given GIT_NOTES_REF points outside refs/notes/', () => {
+    describe('When a notes verb runs through openRepository', () => {
+      it('Then the env var is honoured and refused as NOTES_REF_OUTSIDE', async () => {
+        // Arrange — env now reaches commands through the wired ctx.env.
+        const saved = process.env.GIT_NOTES_REF;
+        process.env.GIT_NOTES_REF = 'refs/heads/evil';
+        const sut = await openRepository({ cwd: tmpdir });
+
+        try {
+          await sut.init();
+          // Act
+          let caught: unknown;
+          try {
+            await sut.notes.list();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; ref?: string };
+          expect(data.code).toBe('NOTES_REF_OUTSIDE');
+        } finally {
+          await sut.dispose();
+          if (saved === undefined) {
+            delete process.env.GIT_NOTES_REF;
+          } else {
+            process.env.GIT_NOTES_REF = saved;
+          }
         }
       });
     });

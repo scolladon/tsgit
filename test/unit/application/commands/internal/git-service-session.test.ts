@@ -702,4 +702,142 @@ describe('GitServiceSession — ssh non-zero exit', () => {
       });
     });
   });
+
+  describe('Given a live (non-aborted) signal and an ssh channel exiting non-zero', () => {
+    describe('When advertisement() is consumed', () => {
+      it('Then it still throws NETWORK_ERROR (abort translation needs an actual abort)', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const { channel } = fakeChannel({ exitCode: 128 });
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = { ...contextWithSsh(ssh), signal: controller.signal };
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(await sut.advertisement());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('NETWORK_ERROR');
+        expect(data.reason).toContain('128');
+      });
+    });
+  });
+
+  describe('Given an aborted context whose killed ssh child exits non-zero', () => {
+    describe('When advertisement() is consumed', () => {
+      it('Then the failure surfaces as OPERATION_ABORTED, not a network error', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const { channel } = fakeChannel({ exitCode: 128 });
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = { ...contextWithSsh(ssh), signal: controller.signal };
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(await sut.advertisement());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string };
+        expect(data.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+});
+
+describe('GitServiceSession — ssh duplex exchange', () => {
+  describe('Given an ssh channel whose stdin write settles only after the response is consumed', () => {
+    describe('When exchange() runs over the duplex channel', () => {
+      it('Then the response streams before the write settles (no duplex deadlock)', async () => {
+        // Arrange — a stdin sink stalled until the test releases it: an
+        // implementation that awaits the write before reading stdout can
+        // never finish this test.
+        let releaseWrite: (() => void) | undefined;
+        const writeGate = new Promise<void>((resolve) => {
+          releaseWrite = resolve;
+        });
+        let writeSettled = false;
+        const stdin = new WritableStream<Uint8Array>({
+          write: async () => {
+            await writeGate;
+            writeSettled = true;
+          },
+        });
+        const stdout = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encodePktStream([ENCODER.encode('NAK\n')]));
+            controller.close();
+          },
+        });
+        const closeSpy = vi.fn(async () => undefined);
+        const channel: SshChannel = { stdin, stdout, exit: Promise.resolve(0), close: closeSpy };
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act — resolves only when the write is not awaited up front.
+        const response = await sut.exchange(ENCODER.encode('0000'));
+        const iterator = response[Symbol.asyncIterator]();
+        const first = await iterator.next();
+
+        // Assert — data flowed while the write was still pending.
+        expect(writeSettled).toBe(false);
+        expect(first.done).toBe(false);
+        releaseWrite?.();
+        const flush = await iterator.next();
+        expect(flush.done).toBe(false);
+        const last = await iterator.next();
+        expect(last.done).toBe(true);
+        expect(writeSettled).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an ssh channel whose stdin rejects the request write', () => {
+    describe('When the exchange response is consumed to its natural end', () => {
+      it('Then the parked write failure surfaces instead of being swallowed', async () => {
+        // Arrange
+        const writeError = new Error('stdin write failed');
+        const stdin = new WritableStream<Uint8Array>({
+          write: () => Promise.reject(writeError),
+        });
+        const stdout = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encodePktStream([ENCODER.encode('NAK\n')]));
+            controller.close();
+          },
+        });
+        const closeSpy = vi.fn(async () => undefined);
+        const channel: SshChannel = { stdin, stdout, exit: Promise.resolve(0), close: closeSpy };
+        const { ssh } = fakeSshTransport(channel);
+        const ctx = contextWithSsh(ssh);
+        const sut = openGitSession(ctx, 'ssh://git@example.com/repo.git', 'git-upload-pack');
+
+        // Act
+        const response = await sut.exchange(ENCODER.encode('0000'));
+        let caught: unknown;
+        try {
+          await collect(response);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the exact parked rejection, surfaced at stream end.
+        expect(caught).toBe(writeError);
+      });
+    });
+  });
 });

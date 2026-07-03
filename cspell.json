@@ -970,7 +970,10 @@
     "sanitiser",
     "tortoiseplink",
     "userless",
-    "WHATWG"
+    "WHATWG",
+    "foobarbaz",
+    "cmdline",
+    "bigpush"
   ],
   "ignorePaths": [
     "node_modules",

@@ -38,15 +38,21 @@ const splitIntoCommand = (raw: string): ResolvedSshCommand => {
 };
 
 /**
- * Minimal POSIX-ish word splitter for shell-string config/env values: honours
+ * Minimal POSIX word splitter for shell-string config/env values: honours
  * single quotes (fully literal), double quotes (backslash escapes `"` and
- * `\`), and a bare backslash escaping the next character. Sufficient for
- * ssh command strings; never shells out to split.
+ * `\`), and a bare backslash escaping the next character. Adjacent quoted
+ * and bare segments concatenate into one word (`foo"bar"baz` → `foobarbaz`),
+ * matching POSIX field splitting and git's `split_cmdline`. Never shells out.
  */
-const SHELL_WORD = /'([^']*)'|"((?:[^"\\]|\\.)*)"|((?:[^\s'"\\]|\\.)+)/g;
+const SHELL_SEGMENT = /'([^']*)'|"((?:[^"\\]|\\.)*)"|((?:[^\s'"\\]|\\.)+)/g;
+
+const SHELL_WORD = /(?:'[^']*'|"(?:[^"\\]|\\.)*"|(?:[^\s'"\\]|\\.))+/g;
 
 const splitShellWords = (input: string): ReadonlyArray<string> =>
-  Array.from(input.matchAll(SHELL_WORD), extractWord);
+  Array.from(input.matchAll(SHELL_WORD), (word) => unquoteWord(word[0]));
+
+const unquoteWord = (word: string): string =>
+  Array.from(word.matchAll(SHELL_SEGMENT), extractWord).join('');
 
 const extractWord = (match: RegExpMatchArray): string => {
   const [, single, double, bare] = match;

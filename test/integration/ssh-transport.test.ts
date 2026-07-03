@@ -170,16 +170,40 @@ const wireOriginRemote = async (repo: OpenedRepo, url: string): Promise<void> =>
   __resetConfigCacheForTests();
 };
 
-const commitLocalChange = async (repo: OpenedRepo, label: string): Promise<ObjectId> => {
+const commitLocalChange = (repo: OpenedRepo, label: string): Promise<ObjectId> =>
+  commitFileChange(repo, `${label}.txt`, new TextEncoder().encode(`${label}\n`), label);
+
+/**
+ * Deterministic incompressible bytes (xorshift32): the resulting pack stays
+ * approximately `byteLength`, far beyond any OS pipe buffer.
+ */
+const pseudoRandomBytes = (byteLength: number): Uint8Array => {
+  const bytes = new Uint8Array(byteLength);
+  let state = 0x9e3779b9;
+  for (let i = 0; i < byteLength; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    bytes[i] = state & 0xff;
+  }
+  return bytes;
+};
+
+const commitFileChange = async (
+  repo: OpenedRepo,
+  fileName: string,
+  content: Uint8Array,
+  message: string,
+): Promise<ObjectId> => {
   const head = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
   const blob: Blob = {
     type: 'blob',
-    content: new TextEncoder().encode(`${label}\n`),
+    content,
     id: '' as ObjectId,
   };
   const blobId = await writeObject(repo.ctx, blob);
   const treeId = await writeTree(repo.ctx, [
-    { name: `${label}.txt`, mode: '100644' as FileMode, id: blobId },
+    { name: fileName, mode: '100644' as FileMode, id: blobId },
   ]);
   const author = {
     name: 'Push',
@@ -195,7 +219,7 @@ const commitLocalChange = async (repo: OpenedRepo, label: string): Promise<Objec
       parents: [head],
       author,
       committer: author,
-      message: label,
+      message,
       extraHeaders: [],
     },
   };
@@ -283,6 +307,45 @@ describe.skipIf(SKIP_REASON !== false)('ssh transport — end-to-end over a fake
         // Assert — push.
         expect(pushResult.pushedRefs).toHaveLength(1);
         expect(pushResult.pushedRefs[0]).toMatchObject({
+          name: 'refs/heads/main' as RefName,
+          newId: newHead,
+          status: 'ok',
+        });
+        const bareTip = runGit(['-C', bareRepoPath, 'rev-parse', 'main']).trim();
+        expect(bareTip).toBe(newHead);
+      } finally {
+        await repo.dispose();
+        await rm(workDir, { recursive: true, force: true });
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it('Then a multi-megabyte push completes without deadlocking the duplex pipes', async () => {
+      // Arrange — an incompressible blob far beyond the OS pipe buffers, so
+      // the pack write and the side-band response must interleave.
+      const { root, bareRepoPath } = await createFreshBareRepo();
+      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ssh-bigpush-'));
+      const url = `ssh://git@localhost${bareRepoPath}`;
+      const repo = await openRepository({ cwd: workDir });
+
+      try {
+        await repo.clone({ url });
+        await wireOriginRemote(repo, url);
+        const newHead = await commitFileChange(
+          repo,
+          'big.bin',
+          pseudoRandomBytes(4 * 1024 * 1024),
+          'large push',
+        );
+
+        // Act
+        const result = await repo.push({
+          remote: 'origin',
+          refspecs: ['refs/heads/main:refs/heads/main'],
+        });
+
+        // Assert
+        expect(result.pushedRefs[0]).toMatchObject({
           name: 'refs/heads/main' as RefName,
           newId: newHead,
           status: 'ok',

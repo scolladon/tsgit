@@ -11,6 +11,7 @@ import { NodeFileSystem } from './node-file-system.js';
 import { NodeHashService } from './node-hash-service.js';
 import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
+import { NodeSshTransport } from './node-ssh-transport.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_DELTA_CACHE_ENTRIES = 65_536;
@@ -35,6 +36,13 @@ export interface NodeAdapterOptions {
    * `[merge "<driver>"].driver` shell command with the full `process.env`.
    */
   readonly command?: boolean;
+  /**
+   * Wire the ssh transport (default true). Pass `false` to refuse ssh/scp
+   * remotes. A wired transport spawns the resolved ssh command
+   * (`GIT_SSH_COMMAND`/`GIT_SSH`/`core.sshCommand`, else `ssh`) inheriting
+   * the full `process.env`.
+   */
+  readonly ssh?: boolean;
 }
 
 export function createNodeContext(options: NodeAdapterOptions): Context {
@@ -67,6 +75,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.hooks === false ? {} : { hooks: new NodeHookRunner() }),
     ...(options.command === false ? {} : { command: new NodeCommandRunner() }),
+    ...(options.ssh === false ? {} : { ssh: new NodeSshTransport() }),
     env: new NodeEnvReader(),
   };
   return createContext(parts);

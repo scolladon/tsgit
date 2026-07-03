@@ -497,4 +497,65 @@ describe('internal/remote-url', () => {
       });
     });
   });
+
+  describe('Given an ssh URL with a bracketed IPv6 host', () => {
+    describe('When parsing ssh://[::1]/repo.git', () => {
+      it('Then the host is the bare IPv6 address, as ssh expects it', () => {
+        // Arrange
+        const sut = parseRemoteUrl;
+
+        // Act
+        const result = sut('ssh://[::1]/repo.git');
+
+        // Assert
+        expect(result).toEqual({ kind: 'ssh', host: '::1', path: '/repo.git' });
+      });
+    });
+
+    describe('When parsing ssh://git@[2001:db8::1]:2222/repo.git', () => {
+      it('Then user, bare host, and port are all extracted', () => {
+        // Arrange
+        const sut = parseRemoteUrl;
+
+        // Act
+        const result = sut('ssh://git@[2001:db8::1]:2222/repo.git');
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'ssh',
+          user: 'git',
+          host: '2001:db8::1',
+          port: 2222,
+          path: '/repo.git',
+        });
+      });
+    });
+
+    describe('When formatting a port-less IPv6 RemoteUrl', () => {
+      it('Then it re-brackets the host in the ssh URL form (scp form cannot carry a colon host)', () => {
+        // Arrange
+        const parsed: RemoteUrl = { kind: 'ssh', host: '::1', path: '/repo.git' };
+
+        // Act
+        const result = formatRemoteUrl(parsed);
+
+        // Assert
+        expect(result).toBe('ssh://[::1]/repo.git');
+      });
+    });
+
+    describe('When round-tripping an IPv6 URL with user and port', () => {
+      it('Then parse(format(parse(x))) is identical to parse(x)', () => {
+        // Arrange
+        const sut = parseRemoteUrl;
+        const first = sut('ssh://git@[2001:db8::1]:2222/repo.git');
+
+        // Act
+        const result = sut(formatRemoteUrl(first));
+
+        // Assert
+        expect(result).toEqual(first);
+      });
+    });
+  });
 });
