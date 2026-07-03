@@ -24,6 +24,7 @@ export {
   readConfigSections,
 } from './config-scoped-read.js';
 export { createCommit } from './create-commit.js';
+export { createTag } from './create-tag.js';
 export { diffTrees } from './diff-trees.js';
 export type { EnumerateObjectsOptions } from './enumerate-objects.js';
 export { enumerateObjects } from './enumerate-objects.js';

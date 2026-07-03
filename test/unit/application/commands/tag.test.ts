@@ -5,6 +5,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { tagCreate, tagDelete, tagList } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
@@ -23,6 +24,17 @@ const seedWithCommit = async () => {
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
   return { ctx, commitId: c.id };
+};
+
+/** A repository with a commit AND a configured `[user]` — the tagger source for annotated tags. */
+const seedWithConfiguredUser = async () => {
+  const seeded = await seedWithCommit();
+  await seeded.ctx.fs.writeUtf8(
+    `${seeded.ctx.layout.gitDir}/config`,
+    '[user]\n  name = Grace\n  email = grace@example.com\n',
+  );
+  __resetConfigCacheForTests();
+  return seeded;
 };
 
 describe('tag', () => {
@@ -339,6 +351,100 @@ describe('tag', () => {
 
         // Assert — the plain Error is rethrown as-is, never dereferenced for `.data.code`.
         expect(caught).toBe(renameFailure);
+      });
+    });
+  });
+
+  describe('Given a configured user, annotate true, and a message', () => {
+    describe('When tag create', () => {
+      it('Then refs/tags/<name> points at a written tag object, not the commit', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithConfiguredUser();
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
+
+        // Assert
+        expect(sut.id).not.toBe(commitId);
+        const obj = await readObject(ctx, sut.id);
+        expect(obj.type).toBe('tag');
+      });
+    });
+  });
+
+  describe('Given a configured user and a message, with annotate left unset', () => {
+    describe('When tag create', () => {
+      it('Then it is annotated — message implies -a', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithConfiguredUser();
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
+
+        // Assert
+        expect(sut.id).not.toBe(commitId);
+        const obj = await readObject(ctx, sut.id);
+        expect(obj.type).toBe('tag');
+      });
+    });
+  });
+
+  describe('Given neither annotate nor message', () => {
+    describe('When tag create', () => {
+      it('Then it stays lightweight — the ref points at the target OID with no tag object written', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0' });
+
+        // Assert
+        expect(sut.id).toBe(commitId);
+        const obj = await readObject(ctx, sut.id);
+        expect(obj.type).toBe('commit');
+      });
+    });
+  });
+
+  describe('Given annotate true but no configured user', () => {
+    describe('When tag create', () => {
+      it('Then it throws the author-unconfigured refusal', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('AUTHOR_UNCONFIGURED');
+      });
+    });
+  });
+
+  describe('Given an existing tag and a configured user', () => {
+    describe('When annotated tag create without force', () => {
+      it('Then it throws TAG_EXISTS', async () => {
+        // Arrange
+        const { ctx } = await seedWithConfiguredUser();
+        await tagCreate(ctx, { name: 'v1.0' });
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('TAG_EXISTS');
       });
     });
   });
