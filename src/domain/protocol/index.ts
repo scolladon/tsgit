@@ -4,6 +4,7 @@ export {
   CLIENT_CAPABILITIES_PUSH,
   formatCapabilities,
   negotiateCapabilities,
+  PUSH_CERT,
   parseCapabilities,
 } from './capabilities.js';
 export type { ProtocolError } from './error.js';
@@ -43,13 +44,17 @@ export {
   RESPONSE_END_PKT,
 } from './pkt-line.js';
 export type {
+  PushCertPayloadInput,
   ReceivePackRequest,
   ReceivePackResponse,
   RefStatus,
   RefUpdate,
+  SignedReceivePackRequest,
 } from './receive-pack.js';
 export {
+  buildPushCertPayload,
   buildReceivePackRequest,
+  buildSignedReceivePackRequest,
   parseReceivePackResponse,
 } from './receive-pack.js';
 export {
