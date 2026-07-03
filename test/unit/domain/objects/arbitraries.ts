@@ -55,7 +55,11 @@ export function arbTagName(): fc.Arbitrary<string> {
     .filter((s) => !s.includes('\0') && !s.includes('\n') && !s.includes(' '));
 }
 
-const ARMOR_BODY_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+const ARMOR_BODY_CHARS = [
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  'abcdefghijklmnopqrstuvwxyz',
+  '0123456789+/=',
+].join('');
 
 // A well-formed PGP or SSH armor block, byte-shaped like what `signPayload`
 // returns: a `-----BEGIN ... SIGNATURE-----` / `-----END ... SIGNATURE-----`

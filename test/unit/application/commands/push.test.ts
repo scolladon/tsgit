@@ -1967,7 +1967,9 @@ describe('push — signed', () => {
         // Arrange
         const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
         const ctx = createMemoryContext({ command: runner });
+        // secretlint-disable @secretlint/secretlint-rule-basicauth
         const credUrl = 'https://alice:s3cr3t@example.com/r.git';
+        // secretlint-enable @secretlint/secretlint-rule-basicauth
         const { parent } = await seedSignedPush(ctx, { url: credUrl });
         const { transport, requestBodies } = fakeServer({
           url: credUrl,
