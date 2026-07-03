@@ -1,12 +1,13 @@
 import { mergeHasConflicts } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
-import type { CommitData } from '../../domain/objects/commit.js';
+import type { Commit, CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
-import { ZERO_OID } from '../../domain/objects/index.js';
+import { serializeCommitContent, ZERO_OID } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
@@ -42,6 +43,7 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
+import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -51,6 +53,14 @@ export interface CommitOptions {
   readonly allowEmptyMessage?: boolean;
   /** Skip the `pre-commit` and `commit-msg` hooks (git's `--no-verify`). */
   readonly noVerify?: boolean;
+  /**
+   * Sign the commit (git's `-S`). Tri-state against `commit.gpgsign`: an
+   * explicit `true`/`false` here always wins; leaving it `undefined` falls
+   * back to `commit.gpgsign` from config.
+   */
+  readonly sign?: boolean;
+  /** Signing key/identity override (git's `-S<keyid>`); falls back to `user.signingKey`. */
+  readonly signKey?: string;
 }
 
 export interface CommitResult {
@@ -93,7 +103,9 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   if (opts.author === undefined && configUser === undefined) {
-    // equivalent-mutant: configUser is undefined iff config.user is undefined (toAuthor returns undefined for undefined); when configUser is defined all keys are valued so the guard is a no-op
+    // No explicit author and no usable config identity (unset, signingKey-only,
+    // or a valueless name/email) — surface a valueless key as CONFIG_MISSING_VALUE
+    // before falling back to the default identity.
     await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']);
   }
   const author = resolveAuthor(buildResolverInput(opts.author, configUser));
@@ -128,7 +140,11 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
     message,
     extraHeaders: [],
   };
-  const id = await createCommit(ctx, commitData);
+  const gpgSignature = await resolveGpgSignature(ctx, config, commitData, committer, opts);
+  const id = await createCommit(ctx, {
+    ...commitData,
+    ...(gpgSignature !== undefined ? { gpgSignature } : {}),
+  });
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   const reflogMessage = commitReflogMessage(message, parentId, mergeHead, cherryPickHead);
   await writeCommitRef(ctx, { branch, id, parentId, reflogMessage });
@@ -137,6 +153,46 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // abort it (git ignores its exit code).
   await runInformationalHook(ctx, 'post-commit');
   return { id, tree: treeId, branch, parents };
+};
+
+/**
+ * Sign the unsigned commit payload (the commit object without a `gpgsig`
+ * header). Throws `SIGNING_FAILED` atomically on any signer refusal — the
+ * caller must not proceed to `createCommit` when this throws.
+ */
+const signCommit = async (
+  ctx: Context,
+  config: ParsedConfig,
+  data: CommitData,
+  committer: AuthorIdentity,
+  signKey: string | undefined,
+): Promise<string> => {
+  const request = resolveSignRequest(config, committer, signKey);
+  const unsigned: Commit = { type: 'commit', id: '' as ObjectId, data };
+  const payload = serializeCommitContent(unsigned);
+  const armor = await signOrThrow(ctx, payload, request);
+  // Signers terminate their armor block with a trailing newline; the header
+  // encoder (formatContinuationHeader) treats a trailing newline in a header
+  // value as an extra blank continuation line rather than a line terminator,
+  // so it is stripped here to match the stored gpgSignature convention.
+  return armor.endsWith('\n') ? armor.slice(0, -1) : armor;
+};
+
+/**
+ * Tri-state signing decision: an explicit `opts.sign` always wins; leaving it
+ * `undefined` falls back to `commit.gpgsign` from config. Returns `undefined`
+ * when signing is off, otherwise the resolved armor (or throws).
+ */
+const resolveGpgSignature = async (
+  ctx: Context,
+  config: ParsedConfig,
+  commitData: CommitData,
+  committer: AuthorIdentity,
+  opts: CommitOptions,
+): Promise<string | undefined> => {
+  const wantSign = opts.sign ?? config.commit?.gpgSign === true;
+  if (!wantSign) return undefined;
+  return signCommit(ctx, config, commitData, committer, opts.signKey);
 };
 
 interface CommitRefUpdate {
@@ -260,9 +316,12 @@ const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
 };
 
 const toAuthor = (
-  user: { readonly name: string; readonly email: string } | undefined,
+  user:
+    | { readonly name?: string; readonly email?: string; readonly signingKey?: string }
+    | undefined,
 ): AuthorIdentity | undefined => {
-  if (user === undefined) return undefined;
+  // A signingKey-only user (no name/email) is not an identity.
+  if (user?.name === undefined || user?.email === undefined) return undefined;
   return {
     name: user.name,
     email: user.email,

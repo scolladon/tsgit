@@ -135,4 +135,40 @@ describe('selectPushCapabilities', () => {
       });
     });
   });
+
+  describe('Given signing=true and the server advertises push-cert=<nonce>', () => {
+    describe('When selectPushCapabilities runs', () => {
+      it('Then the negotiated push-cert=<nonce> token IS in the result', () => {
+        // Arrange & Act
+        const sut = selectPushCapabilities(['report-status', 'push-cert=abc123'], true);
+
+        // Assert — negotiateCapabilities echoes back the SERVER's value.
+        expect(sut).toContain('push-cert=abc123');
+      });
+    });
+  });
+
+  describe('Given signing is omitted (default) and the server advertises push-cert=<nonce>', () => {
+    describe('When selectPushCapabilities runs', () => {
+      it('Then no push-cert token is in the result', () => {
+        // Arrange & Act — kills the "always want push-cert" mutant.
+        const sut = selectPushCapabilities(['report-status', 'push-cert=abc123']);
+
+        // Assert
+        expect(sut.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given signing=true but the server does NOT advertise push-cert', () => {
+    describe('When selectPushCapabilities runs', () => {
+      it('Then no push-cert token is in the result', () => {
+        // Arrange & Act — the intersect step still applies to push-cert.
+        const sut = selectPushCapabilities(['report-status'], true);
+
+        // Assert
+        expect(sut.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
+      });
+    });
+  });
 });

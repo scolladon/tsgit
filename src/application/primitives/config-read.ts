@@ -22,7 +22,7 @@ export interface ParsedConfig {
     /** `core.sshCommand` — shell string resolved by `resolveSshCommand` ahead of `GIT_SSH`. */
     readonly sshCommand?: string;
   };
-  readonly user?: { readonly name: string; readonly email: string };
+  readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
     string,
     {
@@ -64,6 +64,19 @@ export interface ParsedConfig {
   >;
   /** `[extensions]` — `partialClone` names the promisor remote of a partial clone. */
   readonly extensions?: { readonly partialClone?: string };
+  /** `commit.gpgSign` — sign commits by default when true. */
+  readonly commit?: { readonly gpgSign?: boolean };
+  /** `tag.gpgSign` — sign annotated tags by default when true. */
+  readonly tag?: { readonly gpgSign?: boolean };
+  /** `push.gpgSign` — sign push certificates: `true`/`false`, or `if-asked` (server-requested). */
+  readonly push?: { readonly gpgSign?: 'true' | 'false' | 'if-asked' };
+  /** `[gpg]` — signing backend selection and the external program(s) invoked to sign/verify. */
+  readonly gpg?: {
+    readonly format?: 'openpgp' | 'ssh' | 'x509';
+    readonly program?: string;
+    /** `gpg.ssh.program` — the `ssh-keygen`-compatible binary used for `gpg.format = ssh`. */
+    readonly ssh?: { readonly program?: string };
+  };
 }
 
 /**
@@ -973,9 +986,15 @@ const scanQuotedHeaderPrefix = (
   return { parse, endOffset: closeQuoteAt + 2 };
 };
 
+type MutableGpg = {
+  format?: 'openpgp' | 'ssh' | 'x509';
+  program?: string;
+  ssh?: { program?: string };
+};
+
 interface MutableParsedConfig {
   core?: MutableCore;
-  user?: { name?: string; email?: string };
+  user?: { name?: string; email?: string; signingKey?: string };
   remote?: Map<
     string,
     {
@@ -992,6 +1011,10 @@ interface MutableParsedConfig {
   diff?: Map<string, { textconv?: string; cachetextconv?: boolean }>;
   filter?: Map<string, { clean?: string; smudge?: string; process?: string; required?: boolean }>;
   extensions?: { partialClone?: string };
+  commit?: { gpgSign?: boolean };
+  tag?: { gpgSign?: boolean };
+  push?: { gpgSign?: 'true' | 'false' | 'if-asked' };
+  gpg?: MutableGpg;
 }
 
 const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: string): void => {
@@ -1001,6 +1024,7 @@ const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: str
   else if (sec.section === 'merge') mergeMergeDriver(acc, name, sec);
   else if (sec.section === 'diff') mergeDiffDriver(acc, name, sec);
   else if (sec.section === 'filter') mergeFilterDriver(acc, name, sec);
+  else if (sec.section === 'gpg') mergeGpgSsh(acc, name, sec);
 };
 
 const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
@@ -1012,6 +1036,14 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergeUser(acc, sec);
   } else if (sec.section === 'extensions') {
     mergeExtensions(acc, sec);
+  } else if (sec.section === 'commit') {
+    mergeCommit(acc, sec);
+  } else if (sec.section === 'tag') {
+    mergeTag(acc, sec);
+  } else if (sec.section === 'push') {
+    mergePush(acc, sec);
+  } else if (sec.section === 'gpg') {
+    mergeGpg(acc, sec);
   }
 };
 
@@ -1105,7 +1137,10 @@ const mergeCore = (acc: { core?: MutableCore }, sec: IniSection): void => {
 const parseLogAllRefUpdates = (value: string | null): boolean | 'always' =>
   value !== null && value.toLowerCase() === 'always' ? 'always' : parseGitBoolean(value);
 
-const mergeUser = (acc: { user?: { name?: string; email?: string } }, sec: IniSection): void => {
+const mergeUser = (
+  acc: { user?: { name?: string; email?: string; signingKey?: string } },
+  sec: IniSection,
+): void => {
   for (const { key, value } of sec.entries) {
     // String-typed fields skip null (valueless key treated as absent).
     if (value === null) continue;
@@ -1114,6 +1149,8 @@ const mergeUser = (acc: { user?: { name?: string; email?: string } }, sec: IniSe
       acc.user = { ...acc.user, name: value };
     } else if (key === 'email') {
       acc.user = { ...acc.user, email: value };
+    } else if (key.toLowerCase() === 'signingkey') {
+      acc.user = { ...acc.user, signingKey: value };
     }
   }
 };
@@ -1293,6 +1330,66 @@ const mergeExtensions = (
   }
 };
 
+const mergeCommit = (acc: { commit?: { gpgSign?: boolean } }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    if (key.toLowerCase() === 'gpgsign') {
+      acc.commit = { ...acc.commit, gpgSign: parseGitBoolean(value) };
+    }
+  }
+};
+
+const mergeTag = (acc: { tag?: { gpgSign?: boolean } }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    if (key.toLowerCase() === 'gpgsign') {
+      acc.tag = { ...acc.tag, gpgSign: parseGitBoolean(value) };
+    }
+  }
+};
+
+const parsePushGpgSign = (value: string | null): 'true' | 'false' | 'if-asked' =>
+  value !== null && value.toLowerCase() === 'if-asked'
+    ? 'if-asked'
+    : parseGitBoolean(value)
+      ? 'true'
+      : 'false';
+
+const mergePush = (
+  acc: { push?: { gpgSign?: 'true' | 'false' | 'if-asked' } },
+  sec: IniSection,
+): void => {
+  for (const { key, value } of sec.entries) {
+    if (key.toLowerCase() === 'gpgsign') {
+      acc.push = { ...acc.push, gpgSign: parsePushGpgSign(value) };
+    }
+  }
+};
+
+const isGpgFormat = (value: string): value is 'openpgp' | 'ssh' | 'x509' =>
+  value === 'openpgp' || value === 'ssh' || value === 'x509';
+
+const mergeGpg = (acc: { gpg?: MutableGpg }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    if (value === null) continue;
+    const lowered = key.toLowerCase();
+    if (lowered === 'format' && isGpgFormat(value)) {
+      acc.gpg = { ...acc.gpg, format: value };
+    } else if (lowered === 'program') {
+      acc.gpg = { ...acc.gpg, program: value };
+    }
+  }
+};
+
+// `[gpg "ssh"]` is the only recognised `gpg.*` subsection; any other
+// subsection name (not a real git config surface today) is a silent no-op.
+const mergeGpgSsh = (acc: { gpg?: MutableGpg }, name: string, sec: IniSection): void => {
+  if (name !== 'ssh') return;
+  for (const { key, value } of sec.entries) {
+    if (key.toLowerCase() === 'program' && value !== null) {
+      acc.gpg = { ...acc.gpg, ssh: { ...acc.gpg?.ssh, program: value } };
+    }
+  }
+};
+
 /**
  * Finalize the `[core]` section: emit only the keys that were set, or
  * `undefined` when the section was never populated. `mergeCore` is the sole
@@ -1321,6 +1418,10 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
 type FinalizeOut = {
   diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
   filter?: ReadonlyMap<string, FilterEntry>;
+  commit?: { gpgSign?: boolean };
+  tag?: { gpgSign?: boolean };
+  push?: { gpgSign?: 'true' | 'false' | 'if-asked' };
+  gpg?: MutableGpg;
 };
 
 // Extracted to keep `finalize` under the cognitive-complexity ceiling.
@@ -1329,6 +1430,35 @@ const finalizeDriverMaps = (acc: MutableParsedConfig, out: FinalizeOut): void =>
   if (acc.diff !== undefined && acc.diff.size > 0) out.diff = acc.diff;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.filter` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.filter !== undefined && acc.filter.size > 0) out.filter = acc.filter;
+};
+
+/**
+ * Finalize `[user]`: emit only when an identity (both name+email) or a
+ * signingKey was set. A signingKey-only user does NOT count as an identity —
+ * author/committer resolution still requires both name and email.
+ */
+const finalizeUser = (
+  user: { name?: string; email?: string; signingKey?: string } | undefined,
+): ParsedConfig['user'] => {
+  if (user === undefined) return undefined;
+  const hasIdentity = user.name !== undefined && user.email !== undefined;
+  if (!hasIdentity && user.signingKey === undefined) return undefined;
+  return {
+    ...(user.name !== undefined ? { name: user.name } : {}),
+    ...(user.email !== undefined ? { email: user.email } : {}),
+    ...(user.signingKey !== undefined ? { signingKey: user.signingKey } : {}),
+  };
+};
+
+// `mergeCommit`/`mergeTag`/`mergePush`/`mergeGpg`/`mergeGpgSsh` only assign
+// their bucket after observing a recognised key, so a defined value is
+// always non-empty (same invariant as `extensions`). Extracted to keep
+// `finalize` under the cognitive-complexity ceiling.
+const finalizeSigningBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void => {
+  if (acc.commit !== undefined) out.commit = acc.commit;
+  if (acc.tag !== undefined) out.tag = acc.tag;
+  if (acc.push !== undefined) out.push = acc.push;
+  if (acc.gpg !== undefined) out.gpg = acc.gpg;
 };
 
 const finalize = (acc: MutableParsedConfig): ParsedConfig => {
@@ -1343,7 +1473,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       sparseCheckoutCone?: boolean;
       looseCompression?: number;
     };
-    user?: { name: string; email: string };
+    user?: { name?: string; email?: string; signingKey?: string };
     remote?: ReadonlyMap<
       string,
       {
@@ -1363,13 +1493,15 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       { clean?: string; smudge?: string; process?: string; required?: boolean }
     >;
     extensions?: { partialClone?: string };
+    commit?: { gpgSign?: boolean };
+    tag?: { gpgSign?: boolean };
+    push?: { gpgSign?: 'true' | 'false' | 'if-asked' };
+    gpg?: MutableGpg;
   } = {};
   const core = finalizeCore(acc.core);
   if (core !== undefined) out.core = core;
-  // Stryker disable next-line OptionalChaining: equivalent — `&&` short-circuits, so `acc.user?.email` is only read after `acc.user?.name !== undefined` proved `acc.user` is defined.
-  if (acc.user?.name !== undefined && acc.user?.email !== undefined) {
-    out.user = { name: acc.user.name, email: acc.user.email };
-  }
+  const user = finalizeUser(acc.user);
+  if (user !== undefined) out.user = user;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.remote` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.remote !== undefined && acc.remote.size > 0) out.remote = acc.remote;
   // `mergeExtensions` only assigns `acc.extensions` after observing a
@@ -1382,6 +1514,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.merge` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.merge !== undefined && acc.merge.size > 0) out.merge = acc.merge;
   finalizeDriverMaps(acc, out);
+  finalizeSigningBuckets(acc, out);
   return out;
 };
 

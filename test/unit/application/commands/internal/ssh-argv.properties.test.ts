@@ -14,7 +14,11 @@ const hasSh = (): boolean => {
   }
 };
 
-const SH_AVAILABLE = hasSh();
+// Node's Windows exec layer mangles backslash/quote args passed to sh.exe, so the
+// real-POSIX-shell oracle is unreliable there. sqQuote's output is unwrapped by the
+// remote server's POSIX shell regardless of client OS; Windows correctness is covered
+// by the example tests.
+const SH_AVAILABLE = process.platform !== 'win32' && hasSh();
 
 describe.skipIf(!SH_AVAILABLE)('sqQuote properties', () => {
   describe('Given an arbitrary printable-ASCII path (incl. quotes and spaces)', () => {

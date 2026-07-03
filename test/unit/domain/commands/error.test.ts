@@ -58,6 +58,8 @@ import {
   revparseAmbiguous,
   revparseUnresolved,
   sanitize,
+  signedPushUnsupported,
+  signingFailed,
   sparsePatternFileTooLarge,
   stashApplyWouldOverwrite,
   stashNotFound,
@@ -1639,6 +1641,68 @@ describe('domain commands error — extractDetail message formatting', () => {
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'NOTES_REF_OUTSIDE', ref: 'refs/heads/main' });
         expect(result.message).toContain('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given the signingFailed error helper', () => {
+    describe('When called with reason "signer-failed" and a format', () => {
+      it('Then data carries code, reason and format; message names both', () => {
+        // Arrange
+        const sut = signingFailed;
+        // Act
+        const result = sut('signer-failed', 'openpgp');
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'SIGNING_FAILED',
+          reason: 'signer-failed',
+          format: 'openpgp',
+        });
+        expect(result.message).toContain('signer-failed');
+        expect(result.message).toContain('openpgp');
+      });
+    });
+
+    describe('When called with reason "off-node" and no format', () => {
+      it('Then data carries only code and reason — no format key', () => {
+        // Arrange
+        const sut = signingFailed;
+        // Act
+        const result = sut('off-node');
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'SIGNING_FAILED', reason: 'off-node' });
+        expect(result.message).toContain('off-node');
+      });
+    });
+
+    describe('When called with reason "unsupported-format" and format "x509"', () => {
+      it('Then data carries reason "unsupported-format" and format "x509"', () => {
+        // Arrange
+        const sut = signingFailed;
+        // Act
+        const result = sut('unsupported-format', 'x509');
+        // Assert
+        expect(result.data).toEqual({
+          code: 'SIGNING_FAILED',
+          reason: 'unsupported-format',
+          format: 'x509',
+        });
+      });
+    });
+  });
+
+  describe('Given the signedPushUnsupported error helper', () => {
+    describe('When called with a remote name', () => {
+      it('Then data carries code and remote', () => {
+        // Arrange
+        const sut = signedPushUnsupported;
+        // Act
+        const result = sut('origin');
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'SIGNED_PUSH_UNSUPPORTED', remote: 'origin' });
       });
     });
   });

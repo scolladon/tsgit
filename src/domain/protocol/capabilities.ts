@@ -23,6 +23,11 @@ export const CLIENT_CAPABILITIES_PUSH: ReadonlyArray<string> = [
   AGENT,
 ];
 
+// Bare push-cert capability token. Advertised by the client only when a push
+// is being signed, so it is kept out of the default CLIENT_CAPABILITIES_PUSH
+// set and added conditionally by the caller building the wants list.
+export const PUSH_CERT = 'push-cert';
+
 const keyOf = (token: string): string => {
   const eq = token.indexOf('=');
   return eq < 0 ? token : token.slice(0, eq);

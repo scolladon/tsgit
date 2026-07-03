@@ -13,6 +13,7 @@ import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/o
 import { ObjectId as ObjectIdFactory } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
+import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -815,6 +816,177 @@ describe('commit — hooks', () => {
       });
     });
   });
+});
+
+describe('commit — signing', () => {
+  // Signers (gpg, ssh-keygen) terminate their armor block with a trailing
+  // newline; git's own header encoding treats that as the last line's
+  // terminator, not as an extra blank continuation line, so the stored
+  // gpgSignature is the armor with that one trailing newline stripped.
+  const armor = () =>
+    '-----BEGIN PGP SIGNATURE-----\n\nZmFrZXNpZw==\n-----END PGP SIGNATURE-----\n';
+  const signedArmor = () => armor().slice(0, -1);
+
+  const seedSigning = async (
+    command?: ReturnType<typeof stubCommandRunner>,
+    configText?: string,
+  ): Promise<Context> => {
+    const ctx = createMemoryContext(command !== undefined ? { command } : {});
+    await init(ctx);
+    if (configText !== undefined) {
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, configText);
+    }
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    return ctx;
+  };
+
+  const branchRefPath = (ctx: Context): string => `${ctx.layout.gitDir}/refs/heads/main`;
+
+  describe('Given opts.sign is true and the signer succeeds', () => {
+    describe('When commit is called', () => {
+      it('Then the commit object carries the returned armor as gpgSignature', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        const result = await commit(ctx, { message: 'm', author, sign: true });
+
+        // Assert
+        const stored = await readObject(ctx, result.id);
+        if (stored.type !== 'commit') throw new Error('expected a commit object');
+        expect(stored.data.gpgSignature).toBe(signedArmor());
+      });
+    });
+  });
+
+  describe('Given opts.sign is true', () => {
+    describe('When commit signs', () => {
+      it('Then the signer receives the unsigned payload on stdin with no gpgsig header', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        await commit(ctx, { message: 'payload check', author, sign: true });
+
+        // Assert
+        expect(runner.calls).toHaveLength(1);
+        const stdin = new TextDecoder().decode(runner.calls[0]?.stdin);
+        expect(stdin).toContain('payload check');
+        expect(stdin).not.toContain('gpgsig');
+      });
+    });
+  });
+
+  describe('Given commit.gpgsign=true in config and opts.sign is undefined', () => {
+    describe('When commit is called', () => {
+      it('Then it signs — the config default applies', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = true\n');
+
+        // Act
+        const result = await commit(ctx, { message: 'm', author });
+
+        // Assert
+        const stored = await readObject(ctx, result.id);
+        if (stored.type !== 'commit') throw new Error('expected a commit object');
+        expect(stored.data.gpgSignature).toBe(signedArmor());
+      });
+    });
+  });
+
+  describe('Given commit.gpgsign=true in config and opts.sign is explicitly false', () => {
+    describe('When commit is called', () => {
+      it('Then it does not sign — the explicit false overrides the config default', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = true\n');
+
+        // Act
+        const result = await commit(ctx, { message: 'm', author, sign: false });
+
+        // Assert
+        expect(runner.calls).toHaveLength(0);
+        const stored = await readObject(ctx, result.id);
+        if (stored.type !== 'commit') throw new Error('expected a commit object');
+        expect(stored.data.gpgSignature).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given opts.signKey overrides a configured user.signingKey', () => {
+    describe('When commit signs', () => {
+      it('Then the signer invocation uses the override key, not the configured one', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[user]\n\tsigningKey = DEFAULTKEY\n');
+
+        // Act
+        await commit(ctx, { message: 'm', author, sign: true, signKey: 'OVERRIDEKEY' });
+
+        // Assert
+        const invoked = runner.calls[0]?.command ?? '';
+        expect(invoked).toContain('OVERRIDEKEY');
+        expect(invoked).not.toContain('DEFAULTKEY');
+      });
+    });
+  });
+
+  describe('Given the signer exits non-zero', () => {
+    describe('When commit is called with sign: true', () => {
+      it('Then it throws SIGNING_FAILED with reason signer-failed and writes nothing', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ exitCode: 1 });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author, sign: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const error = caught as TsgitError;
+        expect(error.data).toEqual({
+          code: 'SIGNING_FAILED',
+          reason: 'signer-failed',
+          format: 'openpgp',
+        });
+        expect(await ctx.fs.exists(branchRefPath(ctx))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a context with no CommandRunner (off-node)', () => {
+    describe('When commit is called with sign: true', () => {
+      it('Then it throws SIGNING_FAILED with reason off-node and writes nothing', async () => {
+        // Arrange
+        const ctx = await seedSigning(undefined);
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author, sign: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const error = caught as TsgitError;
+        expect(error.data).toEqual({ code: 'SIGNING_FAILED', reason: 'off-node' });
+        expect(await ctx.fs.exists(branchRefPath(ctx))).toBe(false);
+      });
+    });
+  });
+
+  afterEach(() => __resetConfigCacheForTests());
 });
 
 afterEach(() => __resetConfigCacheForTests());

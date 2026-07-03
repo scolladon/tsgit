@@ -10,6 +10,7 @@ import type {
   FilePath,
   GitObject,
   ObjectId,
+  ObjectType,
   RefName,
   Tree,
 } from '../../domain/objects/index.js';
@@ -177,6 +178,16 @@ export interface CreateCommitInput {
   readonly parents: ReadonlyArray<ObjectId>;
   readonly author: AuthorIdentity;
   readonly committer: AuthorIdentity;
+  readonly message: string;
+  readonly gpgSignature?: string;
+  readonly extraHeaders?: ReadonlyArray<ExtraHeader>;
+}
+
+export interface CreateTagInput {
+  readonly object: ObjectId;
+  readonly objectType: ObjectType;
+  readonly tagName: string;
+  readonly tagger: AuthorIdentity;
   readonly message: string;
   readonly gpgSignature?: string;
   readonly extraHeaders?: ReadonlyArray<ExtraHeader>;

@@ -24,6 +24,7 @@ export {
   readConfigSections,
 } from './config-scoped-read.js';
 export { createCommit } from './create-commit.js';
+export { createTag } from './create-tag.js';
 export { diffTrees } from './diff-trees.js';
 export type { EnumerateObjectsOptions } from './enumerate-objects.js';
 export { enumerateObjects } from './enumerate-objects.js';
@@ -72,6 +73,8 @@ export { DEFAULT_NOTES_REF, resolveNotesRef } from './resolve-notes-ref.js';
 export { resolveRef } from './resolve-ref.js';
 export { type HookInput, runHook, runInformationalHook } from './run-hook.js';
 export { readShallow, updateShallow } from './shallow-file.js';
+export type { SignPayloadResult, SignRequest } from './sign-payload.js';
+export { resolveSigningSelector, signPayload } from './sign-payload.js';
 export type { BlobStream, StreamBlobOptions } from './stream-blob.js';
 export { streamBlob } from './stream-blob.js';
 export { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';

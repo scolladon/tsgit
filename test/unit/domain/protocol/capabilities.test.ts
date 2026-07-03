@@ -6,6 +6,7 @@ import {
   CLIENT_CAPABILITIES_PUSH,
   formatCapabilities,
   negotiateCapabilities,
+  PUSH_CERT,
   parseCapabilities,
 } from '../../../../src/domain/protocol/capabilities.js';
 
@@ -93,6 +94,21 @@ describe('parseCapabilities', () => {
 
         // Assert
         expect(sut).toEqual(['agent=git/2.43']);
+      });
+    });
+  });
+
+  describe('Given a tail containing a duplicated push-cert=<nonce> token', () => {
+    describe('When parsed', () => {
+      it("Then the token is preserved and de-dupes under key 'push-cert'", () => {
+        // Arrange
+        const tail = 'push-cert=1700000000-deadbeef push-cert=1700000000-deadbeef side-band-64k';
+
+        // Act
+        const sut = parseCapabilities(tail);
+
+        // Assert
+        expect(sut).toEqual(['push-cert=1700000000-deadbeef', 'side-band-64k']);
       });
     });
   });
@@ -235,6 +251,22 @@ describe('negotiateCapabilities', () => {
       });
     });
   });
+
+  describe('Given client wants a bare push-cert and the server advertises push-cert=<nonce>', () => {
+    describe('When negotiated', () => {
+      it("Then the negotiated set contains the server's push-cert=<nonce> token", () => {
+        // Arrange
+        const server = ['push-cert=1700000000-deadbeef', 'side-band-64k'];
+        const client = [PUSH_CERT, 'side-band-64k'];
+
+        // Act
+        const sut = negotiateCapabilities(server, client);
+
+        // Assert
+        expect(sut).toEqual(['push-cert=1700000000-deadbeef', 'side-band-64k']);
+      });
+    });
+  });
 });
 
 describe('AGENT constant shape', () => {
@@ -296,6 +328,21 @@ describe('CLIENT_CAPABILITIES_PUSH', () => {
       it('Then it includes the AGENT token', () => {
         // Arrange + Assert
         expect(CLIENT_CAPABILITIES_PUSH).toContain(AGENT);
+      });
+      it('Then it does NOT include the push-cert token', () => {
+        // Arrange + Assert — push-cert is conditional, added only when signing
+        expect(CLIENT_CAPABILITIES_PUSH).not.toContain(PUSH_CERT);
+      });
+    });
+  });
+});
+
+describe('PUSH_CERT constant', () => {
+  describe('Given PUSH_CERT', () => {
+    describe('When inspected', () => {
+      it("Then it is the bare token 'push-cert'", () => {
+        // Arrange + Assert
+        expect(PUSH_CERT).toBe('push-cert');
       });
     });
   });

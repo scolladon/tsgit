@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 
+import type { AuthorIdentity } from '../../../../src/domain/objects/author-identity.js';
 import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectType } from '../../../../src/domain/objects/header.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -25,6 +26,56 @@ export function arbFileModeEnum(): fc.Arbitrary<FileMode> {
     FILE_MODE.DIRECTORY,
     FILE_MODE.GITLINK,
   );
+}
+
+export function arbAuthorIdentity(): fc.Arbitrary<AuthorIdentity> {
+  return fc.record({
+    name: fc
+      .string({ maxLength: 20 })
+      .filter((s) => !s.includes('<') && !s.includes('>') && !s.includes('\n')),
+    email: fc
+      .string({ maxLength: 20 })
+      .filter((s) => !s.includes('<') && !s.includes('>') && !s.includes(' ') && !s.includes('\n')),
+    timestamp: fc.integer({ min: 0, max: 9999999999 }),
+    timezoneOffset: fc
+      .tuple(fc.constantFrom('+', '-'), fc.integer({ min: 0, max: 12 }), fc.constantFrom(0, 30))
+      .map(
+        ([sign, h, m]) => `${sign}${h.toString().padStart(2, '0')}${m.toString().padStart(2, '0')}`,
+      ),
+  });
+}
+
+// A ref-safe tag name: non-empty, and free of the bytes that would corrupt
+// the `tag <name>` header line (`\0`) or its line framing (`\n`, ` ` — a
+// space is not itself illegal in a git ref, but keeping names space-free
+// avoids incidental collisions with the header/value split used elsewhere).
+export function arbTagName(): fc.Arbitrary<string> {
+  return fc
+    .string({ minLength: 1, maxLength: 30 })
+    .filter((s) => !s.includes('\0') && !s.includes('\n') && !s.includes(' '));
+}
+
+const ARMOR_BODY_CHARS = [
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  'abcdefghijklmnopqrstuvwxyz',
+  '0123456789+/=',
+].join('');
+
+// A well-formed PGP or SSH armor block, byte-shaped like what `signPayload`
+// returns: a `-----BEGIN ... SIGNATURE-----` / `-----END ... SIGNATURE-----`
+// pair wrapping a base64-alphabet body, terminated by exactly one newline.
+export function arbArmorBlock(): fc.Arbitrary<string> {
+  return fc
+    .tuple(
+      fc.constantFrom('PGP', 'SSH'),
+      fc
+        .array(fc.constantFrom(...ARMOR_BODY_CHARS.split('')), { minLength: 1, maxLength: 40 })
+        .map((chars) => chars.join('')),
+    )
+    .map(
+      ([kind, body]) =>
+        `-----BEGIN ${kind} SIGNATURE-----\n\n${body}\n-----END ${kind} SIGNATURE-----\n`,
+    );
 }
 
 // A single raw line: arbitrary ASCII body (may be empty -> a blank line, may

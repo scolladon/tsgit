@@ -15,7 +15,7 @@ import {
   decode,
   encode,
   formatContinuationHeader,
-  parseOptionalHeaderBlock,
+  parseHeaderLine,
   splitHeaderAndMessage,
 } from './encoding.js';
 import { invalidTag } from './error.js';
@@ -41,12 +41,31 @@ export interface Tag {
 
 const VALID_OBJECT_TYPES: ReadonlySet<string> = new Set(['blob', 'tree', 'commit', 'tag']);
 
+// A tag's signature is appended to the message body, not carried as a
+// `gpgsig` header (unlike commits) — this peels a trailing armor block off
+// the raw message. The trailing `\n?` tolerates the signer's armor already
+// ending in a newline without swallowing a second one.
+const TAG_SIGNATURE_PATTERN =
+  /-----BEGIN (?:PGP|SSH) SIGNATURE-----[\s\S]*-----END (?:PGP|SSH) SIGNATURE-----\n?$/;
+
+function peelTagSignature(rawMessage: string): {
+  readonly message: string;
+  readonly gpgSignature: string | undefined;
+} {
+  const match = TAG_SIGNATURE_PATTERN.exec(rawMessage);
+  if (match === null) {
+    return { message: rawMessage, gpgSignature: undefined };
+  }
+  return { message: rawMessage.slice(0, match.index), gpgSignature: match[0] };
+}
+
 export function parseTagContent(id: ObjectId, content: Uint8Array): Tag {
-  const { headerPart, message } = splitHeaderAndMessage(decode(content));
+  const { headerPart, message: rawMessage } = splitHeaderAndMessage(decode(content));
   const lines = headerPart.split('\n');
   const { object, objectType, tagName, nextIndex: requiredEnd } = parseRequiredTagFields(lines);
   const { tagger, nextIndex } = parseTaggerField(lines, requiredEnd);
-  const { gpgSignature, extraHeaders } = parseTagOptionalHeaders(lines, nextIndex);
+  const { extraHeaders } = parseTagOptionalHeaders(lines, nextIndex);
+  const { message, gpgSignature } = peelTagSignature(rawMessage);
 
   return {
     type: 'tag',
@@ -106,23 +125,32 @@ function parseTaggerField(
   return { tagger: undefined, nextIndex: startIndex };
 }
 
+// Tags have no `gpgsig` header to special-case (the signature lives in the
+// body — see `peelTagSignature`), so this walks continuation lines directly
+// rather than sharing commit's `parseOptionalHeaderBlock`.
 function parseTagOptionalHeaders(
   lines: ReadonlyArray<string>,
   startIndex: number,
-): {
-  readonly gpgSignature: string | undefined;
-  readonly extraHeaders: ReadonlyArray<ExtraHeader>;
-} {
-  return parseOptionalHeaderBlock(
-    lines,
-    startIndex,
-    (msg) => {
-      throw invalidTag(msg);
-    },
-    (msg) => {
-      throw invalidTag(msg);
-    },
-  );
+): { readonly extraHeaders: ReadonlyArray<ExtraHeader> } {
+  const extraHeaders: ExtraHeader[] = [];
+  let i = startIndex;
+  while (i < lines.length) {
+    const { key, value: firstValue } = parseHeaderLine(lines[i]!);
+    if (key === '') {
+      throw invalidTag('unexpected continuation line without preceding header');
+    }
+    const parts: string[] = [firstValue];
+    let endIndex = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      const nextLine = lines[j]!;
+      if (!nextLine.startsWith(' ')) break;
+      parts.push(nextLine.slice(1));
+      endIndex = j;
+    }
+    i = endIndex + 1;
+    extraHeaders.push({ key, value: parts.join('\n') });
+  }
+  return { extraHeaders };
 }
 
 export function serializeTagContent(tag: Tag): Uint8Array {
@@ -140,14 +168,15 @@ export function serializeTagContent(tag: Tag): Uint8Array {
     lines.push(`tagger ${serializeIdentity(data.tagger)}`);
   }
 
-  if (data.gpgSignature !== undefined) {
-    lines.push(formatContinuationHeader('gpgsig', data.gpgSignature));
-  }
-
   for (const header of data.extraHeaders) {
     lines.push(formatContinuationHeader(header.key, header.value));
   }
 
   const headerText = lines.join('\n');
-  return encode(`${headerText}\n\n${data.message}`);
+  // A tag's signature is appended straight onto the message body (unlike a
+  // commit's `gpgsig` header) — real `git tag -s` concatenates the signer's
+  // armor byte-for-byte with no separator and no header wrapping.
+  const body =
+    data.gpgSignature !== undefined ? `${data.message}${data.gpgSignature}` : data.message;
+  return encode(`${headerText}\n\n${body}`);
 }

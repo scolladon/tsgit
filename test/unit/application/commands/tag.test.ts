@@ -1,13 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { tagCreate, tagDelete, tagList } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -23,6 +26,17 @@ const seedWithCommit = async () => {
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
   return { ctx, commitId: c.id };
+};
+
+/** A repository with a commit AND a configured `[user]` — the tagger source for annotated tags. */
+const seedWithConfiguredUser = async () => {
+  const seeded = await seedWithCommit();
+  await seeded.ctx.fs.writeUtf8(
+    `${seeded.ctx.layout.gitDir}/config`,
+    '[user]\n  name = Grace\n  email = grace@example.com\n',
+  );
+  __resetConfigCacheForTests();
+  return seeded;
 };
 
 describe('tag', () => {
@@ -339,6 +353,308 @@ describe('tag', () => {
 
         // Assert — the plain Error is rethrown as-is, never dereferenced for `.data.code`.
         expect(caught).toBe(renameFailure);
+      });
+    });
+  });
+
+  describe('Given a configured user, annotate true, and a message', () => {
+    describe('When tag create', () => {
+      it('Then refs/tags/<name> points at a written tag object, not the commit', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithConfiguredUser();
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
+
+        // Assert
+        expect(sut.id).not.toBe(commitId);
+        const obj = await readObject(ctx, sut.id);
+        expect(obj.type).toBe('tag');
+      });
+    });
+  });
+
+  describe('Given a configured user and a message, with annotate left unset', () => {
+    describe('When tag create', () => {
+      it('Then it is annotated — message implies -a', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithConfiguredUser();
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
+
+        // Assert
+        expect(sut.id).not.toBe(commitId);
+        const obj = await readObject(ctx, sut.id);
+        expect(obj.type).toBe('tag');
+      });
+    });
+  });
+
+  describe('Given neither annotate nor message', () => {
+    describe('When tag create', () => {
+      it('Then it stays lightweight — the ref points at the target OID with no tag object written', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0' });
+
+        // Assert
+        expect(sut.id).toBe(commitId);
+        const obj = await readObject(ctx, sut.id);
+        expect(obj.type).toBe('commit');
+      });
+    });
+  });
+
+  describe('Given annotate true but no configured user', () => {
+    describe('When tag create', () => {
+      it('Then it throws the author-unconfigured refusal', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('AUTHOR_UNCONFIGURED');
+      });
+    });
+  });
+
+  describe('Given an existing tag and a configured user', () => {
+    describe('When annotated tag create without force', () => {
+      it('Then it throws TAG_EXISTS', async () => {
+        // Arrange
+        const { ctx } = await seedWithConfiguredUser();
+        await tagCreate(ctx, { name: 'v1.0' });
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('TAG_EXISTS');
+      });
+    });
+  });
+});
+
+describe('tag — signing', () => {
+  const armor = () =>
+    '-----BEGIN PGP SIGNATURE-----\n\nZmFrZXNpZw==\n-----END PGP SIGNATURE-----\n';
+
+  /** A repository with a commit and a configured `[user]` (the tagger source), plus optional extra config. */
+  const seedSigning = async (
+    command?: ReturnType<typeof stubCommandRunner>,
+    configText?: string,
+  ): Promise<Context> => {
+    const ctx = createMemoryContext(command !== undefined ? { command } : {});
+    await init(ctx);
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[user]\n  name = Grace\n  email = grace@example.com\n${configText ?? ''}`,
+    );
+    __resetConfigCacheForTests();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'first', author });
+    return ctx;
+  };
+
+  const tagRefPath = (ctx: Context, name: string): string =>
+    `${ctx.layout.gitDir}/refs/tags/${name}`;
+
+  afterEach(() => __resetConfigCacheForTests());
+
+  describe('Given opts.sign is true and the signer succeeds', () => {
+    describe('When tag create with a message', () => {
+      it('Then the tag body ends with the returned armor unmodified — no trailing-newline trim (unlike commits)', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: true });
+
+        // Assert
+        const stored = await readObject(ctx, sut.id);
+        if (stored.type !== 'tag') throw new Error('expected a tag object');
+        expect(stored.data.gpgSignature).toBe(armor());
+      });
+    });
+  });
+
+  describe('Given opts.sign is true with no message or annotate', () => {
+    describe('When tag create', () => {
+      it('Then it still creates a signed annotated tag object — sign implies annotate', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', sign: true });
+
+        // Assert
+        const stored = await readObject(ctx, sut.id);
+        expect(stored.type).toBe('tag');
+        if (stored.type !== 'tag') throw new Error('expected a tag object');
+        expect(stored.data.gpgSignature).toBe(armor());
+      });
+    });
+  });
+
+  describe('Given opts.sign is true', () => {
+    describe('When tag create signs', () => {
+      it('Then the signer receives the unsigned tag payload on stdin with no gpgsig header', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        await tagCreate(ctx, { name: 'v1.0', message: 'payload check', sign: true });
+
+        // Assert
+        expect(runner.calls).toHaveLength(1);
+        const stdin = new TextDecoder().decode(runner.calls[0]?.stdin);
+        expect(stdin).toContain('payload check');
+        expect(stdin).not.toContain('gpgsig');
+      });
+    });
+  });
+
+  describe('Given tag.gpgSign=true in config and opts.sign is undefined', () => {
+    describe('When tag create with a message', () => {
+      it('Then it signs — the config default applies', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
+
+        // Assert
+        const stored = await readObject(ctx, sut.id);
+        if (stored.type !== 'tag') throw new Error('expected a tag object');
+        expect(stored.data.gpgSignature).toBe(armor());
+      });
+    });
+  });
+
+  describe('Given tag.gpgSign=true in config and opts.sign is explicitly false', () => {
+    describe('When tag create with a message', () => {
+      it('Then it does not sign — the explicit false overrides the config default', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: false });
+
+        // Assert
+        expect(runner.calls).toHaveLength(0);
+        const stored = await readObject(ctx, sut.id);
+        if (stored.type !== 'tag') throw new Error('expected a tag object');
+        expect(stored.data.gpgSignature).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given tag.gpgSign=true in config but neither annotate, message, nor sign is requested', () => {
+    describe('When tag create', () => {
+      it('Then the tag stays lightweight and unsigned — tag.gpgSign only signs an already-annotated tag', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0' });
+
+        // Assert
+        expect(runner.calls).toHaveLength(0);
+        const stored = await readObject(ctx, sut.id);
+        expect(stored.type).toBe('commit');
+      });
+    });
+  });
+
+  describe('Given opts.signKey overrides a configured user.signingKey', () => {
+    describe('When tag create signs', () => {
+      it('Then the signer invocation uses the override key, not the configured one', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[user]\n  signingKey = DEFAULTKEY\n');
+
+        // Act
+        await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: true, signKey: 'OVERRIDEKEY' });
+
+        // Assert
+        const invoked = runner.calls[0]?.command ?? '';
+        expect(invoked).toContain('OVERRIDEKEY');
+        expect(invoked).not.toContain('DEFAULTKEY');
+      });
+    });
+  });
+
+  describe('Given the signer exits non-zero', () => {
+    describe('When tag create is called with sign: true', () => {
+      it('Then it throws SIGNING_FAILED with reason signer-failed and writes no ref', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ exitCode: 1 });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const error = caught as TsgitError;
+        expect(error.data).toEqual({
+          code: 'SIGNING_FAILED',
+          reason: 'signer-failed',
+          format: 'openpgp',
+        });
+        expect(await ctx.fs.exists(tagRefPath(ctx, 'v1.0'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a context with no CommandRunner (off-node)', () => {
+    describe('When tag create is called with sign: true', () => {
+      it('Then it throws SIGNING_FAILED with reason off-node and writes no ref', async () => {
+        // Arrange
+        const ctx = await seedSigning(undefined);
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const error = caught as TsgitError;
+        expect(error.data).toEqual({ code: 'SIGNING_FAILED', reason: 'off-node' });
+        expect(await ctx.fs.exists(tagRefPath(ctx, 'v1.0'))).toBe(false);
       });
     });
   });

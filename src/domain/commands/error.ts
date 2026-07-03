@@ -238,7 +238,13 @@ export type CommandError =
     }
   | { readonly code: 'NOTES_ALREADY_EXIST'; readonly object: ObjectId }
   | { readonly code: 'NOTES_OBJECT_HAS_NONE'; readonly object: ObjectId }
-  | { readonly code: 'NOTES_REF_OUTSIDE'; readonly ref: string };
+  | { readonly code: 'NOTES_REF_OUTSIDE'; readonly ref: string }
+  | {
+      readonly code: 'SIGNING_FAILED';
+      readonly reason: 'off-node' | 'unsupported-format' | 'signer-failed';
+      readonly format?: 'openpgp' | 'ssh' | 'x509';
+    }
+  | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -728,3 +734,22 @@ export const notesObjectHasNone = (object: ObjectId): TsgitError =>
 // `fatal: refusing to <subcommand> notes in <ref> (outside of refs/notes/)`.
 export const notesRefOutside = (ref: string): TsgitError =>
   new TsgitError({ code: 'NOTES_REF_OUTSIDE', ref });
+
+// Signing refusal: the signer produced no usable signature (off-node — no
+// CommandRunner; unsupported-format — x509; signer-failed — non-zero exit or
+// no well-formed armor on stdout). Nothing is written when this is thrown.
+export const signingFailed = (
+  reason: 'off-node' | 'unsupported-format' | 'signer-failed',
+  format?: 'openpgp' | 'ssh' | 'x509',
+): TsgitError =>
+  new TsgitError(
+    format === undefined
+      ? { code: 'SIGNING_FAILED', reason }
+      : { code: 'SIGNING_FAILED', reason, format },
+  );
+
+// Refusal: `--signed` (mode 'yes') was requested but the receiving end's
+// capability advertisement carries no `push-cert` token. Thrown before any
+// signing attempt or wire exchange — the push is aborted, nothing is sent.
+export const signedPushUnsupported = (remote: string): TsgitError =>
+  new TsgitError({ code: 'SIGNED_PUSH_UNSUPPORTED', remote });

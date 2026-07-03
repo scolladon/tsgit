@@ -7,14 +7,17 @@ import { resolveCommitter } from './commit-message.js';
 /**
  * The current identity (config `user.name`/`user.email` + the current time),
  * used as author and/or committer by the commands that create commits without an
- * explicit identity. Falls back to `resolveCommitter`'s default when `[user]` is unset.
+ * explicit identity. Falls back to `resolveCommitter`'s default when `[user]` is unset
+ * or only partially configured — a signingKey-only `[user]` is not an identity.
  */
 export const resolveCurrentIdentity = async (ctx: Context): Promise<AuthorIdentity> => {
   const config = await readConfig(ctx);
   const user = config.user;
-  if (user === undefined) await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']); // equivalent-mutant: when user !== undefined both name and email are valued (readConfig only sets user when both are non-null), so the guard is always a no-op for that branch
+  if (user?.name === undefined || user?.email === undefined) {
+    await assertNoValuelessConfig(ctx, 'user', undefined, ['name', 'email']);
+  }
   const configUser =
-    user !== undefined
+    user?.name !== undefined && user?.email !== undefined
       ? {
           name: user.name,
           email: user.email,

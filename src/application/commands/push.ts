@@ -18,15 +18,19 @@ import {
   nonFastForward,
   pushRejected,
   sanitize,
+  signedPushUnsupported,
 } from '../../domain/commands/error.js';
 import { remoteNotConfigured } from '../../domain/index.js';
 import { ObjectId, type RefName } from '../../domain/objects/index.js';
 import {
   type AdvertisedRef,
   type Advertisement,
+  buildPushCertPayload,
   buildReceivePackRequest,
+  buildSignedReceivePackRequest,
   decodePktStream,
   type PktLine,
+  PUSH_CERT,
   parseReceivePackResponse,
   parseSideBand,
   type RefStatus,
@@ -40,12 +44,16 @@ import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
+import { resolveSigningSelector } from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
+import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
+import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
 export interface PushOptions {
   readonly remote?: string;
@@ -54,6 +62,12 @@ export interface PushOptions {
   readonly forceWithLease?: ObjectId | 'auto';
   /** Skip the `pre-push` hook (git's `--no-verify`). */
   readonly noVerify?: boolean;
+  /**
+   * GPG-sign the push certificate (git's `--signed`). `'yes'` refuses when
+   * the receiving end doesn't advertise `push-cert`; `'if-asked'` falls back
+   * to an unsigned push in that case. Falls back to `push.gpgSign` when unset.
+   */
+  readonly signed?: 'yes' | 'no' | 'if-asked';
 }
 
 export interface PushedRef {
@@ -119,7 +133,7 @@ const negotiateAndSend = async (
     return { remote: remoteName, url, pushedRefs: [] };
   }
   await runPrePushHook(ctx, opts.noVerify ?? false, remoteName, url, movers);
-  const pushedRefs = await sendUpdates(ctx, session, adv, movers, remoteName);
+  const pushedRefs = await sendUpdates(ctx, session, adv, movers, remoteName, opts, url);
   return { remote: remoteName, url, pushedRefs };
 };
 
@@ -299,7 +313,12 @@ const sendUpdates = async (
   adv: Advertisement,
   movers: ReadonlyArray<ResolvedRefspec>,
   remoteName: string,
+  opts: PushOptions,
+  url: string,
 ): Promise<ReadonlyArray<PushedRef>> => {
+  const mode = await resolveSignedPushMode(ctx, opts);
+  const nonce = parsePushCertNonce(adv.capabilities);
+  const intent = resolveSigningIntent(mode, nonce, remoteName);
   const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
   // ZERO_OID-advertised refs (ref-creation sentinels) are kept verbatim in
   // `haves`: they only ever land in `walkCommits`'s `until` set, which does
@@ -308,12 +327,14 @@ const sendUpdates = async (
   const haves = adv.refs.map((r) => r.id);
   const oids = await collectObjects(ctx, wants, haves);
   const pack = await buildPack(ctx, { oids });
-  const capabilities = selectPushCapabilities(adv.capabilities);
-  const requestBody = buildReceivePackRequest({
-    updates: movers.map(toRefUpdate),
-    capabilities,
-    packfile: pack.bytes,
-  });
+  const capabilities = selectPushCapabilities(adv.capabilities, intent.signing);
+  const requestBody = intent.signing
+    ? await buildSignedRequestBody(ctx, capabilities, movers, pack.bytes, url, intent.nonce)
+    : buildReceivePackRequest({
+        updates: movers.map(toRefUpdate),
+        capabilities,
+        packfile: pack.bytes,
+      });
   const pktSource = await exchangeReceivePack(ctx, session, requestBody);
   const parsed = await parseReceiveResponse(ctx, pktSource, capabilities);
   if (!parsed.unpackOk) {
@@ -326,6 +347,79 @@ const sendUpdates = async (
   }
   const pushedRefs = await applyReportStatus(ctx, movers, parsed.refUpdates, remoteName);
   return pushedRefs;
+};
+
+type SignedPushMode = 'yes' | 'no' | 'if-asked';
+
+/** `opts.signed` wins; otherwise falls back to `push.gpgSign` (default `'no'`). */
+const resolveSignedPushMode = async (ctx: Context, opts: PushOptions): Promise<SignedPushMode> => {
+  if (opts.signed !== undefined) return opts.signed;
+  const config = await readConfig(ctx);
+  const configured = config.push?.gpgSign;
+  if (configured === 'if-asked') return 'if-asked';
+  if (configured === 'true') return 'yes';
+  return 'no';
+};
+
+/** The nonce half of the server's `push-cert=<nonce>` advertisement, when present. */
+const parsePushCertNonce = (capabilities: ReadonlyArray<string>): string | undefined =>
+  capabilities.find((c) => c.startsWith(`${PUSH_CERT}=`))?.slice(PUSH_CERT.length + 1);
+
+type SigningIntent =
+  | { readonly signing: false }
+  | { readonly signing: true; readonly nonce: string };
+
+/**
+ * P.3 refusal / if-asked table: `'yes'` without a server nonce refuses
+ * outright (nothing is sent); `'if-asked'` without a nonce silently falls
+ * back to an unsigned push; either mode with a nonce signs.
+ */
+const resolveSigningIntent = (
+  mode: SignedPushMode,
+  nonce: string | undefined,
+  remoteName: string,
+): SigningIntent => {
+  if (mode === 'yes' && nonce === undefined) throw signedPushUnsupported(remoteName);
+  if (nonce === undefined || mode === 'no') return { signing: false };
+  return { signing: true, nonce };
+};
+
+/**
+ * Build the P.1 certificate envelope: resolve the pusher identity/selector
+ * (same ident-fallback rule as commit/tag `-u`), sign the P.2 raw payload,
+ * and frame it with the armor and the nonce-stripped opener capabilities.
+ */
+const buildSignedRequestBody = async (
+  ctx: Context,
+  negotiatedCapabilities: ReadonlyArray<string>,
+  movers: ReadonlyArray<ResolvedRefspec>,
+  packfile: Uint8Array,
+  url: string,
+  nonce: string,
+): Promise<Uint8Array> => {
+  const config = await readConfig(ctx);
+  const identity = await resolveCurrentIdentity(ctx);
+  const pusherSelector = resolveSigningSelector({
+    ...(config.user?.signingKey !== undefined ? { signingKey: config.user.signingKey } : {}),
+    fallbackIdent: `${identity.name} <${identity.email}>`,
+  });
+  const pusher = `${pusherSelector} ${identity.timestamp} ${identity.timezoneOffset}`;
+  const pushee = anonymizeRemoteUrl(url);
+  const updates = movers.map(toRefUpdate);
+  const payload = buildPushCertPayload({ pusher, pushee, nonce, updates });
+  const armor = await signOrThrow(ctx, payload, resolveSignRequest(config, identity, undefined));
+  const capabilities = negotiatedCapabilities.filter(
+    (c) => c !== PUSH_CERT && !c.startsWith(`${PUSH_CERT}=`),
+  );
+  return buildSignedReceivePackRequest({
+    updates,
+    capabilities,
+    armor,
+    pusher,
+    pushee,
+    nonce,
+    packfile,
+  });
 };
 
 const collectObjects = async (

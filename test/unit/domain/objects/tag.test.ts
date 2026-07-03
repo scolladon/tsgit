@@ -88,10 +88,10 @@ describe('tag', () => {
       });
     });
 
-    describe('Given a tag with gpgsig header', () => {
+    describe('Given a tag with a gpgsig-keyed header line (legacy header position, not body-appended)', () => {
       describe('When parsing', () => {
-        it('Then gpgSignature extracted, excluded from extraHeaders', () => {
-          // Arrange
+        it('Then it is captured as an ordinary extra header and gpgSignature stays undefined', () => {
+          // Arrange — tags carry no gpgsig header: a stray one is just data
           const content = tagText([
             `object ${'b'.repeat(40)}`,
             'type commit',
@@ -108,8 +108,13 @@ describe('tag', () => {
           const sut = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toContain('sig-data');
-          expect(sut.data.extraHeaders.some((h) => h.key === 'gpgsig')).toBe(false);
+          expect(sut.data.gpgSignature).toBeUndefined();
+          expect(sut.data.extraHeaders).toEqual([
+            {
+              key: 'gpgsig',
+              value: '-----BEGIN PGP SIGNATURE-----\nsig-data\n-----END PGP SIGNATURE-----',
+            },
+          ]);
         });
       });
     });
@@ -445,9 +450,9 @@ describe('tag', () => {
       });
     });
 
-    describe('Given tag with duplicate gpgsig header', () => {
+    describe('Given a tag with two gpgsig-keyed header lines', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_TAG with duplicate gpgsig header reason', () => {
+        it('Then both are kept as separate extra headers — tags apply no special-case dedup for gpgsig', () => {
           // Arrange
           const content = tagText([
             `object ${'b'.repeat(40)}`,
@@ -460,15 +465,14 @@ describe('tag', () => {
             'msg',
           ]);
 
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'duplicate gpgsig header',
-              }),
-            }),
-          );
+          // Act
+          const sut = parseTagContent(DUMMY_ID, content);
+
+          // Assert
+          expect(sut.data.extraHeaders).toEqual([
+            { key: 'gpgsig', value: 'first-sig' },
+            { key: 'gpgsig', value: 'second-sig' },
+          ]);
         });
       });
     });
@@ -751,6 +755,129 @@ describe('tag', () => {
 
           // Assert
           expect(sut.data).toEqual(tag.data);
+        });
+      });
+    });
+  });
+
+  describe('signed tag (body-append)', () => {
+    describe('Given a TagData with a PGP armor gpgSignature', () => {
+      describe('When serializeTagContent', () => {
+        it('Then the armor is appended after the message body with no gpgsig header, ending the object with -----END PGP SIGNATURE-----\\n', () => {
+          // Arrange
+          const tag: Tag = {
+            type: 'tag',
+            id: DUMMY_ID,
+            data: {
+              object: OBJ_ID,
+              objectType: 'commit',
+              tagName: 'v1.0',
+              tagger: { name: 'A', email: 'a@a.com', timestamp: 0, timezoneOffset: '+0000' },
+              message: 'Release v1.0\n',
+              gpgSignature:
+                '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n',
+              extraHeaders: [],
+            },
+          };
+
+          // Act
+          const sut = new TextDecoder().decode(serializeTagContent(tag));
+
+          // Assert
+          expect(sut).not.toContain('gpgsig');
+          expect(sut).toContain('Release v1.0\n-----BEGIN PGP SIGNATURE-----');
+          expect(sut.endsWith('-----END PGP SIGNATURE-----\n')).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a serialized signed tag', () => {
+      describe('When parseTagContent', () => {
+        it('Then gpgSignature is the peeled armor and the message excludes it', () => {
+          // Arrange
+          const armor = '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n';
+          const tag: Tag = {
+            type: 'tag',
+            id: DUMMY_ID,
+            data: {
+              object: OBJ_ID,
+              objectType: 'commit',
+              tagName: 'v1.0',
+              tagger: { name: 'A', email: 'a@a.com', timestamp: 0, timezoneOffset: '+0000' },
+              message: 'Release v1.0\n',
+              gpgSignature: armor,
+              extraHeaders: [],
+            },
+          };
+          const bytes = serializeTagContent(tag);
+
+          // Act
+          const sut = parseTagContent(DUMMY_ID, bytes);
+
+          // Assert
+          expect(sut.data.gpgSignature).toBe(armor);
+          expect(sut.data.message).toBe('Release v1.0\n');
+        });
+      });
+    });
+
+    describe('Given a serialized signed tag with an SSH armor', () => {
+      describe('When serializing then parsing', () => {
+        it('Then the SSH armor is appended and peeled identically to a PGP armor', () => {
+          // Arrange
+          const armor =
+            '-----BEGIN SSH SIGNATURE-----\n\nc3NoZmFrZQ==\n-----END SSH SIGNATURE-----\n';
+          const tag: Tag = {
+            type: 'tag',
+            id: DUMMY_ID,
+            data: {
+              object: OBJ_ID,
+              objectType: 'commit',
+              tagName: 'v1.0',
+              tagger: { name: 'A', email: 'a@a.com', timestamp: 0, timezoneOffset: '+0000' },
+              message: 'Release v1.0\n',
+              gpgSignature: armor,
+              extraHeaders: [],
+            },
+          };
+
+          // Act
+          const bytes = serializeTagContent(tag);
+          const sut = parseTagContent(DUMMY_ID, bytes);
+
+          // Assert
+          expect(new TextDecoder().decode(bytes).endsWith('-----END SSH SIGNATURE-----\n')).toBe(
+            true,
+          );
+          expect(sut.data.gpgSignature).toBe(armor);
+        });
+      });
+    });
+
+    describe('Given an unsigned annotated tag', () => {
+      describe('When serializing then parsing', () => {
+        it('Then there is no signature and the message is intact', () => {
+          // Arrange
+          const tag: Tag = {
+            type: 'tag',
+            id: DUMMY_ID,
+            data: {
+              object: OBJ_ID,
+              objectType: 'commit',
+              tagName: 'v1.0',
+              tagger: { name: 'A', email: 'a@a.com', timestamp: 0, timezoneOffset: '+0000' },
+              message: 'Release v1.0\n',
+              extraHeaders: [],
+            },
+          };
+
+          // Act
+          const bytes = serializeTagContent(tag);
+          const sut = parseTagContent(DUMMY_ID, bytes);
+
+          // Assert
+          expect(sut.data.gpgSignature).toBeUndefined();
+          expect(sut.data.message).toBe('Release v1.0\n');
         });
       });
     });
