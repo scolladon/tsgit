@@ -89,7 +89,11 @@ const expectedAdvertisement = (
   }
   if (head.kind === 'symref') {
     const targetId = findRefId(refs, head.target);
-    return { capabilities: [], refs: baseRefs, head: { name: 'HEAD', id: targetId } };
+    return {
+      capabilities: [`symref=HEAD:${head.target}`],
+      refs: baseRefs,
+      head: { name: 'HEAD', id: targetId },
+    };
   }
   return { capabilities: [], refs: baseRefs };
 };

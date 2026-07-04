@@ -107,5 +107,6 @@ export const parseLsRefsResponse = async (
   }
 
   const head = findLsRefsHead(refs, headSymrefTarget);
-  return head === undefined ? { capabilities: [], refs } : { capabilities: [], refs, head };
+  const capabilities = headSymrefTarget === undefined ? [] : [`symref=HEAD:${headSymrefTarget}`];
+  return head === undefined ? { capabilities, refs } : { capabilities, refs, head };
 };

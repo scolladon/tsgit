@@ -113,6 +113,20 @@ describe('parseLsRefsResponse', () => {
           id: OID1,
         });
       });
+
+      it('Then capabilities carries the synthesized symref=HEAD:<target> entry', async () => {
+        // Arrange
+        const stream = responseBody([
+          `${OID2} HEAD symref-target:refs/heads/main\n`,
+          `${OID1} refs/heads/main\n`,
+        ]);
+
+        // Act
+        const sut = await parseLsRefsResponse(stream);
+
+        // Assert
+        expect(sut.capabilities).toEqual(['symref=HEAD:refs/heads/main']);
+      });
     });
   });
 
@@ -215,6 +229,20 @@ describe('parseLsRefsResponse', () => {
         expect(sut.head).toBeUndefined();
         expect(sut.refs).toEqual([]);
       });
+
+      it('Then capabilities still carries the synthesized symref=HEAD:<target> entry (v1-ghost parity)', async () => {
+        // Arrange — mirrors v1's own broken-symref ("ghost") behaviour: the
+        // target branch not existing yet leaves `head` unresolved, but the
+        // capability that names the tracked branch is advertised regardless,
+        // so a client can still create the correctly-named local branch.
+        const stream = responseBody(['unborn HEAD symref-target:refs/heads/main\n']);
+
+        // Act
+        const sut = await parseLsRefsResponse(stream);
+
+        // Assert
+        expect(sut.capabilities).toEqual(['symref=HEAD:refs/heads/main']);
+      });
     });
   });
 
@@ -233,6 +261,17 @@ describe('parseLsRefsResponse', () => {
           { name: 'HEAD', id: OID3 },
           { name: 'refs/heads/main', id: OID1 },
         ]);
+      });
+
+      it('Then capabilities stays empty', async () => {
+        // Arrange
+        const stream = responseBody([`${OID3} HEAD\n`, `${OID1} refs/heads/main\n`]);
+
+        // Act
+        const sut = await parseLsRefsResponse(stream);
+
+        // Assert
+        expect(sut.capabilities).toEqual([]);
       });
     });
   });

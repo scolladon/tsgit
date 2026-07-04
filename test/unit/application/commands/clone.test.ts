@@ -104,8 +104,17 @@ const buildV2AdvertisementBytes = (): Uint8Array => {
   return concatUint8(header, capabilities);
 };
 
-const buildLsRefsResponseBytes = (refs: ReadonlyArray<{ name: string; id: string }>): Uint8Array =>
-  encodePktStream(refs.map((r) => ENCODER.encode(`${r.id} ${r.name}\n`)));
+const buildLsRefsResponseBytes = (
+  refs: ReadonlyArray<{ name: string; id: string }>,
+  head: string,
+): Uint8Array => {
+  const headId = refs.find((r) => r.name === head)?.id;
+  if (headId === undefined) {
+    throw new Error(`fixture invariant violated: ${head} is not among the generated refs`);
+  }
+  const headLine = ENCODER.encode(`${headId} HEAD symref-target:${head}\n`);
+  return encodePktStream([headLine, ...refs.map((r) => ENCODER.encode(`${r.id} ${r.name}\n`))]);
+};
 
 const buildV2PackResponseBytes = (packBytes: Uint8Array): Uint8Array => {
   const channel1 = new Uint8Array(packBytes.length + 1);
@@ -116,6 +125,7 @@ const buildV2PackResponseBytes = (packBytes: Uint8Array): Uint8Array => {
 
 interface CloneFixtureV2Options {
   readonly refs: ReadonlyArray<{ readonly name: string; readonly id: string }>;
+  readonly head: string;
   readonly packBytes: Uint8Array;
 }
 
@@ -129,7 +139,7 @@ const buildCloneRemoteV2 = (
 ): { transport: HttpTransport; requests: HttpRequest[] } => {
   const requests: HttpRequest[] = [];
   const advertisement = buildV2AdvertisementBytes();
-  const lsRefsResponse = buildLsRefsResponseBytes(opts.refs);
+  const lsRefsResponse = buildLsRefsResponseBytes(opts.refs, opts.head);
   const packResponse = buildV2PackResponseBytes(opts.packBytes);
   const transport: HttpTransport = {
     request: async (req: HttpRequest): Promise<HttpResponse> => {
@@ -297,15 +307,16 @@ describe('clone', () => {
 
   describe('Given a v2-capable remote advertising one branch', () => {
     describe('When clone', () => {
-      it('Then it negotiates via ls-refs + v2 fetch and writes the fetched ref', async () => {
-        // Arrange — v2's ls-refs response never surfaces a `symref=HEAD:...`
-        // capability (`parseLsRefsResponse` always returns `capabilities: []`),
-        // so unlike the v1 happy path, HEAD falls back to detached rather than
-        // resolving `refs/heads/main`.
+      it('Then it negotiates via ls-refs + v2 fetch and checks out the tracked branch', async () => {
+        // Arrange — the remote's ls-refs response carries HEAD's
+        // symref-target; parseLsRefsResponse surfaces it as a
+        // `symref=HEAD:...` capability, so v2 clone tracks the branch exactly
+        // like the v1 happy path instead of leaving HEAD detached.
         const ctx = createMemoryContext();
         const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 clone\n');
         const { transport, requests } = buildCloneRemoteV2({
           refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
           packBytes,
         });
         const networkCtx = withTransport(ctx, transport);
@@ -314,9 +325,15 @@ describe('clone', () => {
         const sut = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert
+        expect(sut.head).toBe('refs/heads/main');
+        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
         expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
-        const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
+        const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+        expect(headFile).toBe('ref: refs/heads/main\n');
+        const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
         expect(mainRef.trim()).toBe(blobId);
+        const remoteRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
+        expect(remoteRef.trim()).toBe(blobId);
         const requestBodies = requests
           .filter((r) => r.method === 'POST')
           .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
