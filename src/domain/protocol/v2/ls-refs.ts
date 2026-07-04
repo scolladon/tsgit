@@ -44,12 +44,26 @@ interface ParsedRefLine {
 
 const parseRefLine = (line: string): ParsedRefLine => {
   const spaceIdx = line.indexOf(' ');
+  // equivalent-mutant: widening this guard to `spaceIdx <= 0` only changes
+  // behaviour when spaceIdx === 0 (a leading space). That always makes
+  // `oidToken` the empty string (`line.slice(0, 0)`), which `validateOidString`
+  // below rejects unconditionally — so both branches throw the identical
+  // `invalidRefLine(line)`, just from a different call site.
   if (spaceIdx < 0) throw invalidRefLine(line);
   const oidToken = line.slice(0, spaceIdx);
   const rest = line.slice(spaceIdx + 1);
   const nameEndIdx = rest.indexOf(' ');
   const name = nameEndIdx === -1 ? rest : rest.slice(0, nameEndIdx);
   if (name.length === 0) throw invalidRefLine(line);
+  // equivalent-mutants:
+  // - replacing the `[]` (nameEndIdx === -1) arm with any other fixed
+  //   placeholder string still can never start with SYMREF_TARGET_PREFIX or
+  //   PEELED_PREFIX, so findAttribute never matches it — same as [].
+  // - shifting the slice start from `nameEndIdx + 1` to `nameEndIdx - 1`
+  //   (nameEndIdx !== -1 arm) only prepends `rest[nameEndIdx - 1]`, a single
+  //   character (the name's own last char) before the same trailing split —
+  //   too short to ever satisfy `.startsWith()` on either multi-char prefix,
+  //   so it never perturbs the real attrs that follow.
   const attrs = nameEndIdx === -1 ? [] : rest.slice(nameEndIdx + 1).split(' ');
 
   const symrefTarget = findAttribute(attrs, SYMREF_TARGET_PREFIX);
@@ -78,6 +92,10 @@ const findLsRefsHead = (
 ): AdvertisedRef | undefined => {
   const directHead = refs.find((ref) => ref.name === 'HEAD');
   if (directHead) return directHead;
+  // equivalent-mutant: `AdvertisedRef.name` is typed `string` (never
+  // `undefined`), so when headSymrefTarget is undefined the `.find()` below
+  // can never match any ref either way — removing this guard yields the
+  // identical `undefined` result, just via one extra no-op array scan.
   if (headSymrefTarget === undefined) return undefined;
   const targetRef = refs.find((ref) => ref.name === headSymrefTarget);
   return targetRef === undefined ? undefined : { name: 'HEAD', id: targetRef.id };

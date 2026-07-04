@@ -171,6 +171,70 @@ describe('parseLsRefsResponse', () => {
     });
   });
 
+  describe('Given an oid token with garbage before an otherwise-valid 40-hex suffix', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE — the oid check must anchor at the start', async () => {
+        // Arrange — an unanchored start would let the oid regex find a valid
+        // 40-hex run starting after the "zz" prefix instead of rejecting the
+        // token outright.
+        const line = `zz${'3'.repeat(40)} refs/heads/main`;
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+      });
+    });
+  });
+
+  describe('Given an oid token with a 40-hex prefix followed by trailing garbage', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE — the oid check must anchor at the end', async () => {
+        // Arrange — an unanchored end would let the oid regex stop matching
+        // after the first 40 hex chars instead of rejecting the trailing
+        // garbage.
+        const line = `${'3'.repeat(40)}zz refs/heads/main`;
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+      });
+    });
+  });
+
+  describe('Given an oid token that is a valid 64-hex SHA-256-style id', () => {
+    describe('When parsed', () => {
+      it('Then it is accepted — the optional 24-hex-char suffix group must allow 64-char oids', async () => {
+        // Arrange
+        const oid64 = '3'.repeat(64);
+        const stream = responseBody([`${oid64} refs/heads/main\n`]);
+
+        // Act
+        const sut = await parseLsRefsResponse(stream);
+
+        // Assert
+        expect(sut.refs).toEqual([{ name: 'refs/heads/main', id: OID.from(oid64) }]);
+      });
+    });
+  });
+
   describe('Given an ls-refs response line with no space separator', () => {
     describe('When parsed', () => {
       it('Then it throws INVALID_REF_LINE carrying the line', async () => {
@@ -188,6 +252,30 @@ describe('parseLsRefsResponse', () => {
         // Assert
         expect(sut).toBeInstanceOf(TsgitError);
         expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line: 'garbage' });
+      });
+    });
+  });
+
+  describe('Given a ref line with no space separator whose implied name-slice still looks like a valid oid', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE via the missing-space guard rather than accepting a corrupted parse', async () => {
+        // Arrange — 41 hex chars, no space at all. The first 40 chars alone
+        // would pass the oid check, so only the `spaceIdx < 0` guard (not
+        // later oid validation) can catch this malformed line.
+        const line = '1'.repeat(41);
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
       });
     });
   });
@@ -322,6 +410,41 @@ describe('parseLsRefsResponse', () => {
         // Assert
         expect(sut.refs).toEqual([{ name: 'refs/heads/main', id: OID1 }]);
         expect(sut.head).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a ref name that itself begins with the symref-target prefix and carries no attrs', () => {
+    describe('When parsed', () => {
+      it('Then the ref is still added — the bare name is never treated as its own attribute', async () => {
+        // Arrange — there is no space after the name, so the attrs slice
+        // must stay []; re-including the name itself would let it match its
+        // own "symref-target:" prefix and get silently dropped instead.
+        const stream = responseBody([`${OID1} symref-target:sneaky\n`]);
+
+        // Act
+        const sut = await parseLsRefsResponse(stream);
+
+        // Assert
+        expect(sut.refs).toEqual([{ name: 'symref-target:sneaky', id: OID1 }]);
+      });
+    });
+  });
+
+  describe('Given a ref name that begins with the symref-target prefix and carries a genuine trailing peeled attribute', () => {
+    describe('When parsed', () => {
+      it('Then the trailing attrs are sliced away from the name — the peeled oid is captured, not a bogus symref-target', async () => {
+        // Arrange — there is a genuine attrs section this time. Dropping the
+        // slice that removes the name from the attrs list would re-include
+        // the name, letting its own "symref-target:" prefix match first and
+        // swallow the ref before the real peeled attribute is even read.
+        const stream = responseBody([`${OID1} symref-target:sneaky peeled:${OID2}\n`]);
+
+        // Act
+        const sut = await parseLsRefsResponse(stream);
+
+        // Assert
+        expect(sut.refs).toEqual([{ name: 'symref-target:sneaky', id: OID1, peeled: OID2 }]);
       });
     });
   });
