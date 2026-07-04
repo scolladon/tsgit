@@ -11,7 +11,13 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { openGitSession } from '../../../../../src/application/commands/internal/git-service-session.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/index.js';
-import { encodePktStream, type PktLine } from '../../../../../src/domain/protocol/pkt-line.js';
+import {
+  DELIM_PKT,
+  encodePktLine,
+  encodePktStream,
+  FLUSH_PKT,
+  type PktLine,
+} from '../../../../../src/domain/protocol/pkt-line.js';
 import type {
   HttpRequest,
   HttpResponse,
@@ -315,6 +321,35 @@ describe('GitServiceSession.exchange (http)', () => {
         expect(requests[0]?.headers.accept).toBe('application/x-git-upload-pack-result');
         expect(requests[0]?.body).toBe(requestBytes);
         expect(pkts.filter((p) => p.kind === 'data')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a v2 fetch response body with a section-delim pkt-line', () => {
+    describe('When exchange() runs', () => {
+      it('Then it decodes the delim pkt-line instead of throwing a reserved-length error', async () => {
+        // Arrange — a real v2 `fetch` response separates named sections
+        // (e.g. `wanted-refs` / `packfile`) with the reserved length `0001`.
+        // Decoding this response without the `{ v2: true }` pkt-line option
+        // would reject that reserved length instead of yielding `kind: 'delim'`.
+        const body = new Uint8Array([
+          ...encodePktLine(ENCODER.encode('wanted-refs\n')),
+          ...DELIM_PKT,
+          ...encodePktLine(ENCODER.encode('packfile\n')),
+          ...FLUSH_PKT,
+        ]);
+        const { transport } = fakeTransport(200, body);
+        const sut = openGitSession(
+          contextWith(transport),
+          'https://example.com/repo.git',
+          'git-upload-pack',
+        );
+
+        // Act
+        const pkts = await collect(await sut.exchange(ENCODER.encode('0000')));
+
+        // Assert
+        expect(pkts.map((p) => p.kind)).toEqual(['data', 'delim', 'data', 'flush']);
       });
     });
   });
