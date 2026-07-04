@@ -83,7 +83,10 @@ export {
   parseUploadPackResponse,
 } from './upload-pack.js';
 export {
+  buildLsRefsRequest,
   encodeCommandRequest,
+  type LsRefsRequestOptions,
+  parseLsRefsResponse,
   parseV2Capabilities,
   readSections,
   type Section,
