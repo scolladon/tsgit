@@ -29,7 +29,7 @@ import {
   supportsV2Fetch,
   v2CommandUnsupported,
 } from '../../../domain/protocol/index.js';
-import { consumeServiceHeader } from '../../../domain/protocol/upload-pack.js';
+import { consumeServiceHeaderFlush } from '../../../domain/protocol/upload-pack.js';
 import type { Context } from '../../../ports/context.js';
 import {
   drainPackBodyBounded,
@@ -84,16 +84,27 @@ const withPushback = (
 
 /**
  * Discover refs, dispatching on whichever version the server actually
- * replied with. HTTP sessions carry the `# service=...` prologue ahead of
- * the capability/ref lines (`session.servicePrologue`); SSH sessions do not.
+ * replied with. HTTP v1 sessions carry the `# service=...` prologue ahead of
+ * the ref lines; HTTP v2 sessions do not — the response starts directly with
+ * `version 2\n`. SSH sessions never carry it either way. Since whether the
+ * prologue is present can only be known by looking at the wire, the first
+ * line is always peeked before deciding to consume it as a service header.
  */
+const resolveFirstDiscoveryLine = async (
+  iter: AsyncIterator<PktLine>,
+  peeked: IteratorResult<PktLine>,
+  servicePrologue: boolean,
+): Promise<IteratorResult<PktLine>> => {
+  if (!servicePrologue || isVersion2Line(peeked)) return peeked;
+  await consumeServiceHeaderFlush(iter, peeked, 'git-upload-pack');
+  return iter.next();
+};
+
 export const negotiateDiscovery = async (session: GitServiceSession): Promise<DiscoveryResult> => {
   const pktStream = await session.advertisement();
   const iter = pktStream[Symbol.asyncIterator]();
-  if (session.servicePrologue) {
-    await consumeServiceHeader(iter, 'git-upload-pack');
-  }
-  const first = await iter.next();
+  const peeked = await iter.next();
+  const first = await resolveFirstDiscoveryLine(iter, peeked, session.servicePrologue);
   if (!isVersion2Line(first)) {
     const advertisement = await parseAdvertisedRefs(withPushback(iter, first), 'git-upload-pack', {
       servicePrologue: false,

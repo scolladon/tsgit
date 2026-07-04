@@ -142,11 +142,17 @@ const findHead = (
   return { name: 'HEAD', id: targetRef.id };
 };
 
-export const consumeServiceHeader = async (
-  iter: AsyncIterator<PktLine>,
+/**
+ * Validates an already-read pkt-line as the `# service=<expectedService>`
+ * header, returning the matched service name. Split out from
+ * `consumeServiceHeader` so callers that must peek the first line before
+ * deciding whether a service prologue is even present (HTTP protocol v2
+ * responses omit it) can validate that peeked line without re-reading it.
+ */
+const validateServiceHeaderLine = (
+  first: IteratorResult<PktLine>,
   expectedService: Service,
-): Promise<void> => {
-  const first = await iter.next();
+): string => {
   if (first.done || first.value.kind !== 'data') {
     throw missingServiceHeader(expectedService, '');
   }
@@ -161,10 +167,31 @@ export const consumeServiceHeader = async (
   if (actual !== expectedService) {
     throw missingServiceHeader(expectedService, actual);
   }
+  return actual;
+};
+
+/**
+ * Validates an already-read pkt-line as the service header and consumes the
+ * flush that must immediately follow it.
+ */
+export const consumeServiceHeaderFlush = async (
+  iter: AsyncIterator<PktLine>,
+  first: IteratorResult<PktLine>,
+  expectedService: Service,
+): Promise<void> => {
+  const actual = validateServiceHeaderLine(first, expectedService);
   const sep = await iter.next();
   if (sep.done || sep.value.kind !== 'flush') {
     throw missingServiceHeader(expectedService, actual);
   }
+};
+
+export const consumeServiceHeader = async (
+  iter: AsyncIterator<PktLine>,
+  expectedService: Service,
+): Promise<void> => {
+  const first = await iter.next();
+  await consumeServiceHeaderFlush(iter, first, expectedService);
 };
 
 interface RefAccumulator {

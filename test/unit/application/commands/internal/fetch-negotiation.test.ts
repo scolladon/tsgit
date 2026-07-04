@@ -132,6 +132,27 @@ describe('negotiateDiscovery', () => {
     });
   });
 
+  describe('Given an HTTP advertisement with no service prologue ahead of a version-2 capability list', () => {
+    describe('When negotiateDiscovery runs', () => {
+      it('Then it treats the version line as the first line without requiring a service header', async () => {
+        // Arrange — real git-http-backend omits the `# service=...` prologue
+        // entirely for protocol-v2 responses (only v1 HTTP responses carry
+        // it); a session that unconditionally expects the prologue would
+        // misread `version 2` as a malformed service header and throw.
+        const discoveryBody = concatBytes(...v2CapabilityLines(), FLUSH);
+        const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
+        const session = stubSession({ discoveryBody, servicePrologue: true, exchangeResponse });
+
+        // Act
+        const sut = await negotiateDiscovery(session);
+
+        // Assert
+        expect(sut.version).toBe(2);
+        expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+      });
+    });
+  });
+
   describe('Given an advertisement whose first data line is a v1 ref line', () => {
     describe('When negotiateDiscovery runs', () => {
       it('Then it returns version 1 without any exchange', async () => {
