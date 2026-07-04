@@ -74,36 +74,45 @@ export const parseV2Capabilities = async (
   pktStream: AsyncIterable<PktLine>,
 ): Promise<V2Capabilities> => {
   const iter = pktStream[Symbol.asyncIterator]();
-  const first = await readLine(iter);
-  if (first !== VERSION_LINE) {
-    throw v2CommandUnsupported(first ?? '');
+  try {
+    const first = await readLine(iter);
+    if (first !== VERSION_LINE) {
+      throw v2CommandUnsupported(first ?? '');
+    }
+
+    const state: CapabilityState = {
+      commands: new Set<string>(),
+      fetchFeatures: new Set<string>(),
+      agent: undefined,
+      objectFormat: DEFAULT_OBJECT_FORMAT,
+    };
+
+    for (let line = await readLine(iter); line !== undefined; line = await readLine(iter)) {
+      applyCapabilityLine(state, line);
+    }
+
+    return state.agent === undefined
+      ? {
+          version: 2,
+          commands: state.commands,
+          fetchFeatures: state.fetchFeatures,
+          objectFormat: state.objectFormat,
+        }
+      : {
+          version: 2,
+          agent: state.agent,
+          commands: state.commands,
+          fetchFeatures: state.fetchFeatures,
+          objectFormat: state.objectFormat,
+        };
+  } finally {
+    // The raw `iter.next()` loop above does not engage the for-await runtime
+    // hook, so an exception (or an early `return` from the caller) would
+    // leave an upstream ReadableStream reader locked. Calling `iter.return`
+    // propagates the release through `withPushback` into the HTTP session's
+    // reader, mirroring `parseAdvertisedRefs`'s v1 cleanup.
+    await iter.return?.();
   }
-
-  const state: CapabilityState = {
-    commands: new Set<string>(),
-    fetchFeatures: new Set<string>(),
-    agent: undefined,
-    objectFormat: DEFAULT_OBJECT_FORMAT,
-  };
-
-  for (let line = await readLine(iter); line !== undefined; line = await readLine(iter)) {
-    applyCapabilityLine(state, line);
-  }
-
-  return state.agent === undefined
-    ? {
-        version: 2,
-        commands: state.commands,
-        fetchFeatures: state.fetchFeatures,
-        objectFormat: state.objectFormat,
-      }
-    : {
-        version: 2,
-        agent: state.agent,
-        commands: state.commands,
-        fetchFeatures: state.fetchFeatures,
-        objectFormat: state.objectFormat,
-      };
 };
 
 export const supportsV2Fetch = (caps: V2Capabilities): boolean =>

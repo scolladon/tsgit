@@ -101,24 +101,31 @@ export const parseLsRefsResponse = async (
   pktStream: AsyncIterable<PktLine>,
 ): Promise<Advertisement> => {
   const iter = pktStream[Symbol.asyncIterator]();
-  const refs: AdvertisedRef[] = [];
-  let headSymrefTarget: string | undefined;
+  try {
+    const refs: AdvertisedRef[] = [];
+    let headSymrefTarget: string | undefined;
 
-  let pkt = await iter.next();
-  while (!pkt.done) {
-    if (pkt.value.kind !== 'data') break;
-    const line = stripTrailingNewline(TEXT_DECODER.decode(pkt.value.payload));
-    const parsed = parseRefLine(line);
+    let pkt = await iter.next();
+    while (!pkt.done) {
+      if (pkt.value.kind !== 'data') break;
+      const line = stripTrailingNewline(TEXT_DECODER.decode(pkt.value.payload));
+      const parsed = parseRefLine(line);
 
-    if (parsed.symrefTarget !== undefined) {
-      if (parsed.name === 'HEAD') headSymrefTarget = parsed.symrefTarget;
-    } else {
-      pushAdvertisedRef(refs, parsed, line);
+      if (parsed.symrefTarget !== undefined) {
+        if (parsed.name === 'HEAD') headSymrefTarget = parsed.symrefTarget;
+      } else {
+        pushAdvertisedRef(refs, parsed, line);
+      }
+      pkt = await iter.next();
     }
-    pkt = await iter.next();
-  }
 
-  const head = findLsRefsHead(refs, headSymrefTarget);
-  const capabilities = headSymrefTarget === undefined ? [] : [`symref=HEAD:${headSymrefTarget}`];
-  return head === undefined ? { capabilities, refs } : { capabilities, refs, head };
+    const head = findLsRefsHead(refs, headSymrefTarget);
+    const capabilities = headSymrefTarget === undefined ? [] : [`symref=HEAD:${headSymrefTarget}`];
+    return head === undefined ? { capabilities, refs } : { capabilities, refs, head };
+  } finally {
+    // Mirrors `parseAdvertisedRefs`'s (v1 upload-pack.ts) cleanup: the raw
+    // `iter.next()` loop bypasses the for-await runtime hook, so a thrown
+    // parse error would otherwise leave the HTTP response reader locked.
+    await iter.return?.();
+  }
 };

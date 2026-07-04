@@ -95,6 +95,30 @@ const baseInput: FetchPackInput = {
   progressOp: 'test:write-objects',
 };
 
+/**
+ * Wraps a decoded pkt-line stream so its iterator's `return()` is a spy that
+ * still delegates to the real iterator — proving a consumer released the
+ * stream without breaking whatever cleanup the stream itself performs.
+ */
+const withReturnSpy = (
+  stream: AsyncIterable<PktLine>,
+): { readonly stream: AsyncIterable<PktLine>; readonly returnSpy: ReturnType<typeof vi.fn> } => {
+  const inner = stream[Symbol.asyncIterator]();
+  const returnSpy = vi.fn(
+    async (value?: unknown): Promise<IteratorResult<PktLine>> =>
+      (await inner.return?.(value)) ?? { done: true, value: undefined },
+  );
+  return {
+    stream: {
+      [Symbol.asyncIterator]: (): AsyncIterator<PktLine> => ({
+        next: () => inner.next(),
+        return: returnSpy,
+      }),
+    },
+    returnSpy,
+  };
+};
+
 describe('negotiateDiscovery', () => {
   describe('Given an advertisement whose first data line is "version 2"', () => {
     describe('When negotiateDiscovery runs', () => {
@@ -248,6 +272,31 @@ describe('negotiateDiscovery', () => {
         // Assert
         expect(sut.version).toBe(1);
         expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+      });
+    });
+  });
+
+  describe('Given a version-2 discovery whose discovery and exchange streams expose a return spy', () => {
+    describe('When negotiateDiscovery runs', () => {
+      it('Then it releases both the discovery iterator and the ls-refs exchange iterator', async () => {
+        // Arrange
+        const discoveryBody = concatBytes(...v2CapabilityLines(), FLUSH);
+        const exchangeResponseBytes = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
+        const discovery = withReturnSpy(await responseStream(discoveryBody));
+        const exchange = withReturnSpy(await responseStream(exchangeResponseBytes));
+        const session: GitServiceSession = {
+          advertisement: () => Promise.resolve(discovery.stream),
+          exchange: vi.fn(async () => exchange.stream),
+          close: () => Promise.resolve(),
+          servicePrologue: false,
+        };
+
+        // Act
+        await negotiateDiscovery(session);
+
+        // Assert
+        expect(discovery.returnSpy).toHaveBeenCalledTimes(1);
+        expect(exchange.returnSpy).toHaveBeenCalledTimes(1);
       });
     });
   });
