@@ -157,7 +157,11 @@ const negotiateV2PackBytes = async (
     done: true,
   });
   const pktSource = await session.exchange(requestBody);
-  const parsed = await parseV2FetchResponse(pktSource);
+  const parsed = await parseV2FetchResponse(pktSource, {
+    // Sanitize sideband-2 text BEFORE it crosses the ProgressReporter port —
+    // see negotiateV1PackBytes's onProgress for the full rationale.
+    onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, sanitize(text)),
+  });
   const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
   return { packBytes, shallow: parsed.shallow, unshallow: parsed.unshallow };
 };

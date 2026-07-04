@@ -18,6 +18,7 @@ import type { FetchPackInput } from '../../../../../src/application/primitives/f
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/object-id.js';
 import { decodePktStream, type PktLine } from '../../../../../src/domain/protocol/pkt-line.js';
+import { recordingProgress, withProgress } from '../fixtures.js';
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
@@ -379,6 +380,34 @@ describe('negotiatePackBytes', () => {
         // Assert
         expect(await decodeRequest(session)).toContain('command=fetch');
         expect(DECODER.decode(sut.packBytes)).toBe('PACK-DATA');
+      });
+    });
+  });
+
+  describe('Given a version-2 packfile section carrying channel-2 progress text', () => {
+    describe('When negotiatePackBytes dispatches', () => {
+      it('Then it reports the sanitized progress text through ctx.progress', async () => {
+        // Arrange
+        const { reporter, events } = recordingProgress();
+        const ctx = withProgress(createMemoryContext(), reporter);
+        const exchangeResponse = concatBytes(
+          pktBytes('packfile\n'),
+          pktBytes('\x02Counting objects: 5, done.\n'),
+          pktBytes('\x01PACK-DATA'),
+          FLUSH,
+        );
+        const session = stubSession({ discoveryBody: FLUSH, exchangeResponse });
+
+        // Act
+        await negotiatePackBytes(ctx, session, 2, baseInput);
+
+        // Assert
+        const textUpdates = events.filter(
+          (e): e is { kind: 'update'; op: string; current: number; text?: string } =>
+            e.kind === 'update' && typeof e.text === 'string' && e.text.length > 0,
+        );
+        expect(textUpdates).toHaveLength(1);
+        expect(textUpdates[0]?.text).toBe('Counting objects: 5, done.\n');
       });
     });
   });

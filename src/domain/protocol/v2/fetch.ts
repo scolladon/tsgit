@@ -1,7 +1,7 @@
 import { ObjectId } from '../../objects/object-id.js';
 import { tooManySectionEntries } from '../error.js';
 import type { PktLine } from '../pkt-line.js';
-import { parseSideBand } from '../side-band.js';
+import { parseSideBand, type SideBandOptions } from '../side-band.js';
 import {
   type AckEntry,
   MAX_ADVERTISED_REFS,
@@ -140,8 +140,13 @@ const parseWantedRefs = async (
 
 async function* emptyPackBody(): AsyncGenerator<Uint8Array, void, unknown> {}
 
+export interface V2FetchResponseOptions {
+  readonly onProgress?: (text: string) => void;
+}
+
 export const parseV2FetchResponse = async (
   pktStream: AsyncIterable<PktLine>,
+  options: V2FetchResponseOptions = {},
 ): Promise<V2FetchResponse> => {
   let acks: ReadonlyArray<AckEntry> = [];
   let nak = false;
@@ -169,7 +174,8 @@ export const parseV2FetchResponse = async (
       wantedRefs = await parseWantedRefs(boundedLines(section.name, section.lines));
       continue;
     }
-    packBody = parseSideBand(section.lines, {});
+    const sbOptions: SideBandOptions = options.onProgress ? { onProgress: options.onProgress } : {};
+    packBody = parseSideBand(section.lines, sbOptions);
   }
 
   return { acks, nak, ready, packBody, shallow, unshallow, wantedRefs };
