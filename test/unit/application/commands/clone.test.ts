@@ -88,22 +88,35 @@ const concatUint8 = (...parts: ReadonlyArray<Uint8Array>): Uint8Array => {
   return out;
 };
 
+/**
+ * Real `git-http-backend` v2 responses start directly with `version 2\n` —
+ * unlike v1, there is no `# service=...` prologue on the wire. See
+ * `buildV2AdvertisementWithPrologueBytes` below for the non-default fixture
+ * that still carries one, used to pin the client's peek-past-prologue path.
+ */
 const buildV2AdvertisementBytes = (opts: { readonly filter?: boolean } = {}): Uint8Array => {
-  // Smart-HTTP still sends the `# service=...` prologue ahead of the v2
-  // capability list — negotiateDiscovery consumes it before peeking. Built
-  // directly (rather than via `buildDiscoveryBody`) so there is exactly one
-  // flush between the prologue and the capability list, not two.
-  const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
   const fetchLine = opts.filter === true ? 'fetch=shallow wait-for-done filter\n' : 'fetch\n';
-  const capabilities = encodePktStream([
+  return encodePktStream([
     ENCODER.encode('version 2\n'),
     ENCODER.encode('agent=git/test\n'),
     ENCODER.encode('object-format=sha1\n'),
     ENCODER.encode('ls-refs\n'),
     ENCODER.encode(fetchLine),
   ]);
-  return concatUint8(header, capabilities);
 };
+
+/**
+ * Some smart-HTTP servers still prepend the legacy `# service=...` prologue
+ * ahead of a v2 capability list; negotiateDiscovery must peek past it rather
+ * than assume every v2 response is prologue-free.
+ */
+const buildV2AdvertisementWithPrologueBytes = (
+  opts: { readonly filter?: boolean } = {},
+): Uint8Array =>
+  concatUint8(
+    encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]),
+    buildV2AdvertisementBytes(opts),
+  );
 
 const buildLsRefsResponseBytes = (
   refs: ReadonlyArray<{ name: string; id: string }>,
@@ -130,6 +143,8 @@ interface CloneFixtureV2Options {
   readonly packBytes: Uint8Array;
   /** When true, the v2 `fetch` command advertises the `filter` sub-feature. */
   readonly filter?: boolean;
+  /** When true, the `info/refs` response still carries the `# service=...` prologue. */
+  readonly prologue?: boolean;
 }
 
 /**
@@ -141,9 +156,11 @@ const buildCloneRemoteV2 = (
   opts: CloneFixtureV2Options,
 ): { transport: HttpTransport; requests: HttpRequest[] } => {
   const requests: HttpRequest[] = [];
-  const advertisement = buildV2AdvertisementBytes(
-    opts.filter === undefined ? {} : { filter: opts.filter },
-  );
+  const filterOpts = opts.filter === undefined ? {} : { filter: opts.filter };
+  const advertisement =
+    opts.prologue === true
+      ? buildV2AdvertisementWithPrologueBytes(filterOpts)
+      : buildV2AdvertisementBytes(filterOpts);
   const lsRefsResponse = buildLsRefsResponseBytes(opts.refs, opts.head);
   const packResponse = buildV2PackResponseBytes(opts.packBytes);
   const transport: HttpTransport = {
@@ -344,6 +361,35 @@ describe('clone', () => {
           .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
         expect(requestBodies.some((b) => b.includes('command=ls-refs'))).toBe(true);
         expect(requestBodies.some((b) => b.includes('command=fetch'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a v2-capable remote whose info/refs response still carries the smart-HTTP service prologue', () => {
+    describe('When clone', () => {
+      it('Then it negotiates via ls-refs + v2 fetch and checks out the tracked branch', async () => {
+        // Arrange — some smart-HTTP servers keep sending the legacy
+        // `# service=...` line ahead of the v2 capability list; negotiateDiscovery
+        // must peek past it rather than assume every v2 response is prologue-free.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(
+          ctx,
+          'v2 clone with prologue\n',
+        );
+        const { transport } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+          prologue: true,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(sut.head).toBe('refs/heads/main');
+        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
       });
     });
   });

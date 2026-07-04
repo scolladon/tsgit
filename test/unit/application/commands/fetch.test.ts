@@ -128,18 +128,33 @@ const fakeRemote = (
 
 const DECODER = new TextDecoder();
 
+/**
+ * Real `git-http-backend` v2 responses start directly with `version 2\n` —
+ * unlike v1, there is no `# service=...` prologue on the wire. See
+ * `buildV2AdvertisementWithPrologueBytes` below for the non-default fixture
+ * that still carries one, used to pin the client's peek-past-prologue path.
+ */
 const buildV2AdvertisementBytes = (opts: { readonly filter?: boolean } = {}): Uint8Array => {
-  // Smart-HTTP still sends the `# service=...` prologue ahead of the v2
-  // capability list — negotiateDiscovery consumes it before peeking.
-  const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
   const fetchLine = opts.filter === true ? 'fetch=shallow wait-for-done filter\n' : 'fetch\n';
-  const capabilities = encodePktStream([
+  return encodePktStream([
     ENCODER.encode('version 2\n'),
     ENCODER.encode('agent=git/test\n'),
     ENCODER.encode('object-format=sha1\n'),
     ENCODER.encode('ls-refs\n'),
     ENCODER.encode(fetchLine),
   ]);
+};
+
+/**
+ * Some smart-HTTP servers still prepend the legacy `# service=...` prologue
+ * ahead of a v2 capability list; negotiateDiscovery must peek past it rather
+ * than assume every v2 response is prologue-free.
+ */
+const buildV2AdvertisementWithPrologueBytes = (
+  opts: { readonly filter?: boolean } = {},
+): Uint8Array => {
+  const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
+  const capabilities = buildV2AdvertisementBytes(opts);
   const out = new Uint8Array(header.length + capabilities.length);
   out.set(header, 0);
   out.set(capabilities, header.length);
@@ -161,6 +176,8 @@ interface FakeRemoteV2Opts {
   readonly packBytes: Uint8Array;
   /** When true, the v2 `fetch` command advertises the `filter` sub-feature. */
   readonly filter?: boolean;
+  /** When true, the `info/refs` response still carries the `# service=...` prologue. */
+  readonly prologue?: boolean;
 }
 
 /**
@@ -172,9 +189,11 @@ const fakeRemoteV2 = (
   opts: FakeRemoteV2Opts,
 ): { transport: HttpTransport; requests: HttpRequest[] } => {
   const requests: HttpRequest[] = [];
-  const advertisement = buildV2AdvertisementBytes(
-    opts.filter === undefined ? {} : { filter: opts.filter },
-  );
+  const filterOpts = opts.filter === undefined ? {} : { filter: opts.filter };
+  const advertisement =
+    opts.prologue === true
+      ? buildV2AdvertisementWithPrologueBytes(filterOpts)
+      : buildV2AdvertisementBytes(filterOpts);
   const lsRefsResponse = buildLsRefsResponseBytes(opts.advertisedRefs);
   const packResponse = buildV2PackResponseBytes(opts.packBytes);
   const transport: HttpTransport = {
@@ -434,6 +453,32 @@ describe('fetch', () => {
             .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
           expect(requestBodies.some((b) => b.includes('command=ls-refs'))).toBe(true);
           expect(requestBodies.some((b) => b.includes('command=fetch'))).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a v2-capable origin whose info/refs response still carries the smart-HTTP service prologue', () => {
+      describe('When fetch', () => {
+        it('Then it negotiates via ls-refs + v2 fetch and updates the remote-tracking ref', async () => {
+          // Arrange — some smart-HTTP servers keep sending the legacy
+          // `# service=...` line ahead of the v2 capability list; negotiateDiscovery
+          // must peek past it rather than assume every v2 response is prologue-free.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 fetch with prologue\n');
+          const { transport } = fakeRemoteV2({
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+            prologue: true,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          expect(updated?.newId).toBe(blobId);
         });
       });
     });
