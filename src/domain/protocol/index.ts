@@ -36,6 +36,7 @@ export {
   DELIM_PKT,
   decodePktStream,
   encodePktLine,
+  encodePktLines,
   encodePktStream,
   FLUSH_PKT,
   type GitExchange,

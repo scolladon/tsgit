@@ -13,6 +13,7 @@ import {
 } from '../../../../../src/application/commands/internal/upload-pack-client.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/index.js';
+import { AGENT } from '../../../../../src/domain/protocol/capabilities.js';
 import {
   decodePktStream,
   encodePktStream,
@@ -78,16 +79,36 @@ describe('selectFetchCapabilities', () => {
   describe('Given the server advertises %s', () => {
     describe('When selectFetchCapabilities runs', () => {
       it.each([
-        ['multi_ack_detailed'],
         ['thin-pack'],
         ['no-progress'],
       ] as const)('Then it is NOT included in the result', async (cap) => {
-        // Arrange & Act — kills each of the four `c !== '<cap>'` mutants
-        // inside the filter on line 68.
+        // Arrange & Act — kills each of the `c !== '<cap>'` mutants inside
+        // the filter predicate.
         const sut = selectFetchCapabilities([cap, 'side-band-64k']);
 
         // Assert
         expect(sut).not.toContain(cap);
+      });
+    });
+  });
+
+  describe('Given the server advertises multi_ack_detailed', () => {
+    describe('When selecting fetch capabilities', () => {
+      it('Then multi_ack_detailed is retained', async () => {
+        // Arrange & Act
+        const sut = selectFetchCapabilities([
+          'multi_ack_detailed',
+          'side-band-64k',
+          'ofs-delta',
+          'thin-pack',
+        ]);
+
+        // Assert — retained (single-round strategy tolerates ACK ... common),
+        // while thin-pack/no-progress stay filtered and AGENT is appended last.
+        expect(sut).toContain('multi_ack_detailed');
+        expect(sut).not.toContain('thin-pack');
+        expect(sut).not.toContain('no-progress');
+        expect(sut[sut.length - 1]).toBe(AGENT);
       });
     });
   });

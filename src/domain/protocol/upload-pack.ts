@@ -10,7 +10,7 @@ import {
   tooManyAdvertisedRefs,
   unknownAckStatus,
 } from './error.js';
-import { encodePktLine, encodePktStream, type PktLine } from './pkt-line.js';
+import { encodePktLine, encodePktLines, encodePktStream, type PktLine } from './pkt-line.js';
 import { parseSideBand } from './side-band.js';
 
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: false });
@@ -280,6 +280,20 @@ const filterLine = (spec: string): Uint8Array => TEXT_ENCODER.encode(`filter ${s
 
 const DONE_FRAME = encodePktLine(TEXT_ENCODER.encode('done\n'));
 
+/**
+ * The have-list section grammar is `compute-end = flush-pkt / "done"` —
+ * EITHER a flush OR "done" terminates it, never both. When the request is
+ * closing the round (`done: true`) the have-list must NOT be flush-terminated
+ * — a flush there tells the server to answer with another round of ACKs
+ * instead of the pack, and the trailing "done" frame is then ignored. A
+ * genuine multi-round have-list (no `done` yet) keeps the flush terminator.
+ */
+const buildHaveStream = (haves: ReadonlyArray<ObjectId>, done: boolean | undefined): Uint8Array => {
+  if (haves.length === 0) return new Uint8Array(0);
+  const payloads = haves.map(haveLine);
+  return done === true ? encodePktLines(payloads) : encodePktStream(payloads);
+};
+
 export const buildUploadPackRequest = (req: WantHaveRequest): Uint8Array => {
   if (req.wants.length === 0) throw emptyWants();
   const wantPayloads: Uint8Array[] = [];
@@ -289,8 +303,7 @@ export const buildUploadPackRequest = (req: WantHaveRequest): Uint8Array => {
   if (req.depth !== undefined) wantPayloads.push(deepenLine(req.depth));
   if (req.filter !== undefined) wantPayloads.push(filterLine(req.filter));
   const wantStream = encodePktStream(wantPayloads);
-  const haveStream =
-    req.haves.length === 0 ? new Uint8Array(0) : encodePktStream(req.haves.map(haveLine));
+  const haveStream = buildHaveStream(req.haves, req.done);
   const trailer = req.done ? DONE_FRAME : new Uint8Array(0);
   const total = new Uint8Array(wantStream.byteLength + haveStream.byteLength + trailer.byteLength);
   let off = 0;

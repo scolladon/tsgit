@@ -6,8 +6,11 @@
  *  `discoverRefsForService` in `refs-discovery.ts` (binds
  *  `'git-upload-pack'`).
  * - `selectFetchCapabilities` — intersect the server's advertised capability
- *  set with the tsgit-supported v1 subset (no multi_ack_detailed, no
- *  thin-pack, no no-progress; always append `agent=tsgit/<ver>`).
+ *  set with the tsgit-supported v1 subset (no thin-pack, no no-progress;
+ *  always append `agent=tsgit/<ver>`). `multi_ack_detailed` IS requested —
+ *  tsgit still negotiates a single round (all haves + `done` in one POST),
+ *  but the server may still answer with `ACK <oid> common` lines, which the
+ *  parser already tolerates.
  * - `uniqueRefOids` — strip duplicates from the advertisement's ref oids so
  *  the upload-pack request body's `want` lines are deduplicated.
  *
@@ -28,17 +31,19 @@ export const discoverRefs = async (session: GitServiceSession): Promise<Advertis
   discoverRefsForService(session, 'git-upload-pack');
 
 /**
- * Drop client capabilities.x cannot honor end-to-end (see
- * design): no negotiation rounds (`multi_ack_detailed`), no thin-pack
- * repair, no `no-progress` (we want channel-2 text for the reporter). Always
- * append the agent string — the server does not need to advertise it for the
- * client to send it.
+ * Drop client capabilities tsgit cannot honor end-to-end: no thin-pack
+ * repair, no `no-progress` (we want channel-2 text for the reporter).
+ * `multi_ack_detailed` is kept — tsgit still sends a single round (all haves
+ * + `done` in one POST), but a server may answer with `ACK <oid> common`
+ * lines instead of a bare `ACK`, and the response parser already tolerates
+ * that shape. Always append the agent string — the server does not need to
+ * advertise it for the client to send it.
  */
 export const selectFetchCapabilities = (
   advertised: ReadonlyArray<string>,
 ): ReadonlyArray<string> => {
   const clientWants = CLIENT_CAPABILITIES_FETCH.filter(
-    (c) => c !== 'multi_ack_detailed' && c !== 'thin-pack' && c !== 'no-progress' && c !== AGENT,
+    (c) => c !== 'thin-pack' && c !== 'no-progress' && c !== AGENT,
   );
   const intersected = negotiateProtocolCapabilities(advertised, clientWants);
   return [...intersected, AGENT];
