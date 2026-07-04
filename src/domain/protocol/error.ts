@@ -25,7 +25,13 @@ export type ProtocolError =
   | { readonly code: 'INVALID_FILTER_SPEC'; readonly spec: string; readonly reason: string }
   | { readonly code: 'REMOTE_FILTER_UNSUPPORTED' }
   | { readonly code: 'UNEXPECTED_V2_SECTION'; readonly section: string }
-  | { readonly code: 'V2_COMMAND_UNSUPPORTED'; readonly command: string };
+  | { readonly code: 'V2_COMMAND_UNSUPPORTED'; readonly command: string }
+  | {
+      readonly code: 'TOO_MANY_SECTION_ENTRIES';
+      readonly section: string;
+      readonly count: number;
+      readonly limit: number;
+    };
 
 export const invalidPktLength = (value: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PKT_LENGTH', value });
@@ -88,3 +94,6 @@ export const unexpectedV2Section = (section: string): TsgitError =>
 
 export const v2CommandUnsupported = (command: string): TsgitError =>
   new TsgitError({ code: 'V2_COMMAND_UNSUPPORTED', command });
+
+export const tooManySectionEntries = (section: string, count: number, limit: number): TsgitError =>
+  new TsgitError({ code: 'TOO_MANY_SECTION_ENTRIES', section, count, limit });

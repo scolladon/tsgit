@@ -130,6 +130,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REMOTE_FILTER_UNSUPPORTED':
     case 'UNEXPECTED_V2_SECTION':
     case 'V2_COMMAND_UNSUPPORTED':
+    case 'TOO_MANY_SECTION_ENTRIES':
     case 'SNAPSHOT_REQUIRED':
     case 'WORKDIR_RACE':
     case 'ORDER_INVARIANT_VIOLATION':

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { TsgitError } from '../../../../../src/domain/error.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/object-id.js';
 import { AGENT } from '../../../../../src/domain/protocol/capabilities.js';
 import { decodePktStream, type PktLine } from '../../../../../src/domain/protocol/pkt-line.js';
+import { MAX_ADVERTISED_REFS } from '../../../../../src/domain/protocol/upload-pack.js';
 import {
   buildV2FetchRequest,
   parseV2FetchResponse,
@@ -234,6 +236,123 @@ describe('parseV2FetchResponse', () => {
           { id: OID4, name: 'refs/heads/feature' },
         ]);
       });
+    });
+  });
+});
+
+describe('parseV2FetchResponse — section entry cap', () => {
+  describe('Given an acknowledgments section exceeding the cap', () => {
+    describe('When parsed', () => {
+      it('Then throws TOO_MANY_SECTION_ENTRIES for the acknowledgments section', async () => {
+        // Arrange — synthesize PktLines directly rather than building
+        // MAX_ADVERTISED_REFS+1 raw bytes (that would balloon the test).
+        const overage = MAX_ADVERTISED_REFS + 1;
+        async function* pkts(): AsyncIterable<PktLine> {
+          yield dataLine('acknowledgments\n');
+          for (let i = 0; i < overage; i += 1) {
+            const padded = i.toString(16).padStart(40, '0');
+            yield dataLine(`ACK ${padded}\n`);
+          }
+          yield { kind: 'flush' };
+        }
+
+        // Act
+        let caught: unknown;
+        try {
+          await parseV2FetchResponse(pkts());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          readonly code: string;
+          readonly section?: string;
+          readonly count?: number;
+          readonly limit?: number;
+        };
+        expect(data.code).toBe('TOO_MANY_SECTION_ENTRIES');
+        expect(data.section).toBe('acknowledgments');
+        expect(data.limit).toBe(MAX_ADVERTISED_REFS);
+        expect(data.count).toBe(overage);
+      }, 30_000);
+    });
+  });
+
+  describe('Given a shallow-info section exceeding the cap', () => {
+    describe('When parsed', () => {
+      it('Then throws TOO_MANY_SECTION_ENTRIES for the shallow-info section', async () => {
+        // Arrange
+        const overage = MAX_ADVERTISED_REFS + 1;
+        async function* pkts(): AsyncIterable<PktLine> {
+          yield dataLine('shallow-info\n');
+          for (let i = 0; i < overage; i += 1) {
+            const padded = i.toString(16).padStart(40, '0');
+            yield dataLine(`shallow ${padded}\n`);
+          }
+          yield { kind: 'flush' };
+        }
+
+        // Act
+        let caught: unknown;
+        try {
+          await parseV2FetchResponse(pkts());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          readonly code: string;
+          readonly section?: string;
+          readonly count?: number;
+          readonly limit?: number;
+        };
+        expect(data.code).toBe('TOO_MANY_SECTION_ENTRIES');
+        expect(data.section).toBe('shallow-info');
+        expect(data.limit).toBe(MAX_ADVERTISED_REFS);
+        expect(data.count).toBe(overage);
+      }, 30_000);
+    });
+  });
+
+  describe('Given a wanted-refs section exceeding the cap', () => {
+    describe('When parsed', () => {
+      it('Then throws TOO_MANY_SECTION_ENTRIES for the wanted-refs section', async () => {
+        // Arrange
+        const overage = MAX_ADVERTISED_REFS + 1;
+        async function* pkts(): AsyncIterable<PktLine> {
+          yield dataLine('wanted-refs\n');
+          for (let i = 0; i < overage; i += 1) {
+            const padded = i.toString(16).padStart(40, '0');
+            yield dataLine(`${padded} refs/heads/b${i}\n`);
+          }
+          yield { kind: 'flush' };
+        }
+
+        // Act
+        let caught: unknown;
+        try {
+          await parseV2FetchResponse(pkts());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          readonly code: string;
+          readonly section?: string;
+          readonly count?: number;
+          readonly limit?: number;
+        };
+        expect(data.code).toBe('TOO_MANY_SECTION_ENTRIES');
+        expect(data.section).toBe('wanted-refs');
+        expect(data.limit).toBe(MAX_ADVERTISED_REFS);
+        expect(data.count).toBe(overage);
+      }, 30_000);
     });
   });
 });

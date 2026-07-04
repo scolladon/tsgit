@@ -18,6 +18,7 @@ import {
   pktTruncated,
   sidebandFatal,
   tooManyAdvertisedRefs,
+  tooManySectionEntries,
   unexpectedV2Section,
   unknownAckStatus,
   v2CommandUnsupported,
@@ -250,6 +251,23 @@ describe('domain protocol error', () => {
         });
       });
     });
+
+    describe("Given tooManySectionEntries('wanted-refs', count, limit)", () => {
+      describe('When checking data', () => {
+        it('Then code, section, count, and limit are preserved', () => {
+          // Arrange & Act
+          const sut = tooManySectionEntries('wanted-refs', 500_001, 500_000);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'TOO_MANY_SECTION_ENTRIES',
+            section: 'wanted-refs',
+            count: 500_001,
+            limit: 500_000,
+          });
+        });
+      });
+    });
   });
 
   describe('extractDetail message formatting (exact match)', () => {
@@ -328,6 +346,15 @@ describe('domain protocol error', () => {
       [
         { code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' },
         'V2_COMMAND_UNSUPPORTED: unsupported v2 command or capability: fetch',
+      ],
+      [
+        {
+          code: 'TOO_MANY_SECTION_ENTRIES',
+          section: 'wanted-refs',
+          count: 500_001,
+          limit: 500_000,
+        },
+        'TOO_MANY_SECTION_ENTRIES: v2 section "wanted-refs" entries (500001) exceed limit 500000',
       ],
     ];
 

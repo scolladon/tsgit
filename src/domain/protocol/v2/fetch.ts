@@ -1,11 +1,43 @@
 import { ObjectId } from '../../objects/object-id.js';
+import { tooManySectionEntries } from '../error.js';
 import type { PktLine } from '../pkt-line.js';
 import { parseSideBand } from '../side-band.js';
-import { type AckEntry, parseAckLine, tryConsumeShallowLine } from '../upload-pack.js';
-import { encodeCommandRequest, readSections } from './sections.js';
+import {
+  type AckEntry,
+  MAX_ADVERTISED_REFS,
+  parseAckLine,
+  tryConsumeShallowLine,
+} from '../upload-pack.js';
+import { encodeCommandRequest, readSections, type SectionName } from './sections.js';
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
+
+/**
+ * Shared cap for the acknowledgments/shallow-info/wanted-refs sections of a
+ * v2 fetch response: a hostile server could otherwise flood any of these
+ * with unbounded lines to exhaust client heap. Reuses the same order of
+ * magnitude as the ls-refs/upload-pack advertised-refs cap.
+ */
+const MAX_V2_SECTION_ENTRIES = MAX_ADVERTISED_REFS;
+
+/**
+ * Wraps a section's data-line view with a hard entry cap, throwing before
+ * the (limit+1)th line is yielded to the section-specific parser.
+ */
+async function* boundedLines(
+  section: SectionName,
+  lines: AsyncIterable<PktLine>,
+): AsyncGenerator<PktLine, void, unknown> {
+  let count = 0;
+  for await (const pkt of lines) {
+    count += 1;
+    if (count > MAX_V2_SECTION_ENTRIES) {
+      throw tooManySectionEntries(section, count, MAX_V2_SECTION_ENTRIES);
+    }
+    yield pkt;
+  }
+}
 
 export interface V2FetchRequestOptions {
   readonly wants: ReadonlyArray<ObjectId>;
@@ -121,20 +153,20 @@ export const parseV2FetchResponse = async (
 
   for await (const section of readSections(pktStream)) {
     if (section.name === 'acknowledgments') {
-      const parsed = await parseAcknowledgments(section.lines);
+      const parsed = await parseAcknowledgments(boundedLines(section.name, section.lines));
       acks = parsed.acks;
       nak = parsed.nak;
       ready = parsed.ready;
       continue;
     }
     if (section.name === 'shallow-info') {
-      const parsed = await parseShallowInfo(section.lines);
+      const parsed = await parseShallowInfo(boundedLines(section.name, section.lines));
       shallow = parsed.shallow;
       unshallow = parsed.unshallow;
       continue;
     }
     if (section.name === 'wanted-refs') {
-      wantedRefs = await parseWantedRefs(section.lines);
+      wantedRefs = await parseWantedRefs(boundedLines(section.name, section.lines));
       continue;
     }
     packBody = parseSideBand(section.lines, {});
