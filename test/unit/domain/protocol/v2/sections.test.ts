@@ -114,6 +114,26 @@ describe('readSections', () => {
     });
   });
 
+  describe('Given a single section terminated by a flush, followed by stray bytes', () => {
+    describe('When readSections drains the stream', () => {
+      it('Then it yields the one section and never reads past its terminating flush', async () => {
+        // Arrange — the terminator's `kind` is 'flush', not 'delim', so
+        // `continues` must be false; treating any non-done boundary (or any
+        // boundary at all) as `continues: true` would make readSections keep
+        // reading and misparse the stray bytes below as another section header.
+        const stream = asyncOf([
+          concatBytes(pktBytes('packfile\n'), pktBytes('PACK-DATA'), FLUSH, pktBytes('garbage\n')),
+        ]);
+
+        // Act
+        const sut = await collectSections(decodePktStream(stream, { v2: true }));
+
+        // Assert
+        expect(sut).toEqual([{ name: 'packfile', lines: [dataLine('PACK-DATA')] }]);
+      });
+    });
+  });
+
   describe('Given a stream whose section header is unrecognised', () => {
     describe('When readSections runs', () => {
       it('Then it throws UNEXPECTED_V2_SECTION carrying the header', async () => {
