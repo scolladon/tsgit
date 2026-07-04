@@ -14,6 +14,10 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  commonGitDir,
+  looseObjectPath,
+} from '../../../../src/application/primitives/path-layout.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -2171,6 +2175,127 @@ describe('fetch — everything local', () => {
         const post = requests.find((r) => r.method === 'POST');
         expect(post).toBeDefined();
         expect(new TextDecoder().decode(post?.body)).toContain('deepen 1');
+      });
+    });
+  });
+
+  describe('Given every wanted oid is already local and a remote-tracking ref directory exists', () => {
+    describe('When fetch', () => {
+      it('Then the have-derivation walk never reads that directory', async () => {
+        // Arrange — the fast path must return before `deriveHaves` runs, so a
+        // `readdir` call on the (pre-seeded, genuinely existing) remote-tracking
+        // ref directory would prove the have-walk still ran.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {
+          head: 'refs/heads/main',
+          refs: { 'refs/remotes/origin/main': FAKE_OID('a') },
+        });
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'p1 local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p1 local\n') },
+        ]);
+        const { transport } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+        const poisonPath = `${ctx.layout.gitDir}/refs/remotes/origin`;
+        const poisonedFs = {
+          ...ctx.fs,
+          readdir: (dir: string): ReturnType<typeof ctx.fs.readdir> => {
+            if (dir === poisonPath) {
+              throw new Error('poison: the everything-local fast path must skip the have-walk');
+            }
+            return ctx.fs.readdir(dir);
+          },
+        };
+
+        // Act
+        const sut = await fetch({ ...ctx, fs: poisonedFs, transport });
+
+        // Assert
+        const update = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+        expect(update?.newId).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given the first wanted oid is missing locally and a second is also missing', () => {
+    describe('When fetch', () => {
+      it('Then the presence probe stops at the first missing oid', async () => {
+        // Arrange — neither oid is written locally (no synthetic pack on
+        // disk), so both probes fall through `hasObject` to `ctx.fs.exists`.
+        // The second oid's probe is poisoned: it must never run once the
+        // first probe has already settled the "not everything local" verdict.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 missing 1\n') },
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 missing 2\n') },
+        ]);
+        const [wantId1, wantId2] = built.ids as [ObjectId, ObjectId];
+        const poisonPath = looseObjectPath(commonGitDir(ctx), wantId2);
+        const poisonedFs = {
+          ...ctx.fs,
+          exists: (path: string): Promise<boolean> => {
+            if (path === poisonPath) {
+              throw new Error(
+                'poison: the second want must not be probed once the first is missing',
+              );
+            }
+            return ctx.fs.exists(path);
+          },
+        };
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: wantId1 },
+            { name: 'refs/heads/feature', id: wantId2 },
+          ],
+          packBytes: built.packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, fs: poisonedFs, transport });
+
+        // Assert — reaching this point at all proves the second want's poisoned probe never ran.
+        expect(requests.some((r) => r.method === 'POST')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two wanted oids that are both already present locally', () => {
+    describe('When fetch', () => {
+      it('Then no upload-pack POST is issued', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 1\n') },
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 2\n') },
+        ]);
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 1\n') },
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 2\n') },
+        ]);
+        const [wantId1, wantId2] = built.ids as [ObjectId, ObjectId];
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: wantId1 },
+            { name: 'refs/heads/feature', id: wantId2 },
+          ],
+          packBytes: built.packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(requests.some((r) => r.method === 'POST')).toBe(false);
       });
     });
   });

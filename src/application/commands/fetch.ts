@@ -122,7 +122,6 @@ const negotiateAndApply = async (
 
   const capabilities = selectFetchCapabilities(advertisement.capabilities);
   const wants = uniqueRefOids(advertisement.refs);
-  const haves = await deriveHaves(ctx, remoteName);
 
   // A partial repo's wanted objects may be legitimately promised-absent (the
   // filter deliberately omits them), and a `depth` request needs to reach the
@@ -131,11 +130,13 @@ const negotiateAndApply = async (
   // local-presence short-circuit only applies to full, unfiltered,
   // non-deepening fetches: when everything is already on disk, the
   // upload-pack exchange has nothing to contribute — skip it and go straight
-  // to updating refs.
+  // to updating refs. Checked before deriving haves: the have-walk is wasted
+  // work when this short-circuit is about to discard it anyway.
   if (filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants))) {
     return applyRefsAndBuildResult(ctx, opts, remoteName, url, advertisement, [], []);
   }
 
+  const haves = await deriveHaves(ctx, remoteName);
   const packResult = await fetchPack(
     ctx,
     (c, req) => negotiatePackBytes(c, session, discovery.version, req),
@@ -173,8 +174,10 @@ const isEverythingLocal = async (
   ctx: Context,
   wants: ReadonlyArray<ObjectId>,
 ): Promise<boolean> => {
-  const presence = await Promise.all(wants.map((id) => hasObject(ctx, id)));
-  return presence.every(Boolean);
+  for (const id of wants) {
+    if (!(await hasObject(ctx, id))) return false;
+  }
+  return true;
 };
 
 const applyRefsAndBuildResult = async (
