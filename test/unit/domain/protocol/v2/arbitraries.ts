@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 
 import type { ObjectId } from '../../../../../src/domain/objects/object-id.js';
+import type { SectionName } from '../../../../../src/domain/protocol/v2/sections.js';
 import { oidArb } from '../arbitraries.js';
 
 const TOKEN_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-'.split('');
@@ -8,6 +9,13 @@ const TOKEN_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-'.split('');
 const tokenArb = (): fc.Arbitrary<string> =>
   fc
     .array(fc.constantFrom(...TOKEN_CHARS), { minLength: 1, maxLength: 16 })
+    .map((chars) => chars.join(''));
+
+const AGENT_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-./'.split('');
+
+const agentTokenArb = (): fc.Arbitrary<string> =>
+  fc
+    .array(fc.constantFrom(...AGENT_CHARS), { minLength: 1, maxLength: 16 })
     .map((chars) => chars.join(''));
 
 export const commandArb = (): fc.Arbitrary<string> => tokenArb();
@@ -51,3 +59,39 @@ export const headFixtureArb = (refs: ReadonlyArray<RefFixture>): fc.Arbitrary<He
     .map(([target, wireId]): HeadFixture => ({ kind: 'symref', target, wireId }));
   return fc.oneof(none, detached, symref);
 };
+
+export const KNOWN_SECTION_NAMES: ReadonlyArray<SectionName> = [
+  'acknowledgments',
+  'shallow-info',
+  'wanted-refs',
+  'packfile',
+];
+
+export interface SectionFixture {
+  readonly name: SectionName;
+  readonly lines: ReadonlyArray<string>;
+}
+
+const sectionFixtureArb = (name: SectionName): fc.Arbitrary<SectionFixture> =>
+  fc.array(tokenArb(), { minLength: 0, maxLength: 4 }).map((lines) => ({ name, lines }));
+
+export const sectionFixturesArb = (): fc.Arbitrary<ReadonlyArray<SectionFixture>> =>
+  fc
+    .shuffledSubarray([...KNOWN_SECTION_NAMES], {
+      minLength: 0,
+      maxLength: KNOWN_SECTION_NAMES.length,
+    })
+    .chain((names) => fc.tuple(...names.map((name) => sectionFixtureArb(name))));
+
+export const agentArb = (): fc.Arbitrary<string> => agentTokenArb();
+
+export const fetchFeatureArb = (): fc.Arbitrary<string> => tokenArb();
+
+export const fetchFeaturesArb = (): fc.Arbitrary<ReadonlyArray<string>> =>
+  fc.uniqueArray(fetchFeatureArb(), { minLength: 0, maxLength: 4 });
+
+export const V2_COMMAND_NAMES = ['ls-refs', 'fetch'] as const;
+export type V2CommandName = (typeof V2_COMMAND_NAMES)[number];
+
+export const commandSetArb = (): fc.Arbitrary<ReadonlyArray<V2CommandName>> =>
+  fc.shuffledSubarray([...V2_COMMAND_NAMES], { minLength: 0, maxLength: V2_COMMAND_NAMES.length });
