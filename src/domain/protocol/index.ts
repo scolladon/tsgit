@@ -25,7 +25,9 @@ export {
   pktTruncated,
   remoteFilterUnsupported,
   sidebandFatal,
+  unexpectedV2Section,
   unknownAckStatus,
+  v2CommandUnsupported,
 } from './error.js';
 export {
   formatObjectFilter,
@@ -80,3 +82,12 @@ export {
   parseShallowResponse,
   parseUploadPackResponse,
 } from './upload-pack.js';
+export {
+  encodeCommandRequest,
+  parseV2Capabilities,
+  readSections,
+  type Section,
+  type SectionName,
+  supportsV2Fetch,
+  type V2Capabilities,
+} from './v2/index.js';

@@ -378,6 +378,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `invalid object filter "${data.spec}": ${data.reason}`;
     case 'REMOTE_FILTER_UNSUPPORTED':
       return 'remote does not support partial-clone object filtering';
+    case 'UNEXPECTED_V2_SECTION':
+      return `unexpected v2 section: ${data.section}`;
+    case 'V2_COMMAND_UNSUPPORTED':
+      return `unsupported v2 command or capability: ${data.command}`;
     case 'SNAPSHOT_REQUIRED':
       return `snapshot required: ${data.reason}`;
     case 'WORKDIR_RACE':

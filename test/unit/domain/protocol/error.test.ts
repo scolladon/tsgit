@@ -18,7 +18,9 @@ import {
   pktTruncated,
   sidebandFatal,
   tooManyAdvertisedRefs,
+  unexpectedV2Section,
   unknownAckStatus,
+  v2CommandUnsupported,
 } from '../../../../src/domain/protocol/error.js';
 
 describe('domain protocol error', () => {
@@ -222,6 +224,32 @@ describe('domain protocol error', () => {
         });
       });
     });
+
+    describe("Given unexpectedV2Section('wanted-refs')", () => {
+      describe('When checking data', () => {
+        it('Then code is UNEXPECTED_V2_SECTION and section preserved', () => {
+          // Arrange & Act
+          const sut = unexpectedV2Section('wanted-refs');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'UNEXPECTED_V2_SECTION', section: 'wanted-refs' });
+          expect(sut.message).toContain('wanted-refs');
+        });
+      });
+    });
+
+    describe("Given v2CommandUnsupported('fetch')", () => {
+      describe('When checking data', () => {
+        it('Then code is V2_COMMAND_UNSUPPORTED and command preserved', () => {
+          // Arrange & Act
+          const sut = v2CommandUnsupported('fetch');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' });
+          expect(sut.message).toContain('fetch');
+        });
+      });
+    });
   });
 
   describe('extractDetail message formatting (exact match)', () => {
@@ -292,6 +320,14 @@ describe('domain protocol error', () => {
       [
         { code: 'TOO_MANY_ADVERTISED_REFS', count: 500_001, limit: 500_000 },
         'TOO_MANY_ADVERTISED_REFS: advertised refs (500001) exceed limit 500000',
+      ],
+      [
+        { code: 'UNEXPECTED_V2_SECTION', section: 'wanted-refs' },
+        'UNEXPECTED_V2_SECTION: unexpected v2 section: wanted-refs',
+      ],
+      [
+        { code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' },
+        'V2_COMMAND_UNSUPPORTED: unsupported v2 command or capability: fetch',
       ],
     ];
 
