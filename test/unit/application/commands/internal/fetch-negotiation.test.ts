@@ -267,6 +267,34 @@ describe('negotiateDiscovery', () => {
     });
   });
 
+  describe('Given a discovery stream that is exhausted before yielding any pkt-line', () => {
+    describe('When negotiateDiscovery runs', () => {
+      it("Then it falls back to version 1 without reading a done result's value", async () => {
+        // Arrange — `isVersion2Line` must short-circuit on `pkt.done` before
+        // touching `pkt.value.kind`; skipping that guard throws on the
+        // done-with-no-value result this exhausted iterator produces.
+        const exhausted: AsyncIterable<PktLine> = {
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.resolve({ done: true, value: undefined }),
+          }),
+        };
+        const session: GitServiceSession = {
+          advertisement: () => Promise.resolve(exhausted),
+          exchange: vi.fn(),
+          close: () => Promise.resolve(),
+          servicePrologue: false,
+        };
+
+        // Act
+        const sut = await negotiateDiscovery(session);
+
+        // Assert
+        expect(sut.version).toBe(1);
+        expect(sut.advertisement.refs).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a v1 advertisement whose stream iterator has no return method', () => {
     describe('When negotiateDiscovery runs', () => {
       it('Then it still completes, without calling a return that does not exist', async () => {
@@ -490,6 +518,11 @@ describe('negotiatePackBytes', () => {
         expect(request).not.toContain('no-progress');
         expect(request).not.toContain('deepen');
         expect(request).not.toContain('filter');
+        // Structural check (not just substring absence): the fetch-command
+        // delim must be immediately followed by the want line's own pkt-line
+        // prefix — proving zero arg pkt-lines were emitted, not merely that
+        // none happened to contain the strings "deepen"/"filter".
+        expect(request).toMatch(new RegExp(`object-format=sha1\\n0001[0-9a-f]{4}want ${OID_A}`));
       });
     });
   });
