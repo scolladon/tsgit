@@ -100,8 +100,13 @@ parsing).
 
 **Scope boundary.**
 
-- Smart HTTP **v1** only. Protocol v2 (`Git-Protocol: version=2` header,
-  command-based capability negotiation) is V2 work — see §11.
+- Smart HTTP negotiates protocol **v2** as the primary path (`Git-Protocol:
+  version=2` opt-in header, `ls-refs` discovery, the `fetch` command's
+  `acknowledgments`/`packfile` sections), falling back to the v1 wire
+  described below when the server doesn't advertise `version 2` — shipped in
+  a later backlog slice ([ADR-450](../adr/450-fetch-protocol-v2-with-v1-fallback.md),
+  superseding this section's original v1-only stance; see §6.8 for the v2
+  summary and §11 for phase ownership).
 - HTTPS only at the adapter layer (already enforced by `NodeHttpTransport`'s
   `allowInsecureHttp` default-`false`).
 - No SSH transport (PRD §3 non-goal).
@@ -304,9 +309,12 @@ export function decodePktStream(
 ```
 
 **v1 vs v2 distinction.** Default `v2: false` means delim/response-end
-packets surface as `PROTOCOL_ERROR` with code `PKT_LENGTH_RESERVED`. v2
-support is parked behind this flag for future activation without an API
-change. v1 is the only mode Phase 8 implements.
+packets surface as `PROTOCOL_ERROR` with code `PKT_LENGTH_RESERVED`. The HTTP
+session now always decodes with `{ v2: true }` (sub-decision D2 in
+`design/incremental-fetch-negotiation.md`) — safe on a v1 response too,
+because v1 upload-pack never emits length-`0001`/`0002` frames, so decoding
+is byte-identical either way. SSH sessions still decode `v2: false`; SSH
+stays on the v1 wire (§6.8).
 
 **Backpressure.** The decoder is an `async function*` — consumers naturally
 backpressure via `for await … of`. No explicit pull-mode API.
@@ -831,6 +839,43 @@ Two reasons:
 The **response** body is streamed (HTTP responses always are in our
 `HttpTransport` port; `body` is a `ReadableStream<Uint8Array>`).
 
+### 6.8 Smart HTTP v2 (primary negotiation, v1 retained as fallback)
+
+Superseding this section's original v1-only stance (ADR-005), tsgit opts
+into protocol v2 on every HTTP discovery GET and exchange POST via a
+`Git-Protocol: version=2` request header (SSH sessions never set it, so SSH
+stays on the v1 wire above — ADR-450). Version detection is response-driven,
+not request-driven: the authoritative signal is the advertisement's first
+data pkt-line (`version 2` vs. a v1 ref line), so a server that ignores the
+header still gets a correct v1 fallback.
+
+- **Discovery** — the v2 **`ls-refs`** command (not the v1 ref-advertisement
+  GET) lists refs.
+- **Fetch** — the v2 **`fetch`** command replaces the v1 upload-pack
+  request/response pair; its section-framed response carries an
+  `acknowledgments` section (`ack`/`ready`/`done`) and a `packfile` section
+  (side-band, reusing the same `parseSideBand` as v1).
+- **Fallback** — a server that does not advertise `version 2` gets the
+  corrected v1 wire above (ADR-451's no-flush-before-`done` fix +
+  `multi_ack_detailed`), and so does every SSH remote (v2 is HTTP-only).
+
+**Deliberate minimal v2 request arg set.** tsgit's v2 requests carry a
+narrower argument set than git's own client sends: `ls-refs` sends only
+`symrefs`, and `fetch` sends only `deepen`/`filter` when set — never
+`ofs-delta`, `include-tag`, `thin-pack`, or `no-progress`. Every omitted arg
+only steers *how* the server searches, filters, or packs bytes on the wire,
+never *what* tsgit ends up with on disk, so the resulting objects are
+identical to what git's fuller arg list would produce — a deliberate, pinned
+wire divergence rather than an oversight. See "Deliberate minimalism in the
+v2 request arg set" in `design/incremental-fetch-negotiation.md` for the
+per-argument rationale, and that same doc for the pinned request/response
+wire matrices (not duplicated here). Cross-linked ADRs:
+[450](../adr/450-fetch-protocol-v2-with-v1-fallback.md) (v2 primary + v1
+fallback), [451](../adr/451-fetch-v1-fallback-framing-and-multi-ack.md) (v1
+framing fix), [452](../adr/452-empty-pack-suppression-and-everything-local.md)
+(empty-pack suppression + the `everything_local` no-op short-circuit,
+protocol-agnostic across v1 and v2).
+
 ---
 
 ## 7. Capability Handling
@@ -1225,7 +1270,7 @@ Helpers shared across middleware tests:
 | Streaming pack consumption (no full-pack buffering)     | 9 (consumer of §6.3) | integration test with fixture pack |
 | Cancellation propagation through middleware             | 8           | `withRetry` cancellation tests             |
 | `Authorization` header redaction in all logs            | 8           | `withLogging` test asserts default + custom |
-| Smart HTTP v2 support                                   | V2 (post-1.0) | parked behind `decodePktStream({v2: true})` |
+| Smart HTTP v2 support (primary, v1 fallback retained)   | delivered   | `design/incremental-fetch-negotiation.md`, ADRs 450–452 |
 | SSH transport                                           | V2 (post-1.0) | non-goal in PRD §3                         |
 | Streaming **request** bodies (push of huge repos)       | V2          | requires streaming pack writer              |
 

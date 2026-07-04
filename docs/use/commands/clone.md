@@ -36,9 +36,9 @@ interface CloneResult {
 
 ## Behaviour
 
-`clone` creates the `.git` skeleton, opens a session against the resolved transport (smart-HTTP v1 discovery over HTTP, or a single duplex channel over SSH), fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags). It does **not** materialise the working tree — follow up with `repo.checkout({ rev: result.head })`.
+`clone` creates the `.git` skeleton, opens a session against the resolved transport (smart-HTTP, negotiating protocol v2 — `ls-refs` discovery + the `fetch` command — with a v1 fallback for servers that don't advertise `version 2`; or a single duplex channel over SSH, always v1), fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags) — ref resolution, including the tracked branch's `HEAD` symref, works the same on both protocol versions. It does **not** materialise the working tree — follow up with `repo.checkout({ rev: result.head })`.
 
-A `filter` records `origin` as a *promisor remote* in `.git/config`. Objects omitted by the filter are fetched transparently on the first read — every command built on `readObject` works unchanged on a partial clone.
+A `filter` records `origin` as a *promisor remote* in `.git/config`. Objects omitted by the filter are fetched transparently on the first read — every command built on `readObject` works unchanged on a partial clone. Partial clone works over either protocol version: the server needs to advertise `filter` — as a v1 capability, or as a sub-feature of the v2 `fetch` command — or the clone throws `REMOTE_FILTER_UNSUPPORTED`.
 
 ## Examples
 
@@ -72,7 +72,8 @@ await repo.clone({ url: 'https://github.com/owner/repo.git', depth: 1 });
 
 ## See also
 
+- Design: `docs/design/incremental-fetch-negotiation.md`
 - Primitives: [`fetchPack`](../primitives/internals.md#fetchpack), [`recordRefUpdate`](../primitives/internals.md#recordrefupdate), [`updateShallow`](../primitives/internals.md#updateshallow), [`updateConfigEntries`](../primitives/internals.md#setconfigentry--setcoreconfigentry--updateconfigentries--updatecoreconfig)
 - Related commands: [`fetch`](fetch.md), [`fetchMissing`](fetch-missing.md), [`checkout`](checkout.md)
 - Recipes: [clone + checkout](../recipes.md#clone-and-checkout), [partial clone with lazy-fetch](../recipes.md#partial-clone)
-- ADRs: [005](../../adr/005-clone-protocol-v1.md), [006](../../adr/006-clone-pack-storage-layout.md), [007](../../adr/007-clone-resume-semantics.md), [008](../../adr/008-clone-defer-shallow.md), [078](../../adr/078-partial-clone-filter-scope.md), [081](../../adr/081-promisor-remote-port.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md)
+- ADRs: [005](../../adr/005-clone-protocol-v1.md) (superseded by 450), [006](../../adr/006-clone-pack-storage-layout.md), [007](../../adr/007-clone-resume-semantics.md), [008](../../adr/008-clone-defer-shallow.md), [078](../../adr/078-partial-clone-filter-scope.md), [081](../../adr/081-promisor-remote-port.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md), [450](../../adr/450-fetch-protocol-v2-with-v1-fallback.md), [451](../../adr/451-fetch-v1-fallback-framing-and-multi-ack.md), [452](../../adr/452-empty-pack-suppression-and-everything-local.md)
