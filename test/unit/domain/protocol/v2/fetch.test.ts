@@ -238,6 +238,25 @@ describe('parseV2FetchResponse', () => {
       });
     });
   });
+
+  describe('Given a wanted-refs line whose name carries an embedded newline', () => {
+    describe('When parsed', () => {
+      it('Then it strips only the trailing newline, preserving the embedded one', async () => {
+        // Arrange — the trailing-newline strip must anchor to the end (`$`);
+        // an unanchored strip would remove the first `\n` it finds instead,
+        // corrupting an embedded newline while leaving the real trailing one.
+        const stream = responseStream(
+          concatBytes(pktBytes('wanted-refs\n'), pktBytes(`${OID3} refs/heads/wei\nrd\n`), FLUSH),
+        );
+
+        // Act
+        const sut = await parseV2FetchResponse(stream);
+
+        // Assert
+        expect(sut.wantedRefs).toEqual([{ id: OID3, name: 'refs/heads/wei\nrd' }]);
+      });
+    });
+  });
 });
 
 describe('parseV2FetchResponse — section entry cap', () => {
