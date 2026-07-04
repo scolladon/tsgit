@@ -23,6 +23,7 @@ import { recordingProgress, withProgress } from '../fixtures.js';
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 const OID_A = OID.from('a'.repeat(40));
+const OID_B = OID.from('b'.repeat(40));
 
 const bytesOf = (text: string): Uint8Array => ENCODER.encode(text);
 
@@ -137,6 +138,28 @@ describe('negotiateDiscovery', () => {
         expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
         expect(session.exchange).toHaveBeenCalledTimes(1);
         expect(await decodeRequest(session)).toContain('command=ls-refs');
+      });
+    });
+  });
+
+  describe('Given a version-2 advertisement', () => {
+    describe('When negotiateDiscovery builds its ls-refs request', () => {
+      it('Then the request carries command=ls-refs and symrefs but omits peel and ref-prefix', async () => {
+        // Arrange — tsgit always wants the full advertised ref set, so it
+        // never asks the server to peel tags or filter by prefix.
+        const discoveryBody = concatBytes(...v2CapabilityLines(), FLUSH);
+        const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
+        const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
+
+        // Act
+        await negotiateDiscovery(session);
+
+        // Assert
+        const request = await decodeRequest(session);
+        expect(request).toContain('command=ls-refs');
+        expect(request).toContain('symrefs');
+        expect(request).not.toContain('peel');
+        expect(request).not.toContain('ref-prefix');
       });
     });
   });
@@ -432,6 +455,41 @@ describe('negotiatePackBytes', () => {
         const request = await decodeRequest(session);
         expect(request).toContain('deepen 3');
         expect(request).toContain('filter blob:none');
+      });
+    });
+  });
+
+  describe('Given version 2, a want, and a have, with no depth or filter set', () => {
+    describe('When negotiatePackBytes builds the fetch request', () => {
+      it('Then the request carries command=fetch, want, have, and done but omits ofs-delta, include-tag, thin-pack, no-progress, deepen, and filter', async () => {
+        // Arrange — capability negotiation (ofs-delta/include-tag) and
+        // progress framing (thin-pack/no-progress) only steer how the server
+        // *packs* bytes; the on-disk result is identical either way, so v2
+        // never sends them as fetch-command args.
+        const ctx = createMemoryContext();
+        const exchangeResponse = concatBytes(
+          pktBytes('packfile\n'),
+          pktBytes('\x01PACK-DATA'),
+          FLUSH,
+        );
+        const session = stubSession({ discoveryBody: FLUSH, exchangeResponse });
+        const input: FetchPackInput = { ...baseInput, haves: [OID_B] };
+
+        // Act
+        await negotiatePackBytes(ctx, session, 2, input);
+
+        // Assert
+        const request = await decodeRequest(session);
+        expect(request).toContain('command=fetch');
+        expect(request).toContain(`want ${OID_A}`);
+        expect(request).toContain(`have ${OID_B}`);
+        expect(request).toContain('done');
+        expect(request).not.toContain('ofs-delta');
+        expect(request).not.toContain('include-tag');
+        expect(request).not.toContain('thin-pack');
+        expect(request).not.toContain('no-progress');
+        expect(request).not.toContain('deepen');
+        expect(request).not.toContain('filter');
       });
     });
   });
