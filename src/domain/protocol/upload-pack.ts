@@ -321,7 +321,7 @@ interface ResponseSplit {
   readonly buffered: ReadonlyArray<PktLine>;
 }
 
-const parseAckLine = (text: string): AckEntry => {
+export const parseAckLine = (text: string): AckEntry => {
   // Caller (splitMeta) guarantees `text` starts with the literal `'ACK '`
   // (with a trailing space), so split(' ') always produces at least 2 parts
   // and parts[1] is the oid token.
@@ -351,7 +351,7 @@ const parseShallowOid = (text: string, prefix: string): ObjectId => {
   return ObjectId.from(raw);
 };
 
-const tryConsumeShallowLine = (text: string, state: ShallowParseState): boolean => {
+export const tryConsumeShallowLine = (text: string, state: ShallowParseState): boolean => {
   if (text.startsWith(SHALLOW_PREFIX)) {
     state.shallow.push(parseShallowOid(text, SHALLOW_PREFIX));
     return true;

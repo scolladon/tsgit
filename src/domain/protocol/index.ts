@@ -84,13 +84,18 @@ export {
 } from './upload-pack.js';
 export {
   buildLsRefsRequest,
+  buildV2FetchRequest,
   encodeCommandRequest,
   type LsRefsRequestOptions,
   parseLsRefsResponse,
   parseV2Capabilities,
+  parseV2FetchResponse,
   readSections,
   type Section,
   type SectionName,
   supportsV2Fetch,
   type V2Capabilities,
+  type V2FetchRequestOptions,
+  type V2FetchResponse,
+  type WantedRef,
 } from './v2/index.js';
