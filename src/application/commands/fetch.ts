@@ -37,11 +37,11 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
   advertisesFilter,
-  discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
 } from './internal/upload-pack-client.js';
@@ -111,7 +111,8 @@ const negotiateAndApply = async (
   filter: string | undefined,
   session: GitServiceSession,
 ): Promise<FetchResult> => {
-  const advertisement = await discoverRefs(session);
+  const discovery = await negotiateDiscovery(session);
+  const advertisement = discovery.advertisement;
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A partial repo's fetch must re-apply its filter; the server must still
   // advertise the `filter` capability.
@@ -135,16 +136,20 @@ const negotiateAndApply = async (
     return applyRefsAndBuildResult(ctx, opts, remoteName, url, advertisement, [], []);
   }
 
-  const packResult = await fetchPack(ctx, session.exchange, {
-    wants,
-    haves,
-    capabilities,
-    progressOp: FETCH_WRITE_OBJECTS_OP,
-    // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
-    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
-    // A partial repo re-applies its stored filter and re-marks the pack promisor.
-    ...(filter !== undefined ? { filter, promisor: true } : {}),
-  });
+  const packResult = await fetchPack(
+    ctx,
+    (c, req) => negotiatePackBytes(c, session, discovery.version, req),
+    {
+      wants,
+      haves,
+      capabilities,
+      progressOp: FETCH_WRITE_OBJECTS_OP,
+      // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
+      ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+      // A partial repo re-applies its stored filter and re-marks the pack promisor.
+      ...(filter !== undefined ? { filter, promisor: true } : {}),
+    },
+  );
 
   if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
     await updateShallow(ctx, {

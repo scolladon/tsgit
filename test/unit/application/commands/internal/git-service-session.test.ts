@@ -190,6 +190,41 @@ describe('GitServiceSession.advertisement (http)', () => {
     });
   });
 
+  describe('Given the service is git-upload-pack', () => {
+    describe('When advertisement() runs', () => {
+      it('Then it carries the Git-Protocol: version=2 header', async () => {
+        // Arrange
+        const { transport, requests } = fakeTransport(200, successAdvertisement());
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+
+        // Act
+        await sut.advertisement();
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBe('version=2');
+      });
+    });
+  });
+
+  describe('Given the service is git-receive-pack', () => {
+    describe('When advertisement() runs', () => {
+      it('Then it carries no Git-Protocol header', async () => {
+        // Arrange — v2 is upload-pack (fetch-side) negotiation only; push
+        // stays v1.
+        const { transport, requests } = fakeTransport(200, encodePktStream([]));
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
+
+        // Act
+        await sut.advertisement();
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a non-200 discovery response', () => {
     describe('When advertisement() runs', () => {
       it.each([
@@ -299,6 +334,41 @@ describe('GitServiceSession.exchange (http)', () => {
         expect(requests[0]?.url).toBe('https://example.com/r.git/git-receive-pack');
         expect(requests[0]?.headers['content-type']).toBe('application/x-git-receive-pack-request');
         expect(requests[0]?.headers.accept).toBe('application/x-git-receive-pack-result');
+      });
+    });
+  });
+
+  describe('Given the service is git-upload-pack', () => {
+    describe('When exchange() runs', () => {
+      it('Then the POST carries the Git-Protocol: version=2 header', async () => {
+        // Arrange
+        const responseBody = encodePktStream([ENCODER.encode('NAK\n')]);
+        const { transport, requests } = fakeTransport(200, responseBody);
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+
+        // Act
+        await sut.exchange(ENCODER.encode('0032want aaaa\n0000'));
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBe('version=2');
+      });
+    });
+  });
+
+  describe('Given the service is git-receive-pack', () => {
+    describe('When exchange() runs', () => {
+      it('Then the POST carries no Git-Protocol header', async () => {
+        // Arrange
+        const { transport, requests } = fakeTransport(200, encodePktStream([]));
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
+
+        // Act
+        await sut.exchange(new Uint8Array(0));
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBeUndefined();
       });
     });
   });

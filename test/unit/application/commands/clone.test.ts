@@ -4,6 +4,7 @@ import { clone } from '../../../../src/application/commands/clone.js';
 import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { RefName } from '../../../../src/domain/objects/index.js';
+import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
   HttpRequest,
@@ -72,6 +73,86 @@ const buildPackFromSingleBlob = async (
   const id = built.ids[0];
   if (id === undefined) throw new Error('expected one entry');
   return { packBytes: built.packBytes, blobId: id };
+};
+
+const DECODER = new TextDecoder();
+
+const concatUint8 = (...parts: ReadonlyArray<Uint8Array>): Uint8Array => {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+};
+
+const buildV2AdvertisementBytes = (): Uint8Array => {
+  // Smart-HTTP still sends the `# service=...` prologue ahead of the v2
+  // capability list — negotiateDiscovery consumes it before peeking. Built
+  // directly (rather than via `buildDiscoveryBody`) so there is exactly one
+  // flush between the prologue and the capability list, not two.
+  const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
+  const capabilities = encodePktStream([
+    ENCODER.encode('version 2\n'),
+    ENCODER.encode('agent=git/test\n'),
+    ENCODER.encode('object-format=sha1\n'),
+    ENCODER.encode('ls-refs\n'),
+    ENCODER.encode('fetch\n'),
+  ]);
+  return concatUint8(header, capabilities);
+};
+
+const buildLsRefsResponseBytes = (refs: ReadonlyArray<{ name: string; id: string }>): Uint8Array =>
+  encodePktStream(refs.map((r) => ENCODER.encode(`${r.id} ${r.name}\n`)));
+
+const buildV2PackResponseBytes = (packBytes: Uint8Array): Uint8Array => {
+  const channel1 = new Uint8Array(packBytes.length + 1);
+  channel1[0] = 0x01;
+  channel1.set(packBytes, 1);
+  return encodePktStream([ENCODER.encode('packfile\n'), channel1]);
+};
+
+interface CloneFixtureV2Options {
+  readonly refs: ReadonlyArray<{ readonly name: string; readonly id: string }>;
+  readonly packBytes: Uint8Array;
+}
+
+/**
+ * A v2-capable remote: `info/refs` answers the v2 capability list; the same
+ * `git-upload-pack` POST endpoint serves both `ls-refs` and `fetch` command
+ * requests, distinguished by the `command=` line in the request body.
+ */
+const buildCloneRemoteV2 = (
+  opts: CloneFixtureV2Options,
+): { transport: HttpTransport; requests: HttpRequest[] } => {
+  const requests: HttpRequest[] = [];
+  const advertisement = buildV2AdvertisementBytes();
+  const lsRefsResponse = buildLsRefsResponseBytes(opts.refs);
+  const packResponse = buildV2PackResponseBytes(opts.packBytes);
+  const transport: HttpTransport = {
+    request: async (req: HttpRequest): Promise<HttpResponse> => {
+      requests.push(req);
+      const requestText = req.body === undefined ? '' : DECODER.decode(req.body);
+      const body = req.url.includes('/info/refs')
+        ? advertisement
+        : requestText.includes('command=ls-refs')
+          ? lsRefsResponse
+          : packResponse;
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'application/x-git-upload-pack-result' },
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(body.slice());
+            controller.close();
+          },
+        }),
+      };
+    },
+  };
+  return { transport, requests };
 };
 
 describe('clone', () => {
@@ -210,6 +291,37 @@ describe('clone', () => {
           (await readReflog(ctx, 'refs/remotes/origin/main' as RefName)).map((e) => e.message),
         ).toEqual(expected);
         expect((await readReflog(ctx, 'HEAD' as RefName)).map((e) => e.message)).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a v2-capable remote advertising one branch', () => {
+    describe('When clone', () => {
+      it('Then it negotiates via ls-refs + v2 fetch and writes the fetched ref', async () => {
+        // Arrange — v2's ls-refs response never surfaces a `symref=HEAD:...`
+        // capability (`parseLsRefsResponse` always returns `capabilities: []`),
+        // so unlike the v1 happy path, HEAD falls back to detached rather than
+        // resolving `refs/heads/main`.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 clone\n');
+        const { transport, requests } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
+        const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
+        expect(mainRef.trim()).toBe(blobId);
+        const requestBodies = requests
+          .filter((r) => r.method === 'POST')
+          .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
+        expect(requestBodies.some((b) => b.includes('command=ls-refs'))).toBe(true);
+        expect(requestBodies.some((b) => b.includes('command=fetch'))).toBe(true);
       });
     });
   });

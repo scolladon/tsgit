@@ -142,7 +142,7 @@ const findHead = (
   return { name: 'HEAD', id: targetRef.id };
 };
 
-const consumeServiceHeader = async (
+export const consumeServiceHeader = async (
   iter: AsyncIterator<PktLine>,
   expectedService: Service,
 ): Promise<void> => {

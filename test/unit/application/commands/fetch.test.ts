@@ -122,6 +122,76 @@ const fakeRemote = (
   return { transport, requests };
 };
 
+const DECODER = new TextDecoder();
+
+const buildV2AdvertisementBytes = (): Uint8Array => {
+  // Smart-HTTP still sends the `# service=...` prologue ahead of the v2
+  // capability list — negotiateDiscovery consumes it before peeking.
+  const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
+  const capabilities = encodePktStream([
+    ENCODER.encode('version 2\n'),
+    ENCODER.encode('agent=git/test\n'),
+    ENCODER.encode('object-format=sha1\n'),
+    ENCODER.encode('ls-refs\n'),
+    ENCODER.encode('fetch\n'),
+  ]);
+  const out = new Uint8Array(header.length + capabilities.length);
+  out.set(header, 0);
+  out.set(capabilities, header.length);
+  return out;
+};
+
+const buildLsRefsResponseBytes = (refs: ReadonlyArray<RemoteRef>): Uint8Array =>
+  encodePktStream(refs.map((r) => ENCODER.encode(`${r.id} ${r.name}\n`)));
+
+const buildV2PackResponseBytes = (packBytes: Uint8Array): Uint8Array => {
+  const channel1 = new Uint8Array(packBytes.length + 1);
+  channel1[0] = 0x01;
+  channel1.set(packBytes, 1);
+  return encodePktStream([ENCODER.encode('packfile\n'), channel1]);
+};
+
+interface FakeRemoteV2Opts {
+  readonly advertisedRefs: ReadonlyArray<RemoteRef>;
+  readonly packBytes: Uint8Array;
+}
+
+/**
+ * A v2-capable remote: `info/refs` answers the v2 capability list; the same
+ * `git-upload-pack` POST endpoint serves both `ls-refs` and `fetch` command
+ * requests, distinguished by the `command=` line in the request body.
+ */
+const fakeRemoteV2 = (
+  opts: FakeRemoteV2Opts,
+): { transport: HttpTransport; requests: HttpRequest[] } => {
+  const requests: HttpRequest[] = [];
+  const advertisement = buildV2AdvertisementBytes();
+  const lsRefsResponse = buildLsRefsResponseBytes(opts.advertisedRefs);
+  const packResponse = buildV2PackResponseBytes(opts.packBytes);
+  const transport: HttpTransport = {
+    request: async (req: HttpRequest): Promise<HttpResponse> => {
+      requests.push(req);
+      const requestText = req.body === undefined ? '' : DECODER.decode(req.body);
+      const body = req.url.includes('info/refs')
+        ? advertisement
+        : requestText.includes('command=ls-refs')
+          ? lsRefsResponse
+          : packResponse;
+      return {
+        statusCode: 200,
+        headers: {},
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(body.slice());
+            controller.close();
+          },
+        }),
+      };
+    },
+  };
+  return { transport, requests };
+};
+
 const writeOriginConfig = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
   await ctx.fs.writeUtf8(
     `${ctx.layout.gitDir}/config`,
@@ -327,6 +397,34 @@ describe('fetch', () => {
           );
           const entries = await readReflog(ctx, 'refs/remotes/origin/main' as RefName);
           expect(entries.map((e) => e.message)).toEqual(['fetch origin: storing head']);
+        });
+      });
+    });
+
+    describe('Given a v2-capable origin advertising one branch', () => {
+      describe('When fetch', () => {
+        it('Then it negotiates via ls-refs + v2 fetch and updates the remote-tracking ref', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 fetch\n');
+          const { transport, requests } = fakeRemoteV2({
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          expect(updated?.newId).toBe(blobId);
+          const requestBodies = requests
+            .filter((r) => r.method === 'POST')
+            .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
+          expect(requestBodies.some((b) => b.includes('command=ls-refs'))).toBe(true);
+          expect(requestBodies.some((b) => b.includes('command=fetch'))).toBe(true);
         });
       });
     });

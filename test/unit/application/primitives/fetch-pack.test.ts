@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { negotiatePackBytes } from '../../../../src/application/commands/internal/fetch-negotiation.js';
 import {
   type ExternalBaseResolver,
   fetchPack,
+  type NegotiatePackBytes,
   walkPackEntries,
 } from '../../../../src/application/primitives/fetch-pack.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -169,6 +171,14 @@ const toExchange =
     return decodePktStream(readableStreamToAsyncIterable(response.body));
   };
 
+// `fetchPack` now takes a version-bound negotiator rather than a raw
+// exchange; wrapping the transport through the real v1 negotiator keeps
+// every existing wire-level scenario below byte-identical to pre-change.
+const toNegotiator =
+  (transport: HttpTransport): NegotiatePackBytes =>
+  (ctx, input) =>
+    negotiatePackBytes(ctx, { exchange: toExchange(transport) }, 1, input);
+
 type MemCtx = ReturnType<typeof createMemoryContext>;
 
 const withConfig = (ctx: MemCtx, patch: Partial<NonNullable<MemCtx['config']>>): MemCtx =>
@@ -269,7 +279,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -321,7 +331,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, toExchange(transport), {
+          await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -349,7 +359,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, toExchange(transport), {
+          await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta', 'filter'],
@@ -375,7 +385,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -402,7 +412,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -425,7 +435,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(new Uint8Array(0));
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: ['a'.repeat(40) as ObjectId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -459,7 +469,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -494,7 +504,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -528,7 +538,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [normal.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -582,7 +592,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -626,7 +636,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [unknownBaseId as ObjectId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -658,7 +668,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [],
               haves: [],
               capabilities: [],
@@ -695,7 +705,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -736,7 +746,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -770,7 +780,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -820,7 +830,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -863,7 +873,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -902,7 +912,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -940,7 +950,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -980,7 +990,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1020,7 +1030,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1050,7 +1060,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(tightCtx, toExchange(transport), {
+          const sut = await fetchPack(tightCtx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1074,7 +1084,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(exactCtx, toExchange(transport), {
+          const sut = await fetchPack(exactCtx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1100,7 +1110,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(overCtx, toExchange(transport), {
+            await fetchPack(overCtx, toNegotiator(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1136,7 +1146,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: [], // no side-band advertised
@@ -1163,7 +1173,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, toExchange(transport), {
+          await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1209,7 +1219,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1245,7 +1255,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1295,7 +1305,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1359,7 +1369,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1407,7 +1417,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1462,7 +1472,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1524,7 +1534,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1561,7 +1571,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1591,7 +1601,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, toExchange(transport), {
+          await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1619,7 +1629,7 @@ describe('fetchPack', () => {
 
           // Act
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [blobId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1653,7 +1663,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          await fetchPack(ctx, toExchange(transport), {
+          await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1684,7 +1694,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1711,7 +1721,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1743,7 +1753,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1778,7 +1788,7 @@ describe('fetchPack', () => {
           // Act
           let caught: unknown;
           try {
-            await fetchPack(ctx, toExchange(transport), {
+            await fetchPack(ctx, toNegotiator(transport), {
               wants: [dummyId],
               haves: [],
               capabilities: ['side-band-64k'],
@@ -1812,7 +1822,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toExchange(transport), {
+          const sut = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
