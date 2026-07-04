@@ -761,6 +761,39 @@ describe('clone', () => {
       });
     });
   });
+
+  describe('Given a discovery with a path-traversal ref name (refs/heads/../../../config)', () => {
+    describe('When clone', () => {
+      it('Then the malicious ref is not written and the legitimate ref still is', async () => {
+        // Arrange — a hostile server advertises a ref name that, once
+        // prefixed with refs/remotes/origin/, would escape .git and
+        // overwrite gitDir/config.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'safe\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+          refs: [
+            { name: 'refs/heads/main', id: blobId },
+            { name: 'refs/heads/../../../config', id: blobId },
+          ],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert — the malicious ref is dropped, the legitimate ref is
+        // written, and gitDir/config is untouched (not clobbered with a raw oid).
+        const names = sut.fetchedRefs.map((r) => r.name);
+        expect(names).not.toContain('refs/remotes/origin/../../../config');
+        expect(names).toContain('refs/remotes/origin/main');
+        const configAfter = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(configAfter).toContain('[core]');
+      });
+    });
+  });
 });
 
 describe('clone — progress reporting', () => {

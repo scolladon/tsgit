@@ -1,7 +1,7 @@
 import { ObjectId } from '../../objects/object-id.js';
-import { invalidRefLine } from '../error.js';
+import { invalidRefLine, tooManyAdvertisedRefs } from '../error.js';
 import type { PktLine } from '../pkt-line.js';
-import type { AdvertisedRef, Advertisement } from '../upload-pack.js';
+import { type AdvertisedRef, type Advertisement, MAX_ADVERTISED_REFS } from '../upload-pack.js';
 import { encodeCommandRequest } from './sections.js';
 
 const TEXT_ENCODER = new TextEncoder();
@@ -80,6 +80,23 @@ const findLsRefsHead = (
   return targetRef === undefined ? undefined : { name: 'HEAD', id: targetRef.id };
 };
 
+/**
+ * Bounds the ref count before appending, mirroring v1's `collectRefs` cap: a
+ * hostile server could otherwise flood the response with refs to exhaust
+ * heap on the client.
+ */
+const pushAdvertisedRef = (refs: AdvertisedRef[], parsed: ParsedRefLine, line: string): void => {
+  if (refs.length >= MAX_ADVERTISED_REFS) {
+    throw tooManyAdvertisedRefs(refs.length + 1, MAX_ADVERTISED_REFS);
+  }
+  const id = validateOidString(parsed.oidToken, line);
+  refs.push(
+    parsed.peeled === undefined
+      ? { id, name: parsed.name }
+      : { id, name: parsed.name, peeled: validateOidString(parsed.peeled, line) },
+  );
+};
+
 export const parseLsRefsResponse = async (
   pktStream: AsyncIterable<PktLine>,
 ): Promise<Advertisement> => {
@@ -96,12 +113,7 @@ export const parseLsRefsResponse = async (
     if (parsed.symrefTarget !== undefined) {
       if (parsed.name === 'HEAD') headSymrefTarget = parsed.symrefTarget;
     } else {
-      const id = validateOidString(parsed.oidToken, line);
-      refs.push(
-        parsed.peeled === undefined
-          ? { id, name: parsed.name }
-          : { id, name: parsed.name, peeled: validateOidString(parsed.peeled, line) },
-      );
+      pushAdvertisedRef(refs, parsed, line);
     }
     pkt = await iter.next();
   }

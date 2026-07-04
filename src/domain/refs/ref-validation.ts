@@ -60,3 +60,12 @@ export function validateRefName(name: string): RefName {
 
   return name as RefName;
 }
+
+export function isSafeRefName(name: string): boolean {
+  try {
+    validateRefName(name);
+    return true;
+  } catch {
+    return false;
+  }
+}

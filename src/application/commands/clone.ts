@@ -8,6 +8,7 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
+import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
@@ -214,6 +215,7 @@ const writeFetchedRefs = async (
   const written: Array<{ name: RefName; id: ObjectId }> = [];
   for (const ref of advertisement.refs) {
     if (ref.name === 'HEAD') continue;
+    if (!isSafeRefName(ref.name)) continue;
     if (ref.name.startsWith('refs/heads/')) {
       const branch = ref.name.slice('refs/heads/'.length);
       const remoteRef = `refs/remotes/origin/${branch}` as RefName;

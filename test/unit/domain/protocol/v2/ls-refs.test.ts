@@ -8,6 +8,7 @@ import {
   encodePktStream,
   type PktLine,
 } from '../../../../../src/domain/protocol/pkt-line.js';
+import { MAX_ADVERTISED_REFS } from '../../../../../src/domain/protocol/upload-pack.js';
 import {
   buildLsRefsRequest,
   parseLsRefsResponse,
@@ -322,6 +323,67 @@ describe('parseLsRefsResponse', () => {
         expect(sut.refs).toEqual([{ name: 'refs/heads/main', id: OID1 }]);
         expect(sut.head).toBeUndefined();
       });
+    });
+  });
+});
+
+describe('parseLsRefsResponse — advertised-refs cap', () => {
+  describe('Given a response exceeding MAX_ADVERTISED_REFS', () => {
+    describe('When parsed', () => {
+      it('Then throws TOO_MANY_ADVERTISED_REFS before allocating beyond the cap', async () => {
+        // Arrange — synthesize a PktLine async iterable directly so we don't
+        // have to build MAX_ADVERTISED_REFS+1 raw bytes (that would balloon the
+        // test). The parser consumes pkt-lines, not bytes, so an in-process
+        // generator is the cheapest fixture.
+        const overage = MAX_ADVERTISED_REFS + 1;
+        async function* pkts(): AsyncIterable<PktLine> {
+          for (let i = 0; i < overage; i += 1) {
+            const padded = i.toString(16).padStart(40, '0');
+            yield dataLine(`${padded} refs/heads/b${i}\n`);
+          }
+          yield { kind: 'flush' };
+        }
+
+        // Act
+        let caught: unknown;
+        try {
+          await parseLsRefsResponse(pkts());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          readonly code: string;
+          readonly count?: number;
+          readonly limit?: number;
+        };
+        expect(data.code).toBe('TOO_MANY_ADVERTISED_REFS');
+        expect(data.limit).toBe(MAX_ADVERTISED_REFS);
+        expect(data.count).toBe(overage);
+      }, 30_000);
+    });
+  });
+
+  describe('Given a response with exactly MAX_ADVERTISED_REFS refs', () => {
+    describe('When parsed', () => {
+      it('Then it resolves with refs.length === MAX_ADVERTISED_REFS', async () => {
+        // Arrange
+        async function* pkts(): AsyncIterable<PktLine> {
+          for (let i = 0; i < MAX_ADVERTISED_REFS; i += 1) {
+            const padded = i.toString(16).padStart(40, '0');
+            yield dataLine(`${padded} refs/heads/b${i}\n`);
+          }
+          yield { kind: 'flush' };
+        }
+
+        // Act
+        const sut = await parseLsRefsResponse(pkts());
+
+        // Assert
+        expect(sut.refs.length).toBe(MAX_ADVERTISED_REFS);
+      }, 30_000);
     });
   });
 });

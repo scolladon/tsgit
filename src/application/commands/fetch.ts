@@ -26,7 +26,7 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
@@ -353,15 +353,6 @@ const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | u
     return ref.name as RefName;
   }
   return undefined;
-};
-
-const isSafeRefName = (name: string): boolean => {
-  try {
-    validateRefName(name);
-    return true;
-  } catch {
-    return false;
-  }
 };
 
 const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {

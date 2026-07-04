@@ -19,4 +19,4 @@ export { refCandidates } from './ref-candidates.js';
 export type { DirectRef, LooseRef, PackedRefEntry, PackedRefs, SymbolicRef } from './ref-types.js';
 
 // Validation
-export { validateRefName } from './ref-validation.js';
+export { isSafeRefName, validateRefName } from './ref-validation.js';
