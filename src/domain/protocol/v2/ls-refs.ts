@@ -46,8 +46,11 @@ const parseRefLine = (line: string): ParsedRefLine => {
   const spaceIdx = line.indexOf(' ');
   if (spaceIdx < 0) throw invalidRefLine(line);
   const oidToken = line.slice(0, spaceIdx);
-  const [name, ...attrs] = line.slice(spaceIdx + 1).split(' ');
-  if (name === undefined || name.length === 0) throw invalidRefLine(line);
+  const rest = line.slice(spaceIdx + 1);
+  const nameEndIdx = rest.indexOf(' ');
+  const name = nameEndIdx === -1 ? rest : rest.slice(0, nameEndIdx);
+  if (name.length === 0) throw invalidRefLine(line);
+  const attrs = nameEndIdx === -1 ? [] : rest.slice(nameEndIdx + 1).split(' ');
 
   const symrefTarget = findAttribute(attrs, SYMREF_TARGET_PREFIX);
   if (symrefTarget !== undefined) return { name, oidToken, symrefTarget };

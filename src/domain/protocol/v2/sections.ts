@@ -6,6 +6,9 @@ const KNOWN_SECTION_NAMES = ['acknowledgments', 'shallow-info', 'wanted-refs', '
 
 export type SectionName = (typeof KNOWN_SECTION_NAMES)[number];
 
+/** A pkt-line already known to carry a data payload — the only kind `sectionLines` ever yields. */
+export type DataPktLine = Extract<PktLine, { kind: 'data' }>;
+
 /**
  * One named section of a v2 command response. `lines` is a lazy view over
  * the shared underlying pkt-line stream: the consumer MUST fully drain it
@@ -14,7 +17,7 @@ export type SectionName = (typeof KNOWN_SECTION_NAMES)[number];
  */
 export type Section = {
   readonly name: SectionName;
-  readonly lines: AsyncIterable<PktLine>;
+  readonly lines: AsyncIterable<DataPktLine>;
 };
 
 const TEXT_ENCODER = new TextEncoder();
@@ -60,7 +63,7 @@ export const encodeCommandRequest = (
 async function* sectionLines(
   iter: AsyncIterator<PktLine>,
   onBoundary: (continues: boolean) => void,
-): AsyncGenerator<PktLine, void, unknown> {
+): AsyncGenerator<DataPktLine, void, unknown> {
   for (;;) {
     const next = await iter.next();
     if (next.done || next.value.kind !== 'data') {

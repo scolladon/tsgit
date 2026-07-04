@@ -8,7 +8,12 @@ import {
   parseAckLine,
   tryConsumeShallowLine,
 } from '../upload-pack.js';
-import { encodeCommandRequest, readSections, type SectionName } from './sections.js';
+import {
+  type DataPktLine,
+  encodeCommandRequest,
+  readSections,
+  type SectionName,
+} from './sections.js';
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
@@ -27,8 +32,8 @@ const MAX_V2_SECTION_ENTRIES = MAX_ADVERTISED_REFS;
  */
 async function* boundedLines(
   section: SectionName,
-  lines: AsyncIterable<PktLine>,
-): AsyncGenerator<PktLine, void, unknown> {
+  lines: AsyncIterable<DataPktLine>,
+): AsyncGenerator<DataPktLine, void, unknown> {
   let count = 0;
   for await (const pkt of lines) {
     count += 1;
@@ -71,15 +76,6 @@ export const buildV2FetchRequest = (options: V2FetchRequestOptions): Uint8Array 
   return encodeCommandRequest('fetch', options.args ?? [], payloads);
 };
 
-/**
- * `readSections` (see sections.ts) only ever yields `data` pkt-lines through a
- * section's `lines` view — the boundary line (delim/flush/response-end) that
- * ends a section is detected internally and never handed to the consumer.
- * The cast documents that guarantee instead of adding an unreachable branch.
- */
-const dataPayload = (pkt: PktLine): Uint8Array =>
-  (pkt as Extract<PktLine, { kind: 'data' }>).payload;
-
 interface AcknowledgmentsResult {
   readonly acks: ReadonlyArray<AckEntry>;
   readonly nak: boolean;
@@ -87,13 +83,13 @@ interface AcknowledgmentsResult {
 }
 
 const parseAcknowledgments = async (
-  lines: AsyncIterable<PktLine>,
+  lines: AsyncIterable<DataPktLine>,
 ): Promise<AcknowledgmentsResult> => {
   const acks: AckEntry[] = [];
   let nak = false;
   let ready = false;
   for await (const pkt of lines) {
-    const text = TEXT_DECODER.decode(dataPayload(pkt));
+    const text = TEXT_DECODER.decode(pkt.payload);
     if (text.startsWith('ACK ')) {
       acks.push(parseAckLine(text));
       continue;
@@ -114,10 +110,10 @@ interface ShallowInfoResult {
   readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
-const parseShallowInfo = async (lines: AsyncIterable<PktLine>): Promise<ShallowInfoResult> => {
+const parseShallowInfo = async (lines: AsyncIterable<DataPktLine>): Promise<ShallowInfoResult> => {
   const state = { shallow: [] as ObjectId[], unshallow: [] as ObjectId[] };
   for await (const pkt of lines) {
-    tryConsumeShallowLine(TEXT_DECODER.decode(dataPayload(pkt)), state);
+    tryConsumeShallowLine(TEXT_DECODER.decode(pkt.payload), state);
   }
   return state;
 };
@@ -129,11 +125,11 @@ const parseWantedRefLine = (line: string): WantedRef => {
 };
 
 const parseWantedRefs = async (
-  lines: AsyncIterable<PktLine>,
+  lines: AsyncIterable<DataPktLine>,
 ): Promise<ReadonlyArray<WantedRef>> => {
   const wantedRefs: WantedRef[] = [];
   for await (const pkt of lines) {
-    wantedRefs.push(parseWantedRefLine(TEXT_DECODER.decode(dataPayload(pkt))));
+    wantedRefs.push(parseWantedRefLine(TEXT_DECODER.decode(pkt.payload)));
   }
   return wantedRefs;
 };
