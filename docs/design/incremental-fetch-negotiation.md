@@ -591,8 +591,6 @@ incremental fetch over the corrected v1 path; HTTP is the primary faithfulness p
 
 ## Out of scope
 
-- **v2 partial-clone `filter` args** — v2 unblocks them (ADR-005 §Negative), but 25.3 delivers
-  incremental fetch only; the `filter` arg is future partial-clone work.
 - **v2 over SSH** — sub-decision D5; SSH uses the corrected v1 path. A follow-on adds
   `GIT_PROTOCOL` env-forwarding to the SSH channel.
 - **Multi-round v2 negotiation** (`ready`-driven progressive have batches, `wait-for-done`) — tsgit
