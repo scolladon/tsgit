@@ -88,18 +88,19 @@ const concatUint8 = (...parts: ReadonlyArray<Uint8Array>): Uint8Array => {
   return out;
 };
 
-const buildV2AdvertisementBytes = (): Uint8Array => {
+const buildV2AdvertisementBytes = (opts: { readonly filter?: boolean } = {}): Uint8Array => {
   // Smart-HTTP still sends the `# service=...` prologue ahead of the v2
   // capability list — negotiateDiscovery consumes it before peeking. Built
   // directly (rather than via `buildDiscoveryBody`) so there is exactly one
   // flush between the prologue and the capability list, not two.
   const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
+  const fetchLine = opts.filter === true ? 'fetch=shallow wait-for-done filter\n' : 'fetch\n';
   const capabilities = encodePktStream([
     ENCODER.encode('version 2\n'),
     ENCODER.encode('agent=git/test\n'),
     ENCODER.encode('object-format=sha1\n'),
     ENCODER.encode('ls-refs\n'),
-    ENCODER.encode('fetch\n'),
+    ENCODER.encode(fetchLine),
   ]);
   return concatUint8(header, capabilities);
 };
@@ -127,6 +128,8 @@ interface CloneFixtureV2Options {
   readonly refs: ReadonlyArray<{ readonly name: string; readonly id: string }>;
   readonly head: string;
   readonly packBytes: Uint8Array;
+  /** When true, the v2 `fetch` command advertises the `filter` sub-feature. */
+  readonly filter?: boolean;
 }
 
 /**
@@ -138,7 +141,9 @@ const buildCloneRemoteV2 = (
   opts: CloneFixtureV2Options,
 ): { transport: HttpTransport; requests: HttpRequest[] } => {
   const requests: HttpRequest[] = [];
-  const advertisement = buildV2AdvertisementBytes();
+  const advertisement = buildV2AdvertisementBytes(
+    opts.filter === undefined ? {} : { filter: opts.filter },
+  );
   const lsRefsResponse = buildLsRefsResponseBytes(opts.refs, opts.head);
   const packResponse = buildV2PackResponseBytes(opts.packBytes);
   const transport: HttpTransport = {
@@ -899,6 +904,63 @@ describe('clone — partial clone', () => {
         });
         const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
         expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a v2-capable server whose fetch command advertises filter', () => {
+    describe('When clone with blob:none', () => {
+      it('Then it does not throw and sends the filter arg over the v2 fetch request', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 filtered\n');
+        const { transport, requests } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+          filter: true,
+        });
+
+        // Act
+        await clone(withTransport(ctx, transport), { url: REMOTE_URL, filter: 'blob:none' });
+
+        // Assert — the v2 fetch command request carries the filter arg, and
+        // the promisor config block is written just like the v1 path.
+        const fetchRequest = requests.find(
+          (r) => r.body !== undefined && DECODER.decode(r.body).includes('command=fetch'),
+        );
+        expect(fetchRequest).toBeDefined();
+        expect(DECODER.decode(fetchRequest?.body)).toContain('filter blob:none');
+        const parsed = await readConfig(ctx);
+        expect(parsed.remote?.get('origin')?.promisor).toBe(true);
+        expect(parsed.remote?.get('origin')?.partialCloneFilter).toBe('blob:none');
+      });
+    });
+  });
+
+  describe('Given a v2-capable server whose fetch command does not advertise filter', () => {
+    describe('When clone with a filter', () => {
+      it('Then throws REMOTE_FILTER_UNSUPPORTED', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 unfiltered\n');
+        const { transport } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await clone(withTransport(ctx, transport), { url: REMOTE_URL, filter: 'blob:none' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REMOTE_FILTER_UNSUPPORTED');
       });
     });
   });

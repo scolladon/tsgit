@@ -124,16 +124,17 @@ const fakeRemote = (
 
 const DECODER = new TextDecoder();
 
-const buildV2AdvertisementBytes = (): Uint8Array => {
+const buildV2AdvertisementBytes = (opts: { readonly filter?: boolean } = {}): Uint8Array => {
   // Smart-HTTP still sends the `# service=...` prologue ahead of the v2
   // capability list — negotiateDiscovery consumes it before peeking.
   const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
+  const fetchLine = opts.filter === true ? 'fetch=shallow wait-for-done filter\n' : 'fetch\n';
   const capabilities = encodePktStream([
     ENCODER.encode('version 2\n'),
     ENCODER.encode('agent=git/test\n'),
     ENCODER.encode('object-format=sha1\n'),
     ENCODER.encode('ls-refs\n'),
-    ENCODER.encode('fetch\n'),
+    ENCODER.encode(fetchLine),
   ]);
   const out = new Uint8Array(header.length + capabilities.length);
   out.set(header, 0);
@@ -154,6 +155,8 @@ const buildV2PackResponseBytes = (packBytes: Uint8Array): Uint8Array => {
 interface FakeRemoteV2Opts {
   readonly advertisedRefs: ReadonlyArray<RemoteRef>;
   readonly packBytes: Uint8Array;
+  /** When true, the v2 `fetch` command advertises the `filter` sub-feature. */
+  readonly filter?: boolean;
 }
 
 /**
@@ -165,7 +168,9 @@ const fakeRemoteV2 = (
   opts: FakeRemoteV2Opts,
 ): { transport: HttpTransport; requests: HttpRequest[] } => {
   const requests: HttpRequest[] = [];
-  const advertisement = buildV2AdvertisementBytes();
+  const advertisement = buildV2AdvertisementBytes(
+    opts.filter === undefined ? {} : { filter: opts.filter },
+  );
   const lsRefsResponse = buildLsRefsResponseBytes(opts.advertisedRefs);
   const packResponse = buildV2PackResponseBytes(opts.packBytes);
   const transport: HttpTransport = {
@@ -1979,6 +1984,67 @@ describe('fetch — partial clone', () => {
           url: 'https://example.com/r.git',
           advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
           advertisedCaps: ['side-band-64k', 'ofs-delta'],
+          packBytes,
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetch({ ...ctx, transport });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REMOTE_FILTER_UNSUPPORTED');
+      });
+    });
+  });
+
+  describe('Given a partial repo and a v2-capable server whose fetch command advertises filter', () => {
+    describe('When fetch', () => {
+      it('Then the v2 fetch request carries the filter and a promisor pack is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedPartialRepo(
+          ctx,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+        );
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 partial fetch\n');
+        const { transport, requests } = fakeRemoteV2({
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+          filter: true,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport });
+
+        // Assert — the v2 fetch command request carries the filter arg.
+        const fetchRequest = requests.find(
+          (r) => r.body !== undefined && DECODER.decode(r.body).includes('command=fetch'),
+        );
+        expect(fetchRequest).toBeDefined();
+        expect(DECODER.decode(fetchRequest?.body)).toContain('filter blob:none');
+        const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
+        expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a partial repo and a v2-capable server whose fetch command does not advertise filter', () => {
+    describe('When fetch', () => {
+      it('Then throws REMOTE_FILTER_UNSUPPORTED', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedPartialRepo(
+          ctx,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+        );
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 dropped\n');
+        const { transport } = fakeRemoteV2({
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
           packBytes,
         });
 

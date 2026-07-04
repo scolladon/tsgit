@@ -1002,7 +1002,9 @@
     "dpusher",
     "enonce",
     "epush",
-    "lnbm"
+    "lnbm",
+    "objectname",
+    "objecttype"
   ],
   "ignorePaths": [
     "node_modules",

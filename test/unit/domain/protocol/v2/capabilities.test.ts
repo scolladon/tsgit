@@ -60,6 +60,53 @@ describe('parseV2Capabilities', () => {
     });
   });
 
+  describe('Given a version-2 advertisement whose fetch command advertises filter', () => {
+    describe('When parsed', () => {
+      it('Then fetchFeatures includes filter', async () => {
+        // Arrange
+        const advertisement = [
+          'version 2\n',
+          'ls-refs=unborn\n',
+          'fetch=shallow wait-for-done filter\n',
+          'object-format=sha1\n',
+        ];
+
+        // Act
+        const caps = await parseV2Capabilities(streamOf(advertisement));
+
+        // Assert
+        expect(caps.fetchFeatures.has('filter')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a version-2 advertisement whose fetch command does not advertise filter', () => {
+    describe('When parsed', () => {
+      it('Then fetchFeatures omits filter', async () => {
+        // Arrange & Act
+        const caps = await parseV2Capabilities(streamOf(FULL_ADVERTISEMENT));
+
+        // Assert
+        expect(caps.fetchFeatures.has('filter')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a version-2 advertisement whose fetch command has no feature list', () => {
+    describe('When parsed', () => {
+      it('Then fetchFeatures is empty', async () => {
+        // Arrange
+        const advertisement = ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha1\n'];
+
+        // Act
+        const caps = await parseV2Capabilities(streamOf(advertisement));
+
+        // Assert
+        expect(caps.fetchFeatures.size).toBe(0);
+      });
+    });
+  });
+
   describe('Given a first line that is not "version 2"', () => {
     describe('When parsed', () => {
       it('Then it throws V2_COMMAND_UNSUPPORTED carrying the offending line', async () => {

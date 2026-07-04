@@ -54,14 +54,18 @@ const SERVICE_HEADER = concatBytes(pktBytes('# service=git-upload-pack\n'), FLUS
 
 const v1RefLine = (): Uint8Array => pktBytes(`${OID_A} refs/heads/main\0ofs-delta\n`);
 
-const v2CapabilityLines = (opts: { readonly fetch: boolean } = { fetch: true }): Uint8Array[] => {
+const v2CapabilityLines = (
+  opts: { readonly fetch: boolean; readonly filter?: boolean } = { fetch: true },
+): Uint8Array[] => {
   const lines = [
     pktBytes('version 2\n'),
     pktBytes('agent=git/test\n'),
     pktBytes('object-format=sha1\n'),
   ];
   lines.push(pktBytes('ls-refs\n'));
-  if (opts.fetch) lines.push(pktBytes('fetch\n'));
+  if (opts.fetch) {
+    lines.push(pktBytes(opts.filter === true ? 'fetch=shallow wait-for-done filter\n' : 'fetch\n'));
+  }
   return lines;
 };
 
@@ -265,6 +269,43 @@ describe('negotiateDiscovery', () => {
 
         // Assert
         expect(caught?.data).toEqual({ code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' });
+      });
+    });
+  });
+
+  describe('Given a version-2 advertisement whose fetch command advertises filter', () => {
+    describe('When negotiateDiscovery runs', () => {
+      it('Then advertisement.capabilities includes filter', async () => {
+        // Arrange
+        const discoveryBody = concatBytes(
+          ...v2CapabilityLines({ fetch: true, filter: true }),
+          FLUSH,
+        );
+        const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
+        const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
+
+        // Act
+        const sut = await negotiateDiscovery(session);
+
+        // Assert
+        expect(sut.advertisement.capabilities).toContain('filter');
+      });
+    });
+  });
+
+  describe('Given a version-2 advertisement whose fetch command does not advertise filter', () => {
+    describe('When negotiateDiscovery runs', () => {
+      it('Then advertisement.capabilities omits filter', async () => {
+        // Arrange
+        const discoveryBody = concatBytes(...v2CapabilityLines({ fetch: true }), FLUSH);
+        const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
+        const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
+
+        // Act
+        const sut = await negotiateDiscovery(session);
+
+        // Assert
+        expect(sut.advertisement.capabilities).not.toContain('filter');
       });
     });
   });

@@ -100,6 +100,21 @@ const resolveFirstDiscoveryLine = async (
   return iter.next();
 };
 
+/**
+ * Real git advertises `filter` as a sub-feature of the v2 `fetch` command
+ * (`fetch=shallow wait-for-done filter`), not as a top-level ref-advertisement
+ * capability the way v1 does. Folding it into `advertisement.capabilities`
+ * keeps `advertisesFilter` — and the filter guard in clone/fetch that calls
+ * it — version-agnostic.
+ */
+const withV2FilterCapability = (
+  advertisement: Advertisement,
+  fetchFeatures: ReadonlySet<string>,
+): Advertisement =>
+  fetchFeatures.has('filter')
+    ? { ...advertisement, capabilities: [...advertisement.capabilities, 'filter'] }
+    : advertisement;
+
 export const negotiateDiscovery = async (session: GitServiceSession): Promise<DiscoveryResult> => {
   const pktStream = await session.advertisement();
   const iter = pktStream[Symbol.asyncIterator]();
@@ -115,7 +130,8 @@ export const negotiateDiscovery = async (session: GitServiceSession): Promise<Di
   const capabilities = await parseV2Capabilities(withPushback(iter, first));
   if (!supportsV2Fetch(capabilities)) throw v2CommandUnsupported('fetch');
   const responsePkts = await session.exchange(buildLsRefsRequest({ symrefs: true }));
-  const advertisement = await parseLsRefsResponse(responsePkts);
+  const lsRefsAdvertisement = await parseLsRefsResponse(responsePkts);
+  const advertisement = withV2FilterCapability(lsRefsAdvertisement, capabilities.fetchFeatures);
   return { version: 2, advertisement };
 };
 

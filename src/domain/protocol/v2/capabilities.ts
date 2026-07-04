@@ -9,6 +9,12 @@ export type V2Capabilities = {
   readonly version: 2;
   readonly agent?: string;
   readonly commands: ReadonlySet<string>;
+  /**
+   * Sub-features of the `fetch` command, parsed from its `fetch=<features>`
+   * value (e.g. `shallow`, `wait-for-done`, `filter`). Empty when the server
+   * advertises a bare `fetch` line or omits the command entirely.
+   */
+  readonly fetchFeatures: ReadonlySet<string>;
   readonly objectFormat: string;
 };
 
@@ -28,6 +34,42 @@ const readLine = async (iter: AsyncIterator<PktLine>): Promise<string | undefine
   return stripTrailingNewline(TEXT_DECODER.decode(next.value.payload));
 };
 
+const splitFetchFeatures = (value: string | undefined): ReadonlyArray<string> =>
+  value === undefined ? [] : value.split(' ').filter((feature) => feature.length > 0);
+
+interface CapabilityState {
+  readonly commands: Set<string>;
+  readonly fetchFeatures: Set<string>;
+  agent: string | undefined;
+  objectFormat: string;
+}
+
+/** `ls-refs`/`fetch` lines add to `commands`; `fetch`'s own `=<features>` value additionally fans out into `fetchFeatures`. */
+const applyCommandLine = (
+  state: CapabilityState,
+  name: string,
+  value: string | undefined,
+): void => {
+  if (!KNOWN_COMMANDS.has(name)) return;
+  state.commands.add(name);
+  if (name !== 'fetch') return;
+  for (const feature of splitFetchFeatures(value)) state.fetchFeatures.add(feature);
+};
+
+const applyCapabilityLine = (state: CapabilityState, line: string): void => {
+  const [name, value] = splitCapability(line);
+  if (name === 'agent') {
+    state.agent = value;
+    return;
+  }
+  if (name === 'object-format') {
+    state.objectFormat = value ?? '';
+    if (state.objectFormat !== DEFAULT_OBJECT_FORMAT) throw v2CommandUnsupported(line);
+    return;
+  }
+  applyCommandLine(state, name, value);
+};
+
 export const parseV2Capabilities = async (
   pktStream: AsyncIterable<PktLine>,
 ): Promise<V2Capabilities> => {
@@ -37,31 +79,31 @@ export const parseV2Capabilities = async (
     throw v2CommandUnsupported(first ?? '');
   }
 
-  const commands = new Set<string>();
-  let agent: string | undefined;
-  let objectFormat = DEFAULT_OBJECT_FORMAT;
+  const state: CapabilityState = {
+    commands: new Set<string>(),
+    fetchFeatures: new Set<string>(),
+    agent: undefined,
+    objectFormat: DEFAULT_OBJECT_FORMAT,
+  };
 
   for (let line = await readLine(iter); line !== undefined; line = await readLine(iter)) {
-    const [name, value] = splitCapability(line);
-    if (name === 'agent') {
-      agent = value;
-      continue;
-    }
-    if (name === 'object-format') {
-      objectFormat = value ?? '';
-      if (objectFormat !== DEFAULT_OBJECT_FORMAT) {
-        throw v2CommandUnsupported(line);
-      }
-      continue;
-    }
-    if (KNOWN_COMMANDS.has(name)) {
-      commands.add(name);
-    }
+    applyCapabilityLine(state, line);
   }
 
-  return agent === undefined
-    ? { version: 2, commands, objectFormat }
-    : { version: 2, agent, commands, objectFormat };
+  return state.agent === undefined
+    ? {
+        version: 2,
+        commands: state.commands,
+        fetchFeatures: state.fetchFeatures,
+        objectFormat: state.objectFormat,
+      }
+    : {
+        version: 2,
+        agent: state.agent,
+        commands: state.commands,
+        fetchFeatures: state.fetchFeatures,
+        objectFormat: state.objectFormat,
+      };
 };
 
 export const supportsV2Fetch = (caps: V2Capabilities): boolean =>
