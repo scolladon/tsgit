@@ -4,14 +4,26 @@ import type { ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import type { SectionName } from '../../../../../src/domain/protocol/v2/sections.js';
 import { oidArb } from '../arbitraries.js';
 
-const TOKEN_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-'.split('');
+const charRange = (start: string, end: string): string[] =>
+  Array.from({ length: end.charCodeAt(0) - start.charCodeAt(0) + 1 }, (_, i) =>
+    String.fromCharCode(start.charCodeAt(0) + i),
+  );
+
+const TOKEN_CHARS = [...charRange('a', 'z'), ...charRange('0', '9'), '-'];
 
 const tokenArb = (): fc.Arbitrary<string> =>
   fc
     .array(fc.constantFrom(...TOKEN_CHARS), { minLength: 1, maxLength: 16 })
     .map((chars) => chars.join(''));
 
-const AGENT_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-./'.split('');
+const AGENT_CHARS = [
+  ...charRange('a', 'z'),
+  ...charRange('A', 'Z'),
+  ...charRange('0', '9'),
+  '-',
+  '.',
+  '/',
+];
 
 const agentTokenArb = (): fc.Arbitrary<string> =>
   fc
