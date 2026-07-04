@@ -961,9 +961,10 @@ describe('fetchPack', () => {
 
     describe('Given an empty pack (0 objects)', () => {
       describe('When fetchPack runs', () => {
-        it('Then writes a valid.pack +.idx', async () => {
+        it('Then suppresses the pack/idx artifacts', async () => {
           // Arrange — assemble a 12-byte header with objectCount=0 + 20-byte trailer.
           const ctx = createMemoryContext();
+          await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
           const dummyId = (await computeBlobId(ctx, ENCODER.encode('dummy\n'))) as ObjectId;
           const header = new Uint8Array(12);
           const dv = new DataView(header.buffer);
@@ -988,8 +989,52 @@ describe('fetchPack', () => {
 
           // Assert
           expect(sut.objectCount).toBe(0);
-          const idx = parsePackIndex(await ctx.fs.read(sut.idxPath));
-          expect(idx.objectCount).toBe(0);
+          expect(sut.packPath).toBe('');
+          expect(sut.idxPath).toBe('');
+          const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
+          expect(packDir).toHaveLength(0);
+        });
+      });
+    });
+
+    describe('Given a pack whose header declares 0 objects but the trailer does not match', () => {
+      describe('When fetchPack runs', () => {
+        it('Then throws INVALID_PACK_HEADER instead of silently suppressing it', async () => {
+          // Arrange — objectCount=0 makes this look like a legitimate empty pack,
+          // but the trailer is garbage. Pins that verification runs BEFORE the
+          // empty-pack suppression check, not instead of it.
+          const ctx = createMemoryContext();
+          const dummyId = (await computeBlobId(ctx, ENCODER.encode('dummy\n'))) as ObjectId;
+          const header = new Uint8Array(12);
+          const dv = new DataView(header.buffer);
+          dv.setUint32(0, 0x5041434b);
+          dv.setUint32(4, 2);
+          dv.setUint32(8, 0);
+          const trailerBytes = new Uint8Array(20).fill(0xff);
+          const packBytes = new Uint8Array(header.length + trailerBytes.length);
+          packBytes.set(header, 0);
+          packBytes.set(trailerBytes, header.length);
+          const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+          const { transport } = captureRequests(body);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetchPack(ctx, toExchange(transport), {
+              wants: [dummyId],
+              haves: [],
+              capabilities: ['side-band-64k'],
+              progressOp: 'test:write-objects',
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('INVALID_PACK_HEADER');
+          expect(data.reason).toContain('trailer mismatch');
         });
       });
     });

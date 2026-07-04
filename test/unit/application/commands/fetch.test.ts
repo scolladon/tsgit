@@ -23,7 +23,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
-import { buildSyntheticPack } from '../primitives/pack-fixture.js';
+import { buildSyntheticPack, writeSyntheticPack } from '../primitives/pack-fixture.js';
 import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -1917,6 +1917,96 @@ describe('fetch — partial clone', () => {
         // Assert — an empty url is as unusable as a missing one.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+      });
+    });
+  });
+});
+
+describe('fetch — everything local', () => {
+  describe('Given every wanted oid is already present locally and no filter is set', () => {
+    describe('When fetch', () => {
+      it('Then no upload-pack POST is issued and the remote-tracking ref still advances', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'already local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('already local\n') },
+        ]);
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+
+        // Act
+        const sut = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(requests.some((r) => r.method === 'POST')).toBe(false);
+        const update = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+        expect(update?.newId).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given a partial repo (stored filter) whose wanted oid is already present locally', () => {
+    describe('When fetch', () => {
+      it('Then it still negotiates instead of short-circuiting', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+        );
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'partial local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('partial local\n') },
+        ]);
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedCaps: ['side-band-64k', 'ofs-delta', 'filter'],
+          packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport });
+
+        // Assert — the exchange still happened despite the object already being local.
+        expect(requests.some((r) => r.method === 'POST')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a depth argument and every wanted oid already present locally', () => {
+    describe('When fetch', () => {
+      it('Then it still negotiates instead of short-circuiting', async () => {
+        // Arrange — a shallow/deepen request must reach the server regardless
+        // of local object presence: the point of `depth` is to extend history
+        // the server holds, not to fetch an object the client already has.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'deepen local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('deepen local\n') },
+        ]);
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport }, { depth: 1 });
+
+        // Assert — the exchange still happened despite the object already being local.
+        const post = requests.find((r) => r.method === 'POST');
+        expect(post).toBeDefined();
+        expect(new TextDecoder().decode(post?.body)).toContain('deepen 1');
       });
     });
   });

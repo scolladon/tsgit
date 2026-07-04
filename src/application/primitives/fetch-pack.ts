@@ -124,37 +124,63 @@ export const fetchPack = async (
     // (the server has nothing to send), not an error. Surface it as an
     // empty result so the caller can advance refs and return cleanly.
     if (download.packBytes.length === 0) {
-      return {
-        packPath: '',
-        idxPath: '',
-        objectCount: 0,
-        packSha: '',
-        shallow: download.shallow,
-        unshallow: download.unshallow,
-      };
+      return emptyPackResult(download.shallow, download.unshallow);
     }
-    const packSha = await verifyPackTrailer(download.packBytes, ctx);
-    const entries = await walkPackEntries(ctx, download.packBytes);
-    const idxBytes = await buildIdx(ctx, entries, packSha);
-    const written = await writePackArtifacts(
-      ctx,
-      download.packBytes,
-      idxBytes,
-      packSha,
-      entries.length,
-      input.promisor === true,
-    );
-    // Drop the per-Context pack-registry cache so reads through this same
-    // handle (e.g. a follow-up merge in `pull`) see the just-written pack.
-    refreshPackRegistry(ctx);
-    return {
-      ...written,
-      shallow: download.shallow,
-      unshallow: download.unshallow,
-    };
+    return await materializePack(ctx, download, input);
   } finally {
     ctx.progress.end(input.progressOp);
   }
+};
+
+const emptyPackResult = (
+  shallow: ReadonlyArray<ObjectId>,
+  unshallow: ReadonlyArray<ObjectId>,
+): FetchPackResult => ({
+  packPath: '',
+  idxPath: '',
+  objectCount: 0,
+  packSha: '',
+  shallow,
+  unshallow,
+});
+
+/**
+ * Post-download tail: verify the trailer, walk entries, then either suppress
+ * or write the pack/idx artifacts. Split out of `fetchPack` so the negotiated
+ * response can be fully verified (trailer + entry walk) before deciding
+ * whether it is empty — a malformed pack that merely *looks* empty (bad
+ * trailer, truncated entries) must still throw, never be silently dropped.
+ */
+const materializePack = async (
+  ctx: Context,
+  download: PackDownload,
+  input: FetchPackInput,
+): Promise<FetchPackResult> => {
+  const packSha = await verifyPackTrailer(download.packBytes, ctx);
+  const entries = await walkPackEntries(ctx, download.packBytes);
+  // A verified pack can legitimately carry zero entries (e.g. the negotiated
+  // response round-tripped a pack rather than a zero-byte body). Suppress
+  // writing pack/idx artifacts for it, same as the zero-byte-body guard above.
+  if (entries.length === 0) {
+    return emptyPackResult(download.shallow, download.unshallow);
+  }
+  const idxBytes = await buildIdx(ctx, entries, packSha);
+  const written = await writePackArtifacts(
+    ctx,
+    download.packBytes,
+    idxBytes,
+    packSha,
+    entries.length,
+    input.promisor === true,
+  );
+  // Drop the per-Context pack-registry cache so reads through this same
+  // handle (e.g. a follow-up merge in `pull`) see the just-written pack.
+  refreshPackRegistry(ctx);
+  return {
+    ...written,
+    shallow: download.shallow,
+    unshallow: download.unshallow,
+  };
 };
 
 const downloadPack = async (

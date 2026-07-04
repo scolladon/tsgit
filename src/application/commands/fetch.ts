@@ -30,6 +30,7 @@ import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { hasObject } from '../primitives/has-object.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
@@ -122,6 +123,18 @@ const negotiateAndApply = async (
   const wants = uniqueRefOids(advertisement.refs);
   const haves = await deriveHaves(ctx, remoteName);
 
+  // A partial repo's wanted objects may be legitimately promised-absent (the
+  // filter deliberately omits them), and a `depth` request needs to reach the
+  // server regardless of local presence — deepening extends history the
+  // server holds, it doesn't just fetch an already-known tip. The
+  // local-presence short-circuit only applies to full, unfiltered,
+  // non-deepening fetches: when everything is already on disk, the
+  // upload-pack exchange has nothing to contribute — skip it and go straight
+  // to updating refs.
+  if (filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants))) {
+    return applyRefsAndBuildResult(ctx, opts, remoteName, url, advertisement, [], []);
+  }
+
   const packResult = await fetchPack(ctx, session.exchange, {
     wants,
     haves,
@@ -140,6 +153,34 @@ const negotiateAndApply = async (
     });
   }
 
+  return applyRefsAndBuildResult(
+    ctx,
+    opts,
+    remoteName,
+    url,
+    advertisement,
+    packResult.shallow,
+    packResult.unshallow,
+  );
+};
+
+const isEverythingLocal = async (
+  ctx: Context,
+  wants: ReadonlyArray<ObjectId>,
+): Promise<boolean> => {
+  const presence = await Promise.all(wants.map((id) => hasObject(ctx, id)));
+  return presence.every(Boolean);
+};
+
+const applyRefsAndBuildResult = async (
+  ctx: Context,
+  opts: FetchOptions,
+  remoteName: string,
+  url: string,
+  advertisement: Advertisement,
+  shallow: ReadonlyArray<ObjectId>,
+  unshallow: ReadonlyArray<ObjectId>,
+): Promise<FetchResult> => {
   const updatedRefs = await applyRemoteRefs(ctx, remoteName, advertisement);
   const prunedRefs = opts.prune === true ? await prune(ctx, remoteName, advertisement) : [];
 
@@ -148,8 +189,8 @@ const negotiateAndApply = async (
     url,
     updatedRefs,
     prunedRefs,
-    shallow: packResult.shallow,
-    unshallow: packResult.unshallow,
+    shallow,
+    unshallow,
   };
 };
 
