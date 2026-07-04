@@ -45,6 +45,19 @@ describe('parseV2Capabilities', () => {
     });
   });
 
+  describe('Given a version-2 advertisement carrying an unrecognised command line', () => {
+    describe('When parsed', () => {
+      it('Then commands omits the unrecognised name', async () => {
+        // Arrange & Act — FULL_ADVERTISEMENT carries `server-option\n`, a
+        // real v2 capability this client does not implement.
+        const caps = await parseV2Capabilities(streamOf(FULL_ADVERTISEMENT));
+
+        // Assert
+        expect(caps.commands.has('server-option')).toBe(false);
+      });
+    });
+  });
+
   describe('Given a version-2 advertisement missing the fetch command', () => {
     describe('When supportsV2Fetch is checked', () => {
       it('Then it returns false', async () => {
@@ -97,6 +110,47 @@ describe('parseV2Capabilities', () => {
       it('Then fetchFeatures is empty', async () => {
         // Arrange
         const advertisement = ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha1\n'];
+
+        // Act
+        const caps = await parseV2Capabilities(streamOf(advertisement));
+
+        // Assert
+        expect(caps.fetchFeatures.size).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a version-2 advertisement whose fetch value has a doubled separator space', () => {
+    describe('When parsed', () => {
+      it('Then fetchFeatures never contains an empty string', async () => {
+        // Arrange
+        const advertisement = [
+          'version 2\n',
+          'ls-refs\n',
+          'fetch=shallow  wait-for-done\n',
+          'object-format=sha1\n',
+        ];
+
+        // Act
+        const caps = await parseV2Capabilities(streamOf(advertisement));
+
+        // Assert
+        expect(caps.fetchFeatures.has('')).toBe(false);
+        expect(caps.fetchFeatures).toEqual(new Set(['shallow', 'wait-for-done']));
+      });
+    });
+  });
+
+  describe('Given a version-2 advertisement whose ls-refs command carries its own value', () => {
+    describe('When parsed', () => {
+      it('Then fetchFeatures stays empty — only the fetch value feeds it', async () => {
+        // Arrange
+        const advertisement = [
+          'version 2\n',
+          'ls-refs=unborn\n',
+          'fetch\n',
+          'object-format=sha1\n',
+        ];
 
         // Act
         const caps = await parseV2Capabilities(streamOf(advertisement));
