@@ -1,4 +1,4 @@
-import { v2CommandUnsupported } from '../error.js';
+import { unsupportedObjectFormat, v2CommandUnsupported } from '../error.js';
 import type { PktLine } from '../pkt-line.js';
 
 const VERSION_LINE = 'version 2';
@@ -64,7 +64,8 @@ const applyCapabilityLine = (state: CapabilityState, line: string): void => {
   }
   if (name === 'object-format') {
     state.objectFormat = value ?? '';
-    if (state.objectFormat !== DEFAULT_OBJECT_FORMAT) throw v2CommandUnsupported(line);
+    if (state.objectFormat !== DEFAULT_OBJECT_FORMAT)
+      throw unsupportedObjectFormat(state.objectFormat);
     return;
   }
   applyCommandLine(state, name, value);

@@ -156,7 +156,7 @@ describe('parseV2Capabilities', () => {
 
   describe('Given a version-2 advertisement whose object-format is sha256', () => {
     describe('When parsed', () => {
-      it('Then it throws V2_COMMAND_UNSUPPORTED carrying the offending object-format', async () => {
+      it('Then it throws UNSUPPORTED_OBJECT_FORMAT carrying the offending format', async () => {
         // Arrange
         const advertisement = ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha256\n'];
 
@@ -171,8 +171,8 @@ describe('parseV2Capabilities', () => {
         // Assert
         expect(sut).toBeInstanceOf(TsgitError);
         expect((sut as TsgitError).data).toEqual({
-          code: 'V2_COMMAND_UNSUPPORTED',
-          command: 'object-format=sha256',
+          code: 'UNSUPPORTED_OBJECT_FORMAT',
+          format: 'sha256',
         });
       });
     });
@@ -215,7 +215,7 @@ describe('parseV2Capabilities', () => {
 
   describe('Given a bare "object-format" capability with no value', () => {
     describe('When parsed', () => {
-      it('Then it throws V2_COMMAND_UNSUPPORTED', async () => {
+      it('Then it throws UNSUPPORTED_OBJECT_FORMAT carrying an empty format', async () => {
         // Arrange
         const advertisement = ['version 2\n', 'object-format\n'];
 
@@ -230,8 +230,8 @@ describe('parseV2Capabilities', () => {
         // Assert
         expect(sut).toBeInstanceOf(TsgitError);
         expect((sut as TsgitError).data).toEqual({
-          code: 'V2_COMMAND_UNSUPPORTED',
-          command: 'object-format',
+          code: 'UNSUPPORTED_OBJECT_FORMAT',
+          format: '',
         });
       });
     });

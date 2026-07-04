@@ -384,6 +384,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `unsupported v2 command or capability: ${data.command}`;
     case 'TOO_MANY_SECTION_ENTRIES':
       return `v2 section "${data.section}" entries (${data.count}) exceed limit ${data.limit}`;
+    case 'UNSUPPORTED_OBJECT_FORMAT':
+      return `unsupported object format: ${data.format}`;
     case 'SNAPSHOT_REQUIRED':
       return `snapshot required: ${data.reason}`;
     case 'WORKDIR_RACE':

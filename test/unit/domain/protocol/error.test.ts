@@ -21,6 +21,7 @@ import {
   tooManySectionEntries,
   unexpectedV2Section,
   unknownAckStatus,
+  unsupportedObjectFormat,
   v2CommandUnsupported,
 } from '../../../../src/domain/protocol/error.js';
 
@@ -268,6 +269,18 @@ describe('domain protocol error', () => {
         });
       });
     });
+
+    describe("Given unsupportedObjectFormat('sha256')", () => {
+      describe('When checking data', () => {
+        it('Then code and format are preserved', () => {
+          // Arrange & Act
+          const sut = unsupportedObjectFormat('sha256');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' });
+        });
+      });
+    });
   });
 
   describe('extractDetail message formatting (exact match)', () => {
@@ -355,6 +368,10 @@ describe('domain protocol error', () => {
           limit: 500_000,
         },
         'TOO_MANY_SECTION_ENTRIES: v2 section "wanted-refs" entries (500001) exceed limit 500000',
+      ],
+      [
+        { code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' },
+        'UNSUPPORTED_OBJECT_FORMAT: unsupported object format: sha256',
       ],
     ];
 

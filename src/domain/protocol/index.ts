@@ -27,6 +27,7 @@ export {
   sidebandFatal,
   unexpectedV2Section,
   unknownAckStatus,
+  unsupportedObjectFormat,
   v2CommandUnsupported,
 } from './error.js';
 export {

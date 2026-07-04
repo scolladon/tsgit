@@ -31,7 +31,8 @@ export type ProtocolError =
       readonly section: string;
       readonly count: number;
       readonly limit: number;
-    };
+    }
+  | { readonly code: 'UNSUPPORTED_OBJECT_FORMAT'; readonly format: string };
 
 export const invalidPktLength = (value: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PKT_LENGTH', value });
@@ -97,3 +98,6 @@ export const v2CommandUnsupported = (command: string): TsgitError =>
 
 export const tooManySectionEntries = (section: string, count: number, limit: number): TsgitError =>
   new TsgitError({ code: 'TOO_MANY_SECTION_ENTRIES', section, count, limit });
+
+export const unsupportedObjectFormat = (format: string): TsgitError =>
+  new TsgitError({ code: 'UNSUPPORTED_OBJECT_FORMAT', format });
