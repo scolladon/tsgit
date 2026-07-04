@@ -129,6 +129,9 @@ export const negotiateDiscovery = async (session: GitServiceSession): Promise<Di
 
   const capabilities = await parseV2Capabilities(withPushback(iter, first));
   if (!supportsV2Fetch(capabilities)) throw v2CommandUnsupported('fetch');
+  // `peel` and `ref-prefix` are omitted deliberately: tsgit always wants the
+  // full advertised ref set, so filtering/peeling server-side buys nothing —
+  // the resulting on-disk state is identical to requesting them.
   const responsePkts = await session.exchange(buildLsRefsRequest({ symrefs: true }));
   const lsRefsAdvertisement = await parseLsRefsResponse(responsePkts);
   const advertisement = withV2FilterCapability(lsRefsAdvertisement, capabilities.fetchFeatures);
@@ -138,6 +141,9 @@ export const negotiateDiscovery = async (session: GitServiceSession): Promise<Di
 /** Pack-byte negotiation only ever calls `session.exchange` — narrowing to this one member keeps test stubs a one-liner and the dependency honest (ISP). */
 export type PackExchangeSession = Pick<GitServiceSession, 'exchange'>;
 
+// `ofs-delta` and `include-tag` are omitted deliberately: they only steer how
+// the server *packs* bytes on the wire, and the resulting on-disk objects are
+// byte-identical either way, so there is nothing to negotiate for.
 const v2Args = (input: Pick<FetchPackInput, 'depth' | 'filter'>): ReadonlyArray<string> => {
   const args: string[] = [];
   if (input.depth !== undefined) args.push(`deepen ${input.depth}`);

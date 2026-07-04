@@ -287,9 +287,10 @@ walk entries, empty-pack guard, write artifacts) is unchanged (D3 splits it out 
 - **Request builder** `buildLsRefsRequest({ symrefs, peel, refPrefixes })` → command header
   (`command=ls-refs`, `agent`, `object-format=sha1`), `0001` delim, then `symrefs\n`, `peel\n`,
   and one `ref-prefix <p>\n` per prefix, then `0000`. Framed via the new no-flush/section
-  encoder (Part 3). tsgit sends `symrefs` + `peel` and the same prefixes clone/fetch already want
-  (`HEAD`, `refs/heads/`, `refs/tags/`) so the mapped `Advertisement` carries symref-HEAD and
-  peeled tags exactly like the v1 advertisement's `symref=HEAD:` + `^{}` lines.
+  encoder (Part 3). tsgit's negotiation seam calls it with `symrefs: true` only — `peel` and
+  `refPrefixes` are deliberately left unset (see "Deliberate minimalism in the v2 request arg
+  set" below) — so the mapped `Advertisement` carries symref-HEAD from the `symrefs` capability,
+  matching the v1 advertisement's `symref=HEAD:` line.
 - **Response parser** `parseLsRefsResponse(pktStream)` → `Advertisement`. Each data line is
   `<oid> <name>[ symref-target:<t>][ peeled:<o>]`; map `symref-target:` → the existing
   `findHead`-style HEAD synthesis, `peeled:` → `AdvertisedRef.peeled`. `0000` terminates. Reuses
@@ -303,10 +304,11 @@ and clone's want-derivation are untouched.
 `domain/protocol/v2/fetch.ts`:
 
 - **Request builder** `buildV2FetchRequest({ wants, haves, args, done })` → command header
-  (`command=fetch`, `agent`, `object-format=sha1`), `0001` delim, then arg lines
-  (`ofs-delta`, `include-tag` — tsgit's supported subset, **no** `thin-pack`/`no-progress`),
-  `want <oid>` per want, `have <oid>` per have (≤ `MAX_HAVES`), `done` (tsgit forces single-round
-  per ADR-010), `0000`.
+  (`command=fetch`, `agent`, `object-format=sha1`), `0001` delim, then arg lines (tsgit's
+  negotiation seam passes only `deepen <n>` when a depth is set and `filter <spec>` when a
+  filter is set — **no** `ofs-delta`/`include-tag`/`thin-pack`/`no-progress`; see "Deliberate
+  minimalism in the v2 request arg set" below), `want <oid>` per want, `have <oid>` per have
+  (≤ `MAX_HAVES`), `done` (tsgit forces single-round per ADR-010), `0000`.
 - **Section response parser** `parseV2FetchResponse(pktStream, { sideBand })`. A section-header
   dispatcher: read a data pkt-line = section name; consume that section until the next `0001`
   delim or the terminating `0000`; dispatch:
@@ -322,6 +324,37 @@ and clone's want-derivation are untouched.
 
 Result shape mirrors `UploadPackResponse` (`{ acks, nak, ready, packBody, shallow, unshallow,
 wantedRefs }`) so `downloadPack`'s drain logic is shared.
+
+### Deliberate minimalism in the v2 request arg set
+
+The `domain/protocol/v2/ls-refs.ts` and `domain/protocol/v2/fetch.ts` builders accept the full
+set of args the spec allows (`peel`, `refPrefixes`, arbitrary `args` for `fetch`), but the
+negotiation seam (`application/commands/internal/fetch-negotiation.ts`) deliberately calls them
+with a minimal subset:
+
+- **`ls-refs`**: only `symrefs: true`. `peel` and `ref-prefix` are omitted.
+- **`fetch`**: only `deepen <n>` (when `depth` is set) and `filter <spec>` (when a filter is
+  set). `ofs-delta`, `include-tag`, `thin-pack`, and `no-progress` are never sent.
+
+This is intentional, not an oversight — each omitted arg only steers *how* the server searches,
+filters, or packs bytes on the wire, never *what* ends up on tsgit's disk:
+
+- `ref-prefix` filters which refs the server advertises; tsgit always wants the full ref set
+  (clone/fetch already prune locally), so server-side filtering buys nothing.
+- `peel` asks the server to include a `peeled:<oid>` hint per tag. tsgit's on-disk peeled-tag
+  tracking (`domain/refs/packed-refs.ts`) is derived from the fetched tag objects themselves,
+  not from this wire hint, so requesting it would be a pure no-op for what gets persisted.
+- `ofs-delta`/`include-tag` only affect how the server encodes the packfile (offset- vs
+  ref-deltas, whether unreferenced tag objects ride along); the unpacked objects tsgit writes
+  are byte-identical either way.
+- `thin-pack`/`no-progress` are v1-only holdovers with no v2 equivalent tsgit's negotiation
+  needs — no-progress in particular is superseded by v2's `sideband-all` framing, which tsgit
+  already parses via `parseSideBand`.
+
+Because the wire differs from what canonical `git fetch` sends while the resulting objects,
+refs, and pack contents are byte-identical, this is a narrow, deliberate divergence from the
+git-faithfulness prime directive's wire-format expectation — pinned by the interop test suite's
+v2 negotiation goldens rather than by matching git's exact arg list.
 
 ### 4. v1 fallback correctness (ADR-451)
 
