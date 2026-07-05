@@ -85,6 +85,11 @@ describe('Given the reflog message builders', () => {
       expect(sut.rebaseStartCheckout('main')).toBe('rebase (start): checkout main');
     });
 
+    it('Then rebaseActionReflog renders "rebase (<action>): <subject>" for a runtime action', () => {
+      // Arrange / Act / Assert
+      expect(sut.rebaseActionReflog('squash', 'fold it')).toBe('rebase (squash): fold it');
+    });
+
     it('Then rebasePickReflog renders "rebase (pick): <subject>"', () => {
       // Arrange / Act / Assert
       expect(sut.rebasePickReflog('a step')).toBe('rebase (pick): a step');

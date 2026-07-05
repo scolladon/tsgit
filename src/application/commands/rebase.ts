@@ -29,6 +29,7 @@ import {
 import {
   REBASE_FAST_FORWARD,
   rebaseAbortReturningTo,
+  rebaseActionReflog,
   rebaseContinueReflog,
   rebaseEditReflog,
   rebaseFinishOnto,
@@ -1019,7 +1020,7 @@ const meldGroupMember = async (
     expected: head,
     author: headData.author,
     message,
-    reflog: `rebase (${inst.action}): ${subjectLine(message)}`,
+    reflog: rebaseActionReflog(inst.action, subjectLine(message)),
   });
   return { kind: 'committed', created, message };
 };

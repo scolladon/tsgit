@@ -47,6 +47,13 @@ export const revertReflog = (subject: string): string => `revert: ${subject}`;
 /** `rebase (start): checkout <onto>` — detaching HEAD onto the rebase base. */
 export const rebaseStartCheckout = (onto: string): string => `rebase (start): checkout ${onto}`;
 
+/**
+ * `rebase (<action>): <subject>` — the generic form for an interactive-rebase step whose
+ * action is only known at runtime. Known-action call sites use the named builders below.
+ */
+export const rebaseActionReflog = (action: string, subject: string): string =>
+  `rebase (${action}): ${subject}`;
+
 /** `rebase (pick): <subject>` — a replayed pick. */
 export const rebasePickReflog = (subject: string): string => `rebase (pick): ${subject}`;
 

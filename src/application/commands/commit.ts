@@ -12,6 +12,12 @@ import {
   commitMergeReflog,
   commitReflog,
 } from '../../domain/reflog/reflog-messages.js';
+import {
+  CHERRY_PICK,
+  MERGE,
+  type PendingOperation,
+  REVERT,
+} from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -240,10 +246,10 @@ const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => ({
   revertHead: await readRevertHead(ctx),
 });
 
-const pendingExceptOf = (m: PendingMarkers): 'merge' | 'cherry-pick' | 'revert' | undefined => {
-  if (m.mergeHead !== undefined) return 'merge';
-  if (m.cherryPickHead !== undefined) return 'cherry-pick';
-  if (m.revertHead !== undefined) return 'revert';
+const pendingExceptOf = (m: PendingMarkers): PendingOperation | undefined => {
+  if (m.mergeHead !== undefined) return MERGE;
+  if (m.cherryPickHead !== undefined) return CHERRY_PICK;
+  if (m.revertHead !== undefined) return REVERT;
   return undefined;
 };
 
