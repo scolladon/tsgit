@@ -41,7 +41,7 @@ every site; these anchor the design):
 | # | Family | Representative literals | Current homes (sample) | Proposed canonical home |
 |---|---|---|---|---|
 | F1 | **State-marker filenames** | `MERGE_HEAD`, `ORIG_HEAD`, `MERGE_MSG`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `FETCH_HEAD` | `internal/merge-state.ts`, `internal/revert-state.ts`, `commands/worktree.ts`, `snapshot/snapshot-factory.ts` (`COMMIT_REF_FILES`), `primitives/internal/repo-state.ts` (`{file, operation}` table) | `domain/refs/state-files.ts` (or `application/**/internal/state-files.ts`) — one named table; existing `COMMIT_REF_FILES` / `repo-state` table re-point to it |
-| F2 | **Reflog message prefixes / labels** | `reset: moving to `, `revert: `, `commit: `, `commit (initial): `, `commit (amend): `, `commit (merge): `, `branch: Created from `, `cherry-pick: `, `clone: from `, `fetch <remote>: …` | `commands/commit.ts`, `branch.ts`, `cherry-pick.ts`, `revert.ts`, `abort-merge.ts`, `clone.ts`, `fetch.ts` | `domain/reflog/reflog-messages.ts` — prefix constants (+ optional builders, see D3) |
+| F2 | **Reflog message prefixes / labels** | `reset: moving to `, `revert: `, `commit: `, `commit (initial): `, `commit (amend): `, `commit (merge): `, `branch: Created from `, `cherry-pick: `, `clone: from `, `fetch <remote>: …` | `commands/commit.ts`, `branch.ts`, `cherry-pick.ts`, `revert.ts`, `abort-merge.ts`, `clone.ts`, `fetch.ts` | `domain/reflog/reflog-messages.ts` — **pure builder functions** owning each full line (ADR-455) |
 | F3 | **Operation labels** | `'merge'`, `'rebase'`, `'cherry-pick'`, `'revert'`, `'revert --continue'`, `'revert --abort'`, `'cherry-pick --continue'` | `primitives/internal/repo-state.ts` (`PendingOperation` union, twice), `commands/commit.ts`, `cherry-pick.ts`, `revert.ts` (assert / error args) | `domain/sequencer/operation-labels.ts` — the `PendingOperation` vocabulary + the CLI-flavored operation strings used in refusals |
 | F4 | **Conflict-marker tokens** | `<<<<<<<`, `\|\|\|\|\|\|\|`, `=======`, `>>>>>>>` | `internal/commit-message.ts`, `domain/merge/*` | `domain/merge/conflict-markers.ts` (or extend `merge-labels.ts`) |
 | F5 | **Walk caps** | numeric bounds on history/commit walks | commit/history walk primitives | colocated with the walk primitive that owns the bound |
@@ -68,33 +68,27 @@ real git, and mutation testing pins each literal's exact spelling — **provided
 their own oracles** (R4). A relocation that changed a byte fails an interop golden or a unit
 assertion immediately.
 
-## Decision candidates (for the ADR conversation)
+## Decisions (settled — see ADRs 453–455)
 
-- **DC1 — Placement granularity.** (a) One concern-colocated module per family in its
-  domain concern *(recommended — matches `merge-labels.ts`)*; (b) a single central
-  `constants.ts`; (c) inline `as const` at each primary consumer with no shared module.
-  → *Recommend (a).* Load-bearing: sets the module topology the plan builds against.
-- **DC2 — Scope breadth.** (a) Exactly the five named families F1–F5 *(recommended)*;
-  (b) F1–F5 **plus** adjacent primitive-obsession found in-flight (e.g. the duplicated
-  `PendingOperation` union in `repo-state.ts`, other re-typed unions). → *Recommend (a)
-  with a documented follow-up for anything F1–F5 doesn't cover*, honoring the
-  "everything in this PR / warn-and-ask before deferring" default — so DC2 really asks:
-  *does the duplicated `PendingOperation` union ride along in F3, or split out?*
-- **DC3 — Reflog messages: constants vs builders.** Many reflog messages are templated
-  (`cherry-pick: ${subject}`, `branch: Created from ${startPoint}`, `fetch ${remote}: …`).
-  (a) Extract only the **static prefix** as a constant, keep interpolation at the call site
-  *(recommended — smallest diff, preserves each call site's readability)*; (b) introduce
-  **message-builder functions** (`revertReflog(subject)`) that own the whole line. → Affects
-  how much logic moves into the reflog module.
-- **DC4 — Operation-label unification.** The `PendingOperation` union
-  (`'merge' | 'rebase' | 'cherry-pick' | 'revert'`) is declared in two spots and echoed as
-  error-message args. (a) Single exported union + value table shared by `repo-state`,
-  `commit`, `cherry-pick`, `revert` *(recommended)*; (b) leave the type where it is, extract
-  only the string literals. → Load-bearing: (a) touches a domain type crossing several
-  commands.
-- **DC5 — Conflict markers: new module vs extend `merge-labels.ts`.** (a) New
-  `domain/merge/conflict-markers.ts` *(recommended — markers are a distinct concern from the
-  ours/theirs labels already in `merge-labels.ts`)*; (b) extend `merge-labels.ts`.
+- **DC1 — Placement granularity → concern-colocated modules** (ADR-453, adopted-as-recommended).
+  One small module per family in its domain concern, matching `merge-labels.ts`. Sets the
+  module topology the plan builds against.
+- **DC5 — Conflict markers → new `domain/merge/conflict-markers.ts`** (ADR-453,
+  adopted-as-recommended). Markers are a distinct concern from the ours/theirs labels already
+  in `merge-labels.ts`, so they get their own module.
+- **DC2 + DC4 — Operation-label vocabulary → unified** (ADR-454, ratified). One exported
+  `PENDING_OPERATIONS` frozen tuple derives the `PendingOperation` type; the CLI-flavored
+  refusal strings become named constants in `domain/sequencer/operation-labels.ts`, imported
+  by `repo-state`, `commit`, `cherry-pick`, `revert`. The current union duplication is
+  removed (no split-out follow-up).
+- **DC3 — Reflog messages → pure builder functions** (ADR-455, ratified — overrides the
+  design's original static-prefix recommendation). `domain/reflog/reflog-messages.ts` exports
+  builders that own each full line; each builder gets a direct unit test with **hardcoded**
+  expected strings (R4).
+
+**Load-bearing mutation-integrity rule (R4, ADR-453):** production code imports the
+constant/builder; tests keep their own hardcoded literal oracles. A shared literal would let
+a `StringLiteral` mutant flip both sides and survive.
 
 ## Module location
 
@@ -108,8 +102,8 @@ invariant. No ADR-level boundary change — this is relocation within existing t
 - **No new behavior tests.** The change is a pure relocation; the existing unit + integration
   + interop suites are the behavioral gate. Green suite = zero drift (R1).
 - **Coverage:** each new constant is referenced by ≥1 consumer, so it is covered by the
-  consumer's existing tests. Any new module with a pure builder (DC3-b / DC4-a) gets a
-  direct unit test with **hardcoded** expected strings (R4).
+  consumer's existing tests. The reflog **builder functions** (ADR-455) each get a direct
+  unit test with **hardcoded** expected strings (R4).
 - **Mutation:** the sweep must not *lower* the mutation score. Because tests keep their own
   literal oracles, a `StringLiteral` mutant of any relocated constant still flips exactly one
   side and dies on the consumer's test. Re-run the scoped mutation battery over touched files.
