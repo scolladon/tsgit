@@ -15,6 +15,7 @@ import {
   type RefName,
   ZERO_OID,
 } from '../../domain/objects/index.js';
+import { ORIG_HEAD } from '../../domain/refs/state-files.js';
 import {
   WORKTREE_COMMONDIR,
   type WorktreeHead,
@@ -161,7 +162,7 @@ const writeAdmin = async (
   await ctx.fs.writeUtf8(`${admin}/commondir`, `${WORKTREE_COMMONDIR}\n`);
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(worktreePath)}\n`);
   await ctx.fs.writeUtf8(`${admin}/HEAD`, `${worktreeHeadContent(head)}\n`);
-  await ctx.fs.writeUtf8(`${admin}/ORIG_HEAD`, `${oid}\n`);
+  await ctx.fs.writeUtf8(`${admin}/${ORIG_HEAD}`, `${oid}\n`);
   await worktreeScopedFs(ctx, worktreePath).writeUtf8(
     `${worktreePath}/.git`,
     `${worktreeGitfile(admin)}\n`,

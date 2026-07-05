@@ -10,6 +10,12 @@ import { type ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
 import { parseLooseRef } from '../../../domain/refs/index.js';
+import {
+  CHERRY_PICK_HEAD,
+  MERGE_HEAD,
+  REBASE_HEAD,
+  REVERT_HEAD,
+} from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 import {
   findFirstInvalidCompression,
@@ -125,10 +131,10 @@ const PENDING_MARKERS: ReadonlyArray<{
   readonly file: string;
   readonly operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
 }> = [
-  { file: 'MERGE_HEAD', operation: 'merge' },
-  { file: 'CHERRY_PICK_HEAD', operation: 'cherry-pick' },
-  { file: 'REVERT_HEAD', operation: 'revert' },
-  { file: 'REBASE_HEAD', operation: 'rebase' },
+  { file: MERGE_HEAD, operation: 'merge' },
+  { file: CHERRY_PICK_HEAD, operation: 'cherry-pick' },
+  { file: REVERT_HEAD, operation: 'revert' },
+  { file: REBASE_HEAD, operation: 'rebase' },
 ];
 
 type PendingOperation = 'merge' | 'rebase' | 'cherry-pick' | 'revert';

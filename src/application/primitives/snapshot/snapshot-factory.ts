@@ -1,6 +1,12 @@
 import { TsgitError } from '../../../domain/error.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
+import {
+  CHERRY_PICK_HEAD,
+  FETCH_HEAD,
+  MERGE_HEAD,
+  REVERT_HEAD,
+} from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 import type {
   IndexResolver,
@@ -36,7 +42,7 @@ export interface SnapshotFactory {
   stashEntry(stashIndex: number, opts?: SnapshotOptions): Promise<StashSnapshot | null>;
 }
 
-const COMMIT_REF_FILES = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'FETCH_HEAD'] as const;
+const COMMIT_REF_FILES = [MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, FETCH_HEAD] as const;
 
 /**
  * Build a lazy `TreeSnapshot` whose root tree is resolved on first
@@ -133,10 +139,10 @@ export const createSnapshotFactory = (deps: SnapshotFactoryDeps): SnapshotFactor
     index: () => createIndexSnapshot({ ctx: deps.ctx, indexResolver: deps.indexResolver }),
     workdir: (opts) =>
       createWorkdirSnapshot({ ctx: deps.ctx, enumerator: deps.workdirEnumerator }, opts),
-    mergeHead: compoundFactory(deps, 'MERGE_HEAD'),
-    cherryPickHead: compoundFactory(deps, 'CHERRY_PICK_HEAD'),
-    revertHead: compoundFactory(deps, 'REVERT_HEAD'),
-    fetchHead: compoundFactory(deps, 'FETCH_HEAD'),
+    mergeHead: compoundFactory(deps, MERGE_HEAD),
+    cherryPickHead: compoundFactory(deps, CHERRY_PICK_HEAD),
+    revertHead: compoundFactory(deps, REVERT_HEAD),
+    fetchHead: compoundFactory(deps, FETCH_HEAD),
     stashEntry: (stashIndex) => stashEntry(deps, stashIndex),
   };
 };
