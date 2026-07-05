@@ -6,6 +6,12 @@ import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { serializeCommitContent, ZERO_OID } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
+import {
+  commitCherryPickReflog,
+  commitInitialReflog,
+  commitMergeReflog,
+  commitReflog,
+} from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -287,10 +293,10 @@ const commitReflogMessage = (
   cherryPickHead: ObjectId | undefined,
 ): string => {
   const subject = subjectLine(message);
-  if (parentId === undefined) return `commit (initial): ${subject}`;
-  if (mergeHead !== undefined) return `commit (merge): ${subject}`;
-  if (cherryPickHead !== undefined) return `commit (cherry-pick): ${subject}`;
-  return `commit: ${subject}`;
+  if (parentId === undefined) return commitInitialReflog(subject);
+  if (mergeHead !== undefined) return commitMergeReflog(subject);
+  if (cherryPickHead !== undefined) return commitCherryPickReflog(subject);
+  return commitReflog(subject);
 };
 
 const buildParents = (

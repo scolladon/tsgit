@@ -1,6 +1,7 @@
 import { noOperationInProgress } from '../../domain/commands/error.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import { MERGE, MERGE_ABORT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -48,7 +49,7 @@ export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   // symbolic `HEAD`, so the coupled-HEAD reflog reads `reset: moving to HEAD`
   // (the literal `HEAD`, not the oid). The branch entry is skipped upstream: a
   // conflicted merge never moved HEAD, so `origHead` equals the current tip.
-  await updateRef(ctx, head.target, origHead, { reflogMessage: 'reset: moving to HEAD' });
+  await updateRef(ctx, head.target, origHead, { reflogMessage: resetMovingTo('HEAD') });
   await clearMergeState(ctx);
   return { origHead, branch: head.target };
 };

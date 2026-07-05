@@ -26,6 +26,7 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
+import { fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -329,7 +330,7 @@ const applyRemoteRefs = async (
       continue;
     }
     await updateRef(ctx, target, ref.id, {
-      reflogMessage: `fetch ${remoteName}: storing head`,
+      reflogMessage: fetchStoringHead(remoteName),
     });
     updates.push({ name: target, oldId, newId: ref.id });
   }

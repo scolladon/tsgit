@@ -10,6 +10,7 @@
  * touches `.git/sequencer/` — so it does **not** route through this helper.
  */
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
+import { resetMovingTo } from '../../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../../ports/context.js';
 import { updateRef } from '../../primitives/update-ref.js';
 import { clearMergeMsg } from './merge-state.js';
@@ -29,7 +30,7 @@ export const abortSequencerReset = async (
 ): Promise<void> => {
   await hardResetWorktreeToCommit(ctx, options.target);
   await updateRef(ctx, options.branch, options.target, {
-    reflogMessage: `reset: moving to ${options.target}`,
+    reflogMessage: resetMovingTo(options.target),
   });
   await options.clearHead(ctx);
   await clearMergeMsg(ctx);
