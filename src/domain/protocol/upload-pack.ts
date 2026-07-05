@@ -10,7 +10,7 @@ import {
   tooManyAdvertisedRefs,
   unknownAckStatus,
 } from './error.js';
-import { encodePktLine, encodePktStream, type PktLine } from './pkt-line.js';
+import { encodePktLine, encodePktLines, encodePktStream, type PktLine } from './pkt-line.js';
 import { parseSideBand } from './side-band.js';
 
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: false });
@@ -142,11 +142,17 @@ const findHead = (
   return { name: 'HEAD', id: targetRef.id };
 };
 
-const consumeServiceHeader = async (
-  iter: AsyncIterator<PktLine>,
+/**
+ * Validates an already-read pkt-line as the `# service=<expectedService>`
+ * header, returning the matched service name. Split out from
+ * `consumeServiceHeader` so callers that must peek the first line before
+ * deciding whether a service prologue is even present (HTTP protocol v2
+ * responses omit it) can validate that peeked line without re-reading it.
+ */
+const validateServiceHeaderLine = (
+  first: IteratorResult<PktLine>,
   expectedService: Service,
-): Promise<void> => {
-  const first = await iter.next();
+): string => {
   if (first.done || first.value.kind !== 'data') {
     throw missingServiceHeader(expectedService, '');
   }
@@ -161,10 +167,31 @@ const consumeServiceHeader = async (
   if (actual !== expectedService) {
     throw missingServiceHeader(expectedService, actual);
   }
+  return actual;
+};
+
+/**
+ * Validates an already-read pkt-line as the service header and consumes the
+ * flush that must immediately follow it.
+ */
+export const consumeServiceHeaderFlush = async (
+  iter: AsyncIterator<PktLine>,
+  first: IteratorResult<PktLine>,
+  expectedService: Service,
+): Promise<void> => {
+  const actual = validateServiceHeaderLine(first, expectedService);
   const sep = await iter.next();
   if (sep.done || sep.value.kind !== 'flush') {
     throw missingServiceHeader(expectedService, actual);
   }
+};
+
+export const consumeServiceHeader = async (
+  iter: AsyncIterator<PktLine>,
+  expectedService: Service,
+): Promise<void> => {
+  const first = await iter.next();
+  await consumeServiceHeaderFlush(iter, first, expectedService);
 };
 
 interface RefAccumulator {
@@ -280,6 +307,20 @@ const filterLine = (spec: string): Uint8Array => TEXT_ENCODER.encode(`filter ${s
 
 const DONE_FRAME = encodePktLine(TEXT_ENCODER.encode('done\n'));
 
+/**
+ * The have-list section grammar is `compute-end = flush-pkt / "done"` —
+ * EITHER a flush OR "done" terminates it, never both. When the request is
+ * closing the round (`done: true`) the have-list must NOT be flush-terminated
+ * — a flush there tells the server to answer with another round of ACKs
+ * instead of the pack, and the trailing "done" frame is then ignored. A
+ * genuine multi-round have-list (no `done` yet) keeps the flush terminator.
+ */
+const buildHaveStream = (haves: ReadonlyArray<ObjectId>, done: boolean | undefined): Uint8Array => {
+  if (haves.length === 0) return new Uint8Array(0);
+  const payloads = haves.map(haveLine);
+  return done === true ? encodePktLines(payloads) : encodePktStream(payloads);
+};
+
 export const buildUploadPackRequest = (req: WantHaveRequest): Uint8Array => {
   if (req.wants.length === 0) throw emptyWants();
   const wantPayloads: Uint8Array[] = [];
@@ -289,8 +330,7 @@ export const buildUploadPackRequest = (req: WantHaveRequest): Uint8Array => {
   if (req.depth !== undefined) wantPayloads.push(deepenLine(req.depth));
   if (req.filter !== undefined) wantPayloads.push(filterLine(req.filter));
   const wantStream = encodePktStream(wantPayloads);
-  const haveStream =
-    req.haves.length === 0 ? new Uint8Array(0) : encodePktStream(req.haves.map(haveLine));
+  const haveStream = buildHaveStream(req.haves, req.done);
   const trailer = req.done ? DONE_FRAME : new Uint8Array(0);
   const total = new Uint8Array(wantStream.byteLength + haveStream.byteLength + trailer.byteLength);
   let off = 0;
@@ -308,7 +348,7 @@ interface ResponseSplit {
   readonly buffered: ReadonlyArray<PktLine>;
 }
 
-const parseAckLine = (text: string): AckEntry => {
+export const parseAckLine = (text: string): AckEntry => {
   // Caller (splitMeta) guarantees `text` starts with the literal `'ACK '`
   // (with a trailing space), so split(' ') always produces at least 2 parts
   // and parts[1] is the oid token.
@@ -338,7 +378,7 @@ const parseShallowOid = (text: string, prefix: string): ObjectId => {
   return ObjectId.from(raw);
 };
 
-const tryConsumeShallowLine = (text: string, state: ShallowParseState): boolean => {
+export const tryConsumeShallowLine = (text: string, state: ShallowParseState): boolean => {
   if (text.startsWith(SHALLOW_PREFIX)) {
     state.shallow.push(parseShallowOid(text, SHALLOW_PREFIX));
     return true;

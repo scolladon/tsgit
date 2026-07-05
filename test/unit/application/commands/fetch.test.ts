@@ -14,6 +14,10 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  commonGitDir,
+  looseObjectPath,
+} from '../../../../src/application/primitives/path-layout.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -23,7 +27,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
-import { buildSyntheticPack } from '../primitives/pack-fixture.js';
+import { buildSyntheticPack, writeSyntheticPack } from '../primitives/pack-fixture.js';
 import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -107,6 +111,100 @@ const fakeRemote = (
     request: async (req: HttpRequest): Promise<HttpResponse> => {
       requests.push(req);
       const body = req.url.includes('info/refs') ? advertisement : packResponse;
+      return {
+        statusCode: 200,
+        headers: {},
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(body.slice());
+            controller.close();
+          },
+        }),
+      };
+    },
+  };
+  return { transport, requests };
+};
+
+const DECODER = new TextDecoder();
+
+/**
+ * Real `git-http-backend` v2 responses start directly with `version 2\n` —
+ * unlike v1, there is no `# service=...` prologue on the wire. See
+ * `buildV2AdvertisementWithPrologueBytes` below for the non-default fixture
+ * that still carries one, used to pin the client's peek-past-prologue path.
+ */
+const buildV2AdvertisementBytes = (opts: { readonly filter?: boolean } = {}): Uint8Array => {
+  const fetchLine = opts.filter === true ? 'fetch=shallow wait-for-done filter\n' : 'fetch\n';
+  return encodePktStream([
+    ENCODER.encode('version 2\n'),
+    ENCODER.encode('agent=git/test\n'),
+    ENCODER.encode('object-format=sha1\n'),
+    ENCODER.encode('ls-refs\n'),
+    ENCODER.encode(fetchLine),
+  ]);
+};
+
+/**
+ * Some smart-HTTP servers still prepend the legacy `# service=...` prologue
+ * ahead of a v2 capability list; negotiateDiscovery must peek past it rather
+ * than assume every v2 response is prologue-free.
+ */
+const buildV2AdvertisementWithPrologueBytes = (
+  opts: { readonly filter?: boolean } = {},
+): Uint8Array => {
+  const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
+  const capabilities = buildV2AdvertisementBytes(opts);
+  const out = new Uint8Array(header.length + capabilities.length);
+  out.set(header, 0);
+  out.set(capabilities, header.length);
+  return out;
+};
+
+const buildLsRefsResponseBytes = (refs: ReadonlyArray<RemoteRef>): Uint8Array =>
+  encodePktStream(refs.map((r) => ENCODER.encode(`${r.id} ${r.name}\n`)));
+
+const buildV2PackResponseBytes = (packBytes: Uint8Array): Uint8Array => {
+  const channel1 = new Uint8Array(packBytes.length + 1);
+  channel1[0] = 0x01;
+  channel1.set(packBytes, 1);
+  return encodePktStream([ENCODER.encode('packfile\n'), channel1]);
+};
+
+interface FakeRemoteV2Opts {
+  readonly advertisedRefs: ReadonlyArray<RemoteRef>;
+  readonly packBytes: Uint8Array;
+  /** When true, the v2 `fetch` command advertises the `filter` sub-feature. */
+  readonly filter?: boolean;
+  /** When true, the `info/refs` response still carries the `# service=...` prologue. */
+  readonly prologue?: boolean;
+}
+
+/**
+ * A v2-capable remote: `info/refs` answers the v2 capability list; the same
+ * `git-upload-pack` POST endpoint serves both `ls-refs` and `fetch` command
+ * requests, distinguished by the `command=` line in the request body.
+ */
+const fakeRemoteV2 = (
+  opts: FakeRemoteV2Opts,
+): { transport: HttpTransport; requests: HttpRequest[] } => {
+  const requests: HttpRequest[] = [];
+  const filterOpts = opts.filter === undefined ? {} : { filter: opts.filter };
+  const advertisement =
+    opts.prologue === true
+      ? buildV2AdvertisementWithPrologueBytes(filterOpts)
+      : buildV2AdvertisementBytes(filterOpts);
+  const lsRefsResponse = buildLsRefsResponseBytes(opts.advertisedRefs);
+  const packResponse = buildV2PackResponseBytes(opts.packBytes);
+  const transport: HttpTransport = {
+    request: async (req: HttpRequest): Promise<HttpResponse> => {
+      requests.push(req);
+      const requestText = req.body === undefined ? '' : DECODER.decode(req.body);
+      const body = req.url.includes('info/refs')
+        ? advertisement
+        : requestText.includes('command=ls-refs')
+          ? lsRefsResponse
+          : packResponse;
       return {
         statusCode: 200,
         headers: {},
@@ -327,6 +425,60 @@ describe('fetch', () => {
           );
           const entries = await readReflog(ctx, 'refs/remotes/origin/main' as RefName);
           expect(entries.map((e) => e.message)).toEqual(['fetch origin: storing head']);
+        });
+      });
+    });
+
+    describe('Given a v2-capable origin advertising one branch', () => {
+      describe('When fetch', () => {
+        it('Then it negotiates via ls-refs + v2 fetch and updates the remote-tracking ref', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 fetch\n');
+          const { transport, requests } = fakeRemoteV2({
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          expect(updated?.newId).toBe(blobId);
+          const requestBodies = requests
+            .filter((r) => r.method === 'POST')
+            .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
+          expect(requestBodies.some((b) => b.includes('command=ls-refs'))).toBe(true);
+          expect(requestBodies.some((b) => b.includes('command=fetch'))).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a v2-capable origin whose info/refs response still carries the smart-HTTP service prologue', () => {
+      describe('When fetch', () => {
+        it('Then it negotiates via ls-refs + v2 fetch and updates the remote-tracking ref', async () => {
+          // Arrange — some smart-HTTP servers keep sending the legacy
+          // `# service=...` line ahead of the v2 capability list; negotiateDiscovery
+          // must peek past it rather than assume every v2 response is prologue-free.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 fetch with prologue\n');
+          const { transport } = fakeRemoteV2({
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+            prologue: true,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          expect(updated?.newId).toBe(blobId);
         });
       });
     });
@@ -1899,6 +2051,67 @@ describe('fetch — partial clone', () => {
     });
   });
 
+  describe('Given a partial repo and a v2-capable server whose fetch command advertises filter', () => {
+    describe('When fetch', () => {
+      it('Then the v2 fetch request carries the filter and a promisor pack is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedPartialRepo(
+          ctx,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+        );
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 partial fetch\n');
+        const { transport, requests } = fakeRemoteV2({
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+          filter: true,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport });
+
+        // Assert — the v2 fetch command request carries the filter arg.
+        const fetchRequest = requests.find(
+          (r) => r.body !== undefined && DECODER.decode(r.body).includes('command=fetch'),
+        );
+        expect(fetchRequest).toBeDefined();
+        expect(DECODER.decode(fetchRequest?.body)).toContain('filter blob:none');
+        const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
+        expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a partial repo and a v2-capable server whose fetch command does not advertise filter', () => {
+    describe('When fetch', () => {
+      it('Then throws REMOTE_FILTER_UNSUPPORTED', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedPartialRepo(
+          ctx,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+        );
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 dropped\n');
+        const { transport } = fakeRemoteV2({
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetch({ ...ctx, transport });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REMOTE_FILTER_UNSUPPORTED');
+      });
+    });
+  });
+
   describe('Given a remote with an empty url', () => {
     describe('When fetch', () => {
       it('Then throws REMOTE_NOT_CONFIGURED', async () => {
@@ -1917,6 +2130,217 @@ describe('fetch — partial clone', () => {
         // Assert — an empty url is as unusable as a missing one.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+      });
+    });
+  });
+});
+
+describe('fetch — everything local', () => {
+  describe('Given every wanted oid is already present locally and no filter is set', () => {
+    describe('When fetch', () => {
+      it('Then no upload-pack POST is issued and the remote-tracking ref still advances', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'already local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('already local\n') },
+        ]);
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+
+        // Act
+        const sut = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(requests.some((r) => r.method === 'POST')).toBe(false);
+        const update = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+        expect(update?.newId).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given a partial repo (stored filter) whose wanted oid is already present locally', () => {
+    describe('When fetch', () => {
+      it('Then it still negotiates instead of short-circuiting', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  partialclonefilter = blob:none\n',
+        );
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'partial local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('partial local\n') },
+        ]);
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedCaps: ['side-band-64k', 'ofs-delta', 'filter'],
+          packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport });
+
+        // Assert — the exchange still happened despite the object already being local.
+        expect(requests.some((r) => r.method === 'POST')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a depth argument and every wanted oid already present locally', () => {
+    describe('When fetch', () => {
+      it('Then it still negotiates instead of short-circuiting', async () => {
+        // Arrange — a shallow/deepen request must reach the server regardless
+        // of local object presence: the point of `depth` is to extend history
+        // the server holds, not to fetch an object the client already has.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'deepen local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('deepen local\n') },
+        ]);
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport }, { depth: 1 });
+
+        // Assert — the exchange still happened despite the object already being local.
+        const post = requests.find((r) => r.method === 'POST');
+        expect(post).toBeDefined();
+        expect(new TextDecoder().decode(post?.body)).toContain('deepen 1');
+      });
+    });
+  });
+
+  describe('Given every wanted oid is already local and a remote-tracking ref directory exists', () => {
+    describe('When fetch', () => {
+      it('Then the have-derivation walk never reads that directory', async () => {
+        // Arrange — the fast path must return before `deriveHaves` runs, so a
+        // `readdir` call on the (pre-seeded, genuinely existing) remote-tracking
+        // ref directory would prove the have-walk still ran.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {
+          head: 'refs/heads/main',
+          refs: { 'refs/remotes/origin/main': FAKE_OID('a') },
+        });
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'p1 local\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p1 local\n') },
+        ]);
+        const { transport } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+        const poisonPath = `${ctx.layout.gitDir}/refs/remotes/origin`;
+        const poisonedFs = {
+          ...ctx.fs,
+          readdir: (dir: string): ReturnType<typeof ctx.fs.readdir> => {
+            if (dir === poisonPath) {
+              throw new Error('poison: the everything-local fast path must skip the have-walk');
+            }
+            return ctx.fs.readdir(dir);
+          },
+        };
+
+        // Act
+        const sut = await fetch({ ...ctx, fs: poisonedFs, transport });
+
+        // Assert
+        const update = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+        expect(update?.newId).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given the first wanted oid is missing locally and a second is also missing', () => {
+    describe('When fetch', () => {
+      it('Then the presence probe stops at the first missing oid', async () => {
+        // Arrange — neither oid is written locally (no synthetic pack on
+        // disk), so both probes fall through `hasObject` to `ctx.fs.exists`.
+        // The second oid's probe is poisoned: it must never run once the
+        // first probe has already settled the "not everything local" verdict.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 missing 1\n') },
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 missing 2\n') },
+        ]);
+        const [wantId1, wantId2] = built.ids as [ObjectId, ObjectId];
+        const poisonPath = looseObjectPath(commonGitDir(ctx), wantId2);
+        const poisonedFs = {
+          ...ctx.fs,
+          exists: (path: string): Promise<boolean> => {
+            if (path === poisonPath) {
+              throw new Error(
+                'poison: the second want must not be probed once the first is missing',
+              );
+            }
+            return ctx.fs.exists(path);
+          },
+        };
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: wantId1 },
+            { name: 'refs/heads/feature', id: wantId2 },
+          ],
+          packBytes: built.packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, fs: poisonedFs, transport });
+
+        // Assert — reaching this point at all proves the second want's poisoned probe never ran.
+        expect(requests.some((r) => r.method === 'POST')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two wanted oids that are both already present locally', () => {
+    describe('When fetch', () => {
+      it('Then no upload-pack POST is issued', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 1\n') },
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 2\n') },
+        ]);
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 1\n') },
+          { kind: 'base', type: 'blob', content: ENCODER.encode('p2 present 2\n') },
+        ]);
+        const [wantId1, wantId2] = built.ids as [ObjectId, ObjectId];
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: wantId1 },
+            { name: 'refs/heads/feature', id: wantId2 },
+          ],
+          packBytes: built.packBytes,
+        });
+
+        // Act
+        await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(requests.some((r) => r.method === 'POST')).toBe(false);
       });
     });
   });

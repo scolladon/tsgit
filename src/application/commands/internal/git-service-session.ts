@@ -51,6 +51,16 @@ const ADVERTISEMENT_ACCEPT: Readonly<Record<Service, string>> = {
 };
 
 /**
+ * Advertises protocol v2 support to the server. Scoped to `git-upload-pack`
+ * only — push has no v2 wire form in this client.
+ */
+const GIT_PROTOCOL_V2_HEADER: Readonly<Record<string, string>> = { 'git-protocol': 'version=2' };
+const EMPTY_HEADERS: Readonly<Record<string, string>> = {};
+
+const protocolHeaders = (service: Service): Readonly<Record<string, string>> =>
+  service === 'git-upload-pack' ? GIT_PROTOCOL_V2_HEADER : EMPTY_HEADERS;
+
+/**
  * Open a session against `url` for `service`. HTTP(S) URLs get the existing
  * discovery/exchange wire shape. SSH URLs (`ssh://`, scp-like) spawn a real
  * channel when the runtime supplies `ctx.ssh`; browser/memory (no `ctx.ssh`)
@@ -90,14 +100,14 @@ const createHttpSession = (ctx: Context, url: string, service: Service): GitServ
     if (response.statusCode !== 200) {
       throw httpError(response.statusCode, `${req.reasonLabel} returned ${response.statusCode}`);
     }
-    return decodePktStream(readableStreamToAsyncIterable(response.body));
+    return decodePktStream(readableStreamToAsyncIterable(response.body), { v2: true });
   };
 
   const advertisement = (): Promise<AsyncIterable<PktLine>> =>
     requestPkts({
       url: buildDiscoveryUrl(url, service),
       method: 'GET',
-      headers: { accept: ADVERTISEMENT_ACCEPT[service] },
+      headers: { accept: ADVERTISEMENT_ACCEPT[service], ...protocolHeaders(service) },
       reasonLabel: `${service} discovery`,
     });
 
@@ -105,7 +115,7 @@ const createHttpSession = (ctx: Context, url: string, service: Service): GitServ
     requestPkts({
       url: buildExchangeUrl(url, service),
       method: 'POST',
-      headers: EXCHANGE_HEADERS[service],
+      headers: { ...EXCHANGE_HEADERS[service], ...protocolHeaders(service) },
       reasonLabel: service,
       body: requestBytes,
     });

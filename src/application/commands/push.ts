@@ -36,7 +36,7 @@ import {
   type RefStatus,
   type RefUpdate,
 } from '../../domain/protocol/index.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -508,18 +508,8 @@ const updateTrackingCache = async (
   // derives from a server-advertised name matched against the local refspec
   // via the remoteByName map, so `composed` is always a valid ref path. The
   // guard is defense-in-depth for future refactors; it cannot fire on any
-  // input push() can construct, hence the equivalent-mutant suppressions.
+  // input push() can construct, hence the equivalent-mutant suppression.
   // Stryker disable next-line ConditionalExpression: equivalent — `composed` is always a valid ref path (see above); the guard never fires.
   if (!isSafeRefName(composed)) return;
   await updateRef(ctx, composed as RefName, m.localOid, { reflogMessage: 'update by push' });
-};
-
-const isSafeRefName = (name: string): boolean => {
-  try {
-    validateRefName(name);
-    return true;
-  } catch {
-    // Stryker disable next-line BooleanLiteral: equivalent — `name` is always a valid composed ref path, so `validateRefName` never throws and this branch is unreachable.
-    return false;
-  }
 };

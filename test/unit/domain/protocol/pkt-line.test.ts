@@ -5,6 +5,7 @@ import {
   DELIM_PKT,
   decodePktStream,
   encodePktLine,
+  encodePktLines,
   encodePktStream,
   FLUSH_PKT,
   MAX_PKT_LINE_PAYLOAD,
@@ -226,6 +227,91 @@ describe('encodePktStream', () => {
         // Act & Assert
         try {
           encodePktStream([tooBig]);
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(RangeError);
+          expect((err as RangeError).message).toBe(expected);
+        }
+      });
+    });
+  });
+});
+
+describe('encodePktLines', () => {
+  describe('Given an empty array', () => {
+    describe('When encodePktLines', () => {
+      it('Then result is empty (no trailing flush)', () => {
+        // Arrange
+        const payloads: ReadonlyArray<Uint8Array> = [];
+
+        // Act
+        const sut = encodePktLines(payloads);
+
+        // Assert
+        expect(sut).toEqual(new Uint8Array(0));
+      });
+    });
+  });
+
+  describe('Given a single "foo" payload', () => {
+    describe('When encodePktLines', () => {
+      it('Then result equals "0007foo" with no trailing flush', () => {
+        // Arrange
+        const payloads = [bytesOf('foo')];
+
+        // Act
+        const sut = encodePktLines(payloads);
+
+        // Assert
+        expect(sut).toEqual(bytesOf('0007foo'));
+      });
+    });
+  });
+
+  describe('Given three payloads', () => {
+    describe('When encodePktLines', () => {
+      it('Then result equals concat(encodePktLine each) with no flush', () => {
+        // Arrange
+        const a = bytesOf('alpha');
+        const b = bytesOf('beta');
+        const c = bytesOf('gamma');
+
+        // Act
+        const sut = encodePktLines([a, b, c]);
+
+        // Assert
+        expect(sut).toEqual(concat(encodePktLine(a), encodePktLine(b), encodePktLine(c)));
+      });
+    });
+  });
+
+  describe('Given a payload of exactly MAX_PKT_LINE_PAYLOAD bytes', () => {
+    describe('When encodePktLines', () => {
+      it('Then it does NOT throw', () => {
+        // Arrange — exact-boundary payload must be accepted; kills the `>=`
+        // mutant on the `p.byteLength > MAX_PKT_LINE_PAYLOAD` guard.
+        const atMax = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+
+        // Act
+        const sut = encodePktLines([atMax]);
+
+        // Assert — header(4) + payload, no trailing flush
+        expect(sut.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4);
+      });
+    });
+  });
+
+  describe('Given a payload above MAX_PKT_LINE_PAYLOAD', () => {
+    describe('When encodePktLines', () => {
+      it('Then throws RangeError with the exact documented message', () => {
+        // Arrange
+        const tooBig = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 1);
+        const expected = `pkt-line: payload too large (${MAX_PKT_LINE_PAYLOAD + 1} > ${MAX_PKT_LINE_PAYLOAD})`;
+
+        // Act & Assert
+        try {
+          encodePktLines([tooBig]);
           throw new Error('expected throw');
         } catch (err) {
           // Assert

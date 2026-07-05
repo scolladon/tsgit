@@ -167,14 +167,18 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `PUSH_REJECTED` | `name, reason` | Server returned `ng` for at least one ref. |
 | `REFSPEC_INVALID` | `value, reason` | Refspec syntactically invalid. |
 | `REMOTE_ADVERTISES_NO_REFS` | — | Server returned an empty ref list. |
-| `REMOTE_FILTER_UNSUPPORTED` | — | Server's capabilities lack `filter`. |
+| `REMOTE_FILTER_UNSUPPORTED` | — | Server's capabilities lack `filter` (v1 capability list or v2 `fetch` command's sub-features). |
 | `REMOTE_NOT_CONFIGURED` | `name` | `[remote "<name>"]` not in `.git/config`. |
 | `SIDEBAND_FATAL` | `message` | Server emitted a sideband fatal-error line. |
 | `SIGNED_PUSH_UNSUPPORTED` | — | `push({ signed: 'yes' })` but the server does not advertise the `push-cert` capability. Nothing is sent. (`'if-asked'` falls back to an unsigned push.) |
-| `TOO_MANY_ADVERTISED_REFS` | `count, limit` | Server advertised more refs than the cap. |
+| `TOO_MANY_ADVERTISED_REFS` | `count, limit` | Server advertised more refs than the cap (v1 ref advertisement or v2 `ls-refs` response). |
 | `TOO_MANY_REDIRECTS` | `count, limit` | HTTP redirect loop / overflow. |
+| `TOO_MANY_SECTION_ENTRIES` | `section, count, limit` | A v2 `fetch` response section (`acknowledgments`, `shallow-info`, `wanted-refs`) produced more lines than the safety cap. |
+| `UNEXPECTED_V2_SECTION` | `section` | A v2 `fetch` response section header names something other than `acknowledgments`, `shallow-info`, `wanted-refs`, or `packfile`. |
 | `UNKNOWN_ACK_STATUS` | `status` | want/have negotiation returned an unrecognised ack. |
+| `UNSUPPORTED_OBJECT_FORMAT` | `format` | v2 capability advertisement's `object-format` is not `sha1` — tsgit only supports sha1 repositories. |
 | `UNSUPPORTED_SCHEME` | `scheme` | URL scheme not in the allowed list. |
+| `V2_COMMAND_UNSUPPORTED` | `command` | The server's v2 capability advertisement doesn't support a command tsgit needs — e.g. its first line isn't exactly `version 2`, or it doesn't list the `fetch` command. |
 
 ### Hooks & lifecycle
 

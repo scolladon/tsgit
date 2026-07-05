@@ -11,7 +11,13 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { openGitSession } from '../../../../../src/application/commands/internal/git-service-session.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/index.js';
-import { encodePktStream, type PktLine } from '../../../../../src/domain/protocol/pkt-line.js';
+import {
+  DELIM_PKT,
+  encodePktLine,
+  encodePktStream,
+  FLUSH_PKT,
+  type PktLine,
+} from '../../../../../src/domain/protocol/pkt-line.js';
 import type {
   HttpRequest,
   HttpResponse,
@@ -190,6 +196,41 @@ describe('GitServiceSession.advertisement (http)', () => {
     });
   });
 
+  describe('Given the service is git-upload-pack', () => {
+    describe('When advertisement() runs', () => {
+      it('Then it carries the Git-Protocol: version=2 header', async () => {
+        // Arrange
+        const { transport, requests } = fakeTransport(200, successAdvertisement());
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+
+        // Act
+        await sut.advertisement();
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBe('version=2');
+      });
+    });
+  });
+
+  describe('Given the service is git-receive-pack', () => {
+    describe('When advertisement() runs', () => {
+      it('Then it carries no Git-Protocol header', async () => {
+        // Arrange — v2 is upload-pack (fetch-side) negotiation only; push
+        // stays v1.
+        const { transport, requests } = fakeTransport(200, encodePktStream([]));
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
+
+        // Act
+        await sut.advertisement();
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a non-200 discovery response', () => {
     describe('When advertisement() runs', () => {
       it.each([
@@ -284,6 +325,35 @@ describe('GitServiceSession.exchange (http)', () => {
     });
   });
 
+  describe('Given a v2 fetch response body with a section-delim pkt-line', () => {
+    describe('When exchange() runs', () => {
+      it('Then it decodes the delim pkt-line instead of throwing a reserved-length error', async () => {
+        // Arrange — a real v2 `fetch` response separates named sections
+        // (e.g. `wanted-refs` / `packfile`) with the reserved length `0001`.
+        // Decoding this response without the `{ v2: true }` pkt-line option
+        // would reject that reserved length instead of yielding `kind: 'delim'`.
+        const body = new Uint8Array([
+          ...encodePktLine(ENCODER.encode('wanted-refs\n')),
+          ...DELIM_PKT,
+          ...encodePktLine(ENCODER.encode('packfile\n')),
+          ...FLUSH_PKT,
+        ]);
+        const { transport } = fakeTransport(200, body);
+        const sut = openGitSession(
+          contextWith(transport),
+          'https://example.com/repo.git',
+          'git-upload-pack',
+        );
+
+        // Act
+        const pkts = await collect(await sut.exchange(ENCODER.encode('0000')));
+
+        // Assert
+        expect(pkts.map((p) => p.kind)).toEqual(['data', 'delim', 'data', 'flush']);
+      });
+    });
+  });
+
   describe('Given the service is git-receive-pack', () => {
     describe('When exchange() runs', () => {
       it('Then it POSTs to .../git-receive-pack with the receive-pack headers', async () => {
@@ -299,6 +369,41 @@ describe('GitServiceSession.exchange (http)', () => {
         expect(requests[0]?.url).toBe('https://example.com/r.git/git-receive-pack');
         expect(requests[0]?.headers['content-type']).toBe('application/x-git-receive-pack-request');
         expect(requests[0]?.headers.accept).toBe('application/x-git-receive-pack-result');
+      });
+    });
+  });
+
+  describe('Given the service is git-upload-pack', () => {
+    describe('When exchange() runs', () => {
+      it('Then the POST carries the Git-Protocol: version=2 header', async () => {
+        // Arrange
+        const responseBody = encodePktStream([ENCODER.encode('NAK\n')]);
+        const { transport, requests } = fakeTransport(200, responseBody);
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+
+        // Act
+        await sut.exchange(ENCODER.encode('0032want aaaa\n0000'));
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBe('version=2');
+      });
+    });
+  });
+
+  describe('Given the service is git-receive-pack', () => {
+    describe('When exchange() runs', () => {
+      it('Then the POST carries no Git-Protocol header', async () => {
+        // Arrange
+        const { transport, requests } = fakeTransport(200, encodePktStream([]));
+        const ctx = contextWith(transport);
+        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-receive-pack');
+
+        // Act
+        await sut.exchange(new Uint8Array(0));
+
+        // Assert
+        expect(requests[0]?.headers['git-protocol']).toBeUndefined();
       });
     });
   });

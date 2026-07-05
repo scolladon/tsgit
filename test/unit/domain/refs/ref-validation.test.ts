@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
-import { validateRefName } from '../../../../src/domain/refs/ref-validation.js';
+import { isSafeRefName, validateRefName } from '../../../../src/domain/refs/ref-validation.js';
 import { arbRefName } from './arbitraries.js';
 
 describe('validateRefName', () => {
@@ -634,6 +634,38 @@ describe('validateRefName', () => {
             expect(sut).toContain('refs/heads/');
           });
         }
+      });
+    });
+  });
+});
+
+describe('isSafeRefName', () => {
+  describe("Given 'refs/heads/main'", () => {
+    describe('When checking safety', () => {
+      it('Then it returns true', () => {
+        // Arrange
+        const sut = isSafeRefName;
+
+        // Act
+        const result = sut('refs/heads/main');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe("Given 'refs/heads/../../../config'", () => {
+    describe('When checking safety', () => {
+      it('Then it returns false', () => {
+        // Arrange
+        const sut = isSafeRefName;
+
+        // Act
+        const result = sut('refs/heads/../../../config');
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

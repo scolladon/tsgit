@@ -8,17 +8,18 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
+import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { updateConfigEntries } from '../primitives/update-config.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
+import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import {
   advertisesFilter,
-  discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
 } from './internal/upload-pack-client.js';
@@ -118,7 +119,8 @@ const negotiateAndWritePack = async (
   filterSpec: string | undefined,
   session: GitServiceSession,
 ): Promise<CloneResult> => {
-  const advertisement = await discoverRefs(session);
+  const discovery = await negotiateDiscovery(session);
+  const advertisement = discovery.advertisement;
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A filtered clone needs the server to advertise the `filter` capability;
   // fail before the pack POST when it does not.
@@ -127,16 +129,20 @@ const negotiateAndWritePack = async (
   }
   const capabilities = selectFetchCapabilities(advertisement.capabilities);
   const wants = uniqueRefOids(advertisement.refs);
-  const packResult = await fetchPack(ctx, session.exchange, {
-    wants,
-    haves: [],
-    capabilities,
-    progressOp: CLONE_WRITE_OBJECTS_OP,
-    // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ depth: opts.depth }`; `fetchPack` gates on `input.depth !== undefined`, so `depth: undefined` and the empty spread produce identical request bodies.
-    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
-    // A filtered clone sends the `filter` line and marks the pack promisor.
-    ...(filterSpec !== undefined ? { filter: filterSpec, promisor: true } : {}),
-  });
+  const packResult = await fetchPack(
+    ctx,
+    (c, req) => negotiatePackBytes(c, session, discovery.version, req),
+    {
+      wants,
+      haves: [],
+      capabilities,
+      progressOp: CLONE_WRITE_OBJECTS_OP,
+      // Stryker disable next-line ConditionalExpression: equivalent — always-true ternary spreads `{ depth: opts.depth }`; `fetchPack` gates on `input.depth !== undefined`, so `depth: undefined` and the empty spread produce identical request bodies.
+      ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+      // A filtered clone sends the `filter` line and marks the pack promisor.
+      ...(filterSpec !== undefined ? { filter: filterSpec, promisor: true } : {}),
+    },
+  );
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — with `shallow.length === 0`, `updateShallow` receives two empty arrays and short-circuits to `deleteIfPresent` on a freshly bootstrapped `.git` (no shallow file exists), so `>= 0`/always-true are indistinguishable from `> 0`. The killable `< 0`/always-false half is covered by the depth:1 shallow-success test.
   if (packResult.shallow.length > 0) {
     // Clone never sees `unshallow` (the local repo is empty until now), but
@@ -209,6 +215,7 @@ const writeFetchedRefs = async (
   const written: Array<{ name: RefName; id: ObjectId }> = [];
   for (const ref of advertisement.refs) {
     if (ref.name === 'HEAD') continue;
+    if (!isSafeRefName(ref.name)) continue;
     if (ref.name.startsWith('refs/heads/')) {
       const branch = ref.name.slice('refs/heads/'.length);
       const remoteRef = `refs/remotes/origin/${branch}` as RefName;

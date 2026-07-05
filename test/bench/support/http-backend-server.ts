@@ -21,6 +21,14 @@ export interface GitHttpBackend {
 export interface StartGitHttpBackendOpts {
   readonly projectRoot: string;
   readonly host?: string;
+  /**
+   * Forward the client's `Git-Protocol` request header to the CGI
+   * `GIT_PROTOCOL` env var, letting `git-http-backend` negotiate protocol
+   * v2 when the client advertises it. Defaults to `false` so existing
+   * scenarios keep exercising the v1 path unchanged; set `true` to drive a
+   * scenario over v2 instead.
+   */
+  readonly forwardGitProtocol?: boolean;
 }
 
 const findGitExecPath = (): string | undefined => {
@@ -84,11 +92,17 @@ const writeCgiResponse = (res: http.ServerResponse, raw: Buffer): void => {
   res.end(body);
 };
 
+const gitProtocolHeader = (req: http.IncomingMessage): string => {
+  const header = req.headers['git-protocol'];
+  return Array.isArray(header) ? (header[0] ?? '') : (header ?? '');
+};
+
 const handleRequest = (
   backendPath: string,
   projectRoot: string,
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  forwardGitProtocol: boolean,
 ): void => {
   if (req.url === undefined || req.method === undefined) {
     res.statusCode = 400;
@@ -110,6 +124,7 @@ const handleRequest = (
     CONTENT_TYPE: req.headers['content-type'] ?? '',
     CONTENT_LENGTH: req.headers['content-length'] ?? '',
     REMOTE_ADDR: req.socket.remoteAddress ?? '127.0.0.1',
+    ...(forwardGitProtocol ? { GIT_PROTOCOL: gitProtocolHeader(req) } : {}),
   };
   const child = spawn(backendPath, [], { env });
   // If git-http-backend exits before consuming the request body (rejected
@@ -140,8 +155,9 @@ export const startGitHttpBackend = async (
     throw new Error('git-http-backend not found on $PATH');
   }
   const host = opts.host ?? '127.0.0.1';
+  const forwardGitProtocol = opts.forwardGitProtocol ?? false;
   const server = http.createServer((req, res) => {
-    handleRequest(backendPath, opts.projectRoot, req, res);
+    handleRequest(backendPath, opts.projectRoot, req, res, forwardGitProtocol);
   });
   await new Promise<void>((resolve) => {
     server.listen(0, host, resolve);

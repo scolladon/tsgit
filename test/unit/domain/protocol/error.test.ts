@@ -18,7 +18,11 @@ import {
   pktTruncated,
   sidebandFatal,
   tooManyAdvertisedRefs,
+  tooManySectionEntries,
+  unexpectedV2Section,
   unknownAckStatus,
+  unsupportedObjectFormat,
+  v2CommandUnsupported,
 } from '../../../../src/domain/protocol/error.js';
 
 describe('domain protocol error', () => {
@@ -222,6 +226,61 @@ describe('domain protocol error', () => {
         });
       });
     });
+
+    describe("Given unexpectedV2Section('wanted-refs')", () => {
+      describe('When checking data', () => {
+        it('Then code is UNEXPECTED_V2_SECTION and section preserved', () => {
+          // Arrange & Act
+          const sut = unexpectedV2Section('wanted-refs');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'UNEXPECTED_V2_SECTION', section: 'wanted-refs' });
+          expect(sut.message).toContain('wanted-refs');
+        });
+      });
+    });
+
+    describe("Given v2CommandUnsupported('fetch')", () => {
+      describe('When checking data', () => {
+        it('Then code is V2_COMMAND_UNSUPPORTED and command preserved', () => {
+          // Arrange & Act
+          const sut = v2CommandUnsupported('fetch');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' });
+          expect(sut.message).toContain('fetch');
+        });
+      });
+    });
+
+    describe("Given tooManySectionEntries('wanted-refs', count, limit)", () => {
+      describe('When checking data', () => {
+        it('Then code, section, count, and limit are preserved', () => {
+          // Arrange & Act
+          const sut = tooManySectionEntries('wanted-refs', 500_001, 500_000);
+
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'TOO_MANY_SECTION_ENTRIES',
+            section: 'wanted-refs',
+            count: 500_001,
+            limit: 500_000,
+          });
+        });
+      });
+    });
+
+    describe("Given unsupportedObjectFormat('sha256')", () => {
+      describe('When checking data', () => {
+        it('Then code and format are preserved', () => {
+          // Arrange & Act
+          const sut = unsupportedObjectFormat('sha256');
+
+          // Assert
+          expect(sut.data).toEqual({ code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' });
+        });
+      });
+    });
   });
 
   describe('extractDetail message formatting (exact match)', () => {
@@ -292,6 +351,27 @@ describe('domain protocol error', () => {
       [
         { code: 'TOO_MANY_ADVERTISED_REFS', count: 500_001, limit: 500_000 },
         'TOO_MANY_ADVERTISED_REFS: advertised refs (500001) exceed limit 500000',
+      ],
+      [
+        { code: 'UNEXPECTED_V2_SECTION', section: 'wanted-refs' },
+        'UNEXPECTED_V2_SECTION: unexpected v2 section: wanted-refs',
+      ],
+      [
+        { code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' },
+        'V2_COMMAND_UNSUPPORTED: unsupported v2 command or capability: fetch',
+      ],
+      [
+        {
+          code: 'TOO_MANY_SECTION_ENTRIES',
+          section: 'wanted-refs',
+          count: 500_001,
+          limit: 500_000,
+        },
+        'TOO_MANY_SECTION_ENTRIES: v2 section "wanted-refs" entries (500001) exceed limit 500000',
+      ],
+      [
+        { code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' },
+        'UNSUPPORTED_OBJECT_FORMAT: unsupported object format: sha256',
       ],
     ];
 

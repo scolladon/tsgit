@@ -46,8 +46,8 @@ export const encodePktLine = (payload: Uint8Array): Uint8Array => {
   return out;
 };
 
-export const encodePktStream = (payloads: ReadonlyArray<Uint8Array>): Uint8Array => {
-  let total = FLUSH_PKT.byteLength;
+const concatPktLines = (payloads: ReadonlyArray<Uint8Array>, trailer: Uint8Array): Uint8Array => {
+  let total = trailer.byteLength;
   for (const p of payloads) {
     if (p.byteLength > MAX_PKT_LINE_PAYLOAD) {
       throw new RangeError(
@@ -65,9 +65,21 @@ export const encodePktStream = (payloads: ReadonlyArray<Uint8Array>): Uint8Array
     out.set(p, off);
     off += p.byteLength;
   }
-  out.set(FLUSH_PKT, off);
+  out.set(trailer, off);
   return out;
 };
+
+export const encodePktStream = (payloads: ReadonlyArray<Uint8Array>): Uint8Array =>
+  concatPktLines(payloads, FLUSH_PKT);
+
+/**
+ * Like `encodePktStream` but WITHOUT the terminating flush-pkt — for framing
+ * a section that is terminated by something other than a flush (e.g. the v1
+ * have-list immediately followed by "done", or a v2 arg-list followed by more
+ * frames).
+ */
+export const encodePktLines = (payloads: ReadonlyArray<Uint8Array>): Uint8Array =>
+  concatPktLines(payloads, new Uint8Array(0));
 
 const parseLength = (acc: Uint8Array): number => {
   const header = DECODER.decode(acc.subarray(0, PKT_LENGTH_BYTES));

@@ -26,21 +26,22 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { hasObject } from '../primitives/has-object.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
   advertisesFilter,
-  discoverRefs,
   selectFetchCapabilities,
   uniqueRefOids,
 } from './internal/upload-pack-client.js';
@@ -110,7 +111,8 @@ const negotiateAndApply = async (
   filter: string | undefined,
   session: GitServiceSession,
 ): Promise<FetchResult> => {
-  const advertisement = await discoverRefs(session);
+  const discovery = await negotiateDiscovery(session);
+  const advertisement = discovery.advertisement;
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A partial repo's fetch must re-apply its filter; the server must still
   // advertise the `filter` capability.
@@ -120,18 +122,35 @@ const negotiateAndApply = async (
 
   const capabilities = selectFetchCapabilities(advertisement.capabilities);
   const wants = uniqueRefOids(advertisement.refs);
-  const haves = await deriveHaves(ctx, remoteName);
 
-  const packResult = await fetchPack(ctx, session.exchange, {
-    wants,
-    haves,
-    capabilities,
-    progressOp: FETCH_WRITE_OBJECTS_OP,
-    // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
-    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
-    // A partial repo re-applies its stored filter and re-marks the pack promisor.
-    ...(filter !== undefined ? { filter, promisor: true } : {}),
-  });
+  // A partial repo's wanted objects may be legitimately promised-absent (the
+  // filter deliberately omits them), and a `depth` request needs to reach the
+  // server regardless of local presence — deepening extends history the
+  // server holds, it doesn't just fetch an already-known tip. The
+  // local-presence short-circuit only applies to full, unfiltered,
+  // non-deepening fetches: when everything is already on disk, the
+  // upload-pack exchange has nothing to contribute — skip it and go straight
+  // to updating refs. Checked before deriving haves: the have-walk is wasted
+  // work when this short-circuit is about to discard it anyway.
+  if (filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants))) {
+    return applyRefsAndBuildResult(ctx, opts, remoteName, url, advertisement, [], []);
+  }
+
+  const haves = await deriveHaves(ctx, remoteName);
+  const packResult = await fetchPack(
+    ctx,
+    (c, req) => negotiatePackBytes(c, session, discovery.version, req),
+    {
+      wants,
+      haves,
+      capabilities,
+      progressOp: FETCH_WRITE_OBJECTS_OP,
+      // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
+      ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+      // A partial repo re-applies its stored filter and re-marks the pack promisor.
+      ...(filter !== undefined ? { filter, promisor: true } : {}),
+    },
+  );
 
   if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
     await updateShallow(ctx, {
@@ -140,6 +159,36 @@ const negotiateAndApply = async (
     });
   }
 
+  return applyRefsAndBuildResult(
+    ctx,
+    opts,
+    remoteName,
+    url,
+    advertisement,
+    packResult.shallow,
+    packResult.unshallow,
+  );
+};
+
+const isEverythingLocal = async (
+  ctx: Context,
+  wants: ReadonlyArray<ObjectId>,
+): Promise<boolean> => {
+  for (const id of wants) {
+    if (!(await hasObject(ctx, id))) return false;
+  }
+  return true;
+};
+
+const applyRefsAndBuildResult = async (
+  ctx: Context,
+  opts: FetchOptions,
+  remoteName: string,
+  url: string,
+  advertisement: Advertisement,
+  shallow: ReadonlyArray<ObjectId>,
+  unshallow: ReadonlyArray<ObjectId>,
+): Promise<FetchResult> => {
   const updatedRefs = await applyRemoteRefs(ctx, remoteName, advertisement);
   const prunedRefs = opts.prune === true ? await prune(ctx, remoteName, advertisement) : [];
 
@@ -148,8 +197,8 @@ const negotiateAndApply = async (
     url,
     updatedRefs,
     prunedRefs,
-    shallow: packResult.shallow,
-    unshallow: packResult.unshallow,
+    shallow,
+    unshallow,
   };
 };
 
@@ -307,15 +356,6 @@ const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | u
     return ref.name as RefName;
   }
   return undefined;
-};
-
-const isSafeRefName = (name: string): boolean => {
-  try {
-    validateRefName(name);
-    return true;
-  } catch {
-    return false;
-  }
 };
 
 const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {

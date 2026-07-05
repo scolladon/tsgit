@@ -5,13 +5,13 @@
  * upstream resolved from the config `clone` now writes), proving that fetch +
  * merge compose over real git.
  *
- * Scope note: this asserts the up-to-date path (the remote is unchanged after
- * clone). A "remote advanced → fast-forward" assertion needs tsgit's `fetch` to
- * deliver objects incrementally (client has a base, wants new commits), which
- * the current single-round, multi-ack-less upload-pack client does not support.
- * The fast-forward / true-merge / conflict / abort / continue composition is
- * proven exhaustively in `test/unit/application/commands/pull.test.ts` against a
- * real local commit graph.
+ * Covers both the up-to-date path (remote unchanged after clone) and the
+ * fast-forward path (remote advances past what was cloned, delivered via the
+ * incremental fetch negotiation — see `incremental-fetch-http-backend.test.ts`
+ * for the dedicated faithfulness pin). The true-merge / conflict / abort /
+ * continue composition is proven exhaustively in
+ * `test/unit/application/commands/pull.test.ts` against a real local commit
+ * graph.
  *
  * Suite is gated on `git --version` + a discoverable `git-http-backend`.
  *
@@ -22,13 +22,14 @@
  */
 import { spawn } from 'node:child_process';
 import { accessSync, cpSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { ObjectId, RefName } from '../../../src/domain/objects/object-id.js';
 import { openRepository } from '../../../src/index.node.js';
-import { runGit, runGitEnv } from '../interop-helpers.js';
+import { git, runGit, runGitEnv } from '../interop-helpers.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -203,5 +204,53 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
     expect(sut.fetch.remote).toBe('origin');
     expect(sut.fetch.url).toBe(url);
     expect(sut.merge.kind).toBe('up-to-date');
+  });
+
+  it('Given a clone whose remote has advanced, When pull, Then fetch + merge compose and fast-forward', async () => {
+    // Arrange — clone the fixture at its current (pre-advance) state.
+    const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-ff-it-'));
+    workDirs.push(workDir);
+    const url = `http://127.0.0.1:${port}/source.git`;
+    const repo = await openRepository({
+      cwd: workDir,
+      allowInsecureHttp: true,
+      config: {
+        allowInsecure: true,
+        allowPrivateNetworks: true,
+        dnsResolver: async () => ['127.0.0.1'],
+      },
+    });
+    await repo.clone({ url });
+
+    // Arrange — advance the served bare copy past what was cloned, via a
+    // real-git worktree pushed straight into it on the local filesystem (no
+    // HTTP involved in the advance itself, only in tsgit's later pull).
+    const seedDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-ff-seed-'));
+    workDirs.push(seedDir);
+    const bareRepoPath = path.join(serverProjectRoot, 'source.git');
+    git(seedDir, 'clone', '-q', bareRepoPath, '.');
+    git(seedDir, 'config', 'user.name', 'Ada');
+    git(seedDir, 'config', 'user.email', 'ada@example.com');
+    await writeFile(path.join(seedDir, 'advance.txt'), 'advance\n');
+    git(seedDir, 'add', 'advance.txt');
+    git(seedDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance');
+    git(seedDir, 'push', '-q', 'origin', 'HEAD:main');
+    const c1 = git(seedDir, 'rev-parse', 'HEAD').trim() as ObjectId;
+
+    // Act
+    const sut = await repo.pull();
+
+    // Assert — fetch delivered exactly the new commit and merge
+    // fast-forwarded the local branch onto it (no `pull` code change needed
+    // — it composes over the corrected fetch negotiation as-is).
+    const mainUpdate = sut.fetch.updatedRefs.find(
+      (r) => r.name === ('refs/remotes/origin/main' as RefName),
+    );
+    expect(mainUpdate?.newId).toBe(c1);
+    expect(sut.merge).toEqual({
+      kind: 'fast-forward',
+      id: c1,
+      branch: 'refs/heads/main' as RefName,
+    });
   });
 });

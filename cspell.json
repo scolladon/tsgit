@@ -24,6 +24,9 @@
     "typeflag",
     "typeflags",
     "usize",
+    "publickey",
+    "toggleable",
+    "unrequested",
     "ustar",
     "zlibs",
     "gitgrep",
@@ -999,7 +1002,9 @@
     "dpusher",
     "enonce",
     "epush",
-    "lnbm"
+    "lnbm",
+    "objectname",
+    "objecttype"
   ],
   "ignorePaths": [
     "node_modules",

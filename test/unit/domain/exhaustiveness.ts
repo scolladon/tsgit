@@ -128,6 +128,10 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'SMUDGE_FILTER_FAILED':
     case 'INVALID_FILTER_SPEC':
     case 'REMOTE_FILTER_UNSUPPORTED':
+    case 'UNEXPECTED_V2_SECTION':
+    case 'V2_COMMAND_UNSUPPORTED':
+    case 'TOO_MANY_SECTION_ENTRIES':
+    case 'UNSUPPORTED_OBJECT_FORMAT':
     case 'SNAPSHOT_REQUIRED':
     case 'WORKDIR_RACE':
     case 'ORDER_INVARIANT_VIOLATION':

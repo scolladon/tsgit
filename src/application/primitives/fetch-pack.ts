@@ -10,15 +10,9 @@
  * Out of scope here (handled by callers): URL validation, capability
  * negotiation, ref-update propagation.
  */
-import { sanitize } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
-import {
-  buildUploadPackRequest,
-  type GitExchange,
-  parseUploadPackResponse,
-} from '../../domain/protocol/index.js';
 import {
   applyDelta,
   type BasePackEntryHeader,
@@ -105,95 +99,104 @@ export interface FetchPackResult {
   readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
-interface PackDownload {
+export interface PackDownload {
   readonly packBytes: Uint8Array;
   readonly shallow: ReadonlyArray<ObjectId>;
   readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
+/**
+ * Negotiates and drains the pack body for one `fetchPack` call. Callers bind
+ * the wire version and the transport session into this closure — `fetchPack`
+ * itself stays version-agnostic, matching every other caller of the shared
+ * `PackDownload` shape.
+ */
+export type NegotiatePackBytes = (ctx: Context, input: FetchPackInput) => Promise<PackDownload>;
+
 export const fetchPack = async (
   ctx: Context,
-  exchange: GitExchange,
+  negotiatePackBytes: NegotiatePackBytes,
   input: FetchPackInput,
 ): Promise<FetchPackResult> => {
   ctx.progress.start(input.progressOp);
   try {
-    const download = await downloadPack(ctx, exchange, input);
+    const download = await downloadPack(ctx, negotiatePackBytes, input);
     // git-upload-pack returns a zero-byte body when the client's `have` set
     // already covers every wanted oid. This is a legitimate protocol state
     // (the server has nothing to send), not an error. Surface it as an
     // empty result so the caller can advance refs and return cleanly.
     if (download.packBytes.length === 0) {
-      return {
-        packPath: '',
-        idxPath: '',
-        objectCount: 0,
-        packSha: '',
-        shallow: download.shallow,
-        unshallow: download.unshallow,
-      };
+      return emptyPackResult(download.shallow, download.unshallow);
     }
-    const packSha = await verifyPackTrailer(download.packBytes, ctx);
-    const entries = await walkPackEntries(ctx, download.packBytes);
-    const idxBytes = await buildIdx(ctx, entries, packSha);
-    const written = await writePackArtifacts(
-      ctx,
-      download.packBytes,
-      idxBytes,
-      packSha,
-      entries.length,
-      input.promisor === true,
-    );
-    // Drop the per-Context pack-registry cache so reads through this same
-    // handle (e.g. a follow-up merge in `pull`) see the just-written pack.
-    refreshPackRegistry(ctx);
-    return {
-      ...written,
-      shallow: download.shallow,
-      unshallow: download.unshallow,
-    };
+    return await materializePack(ctx, download, input);
   } finally {
     ctx.progress.end(input.progressOp);
   }
 };
 
-const downloadPack = async (
+const emptyPackResult = (
+  shallow: ReadonlyArray<ObjectId>,
+  unshallow: ReadonlyArray<ObjectId>,
+): FetchPackResult => ({
+  packPath: '',
+  idxPath: '',
+  objectCount: 0,
+  packSha: '',
+  shallow,
+  unshallow,
+});
+
+/**
+ * Post-download tail: verify the trailer, walk entries, then either suppress
+ * or write the pack/idx artifacts. Split out of `fetchPack` so the negotiated
+ * response can be fully verified (trailer + entry walk) before deciding
+ * whether it is empty — a malformed pack that merely *looks* empty (bad
+ * trailer, truncated entries) must still throw, never be silently dropped.
+ */
+const materializePack = async (
   ctx: Context,
-  exchange: GitExchange,
+  download: PackDownload,
   input: FetchPackInput,
-): Promise<PackDownload> => {
-  const requestBody = buildUploadPackRequest({
-    wants: input.wants,
-    haves: input.haves,
-    capabilities: input.capabilities,
-    done: true,
-    // equivalent-mutant: dropping the ternary and spreading
-    // `{ depth: input.depth }` unconditionally is observable-equivalent.
-    // `buildUploadPackRequest` treats `depth: undefined` identically to no
-    // `depth` field — no `deepen N\n` line is emitted in either case.
-    // Stryker disable next-line ConditionalExpression: equivalent — `buildUploadPackRequest` treats `depth: undefined` like an absent field, so spreading unconditionally emits no `deepen` line.
-    ...(input.depth !== undefined ? { depth: input.depth } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — `buildUploadPackRequest` treats `filter: undefined` like an absent field, so spreading unconditionally emits no `filter` line.
-    ...(input.filter !== undefined ? { filter: input.filter } : {}),
-  });
-  const pktSource = await exchange(requestBody);
-  const parsed = await parseUploadPackResponse(pktSource, {
-    sideBand: hasSideBand(input.capabilities),
-    // Sanitize sideband-2 text BEFORE it crosses the ProgressReporter port:
-    // user-supplied reporters are free implementations and the contract does
-    // not require sanitization — a logging reporter that forwards the bytes
-    // verbatim would be vulnerable to terminal injection from a malicious
-    // server. Sanitizing at the boundary leaves no untrusted byte on the
-    // reporter call surface.
-    onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, sanitize(text)),
-    // Stryker disable next-line ConditionalExpression: equivalent — `parseUploadPackResponse` treats `expectShallow: true` identically on a non-shallow stream (the NAK pkt is pushed back and processed as the non-shallow path).
-    expectShallow: input.depth !== undefined,
-  });
-  const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
-  return { packBytes, shallow: parsed.shallow, unshallow: parsed.unshallow };
+): Promise<FetchPackResult> => {
+  const packSha = await verifyPackTrailer(download.packBytes, ctx);
+  const entries = await walkPackEntries(ctx, download.packBytes);
+  // A verified pack can legitimately carry zero entries (e.g. the negotiated
+  // response round-tripped a pack rather than a zero-byte body). Suppress
+  // writing pack/idx artifacts for it, same as the zero-byte-body guard above.
+  if (entries.length === 0) {
+    return emptyPackResult(download.shallow, download.unshallow);
+  }
+  const idxBytes = await buildIdx(ctx, entries, packSha);
+  const written = await writePackArtifacts(
+    ctx,
+    download.packBytes,
+    idxBytes,
+    packSha,
+    entries.length,
+    input.promisor === true,
+  );
+  // Drop the per-Context pack-registry cache so reads through this same
+  // handle (e.g. a follow-up merge in `pull`) see the just-written pack.
+  refreshPackRegistry(ctx);
+  return {
+    ...written,
+    shallow: download.shallow,
+    unshallow: download.unshallow,
+  };
 };
 
-const drainPackBodyBounded = async (
+/**
+ * Thin adapter boundary: `fetchPack` stays version-agnostic, the injected
+ * `negotiatePackBytes` (bound to a wire version + transport session by the
+ * caller) does the actual request/response work.
+ */
+const downloadPack = async (
+  ctx: Context,
+  negotiatePackBytes: NegotiatePackBytes,
+  input: FetchPackInput,
+): Promise<PackDownload> => negotiatePackBytes(ctx, input);
+
+export const drainPackBodyBounded = async (
   ctx: Context,
   input: FetchPackInput,
   source: AsyncIterable<Uint8Array>,
@@ -237,7 +240,7 @@ const drainPackBodyBounded = async (
 const packTooLargeBytes = (limit: number): TsgitError =>
   new TsgitError({ code: 'PACK_TOO_LARGE', objectCount: 0, limit });
 
-const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
+export const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
   caps.some((c) => SIDE_BAND_CAPS.has(c));
 
 export const verifyPackTrailer = async (packBytes: Uint8Array, ctx: Context): Promise<string> => {

@@ -986,6 +986,47 @@ describe('buildUploadPackRequest', () => {
       });
     });
   });
+
+  describe('Given haves and done=true', () => {
+    describe('When built', () => {
+      const buildLines = async (): Promise<PktLine[]> =>
+        decodeAll(
+          buildUploadPackRequest({
+            wants: [OID1],
+            haves: [OID2, OID3],
+            capabilities: ['side-band-64k'],
+            done: true,
+          }),
+        );
+
+      it('Then have lines are terminated by "done" with no flush between the last have and done', async () => {
+        // Arrange & Act
+        const lines = await buildLines();
+
+        // Assert — exactly one flush (after the want-list), then have, have, done —
+        // no second flush is emitted before "done".
+        expect(lines.map((l) => l.kind)).toEqual(['data', 'flush', 'data', 'data', 'data']);
+        const last = lines[lines.length - 1];
+        expect(last?.kind).toBe('data');
+        if (last?.kind === 'data') {
+          expect(new TextDecoder().decode(last.payload)).toBe('done\n');
+        }
+      });
+
+      it('Then the two have payloads are preserved in order', async () => {
+        // Arrange & Act
+        const lines = await buildLines();
+
+        // Assert
+        const dataLines = lines.filter(
+          (l): l is { kind: 'data'; payload: Uint8Array } => l.kind === 'data',
+        );
+        const dec = new TextDecoder();
+        expect(dec.decode(dataLines[1]?.payload)).toBe(`have ${OID2}\n`);
+        expect(dec.decode(dataLines[2]?.payload)).toBe(`have ${OID3}\n`);
+      });
+    });
+  });
 });
 
 describe('parseUploadPackResponse', () => {

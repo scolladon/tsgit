@@ -4,6 +4,7 @@ import { clone } from '../../../../src/application/commands/clone.js';
 import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { RefName } from '../../../../src/domain/objects/index.js';
+import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
   HttpRequest,
@@ -72,6 +73,118 @@ const buildPackFromSingleBlob = async (
   const id = built.ids[0];
   if (id === undefined) throw new Error('expected one entry');
   return { packBytes: built.packBytes, blobId: id };
+};
+
+const DECODER = new TextDecoder();
+
+const concatUint8 = (...parts: ReadonlyArray<Uint8Array>): Uint8Array => {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+};
+
+/**
+ * Real `git-http-backend` v2 responses start directly with `version 2\n` —
+ * unlike v1, there is no `# service=...` prologue on the wire. See
+ * `buildV2AdvertisementWithPrologueBytes` below for the non-default fixture
+ * that still carries one, used to pin the client's peek-past-prologue path.
+ */
+const buildV2AdvertisementBytes = (opts: { readonly filter?: boolean } = {}): Uint8Array => {
+  const fetchLine = opts.filter === true ? 'fetch=shallow wait-for-done filter\n' : 'fetch\n';
+  return encodePktStream([
+    ENCODER.encode('version 2\n'),
+    ENCODER.encode('agent=git/test\n'),
+    ENCODER.encode('object-format=sha1\n'),
+    ENCODER.encode('ls-refs\n'),
+    ENCODER.encode(fetchLine),
+  ]);
+};
+
+/**
+ * Some smart-HTTP servers still prepend the legacy `# service=...` prologue
+ * ahead of a v2 capability list; negotiateDiscovery must peek past it rather
+ * than assume every v2 response is prologue-free.
+ */
+const buildV2AdvertisementWithPrologueBytes = (
+  opts: { readonly filter?: boolean } = {},
+): Uint8Array =>
+  concatUint8(
+    encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]),
+    buildV2AdvertisementBytes(opts),
+  );
+
+const buildLsRefsResponseBytes = (
+  refs: ReadonlyArray<{ name: string; id: string }>,
+  head: string,
+): Uint8Array => {
+  const headId = refs.find((r) => r.name === head)?.id;
+  if (headId === undefined) {
+    throw new Error(`fixture invariant violated: ${head} is not among the generated refs`);
+  }
+  const headLine = ENCODER.encode(`${headId} HEAD symref-target:${head}\n`);
+  return encodePktStream([headLine, ...refs.map((r) => ENCODER.encode(`${r.id} ${r.name}\n`))]);
+};
+
+const buildV2PackResponseBytes = (packBytes: Uint8Array): Uint8Array => {
+  const channel1 = new Uint8Array(packBytes.length + 1);
+  channel1[0] = 0x01;
+  channel1.set(packBytes, 1);
+  return encodePktStream([ENCODER.encode('packfile\n'), channel1]);
+};
+
+interface CloneFixtureV2Options {
+  readonly refs: ReadonlyArray<{ readonly name: string; readonly id: string }>;
+  readonly head: string;
+  readonly packBytes: Uint8Array;
+  /** When true, the v2 `fetch` command advertises the `filter` sub-feature. */
+  readonly filter?: boolean;
+  /** When true, the `info/refs` response still carries the `# service=...` prologue. */
+  readonly prologue?: boolean;
+}
+
+/**
+ * A v2-capable remote: `info/refs` answers the v2 capability list; the same
+ * `git-upload-pack` POST endpoint serves both `ls-refs` and `fetch` command
+ * requests, distinguished by the `command=` line in the request body.
+ */
+const buildCloneRemoteV2 = (
+  opts: CloneFixtureV2Options,
+): { transport: HttpTransport; requests: HttpRequest[] } => {
+  const requests: HttpRequest[] = [];
+  const filterOpts = opts.filter === undefined ? {} : { filter: opts.filter };
+  const advertisement =
+    opts.prologue === true
+      ? buildV2AdvertisementWithPrologueBytes(filterOpts)
+      : buildV2AdvertisementBytes(filterOpts);
+  const lsRefsResponse = buildLsRefsResponseBytes(opts.refs, opts.head);
+  const packResponse = buildV2PackResponseBytes(opts.packBytes);
+  const transport: HttpTransport = {
+    request: async (req: HttpRequest): Promise<HttpResponse> => {
+      requests.push(req);
+      const requestText = req.body === undefined ? '' : DECODER.decode(req.body);
+      const body = req.url.includes('/info/refs')
+        ? advertisement
+        : requestText.includes('command=ls-refs')
+          ? lsRefsResponse
+          : packResponse;
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'application/x-git-upload-pack-result' },
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(body.slice());
+            controller.close();
+          },
+        }),
+      };
+    },
+  };
+  return { transport, requests };
 };
 
 describe('clone', () => {
@@ -210,6 +323,73 @@ describe('clone', () => {
           (await readReflog(ctx, 'refs/remotes/origin/main' as RefName)).map((e) => e.message),
         ).toEqual(expected);
         expect((await readReflog(ctx, 'HEAD' as RefName)).map((e) => e.message)).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a v2-capable remote advertising one branch', () => {
+    describe('When clone', () => {
+      it('Then it negotiates via ls-refs + v2 fetch and checks out the tracked branch', async () => {
+        // Arrange — the remote's ls-refs response carries HEAD's
+        // symref-target; parseLsRefsResponse surfaces it as a
+        // `symref=HEAD:...` capability, so v2 clone tracks the branch exactly
+        // like the v1 happy path instead of leaving HEAD detached.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 clone\n');
+        const { transport, requests } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(sut.head).toBe('refs/heads/main');
+        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
+        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
+        const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+        expect(headFile).toBe('ref: refs/heads/main\n');
+        const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
+        expect(mainRef.trim()).toBe(blobId);
+        const remoteRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
+        expect(remoteRef.trim()).toBe(blobId);
+        const requestBodies = requests
+          .filter((r) => r.method === 'POST')
+          .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
+        expect(requestBodies.some((b) => b.includes('command=ls-refs'))).toBe(true);
+        expect(requestBodies.some((b) => b.includes('command=fetch'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a v2-capable remote whose info/refs response still carries the smart-HTTP service prologue', () => {
+    describe('When clone', () => {
+      it('Then it negotiates via ls-refs + v2 fetch and checks out the tracked branch', async () => {
+        // Arrange — some smart-HTTP servers keep sending the legacy
+        // `# service=...` line ahead of the v2 capability list; negotiateDiscovery
+        // must peek past it rather than assume every v2 response is prologue-free.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(
+          ctx,
+          'v2 clone with prologue\n',
+        );
+        const { transport } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+          prologue: true,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(sut.head).toBe('refs/heads/main');
+        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
       });
     });
   });
@@ -627,6 +807,39 @@ describe('clone', () => {
       });
     });
   });
+
+  describe('Given a discovery with a path-traversal ref name (refs/heads/../../../config)', () => {
+    describe('When clone', () => {
+      it('Then the malicious ref is not written and the legitimate ref still is', async () => {
+        // Arrange — a hostile server advertises a ref name that, once
+        // prefixed with refs/remotes/origin/, would escape .git and
+        // overwrite gitDir/config.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'safe\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+          refs: [
+            { name: 'refs/heads/main', id: blobId },
+            { name: 'refs/heads/../../../config', id: blobId },
+          ],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const sut = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert — the malicious ref is dropped, the legitimate ref is
+        // written, and gitDir/config is untouched (not clobbered with a raw oid).
+        const names = sut.fetchedRefs.map((r) => r.name);
+        expect(names).not.toContain('refs/remotes/origin/../../../config');
+        expect(names).toContain('refs/remotes/origin/main');
+        const configAfter = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(configAfter).toContain('[core]');
+      });
+    });
+  });
 });
 
 describe('clone — progress reporting', () => {
@@ -770,6 +983,63 @@ describe('clone — partial clone', () => {
         });
         const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
         expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a v2-capable server whose fetch command advertises filter', () => {
+    describe('When clone with blob:none', () => {
+      it('Then it does not throw and sends the filter arg over the v2 fetch request', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 filtered\n');
+        const { transport, requests } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+          filter: true,
+        });
+
+        // Act
+        await clone(withTransport(ctx, transport), { url: REMOTE_URL, filter: 'blob:none' });
+
+        // Assert — the v2 fetch command request carries the filter arg, and
+        // the promisor config block is written just like the v1 path.
+        const fetchRequest = requests.find(
+          (r) => r.body !== undefined && DECODER.decode(r.body).includes('command=fetch'),
+        );
+        expect(fetchRequest).toBeDefined();
+        expect(DECODER.decode(fetchRequest?.body)).toContain('filter blob:none');
+        const parsed = await readConfig(ctx);
+        expect(parsed.remote?.get('origin')?.promisor).toBe(true);
+        expect(parsed.remote?.get('origin')?.partialCloneFilter).toBe('blob:none');
+      });
+    });
+  });
+
+  describe('Given a v2-capable server whose fetch command does not advertise filter', () => {
+    describe('When clone with a filter', () => {
+      it('Then throws REMOTE_FILTER_UNSUPPORTED', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 unfiltered\n');
+        const { transport } = buildCloneRemoteV2({
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await clone(withTransport(ctx, transport), { url: REMOTE_URL, filter: 'blob:none' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REMOTE_FILTER_UNSUPPORTED');
       });
     });
   });

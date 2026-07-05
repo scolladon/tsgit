@@ -17,9 +17,10 @@ import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { createPackRegistry, type PackRegistry } from '../primitives/pack-registry.js';
 import { looseObjectPath } from '../primitives/path-layout.js';
+import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { openGitSession } from './internal/git-service-session.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { discoverRefs, selectFetchCapabilities } from './internal/upload-pack-client.js';
+import { selectFetchCapabilities } from './internal/upload-pack-client.js';
 
 export interface FetchMissingOptions {
   /** Object ids to fetch. Ones already present locally are skipped. */
@@ -95,11 +96,11 @@ const fetchMissingInternal = async (
 
   const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
-    const advertisement = await discoverRefs(session);
-    const capabilities = selectFetchCapabilities(advertisement.capabilities);
+    const discovery = await negotiateDiscovery(session);
+    const capabilities = selectFetchCapabilities(discovery.advertisement.capabilities);
     try {
-      // No `filter`: a lazy-fetch requests exact oids (ADR-080).
-      await fetchPack(ctx, session.exchange, {
+      // No `filter`: a lazy-fetch requests exact oids.
+      await fetchPack(ctx, (c, req) => negotiatePackBytes(c, session, discovery.version, req), {
         wants: missing,
         haves: [],
         capabilities,
