@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783238237281,
+  "lastUpdate": 1783286835864,
   "repoUrl": "https://github.com/scolladon/tsgit",
   "entries": {
     "tsgit benchmarks": [
@@ -619,6 +619,130 @@ window.BENCHMARK_DATA = {
           {
             "name": "test/bench/status.bench.ts > Given a 50-commit working tree with 25 modified files, When status() scans it, Then compare tsgit against isomorphic-git > isomorphic-git",
             "value": 11.731039500000179,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "colladonsebastien@gmail.com",
+            "name": "Sébastien Colladon",
+            "username": "scolladon"
+          },
+          "committer": {
+            "email": "colladonsebastien@gmail.com",
+            "name": "Sébastien Colladon",
+            "username": "scolladon"
+          },
+          "distinct": true,
+          "id": "1656f98fd742d7dba2cc365ef4563f5695d9ae15",
+          "message": "docs: reorder Phase 26 backlog into execution sequence",
+          "timestamp": "2026-07-05T23:01:14+02:00",
+          "tree_id": "f7c1ce3d4cb1f7d2b342a0a6db034a19b2532f53",
+          "url": "https://github.com/scolladon/tsgit/commit/1656f98fd742d7dba2cc365ef4563f5695d9ae15"
+        },
+        "date": 1783286834947,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "test/bench/clone-small-repo.bench.ts > Given a local git-http-backend serving a 5-commit repo, When clone() fetches the full pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 25.29101300000002,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/clone-small-repo.bench.ts > Given a local git-http-backend serving a 5-commit repo, When clone() fetches the full pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 27.489497000000256,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/log-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When log() walks every commit, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 1659.4892595000001,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/log-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When log() walks every commit, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 902.8206190000001,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/log.bench.ts > Given a 50-commit repo, When log() walks every commit, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 17.541187500000092,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/log.bench.ts > Given a 50-commit repo, When log() walks every commit, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 14.762114999999994,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/pack-read-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a cold pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 10.790656499999955,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/pack-read-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a cold pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 95.7119715,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/pack-read-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a warm pack, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.37978449999991426,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/pack-read-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When readBlob() reads from a warm pack, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 95.13935500000025,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/read-blob.bench.ts > Given a fresh repository opened per call (cold LRU cache), When readBlob() reads a blob, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.5302675000000363,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/read-blob.bench.ts > Given a fresh repository opened per call (cold LRU cache), When readBlob() reads a blob, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 0.39253899999994246,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/read-blob.bench.ts > Given a repository with a warmed LRU delta-base cache, When readBlob() reads a blob, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 0.29235000000016953,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/read-blob.bench.ts > Given a repository with a warmed LRU delta-base cache, When readBlob() reads a blob, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 0.3459509999997863,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/status-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When status() scans the clean tree, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 7366.217122000002,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/status-scale.bench.ts > Given a medium repo (5000 commits, 20000 blobs), When status() scans the clean tree, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 2979.956292000017,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a clean 50-commit working tree, When status() scans it, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 15.910802999999987,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a clean 50-commit working tree, When status() scans it, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 8.643263999999817,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a 50-commit working tree with 25 modified files, When status() scans it, Then compare tsgit against isomorphic-git > tsgit",
+            "value": 14.597089000000096,
+            "unit": "ms"
+          },
+          {
+            "name": "test/bench/status.bench.ts > Given a 50-commit working tree with 25 modified files, When status() scans it, Then compare tsgit against isomorphic-git > isomorphic-git",
+            "value": 13.647690999999895,
             "unit": "ms"
           }
         ]
