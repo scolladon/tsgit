@@ -37,3 +37,39 @@ export const fetchStoringHead = (remote: string): string => `fetch ${remote}: st
 
 /** `update by push` — the reflog for a ref advanced by a push. */
 export const PUSH_UPDATE = 'update by push';
+
+/** `cherry-pick: <subject>` — a cherry-pick step's reflog on HEAD. */
+export const cherryPickReflog = (subject: string): string => `cherry-pick: ${subject}`;
+
+/** `revert: <subject>` — a revert step's reflog on HEAD. */
+export const revertReflog = (subject: string): string => `revert: ${subject}`;
+
+/** `rebase (start): checkout <onto>` — detaching HEAD onto the rebase base. */
+export const rebaseStartCheckout = (onto: string): string => `rebase (start): checkout ${onto}`;
+
+/** `rebase (pick): <subject>` — a replayed pick. */
+export const rebasePickReflog = (subject: string): string => `rebase (pick): ${subject}`;
+
+/** `rebase (edit): <subject>` — a stopped edit step. */
+export const rebaseEditReflog = (subject: string): string => `rebase (edit): ${subject}`;
+
+/** `rebase (reword): <subject>` — a reword step (recorded before and after the amend). */
+export const rebaseRewordReflog = (subject: string): string => `rebase (reword): ${subject}`;
+
+/** `rebase (continue): <subject>` — a step replayed after a conflict was resolved. */
+export const rebaseContinueReflog = (subject: string): string => `rebase (continue): ${subject}`;
+
+/** `rebase (finish): <branch> onto <onto>` — the finishing move of the branch ref. */
+export const rebaseFinishOnto = (branch: string, onto: string): string =>
+  `rebase (finish): ${branch} onto ${onto}`;
+
+/** `rebase (finish): returning to <branch>` — reattaching HEAD after a finished rebase. */
+export const rebaseFinishReturningTo = (branch: string): string =>
+  `rebase (finish): returning to ${branch}`;
+
+/** `rebase (abort): returning to <target>` — reattaching HEAD after an aborted rebase. */
+export const rebaseAbortReturningTo = (target: string): string =>
+  `rebase (abort): returning to ${target}`;
+
+/** `rebase: fast-forward` — a rebase that reduced to a fast-forward. */
+export const REBASE_FAST_FORWARD = 'rebase: fast-forward';

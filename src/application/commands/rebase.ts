@@ -26,6 +26,17 @@ import {
   type RebaseBackupHeader,
   type RebaseTodoAction,
 } from '../../domain/rebase/index.js';
+import {
+  REBASE_FAST_FORWARD,
+  rebaseAbortReturningTo,
+  rebaseContinueReflog,
+  rebaseEditReflog,
+  rebaseFinishOnto,
+  rebaseFinishReturningTo,
+  rebasePickReflog,
+  rebaseRewordReflog,
+  rebaseStartCheckout,
+} from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
 import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -218,7 +229,7 @@ const detachHead = async (
   ontoName: string,
 ): Promise<void> => {
   await getRefStore(ctx).writeLoose(HEAD, onto);
-  await recordRefUpdate(ctx, HEAD, fromHead, onto, `rebase (start): checkout ${ontoName}`);
+  await recordRefUpdate(ctx, HEAD, fromHead, onto, rebaseStartCheckout(ontoName));
   await hardResetWorktreeToCommit(ctx, onto);
 };
 
@@ -286,7 +297,7 @@ const replayOne = async (
   });
   await updateRef(ctx, HEAD, id, {
     expected: ourId,
-    reflogMessage: `rebase (pick): ${subjectLine(cData.message)}`,
+    reflogMessage: rebasePickReflog(subjectLine(cData.message)),
   });
   return { kind: 'committed', id };
 };
@@ -370,10 +381,10 @@ const finishRebase = async (
   if (branch === undefined) return;
   await updateRef(ctx, branch, newTip, {
     expected: origHead,
-    reflogMessage: `rebase (finish): ${branch} onto ${onto}`,
+    reflogMessage: rebaseFinishOnto(branch, onto),
   });
   await writeSymbolicRef(ctx, HEAD, branch);
-  await recordRefUpdate(ctx, HEAD, newTip, newTip, `rebase (finish): returning to ${branch}`);
+  await recordRefUpdate(ctx, HEAD, newTip, newTip, rebaseFinishReturningTo(branch));
 };
 
 /**
@@ -537,7 +548,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   });
   await updateRef(ctx, HEAD, resolutionId, {
     expected: currentHead,
-    reflogMessage: `rebase (continue): ${subjectLine(message)}`,
+    reflogMessage: rebaseContinueReflog(subjectLine(message)),
   });
   const rewritten = [...(await readRewrittenList(ctx)), [stopped.oid, resolutionId] as const];
   const rc: ReplayContext = {
@@ -592,13 +603,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   // detached rebase moves HEAD back to the original oid (`returning to <oid>`).
   if (branch !== undefined) {
     await writeSymbolicRef(ctx, HEAD, branch);
-    await recordRefUpdate(
-      ctx,
-      HEAD,
-      currentHead,
-      state.origHead,
-      `rebase (abort): returning to ${branch}`,
-    );
+    await recordRefUpdate(ctx, HEAD, currentHead, state.origHead, rebaseAbortReturningTo(branch));
   } else {
     await getRefStore(ctx).writeLoose(HEAD, state.origHead);
     await recordRefUpdate(
@@ -606,7 +611,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
       HEAD,
       currentHead,
       state.origHead,
-      `rebase (abort): returning to ${state.origHead}`,
+      rebaseAbortReturningTo(state.origHead),
     );
   }
   await clearRebaseState(ctx);
@@ -714,7 +719,7 @@ const detachInteractive = async (
   foldedHead: ObjectId,
 ): Promise<void> => {
   await getRefStore(ctx).writeLoose(HEAD, foldedHead);
-  await recordRefUpdate(ctx, HEAD, fromHead, foldedHead, `rebase (start): checkout ${ontoName}`);
+  await recordRefUpdate(ctx, HEAD, fromHead, foldedHead, rebaseStartCheckout(ontoName));
   await hardResetWorktreeToCommit(ctx, foldedHead);
 };
 
@@ -723,7 +728,7 @@ const detachInteractive = async (
 const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> => {
   const from = await resolveRef(ctx, HEAD);
   await getRefStore(ctx).writeLoose(HEAD, target);
-  await recordRefUpdate(ctx, HEAD, from, target, 'rebase: fast-forward');
+  await recordRefUpdate(ctx, HEAD, from, target, REBASE_FAST_FORWARD);
   await hardResetWorktreeToCommit(ctx, target);
 };
 
@@ -803,7 +808,7 @@ const stepPick = async (
     inst,
     cData,
     head,
-    `rebase (pick): ${subjectLine(cData.message)}`,
+    rebasePickReflog(subjectLine(cData.message)),
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
   return { kind: 'advanced', created: produced.created };
@@ -821,7 +826,7 @@ const stepEdit = async (
     inst,
     cData,
     head,
-    `rebase (edit): ${subjectLine(cData.message)}`,
+    rebaseEditReflog(subjectLine(cData.message)),
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
   return { kind: 'edit-stop', created: produced.created };
@@ -850,7 +855,7 @@ const stepReword = async (
     inst,
     cData,
     head,
-    `rebase (reword): ${subjectLine(cData.message)}`,
+    rebaseRewordReflog(subjectLine(cData.message)),
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
   const producedData = await readCommitData(ctx, produced.created);
@@ -860,7 +865,7 @@ const stepReword = async (
     expected: produced.created,
     author: producedData.author,
     message,
-    reflog: `rebase (reword): ${subjectLine(message)}`,
+    reflog: rebaseRewordReflog(subjectLine(message)),
   });
   return { kind: 'advanced', created };
 };
@@ -1172,7 +1177,7 @@ const rebaseContinueInteractive = async (
       expected: currentHead,
       author: baseData.author,
       message,
-      reflog: `rebase (continue): ${subjectLine(message)}`,
+      reflog: rebaseContinueReflog(subjectLine(message)),
     });
     rewritten.push([stoppedOid, resumeHead]);
   } else if (state.amend !== undefined) {
@@ -1186,7 +1191,7 @@ const rebaseContinueInteractive = async (
         expected: currentHead,
         author: state.author,
         message: amendCommit.message,
-        reflog: `rebase (continue): ${subjectLine(amendCommit.message)}`,
+        reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
       });
       rewritten.push([stoppedOid, resumeHead]);
     }
@@ -1201,7 +1206,7 @@ const rebaseContinueInteractive = async (
       expected: currentHead,
       author: state.author,
       message,
-      reflog: `rebase (continue): ${subjectLine(message)}`,
+      reflog: rebaseContinueReflog(subjectLine(message)),
     });
     rewritten.push([stoppedOid, resumeHead]);
   }

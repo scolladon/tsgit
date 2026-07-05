@@ -22,6 +22,7 @@ import { type ConflictType, type MergeConflict, replayLabels } from '../../domai
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import { cherryPickReflog, commitCherryPickReflog } from '../../domain/reflog/reflog-messages.js';
 import type { TodoEntry } from '../../domain/sequencer/index.js';
 import {
   CHERRY_PICK,
@@ -341,7 +342,7 @@ const applyOnePick = async (
     const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, opts);
     await updateRef(ctx, branch, id, {
       expected: ourId,
-      reflogMessage: `cherry-pick: ${subjectLine(cData.message)}`,
+      reflogMessage: cherryPickReflog(subjectLine(cData.message)),
     });
     return { kind: 'committed', id };
   } finally {
@@ -477,7 +478,7 @@ const commitResolvedPick = async (
   });
   await updateRef(ctx, branch, id, {
     expected: ourId,
-    reflogMessage: `commit (cherry-pick): ${subjectLine(message)}`,
+    reflogMessage: commitCherryPickReflog(subjectLine(message)),
   });
   return id;
 };

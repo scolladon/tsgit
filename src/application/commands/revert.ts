@@ -23,6 +23,7 @@ import { type ConflictType, type MergeConflict, revertLabels } from '../../domai
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import { commitReflog, revertReflog } from '../../domain/reflog/reflog-messages.js';
 import type { TodoEntry } from '../../domain/sequencer/index.js';
 import {
   REVERT,
@@ -179,7 +180,7 @@ const applyOneRevert = async (
     if (res.mergedTree === oursTree) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries);
     const { id, subject } = await buildRevertCommit(ctx, source, cData, ourId, res.mergedTree);
-    await updateRef(ctx, branch, id, { expected: ourId, reflogMessage: `revert: ${subject}` });
+    await updateRef(ctx, branch, id, { expected: ourId, reflogMessage: revertReflog(subject) });
     return { kind: 'committed', id };
   } finally {
     await lock.release();
@@ -458,7 +459,7 @@ const commitResolvedRevert = async (
   });
   await updateRef(ctx, branch, id, {
     expected: ourId,
-    reflogMessage: `commit: ${subjectLine(message)}`,
+    reflogMessage: commitReflog(subjectLine(message)),
   });
   return id;
 };

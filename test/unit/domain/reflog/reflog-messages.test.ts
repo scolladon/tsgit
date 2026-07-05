@@ -56,4 +56,56 @@ describe('Given the reflog message builders', () => {
       expect(sut.PUSH_UPDATE).toBe('update by push');
     });
   });
+
+  describe('When building cherry-pick and revert reflog lines', () => {
+    it('Then cherryPickReflog renders "cherry-pick: <subject>"', () => {
+      expect(sut.cherryPickReflog('port fix')).toBe('cherry-pick: port fix');
+    });
+
+    it('Then revertReflog renders "revert: <subject>"', () => {
+      expect(sut.revertReflog('undo it')).toBe('revert: undo it');
+    });
+  });
+
+  describe('When building rebase reflog lines', () => {
+    it('Then rebaseStartCheckout renders "rebase (start): checkout <onto>"', () => {
+      expect(sut.rebaseStartCheckout('main')).toBe('rebase (start): checkout main');
+    });
+
+    it('Then rebasePickReflog renders "rebase (pick): <subject>"', () => {
+      expect(sut.rebasePickReflog('a step')).toBe('rebase (pick): a step');
+    });
+
+    it('Then rebaseEditReflog renders "rebase (edit): <subject>"', () => {
+      expect(sut.rebaseEditReflog('an edit')).toBe('rebase (edit): an edit');
+    });
+
+    it('Then rebaseRewordReflog renders "rebase (reword): <subject>"', () => {
+      expect(sut.rebaseRewordReflog('a reword')).toBe('rebase (reword): a reword');
+    });
+
+    it('Then rebaseContinueReflog renders "rebase (continue): <subject>"', () => {
+      expect(sut.rebaseContinueReflog('resumed')).toBe('rebase (continue): resumed');
+    });
+
+    it('Then rebaseFinishOnto renders "rebase (finish): <branch> onto <onto>"', () => {
+      expect(sut.rebaseFinishOnto('refs/heads/topic', 'abc123')).toBe(
+        'rebase (finish): refs/heads/topic onto abc123',
+      );
+    });
+
+    it('Then rebaseFinishReturningTo renders "rebase (finish): returning to <branch>"', () => {
+      expect(sut.rebaseFinishReturningTo('refs/heads/topic')).toBe(
+        'rebase (finish): returning to refs/heads/topic',
+      );
+    });
+
+    it('Then rebaseAbortReturningTo renders "rebase (abort): returning to <target>"', () => {
+      expect(sut.rebaseAbortReturningTo('abc123')).toBe('rebase (abort): returning to abc123');
+    });
+
+    it('Then REBASE_FAST_FORWARD is "rebase: fast-forward"', () => {
+      expect(sut.REBASE_FAST_FORWARD).toBe('rebase: fast-forward');
+    });
+  });
 });
