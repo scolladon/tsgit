@@ -23,6 +23,12 @@ import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { TodoEntry } from '../../domain/sequencer/index.js';
+import {
+  CHERRY_PICK,
+  CHERRY_PICK_ABORT,
+  CHERRY_PICK_CONTINUE,
+  CHERRY_PICK_SKIP,
+} from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -417,11 +423,11 @@ export const cherryPickRun = async (
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'cherry-pick');
+  await assertNotBare(ctx, CHERRY_PICK);
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
-    throw unsupportedOperation('cherry-pick', 'cannot cherry-pick with detached HEAD');
+    throw unsupportedOperation(CHERRY_PICK, 'cannot cherry-pick with detached HEAD');
   }
   const ourId = await resolveHeadCommit(ctx, head.target);
   const todo = await expandRevisions(ctx, input.commits);
@@ -518,15 +524,15 @@ export const cherryPickContinue = async (
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'cherry-pick --continue');
+  await assertNotBare(ctx, CHERRY_PICK_CONTINUE);
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
-    throw noOperationInProgress('cherry-pick');
+    throw noOperationInProgress(CHERRY_PICK);
   }
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
-    throw unsupportedOperation('cherry-pick --continue', 'cannot continue with detached HEAD');
+    throw unsupportedOperation(CHERRY_PICK_CONTINUE, 'cannot continue with detached HEAD');
   }
   const opts = await resolveResumeOpts(ctx, input);
   let ourId = await resolveRef(ctx, head.target);
@@ -568,13 +574,13 @@ export const cherryPickSkip = async (
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'cherry-pick --skip');
+  await assertNotBare(ctx, CHERRY_PICK_SKIP);
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
-    throw noOperationInProgress('cherry-pick');
+    throw noOperationInProgress(CHERRY_PICK);
   }
-  const branch = await requireSymbolicHead(ctx, 'cherry-pick --skip');
+  const branch = await requireSymbolicHead(ctx, CHERRY_PICK_SKIP);
   const ourId = await resolveRef(ctx, branch);
   const opts = await resolveResumeOpts(ctx, input);
   await hardResetWorktreeToCommit(ctx, ourId);
@@ -599,13 +605,13 @@ export const cherryPickSkip = async (
  */
 export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'cherry-pick --abort');
+  await assertNotBare(ctx, CHERRY_PICK_ABORT);
   const source = await readCherryPickHead(ctx);
   const seqHead = await readSequencerHead(ctx);
   if (source === undefined && seqHead === undefined) {
-    throw noOperationInProgress('cherry-pick');
+    throw noOperationInProgress(CHERRY_PICK);
   }
-  const branch = await requireSymbolicHead(ctx, 'cherry-pick --abort');
+  const branch = await requireSymbolicHead(ctx, CHERRY_PICK_ABORT);
   const target = seqHead ?? (await resolveRef(ctx, branch));
   await abortSequencerReset(ctx, { branch, target, clearHead: clearCherryPickHead });
   return { head: target, branch };

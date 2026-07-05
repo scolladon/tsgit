@@ -20,6 +20,7 @@ import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import { deriveWorkingMode, type FileMode, type ObjectId } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
+import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -83,7 +84,7 @@ export const add = async (
   await assertNotBare(ctx, 'add');
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.
-  await assertNoPendingOperation(ctx, { except: ['merge', 'cherry-pick', 'revert', 'rebase'] });
+  await assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] });
   // Build the attribute provider ONCE per add invocation. Skip when no runner
   // is wired (R11 inert fallback — ctx.command absent means no filter execution).
   const provider = await maybeBuildAttributeProvider(ctx);

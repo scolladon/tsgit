@@ -1,6 +1,7 @@
 import { noOperationInProgress } from '../../domain/commands/error.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { MERGE, MERGE_ABORT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-state.js';
@@ -28,19 +29,19 @@ export interface MergeAbortResult {
  */
 export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'merge --abort');
+  await assertNotBare(ctx, MERGE_ABORT);
   const mergeHead = await readMergeHead(ctx);
   // Load-bearing under the ADR-027 write order: `merge`'s conflict path
   // writes `ORIG_HEAD` *before* `MERGE_HEAD`. A crash between the two leaves
   // `ORIG_HEAD` on disk with `MERGE_HEAD` absent — without this guard,
   // `mergeAbort` would silently hard-reset to `ORIG_HEAD` instead of
   // surfacing the inconsistent state to the caller.
-  if (mergeHead === undefined) throw noOperationInProgress('merge');
+  if (mergeHead === undefined) throw noOperationInProgress(MERGE);
   const origHead = await readOrigHead(ctx);
-  if (origHead === undefined) throw noOperationInProgress('merge');
+  if (origHead === undefined) throw noOperationInProgress(MERGE);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
-    throw unsupportedOperation('merge --abort', 'cannot abort with detached HEAD');
+    throw unsupportedOperation(MERGE_ABORT, 'cannot abort with detached HEAD');
   }
   await hardResetWorktreeToCommit(ctx, origHead);
   // git's `merge --abort` delegates to a `reset` whose rev argument is the
