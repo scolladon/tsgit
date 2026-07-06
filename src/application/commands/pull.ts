@@ -17,6 +17,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { type FetchResult, fetch } from './fetch.js';
+import { defaultRemoteName } from './internal/default-remote.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
@@ -27,7 +28,10 @@ import {
 import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
 
 export interface PullOptions {
-  /** Remote to pull from. Default: `branch.<current>.remote` ?? `'origin'`. */
+  /**
+   * Remote to pull from. Default: `branch.<current>.remote` ?? the sole
+   * configured remote ?? `'origin'`.
+   */
   readonly remote?: string;
   /**
    * Remote ref to merge — a short branch name resolved as
@@ -79,7 +83,7 @@ const resolveUpstream = async (
     await assertNoValuelessConfig(ctx, 'branch', currentBranch, ['remote', 'merge']);
   }
   const tracking = currentBranch !== undefined ? config.branch?.get(currentBranch) : undefined;
-  const remote = opts.remote ?? tracking?.remote ?? 'origin';
+  const remote = defaultRemoteName(config, opts.remote, currentBranch);
   const branch = opts.ref ?? shortMergeRef(tracking?.merge);
   if (branch === undefined) {
     throw noUpstreamConfigured(fallbackRef);

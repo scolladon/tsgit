@@ -38,10 +38,13 @@
  * commit (signing off) write nothing under `HOME` — so there is nothing to set
  * up and nothing to clean up.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 // Single source for the isolation HOME: a deterministic path under os.tmpdir()
 // that is never created, so git's global/XDG config lookups miss and fail soft.
@@ -82,6 +85,26 @@ export const runGit = (
 
 /** Snapshot of the sanitised env, for tests that need to extend it. */
 export const runGitEnv = (): NodeJS.ProcessEnv => ({ ...SAFE_ENV });
+
+/**
+ * Async counterpart to `runGit` — spawns git without blocking the event
+ * loop. Required whenever the invoked command talks HTTP to a server
+ * hosted in this same process (e.g. an in-process `git-http-backend` CGI
+ * proxy): `execFileSync`/`runGit` blocks the event loop for the call's
+ * entire duration, so the server can never accept or service the request
+ * the child git process is waiting on — both sides deadlock. Use this for
+ * any command that crosses such a same-process HTTP round trip; plain
+ * local operations (init, config, rev-parse, local-path clone/push) are
+ * unaffected and may keep using `runGit`/`git`.
+ */
+export const runGitAsync = async (
+  args: ReadonlyArray<string>,
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
+): Promise<string> => {
+  const env = options.env ?? SAFE_ENV;
+  const { stdout } = await execFileAsync('git', args as string[], { env });
+  return stdout;
+};
 
 /**
  * Spawn `git` and return the raw binary output as a Uint8Array.
@@ -134,6 +157,10 @@ export const initBothRepos = (peer: string, ours: string, branch = 'main'): void
 
 export const git = (dir: string, ...args: ReadonlyArray<string>): string =>
   runGit(['-C', dir, ...args]);
+
+/** Async counterpart to `git` — see `runGitAsync` for when this is required. */
+export const gitAsync = (dir: string, ...args: ReadonlyArray<string>): Promise<string> =>
+  runGitAsync(['-C', dir, ...args]);
 
 /**
  * `git ls-files --stage` — the host-independent (mode sha stage\tpath)

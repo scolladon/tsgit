@@ -28,6 +28,7 @@ import {
 } from '../../domain/protocol/index.js';
 import { fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
@@ -38,9 +39,14 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { defaultRemoteName } from './internal/default-remote.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
+import {
+  assertOperationalRepository,
+  branchRefFromHead,
+  readHeadRaw,
+} from './internal/repo-state.js';
 import {
   advertisesFilter,
   selectFetchCapabilities,
@@ -48,6 +54,10 @@ import {
 } from './internal/upload-pack-client.js';
 
 export interface FetchOptions {
+  /**
+   * Remote to fetch from. Default: `branch.<current>.remote` ?? the sole
+   * configured remote ?? `'origin'`; detached HEAD skips the branch step.
+   */
   readonly remote?: string;
   readonly refspecs?: ReadonlyArray<string>;
   readonly prune?: boolean;
@@ -78,7 +88,11 @@ const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 
 export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
   await assertOperationalRepository(ctx);
-  const remoteName = opts.remote ?? 'origin';
+  const head = await readHeadRaw(ctx);
+  const branchRef = branchRefFromHead(head);
+  const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
+  const config = await readConfig(ctx);
+  const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);

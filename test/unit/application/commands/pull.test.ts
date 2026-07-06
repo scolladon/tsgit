@@ -321,6 +321,32 @@ describe('pull', () => {
     });
   });
 
+  describe('Given branch.<cur>.merge set, no branch.<cur>.remote, and exactly one non-origin remote configured', () => {
+    describe('When pull', () => {
+      it('Then the remote defaults to that sole remote', async () => {
+        // Arrange — only the merge ref is configured; "solo" is the only remote.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const a = await commitFile(ctx, 'a.txt', 'a', 'A');
+        await updateConfigEntries(ctx, [
+          { section: 'remote', subsection: 'solo', key: 'url', value: REMOTE_URL },
+          { section: 'branch', subsection: 'main', key: 'merge', value: 'refs/heads/main' },
+        ]);
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: a }],
+          await emptyPack(ctx),
+        );
+
+        // Act
+        const sut = await pull(withTransport(ctx, transport));
+
+        // Assert
+        expect(sut.fetch.remote).toBe('solo');
+        expect(sut.merge.kind).toBe('up-to-date');
+      });
+    });
+  });
+
   describe('Given no upstream configuration and no explicit branch', () => {
     describe('When pull', () => {
       it('Then throws NO_UPSTREAM_CONFIGURED for the current branch', async () => {

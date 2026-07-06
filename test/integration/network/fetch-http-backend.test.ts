@@ -22,8 +22,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import { walkCommits } from '../../../src/application/primitives/index.js';
 import type { ObjectId, RefName } from '../../../src/domain/objects/index.js';
-import { openRepository } from '../../../src/index.node.js';
-import { runGit, runGitEnv } from '../interop-helpers.js';
+import { openRepository, type Repository } from '../../../src/index.node.js';
+import { git, gitAsync, runGit, runGitEnv, tryRunGit } from '../interop-helpers.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -235,3 +235,300 @@ describe.skipIf(SKIP_REASON !== false)('fetch — end-to-end against git-http-ba
     await repo.dispose();
   }, 30_000);
 });
+
+describe.skipIf(SKIP_REASON !== false)(
+  'fetch — default remote resolution against git-http-backend',
+  () => {
+    let server: http.Server;
+    let port: number;
+    let projectRoot: string;
+    const workDirs: string[] = [];
+
+    const bareUrl = (name: string): string => `http://127.0.0.1:${port}/${name}.git`;
+
+    const seedBare = async (name: string): Promise<void> => {
+      runGit(['init', '-q', '--bare', path.join(projectRoot, `${name}.git`)]);
+      const seedDir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fetch-remote-seed-${name}-`));
+      workDirs.push(seedDir);
+      git(seedDir, 'clone', '-q', path.join(projectRoot, `${name}.git`), '.');
+      git(seedDir, 'config', 'user.name', 'Ada');
+      git(seedDir, 'config', 'user.email', 'ada@example.com');
+      await writeFile(path.join(seedDir, `${name}.txt`), `${name}\n`);
+      git(seedDir, 'add', `${name}.txt`);
+      git(seedDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', name);
+      git(seedDir, 'push', '-q', 'origin', 'HEAD:main');
+    };
+
+    const initGitRepo = async (): Promise<string> => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fetch-remote-real-'));
+      workDirs.push(dir);
+      git(dir, 'init', '-q', '-b', 'main');
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      return dir;
+    };
+
+    const initTsgitRepo = async (): Promise<{ repo: Repository; dir: string }> => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fetch-remote-ts-'));
+      workDirs.push(dir);
+      const repo = await openRepository({
+        cwd: dir,
+        allowInsecureHttp: true,
+        config: {
+          allowInsecure: true,
+          allowPrivateNetworks: true,
+          dnsResolver: async () => ['127.0.0.1'],
+        },
+      });
+      await repo.init();
+      return { repo, dir };
+    };
+
+    const appendConfig = async (repo: Repository, block: string): Promise<void> => {
+      const configPath = path.join(repo.ctx.layout.gitDir, 'config');
+      const existing = await readFile(configPath, 'utf8');
+      await writeFile(configPath, `${existing}\n${block}\n`);
+      __resetConfigCacheForTests();
+    };
+
+    // Which of `candidates` got a `refs/remotes/<name>/main` tracking ref
+    // after a real-git fetch — proves which remote real git itself resolved to.
+    const resolvedRemoteReal = (dir: string, candidates: readonly string[]): string => {
+      const matches = candidates.filter(
+        (name) => tryRunGit(['-C', dir, 'rev-parse', `refs/remotes/${name}/main`]).ok,
+      );
+      if (matches.length !== 1) {
+        throw new Error(
+          `expected exactly one remote-tracking ref among [${candidates.join(', ')}], found [${matches.join(', ')}]`,
+        );
+      }
+      return matches[0] as string;
+    };
+
+    beforeAll(async () => {
+      projectRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fetch-remote-fixture-'));
+      for (const name of ['origin', 'upstream', 'solo']) {
+        await seedBare(name);
+      }
+      server = http.createServer((req, res) => {
+        handleRequest(GIT_HTTP_BACKEND as string, projectRoot, req, res);
+      });
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      const addr = server.address();
+      if (addr === null || typeof addr === 'string') {
+        throw new Error('server.address() returned an unexpected value');
+      }
+      port = addr.port;
+    });
+
+    afterAll(async () => {
+      for (const dir of workDirs) {
+        await rm(dir, { recursive: true, force: true });
+      }
+      await rm(projectRoot, { recursive: true, force: true });
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    });
+
+    it('Given branch.main.remote set to a non-default remote, When fetch runs with no explicit remote, Then it resolves the same remote real git does', async () => {
+      // Arrange — real-git twin: two remotes, branch tracking points at "upstream".
+      const gitDir = await initGitRepo();
+      git(gitDir, 'remote', 'add', 'origin', bareUrl('origin'));
+      git(gitDir, 'remote', 'add', 'upstream', bareUrl('upstream'));
+      git(gitDir, 'config', 'branch.main.remote', 'upstream');
+      await gitAsync(gitDir, 'fetch', '-q');
+      const gitChose = resolvedRemoteReal(gitDir, ['origin', 'upstream']);
+      const gitOid = git(gitDir, 'rev-parse', `refs/remotes/${gitChose}/main`).trim();
+
+      // Arrange — tsgit twin: identical remote + branch tracking config.
+      const { repo } = await initTsgitRepo();
+      await appendConfig(
+        repo,
+        [
+          '[remote "origin"]',
+          `  url = ${bareUrl('origin')}`,
+          '  fetch = +refs/heads/*:refs/remotes/origin/*',
+          '[remote "upstream"]',
+          `  url = ${bareUrl('upstream')}`,
+          '  fetch = +refs/heads/*:refs/remotes/upstream/*',
+          '[branch "main"]',
+          '  remote = upstream',
+        ].join('\n'),
+      );
+
+      // Act
+      const sut = await repo.fetch();
+
+      // Assert — tsgit resolves the exact remote real git resolved to.
+      expect(sut.remote).toBe(gitChose);
+      const mainUpdate = sut.updatedRefs.find(
+        (r) => r.name === (`refs/remotes/${sut.remote}/main` as RefName),
+      );
+      expect(mainUpdate?.newId).toBe(gitOid as ObjectId);
+
+      await repo.dispose();
+    }, 30_000);
+
+    it('Given no branch tracking and two remotes configured, When fetch runs with no explicit remote, Then it resolves the same remote real git does', async () => {
+      // Arrange — real-git twin: two remotes, no branch tracking configured.
+      const gitDir = await initGitRepo();
+      git(gitDir, 'remote', 'add', 'origin', bareUrl('origin'));
+      git(gitDir, 'remote', 'add', 'upstream', bareUrl('upstream'));
+      await gitAsync(gitDir, 'fetch', '-q');
+      const gitChose = resolvedRemoteReal(gitDir, ['origin', 'upstream']);
+      const gitOid = git(gitDir, 'rev-parse', `refs/remotes/${gitChose}/main`).trim();
+
+      // Arrange — tsgit twin: identical remotes, no branch section.
+      const { repo } = await initTsgitRepo();
+      await appendConfig(
+        repo,
+        [
+          '[remote "origin"]',
+          `  url = ${bareUrl('origin')}`,
+          '  fetch = +refs/heads/*:refs/remotes/origin/*',
+          '[remote "upstream"]',
+          `  url = ${bareUrl('upstream')}`,
+          '  fetch = +refs/heads/*:refs/remotes/upstream/*',
+        ].join('\n'),
+      );
+
+      // Act
+      const sut = await repo.fetch();
+
+      // Assert
+      expect(sut.remote).toBe(gitChose);
+      const mainUpdate = sut.updatedRefs.find(
+        (r) => r.name === (`refs/remotes/${sut.remote}/main` as RefName),
+      );
+      expect(mainUpdate?.newId).toBe(gitOid as ObjectId);
+
+      await repo.dispose();
+    }, 30_000);
+
+    it('Given branch.main.remote set and an explicit remote argument, When fetch runs, Then the explicit argument overrides tracking the same way it does for real git', async () => {
+      // Arrange — real-git twin: branch tracking points at "upstream", but the
+      // fetch call explicitly names "origin".
+      const gitDir = await initGitRepo();
+      git(gitDir, 'remote', 'add', 'origin', bareUrl('origin'));
+      git(gitDir, 'remote', 'add', 'upstream', bareUrl('upstream'));
+      git(gitDir, 'config', 'branch.main.remote', 'upstream');
+      await gitAsync(gitDir, 'fetch', '-q', 'origin');
+      const gitOid = git(gitDir, 'rev-parse', 'refs/remotes/origin/main').trim();
+
+      // Arrange — tsgit twin: identical config, same explicit override.
+      const { repo } = await initTsgitRepo();
+      await appendConfig(
+        repo,
+        [
+          '[remote "origin"]',
+          `  url = ${bareUrl('origin')}`,
+          '  fetch = +refs/heads/*:refs/remotes/origin/*',
+          '[remote "upstream"]',
+          `  url = ${bareUrl('upstream')}`,
+          '  fetch = +refs/heads/*:refs/remotes/upstream/*',
+          '[branch "main"]',
+          '  remote = upstream',
+        ].join('\n'),
+      );
+
+      // Act
+      const sut = await repo.fetch({ remote: 'origin' });
+
+      // Assert
+      expect(sut.remote).toBe('origin');
+      const mainUpdate = sut.updatedRefs.find(
+        (r) => r.name === ('refs/remotes/origin/main' as RefName),
+      );
+      expect(mainUpdate?.newId).toBe(gitOid as ObjectId);
+
+      await repo.dispose();
+    }, 30_000);
+
+    it('Given a detached HEAD with branch.main.remote set and two remotes configured, When fetch runs with no explicit remote, Then the branch tracking step is skipped the same way it is for real git', async () => {
+      // Arrange — real-git twin: commit once so there is something to detach
+      // onto, configure tracking while still on main, then detach; the
+      // config must survive but must not be consulted while detached.
+      const gitDir = await initGitRepo();
+      await writeFile(path.join(gitDir, 'placeholder.txt'), 'placeholder\n');
+      git(gitDir, 'add', 'placeholder.txt');
+      git(gitDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'placeholder');
+      git(gitDir, 'remote', 'add', 'origin', bareUrl('origin'));
+      git(gitDir, 'remote', 'add', 'upstream', bareUrl('upstream'));
+      git(gitDir, 'config', 'branch.main.remote', 'upstream');
+      git(gitDir, 'checkout', '-q', '--detach', 'HEAD');
+      await gitAsync(gitDir, 'fetch', '-q');
+      const gitChose = resolvedRemoteReal(gitDir, ['origin', 'upstream']);
+      const gitOid = git(gitDir, 'rev-parse', `refs/remotes/${gitChose}/main`).trim();
+
+      // Arrange — tsgit twin: same commit + detach + tracking config, using
+      // real git to build the on-disk state (tsgit's repo is git-faithful,
+      // so real git can operate on it directly) before tsgit's own fetch runs.
+      const { repo, dir } = await initTsgitRepo();
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      await writeFile(path.join(dir, 'placeholder.txt'), 'placeholder\n');
+      git(dir, 'add', 'placeholder.txt');
+      git(dir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'placeholder');
+      git(dir, 'checkout', '-q', '--detach', 'HEAD');
+      await appendConfig(
+        repo,
+        [
+          '[remote "origin"]',
+          `  url = ${bareUrl('origin')}`,
+          '  fetch = +refs/heads/*:refs/remotes/origin/*',
+          '[remote "upstream"]',
+          `  url = ${bareUrl('upstream')}`,
+          '  fetch = +refs/heads/*:refs/remotes/upstream/*',
+          '[branch "main"]',
+          '  remote = upstream',
+        ].join('\n'),
+      );
+
+      // Act
+      const sut = await repo.fetch();
+
+      // Assert
+      expect(sut.remote).toBe(gitChose);
+      const mainUpdate = sut.updatedRefs.find(
+        (r) => r.name === (`refs/remotes/${sut.remote}/main` as RefName),
+      );
+      expect(mainUpdate?.newId).toBe(gitOid as ObjectId);
+
+      await repo.dispose();
+    }, 30_000);
+
+    it('Given exactly one non-origin remote configured and no branch tracking, When fetch runs with no explicit remote, Then it resolves the sole remote the same way real git does', async () => {
+      // Arrange — real-git twin: only "solo" is configured.
+      const gitDir = await initGitRepo();
+      git(gitDir, 'remote', 'add', 'solo', bareUrl('solo'));
+      await gitAsync(gitDir, 'fetch', '-q');
+      const gitOid = git(gitDir, 'rev-parse', 'refs/remotes/solo/main').trim();
+
+      // Arrange — tsgit twin: identical sole-remote config.
+      const { repo } = await initTsgitRepo();
+      await appendConfig(
+        repo,
+        [
+          '[remote "solo"]',
+          `  url = ${bareUrl('solo')}`,
+          '  fetch = +refs/heads/*:refs/remotes/solo/*',
+        ].join('\n'),
+      );
+
+      // Act
+      const sut = await repo.fetch();
+
+      // Assert
+      expect(sut.remote).toBe('solo');
+      const mainUpdate = sut.updatedRefs.find(
+        (r) => r.name === ('refs/remotes/solo/main' as RefName),
+      );
+      expect(mainUpdate?.newId).toBe(gitOid as ObjectId);
+
+      await repo.dispose();
+    }, 30_000);
+  },
+);
