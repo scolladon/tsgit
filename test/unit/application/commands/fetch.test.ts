@@ -651,6 +651,51 @@ describe('fetch', () => {
       });
     });
 
+    describe('Given a sole configured remote whose name is a path-traversal string', () => {
+      describe('When fetch is called with no explicit remote', () => {
+        it('Then it refuses with INVALID_OPTION and never reads a traversal directory', async () => {
+          // Arrange — no explicit opts.remote and no branch tracking: the
+          // sole-remote inference is what hands the traversal string to
+          // resolveRemoteUrl, exactly as an attacker-controlled config would.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "../../evil"]\n  url = https://example.com/evil.git\n',
+          );
+          __resetConfigCacheForTests();
+          const readdirCalls: string[] = [];
+          const fs: ReturnType<typeof createMemoryContext>['fs'] = {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              readdirCalls.push(path);
+              return ctx.fs.readdir(path);
+            },
+          };
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch({ ...ctx, fs });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            option: string;
+            reason: string;
+          };
+          expect(data.code).toBe('INVALID_OPTION');
+          expect(data.option).toBe('remote');
+          expect(data.reason).toBe('invalid remote name: ../../evil');
+          expect(readdirCalls).toHaveLength(0);
+        });
+      });
+    });
+
     describe('Given exactly two remotes configured and no branch tracking', () => {
       describe('When fetch is called with no explicit remote', () => {
         it('Then the default remote origin is used', async () => {

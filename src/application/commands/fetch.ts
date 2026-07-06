@@ -39,7 +39,7 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { defaultRemoteName } from './internal/default-remote.js';
+import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import {
@@ -221,6 +221,7 @@ const resolveRemoteUrl = async (
   ctx: Context,
   remoteName: string,
 ): Promise<{ url: string; filter: string | undefined }> => {
+  assertValidRemoteName(remoteName);
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
   // An absent OR empty url means the remote is not usably configured.

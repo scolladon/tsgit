@@ -53,7 +53,7 @@ import { resolveSigningSelector } from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
-import { resolvePushRemote } from './internal/default-remote.js';
+import { assertValidRemoteName, resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import {
   finalizePushRefspecs,
@@ -194,22 +194,8 @@ const prePushLine = (m: ResolvedRefspec): string => {
   return `${localRef} ${m.localOid} ${m.parsed.dst} ${m.remoteOid}\n`;
 };
 
-/**
- * First-pass sanity filter on remote names: alphanumerics, dot, dash,
- * underscore. Rejects obvious traversal vectors (slashes, control chars,
- * spaces) at the entry point so a hostile caller cannot smuggle a path
- * separator through `opts.remote`. NOT a sufficient guarantee on its own —
- * strings like `.git`, `..`, `a..b`, `a.lock` pass this regex but produce
- * invalid composed ref paths. The definitive guard is `isSafeRefName(composed)`
- * inside `updateTrackingCache` (and the contract honored by `updateRef`),
- * which runs `validateRefName` over the full composed path.
- */
-const REMOTE_NAME_RE = /^[A-Za-z0-9._-]+$/;
-
 const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<string> => {
-  if (!REMOTE_NAME_RE.test(remoteName)) {
-    throw invalidOption('remote', `invalid remote name: ${remoteName}`);
-  }
+  assertValidRemoteName(remoteName);
   const config = await readConfig(ctx);
   // Git validates each entry eagerly: a valueless `pushurl` or `url` dies before
   // the `pushurl ?? url` fallback can substitute the other, reporting whichever
