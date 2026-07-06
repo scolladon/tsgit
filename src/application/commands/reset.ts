@@ -13,6 +13,7 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
@@ -77,7 +78,7 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   // so `reset --hard HEAD` records no entry while a real move records the message.
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   await updateRef(ctx, branch ?? ('HEAD' as RefName), id, {
-    reflogMessage: `reset: moving to ${opts.rev}`,
+    reflogMessage: resetMovingTo(opts.rev),
   });
   return { mode: opts.mode, id, branch };
 };

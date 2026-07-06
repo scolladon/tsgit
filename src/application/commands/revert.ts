@@ -23,7 +23,14 @@ import { type ConflictType, type MergeConflict, revertLabels } from '../../domai
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
+import { commitReflog, revertReflog } from '../../domain/reflog/reflog-messages.js';
 import type { TodoEntry } from '../../domain/sequencer/index.js';
+import {
+  REVERT,
+  REVERT_ABORT,
+  REVERT_CONTINUE,
+  REVERT_SKIP,
+} from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -173,7 +180,7 @@ const applyOneRevert = async (
     if (res.mergedTree === oursTree) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries);
     const { id, subject } = await buildRevertCommit(ctx, source, cData, ourId, res.mergedTree);
-    await updateRef(ctx, branch, id, { expected: ourId, reflogMessage: `revert: ${subject}` });
+    await updateRef(ctx, branch, id, { expected: ourId, reflogMessage: revertReflog(subject) });
     return { kind: 'committed', id };
   } finally {
     await lock.release();
@@ -405,11 +412,11 @@ const runNoCommit = async (ctx: Context, todo: ReadonlyArray<ObjectId>): Promise
 
 export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<RevertResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'revert');
+  await assertNotBare(ctx, REVERT);
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
-    throw unsupportedOperation('revert', 'cannot revert with detached HEAD');
+    throw unsupportedOperation(REVERT, 'cannot revert with detached HEAD');
   }
   const ourId = await resolveHeadCommit(ctx, head.target);
   const todo = await expandRevisions(ctx, input.commits);
@@ -452,7 +459,7 @@ const commitResolvedRevert = async (
   });
   await updateRef(ctx, branch, id, {
     expected: ourId,
-    reflogMessage: `commit: ${subjectLine(message)}`,
+    reflogMessage: commitReflog(subjectLine(message)),
   });
   return id;
 };
@@ -484,15 +491,15 @@ const finaliseInProgressRevert = async (
  */
 export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'revert --continue');
+  await assertNotBare(ctx, REVERT_CONTINUE);
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
-    throw noOperationInProgress('revert');
+    throw noOperationInProgress(REVERT);
   }
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
-    throw unsupportedOperation('revert --continue', 'cannot continue with detached HEAD');
+    throw unsupportedOperation(REVERT_CONTINUE, 'cannot continue with detached HEAD');
   }
   let ourId = await resolveRef(ctx, head.target);
   const applied: RevertedCommit[] = [];
@@ -530,13 +537,13 @@ export interface RevertAbortResult {
  */
 export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'revert --skip');
+  await assertNotBare(ctx, REVERT_SKIP);
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
-    throw noOperationInProgress('revert');
+    throw noOperationInProgress(REVERT);
   }
-  const branch = await requireSymbolicHead(ctx, 'revert --skip');
+  const branch = await requireSymbolicHead(ctx, REVERT_SKIP);
   const ourId = await resolveRef(ctx, branch);
   await hardResetWorktreeToCommit(ctx, ourId);
   await clearRevertHead(ctx);
@@ -556,11 +563,11 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
  */
 export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'revert --abort');
+  await assertNotBare(ctx, REVERT_ABORT);
   const source = await readRevertHead(ctx);
   const seqHead = await readSequencerHead(ctx);
-  if (source === undefined && seqHead === undefined) throw noOperationInProgress('revert');
-  const branch = await requireSymbolicHead(ctx, 'revert --abort');
+  if (source === undefined && seqHead === undefined) throw noOperationInProgress(REVERT);
+  const branch = await requireSymbolicHead(ctx, REVERT_ABORT);
   const target = seqHead ?? (await resolveRef(ctx, branch));
   await abortSequencerReset(ctx, { branch, target, clearHead: clearRevertHead });
   return { head: target, branch };

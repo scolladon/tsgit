@@ -36,6 +36,7 @@ import {
   type RefStatus,
   type RefUpdate,
 } from '../../domain/protocol/index.js';
+import { PUSH_UPDATE } from '../../domain/reflog/reflog-messages.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
@@ -511,5 +512,5 @@ const updateTrackingCache = async (
   // input push() can construct, hence the equivalent-mutant suppression.
   // Stryker disable next-line ConditionalExpression: equivalent — `composed` is always a valid ref path (see above); the guard never fires.
   if (!isSafeRefName(composed)) return;
-  await updateRef(ctx, composed as RefName, m.localOid, { reflogMessage: 'update by push' });
+  await updateRef(ctx, composed as RefName, m.localOid, { reflogMessage: PUSH_UPDATE });
 };

@@ -13,11 +13,12 @@
 
 import type { ObjectId } from '../../../domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../../domain/objects/index.js';
+import { MERGE_HEAD, MERGE_MSG, ORIG_HEAD } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 
-const mergeHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/MERGE_HEAD`;
-const mergeMsgPath = (ctx: Context): string => `${ctx.layout.gitDir}/MERGE_MSG`;
-const origHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/ORIG_HEAD`;
+const mergeHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_HEAD}`;
+const mergeMsgPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_MSG}`;
+const origHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${ORIG_HEAD}`;
 
 /** Write `.git/MERGE_HEAD` containing the merge target's commit id + LF. */
 export const writeMergeHead = async (ctx: Context, targetId: ObjectId): Promise<void> => {

@@ -5,15 +5,16 @@
  * common dir. Pure predicate — no I/O.
  */
 import type { RefName } from '../objects/object-id.js';
+import { CHERRY_PICK_HEAD, FETCH_HEAD, MERGE_HEAD, ORIG_HEAD, REVERT_HEAD } from './state-files.js';
 
 /** Root pseudorefs git stores per-worktree (each checkout has its own). */
 const PER_WORKTREE_PSEUDOREFS: ReadonlySet<string> = new Set([
   'HEAD',
-  'ORIG_HEAD',
-  'FETCH_HEAD',
-  'MERGE_HEAD',
-  'CHERRY_PICK_HEAD',
-  'REVERT_HEAD',
+  ORIG_HEAD,
+  FETCH_HEAD,
+  MERGE_HEAD,
+  CHERRY_PICK_HEAD,
+  REVERT_HEAD,
   'BISECT_HEAD',
 ]);
 

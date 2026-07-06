@@ -15,6 +15,8 @@ import {
   type RefName,
   ZERO_OID,
 } from '../../domain/objects/index.js';
+import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
+import { ORIG_HEAD } from '../../domain/refs/state-files.js';
 import {
   WORKTREE_COMMONDIR,
   type WorktreeHead,
@@ -161,7 +163,7 @@ const writeAdmin = async (
   await ctx.fs.writeUtf8(`${admin}/commondir`, `${WORKTREE_COMMONDIR}\n`);
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(worktreePath)}\n`);
   await ctx.fs.writeUtf8(`${admin}/HEAD`, `${worktreeHeadContent(head)}\n`);
-  await ctx.fs.writeUtf8(`${admin}/ORIG_HEAD`, `${oid}\n`);
+  await ctx.fs.writeUtf8(`${admin}/${ORIG_HEAD}`, `${oid}\n`);
   await worktreeScopedFs(ctx, worktreePath).writeUtf8(
     `${worktreePath}/.git`,
     `${worktreeGitfile(admin)}\n`,
@@ -189,7 +191,7 @@ const materializeWorktree = async (child: Context, treeId: ObjectId): Promise<vo
 const writeHeadReflog = async (child: Context, mode: AddMode, oid: ObjectId): Promise<void> => {
   await recordRefUpdate(child, HEAD_REF, ZERO_OID, oid, '');
   if (mode.kind !== 'detached') {
-    await recordRefUpdate(child, HEAD_REF, oid, oid, 'reset: moving to HEAD');
+    await recordRefUpdate(child, HEAD_REF, oid, oid, resetMovingTo('HEAD'));
   }
 };
 

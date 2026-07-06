@@ -6,6 +6,18 @@ import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { serializeCommitContent, ZERO_OID } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
+import {
+  commitCherryPickReflog,
+  commitInitialReflog,
+  commitMergeReflog,
+  commitReflog,
+} from '../../domain/reflog/reflog-messages.js';
+import {
+  CHERRY_PICK,
+  MERGE,
+  type PendingOperation,
+  REVERT,
+} from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -234,10 +246,10 @@ const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => ({
   revertHead: await readRevertHead(ctx),
 });
 
-const pendingExceptOf = (m: PendingMarkers): 'merge' | 'cherry-pick' | 'revert' | undefined => {
-  if (m.mergeHead !== undefined) return 'merge';
-  if (m.cherryPickHead !== undefined) return 'cherry-pick';
-  if (m.revertHead !== undefined) return 'revert';
+const pendingExceptOf = (m: PendingMarkers): PendingOperation | undefined => {
+  if (m.mergeHead !== undefined) return MERGE;
+  if (m.cherryPickHead !== undefined) return CHERRY_PICK;
+  if (m.revertHead !== undefined) return REVERT;
   return undefined;
 };
 
@@ -287,10 +299,10 @@ const commitReflogMessage = (
   cherryPickHead: ObjectId | undefined,
 ): string => {
   const subject = subjectLine(message);
-  if (parentId === undefined) return `commit (initial): ${subject}`;
-  if (mergeHead !== undefined) return `commit (merge): ${subject}`;
-  if (cherryPickHead !== undefined) return `commit (cherry-pick): ${subject}`;
-  return `commit: ${subject}`;
+  if (parentId === undefined) return commitInitialReflog(subject);
+  if (mergeHead !== undefined) return commitMergeReflog(subject);
+  if (cherryPickHead !== undefined) return commitCherryPickReflog(subject);
+  return commitReflog(subject);
 };
 
 const buildParents = (

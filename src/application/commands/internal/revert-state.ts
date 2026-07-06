@@ -10,10 +10,11 @@
 import type { CommitData } from '../../../domain/objects/commit.js';
 import { subjectLine } from '../../../domain/objects/commit-message.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
+import { REVERT_HEAD } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 import { readOptionalOidFile } from './oid-file.js';
 
-const revertHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/REVERT_HEAD`;
+const revertHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${REVERT_HEAD}`;
 
 /** Write `.git/REVERT_HEAD` containing the reverted commit id + LF. */
 export const writeRevertHead = async (ctx: Context, revertedId: ObjectId): Promise<void> => {

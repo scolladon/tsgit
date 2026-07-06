@@ -8,6 +8,7 @@ import { TsgitError } from '../../domain/error.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { ZERO_OID } from '../../domain/objects/index.js';
+import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { readReflog, writeReflog } from '../primitives/reflog-store.js';
@@ -97,7 +98,7 @@ export const branchCreate = async (
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   const startPoint = input.startPoint ?? 'HEAD';
   const target = await resolveBranchTarget(ctx, startPoint);
-  const reflogMessage = `branch: Created from ${startPoint}`;
+  const reflogMessage = branchCreatedFrom(startPoint);
   try {
     await updateRef(
       ctx,
@@ -139,7 +140,7 @@ export const branchRename = async (
   const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
   const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);
-  const reflogMessage = `branch: renamed ${from} to ${to}`;
+  const reflogMessage = branchRenamed(from, to);
   // Capture the source log before any write so the rename preserves history.
   const movedLog = await readReflog(ctx, from);
   try {

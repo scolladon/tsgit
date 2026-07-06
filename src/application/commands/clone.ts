@@ -8,6 +8,7 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
+import { cloneFrom } from '../../domain/reflog/reflog-messages.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
@@ -255,7 +256,7 @@ const writeRef = async (
 ): Promise<void> => {
   const refPath = `${ctx.layout.gitDir}/${name}`;
   await ctx.fs.writeUtf8(refPath, `${id}\n`);
-  await recordRefUpdate(ctx, name, ZERO_OID, id, `clone: from ${reflogUrl}`);
+  await recordRefUpdate(ctx, name, ZERO_OID, id, cloneFrom(reflogUrl));
 };
 
 const headTrackedBranch = (ad: Advertisement): string | undefined => {
@@ -297,5 +298,5 @@ const logClonedHead = async (
   reflogUrl: string,
 ): Promise<void> => {
   if (headOid === undefined) return;
-  await recordRefUpdate(ctx, 'HEAD' as RefName, ZERO_OID, headOid, `clone: from ${reflogUrl}`);
+  await recordRefUpdate(ctx, 'HEAD' as RefName, ZERO_OID, headOid, cloneFrom(reflogUrl));
 };
