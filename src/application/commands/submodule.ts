@@ -25,6 +25,7 @@ import {
 import { branchCreatedFrom } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
 import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
@@ -62,7 +63,11 @@ import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
 import { clone } from './clone.js';
-import { assertNotBare, assertOperationalRepository } from './internal/repo-state.js';
+import {
+  assertNotBare,
+  assertOperationalRepository,
+  currentBranchRef,
+} from './internal/repo-state.js';
 import { mergeRun } from './merge.js';
 import { rebaseRun } from './rebase.js';
 import { status } from './status.js';
@@ -141,11 +146,8 @@ const selectRows = (
  * (git's "own authoritative upstream").
  */
 const resolveBaseUrl = async (ctx: Context, config: ParsedConfig): Promise<string> => {
-  const head = await getRefStore(ctx).resolveDirect(HEAD_REF);
-  const branch =
-    head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX)
-      ? head.target.slice(HEADS_PREFIX.length)
-      : undefined;
+  const ref = await currentBranchRef(ctx);
+  const branch = ref?.startsWith(HEADS_PREFIX) ? shortBranchName(ref) : undefined;
   const remoteName =
     (branch !== undefined ? config.branch?.get(branch)?.remote : undefined) ?? 'origin';
   return config.remote?.get(remoteName)?.url ?? ctx.layout.workDir;
