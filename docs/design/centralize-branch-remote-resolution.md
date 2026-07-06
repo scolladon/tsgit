@@ -596,3 +596,27 @@ keys) are **already decided**. The choices ADR-458 leaves to implementation:
    `DEFAULT_REMOTE` divergence now also feeds push's triangular computation. Worth a sentence in ADR-457
    acknowledging the sanctioned divergence.
 </content>
+
+## Post-decision reconciliation (applied — authoritative over any earlier text)
+
+The ADR conversation settled three real-git findings the first revision flagged. These
+override any conflicting detail above:
+
+1. **Sole-remote fallback (ratified) — `defaultRemoteName` is now fully faithful:**
+   `explicit ?? branch?.remote ?? (config.remote.size === 1 ? theSoleRemoteName : undefined) ?? DEFAULT_REMOTE`.
+   Applies uniformly to `fetch`, `pull`, and `push`'s terminal fallback and triangular base.
+   **`pull` therefore joins the behavior-changed set** and gets its own sole-remote interop case.
+   Add interop coverage across {0 / 1 / 2 remotes} for fetch and pull.
+
+2. **`upstream`-mode triangular dominance (ADR-458 §3):** the `triangular` check fires and
+   refuses (`PUSH_REMOTE_NOT_UPSTREAM`) even when `branch.<name>.merge` is absent — it outranks
+   the no-upstream check. Order the guards exactly as ADR-458 §3 now lists them.
+
+3. **`push.default` enum-value contract (ADR-458 §1):** `tracking`→`upstream` alias;
+   case-sensitive; unrecognised value ⇒ hard config error (file+line) on the cold path,
+   lenient `undefined` during assembly.
+
+**Error codes adopted-as-recommended** (internal taxonomy — git's observable message is what
+parity pins): reuse `NO_UPSTREAM_CONFIGURED`, `REMOTE_NOT_CONFIGURED`; new
+`PUSH_UPSTREAM_NAME_MISMATCH`, `PUSH_REMOTE_NOT_UPSTREAM`, `PUSH_DEFAULT_NOTHING`,
+`PUSH_DETACHED_NO_REFSPEC`, `INVALID_PUSH_DEFAULT`.

@@ -27,7 +27,9 @@ Introduce a small primitive set and migrate every consumer:
 - **`shortBranchName(ref): string`** — domain transform stripping `HEADS_PREFIX`; `stashBranchLabel`
   shares the constant + strip only, keeping its `NO_BRANCH` sentinel.
 - **`defaultRemoteName`** — a **pure function over `ParsedConfig`** (`(config, explicit, branch) → string`),
-  no I/O; both tracking-aware callers already hold `config`.
+  no I/O; both tracking-aware callers already hold `config`. Resolves
+  `explicit ?? branch?.remote ?? <sole remote if config.remote has exactly one> ?? DEFAULT_REMOTE`
+  — the sole-remote fallback (ADR-457) makes it git-faithful for `fetch`/`pull`/`push`.
 - **Constants**: `HEADS_PREFIX = 'refs/heads/'` homed in `src/domain/refs/`; `DEFAULT_REMOTE = 'origin'`
   in `src/domain/remote.ts`. Imported directly; **not** re-exported through a public barrel (no `api.json` surface).
 - **Full consolidation** — migrate all 8 `refs/heads/` constant sites (`pull`, `push`, `branch`,

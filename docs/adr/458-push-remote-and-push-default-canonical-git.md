@@ -34,13 +34,35 @@ Implement git-faithful `push` (ratified user judgment, chosen with the probe evi
 1. **Config infra** — parse `branch.<name>.pushRemote` (into the branch entry),
    `remote.pushDefault` (top-level `[remote] pushDefault`), and `push.default`
    (`[push] default`; enum `nothing|current|upstream|simple|matching`, default `simple`).
+   **Enum-value contract** (probed against real git, not in the original prose): `tracking`
+   is a legacy alias for `upstream`; values are **case-sensitive** (`Simple` is rejected);
+   an unrecognised value is a **hard config error** naming file+line on the cold path
+   (parsed leniently to `undefined` during assembly). Per-remote `[remote "x"] pushDefault`
+   is ignored (only the subsectionless top-level key counts).
 2. **Remote selection** — `opts.remote ?? branch.<current>.pushRemote ?? remote.pushDefault ??
-   branch.<current>.remote ?? DEFAULT_REMOTE`; detached ⇒ `remote.pushDefault ?? DEFAULT_REMOTE`
-   (no `branch.*`). Shares the `defaultRemoteName` family (ADR-456) where the chain overlaps.
+   branch.<current>.remote ?? <sole remote if exactly one> ?? DEFAULT_REMOTE`; detached ⇒
+   `opts.remote ?? remote.pushDefault ?? <sole remote> ?? DEFAULT_REMOTE` (no `branch.*`). The
+   sole-remote fallback and `DEFAULT_REMOTE` terminal come from the shared `defaultRemoteName`
+   family (ADR-456). Define `triangular ≡ pushRemote-resolved-remote ≠ (branch.<current>.remote
+   ?? sole ?? origin)` — the fetch/push remotes differ.
 3. **Refspec + refusal per `push.default` mode** (when no explicit refspec) — implement
-   `simple` / `current` / `upstream` / `matching` / `nothing`, including the upstream-required
-   refusals (`simple`/`upstream` without `branch.<name>.merge`; `simple` name-mismatch) and the
-   detached-HEAD refusal. Error **data** (code + message shape) is part of the parity.
+   `simple` / `current` / `upstream` / `matching` / `nothing`. Refusal precedence probed
+   against real git:
+   - `nothing` — always refuses (`PUSH_DEFAULT_NOTHING`), before contacting the remote.
+   - `current` — detached ⇒ `PUSH_DETACHED_NO_REFSPEC`; else push `refs/heads/<cur>:refs/heads/<cur>`.
+   - `upstream` — detached ⇒ detached-refusal; **elif `triangular` ⇒ refuse `PUSH_REMOTE_NOT_UPSTREAM`
+     — this triangular check DOMINATES and fires even when `branch.<name>.merge` is absent**;
+     elif no `merge` ⇒ `NO_UPSTREAM_CONFIGURED`; else push `refs/heads/<cur>:<merge>`.
+   - `simple` — detached ⇒ detached-refusal; elif `triangular` ⇒ push current-like (no upstream
+     needed); elif no `merge` ⇒ `NO_UPSTREAM_CONFIGURED`; elif `short(merge) ≠ cur` ⇒
+     `PUSH_UPSTREAM_NAME_MISMATCH`; else push `refs/heads/<cur>:<merge>`.
+   - `matching` — HEAD-independent (works detached): push each local `refs/heads/<b>` the push
+     remote already advertises, `<b>:<b>` (requires the advertisement — see the plan/finalize split).
+   Error **data** (code + message shape) is part of the parity. Codes reuse `NO_UPSTREAM_CONFIGURED`
+   (already thrown by `pull`) and `REMOTE_NOT_CONFIGURED`; new codes `PUSH_UPSTREAM_NAME_MISMATCH`,
+   `PUSH_REMOTE_NOT_UPSTREAM`, `PUSH_DEFAULT_NOTHING`, `PUSH_DETACHED_NO_REFSPEC`,
+   `INVALID_PUSH_DEFAULT` are adopted as recommended (internal taxonomy; git's *observable* message
+   is what parity pins).
 4. **Interop matrix** — pin byte-for-byte against real git across
    {`pushRemote`, `pushDefault`, `branch.remote`, `branch.merge` set/unset} ×
    `push.default` ∈ {`simple`,`current`,`upstream`,`matching`,`nothing`} ×
