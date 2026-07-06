@@ -26,6 +26,7 @@ import { branchCreatedFrom } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
+import { DEFAULT_REMOTE } from '../../domain/remote.js';
 import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
 import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
@@ -149,7 +150,7 @@ const resolveBaseUrl = async (ctx: Context, config: ParsedConfig): Promise<strin
   const ref = await currentBranchRef(ctx);
   const branch = ref?.startsWith(HEADS_PREFIX) ? shortBranchName(ref) : undefined;
   const remoteName =
-    (branch !== undefined ? config.branch?.get(branch)?.remote : undefined) ?? 'origin';
+    (branch !== undefined ? config.branch?.get(branch)?.remote : undefined) ?? DEFAULT_REMOTE;
   return config.remote?.get(remoteName)?.url ?? ctx.layout.workDir;
 };
 

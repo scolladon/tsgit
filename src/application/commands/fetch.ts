@@ -27,6 +27,7 @@ import {
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
 import { fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
@@ -361,8 +362,8 @@ const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | u
   // execute a filesystem read on `.git/config`. `validateRefName` rejects every
   // path-traversal vector that the `as RefName` brand cast otherwise bypasses.
   if (!isSafeRefName(ref.name)) return undefined;
-  if (ref.name.startsWith('refs/heads/')) {
-    const branch = ref.name.slice('refs/heads/'.length);
+  if (ref.name.startsWith(HEADS_PREFIX)) {
+    const branch = ref.name.slice(HEADS_PREFIX.length);
     const composed = `refs/remotes/${remoteName}/${branch}`;
     // Stryker disable next-line ConditionalExpression: equivalent — `branch` is derived from a name that already passed isSafeRefName, and `remoteName` is rejected upstream by resolveRemoteUrl's config lookup, so `composed` is always safe here.
     if (!isSafeRefName(composed)) return undefined;
@@ -398,8 +399,8 @@ const prune = async (
 ): Promise<ReadonlyArray<RefName>> => {
   const advertisedBranches = new Set(
     advertisement.refs
-      .filter((r) => r.name.startsWith('refs/heads/'))
-      .map((r) => r.name.slice('refs/heads/'.length)),
+      .filter((r) => r.name.startsWith(HEADS_PREFIX))
+      .map((r) => r.name.slice(HEADS_PREFIX.length)),
   );
   const remoteDir = `${ctx.layout.gitDir}/refs/remotes/${remoteName}`;
   if (!(await ctx.fs.exists(remoteDir))) return [];

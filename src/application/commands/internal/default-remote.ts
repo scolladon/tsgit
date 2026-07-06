@@ -3,6 +3,17 @@ import { DEFAULT_REMOTE } from '../../../domain/remote.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
 
 /**
+ * The configured remote, when exactly one is configured — the shared
+ * "sole remote" rung consulted (at different priority) by both
+ * `defaultRemoteName` and `resolvePushRemote`. `.keys().next().value` reads
+ * the sole key without materializing a throwaway array.
+ */
+const soleRemote = (config: ParsedConfig): string | undefined =>
+  config.remote !== undefined && config.remote.size === 1
+    ? config.remote.keys().next().value
+    : undefined;
+
+/**
  * Resolve the remote a tracking-aware command (`fetch`, `pull`, `submodule`)
  * should use, in git's precedence order: an explicit argument, then the
  * branch's configured tracking remote, then — when exactly one remote is
@@ -15,9 +26,7 @@ export const defaultRemoteName = (
 ): string =>
   explicit ??
   (branch !== undefined ? config.branch?.get(branch)?.remote : undefined) ??
-  (config.remote !== undefined && config.remote.size === 1
-    ? [...config.remote.keys()][0]
-    : undefined) ??
+  soleRemote(config) ??
   DEFAULT_REMOTE;
 
 /**
@@ -38,9 +47,7 @@ export const resolvePushRemote = (
   (branch !== undefined ? config.branch?.get(branch)?.pushRemote : undefined) ??
   config.remotePushDefault ??
   (branch !== undefined ? config.branch?.get(branch)?.remote : undefined) ??
-  (config.remote !== undefined && config.remote.size === 1
-    ? [...config.remote.keys()][0]
-    : undefined) ??
+  soleRemote(config) ??
   DEFAULT_REMOTE;
 
 /**
