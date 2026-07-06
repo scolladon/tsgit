@@ -37,6 +37,7 @@ import {
   type RefUpdate,
 } from '../../domain/protocol/index.js';
 import { PUSH_UPDATE } from '../../domain/reflog/reflog-messages.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
@@ -94,7 +95,6 @@ interface ResolvedRefspec {
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
 const PUSH_UPLOAD_OP = 'push:upload';
 const ZERO_OID = ObjectId.from('0'.repeat(40));
-const REFS_HEADS_PREFIX = 'refs/heads/';
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
@@ -280,10 +280,10 @@ const resolveLease = async (
   // Stryker disable next-line ConditionalExpression: equivalent — when `forceWithLease` is undefined the next line (`undefined !== 'auto'`) returns `opts.forceWithLease` which is `undefined`, the identical result.
   if (opts.forceWithLease === undefined) return undefined;
   if (opts.forceWithLease !== 'auto') return opts.forceWithLease;
-  if (!parsed.dst.startsWith(REFS_HEADS_PREFIX)) {
+  if (!parsed.dst.startsWith(HEADS_PREFIX)) {
     throw invalidOption('forceWithLease', 'lease-on-non-branch');
   }
-  const branch = parsed.dst.slice(REFS_HEADS_PREFIX.length);
+  const branch = parsed.dst.slice(HEADS_PREFIX.length);
   const trackingRef = `refs/remotes/${remoteName}/${branch}` as RefName;
   return resolveRef(ctx, trackingRef);
 };
@@ -501,9 +501,9 @@ const updateTrackingCache = async (
   m: ResolvedRefspec,
   remoteName: string,
 ): Promise<void> => {
-  if (!m.parsed.dst.startsWith(REFS_HEADS_PREFIX)) return; // tags handled elsewhere
+  if (!m.parsed.dst.startsWith(HEADS_PREFIX)) return; // tags handled elsewhere
   if (m.parsed.isDelete) return; // delete-only push doesn't update cache
-  const branch = m.parsed.dst.slice(REFS_HEADS_PREFIX.length);
+  const branch = m.parsed.dst.slice(HEADS_PREFIX.length);
   const composed = `refs/remotes/${remoteName}/${branch}`;
   // `remoteName` is gated by REMOTE_NAME_RE (resolveRemoteUrl) and `branch`
   // derives from a server-advertised name matched against the local refspec

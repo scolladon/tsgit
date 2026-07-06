@@ -24,6 +24,7 @@ import {
 } from '../../domain/objects/index.js';
 import { branchCreatedFrom } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
 import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
@@ -69,7 +70,6 @@ import { status } from './status.js';
 export type { SubmoduleEntry };
 
 const GITMODULES_FILE = '.gitmodules';
-const HEADS_PREFIX = 'refs/heads/';
 const HEAD_REF = 'HEAD' as RefName;
 
 /** A `.gitmodules` row that is actionable by the write verbs (has a safe path). */

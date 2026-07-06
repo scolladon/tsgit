@@ -46,6 +46,7 @@ import {
   assertNoPendingOperation,
   assertNotBare,
   assertOperationalRepository,
+  branchRefFromHead,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
@@ -454,7 +455,7 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
-  const branch = head.kind === 'symbolic' ? head.target : undefined;
+  const branch = branchRefFromHead(head);
   const upstream = await resolveCommitIsh(ctx, input.upstream);
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? input.upstream;

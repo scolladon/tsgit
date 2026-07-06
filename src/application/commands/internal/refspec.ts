@@ -19,6 +19,7 @@
  * `validateRefName` before any ref is read or written to disk.
  */
 import { refspecInvalid } from '../../../domain/protocol/error.js';
+import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 
 export type Force = 'force' | 'normal';
 
@@ -32,15 +33,13 @@ export interface ParsedRefspec {
   readonly isDelete: boolean;
 }
 
-const SHORT_FORM_PREFIX = 'refs/heads/';
-
 const expandShort = (name: string): string => {
   // Fully-qualified ref names already contain at least one slash, so an
   // input without a slash is the short form (e.g. `main`). HEAD is a
   // special source token that the resolver expands — leave it untouched.
   if (name === 'HEAD') return name;
   if (name.includes('/')) return name;
-  return `${SHORT_FORM_PREFIX}${name}`;
+  return `${HEADS_PREFIX}${name}`;
 };
 
 export const parseRefspec = (raw: string): ParsedRefspec => {
