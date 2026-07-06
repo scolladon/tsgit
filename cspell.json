@@ -835,6 +835,8 @@
     "gpgsign",
     "alphabetised",
     "signingkey",
+    "pushdefault",
+    "pushremote",
     "multivar",
     "unquoter",
     "worktreeconfig",
