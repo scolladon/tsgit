@@ -245,7 +245,8 @@ export type CommandError =
       readonly reason: 'off-node' | 'unsupported-format' | 'signer-failed';
       readonly format?: 'openpgp' | 'ssh' | 'x509';
     }
-  | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string };
+  | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string }
+  | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -752,3 +753,9 @@ export const signingFailed = (
 // signing attempt or wire exchange — the push is aborted, nothing is sent.
 export const signedPushUnsupported = (remote: string): TsgitError =>
   new TsgitError({ code: 'SIGNED_PUSH_UNSUPPORTED', remote });
+
+// Refusal: `push.default=current` needs the branch HEAD currently points
+// at, but HEAD is detached. Thrown before the remote is resolved or
+// contacted — mirrors real git's own refspec-selection-time refusal.
+export const pushDetachedNoRefspec = (): TsgitError =>
+  new TsgitError({ code: 'PUSH_DETACHED_NO_REFSPEC' });

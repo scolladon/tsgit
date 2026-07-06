@@ -48,6 +48,7 @@ import {
   operationInProgress,
   pathspecNoMatch,
   pathspecOutsideRepo,
+  pushDetachedNoRefspec,
   pushRejected,
   remoteAdvertisesNoRefs,
   remoteExists,
@@ -1703,6 +1704,20 @@ describe('domain commands error — extractDetail message formatting', () => {
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'SIGNED_PUSH_UNSUPPORTED', remote: 'origin' });
+      });
+    });
+  });
+
+  describe('Given the pushDetachedNoRefspec error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code', () => {
+        // Arrange
+        const sut = pushDetachedNoRefspec;
+        // Act
+        const result = sut();
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'PUSH_DETACHED_NO_REFSPEC' });
       });
     });
   });

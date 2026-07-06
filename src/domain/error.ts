@@ -503,6 +503,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `gpg failed to sign the data (${data.reason}${data.format !== undefined ? `, format=${data.format}` : ''})`;
     case 'SIGNED_PUSH_UNSUPPORTED':
       return 'the receiving end does not support --signed push';
+    case 'PUSH_DETACHED_NO_REFSPEC':
+      return 'you are not currently on a branch';
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

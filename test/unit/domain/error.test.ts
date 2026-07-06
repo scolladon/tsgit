@@ -5,6 +5,7 @@ import {
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  pushDetachedNoRefspec,
   signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
@@ -1255,6 +1256,20 @@ describe('signedPushUnsupported error', () => {
         expect(sut.message).toBe(
           'SIGNED_PUSH_UNSUPPORTED: the receiving end does not support --signed push',
         );
+      });
+    });
+  });
+});
+
+describe('pushDetachedNoRefspec error', () => {
+  describe('Given pushDetachedNoRefspec factory', () => {
+    describe('When reading .message', () => {
+      it('Then message states HEAD is not currently on a branch', () => {
+        // Arrange & Act
+        const sut = pushDetachedNoRefspec();
+
+        // Assert
+        expect(sut.message).toBe('PUSH_DETACHED_NO_REFSPEC: you are not currently on a branch');
       });
     });
   });

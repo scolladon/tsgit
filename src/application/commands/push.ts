@@ -53,8 +53,13 @@ import { walkCommits } from '../primitives/walk-commits.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import {
+  finalizePushRefspecs,
+  type PushRefspecPlan,
+  planPushRefspecs,
+} from './internal/push-refspecs.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
-import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
+import type { ParsedRefspec } from './internal/refspec.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import {
   assertOperationalRepository,
@@ -120,10 +125,10 @@ const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResu
   const config = await readConfig(ctx);
   const remoteName = resolvePushRemote(config, opts.remote, currentBranch);
   const url = await resolveRemoteUrl(ctx, remoteName);
-  const refspecs = await resolveRefspecsInput(ctx, opts.refspecs);
+  const plan = await planPushRefspecs(ctx, config, opts, head);
   const session = openGitSession(ctx, url, 'git-receive-pack');
   try {
-    return await negotiateAndSend(ctx, opts, remoteName, url, refspecs, session);
+    return await negotiateAndSend(ctx, opts, remoteName, url, plan, session);
   } finally {
     await session.close();
   }
@@ -134,10 +139,11 @@ const negotiateAndSend = async (
   opts: PushOptions,
   remoteName: string,
   url: string,
-  refspecs: ReadonlyArray<ParsedRefspec>,
+  plan: PushRefspecPlan,
   session: GitServiceSession,
 ): Promise<PushResult> => {
   const adv = await discoverReceivePackRefs(session);
+  const refspecs = finalizePushRefspecs(plan, adv);
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remoteName, opts);
   const movers = resolved.filter((r) => r.localOid !== r.remoteOid);
   if (movers.length === 0) {
@@ -199,23 +205,6 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
     throw remoteNotConfigured(remoteName);
   }
   return url;
-};
-
-const resolveRefspecsInput = async (
-  ctx: Context,
-  refspecs: ReadonlyArray<string> | undefined,
-): Promise<ReadonlyArray<ParsedRefspec>> => {
-  // An explicit empty `refspecs: []` must fall through to the HEAD-default
-  // branch — `length > 0` (not `>= 0`) makes `[]` behave like "no refspec".
-  if (refspecs !== undefined && refspecs.length > 0) {
-    return refspecs.map(parseRefspec);
-  }
-  const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw invalidOption('refspecs', 'no-default-refspec (HEAD is detached)');
-  }
-  const branch = head.target;
-  return [parseRefspec(`${branch}:${branch}`)];
 };
 
 const resolveAllRefspecs = async (
