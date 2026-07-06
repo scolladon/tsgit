@@ -165,6 +165,89 @@ describe('Given a detached HEAD and a push.default mode other than current', () 
   });
 });
 
+describe('Given push.default=nothing and an attached branch', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then it throws PUSH_DEFAULT_NOTHING', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = { push: { default: 'nothing' } };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(ctx, config, {}, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('PUSH_DEFAULT_NOTHING');
+    });
+  });
+});
+
+describe('Given push.default=nothing and a detached HEAD', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then it throws PUSH_DEFAULT_NOTHING', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { head: '4444444444444444444444444444444444444444' });
+      const config: ParsedConfig = { push: { default: 'nothing' } };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(ctx, config, {}, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('PUSH_DEFAULT_NOTHING');
+    });
+  });
+});
+
+describe('Given explicit refspecs and push.default=nothing', () => {
+  describe('When planPushRefspecs runs', () => {
+    it('Then the explicit refspecs win and push.default is never consulted', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = { push: { default: 'nothing' } };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      const result = await planPushRefspecs(
+        ctx,
+        config,
+        { refspecs: ['refs/heads/feature:refs/heads/feature'] },
+        head,
+      );
+
+      // Assert
+      expect(result).toEqual({
+        kind: 'explicit',
+        refspecs: [
+          {
+            force: 'normal',
+            src: 'refs/heads/feature',
+            dst: 'refs/heads/feature',
+            isDelete: false,
+          },
+        ],
+      });
+    });
+  });
+});
+
 describe('Given an explicit or fixed refspec plan', () => {
   describe('When finalizePushRefspecs resolves it against an advertisement', () => {
     it('Then it passes the refspecs through unchanged', () => {

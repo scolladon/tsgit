@@ -5,6 +5,7 @@ import {
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  pushDefaultNothing,
   pushDetachedNoRefspec,
   signedPushUnsupported,
   signingFailed,
@@ -1270,6 +1271,22 @@ describe('pushDetachedNoRefspec error', () => {
 
         // Assert
         expect(sut.message).toBe('PUSH_DETACHED_NO_REFSPEC: you are not currently on a branch');
+      });
+    });
+  });
+});
+
+describe('pushDefaultNothing error', () => {
+  describe('Given pushDefaultNothing factory', () => {
+    describe('When reading .message', () => {
+      it('Then message states push.default is "nothing"', () => {
+        // Arrange & Act
+        const sut = pushDefaultNothing();
+
+        // Assert
+        expect(sut.message).toBe(
+          'PUSH_DEFAULT_NOTHING: you didn\'t specify any refspecs to push, and push.default is "nothing"',
+        );
       });
     });
   });

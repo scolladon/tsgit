@@ -246,7 +246,8 @@ export type CommandError =
       readonly format?: 'openpgp' | 'ssh' | 'x509';
     }
   | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string }
-  | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' };
+  | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
+  | { readonly code: 'PUSH_DEFAULT_NOTHING' };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -759,3 +760,9 @@ export const signedPushUnsupported = (remote: string): TsgitError =>
 // contacted — mirrors real git's own refspec-selection-time refusal.
 export const pushDetachedNoRefspec = (): TsgitError =>
   new TsgitError({ code: 'PUSH_DETACHED_NO_REFSPEC' });
+
+// Refusal: `push.default=nothing` never has a default refspec to push —
+// always refuses, regardless of HEAD state, before the remote is resolved
+// or contacted. Mirrors real git's own refspec-selection-time refusal.
+export const pushDefaultNothing = (): TsgitError =>
+  new TsgitError({ code: 'PUSH_DEFAULT_NOTHING' });

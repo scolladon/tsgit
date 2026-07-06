@@ -446,6 +446,7 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       'solo',
       'currentmode',
       'currentdetached',
+      'nothingmode',
     ]) {
       seedBare(name, 'real');
       seedBare(name, 'ts');
@@ -731,6 +732,52 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
         'rev-parse',
         'main',
       ]).ok,
+    ).toBe(false);
+
+    await repo.dispose();
+  }, 30_000);
+
+  it('Given push.default=nothing, When push runs with no explicit refspec, Then both real git and tsgit refuse before contacting the remote', async () => {
+    // Arrange — real-git twin: push.default=nothing always refuses, regardless of HEAD state.
+    const gitDir = await initGitRepo();
+    git(gitDir, 'remote', 'add', 'nothingmode', bareUrl('nothingmode', 'real'));
+    git(gitDir, 'config', 'push.default', 'nothing');
+
+    // Act & Assert — real git refuses before ever dialling the remote.
+    let realRefusal: { readonly stderr?: string } = {};
+    try {
+      await gitAsync(gitDir, 'push', '-q');
+      throw new Error('expected real git to refuse the push.default=nothing push');
+    } catch (error) {
+      realRefusal = error as { readonly stderr?: string };
+    }
+    expect(realRefusal.stderr ?? '').toMatch(/push\.default is "nothing"/);
+
+    // Arrange — tsgit twin: same sole remote, push.default=nothing.
+    const { repo } = await initTsgitRepo();
+    await appendConfig(
+      repo,
+      [
+        '[remote "nothingmode"]',
+        `  url = ${bareUrl('nothingmode', 'ts')}`,
+        '[push]',
+        '  default = nothing',
+      ].join('\n'),
+    );
+
+    // Act & Assert — tsgit refuses with the matching structured error, before any network call.
+    await expect(repo.push({})).rejects.toMatchObject({
+      data: { code: 'PUSH_DEFAULT_NOTHING' },
+    });
+
+    // Assert — neither bare received a push.
+    expect(
+      tryRunGit(['--git-dir', path.join(projectRoot, 'nothingmode-real.git'), 'rev-parse', 'main'])
+        .ok,
+    ).toBe(false);
+    expect(
+      tryRunGit(['--git-dir', path.join(projectRoot, 'nothingmode-ts.git'), 'rev-parse', 'main'])
+        .ok,
     ).toBe(false);
 
     await repo.dispose();

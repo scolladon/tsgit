@@ -48,6 +48,7 @@ import {
   operationInProgress,
   pathspecNoMatch,
   pathspecOutsideRepo,
+  pushDefaultNothing,
   pushDetachedNoRefspec,
   pushRejected,
   remoteAdvertisesNoRefs,
@@ -1718,6 +1719,20 @@ describe('domain commands error — extractDetail message formatting', () => {
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'PUSH_DETACHED_NO_REFSPEC' });
+      });
+    });
+  });
+
+  describe('Given the pushDefaultNothing error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code', () => {
+        // Arrange
+        const sut = pushDefaultNothing;
+        // Act
+        const result = sut();
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'PUSH_DEFAULT_NOTHING' });
       });
     });
   });

@@ -7,7 +7,11 @@
  * advertisement is known — only `matching` needs it, to expand against
  * the advertised ref set; every other plan kind is a pass-through.
  */
-import { invalidOption, pushDetachedNoRefspec } from '../../../domain/commands/error.js';
+import {
+  invalidOption,
+  pushDefaultNothing,
+  pushDetachedNoRefspec,
+} from '../../../domain/commands/error.js';
 import type { Advertisement } from '../../../domain/protocol/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
@@ -32,10 +36,10 @@ export interface PushRefspecOptions {
  *
  * Explicit `opts.refspecs` always win, regardless of `push.default`.
  * `push.default=current` computes the current-branch same-named refspec
- * and refuses on a detached HEAD. Every other mode — `simple`, `upstream`,
- * `nothing`, `matching`, and unset (default `simple`) — still routes
- * through the pre-existing HEAD-default resolution so their behaviour is
- * unchanged.
+ * and refuses on a detached HEAD. `push.default=nothing` always refuses,
+ * regardless of HEAD state. Every other mode — `simple`, `upstream`,
+ * `matching`, and unset (default `simple`) — still routes through the
+ * pre-existing HEAD-default resolution so their behaviour is unchanged.
  */
 export const planPushRefspecs = async (
   ctx: Context,
@@ -48,6 +52,9 @@ export const planPushRefspecs = async (
   }
   if (config.push?.default === 'current') {
     return planCurrent(head);
+  }
+  if (config.push?.default === 'nothing') {
+    throw pushDefaultNothing();
   }
   return { kind: 'fixed', refspecs: await resolveRefspecsInput(ctx, opts.refspecs) };
 };

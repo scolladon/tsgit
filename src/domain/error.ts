@@ -505,6 +505,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'the receiving end does not support --signed push';
     case 'PUSH_DETACHED_NO_REFSPEC':
       return 'you are not currently on a branch';
+    case 'PUSH_DEFAULT_NOTHING':
+      return 'you didn\'t specify any refspecs to push, and push.default is "nothing"';
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);
