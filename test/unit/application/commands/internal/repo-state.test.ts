@@ -6,10 +6,13 @@ import {
   assertNotBare,
   assertOperationalRepository,
   assertRepository,
+  branchRefFromHead,
+  currentBranchRef,
   isBare,
   readHeadRaw,
 } from '../../../../../src/application/commands/internal/repo-state.js';
-import { TsgitError } from '../../../../../src/domain/index.js';
+import type { HeadState } from '../../../../../src/application/primitives/internal/repo-state.js';
+import { ObjectId, RefName, TsgitError } from '../../../../../src/domain/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const seedRepo = async (ctx: Context, head = 'ref: refs/heads/main\n'): Promise<void> => {
@@ -282,6 +285,76 @@ describe('internal/repo-state', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+        });
+      });
+    });
+  });
+
+  describe('branchRefFromHead', () => {
+    describe('Given a symbolic HeadState', () => {
+      describe('When branchRefFromHead', () => {
+        it('Then returns the exact target RefName', () => {
+          // Arrange
+          const head: HeadState = { kind: 'symbolic', target: RefName.from('refs/heads/main') };
+
+          // Act
+          const result = branchRefFromHead(head);
+
+          // Assert
+          expect(result).toBe('refs/heads/main');
+        });
+      });
+    });
+
+    describe('Given a direct HeadState', () => {
+      describe('When branchRefFromHead', () => {
+        it('Then returns undefined', () => {
+          // Arrange
+          const head: HeadState = {
+            kind: 'direct',
+            id: ObjectId.from('0123456789abcdef0123456789abcdef01234567'),
+          };
+
+          // Act
+          const result = branchRefFromHead(head);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('currentBranchRef', () => {
+    describe('Given an in-memory ctx whose HEAD is symbolic', () => {
+      describe('When currentBranchRef', () => {
+        it('Then returns the exact target RefName', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, 'ref: refs/heads/main\n');
+
+          // Act
+          const result = await currentBranchRef(ctx);
+
+          // Assert
+          expect(result).toBe('refs/heads/main');
+        });
+      });
+    });
+
+    describe('Given an in-memory ctx whose HEAD is detached', () => {
+      describe('When currentBranchRef', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const oid = '0123456789abcdef0123456789abcdef01234567';
+          await seedRepo(ctx, `${oid}\n`);
+
+          // Act
+          const result = await currentBranchRef(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });

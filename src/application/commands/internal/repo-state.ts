@@ -9,6 +9,8 @@ export {
   assertNotBare,
   assertOperationalRepository,
   assertRepository,
+  branchRefFromHead,
+  currentBranchRef,
   isBare,
   readHeadRaw,
 } from '../../primitives/internal/repo-state.js';
