@@ -479,6 +479,22 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [branch "main"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then pushRemote stays undefined (only remote/merge/pushRemote are read)', async () => {
+        // Arrange — `foo` is none of remote/merge/pushRemote, so it must never set pushRemote.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "main"]\n  foo = bar\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.branch?.get('main')?.pushRemote).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a [branch "main"] section with a valueless pushRemote key', () => {
     describe('When readConfig', () => {
       it('Then pushRemote is skipped (valueless key treated as absent)', async () => {
@@ -1523,6 +1539,22 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(sut.remotePushDefault).toBe('origin');
+      });
+    });
+  });
+
+  describe('Given a subsectionless `[remote]` section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then remotePushDefault stays undefined (only pushDefault is read)', async () => {
+        // Arrange — `foo` is not `pushDefault`, so it must never set remotePushDefault.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote]\n  foo = bar\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.remotePushDefault).toBeUndefined();
       });
     });
   });
@@ -6135,6 +6167,23 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given a `[push]` section with an unrelated key whose value parses as a valid mode', () => {
+    describe('When readConfig', () => {
+      it('Then push.default stays undefined (only the `default` key is read)', async () => {
+        // Arrange — `foo`'s value happens to be a recognized push.default mode, but the
+        // key itself is not `default`, so it must never set push.default.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  foo = simple\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a `[push]` section without a default key', () => {
     describe('When readConfig', () => {
       it('Then push.default is undefined', async () => {
@@ -6270,6 +6319,23 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Assert
         expect(result?.value).toBe('bogus');
         expect(result?.line).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a bogus default entry BEFORE any section header', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined (the entry is not inside [push])', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '  default = bogus\n[push]\n  default = simple\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });
