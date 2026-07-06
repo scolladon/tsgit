@@ -29,6 +29,7 @@ import {
   gitignoreFileTooLarge,
   hookFailed,
   invalidOption,
+  invalidPushDefault,
   invalidUrl,
   MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
@@ -1770,6 +1771,25 @@ describe('domain commands error — extractDetail message formatting', () => {
           code: 'PUSH_UPSTREAM_NAME_MISMATCH',
           branch: 'refs/heads/main',
           upstream: 'refs/heads/other',
+        });
+      });
+    });
+  });
+
+  describe('Given the invalidPushDefault error helper', () => {
+    describe('When called with a bad value, its source, and its line', () => {
+      it('Then data carries code, value, source, and line', () => {
+        // Arrange
+        const sut = invalidPushDefault;
+        // Act
+        const result = sut('bogus', '/abs/.git/config', 9);
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'INVALID_PUSH_DEFAULT',
+          value: 'bogus',
+          source: '/abs/.git/config',
+          line: 9,
         });
       });
     });

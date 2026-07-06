@@ -1399,6 +1399,40 @@ const parsePushDefault = (value: string | null): PushDefaultMode | undefined => 
   return undefined;
 };
 
+/** One invalid `push.default` entry returned by `findInvalidPushDefault`. */
+export interface InvalidPushDefaultEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly line: number;
+  readonly value: string;
+}
+
+/**
+ * Cold-path detection: walk the cached `[push]` (subsectionless) tokens in
+ * file order and return the FIRST `default` entry whose value is present
+ * (non-null) and fails `parsePushDefault` — an unrecognized mode, wrong case
+ * included. A valueless `default` is not an invalid-value error; it mirrors
+ * `mergePush`, which treats it as absent. Returns `undefined` when every
+ * `push.default` entry is either absent, valueless, or a recognized mode.
+ * Runs ONLY on a command's refusal path (`push`), never during config assembly.
+ */
+export const findInvalidPushDefault = async (
+  ctx: Context,
+): Promise<InvalidPushDefaultEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'push', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== 'default') continue;
+    if (token.value === null || parsePushDefault(token.value) !== undefined) continue;
+    return { key: 'push.default', source: path, line: token.startLine + 1, value: token.value };
+  }
+  return undefined;
+};
+
 const mergePush = (
   acc: { push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode } },
   sec: IniSection,

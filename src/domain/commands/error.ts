@@ -257,6 +257,12 @@ export type CommandError =
       readonly code: 'PUSH_UPSTREAM_NAME_MISMATCH';
       readonly branch: RefName;
       readonly upstream: RefName;
+    }
+  | {
+      readonly code: 'INVALID_PUSH_DEFAULT';
+      readonly value: string;
+      readonly source: string;
+      readonly line: number;
     };
 
 const sanitizeForDisplay = (s: string): string => {
@@ -790,3 +796,11 @@ export const pushRemoteNotUpstream = (remote: string, branch: RefName): TsgitErr
 // of name.
 export const pushUpstreamNameMismatch = (branch: RefName, upstream: RefName): TsgitError =>
   new TsgitError({ code: 'PUSH_UPSTREAM_NAME_MISMATCH', branch, upstream });
+
+// Refusal: `push.default` is set to a value that is not one of `nothing`,
+// `current`, `upstream`, `simple`, or `matching` (after the `tracking` →
+// `upstream` alias). Real git validates this on the config-read cold path,
+// before resolving the remote or refspec — the value is reported verbatim,
+// case-sensitive.
+export const invalidPushDefault = (value: string, source: string, line: number): TsgitError =>
+  new TsgitError({ code: 'INVALID_PUSH_DEFAULT', value, source, line });

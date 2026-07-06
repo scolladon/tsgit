@@ -529,6 +529,60 @@ describe('push — config + refspec guards', () => {
       });
     });
   });
+
+  describe('Given push.default is set to an unrecognized value', () => {
+    describe('When push runs with no explicit refspecs', () => {
+      it('Then throws INVALID_PUSH_DEFAULT with the raw value, source, and line before any session', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[push]\n  default = bogus\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await push(ctx);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          value: string;
+          source: string;
+          line: number;
+        };
+        expect(data.code).toBe('INVALID_PUSH_DEFAULT');
+        expect(data.value).toBe('bogus');
+        expect(data.line).toBe(2);
+        expect(data.source).toBe(`${ctx.layout.gitDir}/config`);
+      });
+    });
+
+    describe('When push runs with an explicit refspec', () => {
+      it('Then still throws INVALID_PUSH_DEFAULT (git validates the config regardless)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[push]\n  default = bogus\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await push(ctx, { refspecs: ['refs/heads/main:refs/heads/main'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string };
+        expect(data.code).toBe('INVALID_PUSH_DEFAULT');
+      });
+    });
+  });
 });
 
 describe('push — happy path', () => {

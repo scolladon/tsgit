@@ -15,6 +15,7 @@
  */
 import {
   invalidOption,
+  invalidPushDefault,
   nonFastForward,
   pushRejected,
   sanitize,
@@ -42,7 +43,7 @@ import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
-import { readConfig } from '../primitives/config-read.js';
+import { findInvalidPushDefault, readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
@@ -109,8 +110,19 @@ const PUSH_UPLOAD_OP = 'push:upload';
 const ZERO_OID = ObjectId.from('0'.repeat(40));
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 
+// Real git validates `push.default` on the config-read cold path before resolving
+// the remote or the refspec, regardless of mode or an explicit refspec — mirror
+// that ordering here so a set-but-invalid value refuses before any session opens.
+const assertValidPushDefault = async (ctx: Context): Promise<void> => {
+  const invalid = await findInvalidPushDefault(ctx);
+  if (invalid !== undefined) {
+    throw invalidPushDefault(invalid.value, invalid.source, invalid.line);
+  }
+};
+
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertOperationalRepository(ctx);
+  await assertValidPushDefault(ctx);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
     return await pushViaSession(ctx, opts);

@@ -6,6 +6,7 @@ import {
   findFirstInvalidCompression,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
+  findInvalidPushDefault,
   type IniSection,
   invalidateConfigCache,
   parseIniSections,
@@ -6146,6 +6147,129 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.push?.default).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given no [push] section', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  name = Bob\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default = simple (valid)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = simple\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default = tracking (legacy alias for upstream)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = tracking\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default is valueless', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined (a valueless key is treated as absent)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default = bogus (unrecognized value)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns the raw value, source, and line', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  name = Bob\n[push]\n  default = bogus\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result?.key).toBe('push.default');
+        expect(result?.value).toBe('bogus');
+        expect(result?.line).toBe(4);
+        expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+      });
+    });
+  });
+
+  describe('Given [push] default = Simple (wrong case is invalid)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns the entry (case-sensitive match)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = Simple\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result?.value).toBe('Simple');
+      });
+    });
+  });
+
+  describe('Given a valid default followed by an invalid one in the same [push] section', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns the FIRST invalid entry, ignoring the earlier valid one', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = current\n  default = bogus\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result?.value).toBe('bogus');
+        expect(result?.line).toBe(3);
       });
     });
   });

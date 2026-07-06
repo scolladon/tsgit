@@ -511,6 +511,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `you are pushing to remote '${data.remote}', which is not the upstream of your current branch '${data.branch}'`;
     case 'PUSH_UPSTREAM_NAME_MISMATCH':
       return 'the upstream branch of your current branch does not match the name of your current branch';
+    case 'INVALID_PUSH_DEFAULT':
+      return `bad config variable 'push.default' in file '${data.source}' at line ${data.line}`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

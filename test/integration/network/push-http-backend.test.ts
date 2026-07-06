@@ -447,6 +447,8 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       'currentmode',
       'currentdetached',
       'nothingmode',
+      'invalidpushdefaultbogus',
+      'invalidpushdefaultcase',
       'upstreammode',
       'upstreamfetch',
       'upstreampush',
@@ -791,6 +793,148 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
     expect(
       tryRunGit(['--git-dir', path.join(projectRoot, 'nothingmode-ts.git'), 'rev-parse', 'main'])
         .ok,
+    ).toBe(false);
+
+    await repo.dispose();
+  }, 30_000);
+
+  it('Given push.default is set to an unrecognized value, When push runs with no explicit refspec, Then both real git and tsgit refuse with a bad-config-variable error before contacting the remote', async () => {
+    // Arrange — real-git twin: an unrecognized push.default value.
+    const gitDir = await initGitRepo();
+    git(
+      gitDir,
+      'remote',
+      'add',
+      'invalidpushdefaultbogus',
+      bareUrl('invalidpushdefaultbogus', 'real'),
+    );
+    git(gitDir, 'config', 'push.default', 'bogus');
+
+    // Act & Assert — real git refuses before ever dialling the remote.
+    let realRefusal: { readonly stderr?: string } = {};
+    try {
+      await gitAsync(gitDir, 'push', '-q');
+      throw new Error('expected real git to refuse the unrecognized push.default value');
+    } catch (error) {
+      realRefusal = error as { readonly stderr?: string };
+    }
+    expect(realRefusal.stderr ?? '').toMatch(
+      /bad config variable 'push\.default' in file '.*' at line \d+/,
+    );
+
+    // Arrange — tsgit twin: same sole remote, push.default=bogus.
+    const { repo } = await initTsgitRepo();
+    await appendConfig(
+      repo,
+      [
+        '[remote "invalidpushdefaultbogus"]',
+        `  url = ${bareUrl('invalidpushdefaultbogus', 'ts')}`,
+        '[push]',
+        '  default = bogus',
+      ].join('\n'),
+    );
+    const configPath = path.join(repo.ctx.layout.gitDir, 'config');
+    const configText = await readFile(configPath, 'utf8');
+    const expectedLine =
+      configText.split('\n').findIndex((line) => line.trim() === 'default = bogus') + 1;
+
+    // Act & Assert — tsgit refuses with the matching structured error, before any network call.
+    await expect(repo.push({})).rejects.toMatchObject({
+      data: {
+        code: 'INVALID_PUSH_DEFAULT',
+        value: 'bogus',
+        source: configPath,
+        line: expectedLine,
+      },
+    });
+
+    // Assert — neither bare received a push.
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'invalidpushdefaultbogus-real.git'),
+        'rev-parse',
+        'main',
+      ]).ok,
+    ).toBe(false);
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'invalidpushdefaultbogus-ts.git'),
+        'rev-parse',
+        'main',
+      ]).ok,
+    ).toBe(false);
+
+    await repo.dispose();
+  }, 30_000);
+
+  it('Given push.default is set to a wrong-case recognized word, When push runs with no explicit refspec, Then both real git and tsgit refuse (the enum match is case-sensitive)', async () => {
+    // Arrange — real-git twin: "Simple" is not "simple" — case-sensitive match.
+    const gitDir = await initGitRepo();
+    git(
+      gitDir,
+      'remote',
+      'add',
+      'invalidpushdefaultcase',
+      bareUrl('invalidpushdefaultcase', 'real'),
+    );
+    git(gitDir, 'config', 'push.default', 'Simple');
+
+    // Act & Assert — real git refuses before ever dialling the remote.
+    let realRefusal: { readonly stderr?: string } = {};
+    try {
+      await gitAsync(gitDir, 'push', '-q');
+      throw new Error('expected real git to refuse the wrong-case push.default value');
+    } catch (error) {
+      realRefusal = error as { readonly stderr?: string };
+    }
+    expect(realRefusal.stderr ?? '').toMatch(
+      /bad config variable 'push\.default' in file '.*' at line \d+/,
+    );
+
+    // Arrange — tsgit twin: same sole remote, push.default=Simple.
+    const { repo } = await initTsgitRepo();
+    await appendConfig(
+      repo,
+      [
+        '[remote "invalidpushdefaultcase"]',
+        `  url = ${bareUrl('invalidpushdefaultcase', 'ts')}`,
+        '[push]',
+        '  default = Simple',
+      ].join('\n'),
+    );
+    const configPath = path.join(repo.ctx.layout.gitDir, 'config');
+    const configText = await readFile(configPath, 'utf8');
+    const expectedLine =
+      configText.split('\n').findIndex((line) => line.trim() === 'default = Simple') + 1;
+
+    // Act & Assert — tsgit refuses with the matching structured error, before any network call.
+    await expect(repo.push({})).rejects.toMatchObject({
+      data: {
+        code: 'INVALID_PUSH_DEFAULT',
+        value: 'Simple',
+        source: configPath,
+        line: expectedLine,
+      },
+    });
+
+    // Assert — neither bare received a push.
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'invalidpushdefaultcase-real.git'),
+        'rev-parse',
+        'main',
+      ]).ok,
+    ).toBe(false);
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'invalidpushdefaultcase-ts.git'),
+        'rev-parse',
+        'main',
+      ]).ok,
     ).toBe(false);
 
     await repo.dispose();

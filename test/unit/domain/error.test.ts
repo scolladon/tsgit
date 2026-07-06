@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
   cleanFilterFailed,
+  invalidPushDefault,
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
@@ -1323,6 +1324,22 @@ describe('pushDefaultNothing error', () => {
         // Assert
         expect(sut.message).toBe(
           'PUSH_DEFAULT_NOTHING: you didn\'t specify any refspecs to push, and push.default is "nothing"',
+        );
+      });
+    });
+  });
+});
+
+describe('invalidPushDefault error', () => {
+  describe('Given invalidPushDefault factory', () => {
+    describe('When reading .message', () => {
+      it('Then message names the bad config variable, file, and line', () => {
+        // Arrange & Act
+        const sut = invalidPushDefault('bogus', '/abs/.git/config', 9);
+
+        // Assert
+        expect(sut.message).toBe(
+          "INVALID_PUSH_DEFAULT: bad config variable 'push.default' in file '/abs/.git/config' at line 9",
         );
       });
     });
