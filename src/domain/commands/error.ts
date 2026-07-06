@@ -252,6 +252,11 @@ export type CommandError =
       readonly code: 'PUSH_REMOTE_NOT_UPSTREAM';
       readonly remote: string;
       readonly branch: RefName;
+    }
+  | {
+      readonly code: 'PUSH_UPSTREAM_NAME_MISMATCH';
+      readonly branch: RefName;
+      readonly upstream: RefName;
     };
 
 const sanitizeForDisplay = (s: string): string => {
@@ -778,3 +783,10 @@ export const pushDefaultNothing = (): TsgitError =>
 // triangular condition before checking for a configured upstream.
 export const pushRemoteNotUpstream = (remote: string, branch: RefName): TsgitError =>
   new TsgitError({ code: 'PUSH_REMOTE_NOT_UPSTREAM', remote, branch });
+
+// Refusal: `push.default=simple` requires the configured upstream
+// (`branch.<name>.merge`) to share the current branch's short name —
+// unlike `upstream`, which pushes to any configured merge ref regardless
+// of name.
+export const pushUpstreamNameMismatch = (branch: RefName, upstream: RefName): TsgitError =>
+  new TsgitError({ code: 'PUSH_UPSTREAM_NAME_MISMATCH', branch, upstream });

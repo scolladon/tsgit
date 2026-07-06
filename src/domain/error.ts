@@ -509,6 +509,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'you didn\'t specify any refspecs to push, and push.default is "nothing"';
     case 'PUSH_REMOTE_NOT_UPSTREAM':
       return `you are pushing to remote '${data.remote}', which is not the upstream of your current branch '${data.branch}'`;
+    case 'PUSH_UPSTREAM_NAME_MISMATCH':
+      return 'the upstream branch of your current branch does not match the name of your current branch';
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

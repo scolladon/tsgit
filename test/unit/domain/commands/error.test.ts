@@ -52,6 +52,7 @@ import {
   pushDetachedNoRefspec,
   pushRejected,
   pushRemoteNotUpstream,
+  pushUpstreamNameMismatch,
   remoteAdvertisesNoRefs,
   remoteExists,
   remoteNameInvalid,
@@ -1751,6 +1752,24 @@ describe('domain commands error — extractDetail message formatting', () => {
           code: 'PUSH_REMOTE_NOT_UPSTREAM',
           remote: 'pushdef',
           branch: 'refs/heads/main',
+        });
+      });
+    });
+  });
+
+  describe('Given the pushUpstreamNameMismatch error helper', () => {
+    describe('When called with the current branch ref and its differently-named upstream', () => {
+      it('Then data carries code, branch, and upstream', () => {
+        // Arrange
+        const sut = pushUpstreamNameMismatch;
+        // Act
+        const result = sut('refs/heads/main' as RefName, 'refs/heads/other' as RefName);
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'PUSH_UPSTREAM_NAME_MISMATCH',
+          branch: 'refs/heads/main',
+          upstream: 'refs/heads/other',
         });
       });
     });

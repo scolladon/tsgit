@@ -13,8 +13,9 @@ import {
   pushDefaultNothing,
   pushDetachedNoRefspec,
   pushRemoteNotUpstream,
+  pushUpstreamNameMismatch,
 } from '../../../domain/commands/error.js';
-import type { RefName } from '../../../domain/objects/object-id.js';
+import { RefName } from '../../../domain/objects/object-id.js';
 import type { Advertisement } from '../../../domain/protocol/index.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { Context } from '../../../ports/context.js';
@@ -48,9 +49,15 @@ export interface PushRefspecOptions {
  * not the branch's fetch remote) even when no upstream is configured —
  * that triangular check dominates — then refuses when no
  * `branch.<name>.merge` is configured, and otherwise pushes to the
- * configured upstream ref. Every other mode — `simple`, `matching`, and
- * unset (default `simple`) — still routes through the pre-existing
- * HEAD-default resolution so their behaviour is unchanged.
+ * configured upstream ref. `push.default=simple` — and unset, which
+ * behaves as `simple` (git's own default) — refuses on a detached HEAD,
+ * then treats a triangular workflow like `current` (pushes the same-named
+ * ref, no upstream needed), then refuses when no `branch.<name>.merge` is
+ * configured, then refuses when the configured upstream's short name
+ * differs from the current branch, and otherwise pushes to it. `matching`
+ * is the only mode still routed through the legacy HEAD-default
+ * resolution — it needs the wire advertisement, which isn't available yet
+ * at plan time.
  */
 export const planPushRefspecs = async (
   ctx: Context,
@@ -70,7 +77,10 @@ export const planPushRefspecs = async (
   if (config.push?.default === 'upstream') {
     return planUpstream(config, opts, head);
   }
-  return { kind: 'fixed', refspecs: await resolveRefspecsInput(ctx, opts.refspecs) };
+  if (config.push?.default === 'matching') {
+    return { kind: 'fixed', refspecs: await resolveRefspecsInput(ctx, opts.refspecs) };
+  }
+  return planSimple(config, opts, head);
 };
 
 const planCurrent = (head: HeadState): PushRefspecPlan => {
@@ -83,8 +93,8 @@ const planCurrent = (head: HeadState): PushRefspecPlan => {
 
 /**
  * The push/fetch remote resolution for the current branch, computed once so
- * `upstream` (this part) and `simple` (which layers a name-mismatch check on
- * top, Part 10) can share it.
+ * `upstream` and `simple` (which layers a name-mismatch check on top) can
+ * share it.
  */
 interface BranchRemoteInfo {
   readonly branchFull: RefName;
@@ -132,6 +142,36 @@ const planUpstream = (
     throw noUpstreamConfigured(branchFull);
   }
   return { kind: 'fixed', refspecs: [parseRefspec(`${branchFull}:${merge}`)] };
+};
+
+/**
+ * `simple` — git's own default when `push.default` is unset. A triangular
+ * workflow is treated like `current` (same-named ref, no upstream needed);
+ * a central workflow requires a configured upstream whose short name
+ * matches the current branch, refusing `PUSH_UPSTREAM_NAME_MISMATCH`
+ * otherwise (the one guard `upstream` mode does not apply).
+ */
+const planSimple = (
+  config: ParsedConfig,
+  opts: PushRefspecOptions,
+  head: HeadState,
+): PushRefspecPlan => {
+  const branch = branchRefFromHead(head);
+  if (branch === undefined) {
+    throw pushDetachedNoRefspec();
+  }
+  const { branchFull, triangular, merge } = resolveBranchRemoteInfo(config, opts, branch);
+  if (triangular) {
+    return { kind: 'fixed', refspecs: [parseRefspec(`${branchFull}:${branchFull}`)] };
+  }
+  if (merge === undefined) {
+    throw noUpstreamConfigured(branchFull);
+  }
+  const upstream = RefName.from(merge);
+  if (shortBranchName(upstream) !== shortBranchName(branchFull)) {
+    throw pushUpstreamNameMismatch(branchFull, upstream);
+  }
+  return { kind: 'fixed', refspecs: [parseRefspec(`${branchFull}:${upstream}`)] };
 };
 
 const resolveRefspecsInput = async (

@@ -145,7 +145,11 @@ const fakeServer = (
 const writeOriginConfig = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
   await ctx.fs.writeUtf8(
     `${ctx.layout.gitDir}/config`,
-    '[remote "origin"]\n  url = https://example.com/r.git\n',
+    '[remote "origin"]\n' +
+      '  url = https://example.com/r.git\n' +
+      '[branch "main"]\n' +
+      '  remote = origin\n' +
+      '  merge = refs/heads/main\n',
   );
 };
 
@@ -446,7 +450,8 @@ describe('push — config + refspec guards', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n  url = https://fetch.example.com/r.git\n  pushurl = https://push.example.com/r.git\n',
+          '[remote "origin"]\n  url = https://fetch.example.com/r.git\n  pushurl = https://push.example.com/r.git\n' +
+            '[branch "main"]\n  remote = origin\n  merge = refs/heads/main\n',
         );
         const { transport, requests } = fakeServer({
           url: 'https://push.example.com/r.git',
@@ -495,7 +500,7 @@ describe('push — config + refspec guards', () => {
 
   describe('Given a detached HEAD and no refspec', () => {
     describe('When push runs', () => {
-      it('Then throws INVALID_OPTION (no-default-refspec)', async () => {
+      it('Then throws PUSH_DETACHED_NO_REFSPEC', async () => {
         // Arrange — kills the `head.kind !== "symbolic"` guard mutant.
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
@@ -517,16 +522,10 @@ describe('push — config + refspec guards', () => {
           caught = err;
         }
 
-        // Assert — option literal is 'refspecs' (kills the StringLiteral mutant).
+        // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          option: string;
-          reason: string;
-        };
-        expect(data.code).toBe('INVALID_OPTION');
-        expect(data.option).toBe('refspecs');
-        expect(data.reason).toBe('no-default-refspec (HEAD is detached)');
+        const data = (caught as TsgitError).data as { code: string };
+        expect(data.code).toBe('PUSH_DETACHED_NO_REFSPEC');
       });
     });
   });
@@ -1609,7 +1608,8 @@ describe('push — buildReceivePackUrl', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n  url = https://example.com/r.git/\n',
+          '[remote "origin"]\n  url = https://example.com/r.git/\n' +
+            '[branch "main"]\n  remote = origin\n  merge = refs/heads/main\n',
         );
         const { transport, requests } = fakeServer({
           url: 'https://example.com/r.git/',
@@ -1639,7 +1639,8 @@ describe('push — buildReceivePackUrl', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n  url = https://example.com/r.git?token=abc\n',
+          '[remote "origin"]\n  url = https://example.com/r.git?token=abc\n' +
+            '[branch "main"]\n  remote = origin\n  merge = refs/heads/main\n',
         );
         const { transport, requests } = fakeServer({
           url: 'https://example.com/r.git?token=abc',
@@ -1708,6 +1709,7 @@ describe('push — signed', () => {
     await ctx.fs.writeUtf8(
       `${ctx.layout.gitDir}/config`,
       `[remote "origin"]\n  url = ${url}\n` +
+        `[branch "main"]\n  remote = origin\n  merge = refs/heads/main\n` +
         `[user]\n  name = A\n  email = a@a\n${opts.userExtra ?? ''}` +
         `${opts.otherExtra ?? ''}`,
     );

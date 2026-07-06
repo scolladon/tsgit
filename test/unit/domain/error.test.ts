@@ -8,6 +8,7 @@ import {
   pushDefaultNothing,
   pushDetachedNoRefspec,
   pushRemoteNotUpstream,
+  pushUpstreamNameMismatch,
   signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
@@ -1287,6 +1288,25 @@ describe('pushRemoteNotUpstream error', () => {
         // Assert
         expect(sut.message).toBe(
           "PUSH_REMOTE_NOT_UPSTREAM: you are pushing to remote 'pushdef', which is not the upstream of your current branch 'refs/heads/main'",
+        );
+      });
+    });
+  });
+});
+
+describe('pushUpstreamNameMismatch error', () => {
+  describe('Given pushUpstreamNameMismatch factory', () => {
+    describe('When reading .message', () => {
+      it('Then message states the upstream name does not match the branch name', () => {
+        // Arrange & Act
+        const sut = pushUpstreamNameMismatch(
+          'refs/heads/main' as RefName,
+          'refs/heads/other' as RefName,
+        );
+
+        // Assert
+        expect(sut.message).toBe(
+          'PUSH_UPSTREAM_NAME_MISMATCH: the upstream branch of your current branch does not match the name of your current branch',
         );
       });
     });
