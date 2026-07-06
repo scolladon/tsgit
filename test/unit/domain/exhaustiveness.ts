@@ -189,6 +189,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'SIGNED_PUSH_UNSUPPORTED':
     case 'PUSH_DETACHED_NO_REFSPEC':
     case 'PUSH_DEFAULT_NOTHING':
+    case 'PUSH_REMOTE_NOT_UPSTREAM':
       return;
     default: {
       const _exhaustive: never = data;

@@ -7,6 +7,7 @@ import {
   pathNotInTree,
   pushDefaultNothing,
   pushDetachedNoRefspec,
+  pushRemoteNotUpstream,
   signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
@@ -1271,6 +1272,22 @@ describe('pushDetachedNoRefspec error', () => {
 
         // Assert
         expect(sut.message).toBe('PUSH_DETACHED_NO_REFSPEC: you are not currently on a branch');
+      });
+    });
+  });
+});
+
+describe('pushRemoteNotUpstream error', () => {
+  describe('Given pushRemoteNotUpstream factory', () => {
+    describe('When reading .message', () => {
+      it('Then message names the remote and the branch', () => {
+        // Arrange & Act
+        const sut = pushRemoteNotUpstream('pushdef', 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(sut.message).toBe(
+          "PUSH_REMOTE_NOT_UPSTREAM: you are pushing to remote 'pushdef', which is not the upstream of your current branch 'refs/heads/main'",
+        );
       });
     });
   });

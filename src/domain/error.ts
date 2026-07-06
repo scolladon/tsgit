@@ -507,6 +507,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'you are not currently on a branch';
     case 'PUSH_DEFAULT_NOTHING':
       return 'you didn\'t specify any refspecs to push, and push.default is "nothing"';
+    case 'PUSH_REMOTE_NOT_UPSTREAM':
+      return `you are pushing to remote '${data.remote}', which is not the upstream of your current branch '${data.branch}'`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

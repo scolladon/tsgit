@@ -247,7 +247,12 @@ export type CommandError =
     }
   | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string }
   | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
-  | { readonly code: 'PUSH_DEFAULT_NOTHING' };
+  | { readonly code: 'PUSH_DEFAULT_NOTHING' }
+  | {
+      readonly code: 'PUSH_REMOTE_NOT_UPSTREAM';
+      readonly remote: string;
+      readonly branch: RefName;
+    };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -766,3 +771,10 @@ export const pushDetachedNoRefspec = (): TsgitError =>
 // or contacted. Mirrors real git's own refspec-selection-time refusal.
 export const pushDefaultNothing = (): TsgitError =>
   new TsgitError({ code: 'PUSH_DEFAULT_NOTHING' });
+
+// Refusal: `push.default=upstream` requires the resolved push remote to be
+// the branch's upstream (triangular workflows are rejected). This dominates
+// even when no `branch.<name>.merge` is configured — real git checks the
+// triangular condition before checking for a configured upstream.
+export const pushRemoteNotUpstream = (remote: string, branch: RefName): TsgitError =>
+  new TsgitError({ code: 'PUSH_REMOTE_NOT_UPSTREAM', remote, branch });

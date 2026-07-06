@@ -51,6 +51,7 @@ import {
   pushDefaultNothing,
   pushDetachedNoRefspec,
   pushRejected,
+  pushRemoteNotUpstream,
   remoteAdvertisesNoRefs,
   remoteExists,
   remoteNameInvalid,
@@ -1733,6 +1734,24 @@ describe('domain commands error — extractDetail message formatting', () => {
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'PUSH_DEFAULT_NOTHING' });
+      });
+    });
+  });
+
+  describe('Given the pushRemoteNotUpstream error helper', () => {
+    describe('When called with a remote name and the current branch ref', () => {
+      it('Then data carries code, remote, and branch', () => {
+        // Arrange
+        const sut = pushRemoteNotUpstream;
+        // Act
+        const result = sut('pushdef', 'refs/heads/main' as RefName);
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'PUSH_REMOTE_NOT_UPSTREAM',
+          remote: 'pushdef',
+          branch: 'refs/heads/main',
+        });
       });
     });
   });

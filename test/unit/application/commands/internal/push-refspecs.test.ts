@@ -248,6 +248,175 @@ describe('Given explicit refspecs and push.default=nothing', () => {
   });
 });
 
+describe('Given push.default=upstream and a detached HEAD', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then it throws PUSH_DETACHED_NO_REFSPEC', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { head: '5555555555555555555555555555555555555555' });
+      const config: ParsedConfig = { push: { default: 'upstream' } };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(ctx, config, {}, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('PUSH_DETACHED_NO_REFSPEC');
+    });
+  });
+});
+
+describe('Given push.default=upstream with a triangular remote and branch.merge set', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then it throws PUSH_REMOTE_NOT_UPSTREAM even though an upstream is configured', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = {
+        push: { default: 'upstream' },
+        remotePushDefault: 'pushdef',
+        branch: new Map([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
+      };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(ctx, config, {}, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('PUSH_REMOTE_NOT_UPSTREAM');
+      expect(data).toMatchObject({ remote: 'pushdef', branch: 'refs/heads/main' });
+    });
+  });
+});
+
+describe('Given push.default=upstream with a triangular remote and no branch.merge configured', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then it throws PUSH_REMOTE_NOT_UPSTREAM, not NO_UPSTREAM_CONFIGURED (triangular dominates)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = {
+        push: { default: 'upstream' },
+        remotePushDefault: 'pushdef',
+        branch: new Map([['main', { remote: 'origin' }]]),
+      };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(ctx, config, {}, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('PUSH_REMOTE_NOT_UPSTREAM');
+      expect(data).toMatchObject({ remote: 'pushdef', branch: 'refs/heads/main' });
+    });
+  });
+});
+
+describe('Given push.default=upstream and an explicit opts.remote overriding a central branch.remote', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then the explicit remote is treated as the push remote for the triangular check', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = {
+        push: { default: 'upstream' },
+        branch: new Map([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
+      };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(ctx, config, { remote: 'other-remote' }, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('PUSH_REMOTE_NOT_UPSTREAM');
+      expect(data).toMatchObject({ remote: 'other-remote', branch: 'refs/heads/main' });
+    });
+  });
+});
+
+describe('Given push.default=upstream with a central remote and no branch.merge configured', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then it throws NO_UPSTREAM_CONFIGURED', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = {
+        push: { default: 'upstream' },
+        branch: new Map([['main', { remote: 'origin' }]]),
+      };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(ctx, config, {}, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
+      expect(data).toMatchObject({ branch: 'refs/heads/main' });
+    });
+  });
+});
+
+describe('Given push.default=upstream with a central remote and branch.merge set to a different name', () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it('Then the plan pushes the current branch to the configured upstream ref', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = {
+        push: { default: 'upstream' },
+        branch: new Map([['main', { remote: 'origin', merge: 'refs/heads/other' }]]),
+      };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      const result = await planPushRefspecs(ctx, config, {}, head);
+
+      // Assert
+      expect(result).toEqual({
+        kind: 'fixed',
+        refspecs: [
+          { force: 'normal', src: 'refs/heads/main', dst: 'refs/heads/other', isDelete: false },
+        ],
+      });
+    });
+  });
+});
+
 describe('Given an explicit or fixed refspec plan', () => {
   describe('When finalizePushRefspecs resolves it against an advertisement', () => {
     it('Then it passes the refspecs through unchanged', () => {
