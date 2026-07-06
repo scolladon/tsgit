@@ -186,6 +186,17 @@ describe('Given a parsed config, an explicit remote, and the current branch', ()
       // Assert
       expect(result).toBe('origin');
     });
+
+    it('Then an empty/absent config.remote falls through to DEFAULT_REMOTE', () => {
+      // Arrange
+      const config: ParsedConfig = {};
+
+      // Act
+      const result = resolvePushRemote(config, undefined, 'main');
+
+      // Assert
+      expect(result).toBe('origin');
+    });
   });
 
   describe('When resolvePushRemote resolves with a detached HEAD (branch is undefined)', () => {

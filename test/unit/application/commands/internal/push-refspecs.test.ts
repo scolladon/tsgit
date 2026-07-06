@@ -240,6 +240,32 @@ describe('Given explicit refspecs and push.default=nothing', () => {
   });
 });
 
+describe('Given an empty explicit refspecs array and push.default=nothing', () => {
+  describe('When planPushRefspecs runs', () => {
+    it('Then the empty array falls through to push.default and throws PUSH_DEFAULT_NOTHING', async () => {
+      // Arrange — proves `opts.refspecs.length > 0` is load-bearing: an
+      // empty array must NOT be treated as an explicit refspec selection.
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, {});
+      const config: ParsedConfig = { push: { default: 'nothing' } };
+      const head = await readHeadRaw(ctx);
+
+      // Act
+      let caught: unknown;
+      try {
+        await planPushRefspecs(config, { refspecs: [] }, head);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('PUSH_DEFAULT_NOTHING');
+    });
+  });
+});
+
 describe('Given push.default=upstream and a detached HEAD', () => {
   describe('When planPushRefspecs runs with no explicit refspec', () => {
     it('Then it throws PUSH_DETACHED_NO_REFSPEC', async () => {

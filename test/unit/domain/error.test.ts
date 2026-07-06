@@ -1269,11 +1269,14 @@ describe('pushDetachedNoRefspec error', () => {
   describe('Given pushDetachedNoRefspec factory', () => {
     describe('When reading .message', () => {
       it('Then message states HEAD is not currently on a branch', () => {
-        // Arrange & Act
-        const sut = pushDetachedNoRefspec();
+        // Arrange
+        const sut = pushDetachedNoRefspec;
+
+        // Act
+        const result = sut();
 
         // Assert
-        expect(sut.message).toBe('PUSH_DETACHED_NO_REFSPEC: you are not currently on a branch');
+        expect(result.message).toBe('PUSH_DETACHED_NO_REFSPEC: you are not currently on a branch');
       });
     });
   });
