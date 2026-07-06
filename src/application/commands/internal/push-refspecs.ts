@@ -186,6 +186,9 @@ export const finalizePushRefspecs = (
   if (plan.kind !== 'matching') {
     return plan.refspecs;
   }
+  // equivalent-mutant: dropping this filter would let advertisedHeads include non-heads
+  // refs too, but every localHeads entry already starts with HEADS_PREFIX, so membership
+  // in the filtered vs. unfiltered set is identical for every value actually queried below.
   const advertisedHeads = new Set(
     adv.refs.filter((ref) => ref.name.startsWith(HEADS_PREFIX)).map((ref) => ref.name),
   );
