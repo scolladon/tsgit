@@ -39,6 +39,7 @@ import {
 import { PUSH_UPDATE } from '../../domain/reflog/reflog-messages.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -50,11 +51,16 @@ import { resolveSigningSelector } from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
+import { resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
-import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
+import {
+  assertOperationalRepository,
+  branchRefFromHead,
+  readHeadRaw,
+} from './internal/repo-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
 export interface PushOptions {
@@ -108,7 +114,11 @@ export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushRe
 };
 
 const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResult> => {
-  const remoteName = opts.remote ?? 'origin';
+  const head = await readHeadRaw(ctx);
+  const branchRef = branchRefFromHead(head);
+  const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
+  const config = await readConfig(ctx);
+  const remoteName = resolvePushRemote(config, opts.remote, currentBranch);
   const url = await resolveRemoteUrl(ctx, remoteName);
   const refspecs = await resolveRefspecsInput(ctx, opts.refspecs);
   const session = openGitSession(ctx, url, 'git-receive-pack');
