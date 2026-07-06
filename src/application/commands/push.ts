@@ -44,6 +44,7 @@ import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
+import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -125,7 +126,7 @@ const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResu
   const config = await readConfig(ctx);
   const remoteName = resolvePushRemote(config, opts.remote, currentBranch);
   const url = await resolveRemoteUrl(ctx, remoteName);
-  const plan = await planPushRefspecs(ctx, config, opts, head);
+  const plan = await planPushRefspecs(config, opts, head);
   const session = openGitSession(ctx, url, 'git-receive-pack');
   try {
     return await negotiateAndSend(ctx, opts, remoteName, url, plan, session);
@@ -143,7 +144,11 @@ const negotiateAndSend = async (
   session: GitServiceSession,
 ): Promise<PushResult> => {
   const adv = await discoverReceivePackRefs(session);
-  const refspecs = finalizePushRefspecs(plan, adv);
+  const localHeads =
+    plan.kind === 'matching'
+      ? (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
+      : [];
+  const refspecs = finalizePushRefspecs(plan, adv, localHeads);
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remoteName, opts);
   const movers = resolved.filter((r) => r.localOid !== r.remoteOid);
   if (movers.length === 0) {

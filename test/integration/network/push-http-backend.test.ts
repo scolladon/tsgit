@@ -458,6 +458,8 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       'simplefetch',
       'simplepush',
       'simpledetached',
+      'matchingpartial',
+      'matchingdetached',
     ]) {
       seedBare(name, 'real');
       seedBare(name, 'ts');
@@ -1300,6 +1302,211 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
     expect(
       tryRunGit(['--git-dir', path.join(projectRoot, 'simpledetached-ts.git'), 'rev-parse', 'main'])
         .ok,
+    ).toBe(false);
+
+    await repo.dispose();
+  }, 30_000);
+
+  it('Given push.default=matching with two local branches the remote already advertises and a third it does not, When push runs with no explicit refspec, Then it pushes only the two advertised branches, matching real git', async () => {
+    // Arrange — real-git twin: seed the remote bare's `main`+`feature` at the
+    // pre-advance tip via a local file-path push (no HTTP involved), so the
+    // matching push below has real ref movement to prove on both branches.
+    const gitDir = await initGitRepo();
+    git(gitDir, 'branch', 'feature');
+    git(gitDir, 'branch', 'extra');
+    runGit([
+      '-C',
+      gitDir,
+      'push',
+      path.join(projectRoot, 'matchingpartial-real.git'),
+      'refs/heads/main:refs/heads/main',
+      'refs/heads/feature:refs/heads/feature',
+    ]);
+    git(gitDir, 'remote', 'add', 'matchingpartial', bareUrl('matchingpartial', 'real'));
+    await writeFile(path.join(gitDir, 'advance.txt'), 'advance (real git)\n');
+    git(gitDir, 'add', 'advance.txt');
+    git(gitDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance main (real git)');
+    git(gitDir, 'branch', '-f', 'feature', 'main');
+    git(gitDir, 'config', 'push.default', 'matching');
+    await gitAsync(gitDir, 'push', '-q');
+    const realAdvancedOid = git(gitDir, 'rev-parse', 'main').trim();
+
+    // Arrange — tsgit twin: identical shape, independent commit oids. Real
+    // git seeds the bare directly from tsgit's own git-faithful layout.
+    const { repo, dir } = await initTsgitRepo();
+    git(dir, 'branch', 'feature');
+    git(dir, 'branch', 'extra');
+    runGit([
+      '-C',
+      dir,
+      'push',
+      path.join(projectRoot, 'matchingpartial-ts.git'),
+      'refs/heads/main:refs/heads/main',
+      'refs/heads/feature:refs/heads/feature',
+    ]);
+    await writeFile(path.join(dir, 'advance.txt'), 'advance (tsgit)\n');
+    git(dir, 'add', 'advance.txt');
+    git(dir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance main (tsgit)');
+    git(dir, 'branch', '-f', 'feature', 'main');
+    await appendConfig(
+      repo,
+      [
+        '[remote "matchingpartial"]',
+        `  url = ${bareUrl('matchingpartial', 'ts')}`,
+        '[push]',
+        '  default = matching',
+      ].join('\n'),
+    );
+    const tsAdvancedOid = git(dir, 'rev-parse', 'main').trim();
+
+    // Act
+    const sut = await repo.push({});
+
+    // Assert — both advertised branches advanced identically on both bares;
+    // `extra` (never advertised) reached neither.
+    expect(sut.pushedRefs.map((ref) => ref.name).sort()).toEqual(
+      ['refs/heads/feature', 'refs/heads/main'].sort(),
+    );
+    expect(
+      runGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingpartial-real.git'),
+        'rev-parse',
+        'main',
+      ]).trim(),
+    ).toBe(realAdvancedOid);
+    expect(
+      runGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingpartial-real.git'),
+        'rev-parse',
+        'feature',
+      ]).trim(),
+    ).toBe(realAdvancedOid);
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingpartial-real.git'),
+        'rev-parse',
+        'extra',
+      ]).ok,
+    ).toBe(false);
+
+    expect(
+      runGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingpartial-ts.git'),
+        'rev-parse',
+        'main',
+      ]).trim(),
+    ).toBe(tsAdvancedOid);
+    expect(
+      runGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingpartial-ts.git'),
+        'rev-parse',
+        'feature',
+      ]).trim(),
+    ).toBe(tsAdvancedOid);
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingpartial-ts.git'),
+        'rev-parse',
+        'extra',
+      ]).ok,
+    ).toBe(false);
+
+    await repo.dispose();
+  }, 30_000);
+
+  it('Given push.default=matching and a detached HEAD, When push runs with no explicit refspec, Then it still pushes the matching branch without refusing, unlike every other push.default mode', async () => {
+    // Arrange — real-git twin: seed the remote with `main` at the pre-push
+    // tip via a local file-path push (no HTTP involved), advance main
+    // locally, then detach HEAD before pushing — matching is HEAD-independent,
+    // so real git must not refuse here.
+    const gitDir = await initGitRepo();
+    git(gitDir, 'branch', 'extra');
+    runGit([
+      '-C',
+      gitDir,
+      'push',
+      path.join(projectRoot, 'matchingdetached-real.git'),
+      'refs/heads/main:refs/heads/main',
+    ]);
+    git(gitDir, 'remote', 'add', 'matchingdetached', bareUrl('matchingdetached', 'real'));
+    await writeFile(path.join(gitDir, 'advance.txt'), 'advance (real git)\n');
+    git(gitDir, 'add', 'advance.txt');
+    git(gitDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance main (real git)');
+    const realAdvancedOid = git(gitDir, 'rev-parse', 'main').trim();
+    git(gitDir, 'config', 'push.default', 'matching');
+    git(gitDir, 'checkout', '-q', '--detach', 'HEAD');
+    await gitAsync(gitDir, 'push', '-q');
+
+    // Arrange — tsgit twin: identical shape, independent commit oids. Real
+    // git seeds the bare directly from tsgit's own git-faithful layout.
+    const { repo, dir } = await initTsgitRepo();
+    git(dir, 'branch', 'extra');
+    runGit([
+      '-C',
+      dir,
+      'push',
+      path.join(projectRoot, 'matchingdetached-ts.git'),
+      'refs/heads/main:refs/heads/main',
+    ]);
+    await writeFile(path.join(dir, 'advance.txt'), 'advance (tsgit)\n');
+    git(dir, 'add', 'advance.txt');
+    git(dir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance main (tsgit)');
+    const tsAdvancedOid = git(dir, 'rev-parse', 'main').trim();
+    await appendConfig(
+      repo,
+      [
+        '[remote "matchingdetached"]',
+        `  url = ${bareUrl('matchingdetached', 'ts')}`,
+        '[push]',
+        '  default = matching',
+      ].join('\n'),
+    );
+    await writeFile(path.join(repo.ctx.layout.gitDir, 'HEAD'), `${tsAdvancedOid}\n`);
+
+    // Act — tsgit must not refuse, unlike current/upstream/simple/nothing.
+    const sut = await repo.push({});
+
+    // Assert — `main` advanced on both bares; `extra` (never advertised)
+    // reached neither.
+    expect(sut.pushedRefs.map((ref) => ref.name)).toEqual(['refs/heads/main']);
+    expect(
+      runGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingdetached-real.git'),
+        'rev-parse',
+        'main',
+      ]).trim(),
+    ).toBe(realAdvancedOid);
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingdetached-real.git'),
+        'rev-parse',
+        'extra',
+      ]).ok,
+    ).toBe(false);
+
+    expect(
+      runGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingdetached-ts.git'),
+        'rev-parse',
+        'main',
+      ]).trim(),
+    ).toBe(tsAdvancedOid);
+    expect(
+      tryRunGit([
+        '--git-dir',
+        path.join(projectRoot, 'matchingdetached-ts.git'),
+        'rev-parse',
+        'extra',
+      ]).ok,
     ).toBe(false);
 
     await repo.dispose();

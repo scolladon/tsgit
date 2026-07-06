@@ -4,11 +4,11 @@
  * `planPushRefspecs` runs before the remote is contacted, so refusals
  * (e.g. a detached HEAD under `push.default=current`) fire before any
  * wire exchange. `finalizePushRefspecs` runs once the remote's ref
- * advertisement is known — only `matching` needs it, to expand against
- * the advertised ref set; every other plan kind is a pass-through.
+ * advertisement — and the local `refs/heads/*` list — are known:
+ * `matching` expands against both; every other plan kind is a
+ * pass-through.
  */
 import {
-  invalidOption,
   noUpstreamConfigured,
   pushDefaultNothing,
   pushDetachedNoRefspec,
@@ -17,14 +17,10 @@ import {
 } from '../../../domain/commands/error.js';
 import { RefName } from '../../../domain/objects/object-id.js';
 import type { Advertisement } from '../../../domain/protocol/index.js';
+import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
-import type { Context } from '../../../ports/context.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
-import {
-  branchRefFromHead,
-  type HeadState,
-  readHeadRaw,
-} from '../../primitives/internal/repo-state.js';
+import { branchRefFromHead, type HeadState } from '../../primitives/internal/repo-state.js';
 import { defaultRemoteName, resolvePushRemote } from './default-remote.js';
 import { type ParsedRefspec, parseRefspec } from './refspec.js';
 
@@ -54,13 +50,14 @@ export interface PushRefspecOptions {
  * then treats a triangular workflow like `current` (pushes the same-named
  * ref, no upstream needed), then refuses when no `branch.<name>.merge` is
  * configured, then refuses when the configured upstream's short name
- * differs from the current branch, and otherwise pushes to it. `matching`
- * is the only mode still routed through the legacy HEAD-default
- * resolution — it needs the wire advertisement, which isn't available yet
- * at plan time.
+ * differs from the current branch, and otherwise pushes to it.
+ * `push.default=matching` is HEAD-independent (works detached) and defers
+ * entirely: it needs the wire advertisement to know which local branches
+ * the remote already carries, so it returns an unresolved `matching` plan
+ * for `finalizePushRefspecs` to expand once that advertisement — and the
+ * local branch list — are in hand.
  */
 export const planPushRefspecs = async (
-  ctx: Context,
   config: ParsedConfig,
   opts: PushRefspecOptions,
   head: HeadState,
@@ -78,7 +75,7 @@ export const planPushRefspecs = async (
     return planUpstream(config, opts, head);
   }
   if (config.push?.default === 'matching') {
-    return { kind: 'fixed', refspecs: await resolveRefspecsInput(ctx, opts.refspecs) };
+    return { kind: 'matching' };
   }
   return planSimple(config, opts, head);
 };
@@ -174,31 +171,25 @@ const planSimple = (
   return { kind: 'fixed', refspecs: [parseRefspec(`${branchFull}:${upstream}`)] };
 };
 
-const resolveRefspecsInput = async (
-  ctx: Context,
-  refspecs: ReadonlyArray<string> | undefined,
-): Promise<ReadonlyArray<ParsedRefspec>> => {
-  // An explicit empty `refspecs: []` must fall through to the HEAD-default
-  // branch — `length > 0` (not `>= 0`) makes `[]` behave like "no refspec".
-  if (refspecs !== undefined && refspecs.length > 0) {
-    return refspecs.map(parseRefspec);
-  }
-  const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw invalidOption('refspecs', 'no-default-refspec (HEAD is detached)');
-  }
-  const branch = head.target;
-  return [parseRefspec(`${branch}:${branch}`)];
-};
-
 /**
- * Resolve a plan against the remote's ref advertisement. `matching` is not
- * produced by `planPushRefspecs` yet (its refspecs depend on `adv`, so it
- * is filled in once that mode moves out of the legacy fallback) — for now
- * it returns an empty placeholder rather than being unreachable, keeping
- * this function total over `PushRefspecPlan`.
+ * Resolve a plan against the remote's ref advertisement. `explicit`/`fixed`
+ * pass through unchanged. `matching` expands to one `<b>:<b>` refspec per
+ * local `refs/heads/<b>` that the push remote also advertises under
+ * `refs/heads/` — a local branch absent from the advertisement is simply
+ * not pushed (no refusal; an empty result means nothing to push).
  */
 export const finalizePushRefspecs = (
   plan: PushRefspecPlan,
-  _adv: Advertisement,
-): ReadonlyArray<ParsedRefspec> => (plan.kind === 'matching' ? [] : plan.refspecs);
+  adv: Advertisement,
+  localHeads: ReadonlyArray<RefName>,
+): ReadonlyArray<ParsedRefspec> => {
+  if (plan.kind !== 'matching') {
+    return plan.refspecs;
+  }
+  const advertisedHeads = new Set(
+    adv.refs.filter((ref) => ref.name.startsWith(HEADS_PREFIX)).map((ref) => ref.name),
+  );
+  return localHeads
+    .filter((branch) => advertisedHeads.has(branch))
+    .map((branch) => parseRefspec(`${branch}:${branch}`));
+};

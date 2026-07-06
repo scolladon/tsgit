@@ -8,10 +8,13 @@ import {
 import type { ParsedConfig } from '../../../../../src/application/primitives/config-read.js';
 import { readHeadRaw } from '../../../../../src/application/primitives/internal/repo-state.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
+import { ObjectId, RefName } from '../../../../../src/domain/objects/object-id.js';
 import type { Advertisement } from '../../../../../src/domain/protocol/index.js';
 import { seedRepo } from '../fixtures.js';
 
 const EMPTY_ADVERTISEMENT: Advertisement = { refs: [], capabilities: [] };
+const OID_A = ObjectId.from('a'.repeat(40));
+const OID_B = ObjectId.from('b'.repeat(40));
 
 describe('Given push.default=current and an attached branch', () => {
   describe('When planPushRefspecs runs with no explicit refspec', () => {
@@ -23,7 +26,7 @@ describe('Given push.default=current and an attached branch', () => {
       const head = await readHeadRaw(ctx);
 
       // Act
-      const result = await planPushRefspecs(ctx, config, {}, head);
+      const result = await planPushRefspecs(config, {}, head);
 
       // Assert
       expect(result).toEqual({
@@ -48,7 +51,7 @@ describe('Given push.default=current and a detached HEAD', () => {
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -72,7 +75,6 @@ describe('Given explicit refspecs and push.default=current with a detached HEAD'
 
       // Act
       const result = await planPushRefspecs(
-        ctx,
         config,
         { refspecs: ['refs/heads/feature:refs/heads/feature'] },
         head,
@@ -106,7 +108,7 @@ describe('Given an attached branch, a central remote, and no branch.merge config
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -120,9 +122,9 @@ describe('Given an attached branch, a central remote, and no branch.merge config
   });
 });
 
-describe('Given an attached branch and a push.default mode other than current', () => {
+describe('Given push.default=matching and an attached branch', () => {
   describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then push.default=matching still falls back to the current-branch HEAD default', async () => {
+    it('Then it returns a deferred matching plan, without resolving any refspec yet', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});
@@ -130,22 +132,17 @@ describe('Given an attached branch and a push.default mode other than current', 
       const head = await readHeadRaw(ctx);
 
       // Act
-      const result = await planPushRefspecs(ctx, config, {}, head);
+      const result = await planPushRefspecs(config, {}, head);
 
       // Assert
-      expect(result).toEqual({
-        kind: 'fixed',
-        refspecs: [
-          { force: 'normal', src: 'refs/heads/main', dst: 'refs/heads/main', isDelete: false },
-        ],
-      });
+      expect(result).toEqual({ kind: 'matching' });
     });
   });
 });
 
-describe('Given a detached HEAD and a push.default mode other than current', () => {
+describe('Given push.default=matching and a detached HEAD', () => {
   describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it refuses with the pre-existing INVALID_OPTION error, unchanged from before', async () => {
+    it('Then it still returns a deferred matching plan, proving matching is HEAD-independent', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, { head: '3333333333333333333333333333333333333333' });
@@ -153,21 +150,10 @@ describe('Given a detached HEAD and a push.default mode other than current', () 
       const head = await readHeadRaw(ctx);
 
       // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(ctx, config, {}, head);
-      } catch (error) {
-        caught = error;
-      }
+      const result = await planPushRefspecs(config, {}, head);
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('INVALID_OPTION');
-      expect(data).toMatchObject({
-        option: 'refspecs',
-        reason: 'no-default-refspec (HEAD is detached)',
-      });
+      // Assert — no detached refusal, unlike current/upstream/simple/nothing.
+      expect(result).toEqual({ kind: 'matching' });
     });
   });
 });
@@ -184,7 +170,7 @@ describe('Given push.default=nothing and an attached branch', () => {
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -209,7 +195,7 @@ describe('Given push.default=nothing and a detached HEAD', () => {
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -233,7 +219,6 @@ describe('Given explicit refspecs and push.default=nothing', () => {
 
       // Act
       const result = await planPushRefspecs(
-        ctx,
         config,
         { refspecs: ['refs/heads/feature:refs/heads/feature'] },
         head,
@@ -267,7 +252,7 @@ describe('Given push.default=upstream and a detached HEAD', () => {
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -296,7 +281,7 @@ describe('Given push.default=upstream with a triangular remote and branch.merge 
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -326,7 +311,7 @@ describe('Given push.default=upstream with a triangular remote and no branch.mer
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -355,7 +340,7 @@ describe('Given push.default=upstream and an explicit opts.remote overriding a c
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, { remote: 'other-remote' }, head);
+        await planPushRefspecs(config, { remote: 'other-remote' }, head);
       } catch (error) {
         caught = error;
       }
@@ -384,7 +369,7 @@ describe('Given push.default=upstream with a central remote and no branch.merge 
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -411,7 +396,7 @@ describe('Given push.default=upstream with a central remote and branch.merge set
       const head = await readHeadRaw(ctx);
 
       // Act
-      const result = await planPushRefspecs(ctx, config, {}, head);
+      const result = await planPushRefspecs(config, {}, head);
 
       // Assert
       expect(result).toEqual({
@@ -436,7 +421,7 @@ describe('Given push.default=simple and a detached HEAD', () => {
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -463,7 +448,7 @@ describe('Given push.default=simple with a triangular remote and branch.merge se
       const head = await readHeadRaw(ctx);
 
       // Act
-      const result = await planPushRefspecs(ctx, config, {}, head);
+      const result = await planPushRefspecs(config, {}, head);
 
       // Assert
       expect(result).toEqual({
@@ -491,7 +476,7 @@ describe('Given push.default=simple with a central remote and no branch.merge co
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -520,7 +505,7 @@ describe('Given push.default=simple with a central remote and branch.merge set t
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(ctx, config, {}, head);
+        await planPushRefspecs(config, {}, head);
       } catch (error) {
         caught = error;
       }
@@ -547,7 +532,7 @@ describe('Given push.default=simple with a central remote and branch.merge set t
       const head = await readHeadRaw(ctx);
 
       // Act
-      const result = await planPushRefspecs(ctx, config, {}, head);
+      const result = await planPushRefspecs(config, {}, head);
 
       // Assert
       expect(result).toEqual({
@@ -572,7 +557,7 @@ describe('Given an explicit or fixed refspec plan', () => {
       };
 
       // Act
-      const result = finalizePushRefspecs(plan, EMPTY_ADVERTISEMENT);
+      const result = finalizePushRefspecs(plan, EMPTY_ADVERTISEMENT, []);
 
       // Assert
       expect(result).toBe(plan.refspecs);
@@ -581,13 +566,65 @@ describe('Given an explicit or fixed refspec plan', () => {
 });
 
 describe('Given a matching refspec plan', () => {
-  describe('When finalizePushRefspecs resolves it against an advertisement', () => {
-    it('Then it returns an empty placeholder list', () => {
+  const plan: PushRefspecPlan = { kind: 'matching' };
+  const MAIN = RefName.from('refs/heads/main');
+  const FEATURE = RefName.from('refs/heads/feature');
+
+  describe('When finalizePushRefspecs resolves it against an advertisement with only some local branches present', () => {
+    it('Then it pushes only the locally-present branches that the remote also advertises', () => {
       // Arrange
-      const plan: PushRefspecPlan = { kind: 'matching' };
+      const adv: Advertisement = {
+        capabilities: [],
+        refs: [{ name: 'refs/heads/main', id: OID_A }],
+      };
 
       // Act
-      const result = finalizePushRefspecs(plan, EMPTY_ADVERTISEMENT);
+      const result = finalizePushRefspecs(plan, adv, [MAIN, FEATURE]);
+
+      // Assert
+      expect(result).toEqual([
+        { force: 'normal', src: 'refs/heads/main', dst: 'refs/heads/main', isDelete: false },
+      ]);
+    });
+  });
+
+  describe('When finalizePushRefspecs resolves it against an advertisement carrying every local branch', () => {
+    it('Then it pushes every local branch, one refspec per name', () => {
+      // Arrange
+      const adv: Advertisement = {
+        capabilities: [],
+        refs: [
+          { name: 'refs/heads/main', id: OID_A },
+          { name: 'refs/heads/feature', id: OID_B },
+        ],
+      };
+
+      // Act
+      const result = finalizePushRefspecs(plan, adv, [MAIN, FEATURE]);
+
+      // Assert
+      expect(result).toEqual([
+        { force: 'normal', src: 'refs/heads/main', dst: 'refs/heads/main', isDelete: false },
+        {
+          force: 'normal',
+          src: 'refs/heads/feature',
+          dst: 'refs/heads/feature',
+          isDelete: false,
+        },
+      ]);
+    });
+  });
+
+  describe('When finalizePushRefspecs resolves it against an advertisement that shares no branch name with any local branch', () => {
+    it('Then it returns an empty refspec list, a no-op push', () => {
+      // Arrange
+      const adv: Advertisement = {
+        capabilities: [],
+        refs: [{ name: 'refs/heads/unrelated', id: OID_A }],
+      };
+
+      // Act
+      const result = finalizePushRefspecs(plan, adv, [MAIN, FEATURE]);
 
       // Assert
       expect(result).toEqual([]);
