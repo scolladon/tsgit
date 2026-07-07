@@ -102,10 +102,26 @@ const REPEAT_ZERO_SHORT_BASE = 3;
 const REPEAT_ZERO_LONG_EXTRA_BITS = 7;
 const REPEAT_ZERO_LONG_BASE = 11;
 
-/** LSB-first bit cursor over a byte array, starting at a given byte offset. */
+/**
+ * LSB-first bit cursor over a byte array, starting at a given byte offset.
+ *
+ * Bits are served from a plain-number accumulator (`bitBuffer`, low-bit-first;
+ * `bitCount` valid bits) instead of one bit at a time: `fill` tops the
+ * accumulator up a whole byte at a time only when the current request needs
+ * more bits than are already buffered, so a physical byte is fetched (and
+ * bounds-checked) once per 8 bits consumed rather than once per bit. Consuming
+ * bits is then a mask + shift, no per-bit function-call chain.
+ *
+ * Invariant: after every public call, `bitCount` is strictly less than
+ * `BITS_PER_BYTE` — `fill` never buffers a whole spare byte beyond what a
+ * request needs, and `readBits` always drains exactly the bits it filled for.
+ * That keeps the byte-fetch cadence (and therefore the exact physical byte at
+ * which an out-of-input error fires) identical to a bit-at-a-time reader.
+ */
 class BitReader {
   private bytePos: number;
-  private bitPos = 0;
+  private bitBuffer = 0;
+  private bitCount = 0;
 
   constructor(
     private readonly bytes: Uint8Array,
@@ -114,22 +130,26 @@ class BitReader {
     this.bytePos = offset;
   }
 
+  /** Byte index of the next bit to decode. Per the class invariant at most
+   * one byte of lookahead is ever buffered, so the logical position trails
+   * the physical read cursor by one byte whenever partial bits remain. */
   get position(): number {
-    return this.bytePos;
+    return this.bitCount > 0 ? this.bytePos - 1 : this.bytePos;
   }
 
   readBits(count: number): number {
-    let result = 0;
-    for (let i = 0; i < count; i += 1) {
-      result |= this.readBit() << i;
-    }
-    return result;
+    this.fill(count);
+    const mask = (1 << count) - 1;
+    const value = this.bitBuffer & mask;
+    this.bitBuffer >>>= count;
+    this.bitCount -= count;
+    return value;
   }
 
   alignToByte(): void {
-    if (this.bitPos === 0) return;
-    this.bitPos = 0;
-    this.bytePos += 1;
+    const partial = this.bitCount % BITS_PER_BYTE;
+    this.bitBuffer >>>= partial;
+    this.bitCount -= partial;
   }
 
   readBytes(count: number): Uint8Array {
@@ -141,24 +161,16 @@ class BitReader {
     return slice;
   }
 
-  private readBit(): number {
-    const byte = this.currentByte();
-    const bit = (byte >> this.bitPos) & 1;
-    this.advance();
-    return bit;
-  }
-
-  private currentByte(): number {
-    if (this.bytePos >= this.bytes.length) {
-      throw decompressFailed('unexpected end of deflate stream');
-    }
-    return this.bytes[this.bytePos] as number;
-  }
-
-  private advance(): void {
-    this.bitPos += 1;
-    if (this.bitPos === BITS_PER_BYTE) {
-      this.bitPos = 0;
+  /** Load whole bytes into the accumulator until it holds at least `count`
+   * bits, bounds-checking each physical byte exactly when it is needed —
+   * never speculatively past what the caller asked for. */
+  private fill(count: number): void {
+    while (this.bitCount < count) {
+      if (this.bytePos >= this.bytes.length) {
+        throw decompressFailed('unexpected end of deflate stream');
+      }
+      this.bitBuffer |= (this.bytes[this.bytePos] as number) << this.bitCount;
+      this.bitCount += BITS_PER_BYTE;
       this.bytePos += 1;
     }
   }
