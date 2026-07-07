@@ -130,11 +130,11 @@ class BitReader {
     this.bytePos = offset;
   }
 
-  /** Byte index of the next bit to decode. Per the class invariant at most
-   * one byte of lookahead is ever buffered, so the logical position trails
-   * the physical read cursor by one byte whenever partial bits remain. */
+  /** Byte index of the next bit to decode. Only read after `alignToByte`
+   * (via `verifyTrailer`), which zeroes `bitCount`, so the physical read
+   * cursor is always already byte-aligned at that point. */
   get position(): number {
-    return this.bitCount > 0 ? this.bytePos - 1 : this.bytePos;
+    return this.bytePos;
   }
 
   readBits(count: number): number {
@@ -146,10 +146,12 @@ class BitReader {
     return value;
   }
 
+  /** Discard any sub-byte remainder from the accumulator. Safe to zero both
+   * fields directly: the class invariant keeps `bitCount` below a full byte,
+   * so the discarded remainder is always the whole accumulator. */
   alignToByte(): void {
-    const partial = this.bitCount % BITS_PER_BYTE;
-    this.bitBuffer >>>= partial;
-    this.bitCount -= partial;
+    this.bitBuffer = 0;
+    this.bitCount = 0;
   }
 
   readBytes(count: number): Uint8Array {
