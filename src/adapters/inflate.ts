@@ -28,6 +28,7 @@ const BTYPE_BITS = 2;
 const BLOCK_FINAL = 1;
 const STORED_BLOCK_TYPE = 0;
 const FIXED_BLOCK_TYPE = 1;
+const DYNAMIC_BLOCK_TYPE = 2;
 
 const LENGTH_FIELD_BYTES = 2;
 const NLEN_MASK = 0xffff;
@@ -69,6 +70,30 @@ const FIXED_LITLEN_RANGES: ReadonlyArray<readonly [count: number, bits: number]>
 ];
 const FIXED_DIST_CODE_COUNT = 30; // RFC 1951: distance symbols 0-29, 5 bits each
 const FIXED_DIST_BITS = 5;
+
+/** RFC 1951 order in which code-length code lengths are transmitted. */
+const CL_ORDER: ReadonlyArray<number> = [
+  16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
+const CL_ALPHABET_SIZE = CL_ORDER.length;
+const CL_LENGTH_BITS = 3;
+
+const HLIT_EXTRA_BITS = 5;
+const HLIT_BASE = 257;
+const HDIST_EXTRA_BITS = 5;
+const HDIST_BASE = 1;
+const HCLEN_EXTRA_BITS = 4;
+const HCLEN_BASE = 4;
+
+/** RFC 1951 code-length alphabet: 0-15 are literal lengths; 16-18 are RLE runs. */
+const REPEAT_PREVIOUS_SYMBOL = 16;
+const REPEAT_PREVIOUS_EXTRA_BITS = 2;
+const REPEAT_PREVIOUS_BASE = 3;
+const REPEAT_ZERO_SHORT_SYMBOL = 17;
+const REPEAT_ZERO_SHORT_EXTRA_BITS = 3;
+const REPEAT_ZERO_SHORT_BASE = 3;
+const REPEAT_ZERO_LONG_EXTRA_BITS = 7;
+const REPEAT_ZERO_LONG_BASE = 11;
 
 /** LSB-first bit cursor over a byte array, starting at a given byte offset. */
 class BitReader {
@@ -237,7 +262,7 @@ interface HuffmanTable {
 /** Build a canonical Huffman decode table from per-symbol code lengths
  * (0 = symbol unused). Throws on an over-subscribed code (more codes of a
  * given length than the bit width allows). */
-export function buildHuffmanTable(codeLengths: ReadonlyArray<number>): HuffmanTable {
+function buildHuffmanTable(codeLengths: ReadonlyArray<number>): HuffmanTable {
   const counts = countCodeLengths(codeLengths);
   assertNotOverSubscribed(counts);
   const symbols = orderSymbolsByLength(codeLengths, counts);
@@ -330,6 +355,9 @@ function decodeLength(reader: BitReader, symbol: number): number {
 }
 
 function decodeDistance(reader: BitReader, symbol: number): number {
+  if (symbol >= DIST_BASE.length) {
+    throw decompressFailed('invalid distance code');
+  }
   const base = DIST_BASE[symbol] as number;
   const extraBits = DIST_EXTRA[symbol] as number;
   return base + reader.readBits(extraBits);
@@ -366,6 +394,92 @@ function decodeBlockBody(
   }
 }
 
+/** Canonical tables for a dynamic-Huffman block, built fresh per block. */
+interface DynamicTables {
+  readonly litLenTable: HuffmanTable;
+  readonly distTable: HuffmanTable;
+}
+
+/** Read the HCLEN code-length-code lengths (3 bits each) in RFC transmission
+ * order, scattering them back into alphabet-symbol order (0-18). */
+function readCodeLengthCodeLengths(reader: BitReader, hclen: number): number[] {
+  const lengths = new Array<number>(CL_ALPHABET_SIZE).fill(0);
+  for (let i = 0; i < hclen; i += 1) {
+    lengths[CL_ORDER[i] as number] = reader.readBits(CL_LENGTH_BITS);
+  }
+  return lengths;
+}
+
+/** Resolve one RLE repeat symbol (16/17/18) to its fill value and run count. */
+function readRepeatSpec(
+  reader: BitReader,
+  lengths: ReadonlyArray<number>,
+  symbol: number,
+): { readonly value: number; readonly count: number } {
+  if (symbol === REPEAT_PREVIOUS_SYMBOL) {
+    if (lengths.length === 0) {
+      throw decompressFailed('code-length repeat with no previous length');
+    }
+    const previous = lengths[lengths.length - 1] as number;
+    return {
+      value: previous,
+      count: reader.readBits(REPEAT_PREVIOUS_EXTRA_BITS) + REPEAT_PREVIOUS_BASE,
+    };
+  }
+  if (symbol === REPEAT_ZERO_SHORT_SYMBOL) {
+    return {
+      value: 0,
+      count: reader.readBits(REPEAT_ZERO_SHORT_EXTRA_BITS) + REPEAT_ZERO_SHORT_BASE,
+    };
+  }
+  return { value: 0, count: reader.readBits(REPEAT_ZERO_LONG_EXTRA_BITS) + REPEAT_ZERO_LONG_BASE };
+}
+
+function appendRepeatedLengths(
+  reader: BitReader,
+  lengths: number[],
+  symbol: number,
+  total: number,
+): void {
+  const { value, count } = readRepeatSpec(reader, lengths, symbol);
+  if (lengths.length + count > total) {
+    throw decompressFailed('invalid code-length run');
+  }
+  for (let i = 0; i < count; i += 1) lengths.push(value);
+}
+
+/** Decode `total` code lengths against the code-length table, expanding the
+ * RLE symbols (16 = repeat previous, 17/18 = repeat zero) as encountered. */
+function decodeCodeLengths(reader: BitReader, table: HuffmanTable, total: number): number[] {
+  const lengths: number[] = [];
+  while (lengths.length < total) {
+    const symbol = decodeSymbol(reader, table);
+    if (symbol < REPEAT_PREVIOUS_SYMBOL) {
+      lengths.push(symbol);
+      continue;
+    }
+    appendRepeatedLengths(reader, lengths, symbol, total);
+  }
+  return lengths;
+}
+
+/** Read a dynamic-Huffman block header (HLIT/HDIST/HCLEN + code-length table
+ * + RLE-expanded lit/len and distance code lengths) and build both tables. */
+function decodeDynamicHeader(reader: BitReader): DynamicTables {
+  const hlit = reader.readBits(HLIT_EXTRA_BITS) + HLIT_BASE;
+  const hdist = reader.readBits(HDIST_EXTRA_BITS) + HDIST_BASE;
+  const hclen = reader.readBits(HCLEN_EXTRA_BITS) + HCLEN_BASE;
+
+  const clLengths = readCodeLengthCodeLengths(reader, hclen);
+  const clTable = buildHuffmanTable(clLengths);
+
+  const codeLengths = decodeCodeLengths(reader, clTable, hlit + hdist);
+  return {
+    litLenTable: buildHuffmanTable(codeLengths.slice(0, hlit)),
+    distTable: buildHuffmanTable(codeLengths.slice(hlit)),
+  };
+}
+
 function decodeBlocks(reader: BitReader, output: GrowableBuffer): void {
   let isFinal = false;
   while (!isFinal) {
@@ -379,6 +493,11 @@ function decodeBlocks(reader: BitReader, output: GrowableBuffer): void {
       case FIXED_BLOCK_TYPE:
         decodeBlockBody(reader, output, FIXED_LITLEN_TABLE, FIXED_DIST_TABLE);
         break;
+      case DYNAMIC_BLOCK_TYPE: {
+        const { litLenTable, distTable } = decodeDynamicHeader(reader);
+        decodeBlockBody(reader, output, litLenTable, distTable);
+        break;
+      }
       default:
         throw decompressFailed('reserved block type');
     }
