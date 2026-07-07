@@ -1045,7 +1045,8 @@
     "litlen",
     "nlen",
     "strm",
-    "inftrees"
+    "inftrees",
+    "unget"
   ],
   "ignorePaths": [
     "node_modules",
