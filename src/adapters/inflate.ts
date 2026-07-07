@@ -360,6 +360,11 @@ function analyzeCodeLengths(counts: Uint16Array): CodeLengthSummary {
  * must always be complete. Both rules pinned against real zlib. */
 function assertComplete(summary: CodeLengthSummary, role: HuffmanTableRole): void {
   if (role === 'fixed') return;
+  // zlib inftrees.c: a table with no symbols at all (max == 0) is accepted
+  // at build time for every role -- zlib builds a table that only errors if
+  // a decode ever reads a symbol from it, so an unused table (e.g. a
+  // literal-only block's distance table) never trips this check.
+  if (summary.maxUsedLength === 0) return;
   if (summary.unusedCodes === 0) return;
   if (role !== 'code-length' && summary.maxUsedLength === 1) return;
   throw decompressFailed(incompleteCodeReason(role));

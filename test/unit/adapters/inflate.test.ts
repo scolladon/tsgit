@@ -776,6 +776,92 @@ describe('inflateZlibMember', () => {
     });
   });
 
+  describe('Given a dynamic block whose distance table is entirely unused (all-zero, empty)', () => {
+    describe('When decoding a literal-only body that never selects a distance code', () => {
+      it('Then decodes successfully instead of rejecting the table as incomplete', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+
+        const litLenLengths = new Array(HLIT_BASE).fill(0); // symbols 0..256
+        litLenLengths[0] = 1; // literal 0
+        litLenLengths[END_OF_BLOCK_SYMBOL] = 1; // Kraft-complete: two length-1 codes
+        const distLengths = [0]; // HDIST=1, single symbol has length 0 -- an all-zero table
+        writeGeneralDynamicHeader(writer, litLenLengths, distLengths);
+
+        const litLenCodes = buildCanonicalCodes(litLenLengths);
+        writer.writeCode(litLenCodes.get(0) as string); // literal 0
+        writer.writeCode(litLenCodes.get(END_OF_BLOCK_SYMBOL) as string);
+
+        const payload = new Uint8Array([0]);
+        const member = new Uint8Array([
+          cmf,
+          flg,
+          ...writer.toBytes(),
+          ...adlerTrailerBytes(payload),
+        ]);
+
+        // Act
+        const result = sut(member, 0);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
+  describe('Given a dynamic block whose literal/length table is entirely unused (all-zero, empty)', () => {
+    describe('When decoding reaches the first block-body symbol', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-huffman-code reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+
+        const litLenLengths = new Array(HLIT_BASE).fill(0); // all symbols unused, including EOB
+        const distLengths = [0]; // also all-zero; never reached
+        writeGeneralDynamicHeader(writer, litLenLengths, distLengths);
+        writer.writeField(0, MAX_HUFFMAN_CODE_BITS + 1); // runway: enough bits for the failed walk
+
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+      });
+    });
+  });
+
+  describe('Given a dynamic code-length (CL) table that is entirely unused (all-zero, empty)', () => {
+    describe('When decoding reaches the first code-length symbol', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-huffman-code reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+        writer.writeField(0, HLIT_FIELD_BITS); // HLIT = 257
+        writer.writeField(0, HDIST_FIELD_BITS); // HDIST = 1
+        writer.writeField(0, HCLEN_FIELD_BITS); // HCLEN = 4 (covers CL_ORDER[0..3])
+        for (let position = 0; position < HCLEN_MINIMUM; position += 1) {
+          writer.writeField(0, CL_LENGTH_FIELD_BITS); // every CL-alphabet value unused
+        }
+        writer.writeField(0, MAX_HUFFMAN_CODE_BITS + 1); // runway: enough bits for the failed walk
+
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+      });
+    });
+  });
+
   describe('Given a dynamic code-length (CL) table that is incomplete', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-code-lengths-set reason', () => {
