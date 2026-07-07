@@ -1,12 +1,11 @@
 /**
  * Pure-JS adler32 checksum — algorithm defined in RFC 1950.
  *
- * Used to validate the true end of a zlib stream: the 4 bytes that trail the
- * compressed payload are a big-endian uint32 adler32 of the uncompressed data.
- * Checking this lets the progressive-prefix `streamInflate` scan accept a
- * boundary only when the runtime's DecompressionStream consumed the complete
- * stream (including the checksum), not an early truncated prefix that some
- * runtimes (Deno, Workers) accept prematurely.
+ * A zlib member's compressed payload is followed by a big-endian uint32
+ * adler32 of the uncompressed data. `inflateZlibMember` recomputes it over
+ * the fully decoded output and rejects the member on mismatch, catching
+ * corruption that DEFLATE's own block structure wouldn't (bytes that still
+ * parse as valid blocks but decode to the wrong data).
  */
 
 const ADLER_MOD = 65521;

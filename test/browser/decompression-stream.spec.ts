@@ -77,4 +77,63 @@ test.describe('BrowserCompressor', () => {
     expect(error.name).toBe('TsgitError');
     expect(error.code).toBe('DECOMPRESS_FAILED');
   });
+
+  test('Given a member whose compressed form exceeds 64 KiB concatenated with a second, When streamInflate, Then returns exact output and bytesConsumed for each', async ({
+    readyPage,
+  }) => {
+    const secondPayload = 'second stream trailing a large member';
+    const result = await readyPage.evaluate(async (second: string) => {
+      type StreamInflateResult = { output: Uint8Array; bytesConsumed: number };
+      type Compressor = {
+        deflate: (b: Uint8Array) => Promise<Uint8Array>;
+        streamInflate: (b: Uint8Array, offset: number) => Promise<StreamInflateResult>;
+      };
+      const tsgit = (
+        window as unknown as {
+          __tsgit: { adapters: { BrowserCompressor: new () => Compressor } };
+        }
+      ).__tsgit;
+      const compressor = new tsgit.adapters.BrowserCompressor();
+      const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean =>
+        a.length === b.length && a.every((byte, i) => byte === b[i]);
+      // crypto.getRandomValues rejects any single call over 65536 bytes
+      // (Web Crypto spec quota), so fill in chunks to reach the target size.
+      const fillRandom = (size: number): Uint8Array => {
+        const CRYPTO_QUOTA = 65536;
+        const out = new Uint8Array(size);
+        for (let start = 0; start < size; start += CRYPTO_QUOTA) {
+          crypto.getRandomValues(out.subarray(start, Math.min(start + CRYPTO_QUOTA, size)));
+        }
+        return out;
+      };
+
+      // Random data is poorly compressible, so deflating 100 KiB of it yields
+      // a compressed member past the old 64 KiB browser-adapter cap.
+      const data = fillRandom(100 * 1024);
+      const deflated = await compressor.deflate(data);
+      const secondBytes = new TextEncoder().encode(second);
+      const deflatedSecond = await compressor.deflate(secondBytes);
+      const combined = new Uint8Array(deflated.length + deflatedSecond.length);
+      combined.set(deflated, 0);
+      combined.set(deflatedSecond, deflated.length);
+
+      const first = await compressor.streamInflate(combined, 0);
+      const trailing = await compressor.streamInflate(combined, first.bytesConsumed);
+
+      return {
+        deflatedLength: deflated.length,
+        firstBytesConsumed: first.bytesConsumed,
+        firstOutputMatches: bytesEqual(first.output, data),
+        deflatedSecondLength: deflatedSecond.length,
+        trailingBytesConsumed: trailing.bytesConsumed,
+        trailingOutputMatches: bytesEqual(trailing.output, secondBytes),
+      };
+    }, secondPayload);
+
+    expect(result.deflatedLength).toBeGreaterThan(64 * 1024);
+    expect(result.firstBytesConsumed).toBe(result.deflatedLength);
+    expect(result.firstOutputMatches).toBe(true);
+    expect(result.trailingBytesConsumed).toBe(result.deflatedSecondLength);
+    expect(result.trailingOutputMatches).toBe(true);
+  });
 });

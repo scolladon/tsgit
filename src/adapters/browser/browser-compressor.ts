@@ -1,14 +1,7 @@
 /// <reference lib="dom" />
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
-import { adler32 } from '../adler32.js';
-
-/**
- * Safety cap on input size for the progressive-prefix streamInflate scan.
- * O(n²) behavior makes this adapter unsuitable for production-sized packs;
- * fail loudly so a misuse with a real pack file does not stall the browser.
- */
-const BROWSER_STREAM_INFLATE_MAX_INPUT = 64 * 1024;
+import { inflateZlibMember } from '../inflate.js';
 
 export class BrowserCompressor implements Compressor {
   async deflate(data: Uint8Array, _level?: number): Promise<Uint8Array> {
@@ -60,40 +53,11 @@ export class BrowserCompressor implements Compressor {
     }
   }
 
+  // The zero-dependency decoder is synchronous and whole-member, and already
+  // maps every failure to `decompressFailed` — the rejected promise here
+  // carries that typed error as-is, no re-wrap needed.
   async streamInflate(bytes: Uint8Array, offset: number): Promise<InflateStreamResult> {
-    // Same progressive-prefix approach as the Memory adapter; Web Streams
-    // DecompressionStream doesn't expose consumed-bytes metadata.
-    const slice = bytes.subarray(offset);
-    if (slice.length > BROWSER_STREAM_INFLATE_MAX_INPUT) {
-      throw decompressFailed(
-        `BrowserCompressor.streamInflate input exceeds ${BROWSER_STREAM_INFLATE_MAX_INPUT} byte safety cap`,
-      );
-    }
-    for (let end = 1; end <= slice.length; end += 1) {
-      const attempt = slice.subarray(0, end);
-      try {
-        const ds = new DecompressionStream('deflate');
-        const pumped = new Blob([attempt as BlobPart])
-          .stream()
-          .pipeTo(ds.writable)
-          .catch(() => {});
-        const output = new Uint8Array(await new Response(ds.readable).arrayBuffer());
-        await pumped;
-        // A zlib stream ends with a 4-byte big-endian adler32 of the
-        // uncompressed data (RFC 1950). Some runtimes (Deno, Workers) accept a
-        // truncated prefix before those 4 bytes; guard against that by only
-        // accepting `end` when the trailing 4 bytes match adler32(output).
-        if (
-          end >= 4 &&
-          new DataView(slice.buffer, slice.byteOffset + end - 4, 4).getUint32(0) === adler32(output)
-        ) {
-          return { output, bytesConsumed: end };
-        }
-      } catch {
-        // Not yet complete — grow.
-      }
-    }
-    throw decompressFailed('no valid zlib stream at offset');
+    return inflateZlibMember(bytes, offset);
   }
 
   createInflateStream(): TransformStream<Uint8Array, Uint8Array> {
