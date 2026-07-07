@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import { adler32 } from '../../../src/adapters/adler32.js';
 import { inflateZlibMember } from '../../../src/adapters/inflate.js';
 import { TsgitError } from '../../../src/domain/index.js';
 
@@ -14,6 +15,17 @@ const BTYPE_BIT_OFFSET = 1;
 const BTYPE_MASK = 0b11;
 const FIXED_BLOCK_TYPE = 1;
 const DYNAMIC_BLOCK_TYPE = 2;
+
+/** RFC 1951: DEFLATE Huffman codes are at most 15 bits long. */
+const MAX_HUFFMAN_CODE_BITS = 15;
+const END_OF_BLOCK_SYMBOL = 256;
+/** Number of distinct code-length values (0-15) a CL-alphabet symbol can
+ * represent directly, without resorting to the 16/17/18 RLE symbols. */
+const CL_LITERAL_VALUE_COUNT = 16;
+/** Bits needed to uniquely address `CL_LITERAL_VALUE_COUNT` values — also the
+ * uniform code length assigned to every used CL-alphabet symbol below, which
+ * makes the CL Huffman tree a full (hence Kraft-complete) 16-leaf tree. */
+const CL_UNIFORM_CODE_BITS = 4;
 
 /** RFC 1951 order in which code-length code lengths are transmitted. */
 const CL_ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
@@ -115,6 +127,98 @@ function writeDynamicHeader(
   for (const length of [...litLenLengths, ...distLengths]) {
     writer.writeCode(length === 0 ? '0' : '1');
   }
+}
+
+/**
+ * Write a dynamic-Huffman header capable of expressing ANY per-symbol code
+ * length 0-15 (unlike `writeDynamicHeader`'s 0/1-only shortcut), by giving
+ * every CL-alphabet value 0-15 a uniform 4-bit code (a full, hence always
+ * Kraft-complete, 16-leaf binary tree) and transmitting every lit/len + dist
+ * code length explicitly — no RLE.
+ */
+function writeGeneralDynamicHeader(
+  writer: TestBitWriter,
+  litLenLengths: ReadonlyArray<number>,
+  distLengths: ReadonlyArray<number>,
+): void {
+  writer.writeField(litLenLengths.length - HLIT_BASE, HLIT_FIELD_BITS);
+  writer.writeField(distLengths.length - HDIST_BASE, HDIST_FIELD_BITS);
+  writer.writeField(CL_ORDER.length - HCLEN_MINIMUM, HCLEN_FIELD_BITS); // HCLEN = 19 (every position)
+
+  for (const symbol of CL_ORDER) {
+    const bits = symbol < CL_LITERAL_VALUE_COUNT ? CL_UNIFORM_CODE_BITS : 0;
+    writer.writeField(bits, CL_LENGTH_FIELD_BITS);
+  }
+
+  for (const length of [...litLenLengths, ...distLengths]) {
+    writer.writeCode(length.toString(2).padStart(CL_UNIFORM_CODE_BITS, '0'));
+  }
+}
+
+/** A Kraft-complete lit/len code-length distribution reaching the maximum
+ * 15-bit code depth: one code at each length 1..14 (the end-of-block symbol
+ * takes the length-1 slot) plus two codes at length 15 — RFC 1951's deepest
+ * legal code, forced onto symbol `FORCED_DEEP_SYMBOL`. */
+const FORCED_DEEP_SYMBOL = 13;
+
+function buildFifteenBitDeepLitLenLengths(): number[] {
+  const lengths = new Array(HLIT_BASE).fill(0) as number[]; // symbols 0..256
+  lengths[END_OF_BLOCK_SYMBOL] = 1;
+  for (let symbol = 0; symbol < FORCED_DEEP_SYMBOL; symbol += 1) {
+    lengths[symbol] = symbol + 2; // symbols 0..12 take lengths 2..14
+  }
+  lengths[FORCED_DEEP_SYMBOL] = MAX_HUFFMAN_CODE_BITS;
+  lengths[FORCED_DEEP_SYMBOL + 1] = MAX_HUFFMAN_CODE_BITS;
+  return lengths;
+}
+
+/**
+ * Canonical Huffman code words (RFC 1951 3.2.2) for a set of per-symbol code
+ * lengths (0 = unused): the same (length, symbol)-ordered assignment
+ * `buildHuffmanTable` decodes against. Returns each used symbol's MSB-first
+ * bit string, so tests can hand-craft payload bits for a dynamic block's
+ * lit/len or distance table.
+ */
+function buildCanonicalCodes(codeLengths: ReadonlyArray<number>): ReadonlyMap<number, string> {
+  const maxLength = Math.max(0, ...codeLengths);
+  const countByLength = new Array<number>(maxLength + 1).fill(0);
+  for (const length of codeLengths) {
+    if (length > 0) countByLength[length] = (countByLength[length] as number) + 1;
+  }
+
+  const nextCodeByLength = new Array<number>(maxLength + 1).fill(0);
+  let code = 0;
+  for (let length = 1; length <= maxLength; length += 1) {
+    code = (code + (countByLength[length - 1] as number)) << 1;
+    nextCodeByLength[length] = code;
+  }
+
+  const codes = new Map<number, string>();
+  codeLengths.forEach((length, symbol) => {
+    if (length === 0) return;
+    const value = nextCodeByLength[length] as number;
+    nextCodeByLength[length] = value + 1;
+    codes.set(symbol, value.toString(2).padStart(length, '0'));
+  });
+  return codes;
+}
+
+const ADLER_TRAILER_BYTES = 4;
+const ADLER_BYTE_SHIFT = 8;
+
+/** Big-endian adler32 trailer bytes for a decoded payload, matching RFC 1950
+ * framing — used to hand-craft members that must decode successfully. */
+function adlerTrailerBytes(payload: Uint8Array): number[] {
+  const value = adler32(payload);
+  const bytes: number[] = [];
+  for (
+    let shift = (ADLER_TRAILER_BYTES - 1) * ADLER_BYTE_SHIFT;
+    shift >= 0;
+    shift -= ADLER_BYTE_SHIFT
+  ) {
+    bytes.push((value >>> shift) & 0xff);
+  }
+  return bytes;
 }
 
 function assertDecompressFailed(act: () => unknown, expectedReason: string): void {
@@ -623,6 +727,93 @@ describe('inflateZlibMember', () => {
 
         // Act
         const result = sut(member, 0, payloadLength);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
+  describe('Given a dynamic-Huffman lit/len table that is Kraft-complete down to the 15-bit code depth', () => {
+    describe('When decoding a payload whose only literal uses the forced 15-bit code', () => {
+      it('Then round-trips with byte-exact bytesConsumed', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+
+        const litLenLengths = buildFifteenBitDeepLitLenLengths();
+        const distLengths = [1]; // degenerate single-symbol table (unused: no back-references)
+        writeGeneralDynamicHeader(writer, litLenLengths, distLengths);
+
+        const codes = buildCanonicalCodes(litLenLengths);
+        writer.writeCode(codes.get(FORCED_DEEP_SYMBOL) as string);
+        writer.writeCode(codes.get(END_OF_BLOCK_SYMBOL) as string);
+
+        const payload = new Uint8Array([FORCED_DEEP_SYMBOL]);
+        const member = new Uint8Array([
+          cmf,
+          flg,
+          ...writer.toBytes(),
+          ...adlerTrailerBytes(payload),
+        ]);
+
+        // Act
+        const result = sut(member, 0);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
+  describe('Given a fixed-Huffman block truncated before any body bits are written', () => {
+    describe('When decoding runs off the end mid-symbol', () => {
+      it('Then throws DECOMPRESS_FAILED with the unexpected-end reason', () => {
+        // Arrange — only the 3-bit block header is present; decodeSymbol reads
+        // past it into padding zeros and then off the end of the single byte,
+        // without ever reaching a stored-length/adler trailer readBytes call.
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(FIXED_BLOCK_TYPE, 2); // BTYPE
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'unexpected end of deflate stream');
+      });
+    });
+  });
+
+  describe('Given a fixed-Huffman back-reference whose distance exactly equals the bytes emitted so far', () => {
+    describe('When decoding', () => {
+      it('Then decodes successfully (the boundary is valid, not exceeded)', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(FIXED_BLOCK_TYPE, 2); // BTYPE
+        writer.writeCode('00110000'); // literal 0 (RFC 1951 range 0-143, 8 bits)
+        writer.writeCode('0000001'); // length symbol 257 (base 3, 0 extra bits)
+        writer.writeCode('00000'); // distance symbol 0 (base 1, 0 extra bits) == length emitted so far
+        writer.writeCode('0000000'); // end-of-block (symbol 256)
+
+        const payload = new Uint8Array([0, 0, 0, 0]);
+        const member = new Uint8Array([
+          cmf,
+          flg,
+          ...writer.toBytes(),
+          ...adlerTrailerBytes(payload),
+        ]);
+
+        // Act
+        const result = sut(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));

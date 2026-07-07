@@ -121,7 +121,11 @@ describe('MemoryCompressor', () => {
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          if (data.code === 'DECOMPRESS_FAILED') {
+            expect(data.reason).toBe('unsupported compression method');
+          }
         });
       });
     });
