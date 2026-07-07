@@ -1015,6 +1015,28 @@ describe('inflateZlibMember', () => {
     });
   });
 
+  describe('Given a fixed-Huffman block truncated exactly where a back-reference distance code begins', () => {
+    describe('When decoding runs off the end mid-symbol with no output emitted yet', () => {
+      it('Then throws DECOMPRESS_FAILED with the unexpected-end reason', () => {
+        // Arrange — header + length symbol 284 (8-bit code, 5 extra bits) fill
+        // exactly 16 bits (2 whole bytes), so the member ends precisely where
+        // the distance symbol's first bit would be read: no back-reference is
+        // ever assembled, and no output has been emitted yet.
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(FIXED_BLOCK_TYPE, 2); // BTYPE
+        writer.writeCode('11000100'); // length symbol 284 (base 227, 5 extra bits)
+        writer.writeField(0, 5); // extra bits -> length = 227
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'unexpected end of deflate stream');
+      });
+    });
+  });
+
   describe('Given a fixed-Huffman back-reference whose distance exactly equals the bytes emitted so far', () => {
     describe('When decoding', () => {
       it('Then decodes successfully (the boundary is valid, not exceeded)', () => {
