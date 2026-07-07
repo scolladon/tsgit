@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../src/domain/index.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
@@ -52,6 +53,28 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       const r1 = await sut.streamInflate(combined, 0);
       expect(r1.output).toEqual(first);
       expect(r1.bytesConsumed).toBe(defFirst.length);
+
+      const r2 = await sut.streamInflate(combined, r1.bytesConsumed);
+      expect(r2.output).toEqual(second);
+      expect(r2.bytesConsumed).toBe(defSecond.length);
+    });
+
+    it('Given a member whose compressed form exceeds 64 KiB, When streamInflate, Then returns exact output and bytesConsumed', async () => {
+      const sut = await createSut();
+      // Random data is poorly compressible, so deflating 100 KiB of it yields
+      // a compressed member past the old 64 KiB memory-adapter cap.
+      const data = new Uint8Array(randomBytes(100 * 1024));
+      const deflated = await sut.deflate(data);
+      expect(deflated.length).toBeGreaterThan(64 * 1024);
+      const second = new TextEncoder().encode('second stream trailing a large member');
+      const defSecond = await sut.deflate(second);
+      const combined = new Uint8Array(deflated.length + defSecond.length);
+      combined.set(deflated, 0);
+      combined.set(defSecond, deflated.length);
+
+      const r1 = await sut.streamInflate(combined, 0);
+      expect(Array.from(r1.output)).toEqual(Array.from(data));
+      expect(r1.bytesConsumed).toBe(deflated.length);
 
       const r2 = await sut.streamInflate(combined, r1.bytesConsumed);
       expect(r2.output).toEqual(second);

@@ -1,13 +1,6 @@
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
-import { adler32 } from '../adler32.js';
-
-/**
- * Safety cap on input size for the progressive-prefix streamInflate scan.
- * O(n²) behavior makes inputs above a few KB impractical — guard loudly so a
- * test accidentally using this adapter for a real packfile fails fast.
- */
-const MEMORY_STREAM_INFLATE_MAX_INPUT = 64 * 1024;
+import { inflateZlibMember } from '../inflate.js';
 
 export class MemoryCompressor implements Compressor {
   constructor() {
@@ -46,38 +39,11 @@ export class MemoryCompressor implements Compressor {
     }
   };
 
-  streamInflate = async (bytes: Uint8Array, offset: number): Promise<InflateStreamResult> => {
-    // DecompressionStream in Web Streams doesn't expose "bytes consumed" when
-    // the stream ends mid-input. Feed progressively-larger prefixes until one
-    // decompresses cleanly — that's the zlib terminator. O(n²) in the
-    // compressed length, so this adapter is explicitly bounded to small
-    // test-sized packs. Use NodeCompressor for production workloads.
-    const slice = bytes.subarray(offset);
-    if (slice.length > MEMORY_STREAM_INFLATE_MAX_INPUT) {
-      throw decompressFailed(
-        `MemoryCompressor.streamInflate input exceeds ${MEMORY_STREAM_INFLATE_MAX_INPUT} byte safety cap; use NodeCompressor for real pack files`,
-      );
-    }
-    for (let end = 1; end <= slice.length; end += 1) {
-      const attempt = slice.subarray(0, end);
-      try {
-        const output = await runTransform(attempt, new DecompressionStream('deflate'));
-        // A zlib stream ends with a 4-byte big-endian adler32 of the
-        // uncompressed data (RFC 1950). Some runtimes (Deno, Workers) accept a
-        // truncated prefix before those 4 bytes; guard against that by only
-        // accepting `end` when the trailing 4 bytes match adler32(output).
-        if (
-          end >= 4 &&
-          new DataView(slice.buffer, slice.byteOffset + end - 4, 4).getUint32(0) === adler32(output)
-        ) {
-          return { output, bytesConsumed: end };
-        }
-      } catch {
-        // Not yet a complete zlib stream — keep growing.
-      }
-    }
-    throw decompressFailed('no valid zlib stream at offset');
-  };
+  // The zero-dependency decoder is synchronous and whole-member, and already
+  // maps every failure to `decompressFailed` — the rejected promise here
+  // carries that typed error as-is, no re-wrap needed.
+  streamInflate = async (bytes: Uint8Array, offset: number): Promise<InflateStreamResult> =>
+    inflateZlibMember(bytes, offset);
 
   createInflateStream = (): TransformStream<Uint8Array, Uint8Array> => {
     return new DecompressionStream('deflate') as unknown as TransformStream<Uint8Array, Uint8Array>;

@@ -103,56 +103,11 @@ describe('MemoryCompressor', () => {
       });
     });
 
-    describe('Given streamInflate input above the safety cap', () => {
-      describe('When called', () => {
-        it('Then throws DECOMPRESS_FAILED with a cap-exceeded message', async () => {
-          // Arrange
-          // Memory adapter uses an O(n^2) progressive-prefix scan; the cap guards
-          // against accidentally using this adapter for real packfiles.
-          const sut = new MemoryCompressor();
-          const oversized = new Uint8Array(64 * 1024 + 1);
-          try {
-            await sut.streamInflate(oversized, 0);
-            // Assert
-            expect.unreachable();
-          } catch (err) {
-            expect(err).toBeInstanceOf(TsgitError);
-            const data = (err as TsgitError).data;
-            expect(data.code).toBe('DECOMPRESS_FAILED');
-            if (data.code === 'DECOMPRESS_FAILED') {
-              expect(data.reason).toMatch(/safety cap/);
-            }
-          }
-        });
-      });
-    });
-
-    describe('Given streamInflate input exactly at the safety cap with a valid prefix', () => {
-      describe('When called', () => {
-        it('Then it inflates without hitting the cap', async () => {
-          // Arrange — a 64KiB buffer (length === cap, not above it) whose first
-          // bytes are a real deflate stream; the cap guard uses `>`, so an
-          // exactly-cap input must NOT throw. A `>=` mutant would reject it.
-          const sut = new MemoryCompressor();
-          const payload = await sut.deflate(new Uint8Array([7, 8, 9]));
-          const buffer = new Uint8Array(64 * 1024);
-          buffer.set(payload, 0);
-
-          // Act
-          const result = await sut.streamInflate(buffer, 0);
-
-          // Assert
-          expect(Array.from(result.output)).toEqual([7, 8, 9]);
-          expect(result.bytesConsumed).toBe(payload.length);
-        });
-      });
-    });
-
-    describe('Given bytes that never form a valid zlib stream within the cap', () => {
+    describe('Given bytes that never form a valid zlib stream', () => {
       describe('When streamInflate', () => {
-        it('Then throws DECOMPRESS_FAILED with the no-valid-stream reason', async () => {
-          // Arrange — small all-zero input: no prefix decompresses cleanly, so the
-          // loop exhausts and the terminal throw fires with its exact message.
+        it('Then throws DECOMPRESS_FAILED', async () => {
+          // Arrange — all-zero input has a valid-looking CMF/FLG check but an
+          // unsupported compression method, so the decoder rejects it upfront.
           const sut = new MemoryCompressor();
           const garbage = new Uint8Array([0, 0, 0, 0]);
 
@@ -166,136 +121,7 @@ describe('MemoryCompressor', () => {
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('DECOMPRESS_FAILED');
-          if (data.code === 'DECOMPRESS_FAILED') {
-            expect(data.reason).toBe('no valid zlib stream at offset');
-          }
-        });
-      });
-    });
-
-    describe('Given a buffer where DecompressionStream succeeds on a truncated prefix (simulating Deno/Workers)', () => {
-      describe('When streamInflate', () => {
-        it('Then returns bytesConsumed at the adler32-validated boundary, not the truncated boundary', async () => {
-          // Arrange
-          // Build a real zlib stream so we know the real boundary and the adler32.
-          const sut = new MemoryCompressor();
-          const payload = new Uint8Array([1, 2, 3]);
-          const fullStream = await sut.deflate(payload);
-          // A zlib stream ends with 4 adler32 bytes. Deno/Workers accept the
-          // stream without those trailing bytes ("truncated" at fullStream.length-4).
-          const truncatedLen = fullStream.length - 4;
-
-          // Mock DecompressionStream to also succeed at the truncated length (≥ truncatedLen),
-          // simulating Deno/Workers behaviour. Under this mock the old code would return
-          // bytesConsumed = truncatedLen; the adler32-guarded code returns fullStream.length.
-          const capturedPayload = payload;
-          const capturedTruncLen = truncatedLen;
-          globals.DecompressionStream = class MockDenoDecompressionStream {
-            private inner: TransformStream<Uint8Array, Uint8Array>;
-            constructor(_format: string) {
-              const minLen = capturedTruncLen;
-              const out = capturedPayload;
-              this.inner = new TransformStream<Uint8Array, Uint8Array>({
-                transform(chunk, controller) {
-                  if (chunk.length < minLen) {
-                    controller.error(new Error('incomplete zlib stream'));
-                  } else {
-                    controller.enqueue(out);
-                  }
-                },
-              });
-            }
-            get readable() {
-              return this.inner.readable;
-            }
-            get writable() {
-              return this.inner.writable;
-            }
-          };
-
-          // Act
-          const result = await sut.streamInflate(fullStream, 0);
-
-          // Assert — must reach the adler32-validated boundary, not the early one
-          expect(result.bytesConsumed).toBe(fullStream.length);
-          expect(Array.from(result.output)).toEqual([1, 2, 3]);
-        });
-      });
-    });
-
-    describe('Given a DecompressionStream whose writable.close() rejects on incomplete data (simulating workerd)', () => {
-      describe('When streamInflate', () => {
-        it('Then produces no unhandled rejection and returns the adler32-validated bytesConsumed', async () => {
-          // Arrange — build a real zlib stream so we have a known valid boundary
-          const sut = new MemoryCompressor();
-          const payload = new Uint8Array([4, 5, 6]);
-          const fullStream = await sut.deflate(payload);
-          const streamLen = fullStream.length;
-
-          // workerd rejects writable.close() on incomplete data; simulate it so
-          // the mock only succeeds when it receives the full stream (length = streamLen).
-          const capturedPayload = payload;
-          const capturedStreamLen = streamLen;
-          globals.DecompressionStream = class WorkerdLikeDecompressionStream {
-            private readonly _readable: ReadableStream<Uint8Array>;
-            private readonly _writable: WritableStream<Uint8Array>;
-            constructor(_format: string) {
-              const out = capturedPayload;
-              const minLen = capturedStreamLen;
-              let totalLen = 0;
-              let readableCtrl!: ReadableStreamDefaultController<Uint8Array>;
-              this._readable = new ReadableStream<Uint8Array>({
-                start(ctrl) {
-                  readableCtrl = ctrl;
-                },
-              });
-              this._writable = new WritableStream<Uint8Array>({
-                write(chunk) {
-                  totalLen += chunk.length;
-                },
-                close(): Promise<void> {
-                  if (totalLen < minLen) {
-                    const err = new TypeError(
-                      'Called close() on a decompression stream with incomplete data',
-                    );
-                    readableCtrl.error(err);
-                    // Reject the close() promise — this is the uncaught rejection
-                    // workerd produces when using pipeThrough (writable side is hidden).
-                    return Promise.reject(err);
-                  }
-                  readableCtrl.enqueue(out);
-                  readableCtrl.close();
-                  return Promise.resolve();
-                },
-              });
-            }
-            get readable() {
-              return this._readable;
-            }
-            get writable() {
-              return this._writable;
-            }
-          };
-
-          // Track any unhandled rejections that fire during the call
-          const unhandled: unknown[] = [];
-          const onUnhandled = (reason: unknown) => {
-            unhandled.push(reason);
-          };
-          process.on('unhandledRejection', onUnhandled);
-
-          // Act
-          const result = await sut.streamInflate(fullStream, 0);
-          // Yield to the microtask queue so any suppressed-but-leaked rejections surface
-          await Promise.resolve();
-
-          // Assert — correct result, zero unhandled rejections
-          process.off('unhandledRejection', onUnhandled);
-          expect(result.bytesConsumed).toBe(fullStream.length);
-          expect(Array.from(result.output)).toEqual([4, 5, 6]);
-          expect(unhandled).toHaveLength(0);
+          expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
         });
       });
     });
