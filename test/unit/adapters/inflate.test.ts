@@ -633,6 +633,51 @@ describe('inflateZlibMember', () => {
     });
   });
 
+  describe('Given a dynamic code-length run whose final repeat lands exactly on the declared HLIT+HDIST count', () => {
+    describe('When decoding', () => {
+      it('Then accepts the boundary-exact run instead of rejecting it as an overflow', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+        writer.writeField(0, HLIT_FIELD_BITS); // HLIT = 257
+        writer.writeField(0, HDIST_FIELD_BITS); // HDIST = 1 (declared total = 258)
+        writer.writeField(0, HCLEN_FIELD_BITS); // HCLEN = 4 (covers CL_ORDER[0..3])
+        // Same CL table as the overflow test above: two length-1 codes
+        // (symbols 0 and 18), Kraft-complete. Ascending by symbol value,
+        // symbol 0 gets '0' and symbol 18 gets '1'.
+        for (let position = 0; position < HCLEN_MINIMUM; position += 1) {
+          const isUsed =
+            position === CL_SYMBOL_EIGHTEEN_POSITION || position === CL_SYMBOL_ZERO_POSITION;
+          writer.writeField(isUsed ? 1 : 0, CL_LENGTH_FIELD_BITS);
+        }
+        const maxRepeatExtra = (1 << REPEAT_ZERO_LONG_EXTRA_BITS) - 1; // repeat = 138 (max)
+        writer.writeCode('1'); // CL symbol 18 (repeat-zero-long): repeat 138
+        writer.writeField(maxRepeatExtra, REPEAT_ZERO_LONG_EXTRA_BITS);
+        // Second run's count (120) is picked so 138 + 120 lands EXACTLY on the
+        // declared total (258) -- the boundary the overflow check must accept.
+        const secondRepeatCount = 120;
+        const repeatZeroLongBase = 11; // REPEAT_ZERO_LONG_BASE
+        writer.writeCode('1'); // CL symbol 18 again: repeat 120 more (138 + 120 === 258)
+        writer.writeField(secondRepeatCount - repeatZeroLongBase, REPEAT_ZERO_LONG_EXTRA_BITS);
+        // Both outer tables end up entirely unused (all-zero) -- decoding
+        // reaches the first block-body symbol and fails there. A runway of
+        // zero bits lets that failed Huffman walk run to completion instead
+        // of hitting end-of-stream first (mirrors the "entirely unused
+        // literal/length table" test above).
+        writer.writeField(0, MAX_HUFFMAN_CODE_BITS + 1);
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        // 'invalid code-length run' here would mean the boundary-exact repeat
+        // was wrongly rejected as an overflow.
+        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+      });
+    });
+  });
+
   describe('Given a dynamic block whose distance table declares a reserved distance code (30)', () => {
     describe('When decoding a length/distance pair that selects it', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-distance-code reason', () => {
@@ -858,6 +903,35 @@ describe('inflateZlibMember', () => {
 
         // Act & Assert
         assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+      });
+    });
+  });
+
+  describe('Given a dynamic code-length (CL) table that has exactly one used code (degenerate)', () => {
+    describe('When decoding', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-code-lengths-set reason (no degenerate exception for the CL table itself)', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+        writer.writeField(0, HLIT_FIELD_BITS); // HLIT = 257
+        writer.writeField(0, HDIST_FIELD_BITS); // HDIST = 1
+        writer.writeField(0, HCLEN_FIELD_BITS); // HCLEN = 4 (covers CL_ORDER[0..3])
+        // Only CL-alphabet symbol 0 gets a length (1); symbols 16, 17, 18 stay
+        // unused. maxUsedLength === 1 with a single used code (Kraft = 1/2,
+        // incomplete). The degenerate-single-code exception exists for the
+        // OUTER (literal/length, distance) tables -- never for the
+        // code-length table itself, which must always be Kraft-complete.
+        for (let position = 0; position < HCLEN_MINIMUM; position += 1) {
+          const isUsed = position === CL_SYMBOL_ZERO_POSITION;
+          writer.writeField(isUsed ? 1 : 0, CL_LENGTH_FIELD_BITS);
+        }
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'invalid code lengths set');
       });
     });
   });

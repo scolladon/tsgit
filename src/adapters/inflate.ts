@@ -229,6 +229,10 @@ class BitReader {
    * reported via `PeekResult.availableBits` and raised by callers that
    * require it (`readBits`), not by this fill step itself. */
   private fill(count: number): void {
+    // equivalent-mutant: bitCount<=count would fetch one extra byte at the
+    // bitCount===count boundary, but every reader masks to the low `count`
+    // bits and the paired dropBits->ungetSpareBytes gives the extra byte
+    // back, so bytePos/bitBuffer converge identically either way.
     while (this.bitCount < count && this.bytePos < this.bytes.length) {
       this.bitBuffer |= (this.bytes[this.bytePos] as number) << this.bitCount;
       this.bitCount += BITS_PER_BYTE;
@@ -243,6 +247,9 @@ class BitReader {
    * later out-of-input error fires) matches a bit-at-a-time reader. */
   private ungetSpareBytes(): void {
     const spareBytes = Math.floor(this.bitCount / BITS_PER_BYTE);
+    // equivalent-mutant: when spareBytes===0 the three statements below are
+    // no-ops (subtract 0, mask to the same already-zero-padded width,
+    // subtract 0), so skipping this early return changes nothing.
     if (spareBytes === 0) return;
     this.bitCount -= spareBytes * BITS_PER_BYTE;
     this.bitBuffer &= (1 << this.bitCount) - 1;
@@ -287,6 +294,11 @@ class GrowableBuffer {
     }
     this.ensureCapacity(this.length + length);
     const readIndex = this.length - distance;
+    // equivalent-mutant: copyOverlapping's byte-by-byte loop is correct for
+    // every distance/length combo, including distance>=length; weakening or
+    // dropping this guard only routes more calls through that slower-but-
+    // equivalent general path instead of the copyWithin fast path -- same
+    // resulting bytes.
     if (distance >= length) {
       this.buffer.copyWithin(this.length, readIndex, readIndex + length);
       this.length += length;
@@ -312,6 +324,10 @@ class GrowableBuffer {
     if (required > this.maxBytes) {
       throw decompressFailed('inflated output exceeds safety cap');
     }
+    // equivalent-mutant: skipping this guard forces a redundant reallocation
+    // (nextCapacity/grown.set below faithfully copies the used prefix into a
+    // fresh zeroed buffer); toUint8Array only ever exposes [0, length), so
+    // the extra reallocation is unobservable.
     if (required <= this.buffer.length) return;
     const grown = new Uint8Array(this.nextCapacity(required));
     grown.set(this.buffer.subarray(0, this.length));
@@ -320,9 +336,18 @@ class GrowableBuffer {
 
   private nextCapacity(required: number): number {
     let capacity = this.buffer.length;
+    // equivalent-mutant: capacity<=required would double once more than
+    // needed at the capacity===required boundary, but the internal buffer's
+    // physical size is never observable (toUint8Array exposes only
+    // subarray(0, length)), so over-allocating one extra doubling is inert.
     while (capacity < required) {
       capacity *= BUFFER_GROWTH_FACTOR;
     }
+    // equivalent-mutant: Math.max here would let capacity exceed maxBytes,
+    // but ensureCapacity's independent required>maxBytes guard already
+    // bounds every value that reaches this function, and the returned
+    // buffer's physical size is never observable, so an oversized capacity
+    // is inert.
     return Math.min(capacity, this.maxBytes);
   }
 }
@@ -420,6 +445,10 @@ function buildHuffmanTable(
 function countCodeLengths(codeLengths: ReadonlyArray<number>): Uint16Array {
   const counts = new Uint16Array(MAX_HUFFMAN_CODE_BITS + 1);
   for (const length of codeLengths) {
+    // equivalent-mutant: widening this guard (true, or length>=0) would also
+    // write counts[0], but every downstream reader (firstIndexByLength,
+    // buildRootTable, ...) only iterates lengths 1..MAX_HUFFMAN_CODE_BITS,
+    // so counts[0] is dead storage regardless of its value.
     if (length > 0) counts[length] = (counts[length] as number) + 1;
   }
   return counts;
@@ -487,6 +516,10 @@ function orderSymbolsByLength(
 
 function firstIndexByLength(counts: Uint16Array): Uint16Array {
   const offsets = new Uint16Array(MAX_HUFFMAN_CODE_BITS + 2);
+  // equivalent-mutant: length<MAX_HUFFMAN_CODE_BITS would drop the final
+  // iteration (offsets[MAX_HUFFMAN_CODE_BITS + 1]), but orderSymbolsByLength
+  // only ever reads offsets[length] for real code lengths (<=
+  // MAX_HUFFMAN_CODE_BITS), so that slot is never read.
   for (let length = 1; length <= MAX_HUFFMAN_CODE_BITS; length += 1) {
     offsets[length + 1] = (offsets[length] as number) + (counts[length] as number);
   }
@@ -504,6 +537,11 @@ function buildRootTable(counts: Uint16Array, symbols: Uint16Array): RootTable {
   const rootSymbols = new Uint16Array(ROOT_TABLE_SIZE);
   let first = 0;
   let index = 0;
+  // equivalent-mutant: this loop (and the inner one below) only populate the
+  // root-table performance shortcut; decodeSymbol falls back to the always-
+  // correct decodeSymbolByWalk whenever a code isn't resolved here, so
+  // shrinking, inverting, or emptying either loop just routes more decodes
+  // through that slower-but-equivalent walk -- same decoded output.
   for (let length = 1; length <= ROOT_BITS; length += 1) {
     const count = counts[length] as number;
     for (let offset = 0; offset < count; offset += 1) {
@@ -529,6 +567,13 @@ function fillRootEntries(
   length: number,
   symbol: number,
 ): void {
+  // equivalent-mutant: an entirely no-op body (or a loop that never fills a
+  // slot) leaves those root-table entries at their zero-initialized
+  // ROOT_UNRESOLVED_LENGTH, so decodeSymbol falls back to the always-correct
+  // decodeSymbolByWalk for every affected code -- same decoded output, just
+  // slower. A one-past-the-end iteration (entry===ROOT_TABLE_SIZE) writes
+  // lengths[ROOT_TABLE_SIZE]/symbols[ROOT_TABLE_SIZE], a silently-dropped
+  // out-of-bounds typed-array write per spec -- no valid slot is affected.
   const naturalPrefix = reverseBits(code, length);
   const step = 1 << length;
   for (let entry = naturalPrefix; entry < ROOT_TABLE_SIZE; entry += step) {
@@ -557,6 +602,11 @@ function reverseBits(value: number, bitCount: number): number {
 function decodeSymbol(reader: BitReader, table: HuffmanTable): number {
   const peeked = reader.peekBits(ROOT_BITS);
   const length = table.root.lengths[peeked.value] as number;
+  // equivalent-mutant: forcing this guard true (always) or tightening it to
+  // >= (also at length===availableBits) both push more calls through
+  // decodeSymbolByWalk instead of the root-table fast path; the walk is the
+  // always-correct canonical decoder, so decoded output is identical either
+  // way, just slower.
   if (length === ROOT_UNRESOLVED_LENGTH || length > peeked.availableBits) {
     return decodeSymbolByWalk(reader, table);
   }
@@ -655,6 +705,14 @@ interface DynamicTables {
 /** Read the HCLEN code-length-code lengths (3 bits each) in RFC transmission
  * order, scattering them back into alphabet-symbol order (0-18). */
 function readCodeLengthCodeLengths(reader: BitReader, hclen: number): number[] {
+  // equivalent-mutant: dropping the size argument (new Array().fill(0), a
+  // no-op fill on an empty array) still grows to length 19 -- hclen is
+  // always >= HCLEN_MINIMUM (4), so the loop below always assigns index 18
+  // (CL_ORDER[2] === 18) -- but leaves untouched indices as holes instead of
+  // explicit 0. Every downstream reader either uses for...of (holes yield
+  // undefined, and undefined>0 is false, same as 0>0) or .forEach (which
+  // skips holes entirely, same effect as an explicit-0 early return), so the
+  // two representations are indistinguishable to every consumer.
   const lengths = new Array<number>(CL_ALPHABET_SIZE).fill(0);
   for (let i = 0; i < hclen; i += 1) {
     lengths[CL_ORDER[i] as number] = reader.readBits(CL_LENGTH_BITS);
