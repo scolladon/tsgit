@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
   cleanFilterFailed,
+  invalidPushDefault,
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  pushDefaultNothing,
+  pushDetachedNoRefspec,
+  pushRemoteNotUpstream,
+  pushUpstreamNameMismatch,
   signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
@@ -1254,6 +1259,90 @@ describe('signedPushUnsupported error', () => {
         // Assert
         expect(sut.message).toBe(
           'SIGNED_PUSH_UNSUPPORTED: the receiving end does not support --signed push',
+        );
+      });
+    });
+  });
+});
+
+describe('pushDetachedNoRefspec error', () => {
+  describe('Given pushDetachedNoRefspec factory', () => {
+    describe('When reading .message', () => {
+      it('Then message states HEAD is not currently on a branch', () => {
+        // Arrange
+        const sut = pushDetachedNoRefspec;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.message).toBe('PUSH_DETACHED_NO_REFSPEC: you are not currently on a branch');
+      });
+    });
+  });
+});
+
+describe('pushRemoteNotUpstream error', () => {
+  describe('Given pushRemoteNotUpstream factory', () => {
+    describe('When reading .message', () => {
+      it('Then message names the remote and the branch', () => {
+        // Arrange & Act
+        const sut = pushRemoteNotUpstream('pushdef', 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(sut.message).toBe(
+          "PUSH_REMOTE_NOT_UPSTREAM: you are pushing to remote 'pushdef', which is not the upstream of your current branch 'refs/heads/main'",
+        );
+      });
+    });
+  });
+});
+
+describe('pushUpstreamNameMismatch error', () => {
+  describe('Given pushUpstreamNameMismatch factory', () => {
+    describe('When reading .message', () => {
+      it('Then message states the upstream name does not match the branch name', () => {
+        // Arrange & Act
+        const sut = pushUpstreamNameMismatch(
+          'refs/heads/main' as RefName,
+          'refs/heads/other' as RefName,
+        );
+
+        // Assert
+        expect(sut.message).toBe(
+          'PUSH_UPSTREAM_NAME_MISMATCH: the upstream branch of your current branch does not match the name of your current branch',
+        );
+      });
+    });
+  });
+});
+
+describe('pushDefaultNothing error', () => {
+  describe('Given pushDefaultNothing factory', () => {
+    describe('When reading .message', () => {
+      it('Then message states push.default is "nothing"', () => {
+        // Arrange & Act
+        const sut = pushDefaultNothing();
+
+        // Assert
+        expect(sut.message).toBe(
+          'PUSH_DEFAULT_NOTHING: you didn\'t specify any refspecs to push, and push.default is "nothing"',
+        );
+      });
+    });
+  });
+});
+
+describe('invalidPushDefault error', () => {
+  describe('Given invalidPushDefault factory', () => {
+    describe('When reading .message', () => {
+      it('Then message names the bad config variable, file, and line', () => {
+        // Arrange & Act
+        const sut = invalidPushDefault('bogus', '/abs/.git/config', 9);
+
+        // Assert
+        expect(sut.message).toBe(
+          "INVALID_PUSH_DEFAULT: bad config variable 'push.default' in file '/abs/.git/config' at line 9",
         );
       });
     });

@@ -27,7 +27,9 @@ import {
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
 import { fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
@@ -38,9 +40,14 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
+import {
+  assertOperationalRepository,
+  branchRefFromHead,
+  readHeadRaw,
+} from './internal/repo-state.js';
 import {
   advertisesFilter,
   selectFetchCapabilities,
@@ -48,6 +55,10 @@ import {
 } from './internal/upload-pack-client.js';
 
 export interface FetchOptions {
+  /**
+   * Remote to fetch from. Default: `branch.<current>.remote` ?? the sole
+   * configured remote ?? `'origin'`; detached HEAD skips the branch step.
+   */
   readonly remote?: string;
   readonly refspecs?: ReadonlyArray<string>;
   readonly prune?: boolean;
@@ -78,7 +89,11 @@ const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 
 export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
   await assertOperationalRepository(ctx);
-  const remoteName = opts.remote ?? 'origin';
+  const head = await readHeadRaw(ctx);
+  const branchRef = branchRefFromHead(head);
+  const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
+  const config = await readConfig(ctx);
+  const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);
@@ -207,6 +222,7 @@ const resolveRemoteUrl = async (
   ctx: Context,
   remoteName: string,
 ): Promise<{ url: string; filter: string | undefined }> => {
+  assertValidRemoteName(remoteName);
   const config = await readConfig(ctx);
   const remote = config.remote?.get(remoteName);
   // An absent OR empty url means the remote is not usably configured.
@@ -346,8 +362,8 @@ const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | u
   // execute a filesystem read on `.git/config`. `validateRefName` rejects every
   // path-traversal vector that the `as RefName` brand cast otherwise bypasses.
   if (!isSafeRefName(ref.name)) return undefined;
-  if (ref.name.startsWith('refs/heads/')) {
-    const branch = ref.name.slice('refs/heads/'.length);
+  if (ref.name.startsWith(HEADS_PREFIX)) {
+    const branch = ref.name.slice(HEADS_PREFIX.length);
     const composed = `refs/remotes/${remoteName}/${branch}`;
     // Stryker disable next-line ConditionalExpression: equivalent — `branch` is derived from a name that already passed isSafeRefName, and `remoteName` is rejected upstream by resolveRemoteUrl's config lookup, so `composed` is always safe here.
     if (!isSafeRefName(composed)) return undefined;
@@ -383,8 +399,8 @@ const prune = async (
 ): Promise<ReadonlyArray<RefName>> => {
   const advertisedBranches = new Set(
     advertisement.refs
-      .filter((r) => r.name.startsWith('refs/heads/'))
-      .map((r) => r.name.slice('refs/heads/'.length)),
+      .filter((r) => r.name.startsWith(HEADS_PREFIX))
+      .map((r) => r.name.slice(HEADS_PREFIX.length)),
   );
   const remoteDir = `${ctx.layout.gitDir}/refs/remotes/${remoteName}`;
   if (!(await ctx.fs.exists(remoteDir))) return [];

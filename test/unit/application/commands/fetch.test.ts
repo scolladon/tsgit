@@ -539,6 +539,191 @@ describe('fetch', () => {
     });
   });
 
+  describe('default remote resolution', () => {
+    describe('Given branch.main.remote configured to a non-default remote', () => {
+      describe('When fetch is called with no explicit remote', () => {
+        it('Then result resolves the tracked remote', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "upstream"]\n  url = https://example.com/upstream.git\n[branch "main"]\n  remote = upstream\n',
+          );
+          __resetConfigCacheForTests();
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/upstream.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          expect(sut.remote).toBe('upstream');
+        });
+      });
+    });
+
+    describe('Given branch.main.remote configured and an explicit remote option', () => {
+      describe('When fetch is called with an explicit remote', () => {
+        it('Then the explicit remote overrides branch tracking', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "upstream"]\n  url = https://example.com/upstream.git\n[remote "explicit"]\n  url = https://example.com/explicit.git\n[branch "main"]\n  remote = upstream\n',
+          );
+          __resetConfigCacheForTests();
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/explicit.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport }, { remote: 'explicit' });
+
+          // Assert
+          expect(sut.remote).toBe('explicit');
+        });
+      });
+    });
+
+    describe('Given a detached HEAD with branch.main.remote configured and two remotes', () => {
+      describe('When fetch is called with no explicit remote', () => {
+        it('Then the branch tracking step is skipped and the default remote is used', async () => {
+          // Arrange — HEAD detached onto a real commit; branch.main.remote
+          // would resolve to "upstream" if the branch step ran, proving here
+          // that a detached HEAD skips it in favor of the two-remote default.
+          const ctx = createMemoryContext();
+          const { commitIds } = await seedRepo(ctx, { commits: [{ tree: '0'.repeat(40) }] });
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${commitIds[0]}\n`);
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "origin"]\n  url = https://example.com/origin.git\n[remote "upstream"]\n  url = https://example.com/upstream.git\n[branch "main"]\n  remote = upstream\n',
+          );
+          __resetConfigCacheForTests();
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/origin.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          expect(sut.remote).toBe('origin');
+        });
+      });
+    });
+
+    describe('Given exactly one non-origin remote configured and no branch tracking', () => {
+      describe('When fetch is called with no explicit remote', () => {
+        it('Then result resolves the sole configured remote', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "solo"]\n  url = https://example.com/solo.git\n',
+          );
+          __resetConfigCacheForTests();
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/solo.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          expect(sut.remote).toBe('solo');
+        });
+      });
+    });
+
+    describe('Given a sole configured remote whose name is a path-traversal string', () => {
+      describe('When fetch is called with no explicit remote', () => {
+        it('Then it refuses with INVALID_OPTION and never reads a traversal directory', async () => {
+          // Arrange — no explicit opts.remote and no branch tracking: the
+          // sole-remote inference is what hands the traversal string to
+          // resolveRemoteUrl, exactly as an attacker-controlled config would.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "../../evil"]\n  url = https://example.com/evil.git\n',
+          );
+          __resetConfigCacheForTests();
+          const readdirCalls: string[] = [];
+          const fs: ReturnType<typeof createMemoryContext>['fs'] = {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              readdirCalls.push(path);
+              return ctx.fs.readdir(path);
+            },
+          };
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch({ ...ctx, fs });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            option: string;
+            reason: string;
+          };
+          expect(data.code).toBe('INVALID_OPTION');
+          expect(data.option).toBe('remote');
+          expect(data.reason).toBe('invalid remote name: ../../evil');
+          expect(readdirCalls).toHaveLength(0);
+        });
+      });
+    });
+
+    describe('Given exactly two remotes configured and no branch tracking', () => {
+      describe('When fetch is called with no explicit remote', () => {
+        it('Then the default remote origin is used', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[remote "origin"]\n  url = https://example.com/origin.git\n[remote "other"]\n  url = https://example.com/other.git\n',
+          );
+          __resetConfigCacheForTests();
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/origin.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const sut = await fetch({ ...ctx, transport });
+
+          // Assert
+          expect(sut.remote).toBe('origin');
+        });
+      });
+    });
+  });
+
   describe('haves derivation', () => {
     describe('Given remote-tracking refs already on disk', () => {
       describe('When fetch', () => {

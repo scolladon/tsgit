@@ -15,6 +15,7 @@
  */
 import {
   invalidOption,
+  invalidPushDefault,
   nonFastForward,
   pushRejected,
   sanitize,
@@ -37,11 +38,14 @@ import {
   type RefUpdate,
 } from '../../domain/protocol/index.js';
 import { PUSH_UPDATE } from '../../domain/reflog/reflog-messages.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
-import { readConfig } from '../primitives/config-read.js';
+import { findInvalidPushDefault, readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
+import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -49,11 +53,21 @@ import { resolveSigningSelector } from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
+import { assertValidRemoteName, resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import {
+  finalizePushRefspecs,
+  type PushRefspecPlan,
+  planPushRefspecs,
+} from './internal/push-refspecs.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
-import { type ParsedRefspec, parseRefspec } from './internal/refspec.js';
+import type { ParsedRefspec } from './internal/refspec.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
-import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
+import {
+  assertOperationalRepository,
+  branchRefFromHead,
+  readHeadRaw,
+} from './internal/repo-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
 export interface PushOptions {
@@ -94,11 +108,21 @@ interface ResolvedRefspec {
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
 const PUSH_UPLOAD_OP = 'push:upload';
 const ZERO_OID = ObjectId.from('0'.repeat(40));
-const REFS_HEADS_PREFIX = 'refs/heads/';
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
+
+// Real git validates `push.default` on the config-read cold path before resolving
+// the remote or the refspec, regardless of mode or an explicit refspec — mirror
+// that ordering here so a set-but-invalid value refuses before any session opens.
+const assertValidPushDefault = async (ctx: Context): Promise<void> => {
+  const invalid = await findInvalidPushDefault(ctx);
+  if (invalid !== undefined) {
+    throw invalidPushDefault(invalid.value, invalid.source, invalid.line);
+  }
+};
 
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertOperationalRepository(ctx);
+  await assertValidPushDefault(ctx);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
     return await pushViaSession(ctx, opts);
@@ -108,12 +132,16 @@ export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushRe
 };
 
 const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResult> => {
-  const remoteName = opts.remote ?? 'origin';
+  const head = await readHeadRaw(ctx);
+  const branchRef = branchRefFromHead(head);
+  const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
+  const config = await readConfig(ctx);
+  const remoteName = resolvePushRemote(config, opts.remote, currentBranch);
   const url = await resolveRemoteUrl(ctx, remoteName);
-  const refspecs = await resolveRefspecsInput(ctx, opts.refspecs);
+  const plan = await planPushRefspecs(config, opts, head);
   const session = openGitSession(ctx, url, 'git-receive-pack');
   try {
-    return await negotiateAndSend(ctx, opts, remoteName, url, refspecs, session);
+    return await negotiateAndSend(ctx, opts, remoteName, url, plan, session);
   } finally {
     await session.close();
   }
@@ -124,10 +152,15 @@ const negotiateAndSend = async (
   opts: PushOptions,
   remoteName: string,
   url: string,
-  refspecs: ReadonlyArray<ParsedRefspec>,
+  plan: PushRefspecPlan,
   session: GitServiceSession,
 ): Promise<PushResult> => {
   const adv = await discoverReceivePackRefs(session);
+  const localHeads =
+    plan.kind === 'matching'
+      ? (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
+      : [];
+  const refspecs = finalizePushRefspecs(plan, adv, localHeads);
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remoteName, opts);
   const movers = resolved.filter((r) => r.localOid !== r.remoteOid);
   if (movers.length === 0) {
@@ -161,22 +194,8 @@ const prePushLine = (m: ResolvedRefspec): string => {
   return `${localRef} ${m.localOid} ${m.parsed.dst} ${m.remoteOid}\n`;
 };
 
-/**
- * First-pass sanity filter on remote names: alphanumerics, dot, dash,
- * underscore. Rejects obvious traversal vectors (slashes, control chars,
- * spaces) at the entry point so a hostile caller cannot smuggle a path
- * separator through `opts.remote`. NOT a sufficient guarantee on its own —
- * strings like `.git`, `..`, `a..b`, `a.lock` pass this regex but produce
- * invalid composed ref paths. The definitive guard is `isSafeRefName(composed)`
- * inside `updateTrackingCache` (and the contract honored by `updateRef`),
- * which runs `validateRefName` over the full composed path.
- */
-const REMOTE_NAME_RE = /^[A-Za-z0-9._-]+$/;
-
 const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<string> => {
-  if (!REMOTE_NAME_RE.test(remoteName)) {
-    throw invalidOption('remote', `invalid remote name: ${remoteName}`);
-  }
+  assertValidRemoteName(remoteName);
   const config = await readConfig(ctx);
   // Git validates each entry eagerly: a valueless `pushurl` or `url` dies before
   // the `pushurl ?? url` fallback can substitute the other, reporting whichever
@@ -189,23 +208,6 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
     throw remoteNotConfigured(remoteName);
   }
   return url;
-};
-
-const resolveRefspecsInput = async (
-  ctx: Context,
-  refspecs: ReadonlyArray<string> | undefined,
-): Promise<ReadonlyArray<ParsedRefspec>> => {
-  // An explicit empty `refspecs: []` must fall through to the HEAD-default
-  // branch — `length > 0` (not `>= 0`) makes `[]` behave like "no refspec".
-  if (refspecs !== undefined && refspecs.length > 0) {
-    return refspecs.map(parseRefspec);
-  }
-  const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw invalidOption('refspecs', 'no-default-refspec (HEAD is detached)');
-  }
-  const branch = head.target;
-  return [parseRefspec(`${branch}:${branch}`)];
 };
 
 const resolveAllRefspecs = async (
@@ -280,10 +282,10 @@ const resolveLease = async (
   // Stryker disable next-line ConditionalExpression: equivalent — when `forceWithLease` is undefined the next line (`undefined !== 'auto'`) returns `opts.forceWithLease` which is `undefined`, the identical result.
   if (opts.forceWithLease === undefined) return undefined;
   if (opts.forceWithLease !== 'auto') return opts.forceWithLease;
-  if (!parsed.dst.startsWith(REFS_HEADS_PREFIX)) {
+  if (!parsed.dst.startsWith(HEADS_PREFIX)) {
     throw invalidOption('forceWithLease', 'lease-on-non-branch');
   }
-  const branch = parsed.dst.slice(REFS_HEADS_PREFIX.length);
+  const branch = parsed.dst.slice(HEADS_PREFIX.length);
   const trackingRef = `refs/remotes/${remoteName}/${branch}` as RefName;
   return resolveRef(ctx, trackingRef);
 };
@@ -501,9 +503,9 @@ const updateTrackingCache = async (
   m: ResolvedRefspec,
   remoteName: string,
 ): Promise<void> => {
-  if (!m.parsed.dst.startsWith(REFS_HEADS_PREFIX)) return; // tags handled elsewhere
+  if (!m.parsed.dst.startsWith(HEADS_PREFIX)) return; // tags handled elsewhere
   if (m.parsed.isDelete) return; // delete-only push doesn't update cache
-  const branch = m.parsed.dst.slice(REFS_HEADS_PREFIX.length);
+  const branch = m.parsed.dst.slice(HEADS_PREFIX.length);
   const composed = `refs/remotes/${remoteName}/${branch}`;
   // `remoteName` is gated by REMOTE_NAME_RE (resolveRemoteUrl) and `branch`
   // derives from a server-advertised name matched against the local refspec

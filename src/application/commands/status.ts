@@ -28,7 +28,11 @@ import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
-import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
+import {
+  assertOperationalRepository,
+  branchRefFromHead,
+  readHeadRaw,
+} from './internal/repo-state.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -118,7 +122,7 @@ interface GranularityTracker {
 export const status = async (ctx: Context): Promise<StatusResult> => {
   await assertOperationalRepository(ctx);
   const head = await readHeadRaw(ctx);
-  const branch = head.kind === 'symbolic' ? head.target : undefined;
+  const branch = branchRefFromHead(head);
   const detached = head.kind === 'direct';
   // `readIndex` returns an empty index when the file is absent (fresh/unborn
   // repo); a thrown error means a corrupt index, which we let propagate rather

@@ -10,7 +10,8 @@
  *   untracked files on <branch>: <abbrev> <subject>  (the untracked commit)
  */
 
-const HEADS_PREFIX = 'refs/heads/';
+import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
+
 const NO_BRANCH = '(no branch)';
 
 /**

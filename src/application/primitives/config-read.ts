@@ -3,6 +3,9 @@ import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { commonGitDir } from './path-layout.js';
 
+/** `push.default` mode; `tracking` is a deprecated alias canonicalized to `upstream` at parse time. */
+export type PushDefaultMode = 'nothing' | 'current' | 'upstream' | 'simple' | 'matching';
+
 /**
  * Subset of `.git/config` that v1 commands consume. Only fields actually used by
  * commands are typed — the parser ignores everything else (lenient, like git itself).
@@ -36,7 +39,17 @@ export interface ParsedConfig {
       readonly partialCloneFilter?: string;
     }
   >;
-  readonly branch?: ReadonlyMap<string, { readonly remote?: string; readonly merge?: string }>;
+  /** `remote.pushDefault` — subsectionless `[remote]` only; per-remote `[remote "x"] pushDefault` is not read. */
+  readonly remotePushDefault?: string;
+  readonly branch?: ReadonlyMap<
+    string,
+    {
+      readonly remote?: string;
+      readonly merge?: string;
+      /** `branch.<name>.pushRemote` — overrides the push-remote for this branch. */
+      readonly pushRemote?: string;
+    }
+  >;
   /** `[submodule "<name>"]` — the registered (initialised) submodules. */
   readonly submodule?: ReadonlyMap<
     string,
@@ -68,8 +81,12 @@ export interface ParsedConfig {
   readonly commit?: { readonly gpgSign?: boolean };
   /** `tag.gpgSign` — sign annotated tags by default when true. */
   readonly tag?: { readonly gpgSign?: boolean };
-  /** `push.gpgSign` — sign push certificates: `true`/`false`, or `if-asked` (server-requested). */
-  readonly push?: { readonly gpgSign?: 'true' | 'false' | 'if-asked' };
+  readonly push?: {
+    /** `push.gpgSign` — sign push certificates: `true`/`false`, or `if-asked` (server-requested). */
+    readonly gpgSign?: 'true' | 'false' | 'if-asked';
+    /** `push.default` — canonicalized push remote-selection mode (`tracking` maps to `upstream`). */
+    readonly default?: PushDefaultMode;
+  };
   /** `[gpg]` — signing backend selection and the external program(s) invoked to sign/verify. */
   readonly gpg?: {
     readonly format?: 'openpgp' | 'ssh' | 'x509';
@@ -1005,7 +1022,8 @@ interface MutableParsedConfig {
       partialCloneFilter?: string;
     }
   >;
-  branch?: Map<string, { remote?: string; merge?: string }>;
+  remotePushDefault?: string;
+  branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }>;
   submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
   merge?: Map<string, { name?: string; driver?: string; recursive?: string }>;
   diff?: Map<string, { textconv?: string; cachetextconv?: boolean }>;
@@ -1013,7 +1031,7 @@ interface MutableParsedConfig {
   extensions?: { partialClone?: string };
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
-  push?: { gpgSign?: 'true' | 'false' | 'if-asked' };
+  push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 }
 
@@ -1030,6 +1048,8 @@ const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: str
 const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
   if (sec.subsection !== undefined) {
     dispatchSubsection(acc, sec, sec.subsection);
+  } else if (sec.section === 'remote') {
+    mergeRemoteTopLevel(acc, sec);
   } else if (sec.section === 'core') {
     mergeCore(acc, sec);
   } else if (sec.section === 'user') {
@@ -1207,19 +1227,29 @@ const mergeRemote = (
   acc.remote.set(name, compactRemote(mutable));
 };
 
+// `[remote]` (no subsection) — distinct from `[remote "<name>"]`. Only `pushDefault` lives here;
+// per-remote `pushDefault` is not read (pinned: `[remote "x"] pushDefault` is ignored by git).
+const mergeRemoteTopLevel = (acc: { remotePushDefault?: string }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    if (value !== null && key.toLowerCase() === 'pushdefault') acc.remotePushDefault = value;
+  }
+};
+
 const mergeBranch = (
-  acc: { branch?: Map<string, { remote?: string; merge?: string }> },
+  acc: { branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }> },
   name: string,
   sec: IniSection,
 ): void => {
   acc.branch ??= new Map();
   const current = acc.branch.get(name) ?? {};
-  const next: { remote?: string; merge?: string } = { ...current };
+  const next: { remote?: string; merge?: string; pushRemote?: string } = { ...current };
   for (const { key, value } of sec.entries) {
     // String-typed fields skip null (valueless key treated as absent).
     if (value === null) continue;
     if (key === 'remote') next.remote = value;
     else if (key === 'merge') next.merge = value;
+    // Git config keys are case-insensitive; compare pushRemote on the lower-cased key.
+    else if (key.toLowerCase() === 'pushremote') next.pushRemote = value;
   }
   acc.branch.set(name, next);
 };
@@ -1353,13 +1383,66 @@ const parsePushGpgSign = (value: string | null): 'true' | 'false' | 'if-asked' =
       ? 'true'
       : 'false';
 
+// Lenient here: an unrecognized value (including wrong case) parses to `undefined` rather than
+// throwing — the hard refusal on an invalid `push.default` is a push-time concern, not the parser's.
+const parsePushDefault = (value: string | null): PushDefaultMode | undefined => {
+  if (value === 'tracking') return 'upstream'; // deprecated alias
+  if (
+    value === 'nothing' ||
+    value === 'current' ||
+    value === 'upstream' ||
+    value === 'simple' ||
+    value === 'matching'
+  ) {
+    return value;
+  }
+  return undefined;
+};
+
+/** One invalid `push.default` entry returned by `findInvalidPushDefault`. */
+export interface InvalidPushDefaultEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly line: number;
+  readonly value: string;
+}
+
+/**
+ * Cold-path detection: walk the cached `[push]` (subsectionless) tokens in
+ * file order and return the FIRST `default` entry whose value is present
+ * (non-null) and fails `parsePushDefault` — an unrecognized mode, wrong case
+ * included. A valueless `default` is not an invalid-value error; it mirrors
+ * `mergePush`, which treats it as absent. Returns `undefined` when every
+ * `push.default` entry is either absent, valueless, or a recognized mode.
+ * Runs ONLY on a command's refusal path (`push`), never during config assembly.
+ */
+export const findInvalidPushDefault = async (
+  ctx: Context,
+): Promise<InvalidPushDefaultEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'push', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== 'default') continue;
+    if (token.value === null || parsePushDefault(token.value) !== undefined) continue;
+    return { key: 'push.default', source: path, line: token.startLine + 1, value: token.value };
+  }
+  return undefined;
+};
+
 const mergePush = (
-  acc: { push?: { gpgSign?: 'true' | 'false' | 'if-asked' } },
+  acc: { push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode } },
   sec: IniSection,
 ): void => {
   for (const { key, value } of sec.entries) {
     if (key.toLowerCase() === 'gpgsign') {
       acc.push = { ...acc.push, gpgSign: parsePushGpgSign(value) };
+    } else if (key.toLowerCase() === 'default') {
+      const mode = parsePushDefault(value);
+      if (mode !== undefined) acc.push = { ...acc.push, default: mode };
     }
   }
 };
@@ -1420,7 +1503,7 @@ type FinalizeOut = {
   filter?: ReadonlyMap<string, FilterEntry>;
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
-  push?: { gpgSign?: 'true' | 'false' | 'if-asked' };
+  push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 };
 
@@ -1484,7 +1567,8 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
         partialCloneFilter?: string;
       }
     >;
-    branch?: ReadonlyMap<string, { remote?: string; merge?: string }>;
+    remotePushDefault?: string;
+    branch?: ReadonlyMap<string, { remote?: string; merge?: string; pushRemote?: string }>;
     submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
     merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
     diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
@@ -1495,7 +1579,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     extensions?: { partialClone?: string };
     commit?: { gpgSign?: boolean };
     tag?: { gpgSign?: boolean };
-    push?: { gpgSign?: 'true' | 'false' | 'if-asked' };
+    push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
     gpg?: MutableGpg;
   } = {};
   const core = finalizeCore(acc.core);
@@ -1504,6 +1588,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   if (user !== undefined) out.user = user;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.remote` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.remote !== undefined && acc.remote.size > 0) out.remote = acc.remote;
+  if (acc.remotePushDefault !== undefined) out.remotePushDefault = acc.remotePushDefault;
   // `mergeExtensions` only assigns `acc.extensions` after observing a
   // `partialclone` key, so a defined value is always non-empty.
   if (acc.extensions !== undefined) out.extensions = acc.extensions;

@@ -11,23 +11,27 @@
  */
 import { noUpstreamConfigured } from '../../domain/commands/error.js';
 import { type AuthorIdentity, RefName } from '../../domain/objects/index.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { type FetchResult, fetch } from './fetch.js';
+import { defaultRemoteName } from './internal/default-remote.js';
 import {
   assertNoPendingOperation,
   assertNotBare,
   assertOperationalRepository,
+  branchRefFromHead,
   readHeadRaw,
 } from './internal/repo-state.js';
 import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
 
-const HEADS_PREFIX = 'refs/heads/';
-
 export interface PullOptions {
-  /** Remote to pull from. Default: `branch.<current>.remote` ?? `'origin'`. */
+  /**
+   * Remote to pull from. Default: `branch.<current>.remote` ?? the sole
+   * configured remote ?? `'origin'`.
+   */
   readonly remote?: string;
   /**
    * Remote ref to merge — a short branch name resolved as
@@ -60,13 +64,8 @@ export interface PullResult {
   readonly merge: MergeResult;
 }
 
-const shortBranchName = (ref: RefName): string =>
-  ref.startsWith(HEADS_PREFIX) ? ref.slice(HEADS_PREFIX.length) : ref;
-
-const shortMergeRef = (mergeRef: string | undefined): string | undefined => {
-  if (mergeRef === undefined) return undefined;
-  return mergeRef.startsWith(HEADS_PREFIX) ? mergeRef.slice(HEADS_PREFIX.length) : mergeRef;
-};
+const shortMergeRef = (mergeRef: string | undefined): string | undefined =>
+  mergeRef === undefined ? undefined : shortBranchName(mergeRef as RefName);
 
 interface Upstream {
   readonly remote: string;
@@ -84,7 +83,7 @@ const resolveUpstream = async (
     await assertNoValuelessConfig(ctx, 'branch', currentBranch, ['remote', 'merge']);
   }
   const tracking = currentBranch !== undefined ? config.branch?.get(currentBranch) : undefined;
-  const remote = opts.remote ?? tracking?.remote ?? 'origin';
+  const remote = defaultRemoteName(config, opts.remote, currentBranch);
   const branch = opts.ref ?? shortMergeRef(tracking?.merge);
   if (branch === undefined) {
     throw noUpstreamConfigured(fallbackRef);
@@ -98,8 +97,9 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
   await assertNoPendingOperation(ctx);
 
   const head = await readHeadRaw(ctx);
-  const currentBranch = head.kind === 'symbolic' ? shortBranchName(head.target) : undefined;
-  const fallbackRef = head.kind === 'symbolic' ? head.target : RefName.from('HEAD');
+  const branchRef = branchRefFromHead(head);
+  const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
+  const fallbackRef = branchRef ?? RefName.from('HEAD');
   const { remote, branch } = await resolveUpstream(ctx, currentBranch, opts, fallbackRef);
 
   const fetchResult = await fetch(ctx, {

@@ -6,6 +6,7 @@ import {
   findFirstInvalidCompression,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
+  findInvalidPushDefault,
   type IniSection,
   invalidateConfigCache,
   parseIniSections,
@@ -426,6 +427,86 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.branch?.get('main')?.remote).toBe('origin');
         expect(sut.branch?.get('main')?.merge).toBe('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a [branch "main"] section with pushRemote', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.branch.get("main").pushRemote is set', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "main"]\n  remote = origin\n  pushRemote = upstream\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.branch?.get('main')?.pushRemote).toBe('upstream');
+      });
+    });
+  });
+
+  describe('Given a [branch "main"] section with pushRemote in a different case', () => {
+    describe('When readConfig', () => {
+      it('Then the PUSHREMOTE key is matched case-insensitively', async () => {
+        // Arrange — git config keys are case-insensitive; `PUSHREMOTE` must fold to `pushremote`.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "main"]\n  PUSHREMOTE = upstream\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.branch?.get('main')?.pushRemote).toBe('upstream');
+      });
+    });
+  });
+
+  describe('Given a [branch "main"] section without pushRemote', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.branch.get("main").pushRemote is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "main"]\n  remote = origin\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.branch?.get('main')?.pushRemote).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [branch "main"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then pushRemote stays undefined (only remote/merge/pushRemote are read)', async () => {
+        // Arrange — `foo` is none of remote/merge/pushRemote, so it must never set pushRemote.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "main"]\n  foo = bar\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.branch?.get('main')?.pushRemote).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [branch "main"] section with a valueless pushRemote key', () => {
+    describe('When readConfig', () => {
+      it('Then pushRemote is skipped (valueless key treated as absent)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[branch "main"]\n  pushRemote\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.branch?.get('main')?.pushRemote).toBeUndefined();
       });
     });
   });
@@ -1442,6 +1523,54 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(sut.remote?.get('o')?.fetch).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a subsectionless `[remote]` section with pushDefault', () => {
+    describe('When readConfig', () => {
+      it('Then remotePushDefault is set to the configured remote name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote]\n  pushDefault = origin\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.remotePushDefault).toBe('origin');
+      });
+    });
+  });
+
+  describe('Given a subsectionless `[remote]` section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then remotePushDefault stays undefined (only pushDefault is read)', async () => {
+        // Arrange — `foo` is not `pushDefault`, so it must never set remotePushDefault.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote]\n  foo = bar\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.remotePushDefault).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a `[remote "origin"]` subsection with pushDefault', () => {
+    describe('When readConfig', () => {
+      it('Then remotePushDefault stays undefined (per-remote pushDefault is ignored)', async () => {
+        // Arrange — only the subsectionless `[remote]` carries remote.pushDefault.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "origin"]\n  url = u\n  pushDefault = other\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.remotePushDefault).toBeUndefined();
       });
     });
   });
@@ -5889,6 +6018,324 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.push?.gpgSign).toBe('if-asked');
+      });
+    });
+  });
+
+  describe('Given [push] default = nothing', () => {
+    describe('When readConfig', () => {
+      it("Then push.default is 'nothing'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = nothing\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBe('nothing');
+      });
+    });
+  });
+
+  describe('Given [push] default = current', () => {
+    describe('When readConfig', () => {
+      it("Then push.default is 'current'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = current\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBe('current');
+      });
+    });
+  });
+
+  describe('Given [push] default = upstream', () => {
+    describe('When readConfig', () => {
+      it("Then push.default is 'upstream'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = upstream\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBe('upstream');
+      });
+    });
+  });
+
+  describe('Given [push] default = simple', () => {
+    describe('When readConfig', () => {
+      it("Then push.default is 'simple'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = simple\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBe('simple');
+      });
+    });
+  });
+
+  describe('Given [push] default = matching', () => {
+    describe('When readConfig', () => {
+      it("Then push.default is 'matching'", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = matching\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBe('matching');
+      });
+    });
+  });
+
+  describe('Given [push] default = tracking', () => {
+    describe('When readConfig', () => {
+      it("Then push.default is canonicalized to 'upstream' (deprecated alias)", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = tracking\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBe('upstream');
+      });
+    });
+  });
+
+  describe('Given a `[push]` section with the Default key in a different case', () => {
+    describe('When readConfig', () => {
+      it('Then the Default key is matched case-insensitively', async () => {
+        // Arrange — git config keys are case-insensitive; `Default` must fold to `default`.
+        // (Distinct from value matching, which is case-sensitive — see the `Simple` test below.)
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  Default = simple\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBe('simple');
+      });
+    });
+  });
+
+  describe('Given [push] default = Simple (wrong case)', () => {
+    describe('When readConfig', () => {
+      it('Then push.default stays undefined (case-sensitive match)', async () => {
+        // Arrange — push.default value matching is case-sensitive; `Simple` != `simple`.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = Simple\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default = bogus (unrecognized value)', () => {
+    describe('When readConfig', () => {
+      it('Then push.default stays undefined (lenient parse)', async () => {
+        // Arrange — parsing is lenient here; refusal on an invalid value is a push-time concern.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = bogus\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a `[push]` section with an unrelated key whose value parses as a valid mode', () => {
+    describe('When readConfig', () => {
+      it('Then push.default stays undefined (only the `default` key is read)', async () => {
+        // Arrange — `foo`'s value happens to be a recognized push.default mode, but the
+        // key itself is not `default`, so it must never set push.default.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  foo = simple\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a `[push]` section without a default key', () => {
+    describe('When readConfig', () => {
+      it('Then push.default is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  gpgSign = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.push?.default).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given no [push] section', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  name = Bob\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default = simple (valid)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = simple\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default = tracking (legacy alias for upstream)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = tracking\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default is valueless', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined (a valueless key is treated as absent)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [push] default = bogus (unrecognized value)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns the raw value, source, and line', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  name = Bob\n[push]\n  default = bogus\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result?.key).toBe('push.default');
+        expect(result?.value).toBe('bogus');
+        expect(result?.line).toBe(4);
+        expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
+      });
+    });
+  });
+
+  describe('Given [push] default = Simple (wrong case is invalid)', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns the entry (case-sensitive match)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = Simple\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result?.value).toBe('Simple');
+      });
+    });
+  });
+
+  describe('Given a valid default followed by an invalid one in the same [push] section', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns the FIRST invalid entry, ignoring the earlier valid one', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n  default = current\n  default = bogus\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result?.value).toBe('bogus');
+        expect(result?.line).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a bogus default entry BEFORE any section header', () => {
+    describe('When findInvalidPushDefault', () => {
+      it('Then returns undefined (the entry is not inside [push])', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '  default = bogus\n[push]\n  default = simple\n');
+        const sut = findInvalidPushDefault;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

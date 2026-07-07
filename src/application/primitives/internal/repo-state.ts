@@ -134,6 +134,14 @@ export const readHeadRaw = async (ctx: Context): Promise<HeadState> => {
   return { kind: 'direct', id: parsed.target };
 };
 
+/** The current branch's full ref when HEAD is symbolic; `undefined` when detached. */
+export const branchRefFromHead = (head: HeadState): RefName | undefined =>
+  head.kind === 'symbolic' ? head.target : undefined;
+
+/** `branchRefFromHead(readHeadRaw(ctx))` — the current branch's full ref, or `undefined` when detached. */
+export const currentBranchRef = async (ctx: Context): Promise<RefName | undefined> =>
+  branchRefFromHead(await readHeadRaw(ctx));
+
 const PENDING_MARKERS: ReadonlyArray<{
   readonly file: string;
   readonly operation: PendingOperation;

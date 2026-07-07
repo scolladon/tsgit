@@ -16,6 +16,7 @@ import {
   ZERO_OID,
 } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { ORIG_HEAD } from '../../domain/refs/state-files.js';
 import {
   WORKTREE_COMMONDIR,
@@ -54,7 +55,6 @@ import { status } from './status.js';
 export type { WorktreeEntry };
 
 const HEAD_REF = 'HEAD' as RefName;
-const HEADS_PREFIX = 'refs/heads/';
 
 export interface WorktreeListResult {
   readonly entries: ReadonlyArray<WorktreeEntry>;

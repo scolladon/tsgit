@@ -10,12 +10,17 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { ZERO_OID } from '../../domain/objects/index.js';
 import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { readReflog, writeReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
-import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
+import {
+  assertOperationalRepository,
+  branchRefFromHead,
+  readHeadRaw,
+} from './internal/repo-state.js';
 
 export interface BranchInfo {
   readonly name: RefName;
@@ -55,15 +60,13 @@ export interface BranchRenameResult {
   readonly to: RefName;
 }
 
-const HEADS_PREFIX = 'refs/heads/';
-
 export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   await assertOperationalRepository(ctx);
   const headsDir = `${ctx.layout.gitDir}/refs/heads`;
   if (!(await ctx.fs.exists(headsDir))) return { branches: [] };
   const head = await readHeadRaw(ctx);
-  const currentTarget =
-    head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX) ? head.target : undefined;
+  const ref = branchRefFromHead(head);
+  const currentTarget = ref?.startsWith(HEADS_PREFIX) ? ref : undefined;
   const entries = await ctx.fs.readdir(headsDir);
   const branches: BranchInfo[] = [];
   for (const entry of entries) {

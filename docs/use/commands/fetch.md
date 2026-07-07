@@ -8,7 +8,7 @@ Fetch refs and objects from a remote. Supports shallow fetch (`depth`), prune (`
 repo.fetch(opts?: FetchOptions): Promise<FetchResult>;
 
 interface FetchOptions {
-  readonly remote?: string;                    // default 'origin'
+  readonly remote?: string;                    // default: branch.<current>.remote ?? sole configured remote ?? 'origin'
   readonly refspecs?: ReadonlyArray<string>;   // default '+refs/heads/*:refs/remotes/<remote>/*'
   readonly prune?: boolean;                    // default false
   readonly depth?: number;                     // shallow fetch boundary
@@ -32,13 +32,14 @@ interface FetchUpdate {
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `remote` | `string` | `'origin'` | Remote name. Resolved against `.git/config` `[remote "<name>"]`. |
+| `remote` | `string` | resolved chain | Remote name. Resolved as `branch.<current>.remote` → the sole configured remote (only when exactly one `remote.*` block exists) → `'origin'`; an explicit value always wins. Detached HEAD skips the `branch.<current>.remote` rung. |
 | `refspecs` | `ReadonlyArray<string>` | branches refspec | Explicit refspec list. |
 | `prune` | `boolean` | `false` | Delete `refs/remotes/<remote>/*` entries the server no longer advertises. Local branches and tags are never touched. |
 | `depth` | `number` | (full) | Shallow fetch depth. Writes `.git/shallow`. |
 
 ## Behaviour
 
+- **Remote selection:** in precedence order, `remote` resolves to the explicit option, `branch.<current>.remote`, the sole configured remote (only when exactly one `remote.*` block exists), then `'origin'`. A detached HEAD skips the `branch.<current>.remote` rung.
 - **Partial clone aware:** if `.git/config` records `partialclonefilter`, the fetch re-applies that filter; the repo stays partial. If the server no longer advertises `filter` support, re-applying throws `REMOTE_FILTER_UNSUPPORTED`.
 - **Protocol negotiation:** `fetch` opts into smart-HTTP protocol v2 (`ls-refs` + `fetch` commands) and falls back to v1 when the server doesn't advertise `version 2`; SSH remotes always use v1. Both legs, including partial-clone `filter`, are supported.
 - **Incremental fetch:** a remote that has advanced since the last fetch returns the new objects, on either protocol version.
@@ -75,4 +76,4 @@ console.log(result.prunedRefs);
 - Design: `docs/design/incremental-fetch-negotiation.md`
 - Primitives: [`fetchPack`](../primitives/internals.md#fetchpack), [`enumerateRefs`](../primitives/internals.md#enumeraterefs), [`readShallow`](../primitives/internals.md#readshallow), [`updateShallow`](../primitives/internals.md#updateshallow)
 - Related commands: [`clone`](clone.md), [`fetchMissing`](fetch-missing.md), [`push`](push.md)
-- ADRs: [009](../../adr/009-fetch-shallow-where.md), [010](../../adr/010-fetch-haves-strategy.md), [011](../../adr/011-fetch-ref-update-tx.md), [012](../../adr/012-fetch-prune-semantics.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md), [450](../../adr/450-fetch-protocol-v2-with-v1-fallback.md), [451](../../adr/451-fetch-v1-fallback-framing-and-multi-ack.md), [452](../../adr/452-empty-pack-suppression-and-everything-local.md)
+- ADRs: [009](../../adr/009-fetch-shallow-where.md), [010](../../adr/010-fetch-haves-strategy.md), [011](../../adr/011-fetch-ref-update-tx.md), [012](../../adr/012-fetch-prune-semantics.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md), [450](../../adr/450-fetch-protocol-v2-with-v1-fallback.md), [451](../../adr/451-fetch-v1-fallback-framing-and-multi-ack.md), [452](../../adr/452-empty-pack-suppression-and-everything-local.md), [456](../../adr/456-branch-remote-resolution-primitives.md), [457](../../adr/457-fetch-default-remote-canonical-git.md)

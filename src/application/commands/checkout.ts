@@ -7,6 +7,7 @@ import {
 } from '../../domain/objects/index.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -47,7 +48,6 @@ export interface CheckoutResult {
   readonly changedPaths: number;
 }
 
-const HEADS_PREFIX = 'refs/heads/';
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
 /** post-checkout's 3rd argument: `1` for a branch checkout, `0` for a file checkout. */
 const BRANCH_FLAG = '1';

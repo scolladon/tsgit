@@ -22,14 +22,15 @@
  */
 import { spawn } from 'node:child_process';
 import { accessSync, cpSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import type { ObjectId, RefName } from '../../../src/domain/objects/object-id.js';
-import { openRepository } from '../../../src/index.node.js';
-import { git, runGit, runGitEnv } from '../interop-helpers.js';
+import { openRepository, type Repository } from '../../../src/index.node.js';
+import { git, gitAsync, runGit, runGitEnv } from '../interop-helpers.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -254,3 +255,158 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
     });
   });
 });
+
+describe.skipIf(SKIP_REASON !== false)(
+  'pull — default remote resolution against git-http-backend',
+  () => {
+    let server: http.Server;
+    let port: number;
+    let projectRoot: string;
+    const workDirs: string[] = [];
+
+    const bareUrl = (name: string): string => `http://127.0.0.1:${port}/${name}.git`;
+
+    const seedBare = async (name: string): Promise<void> => {
+      runGit(['init', '-q', '--bare', '-b', 'main', path.join(projectRoot, `${name}.git`)]);
+      const seedDir = await mkdtemp(path.join(os.tmpdir(), `tsgit-pull-remote-seed-${name}-`));
+      workDirs.push(seedDir);
+      git(seedDir, 'clone', '-q', path.join(projectRoot, `${name}.git`), '.');
+      git(seedDir, 'config', 'user.name', 'Ada');
+      git(seedDir, 'config', 'user.email', 'ada@example.com');
+      await writeFile(path.join(seedDir, `${name}.txt`), `${name}\n`);
+      git(seedDir, 'add', `${name}.txt`);
+      git(seedDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', name);
+      git(seedDir, 'push', '-q', 'origin', 'HEAD:main');
+    };
+
+    const initGitRepo = async (): Promise<string> => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-remote-real-'));
+      workDirs.push(dir);
+      git(dir, 'init', '-q', '-b', 'main');
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      return dir;
+    };
+
+    const initTsgitRepo = async (): Promise<Repository> => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-remote-ts-'));
+      workDirs.push(dir);
+      const repo = await openRepository({
+        cwd: dir,
+        allowInsecureHttp: true,
+        config: {
+          allowInsecure: true,
+          allowPrivateNetworks: true,
+          dnsResolver: async () => ['127.0.0.1'],
+        },
+      });
+      await repo.init();
+      return repo;
+    };
+
+    const appendConfig = async (repo: Repository, block: string): Promise<void> => {
+      const configPath = path.join(repo.ctx.layout.gitDir, 'config');
+      const existing = await readFile(configPath, 'utf8');
+      await writeFile(configPath, `${existing}\n${block}\n`);
+      __resetConfigCacheForTests();
+    };
+
+    beforeAll(async () => {
+      projectRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-remote-fixture-'));
+      await seedBare('solo');
+      server = http.createServer((req, res) => {
+        handleRequest(GIT_HTTP_BACKEND as string, projectRoot, req, res);
+      });
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      const addr = server.address();
+      if (addr === null || typeof addr === 'string') {
+        throw new Error('server.address() returned an unexpected value');
+      }
+      port = addr.port;
+    });
+
+    afterAll(async () => {
+      for (const dir of workDirs) {
+        await rm(dir, { recursive: true, force: true });
+      }
+      await rm(projectRoot, { recursive: true, force: true });
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    });
+
+    it('Given exactly one non-origin remote configured and no branch.main.remote, When pull runs with no explicit remote, Then it integrates from the same remote real git resolves to', async () => {
+      // Arrange — real-git twin: only "solo" configured, no branch.main.remote.
+      // Real git's `pull` porcelain refuses this exact shape outright — it
+      // requires a full branch.<name>.remote + branch.<name>.merge upstream
+      // pair and never falls back to a sole remote, unlike `fetch` (proven in
+      // fetch-http-backend.test.ts) — so the twin is built from the two
+      // plumbing steps `pull` composes: a real `git fetch` proves which
+      // remote git's shared default-remote resolution would pick (the same
+      // resolution chain `pull`'s fetch step reuses), then a local
+      // `--ff-only` merge of the fetched ref proves the integration outcome.
+      //
+      // `main` is seeded to "solo"'s pre-advance tip (not left unborn) via a
+      // real fetch + local `update-ref` — a merge target must already exist
+      // for a `--ff-only` merge to have something to fast-forward from.
+      const gitDir = await initGitRepo();
+      git(gitDir, 'remote', 'add', 'solo', bareUrl('solo'));
+      await gitAsync(gitDir, 'fetch', '-q');
+      git(gitDir, 'update-ref', 'refs/heads/main', 'refs/remotes/solo/main');
+
+      // Arrange — tsgit twin: identical sole-remote + merge tracking config,
+      // seeded to the same pre-advance baseline the same way.
+      const repo = await initTsgitRepo();
+      await appendConfig(
+        repo,
+        [
+          '[remote "solo"]',
+          `  url = ${bareUrl('solo')}`,
+          '  fetch = +refs/heads/*:refs/remotes/solo/*',
+          '[branch "main"]',
+          '  merge = refs/heads/main',
+        ].join('\n'),
+      );
+      await repo.fetch({ remote: 'solo' });
+      runGit([
+        '--git-dir',
+        repo.ctx.layout.gitDir,
+        'update-ref',
+        'refs/heads/main',
+        'refs/remotes/solo/main',
+      ]);
+
+      // Arrange — advance "solo" past the seeded baseline so pull has
+      // something real to fast-forward onto (mirrors the ff scenario in the
+      // sibling describe above).
+      const advanceDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-remote-advance-'));
+      workDirs.push(advanceDir);
+      git(advanceDir, 'clone', '-q', path.join(projectRoot, 'solo.git'), '.');
+      git(advanceDir, 'config', 'user.name', 'Ada');
+      git(advanceDir, 'config', 'user.email', 'ada@example.com');
+      await writeFile(path.join(advanceDir, 'advance.txt'), 'advance\n');
+      git(advanceDir, 'add', 'advance.txt');
+      git(advanceDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance');
+      git(advanceDir, 'push', '-q', 'origin', 'HEAD:main');
+
+      // Act (real-git twin) — resolve the sole remote and fast-forward.
+      await gitAsync(gitDir, 'fetch', '-q');
+      git(gitDir, 'merge', '-q', '--ff-only', 'refs/remotes/solo/main');
+      const gitOid = git(gitDir, 'rev-parse', 'HEAD').trim();
+
+      // Act (tsgit twin)
+      const sut = await repo.pull();
+
+      // Assert — tsgit fetched from the same remote real git resolved to,
+      // and the merge fast-forwarded onto the same commit.
+      expect(sut.fetch.remote).toBe('solo');
+      expect(sut.merge).toEqual({
+        kind: 'fast-forward',
+        id: gitOid as ObjectId,
+        branch: 'refs/heads/main' as RefName,
+      });
+    });
+  },
+);

@@ -13,7 +13,7 @@ Integration is merge-only; the `rebase` mode is added when `rebase` lands.
 repo.pull(opts?: PullOptions): Promise<PullResult>;
 
 interface PullOptions {
-  readonly remote?: string;        // default: branch.<current>.remote ?? 'origin'
+  readonly remote?: string;        // default: branch.<current>.remote ?? sole configured remote ?? 'origin'
   readonly ref?: string;           // remote ref to merge; default: short form of branch.<current>.merge
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'; forwarded to merge
   readonly prune?: boolean;        // forwarded to fetch
@@ -33,7 +33,7 @@ interface PullResult {
 
 `pull` reads the same tracking config `clone` writes:
 
-- **remote** — `opts.remote` ?? `branch.<current>.remote` ?? `'origin'`.
+- **remote** — `opts.remote` ?? `branch.<current>.remote` ?? the sole configured remote (only when exactly one `remote.*` block exists) ?? `'origin'`.
 - **ref** — `opts.ref` ?? short form of `branch.<current>.merge`. When
   neither resolves (no upstream and no explicit ref, or a detached HEAD),
   pull throws `NO_UPSTREAM_CONFIGURED`.
@@ -90,4 +90,4 @@ await repo.pull({ remote: 'upstream', ref: 'main' });
 
 - Composed from: [`fetch`](fetch.md) + [`merge`](merge.md).
 - Conflict resolution: [`merge.continue` / `merge.abort`](merge.md#state-machine--mergecontinue-and-mergeabort).
-- ADRs: [196](../../adr/196-pull-strict-upstream-clone-writes-tracking.md), [197](../../adr/197-pull-oid-passthrough-merge-reflog-label.md), [198](../../adr/198-pull-omit-rebase-until-22-3.md), [199](../../adr/199-merge-resolve-target-gitrevisions-dwim.md)
+- ADRs: [196](../../adr/196-pull-strict-upstream-clone-writes-tracking.md), [197](../../adr/197-pull-oid-passthrough-merge-reflog-label.md), [198](../../adr/198-pull-omit-rebase-until-22-3.md), [199](../../adr/199-merge-resolve-target-gitrevisions-dwim.md), [456](../../adr/456-branch-remote-resolution-primitives.md), [457](../../adr/457-fetch-default-remote-canonical-git.md)
