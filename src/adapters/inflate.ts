@@ -183,18 +183,30 @@ class GrowableBuffer {
     this.length += 1;
   }
 
-  /** Copy `length` bytes starting `distance` bytes back from the current end
-   * (byte-by-byte, so overlapping runs where `distance < length` replicate). */
+  /** Copy `length` bytes starting `distance` bytes back from the current end.
+   * Non-overlapping runs (`distance >= length`) bulk-copy in one pass;
+   * overlapping runs (`distance < length`) replicate byte-by-byte, since each
+   * source byte may itself have just been written by this same call. */
   copyBackReference(distance: number, length: number): void {
     if (distance > this.length) {
       throw decompressFailed('distance exceeds output');
     }
     this.ensureCapacity(this.length + length);
-    let readIndex = this.length - distance;
+    const readIndex = this.length - distance;
+    if (distance >= length) {
+      this.buffer.copyWithin(this.length, readIndex, readIndex + length);
+      this.length += length;
+      return;
+    }
+    this.copyOverlapping(readIndex, length);
+  }
+
+  private copyOverlapping(readIndex: number, length: number): void {
+    let read = readIndex;
     for (let i = 0; i < length; i += 1) {
-      this.buffer[this.length] = this.buffer[readIndex] as number;
+      this.buffer[this.length] = this.buffer[read] as number;
       this.length += 1;
-      readIndex += 1;
+      read += 1;
     }
   }
 
