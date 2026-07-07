@@ -1,13 +1,61 @@
 import { randomBytes } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { inflateZlibMember } from '../../../src/adapters/inflate.js';
+import { buildHuffmanTable, inflateZlibMember } from '../../../src/adapters/inflate.js';
 import { TsgitError } from '../../../src/domain/index.js';
 
 const ZLIB_CMF_CM8_CINFO7 = 0x78;
 const FCHECK_MOD = 31;
 const FCHECK_SEARCH_LIMIT = 32;
 const FDICT_SHIFT = 5;
+
+const FIRST_BLOCK_BYTE_INDEX = 2;
+const BTYPE_BIT_OFFSET = 1;
+const BTYPE_MASK = 0b11;
+const FIXED_BLOCK_TYPE = 1;
+
+/** Read BFINAL/BTYPE from the first block-header byte of a zlib member. */
+function readFirstBlockType(member: Uint8Array): number {
+  return ((member[FIRST_BLOCK_BYTE_INDEX] as number) >> BTYPE_BIT_OFFSET) & BTYPE_MASK;
+}
+
+/**
+ * LSB-first bit writer for hand-crafting raw DEFLATE block bytes in tests.
+ * `writeField` packs a value LSB-first (matches BFINAL/BTYPE/extra-bit fields);
+ * `writeCode` packs an RFC-documented MSB-first Huffman code bit string.
+ */
+class TestBitWriter {
+  private readonly bytes: number[] = [];
+  private current = 0;
+  private bitCount = 0;
+
+  writeField(value: number, count: number): void {
+    for (let i = 0; i < count; i += 1) {
+      this.pushBit((value >> i) & 1);
+    }
+  }
+
+  writeCode(msbFirstBits: string): void {
+    for (const bit of msbFirstBits) {
+      this.pushBit(bit === '1' ? 1 : 0);
+    }
+  }
+
+  toBytes(): Uint8Array {
+    if (this.bitCount > 0) this.bytes.push(this.current);
+    return new Uint8Array(this.bytes);
+  }
+
+  private pushBit(bit: number): void {
+    this.current |= bit << this.bitCount;
+    this.bitCount += 1;
+    if (this.bitCount === 8) {
+      this.bytes.push(this.current);
+      this.current = 0;
+      this.bitCount = 0;
+    }
+  }
+}
 
 /** Build a valid (or FDICT-flagged) 2-byte zlib header for hand-crafted members. */
 function buildZlibHeader(fdict: 0 | 1): [number, number] {
@@ -226,6 +274,114 @@ describe('inflateZlibMember', () => {
 
         // Act & Assert
         assertDecompressFailed(() => sut(junk, 0), 'unsupported compression method');
+      });
+    });
+  });
+
+  describe('Given the empty payload', () => {
+    describe('When decoding a fixed-Huffman member with no body bytes', () => {
+      it('Then round-trips to empty output with byte-exact bytesConsumed', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const member = deflateSync(new Uint8Array(0));
+        expect(readFirstBlockType(member)).toBe(FIXED_BLOCK_TYPE);
+
+        // Act
+        const result = sut(member, 0);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual([]);
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
+  describe('Given a fixed-Huffman member with a back-reference', () => {
+    describe('When decoding a short repetitive payload', () => {
+      it('Then round-trips with byte-exact bytesConsumed', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const payload = new TextEncoder().encode('abc'.repeat(13));
+        const member = deflateSync(payload);
+        expect(readFirstBlockType(member)).toBe(FIXED_BLOCK_TYPE);
+
+        // Act
+        const result = sut(member, 0);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
+  describe('Given a back-reference whose distance is less than its length', () => {
+    describe('When decoding a run-length payload (overlapping copy)', () => {
+      it('Then the replicated bytes are byte-exact', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const payload = new TextEncoder().encode('a'.repeat(30));
+        const member = deflateSync(payload);
+        expect(readFirstBlockType(member)).toBe(FIXED_BLOCK_TYPE);
+
+        // Act
+        const result = sut(member, 0);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
+  describe('Given a fixed-Huffman back-reference whose distance exceeds the output produced so far', () => {
+    describe('When decoding', () => {
+      it('Then throws DECOMPRESS_FAILED with the distance-exceeds-output reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(FIXED_BLOCK_TYPE, 2); // BTYPE
+        writer.writeCode('0000001'); // lit/len symbol 257 (length base 3, 0 extra bits)
+        writer.writeCode('00000'); // distance symbol 0 (distance base 1, 0 extra bits)
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'distance exceeds output');
+      });
+    });
+  });
+
+  describe('Given a fixed-Huffman length symbol that is reserved (286)', () => {
+    describe('When decoding', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-length-code reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(FIXED_BLOCK_TYPE, 2); // BTYPE
+        writer.writeCode('11000110'); // lit/len symbol 286 (reserved, never emitted)
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'invalid length code');
+      });
+    });
+  });
+});
+
+describe('buildHuffmanTable', () => {
+  describe('Given code lengths that over-subscribe the Huffman code space', () => {
+    describe('When building the table', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-code-lengths reason', () => {
+        // Arrange
+        const sut = buildHuffmanTable;
+        const overSubscribedLengths = [1, 1, 1];
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(overSubscribedLengths), 'invalid huffman code lengths');
       });
     });
   });
