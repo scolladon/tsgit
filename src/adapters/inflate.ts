@@ -38,6 +38,13 @@ const ADLER_BYTES = 4;
 const INITIAL_BUFFER_CAPACITY = 64;
 const BUFFER_GROWTH_FACTOR = 2;
 
+/**
+ * Cap on inflated output to defeat decompression-bomb amplification. Mirrors
+ * NodeCompressor's 2 GiB output cap so all three adapters refuse the same
+ * malicious member with the same error, instead of exhausting memory.
+ */
+const MAX_INFLATED_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
+
 /** RFC 1951: DEFLATE Huffman codes are at most 15 bits long. */
 const MAX_HUFFMAN_CODE_BITS = 15;
 
@@ -162,6 +169,8 @@ class GrowableBuffer {
   private buffer = new Uint8Array(INITIAL_BUFFER_CAPACITY);
   private length = 0;
 
+  constructor(private readonly maxBytes: number) {}
+
   append(chunk: Uint8Array): void {
     this.ensureCapacity(this.length + chunk.length);
     this.buffer.set(chunk, this.length);
@@ -194,6 +203,9 @@ class GrowableBuffer {
   }
 
   private ensureCapacity(required: number): void {
+    if (required > this.maxBytes) {
+      throw decompressFailed('inflated output exceeds safety cap');
+    }
     if (required <= this.buffer.length) return;
     const grown = new Uint8Array(this.nextCapacity(required));
     grown.set(this.buffer.subarray(0, this.length));
@@ -205,7 +217,7 @@ class GrowableBuffer {
     while (capacity < required) {
       capacity *= BUFFER_GROWTH_FACTOR;
     }
-    return capacity;
+    return Math.min(capacity, this.maxBytes);
   }
 }
 
@@ -522,11 +534,12 @@ function verifyTrailer(reader: BitReader, output: Uint8Array): void {
 export function inflateZlibMember(
   bytes: Uint8Array,
   offset: number,
+  maxOutputBytes: number = MAX_INFLATED_OUTPUT_BYTES,
 ): { output: Uint8Array; bytesConsumed: number } {
   const reader = new BitReader(bytes, offset);
   parseZlibHeader(reader);
 
-  const output = new GrowableBuffer();
+  const output = new GrowableBuffer(maxOutputBytes);
   decodeBlocks(reader, output);
 
   const result = output.toUint8Array();

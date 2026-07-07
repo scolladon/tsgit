@@ -596,4 +596,38 @@ describe('inflateZlibMember', () => {
       });
     });
   });
+
+  describe('Given a member whose decoded output exceeds a small safety cap', () => {
+    const payloadLength = 32;
+    const payload = new Uint8Array(payloadLength).fill(0x41);
+    const member = deflateSync(payload);
+
+    describe('When decoding with maxOutputBytes below the decoded output length', () => {
+      it('Then throws DECOMPRESS_FAILED with the safety-cap reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const smallCap = payloadLength / 2;
+
+        // Act & Assert
+        assertDecompressFailed(
+          () => sut(member, 0, smallCap),
+          'inflated output exceeds safety cap',
+        );
+      });
+    });
+
+    describe('When decoding with maxOutputBytes exactly at the decoded output length', () => {
+      it('Then decodes successfully without false-tripping the cap', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+
+        // Act
+        const result = sut(member, 0, payloadLength);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
 });
