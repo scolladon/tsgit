@@ -579,11 +579,17 @@ describe('inflateZlibMember', () => {
         writer.writeField(0, HLIT_FIELD_BITS); // HLIT = 257
         writer.writeField(0, HDIST_FIELD_BITS); // HDIST = 1
         writer.writeField(0, HCLEN_FIELD_BITS); // HCLEN = 4 (covers CL_ORDER[0..3])
+        // Two length-1 CL codes (symbols 0 and 16) keep the CL table
+        // Kraft-complete -- a single-symbol CL table is itself rejected as
+        // incomplete (pinned against real zlib), which would mask this test's
+        // intended failure. Ascending by symbol value, symbol 0 gets '0' and
+        // symbol 16 gets '1'.
         for (let position = 0; position < HCLEN_MINIMUM; position += 1) {
-          const isSixteen = position === CL_SYMBOL_SIXTEEN_POSITION;
-          writer.writeField(isSixteen ? 1 : 0, CL_LENGTH_FIELD_BITS);
+          const isUsed =
+            position === CL_SYMBOL_SIXTEEN_POSITION || position === CL_SYMBOL_ZERO_POSITION;
+          writer.writeField(isUsed ? 1 : 0, CL_LENGTH_FIELD_BITS);
         }
-        writer.writeCode('0'); // CL symbol 16 (repeat-previous) as the very first code length
+        writer.writeCode('1'); // CL symbol 16 (repeat-previous) as the very first code length
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
@@ -604,14 +610,20 @@ describe('inflateZlibMember', () => {
         writer.writeField(0, HLIT_FIELD_BITS); // HLIT = 257
         writer.writeField(0, HDIST_FIELD_BITS); // HDIST = 1 (declared total = 258)
         writer.writeField(0, HCLEN_FIELD_BITS); // HCLEN = 4 (covers CL_ORDER[0..3])
+        // Two length-1 CL codes (symbols 0 and 18) keep the CL table
+        // Kraft-complete -- a single-symbol CL table is itself rejected as
+        // incomplete (pinned against real zlib), which would mask this test's
+        // intended failure. Ascending by symbol value, symbol 0 gets '0' and
+        // symbol 18 gets '1'.
         for (let position = 0; position < HCLEN_MINIMUM; position += 1) {
-          const isEighteen = position === CL_SYMBOL_EIGHTEEN_POSITION;
-          writer.writeField(isEighteen ? 1 : 0, CL_LENGTH_FIELD_BITS);
+          const isUsed =
+            position === CL_SYMBOL_EIGHTEEN_POSITION || position === CL_SYMBOL_ZERO_POSITION;
+          writer.writeField(isUsed ? 1 : 0, CL_LENGTH_FIELD_BITS);
         }
         const maxRepeatExtra = (1 << REPEAT_ZERO_LONG_EXTRA_BITS) - 1; // repeat = 138 (max)
-        writer.writeCode('0'); // CL symbol 18 (repeat-zero-long): repeat 138
+        writer.writeCode('1'); // CL symbol 18 (repeat-zero-long): repeat 138
         writer.writeField(maxRepeatExtra, REPEAT_ZERO_LONG_EXTRA_BITS);
-        writer.writeCode('0'); // CL symbol 18 again: repeat 138 more (138 + 138 > 258)
+        writer.writeCode('1'); // CL symbol 18 again: repeat 138 more (138 + 138 > 258)
         writer.writeField(maxRepeatExtra, REPEAT_ZERO_LONG_EXTRA_BITS);
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
@@ -671,6 +683,133 @@ describe('inflateZlibMember', () => {
 
         // Act & Assert
         assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+      });
+    });
+  });
+
+  describe('Given a dynamic literal/length table that is incomplete (non-degenerate: more than one used code)', () => {
+    describe('When decoding', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-literal-lengths-set reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+
+        const litLenLengths = new Array(HLIT_BASE).fill(0); // symbols 0..256
+        litLenLengths[0] = 2;
+        litLenLengths[1] = 2;
+        litLenLengths[END_OF_BLOCK_SYMBOL] = 2; // 3 codes of length 2: Kraft = 3/4, incomplete
+        const distLengths = [1]; // valid degenerate carve-out; isolates the lit/len failure
+        writeGeneralDynamicHeader(writer, litLenLengths, distLengths);
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'invalid literal/lengths set');
+      });
+    });
+  });
+
+  describe('Given a dynamic distance table that is incomplete (non-degenerate: more than one used code)', () => {
+    describe('When decoding', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-distances-set reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+
+        const litLenLengths = new Array(HLIT_BASE).fill(0); // symbols 0..256
+        litLenLengths[0] = 1;
+        litLenLengths[END_OF_BLOCK_SYMBOL] = 1; // complete minimal lit/len table
+        const distLengths = [2, 2]; // 2 codes of length 2: Kraft = 1/2, incomplete, non-degenerate
+        writeGeneralDynamicHeader(writer, litLenLengths, distLengths);
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'invalid distances set');
+      });
+    });
+  });
+
+  describe('Given a dynamic block whose distance table has exactly one used code (degenerate, incomplete)', () => {
+    describe('When decoding a back-reference that selects that single code', () => {
+      it('Then decodes successfully instead of rejecting the table as incomplete', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+
+        const litLenLengths = new Array(HLIT_BASE + 1).fill(0); // symbols 0..257
+        litLenLengths[0] = 2; // literal 0
+        litLenLengths[257] = 2; // length symbol (base 3, 0 extra bits)
+        litLenLengths[END_OF_BLOCK_SYMBOL] = 1; // Kraft-complete: 1/4 + 1/4 + 1/2 = 1
+        const distLengths = [1]; // single used code, length 1 -- incomplete, but the accepted carve-out
+        writeGeneralDynamicHeader(writer, litLenLengths, distLengths);
+
+        const litLenCodes = buildCanonicalCodes(litLenLengths);
+        const distCodes = buildCanonicalCodes(distLengths);
+        writer.writeCode(litLenCodes.get(0) as string); // literal 0
+        writer.writeCode(litLenCodes.get(257) as string); // length 3
+        writer.writeCode(distCodes.get(0) as string); // the single distance code -> distance base 1
+        writer.writeCode(litLenCodes.get(END_OF_BLOCK_SYMBOL) as string);
+
+        const payload = new Uint8Array([0, 0, 0, 0]);
+        const member = new Uint8Array([
+          cmf,
+          flg,
+          ...writer.toBytes(),
+          ...adlerTrailerBytes(payload),
+        ]);
+
+        // Act
+        const result = sut(member, 0);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
+  describe('Given a dynamic code-length (CL) table that is incomplete', () => {
+    describe('When decoding', () => {
+      it('Then throws DECOMPRESS_FAILED with the invalid-code-lengths-set reason', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const [cmf, flg] = buildZlibHeader(0);
+        const writer = new TestBitWriter();
+        writer.writeField(1, 1); // BFINAL
+        writer.writeField(DYNAMIC_BLOCK_TYPE, 2); // BTYPE
+        writer.writeField(0, HLIT_FIELD_BITS); // HLIT = 257
+        writer.writeField(0, HDIST_FIELD_BITS); // HDIST = 1
+
+        // HCLEN covers CL_ORDER up to CL-symbol "1"'s position. CL-alphabet
+        // value "0" gets a 1-bit code, value "1" a 2-bit code -- Kraft = 3/4,
+        // incomplete, two used codes (non-degenerate). Still expressive enough
+        // to encode a fully valid, complete outer table, isolating the CL
+        // table's own rejection from the outer tables' validity.
+        const hclen = HCLEN_COVERING_ZERO_AND_ONE;
+        writer.writeField(hclen - HCLEN_MINIMUM, HCLEN_FIELD_BITS);
+        for (let position = 0; position < hclen; position += 1) {
+          const symbol = CL_ORDER[position];
+          const bits = symbol === 0 ? 1 : symbol === 1 ? 2 : 0;
+          writer.writeField(bits, CL_LENGTH_FIELD_BITS);
+        }
+
+        // CL codewords: value "0" (length 1) -> '0'; value "1" (length 2) -> '10'.
+        writer.writeCode('10'); // lit/len symbol 0 -> length 1
+        for (let symbol = 1; symbol < HLIT_BASE - 1; symbol += 1) writer.writeCode('0'); // unused
+        writer.writeCode('10'); // lit/len symbol 256 (EOB) -> length 1
+        writer.writeCode('10'); // dist symbol 0 -> length 1
+        const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
+
+        // Act & Assert
+        assertDecompressFailed(() => sut(member, 0), 'invalid code lengths set');
       });
     });
   });

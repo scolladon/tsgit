@@ -271,12 +271,30 @@ interface HuffmanTable {
   readonly symbols: Uint16Array;
 }
 
+/**
+ * Which alphabet a table decodes, governing how strictly RFC 1951
+ * completeness is enforced (mirrors zlib's `inftrees.c`, pinned empirically
+ * against `node:zlib`):
+ * - 'fixed': the two RFC-hardcoded tables, built once at module load and
+ *   never checked for completeness — the fixed distance table is
+ *   intentionally Kraft-incomplete (30 length-5 codes, sum 30/32).
+ * - 'code-length': the CL table must always be complete.
+ * - 'literal-length' / 'distance': dynamic-header tables must be complete,
+ *   except for the degenerate single-code case (exactly one used symbol, at
+ *   length 1) that real zlib also accepts.
+ */
+type HuffmanTableRole = 'fixed' | 'code-length' | 'literal-length' | 'distance';
+
 /** Build a canonical Huffman decode table from per-symbol code lengths
  * (0 = symbol unused). Throws on an over-subscribed code (more codes of a
- * given length than the bit width allows). */
-function buildHuffmanTable(codeLengths: ReadonlyArray<number>): HuffmanTable {
+ * given length than the bit width allows) or, depending on `role`, an
+ * incomplete one. */
+function buildHuffmanTable(
+  codeLengths: ReadonlyArray<number>,
+  role: HuffmanTableRole,
+): HuffmanTable {
   const counts = countCodeLengths(codeLengths);
-  assertNotOverSubscribed(counts);
+  assertComplete(analyzeCodeLengths(counts), role);
   const symbols = orderSymbolsByLength(codeLengths, counts);
   return { counts, symbols };
 }
@@ -289,16 +307,44 @@ function countCodeLengths(codeLengths: ReadonlyArray<number>): Uint16Array {
   return counts;
 }
 
-/** An over-subscribed code claims more codes of some length than the bit
- * width allows (e.g. three 1-bit codes, when only two 1-bit codes exist). */
-function assertNotOverSubscribed(counts: Uint16Array): void {
+interface CodeLengthSummary {
+  readonly unusedCodes: number;
+  readonly maxUsedLength: number;
+}
+
+/** Walk code-length counts per RFC 1951 canonical construction, throwing on
+ * an over-subscribed code (more codes of some length than the bit width
+ * allows — e.g. three 1-bit codes, when only two exist). Returns the
+ * Kraft-inequality leftover and highest used length, both needed to judge
+ * completeness. */
+function analyzeCodeLengths(counts: Uint16Array): CodeLengthSummary {
   let unusedCodes = 1;
+  let maxUsedLength = 0;
   for (let length = 1; length <= MAX_HUFFMAN_CODE_BITS; length += 1) {
-    unusedCodes = unusedCodes * 2 - (counts[length] as number);
+    const count = counts[length] as number;
+    if (count > 0) maxUsedLength = length;
+    unusedCodes = unusedCodes * 2 - count;
     if (unusedCodes < 0) {
       throw decompressFailed('invalid huffman code lengths');
     }
   }
+  return { unusedCodes, maxUsedLength };
+}
+
+/** RFC 1951 permits an incomplete literal/length or distance code only in the
+ * degenerate one-symbol case (a single length-1 code); a code-length table
+ * must always be complete. Both rules pinned against real zlib. */
+function assertComplete(summary: CodeLengthSummary, role: HuffmanTableRole): void {
+  if (role === 'fixed') return;
+  if (summary.unusedCodes === 0) return;
+  if (role !== 'code-length' && summary.maxUsedLength === 1) return;
+  throw decompressFailed(incompleteCodeReason(role));
+}
+
+function incompleteCodeReason(role: 'code-length' | 'literal-length' | 'distance'): string {
+  if (role === 'code-length') return 'invalid code lengths set';
+  if (role === 'literal-length') return 'invalid literal/lengths set';
+  return 'invalid distances set';
 }
 
 function orderSymbolsByLength(
@@ -353,8 +399,8 @@ function buildFixedDistanceCodeLengths(): number[] {
   return Array(FIXED_DIST_CODE_COUNT).fill(FIXED_DIST_BITS) as number[];
 }
 
-const FIXED_LITLEN_TABLE = buildHuffmanTable(buildFixedLiteralLengthCodeLengths());
-const FIXED_DIST_TABLE = buildHuffmanTable(buildFixedDistanceCodeLengths());
+const FIXED_LITLEN_TABLE = buildHuffmanTable(buildFixedLiteralLengthCodeLengths(), 'fixed');
+const FIXED_DIST_TABLE = buildHuffmanTable(buildFixedDistanceCodeLengths(), 'fixed');
 
 function decodeLength(reader: BitReader, symbol: number): number {
   const index = symbol - MIN_LENGTH_SYMBOL;
@@ -483,12 +529,12 @@ function decodeDynamicHeader(reader: BitReader): DynamicTables {
   const hclen = reader.readBits(HCLEN_EXTRA_BITS) + HCLEN_BASE;
 
   const clLengths = readCodeLengthCodeLengths(reader, hclen);
-  const clTable = buildHuffmanTable(clLengths);
+  const clTable = buildHuffmanTable(clLengths, 'code-length');
 
   const codeLengths = decodeCodeLengths(reader, clTable, hlit + hdist);
   return {
-    litLenTable: buildHuffmanTable(codeLengths.slice(0, hlit)),
-    distTable: buildHuffmanTable(codeLengths.slice(hlit)),
+    litLenTable: buildHuffmanTable(codeLengths.slice(0, hlit), 'literal-length'),
+    distTable: buildHuffmanTable(codeLengths.slice(hlit), 'distance'),
   };
 }
 
