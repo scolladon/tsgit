@@ -48,6 +48,25 @@ const MAX_INFLATED_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
 /** RFC 1951: DEFLATE Huffman codes are at most 15 bits long. */
 const MAX_HUFFMAN_CODE_BITS = 15;
 
+/**
+ * Width of the root Huffman lookup table: peeking this many bits resolves
+ * any code of at most this length in one step (table index -> symbol + code
+ * length), instead of walking the canonical tree bit by bit. Codes longer
+ * than this (up to the RFC 1951 maximum of 15 bits) fall back to the
+ * canonical bit-walk. 9 covers every code-length-alphabet code (whose
+ * lengths are capped at 7 by their own 3-bit encoding) and the common case
+ * for literal/length and distance codes, while keeping the table itself
+ * small (512 entries).
+ */
+const ROOT_BITS = 9;
+const ROOT_TABLE_SIZE = 1 << ROOT_BITS;
+/** Root-table sentinel meaning "not resolvable from the root window alone"
+ * -- either the code is longer than ROOT_BITS, or no code uses this prefix
+ * at all. Both cases defer to the canonical bit-walk, which already handles
+ * long codes and correctly rejects unmatched prefixes. Reuses the same
+ * "0 = absent" convention as an unused code length. */
+const ROOT_UNRESOLVED_LENGTH = 0;
+
 /** RFC 1951 length codes 257-285 (index 0 is symbol 257). */
 const LENGTH_BASE: ReadonlyArray<number> = [
   3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
@@ -112,11 +131,23 @@ const REPEAT_ZERO_LONG_BASE = 11;
  * bounds-checked) once per 8 bits consumed rather than once per bit. Consuming
  * bits is then a mask + shift, no per-bit function-call chain.
  *
+ * `peekBits`/`dropBits` split that fill-then-consume pair so a caller can look
+ * ahead before deciding how much to consume (the root Huffman lookup table
+ * peeks a fixed window, then drops only the resolved code's length). Unlike
+ * `readBits`, `peekBits` never throws on a shortfall: it fills as many whole
+ * bytes as remain and reports how many of the peeked bits are backed by real
+ * input, so a caller can tell a genuine resolution (using only real bits)
+ * from one that would depend on invented zero padding -- see `PeekResult`.
+ * `dropBits` reconciles a peek that fetched whole bytes ahead of a shorter
+ * actual code by giving back any now-spare ones (`ungetSpareBytes`), which
+ * restores the invariant below and keeps `readBits` (a peek immediately
+ * followed by a matching drop, throwing if that shortfall check fails)
+ * behaviourally identical to before.
+ *
  * Invariant: after every public call, `bitCount` is strictly less than
- * `BITS_PER_BYTE` — `fill` never buffers a whole spare byte beyond what a
- * request needs, and `readBits` always drains exactly the bits it filled for.
- * That keeps the byte-fetch cadence (and therefore the exact physical byte at
- * which an out-of-input error fires) identical to a bit-at-a-time reader.
+ * `BITS_PER_BYTE`. That keeps the byte-fetch cadence (and therefore the exact
+ * physical byte at which an out-of-input error fires) identical to a
+ * bit-at-a-time reader.
  */
 class BitReader {
   private bytePos: number;
@@ -137,13 +168,43 @@ class BitReader {
     return this.bytePos;
   }
 
+  /** Consume exactly `count` bits, throwing if that many aren't available.
+   * Every caller that unconditionally needs `count` real bits next (header
+   * fields, extra bits, the canonical bit-walk's one-bit steps) uses this. */
   readBits(count: number): number {
+    const peeked = this.peekBits(count);
+    if (peeked.availableBits < count) {
+      throw decompressFailed('unexpected end of deflate stream');
+    }
+    this.dropBits(count);
+    return peeked.value;
+  }
+
+  /** Look at the next `count` bits without consuming them and without
+   * requiring that many actually exist in the input: fills the accumulator
+   * with as many whole bytes as remain (at most enough for `count` bits),
+   * then returns them low-bit-first, alongside how many of those low
+   * `count` bits are backed by real input (`availableBits`) -- any bits
+   * beyond that are zero only because there was nothing left to load, not a
+   * genuine zero. A resolution that depends only on the bits within
+   * `availableBits` is exact; pair with `dropBits` to consume it. One that
+   * needs more must fall back to `readBits`, which throws exactly where a
+   * bit-at-a-time reader would. */
+  peekBits(count: number): PeekResult {
     this.fill(count);
-    const mask = (1 << count) - 1;
-    const value = this.bitBuffer & mask;
+    return {
+      value: this.bitBuffer & ((1 << count) - 1),
+      availableBits: Math.min(this.bitCount, count),
+    };
+  }
+
+  /** Consume `count` bits already confirmed available (via `peekBits` or
+   * `readBits`). Restores the class invariant afterward via
+   * `ungetSpareBytes`. */
+  dropBits(count: number): void {
     this.bitBuffer >>>= count;
     this.bitCount -= count;
-    return value;
+    this.ungetSpareBytes();
   }
 
   /** Discard any sub-byte remainder from the accumulator. Safe to zero both
@@ -164,18 +225,37 @@ class BitReader {
   }
 
   /** Load whole bytes into the accumulator until it holds at least `count`
-   * bits, bounds-checking each physical byte exactly when it is needed —
-   * never speculatively past what the caller asked for. */
+   * bits or the input is exhausted. Never throws: a genuine shortfall is
+   * reported via `PeekResult.availableBits` and raised by callers that
+   * require it (`readBits`), not by this fill step itself. */
   private fill(count: number): void {
-    while (this.bitCount < count) {
-      if (this.bytePos >= this.bytes.length) {
-        throw decompressFailed('unexpected end of deflate stream');
-      }
+    while (this.bitCount < count && this.bytePos < this.bytes.length) {
       this.bitBuffer |= (this.bytes[this.bytePos] as number) << this.bitCount;
       this.bitCount += BITS_PER_BYTE;
       this.bytePos += 1;
     }
   }
+
+  /** Give back whole bytes buffered ahead of actual need -- e.g. a root-table
+   * peek that filled a full extra byte to reach `ROOT_BITS`, when the code
+   * it resolved to was shorter. Restores `bitCount < BITS_PER_BYTE`, so the
+   * byte-fetch cadence (and therefore the exact physical byte at which a
+   * later out-of-input error fires) matches a bit-at-a-time reader. */
+  private ungetSpareBytes(): void {
+    const spareBytes = Math.floor(this.bitCount / BITS_PER_BYTE);
+    if (spareBytes === 0) return;
+    this.bitCount -= spareBytes * BITS_PER_BYTE;
+    this.bitBuffer &= (1 << this.bitCount) - 1;
+    this.bytePos -= spareBytes;
+  }
+}
+
+/** Result of a non-throwing bit peek: `value` holds the requested bit
+ * window (zero-padded beyond `availableBits` when the input ran out);
+ * `availableBits` is how many of its low bits are backed by real input. */
+interface PeekResult {
+  readonly value: number;
+  readonly availableBits: number;
 }
 
 /** Growable byte accumulator: doubles capacity on overflow, trims on read-out. */
@@ -291,9 +371,21 @@ function decodeStoredBlock(reader: BitReader, output: GrowableBuffer): void {
 }
 
 /** Canonical Huffman decode structure: per-length code counts plus symbols
- * ordered by (length, symbol), as built by `buildHuffmanTable`. */
+ * ordered by (length, symbol), as built by `buildHuffmanTable`, plus a root
+ * lookup table for one-step decoding of codes up to `ROOT_BITS` long. */
 interface HuffmanTable {
   readonly counts: Uint16Array;
+  readonly symbols: Uint16Array;
+  readonly root: RootTable;
+}
+
+/** Root Huffman lookup table: indexed by the next `ROOT_BITS` bits read in
+ * natural (LSB-first) order, each slot resolves either to a code's length
+ * and symbol (for codes of at most `ROOT_BITS` bits) or to
+ * `ROOT_UNRESOLVED_LENGTH`, meaning the canonical bit-walk must be used
+ * instead (a longer code, or no code at all for that prefix). */
+interface RootTable {
+  readonly lengths: Uint8Array;
   readonly symbols: Uint16Array;
 }
 
@@ -322,7 +414,7 @@ function buildHuffmanTable(
   const counts = countCodeLengths(codeLengths);
   assertComplete(analyzeCodeLengths(counts), role);
   const symbols = orderSymbolsByLength(codeLengths, counts);
-  return { counts, symbols };
+  return { counts, symbols, root: buildRootTable(counts, symbols) };
 }
 
 function countCodeLengths(codeLengths: ReadonlyArray<number>): Uint16Array {
@@ -401,10 +493,81 @@ function firstIndexByLength(counts: Uint16Array): Uint16Array {
   return offsets;
 }
 
-/** Decode one symbol by walking the bitstream one bit at a time against the
- * canonical table (bit-at-a-time is simplest and mutation-clean; no fast
- * lookup table to keep magic constants down). */
+/** Build the root lookup table from a canonical (length, symbol)-ordered
+ * Huffman table: walks the same per-length code assignment
+ * `decodeSymbolByWalk` would (`first`/`index` running per length), and for
+ * every code of at most `ROOT_BITS` bits, fills every root-table slot whose
+ * next `ROOT_BITS`-bit window could hold it — i.e. every value of the
+ * "don't care" bits beyond the code's own length. */
+function buildRootTable(counts: Uint16Array, symbols: Uint16Array): RootTable {
+  const lengths = new Uint8Array(ROOT_TABLE_SIZE);
+  const rootSymbols = new Uint16Array(ROOT_TABLE_SIZE);
+  let first = 0;
+  let index = 0;
+  for (let length = 1; length <= ROOT_BITS; length += 1) {
+    const count = counts[length] as number;
+    for (let offset = 0; offset < count; offset += 1) {
+      const symbol = symbols[index + offset] as number;
+      fillRootEntries(lengths, rootSymbols, first + offset, length, symbol);
+    }
+    index += count;
+    first += count;
+    first <<= 1;
+  }
+  return { lengths, symbols: rootSymbols };
+}
+
+/** Fill every root-table slot whose low `length` bits equal `code`'s bits in
+ * natural (LSB-first) reading order. `code` is the canonical, MSB-first
+ * value `decodeSymbolByWalk` would accumulate; reversing it converts to the
+ * order a root-window peek delivers, then every combination of the
+ * remaining `ROOT_BITS - length` "don't care" bits is a valid slot. */
+function fillRootEntries(
+  lengths: Uint8Array,
+  symbols: Uint16Array,
+  code: number,
+  length: number,
+  symbol: number,
+): void {
+  const naturalPrefix = reverseBits(code, length);
+  const step = 1 << length;
+  for (let entry = naturalPrefix; entry < ROOT_TABLE_SIZE; entry += step) {
+    lengths[entry] = length;
+    symbols[entry] = symbol;
+  }
+}
+
+/** Reverse the low `bitCount` bits of `value` (MSB-first <-> LSB-first). */
+function reverseBits(value: number, bitCount: number): number {
+  let reversed = 0;
+  for (let bit = 0; bit < bitCount; bit += 1) {
+    reversed = (reversed << 1) | ((value >> bit) & 1);
+  }
+  return reversed;
+}
+
+/** Decode one symbol: peek the next `ROOT_BITS` bits and resolve via the
+ * precomputed root table in one step for codes of at most `ROOT_BITS` bits;
+ * fall back to the canonical bit-walk for longer codes, a peek window no
+ * code uses at all, or a resolution that would depend on padding bits
+ * invented because the input ran out before a full `ROOT_BITS` window was
+ * available (the walk throws `'unexpected end of deflate stream'` or
+ * `'invalid huffman code'` for those cases, exactly as it did before the
+ * root table existed). */
 function decodeSymbol(reader: BitReader, table: HuffmanTable): number {
+  const peeked = reader.peekBits(ROOT_BITS);
+  const length = table.root.lengths[peeked.value] as number;
+  if (length === ROOT_UNRESOLVED_LENGTH || length > peeked.availableBits) {
+    return decodeSymbolByWalk(reader, table);
+  }
+  reader.dropBits(length);
+  return table.root.symbols[peeked.value] as number;
+}
+
+/** Canonical Huffman decode by walking the bitstream one bit at a time
+ * against the canonical table — the root table's fallback for codes longer
+ * than `ROOT_BITS`, and for peek windows no code resolves to at all. */
+function decodeSymbolByWalk(reader: BitReader, table: HuffmanTable): number {
   let code = 0;
   let first = 0;
   let index = 0;
