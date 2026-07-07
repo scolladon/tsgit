@@ -1032,7 +1032,19 @@
     "upstreammode",
     "upstreamnomerge",
     "upstreamonly",
-    "upstreampush"
+    "upstreampush",
+    "authorises",
+    "cinfo",
+    "desync",
+    "fcheck",
+    "fdict",
+    "fflate",
+    "hclen",
+    "hdist",
+    "hlit",
+    "litlen",
+    "nlen",
+    "strm"
   ],
   "ignorePaths": [
     "node_modules",

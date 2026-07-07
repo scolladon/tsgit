@@ -154,7 +154,7 @@ fixed Huffman. To avoid silent block-type drift across zlib versions, the test's
 Arrange MUST assert the member actually uses BTYPE=01 (read `BFINAL/BTYPE` from the
 first byte after the 2-byte header: `(member[2] >> 1) & 0b11 === 1`) before asserting
 the round-trip — a drift then fails loudly instead of skipping the path. For
-back-reference coverage, a short repetitive payload (`'abcabcabcabcabcabc…'`, ~40 B)
+back-reference coverage, a short repetitive payload (`'abc'` repeated, ~40 B)
 that stays a single fixed block exercises length/distance copy including an
 overlapping copy.
 
