@@ -33,10 +33,8 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   the merge confirmation.
 - **`pre-pr-gate: npm outdated`** — the CI `deps` job gates on freshness; catching it
   pre-PR saves a round. Remediation: bump in a `chore(deps): bump <pkgs>` commit,
-  re-validate. **Exceptions:** `@ls-lint/ls-lint` flags at its own installed version
-  (publisher bug) — local-only, ignore, don't bump. `@cloudflare/workers-types` v5 is
-  filtered in `check:deps` while `wrangler` still peers `^4` — drop the grep filter
-  once wrangler's peer range accepts `^5`.
+  re-validate. **Exception:** `@ls-lint/ls-lint` flags at its own installed version
+  (publisher bug) — local-only, ignore, don't bump.
 - **`review-batch: check:spelling`** — the md-scoped commit hook misses words in TS test
   titles/comments and doc filenames; per-batch spelling beats a failed validate. The
   cspell dict lags on some British `-ising/-ised` forms — full validate is the authority.
