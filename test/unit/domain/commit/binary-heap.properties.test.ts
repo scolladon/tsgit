@@ -55,14 +55,17 @@ describe('Given an arbitrary sequence of entries, When pushed then fully drained
     // Arrange + Act + Assert
     fc.assert(
       fc.property(entriesArb, (entries) => {
+        // Arrange
+        const sut = pushAll(entries);
+
         // Act
-        const sut = drain(pushAll(entries));
+        const result = drain(sut);
 
         // Assert — compare the precedes-invariant projection so genuine ties (equal
         // date+oid but different value) don't spuriously fail: Array.sort is not
         // guaranteed to agree with the heap's sift order on fully-equal keys.
         const expected = entries.slice().sort(byLess).map(precedesProjection);
-        expect(sut.map(precedesProjection)).toEqual(expected);
+        expect(result.map(precedesProjection)).toEqual(expected);
       }),
       { numRuns: 200 },
     );
@@ -74,12 +77,15 @@ describe('Given an arbitrary sequence of entries, When drained one at a time', (
     // Arrange + Act + Assert
     fc.assert(
       fc.property(entriesArb, (entries) => {
+        // Arrange
+        const sut = pushAll(entries);
+
         // Act
-        const sut = drain(pushAll(entries));
+        const result = drain(sut);
 
         // Assert — the heap's pop invariant: a later pop never precedes an earlier one.
-        for (let i = 1; i < sut.length; i += 1) {
-          expect(less(sut[i]!, sut[i - 1]!)).toBe(false);
+        for (let i = 1; i < result.length; i += 1) {
+          expect(less(result[i]!, result[i - 1]!)).toBe(false);
         }
       }),
       { numRuns: 100 },
@@ -90,11 +96,14 @@ describe('Given an arbitrary sequence of entries, When drained one at a time', (
     // Arrange + Act + Assert
     fc.assert(
       fc.property(entriesArb, (entries) => {
+        // Arrange
+        const sut = pushAll(entries);
+
         // Act
-        const sut = drain(pushAll(entries));
+        const result = drain(sut);
 
         // Assert — no drops, no duplicates: same values, ignoring order.
-        const drainedValues = sut.map((entry) => entry.value).sort((x, y) => x - y);
+        const drainedValues = result.map((entry) => entry.value).sort((x, y) => x - y);
         const sourceValues = entries.map((entry) => entry.value).sort((x, y) => x - y);
         expect(drainedValues).toEqual(sourceValues);
       }),
