@@ -1,5 +1,6 @@
 import type { BisectCandidate } from '../../domain/bisect/index.js';
 import { estimateSteps, findBisection } from '../../domain/bisect/index.js';
+import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import { invalidWalkInput } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -44,28 +45,6 @@ const paintReachable = async (
   return visited;
 };
 
-/**
- * FIFO-stable priority-queue entry for the bisect candidate walk.
- * Equal-date tie-break: smaller `ins` (earlier insertion) = higher priority → FIFO.
- * This replicates git's `prio_queue` insertion-counter tie-break, which is the
- * only ordering faithful to `do_find_bisection`'s list-order tie-break.
- * The shared `priority-queue.ts` uses oid as the tie-break (faithful for
- * order-independent consumers like merge-base/blame) and must NOT be changed.
- */
-type WalkEntry = { readonly id: ObjectId; readonly date: number; readonly ins: number };
-
-// equivalent-mutant (a.date===b.date variants and a.ins<=b.ins): newly enqueued entries
-// always receive the highest ins value; a.ins < b.ins never fires when a is new; FIFO
-// ordering is preserved by insertion order regardless of the tie-break sub-expression.
-const entryPrecedes = (a: WalkEntry, b: WalkEntry): boolean =>
-  a.date > b.date || (a.date === b.date && a.ins < b.ins);
-
-const enqueueWalkEntry = (queue: WalkEntry[], entry: WalkEntry): void => {
-  let i = 0;
-  while (i < queue.length && !entryPrecedes(entry, queue[i]!)) i += 1;
-  queue.splice(i, 0, entry);
-};
-
 type WalkNode = {
   readonly id: ObjectId;
   readonly date: number;
@@ -90,6 +69,17 @@ const makeEntryReader = (ctx: Context): ((id: ObjectId) => Promise<CommitEntry>)
  * first-parent-first — skipping UNINTERESTING (good-reachable) commits.
  * Returns the visited commits newest-first.
  */
+type HeapEntry = { readonly id: ObjectId; readonly date: number; readonly ins: number };
+
+// FIFO-stable tie-break: smaller `ins` (earlier insertion) = higher priority. This
+// replicates git's `prio_queue` insertion-counter tie-break, the only ordering
+// faithful to `do_find_bisection`'s list-order tie-break.
+// equivalent-mutant (a.date===b.date variants and a.ins<=b.ins): newly enqueued entries
+// always receive the highest ins value; a.ins < b.ins never fires when a is new; FIFO
+// ordering is preserved by insertion order regardless of the tie-break sub-expression.
+const less = (a: HeapEntry, b: HeapEntry): boolean =>
+  a.date > b.date || (a.date === b.date && a.ins < b.ins);
+
 const walkCandidatesNewestFirst = async (
   getEntry: (id: ObjectId) => Promise<CommitEntry>,
   bad: ObjectId,
@@ -99,13 +89,13 @@ const walkCandidatesNewestFirst = async (
   let ins = 0;
   const visited = new Set<ObjectId>();
   const newestFirst: WalkNode[] = [];
-  const walkQueue: WalkEntry[] = [];
+  const heap = new BinaryHeap<HeapEntry>(less);
   // equivalent-mutant (ins--): both post-fix operators return 0 for bad's entry (ins starts at 0);
   // subsequent parents use ins++ from the modified value, preserving relative ordering.
-  enqueueWalkEntry(walkQueue, { id: bad, date: badDate, ins: ins++ });
+  heap.push({ id: bad, date: badDate, ins: ins++ });
 
-  while (walkQueue.length > 0) {
-    const { id } = walkQueue.shift()!;
+  while (heap.size() > 0) {
+    const { id } = heap.pop()!;
     if (visited.has(id)) continue;
     visited.add(id);
     const entry = await getEntry(id);
@@ -113,7 +103,7 @@ const walkCandidatesNewestFirst = async (
     for (const parent of entry.parents) {
       if (visited.has(parent) || goodReachable.has(parent)) continue;
       const pe = await getEntry(parent);
-      enqueueWalkEntry(walkQueue, { id: parent, date: pe.date, ins: ins++ });
+      heap.push({ id: parent, date: pe.date, ins: ins++ });
     }
   }
   return newestFirst;
