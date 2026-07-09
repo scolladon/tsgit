@@ -81,7 +81,7 @@ Topology:  root ← a1(ts=+1) ← a2(ts=+3) ┐
 
 git rev-list --date-order  ⇒  emits  b2  then  a2
   → FIFO: b2 came from M's parent[0], enqueued first, pops first.
-  → oid-ascending would emit a2 first (ae9a < effc) — the OPPOSITE.
+  → oid-ascending would emit a2 first (a2.oid < b2.oid) — the OPPOSITE.
 ```
 
 So the FIFO tie-break and the oid tie-break **disagree** on this diamond. This is
