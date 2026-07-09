@@ -42,16 +42,18 @@ const drain = <T>(heap: BinaryHeap<T>): T[] => {
   return drained;
 };
 
-describe('Given an empty heap', () => {
-  it('Then size is 0', () => {
+describe('Given an empty heap, When size is read', () => {
+  it('Then it is 0', () => {
     // Arrange
     const sut = new BinaryHeap<number>(numericLess);
 
     // Act + Assert
     expect(sut.size()).toBe(0);
   });
+});
 
-  it('Then pop is undefined', () => {
+describe('Given an empty heap, When popped', () => {
+  it('Then it returns undefined', () => {
     // Arrange
     const sut = new BinaryHeap<number>(numericLess);
 
@@ -61,8 +63,10 @@ describe('Given an empty heap', () => {
     // Assert
     expect(result).toBeUndefined();
   });
+});
 
-  it('Then entries is empty', () => {
+describe('Given an empty heap, When entries is read', () => {
+  it('Then it is empty', () => {
     // Arrange
     const sut = new BinaryHeap<number>(numericLess);
 
