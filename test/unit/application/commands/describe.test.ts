@@ -1133,3 +1133,80 @@ describe('describe --contains', () => {
     }
   });
 });
+
+const withCountedObjectReads = (ctx: Context): { counted: Context; reads: () => number } => {
+  let count = 0;
+  const baseFs = ctx.fs;
+  const countedFs: Context['fs'] = {
+    ...baseFs,
+    read: (path) => {
+      if (path.includes('objects/')) {
+        count += 1;
+      }
+      return baseFs.read(path);
+    },
+  };
+  return { counted: { ...ctx, fs: countedFs }, reads: () => count };
+};
+
+describe('Given a deep chain with an annotated tag three commits below HEAD', () => {
+  const arrange = async (): Promise<{ counted: Context; reads: () => number }> => {
+    const ctx = await seed();
+    const oids: ObjectId[] = [];
+    for (let i = 0; i < 30; i += 1) {
+      oids.push(await commitFile(ctx, `c${i}`));
+    }
+    const target = oids[26] as ObjectId;
+    clock += 60;
+    await annotatedTag(ctx, 'near', target, clock);
+    return withCountedObjectReads(ctx);
+  };
+
+  describe('When describing HEAD', () => {
+    it('Then the near tag is selected at distance three', async () => {
+      // Arrange
+      const { counted } = await arrange();
+
+      // Act
+      const result = await describeCmd(counted);
+
+      // Assert
+      expect(result.name).toBe('near');
+      expect(result.distance).toBe(3);
+    });
+
+    it('Then the walk stops at the covered last path instead of reading the whole chain', async () => {
+      // Arrange
+      const { counted, reads } = await arrange();
+
+      // Act
+      await describeCmd(counted);
+
+      // Assert
+      expect(reads()).toBe(7);
+    });
+  });
+});
+
+describe('Given only a lightweight tag on a deep chain in tags mode', () => {
+  describe('When describing HEAD', () => {
+    it('Then no annotated candidate exists so the walk reads the full chain', async () => {
+      // Arrange
+      const ctx = await seed();
+      const oids: ObjectId[] = [];
+      for (let i = 0; i < 10; i += 1) {
+        oids.push(await commitFile(ctx, `l${i}`));
+      }
+      await tagCreate(ctx, { name: 'light', target: oids[6] as ObjectId });
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      const result = await describeCmd(counted, undefined, { tags: true });
+
+      // Assert
+      expect(result.name).toBe('light');
+      expect(result.distance).toBe(3);
+      expect(reads()).toBe(12);
+    });
+  });
+});

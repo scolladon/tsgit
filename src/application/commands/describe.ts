@@ -24,7 +24,11 @@ import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { commitDateWalk, selectParents } from '../primitives/internal/commit-date-walk.js';
+import {
+  commitDateWalk,
+  type DateWalkStep,
+  selectParents,
+} from '../primitives/internal/commit-date-walk.js';
 import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -240,6 +244,48 @@ interface SelectionOutcome {
  * `finish_depth_computation`). git's secondary "covered path" break is omitted:
  * it cannot change the winner or its finalised depth, only the commits traversed.
  */
+const ANNOTATED_PRIORITY = 2;
+
+const coveredByAllMinDepth = (
+  candidates: ReadonlyArray<Candidate>,
+  reached: ReadonlySet<number> | undefined,
+): boolean => {
+  if (reached === undefined) return false;
+  const minDepth = Math.min(...candidates.map((candidate) => candidate.depth));
+  return candidates.every(
+    (candidate) => candidate.depth !== minDepth || reached.has(candidate.foundOrder),
+  );
+};
+
+type NameRegistration = {
+  readonly annotated: number;
+  readonly skippedLowPriority: boolean;
+};
+
+const registerName = (
+  named: DescribeName,
+  minPriority: number,
+  oid: ObjectId,
+  depth: number,
+  candidates: Candidate[],
+  reach: Map<ObjectId, Set<number>>,
+): NameRegistration => {
+  if (named.priority < minPriority) {
+    return { annotated: 0, skippedLowPriority: true };
+  }
+  const index = candidates.length;
+  candidates.push({ name: named.name, commitOid: oid, depth, foundOrder: index });
+  reachSet(reach, oid).add(index);
+  return { annotated: named.priority === ANNOTATED_PRIORITY ? 1 : 0, skippedLowPriority: false };
+};
+
+const lastPathCovered = (
+  annotatedCount: number,
+  step: DateWalkStep,
+  candidates: ReadonlyArray<Candidate>,
+  reached: ReadonlySet<number> | undefined,
+): boolean => annotatedCount > 0 && step.frontierEmpty && coveredByAllMinDepth(candidates, reached);
+
 const selectNearest = async (
   ctx: Context,
   target: ObjectId,
@@ -251,13 +297,15 @@ const selectNearest = async (
   const reach = new Map<ObjectId, Set<number>>();
   const candidates: Candidate[] = [];
   let counter = 0;
+  let annotatedCount = 0;
   let sawUnannotated = false;
   let winner: Candidate | undefined;
 
-  for await (const { commit } of commitDateWalk(ctx, {
+  for await (const step of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
   })) {
+    const commit = step.commit;
     if (winner !== undefined) {
       finishWinner(reach, commit, winner, plan.firstParent);
       continue;
@@ -271,20 +319,16 @@ const selectNearest = async (
     const oid = commit.id;
     counter += 1;
     const named = nameMap.get(oid);
-    if (named !== undefined && named.priority >= minPriority) {
-      const index = candidates.length;
-      candidates.push({
-        name: named.name,
-        commitOid: oid,
-        depth: counter - 1,
-        foundOrder: index,
-      });
-      reachSet(reach, oid).add(index);
-    } else if (named !== undefined) {
-      sawUnannotated = true;
+    if (named !== undefined) {
+      const registration = registerName(named, minPriority, oid, counter - 1, candidates, reach);
+      annotatedCount += registration.annotated;
+      sawUnannotated = sawUnannotated || registration.skippedLowPriority;
     }
     incrementUnreached(candidates, reach.get(oid));
     propagateReach(reach, commit, plan.firstParent);
+    if (lastPathCovered(annotatedCount, step, candidates, reach.get(oid))) {
+      break;
+    }
   }
 
   return { best: winner ?? pickNearest(candidates), sawUnannotated };
