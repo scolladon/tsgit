@@ -1284,7 +1284,7 @@ describe('Given an annotated tag on a side leg that does not cover the deeper ch
       clock += 60;
       await annotatedTag(ctx, 'ty', y, clock);
       clock += 60;
-      await annotatedTag(ctx, 'troot', root, clock);
+      await annotatedTag(ctx, 't-root', root, clock);
       const { counted, reads } = withCountedObjectReads(ctx);
 
       // Act

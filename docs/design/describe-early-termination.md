@@ -162,8 +162,8 @@ test. `walkCommitsByDate` projects `.commit` and keeps its public signature —
   candidate depth, and break iff the popped commit's reach set contains the
   index of **every** candidate tied at that minimum (`coveredByAllMinDepth`).
 - On break the loop simply ends; the existing
-  `winner ?? pickNearest(candidates)` return is already correct (git QSORTs
-  and takes `all_matches[0]` with the same depths).
+  `winner ?? pickNearest(candidates)` return is already correct (git sorts with
+  `QSORT` and takes `all_matches[0]` with the same depths).
 
 ### 3. `selectNearest` — covered-frontier break (post-freeze branch)
 
