@@ -254,7 +254,7 @@ const selectNearest = async (
   let sawUnannotated = false;
   let winner: Candidate | undefined;
 
-  for await (const commit of commitDateWalk(ctx, {
+  for await (const { commit } of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
   })) {

@@ -6,6 +6,17 @@ import { readCommit } from './read-commit.js';
 
 type CommitReader = (id: ObjectId) => Promise<Commit | undefined>;
 
+/**
+ * One walk step: the popped commit plus the frontier state sampled after the
+ * pop and before its parents are enqueued (git describe cond-2 check point).
+ */
+export type DateWalkStep = {
+  readonly commit: Commit;
+  readonly frontierEmpty: boolean;
+  /** Lazy snapshot of the queued oids; valid until the iterator resumes. */
+  readonly frontier: () => ReadonlyArray<ObjectId>;
+};
+
 /** Parents this walk follows: the first parent only, or all of them. */
 export const selectParents = (commit: Commit, firstParent: boolean): ReadonlyArray<ObjectId> =>
   firstParent ? commit.data.parents.slice(0, 1) : commit.data.parents;
@@ -58,7 +69,7 @@ interface DateWalk {
 export async function* commitDateWalk(
   ctx: Context,
   options: CommitDateWalkOptions,
-): AsyncIterable<Commit> {
+): AsyncIterable<DateWalkStep> {
   const shallow = options.shallow ?? new Set<ObjectId>();
   const walk: DateWalk = {
     queue: [],
@@ -73,7 +84,11 @@ export async function* commitDateWalk(
   while (walk.queue.length > 0) {
     if (ctx.signal?.aborted) throw operationAborted();
     const { value: commit } = walk.queue.shift() as QueueEntry<Commit>;
-    yield commit;
+    yield {
+      commit,
+      frontierEmpty: walk.queue.length === 0,
+      frontier: () => walk.queue.map((entry) => entry.oid),
+    };
     if (shallow.has(commit.id)) continue;
     await enqueueParents(walk, commit);
   }
