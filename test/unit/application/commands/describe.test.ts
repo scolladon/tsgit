@@ -1198,6 +1198,7 @@ describe('Given only a lightweight tag on a deep chain in tags mode', () => {
         oids.push(await commitFile(ctx, `l${i}`));
       }
       await tagCreate(ctx, { name: 'light', target: oids[6] as ObjectId });
+      await tagCreate(ctx, { name: 'light-deep', target: oids[0] as ObjectId });
       const { counted, reads } = withCountedObjectReads(ctx);
 
       // Act
@@ -1206,7 +1207,121 @@ describe('Given only a lightweight tag on a deep chain in tags mode', () => {
       // Assert
       expect(result.name).toBe('light');
       expect(result.distance).toBe(3);
-      expect(reads()).toBe(12);
+      expect(reads()).toBe(13);
+    });
+  });
+});
+
+describe('Given two annotated tags tied on sibling legs above a deep ancestry', () => {
+  describe('When describing the merge of both legs', () => {
+    it('Then the finalisation stops once the last path is covered by the winner', async () => {
+      // Arrange
+      const ctx = await seed();
+      for (let i = 0; i < 5; i += 1) {
+        await commitFile(ctx, `deep${i}`);
+      }
+      const base = await commitFile(ctx, 'base');
+      const tree = await treeOf(ctx, base);
+      const x = await writeCommit(ctx, tree, [base], 'x');
+      const y = await writeCommit(ctx, tree, [base], 'y');
+      const m = await writeCommit(ctx, tree, [x, y], 'm');
+      clock += 60;
+      await annotatedTag(ctx, 'tx', x, clock);
+      clock += 60;
+      await annotatedTag(ctx, 'ty', y, clock);
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      const result = await describeCmd(counted, m);
+
+      // Assert
+      expect(result.name).toBe('ty');
+      expect(result.distance).toBe(2);
+      expect(reads()).toBe(8);
+    });
+  });
+});
+
+describe('Given a frozen winner whose coverage reaches the frontier only later', () => {
+  describe('When describing the merge of a tagged leg and an untagged leg', () => {
+    it('Then the finalisation walks past the uncovered frontier and stops once it is covered', async () => {
+      // Arrange
+      const ctx = await seed();
+      for (let i = 0; i < 5; i += 1) {
+        await commitFile(ctx, `deep${i}`);
+      }
+      const base = await commitFile(ctx, 'base');
+      const tree = await treeOf(ctx, base);
+      const side = await writeCommit(ctx, tree, [base], 'side');
+      const x = await writeCommit(ctx, tree, [base], 'x');
+      const m = await writeCommit(ctx, tree, [x, side], 'm');
+      clock += 60;
+      await annotatedTag(ctx, 'tx', x, clock);
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      const result = await describeCmd(counted, m);
+
+      // Assert
+      expect(result.name).toBe('tx');
+      expect(result.distance).toBe(2);
+      expect(reads()).toBe(6);
+    });
+  });
+});
+
+describe('Given an annotated tag on a side leg that does not cover the deeper chain', () => {
+  describe('When describing the merge of both legs', () => {
+    it('Then the collection keeps walking past frontier-empty pops the tag does not cover', async () => {
+      // Arrange
+      const ctx = await seed();
+      const root = await commitFile(ctx, 'root');
+      const tree = await treeOf(ctx, root);
+      const x1 = await writeCommit(ctx, tree, [root], 'x1');
+      const x2 = await writeCommit(ctx, tree, [x1], 'x2');
+      const y = await writeCommit(ctx, tree, [root], 'y');
+      const m = await writeCommit(ctx, tree, [x2, y], 'm');
+      clock += 60;
+      await annotatedTag(ctx, 'ty', y, clock);
+      clock += 60;
+      await annotatedTag(ctx, 'troot', root, clock);
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      const result = await describeCmd(counted, m);
+
+      // Assert
+      expect(result.name).toBe('ty');
+      expect(result.distance).toBe(3);
+      expect(reads()).toBe(9);
+    });
+  });
+});
+
+describe('Given a merged orphan history whose nearest-so-far tag does not cover the last path', () => {
+  describe('When describing the merge commit', () => {
+    it('Then the freeze elects the first-found tag and finalises its depth across the orphan side', async () => {
+      // Arrange
+      const ctx = await seed();
+      const rb0 = await commitFile(ctx, 'rb0');
+      const tree = await treeOf(ctx, rb0);
+      const rb1 = await writeCommit(ctx, tree, [rb0], 'rb1');
+      const rb2 = await writeCommit(ctx, tree, [rb1], 'rb2');
+      const a0 = await writeCommit(ctx, tree, [], 'a0');
+      const a1 = await writeCommit(ctx, tree, [a0], 'a1');
+      const a2 = await writeCommit(ctx, tree, [a1], 'a2');
+      const m = await writeCommit(ctx, tree, [a2, rb2], 'm');
+      clock += 60;
+      await annotatedTag(ctx, 'ta', a1, clock);
+      clock += 60;
+      await annotatedTag(ctx, 'tb', rb2, clock);
+
+      // Act
+      const result = await describeCmd(ctx, m);
+
+      // Assert
+      expect(result.name).toBe('ta');
+      expect(result.distance).toBe(5);
     });
   });
 });

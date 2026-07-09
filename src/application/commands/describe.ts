@@ -279,12 +279,75 @@ const registerName = (
   return { annotated: named.priority === ANNOTATED_PRIORITY ? 1 : 0, skippedLowPriority: false };
 };
 
+const frontierCovered = (
+  reach: Map<ObjectId, Set<number>>,
+  winner: Candidate,
+  step: DateWalkStep,
+  poppedOid: ObjectId,
+): boolean => {
+  if (reach.get(poppedOid)?.has(winner.foundOrder) !== true) return false;
+  return step.frontier().every((oid) => reach.get(oid)?.has(winner.foundOrder) === true);
+};
+
 const lastPathCovered = (
   annotatedCount: number,
   step: DateWalkStep,
   candidates: ReadonlyArray<Candidate>,
   reached: ReadonlySet<number> | undefined,
 ): boolean => annotatedCount > 0 && step.frontierEmpty && coveredByAllMinDepth(candidates, reached);
+
+type SelectionTally = {
+  annotatedCount: number;
+  sawUnannotated: boolean;
+};
+
+type CollectStepInput = {
+  readonly step: DateWalkStep;
+  readonly depth: number;
+  readonly nameMap: ReadonlyMap<ObjectId, DescribeName>;
+  readonly minPriority: number;
+  readonly candidates: Candidate[];
+  readonly reach: Map<ObjectId, Set<number>>;
+  readonly tally: SelectionTally;
+  readonly firstParent: boolean;
+};
+
+const collectStep = (input: CollectStepInput): boolean => {
+  const { step, candidates, reach, tally } = input;
+  const oid = step.commit.id;
+  const named = input.nameMap.get(oid);
+  if (named !== undefined) {
+    const registration = registerName(
+      named,
+      input.minPriority,
+      oid,
+      input.depth,
+      candidates,
+      reach,
+    );
+    tally.annotatedCount += registration.annotated;
+    tally.sawUnannotated = tally.sawUnannotated || registration.skippedLowPriority;
+  }
+  incrementUnreached(candidates, reach.get(oid));
+  propagateReach(reach, step.commit, input.firstParent);
+  return lastPathCovered(tally.annotatedCount, step, candidates, reach.get(oid));
+};
+
+const frozen = (
+  candidates: ReadonlyArray<Candidate>,
+  maxCandidates: number,
+  totalNames: number,
+): boolean => candidates.length === maxCandidates || candidates.length === totalNames;
+
+const advanceWinner = (
+  reach: Map<ObjectId, Set<number>>,
+  winner: Candidate,
+  step: DateWalkStep,
+  firstParent: boolean,
+): boolean => {
+  finishWinner(reach, step.commit, winner, firstParent);
+  return frontierCovered(reach, winner, step, step.commit.id);
+};
 
 const selectNearest = async (
   ctx: Context,
@@ -297,41 +360,39 @@ const selectNearest = async (
   const reach = new Map<ObjectId, Set<number>>();
   const candidates: Candidate[] = [];
   let counter = 0;
-  let annotatedCount = 0;
-  let sawUnannotated = false;
+  const tally: SelectionTally = { annotatedCount: 0, sawUnannotated: false };
   let winner: Candidate | undefined;
 
   for await (const step of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
   })) {
-    const commit = step.commit;
-    if (winner !== undefined) {
-      finishWinner(reach, commit, winner, plan.firstParent);
-      continue;
-    }
-    if (candidates.length === plan.maxCandidates || candidates.length === totalNames) {
+    if (winner === undefined && frozen(candidates, plan.maxCandidates, totalNames)) {
       winner = pickNearest(candidates);
       if (winner === undefined) break;
-      finishWinner(reach, commit, winner, plan.firstParent);
+    }
+    if (winner !== undefined) {
+      if (advanceWinner(reach, winner, step, plan.firstParent)) break;
       continue;
     }
-    const oid = commit.id;
     counter += 1;
-    const named = nameMap.get(oid);
-    if (named !== undefined) {
-      const registration = registerName(named, minPriority, oid, counter - 1, candidates, reach);
-      annotatedCount += registration.annotated;
-      sawUnannotated = sawUnannotated || registration.skippedLowPriority;
-    }
-    incrementUnreached(candidates, reach.get(oid));
-    propagateReach(reach, commit, plan.firstParent);
-    if (lastPathCovered(annotatedCount, step, candidates, reach.get(oid))) {
+    if (
+      collectStep({
+        step,
+        depth: counter - 1,
+        nameMap,
+        minPriority,
+        candidates,
+        reach,
+        tally,
+        firstParent: plan.firstParent,
+      })
+    ) {
       break;
     }
   }
 
-  return { best: winner ?? pickNearest(candidates), sawUnannotated };
+  return { best: winner ?? pickNearest(candidates), sawUnannotated: tally.sawUnannotated };
 };
 
 /** git's `compare_pt`: nearest (smallest depth) first, ties broken by found order. */

@@ -203,6 +203,26 @@ its push loop.
   (reuse the `log-scale` fixture pattern), tag near tip; `bench:summary` delta
   is the recorded evidence of O(distance) traversal.
 
+## Findings pinned during implementation
+
+- **Git also freezes when every name is found.** v2.54's main loop sets
+  `gave_up_on` when `match_cnt == hashmap_get_size(&names)`, not only at
+  `max_candidates` — the same all-names freeze 23.4n gave tsgit. The winner is
+  then elected on **partial** depths (QSORT at loop end) and only its depth is
+  finalised. Verified with real git 2.55 on a merged-orphan repro: candidates
+  end `ta=5`, `tb=4`, yet `ta-5` wins because the freeze happened while
+  `ta=3 < tb=4`. tsgit reproduces this byte-for-byte (example test).
+- **The cond-2 min-depth coverage guard is vacuous on single-root DAGs** — with
+  one root, an empty frontier implies every candidate covers the popped commit.
+  It changes behaviour only on multi-root (orphan-merge) histories, which is
+  the upstream motivation for the guard. The pinning example is therefore a
+  merged-orphan topology.
+- **Property oracle scope.** Because election uses freeze-time partial depths,
+  a pure reachability oracle is sound only when a single tag is reachable —
+  the property generates exactly one annotated tag (orphan roots allowed) and
+  asserts the distance equals `|reachable(target) \ reachable(tag)|`;
+  multi-tag election stays pinned by real-git-verified example tests.
+
 ## Non-goals
 
 - No change to candidate selection, freeze, or winner ordering semantics
