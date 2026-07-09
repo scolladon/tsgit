@@ -250,8 +250,14 @@ const coveredByAllMinDepth = (
   candidates: ReadonlyArray<Candidate>,
   reached: ReadonlySet<number> | undefined,
 ): boolean => {
+  // equivalent-mutant: an empty-frontier last-path pop always lies on a
+  // candidate's reachable frontier, so `reached` is defined here — the guard is
+  // defensive and its return value cannot steer a real walk.
   if (reached === undefined) return false;
   const minDepth = Math.min(...candidates.map((candidate) => candidate.depth));
+  // equivalent-mutant: once every min-depth candidate covers the last path the
+  // elected tag and its depth are fixed, so widening this to "all candidates"
+  // only delays the break — output is identical, only traversal count differs.
   return candidates.every(
     (candidate) => candidate.depth !== minDepth || reached.has(candidate.foundOrder),
   );
@@ -286,6 +292,11 @@ const frontierCovered = (
   poppedOid: ObjectId,
 ): boolean => {
   if (reach.get(poppedOid)?.has(winner.foundOrder) !== true) return false;
+  // equivalent-mutant: the collection break (lastPathCovered) already ends the
+  // walk at the first empty-frontier covered pop, so this positive branch is only
+  // reached with an empty frontier — every() is then vacuously true and its
+  // per-oid predicate never changes the outcome. The scan still earns its keep by
+  // returning false when an uncovered commit is queued (that path IS exercised).
   return step.frontier().every((oid) => reach.get(oid)?.has(winner.foundOrder) === true);
 };
 
@@ -326,6 +337,9 @@ const collectStep = (input: CollectStepInput): boolean => {
       reach,
     );
     tally.annotatedCount += registration.annotated;
+    // equivalent-mutant: sawUnannotated is only read when no candidate registers
+    // (best === undefined). Forcing it true here cannot be observed once any
+    // candidate exists, and the all-lightweight case already sets it true.
     tally.sawUnannotated = tally.sawUnannotated || registration.skippedLowPriority;
   }
   incrementUnreached(candidates, reach.get(oid));
@@ -369,6 +383,9 @@ const selectNearest = async (
   })) {
     if (winner === undefined && frozen(candidates, plan.maxCandidates, totalNames)) {
       winner = pickNearest(candidates);
+      // equivalent-mutant: only reached when totalNames === 0 (freeze on an empty
+      // candidate set); breaking or not both leave winner undefined and yield the
+      // same no-describe error, differing only in unobservable traversal.
       if (winner === undefined) break;
     }
     if (winner !== undefined) {
