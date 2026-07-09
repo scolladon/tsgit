@@ -51,9 +51,13 @@ describe('resolveCurrentIdentity', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('AUTHOR_UNCONFIGURED');
-        expect(caught?.data.code).not.toBe('CONFIG_MISSING_VALUE');
+        expect(caught.data.code).toBe('AUTHOR_UNCONFIGURED');
+        expect(caught.data.code).not.toBe('CONFIG_MISSING_VALUE');
       });
     });
   });
@@ -74,11 +78,15 @@ describe('resolveCurrentIdentity', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((caught?.data as { key: string }).key).toBe('user.name');
-        expect((caught?.data as { line: number }).line).toBe(2);
-        expect((caught?.data as { source: string }).source).toMatch(/\/config$/);
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.name');
+        expect((caught.data as { line: number }).line).toBe(2);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });
@@ -99,11 +107,15 @@ describe('resolveCurrentIdentity', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((caught?.data as { key: string }).key).toBe('user.email');
-        expect((caught?.data as { line: number }).line).toBe(3);
-        expect((caught?.data as { source: string }).source).toMatch(/\/config$/);
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.email');
+        expect((caught.data as { line: number }).line).toBe(3);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });
@@ -124,11 +136,15 @@ describe('resolveCurrentIdentity', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((caught?.data as { key: string }).key).toBe('user.name');
-        expect((caught?.data as { line: number }).line).toBe(2);
-        expect((caught?.data as { source: string }).source).toMatch(/\/config$/);
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.name');
+        expect((caught.data as { line: number }).line).toBe(2);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });
@@ -149,11 +165,15 @@ describe('resolveCurrentIdentity', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((caught?.data as { key: string }).key).toBe('user.email');
-        expect((caught?.data as { line: number }).line).toBe(2);
-        expect((caught?.data as { source: string }).source).toMatch(/\/config$/);
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.email');
+        expect((caught.data as { line: number }).line).toBe(2);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
       });
     });
   });

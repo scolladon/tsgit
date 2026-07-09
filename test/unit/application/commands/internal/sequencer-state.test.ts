@@ -68,8 +68,12 @@ describe('sequencer-state', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('INVALID_OBJECT_ID');
+        expect(caught.data.code).toBe('INVALID_OBJECT_ID');
       });
     });
   });
@@ -192,8 +196,12 @@ describe('sequencer-state', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('INVALID_SEQUENCER_TODO');
+        expect(caught.data.code).toBe('INVALID_SEQUENCER_TODO');
       });
     });
   });
@@ -339,9 +347,13 @@ describe('sequencer-state', () => {
           caught = err as TsgitError;
         }
 
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
         // Assert
-        expect(caught?.data.code).toBe('INVALID_SEQUENCER_TODO');
-        expect((caught?.data as { reason: string }).reason).toContain('c0ffee00');
+        expect(caught.data.code).toBe('INVALID_SEQUENCER_TODO');
+        expect((caught.data as { reason: string }).reason).toContain('c0ffee00');
       });
     });
   });
