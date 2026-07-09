@@ -497,3 +497,156 @@ describe('nameRev', () => {
     });
   });
 });
+
+const withCountedObjectReads = (ctx: Context): { counted: Context; reads: () => number } => {
+  let count = 0;
+  const baseFs = ctx.fs;
+  const countedFs: Context['fs'] = {
+    ...baseFs,
+    read: (path) => {
+      if (path.includes('objects/')) {
+        count += 1;
+      }
+      return baseFs.read(path);
+    },
+  };
+  return { counted: { ...ctx, fs: countedFs }, reads: () => count };
+};
+
+const DAY_AND_A_BIT = 90_000;
+
+describe('Given a linear chain with an old root block and a recent tip block', () => {
+  const arrange = async (): Promise<{
+    counted: Context;
+    reads: () => number;
+    oldest: ObjectId;
+    tip: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const oids: ObjectId[] = [];
+    for (let i = 0; i < 25; i += 1) oids.push(await commitFile(ctx, `old${i}`));
+    clock += DAY_AND_A_BIT;
+    for (let i = 0; i < 5; i += 1) oids.push(await commitFile(ctx, `new${i}`));
+    const { counted, reads } = withCountedObjectReads(ctx);
+    return { counted, reads, oldest: oids[0] as ObjectId, tip: oids[29] as ObjectId };
+  };
+
+  describe('When name-rev runs on the tip commit', () => {
+    it('Then it still names the tip by its branch', async () => {
+      // Arrange
+      const { counted, tip } = await arrange();
+
+      // Act
+      const sut = await nameRev(counted, tip);
+
+      // Assert
+      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+    });
+
+    it('Then the walk stops at the date cutoff instead of reading the whole chain', async () => {
+      // Arrange
+      const { counted, reads, tip } = await arrange();
+
+      // Act
+      await nameRev(counted, tip);
+
+      // Assert
+      expect(reads()).toBe(8);
+    });
+  });
+
+  describe('When name-rev runs on the oldest commit', () => {
+    it('Then its own cutoff prunes nothing and the read count covers the full ancestry', async () => {
+      // Arrange
+      const { counted, reads, oldest } = await arrange();
+
+      // Act
+      await nameRev(counted, oldest);
+
+      // Assert
+      expect(reads()).toBe(32);
+    });
+  });
+});
+
+describe('Given a recent branch and a disjoint branch whose tip is over a day older', () => {
+  const arrange = async (): Promise<{
+    counted: Context;
+    reads: () => number;
+    target: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const target = await commitFile(ctx, 'main-tip');
+    const tree = await treeOf(ctx, target);
+    clock -= DAY_AND_A_BIT;
+    let parent = await writeCommit(ctx, tree, []);
+    for (let i = 0; i < 4; i += 1) parent = await commitFileOnTop(ctx, parent);
+    await pointBranch(ctx, 'stale', parent);
+    const { counted, reads } = withCountedObjectReads(ctx);
+    return { counted, reads, target };
+  };
+
+  describe('When name-rev runs on the recent target', () => {
+    it('Then the target still names correctly by its own branch', async () => {
+      // Arrange
+      const { counted, target } = await arrange();
+
+      // Act
+      const sut = await nameRev(counted, target);
+
+      // Assert
+      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+    });
+
+    it('Then the stale branch is never seeded so its ancestry is never read', async () => {
+      // Arrange
+      const { counted, reads, target } = await arrange();
+
+      // Act
+      await nameRev(counted, target);
+
+      // Assert
+      expect(reads()).toBe(4);
+    });
+  });
+});
+
+describe('Given a chain whose middle commit is dated exactly one day older than the target', () => {
+  const arrange = async (): Promise<{ counted: Context; reads: () => number; tip: ObjectId }> => {
+    const ctx = await seed();
+    const root = await commitFile(ctx, 'root');
+    clock += DAY_AND_A_BIT - 60;
+    const mid = await commitFileOnTop(ctx, root);
+    const midDate = clock;
+    clock = midDate + 86_400 - 60;
+    const tree = await treeOf(ctx, mid);
+    const tip = await writeCommit(ctx, tree, [mid]);
+    await pointBranch(ctx, 'main', tip);
+    const { counted, reads } = withCountedObjectReads(ctx);
+    return { counted, reads, tip };
+  };
+
+  describe('When name-rev runs on the tip', () => {
+    it('Then the boundary commit is still walked and the tip still names correctly', async () => {
+      // Arrange
+      const { counted, tip } = await arrange();
+
+      // Act
+      const sut = await nameRev(counted, tip);
+
+      // Assert
+      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+    });
+
+    it('Then reading reaches the boundary commit and its parent, not just the tip', async () => {
+      // Arrange
+      const { counted, reads, tip } = await arrange();
+
+      // Act
+      await nameRev(counted, tip);
+
+      // Assert
+      expect(reads()).toBe(5);
+    });
+  });
+});

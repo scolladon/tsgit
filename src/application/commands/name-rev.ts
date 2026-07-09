@@ -8,11 +8,13 @@
  */
 import {
   buildRefFilter,
+  commitIsBeforeCutoff,
   firstParentName,
   foldSteps,
   isBetterName,
   mergeParentName,
   type NameRevStep,
+  nameRevCutoff,
   type RevName,
 } from '../../domain/name-rev/index.js';
 import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
@@ -57,10 +59,12 @@ export const nameRev = async (
 ): Promise<NameRevResult> => {
   await assertOperationalRepository(ctx);
   const target = await resolveCommit(ctx, rev ?? DEFAULT_REV);
+  const targetCommit = (await readObject(ctx, target)) as Commit;
+  const cutoff = nameRevCutoff(targetCommit.data.committer.timestamp);
   const filter = buildRefFilter(parseNameRevOptions(opts));
   const refs = [...(await enumerateRefs(ctx))].filter((ref) => filter.qualifies(ref)).sort();
   const revNames = new Map<ObjectId, RevName>();
-  for (const ref of refs) await walkRef(ctx, ref, revNames);
+  for (const ref of refs) await walkRef(ctx, ref, revNames, cutoff);
 
   const name = revNames.get(target);
   if (name === undefined) return { oid: target, ref: undefined, tagDeref: false, steps: [] };
@@ -72,29 +76,32 @@ const walkRef = async (
   ctx: Context,
   ref: RefName,
   revNames: Map<ObjectId, RevName>,
+  cutoff: number,
 ): Promise<void> => {
-  const tip = await seedRef(ctx, ref, revNames);
+  const tip = await seedRef(ctx, ref, revNames, cutoff);
   if (tip === undefined) return;
   const stack: Commit[] = [tip];
   while (stack.length > 0) {
     const commit = stack.pop() as Commit;
     const name = revNames.get(commit.id) as RevName;
-    const queued = await expandParents(ctx, commit, name, revNames);
+    const queued = await expandParents(ctx, commit, name, revNames, cutoff);
     // Reverse-push so the first parent is popped first (git's LIFO traversal).
     for (let index = queued.length - 1; index >= 0; index -= 1) stack.push(queued[index] as Commit);
   }
 };
 
-/** Resolve + peel a ref to its tip commit and seed its name; `undefined` if it loses or can't peel. */
+/** Resolve + peel a ref to its tip commit and seed its name; `undefined` if it loses, can't peel, or is pruned. */
 const seedRef = async (
   ctx: Context,
   ref: RefName,
   revNames: Map<ObjectId, RevName>,
+  cutoff: number,
 ): Promise<Commit | undefined> => {
   const resolved = await getRefStore(ctx).resolveDirect(ref);
   if (resolved.kind !== 'direct') return undefined;
   const tip = await peelRefToCommit(ctx, resolved.id);
   if (tip === undefined) return undefined;
+  if (commitIsBeforeCutoff(tip.commit.data.committer.timestamp, cutoff)) return undefined;
   const seed: RevName = {
     ref,
     tagDeref: tip.viaTag,
@@ -107,12 +114,13 @@ const seedRef = async (
   return accept(revNames, tip.commit.id, seed) ? tip.commit : undefined;
 };
 
-/** Name each parent of `commit` and return the parent commits whose name improved. */
+/** Name each parent of `commit` and return the parent commits whose name improved and are not pruned. */
 const expandParents = async (
   ctx: Context,
   commit: Commit,
   name: RevName,
   revNames: Map<ObjectId, RevName>,
+  cutoff: number,
 ): Promise<Commit[]> => {
   const queued: Commit[] = [];
   const parents = commit.data.parents;
@@ -121,7 +129,9 @@ const expandParents = async (
     const candidate = index === 0 ? firstParentName(name) : mergeParentName(name, index + 1);
     if (!accept(revNames, parentOid, candidate)) continue;
     const parent = await readObject(ctx, parentOid);
-    if (parent.type === 'commit') queued.push(parent);
+    if (parent.type !== 'commit') continue;
+    if (commitIsBeforeCutoff(parent.data.committer.timestamp, cutoff)) continue;
+    queued.push(parent);
   }
   return queued;
 };
