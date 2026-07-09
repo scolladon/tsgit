@@ -37,8 +37,8 @@ const siftDown = <T>(values: T[], less: (a: T, b: T) => boolean, start: number):
 
 /**
  * Array-backed binary min-heap ordered "by should-pop-first": `less(a, b) === true`
- * means `a` pops before `b`. The backing array is mutated in place and fully
- * encapsulated behind {@link push}/{@link pop}.
+ * means `a` pops before `b`. The backing array is mutated in place, only ever through
+ * {@link push}/{@link pop}; {@link entries} hands out a read-only view of it.
  */
 export class BinaryHeap<T> {
   private readonly values: T[] = [];
@@ -65,6 +65,11 @@ export class BinaryHeap<T> {
     return this.values.length;
   }
 
+  /**
+   * A live, read-only view of the unsorted backing entries — returned by reference
+   * (zero-copy) so frontier scans stay allocation-free on the hot path. Callers must
+   * treat it as read-only; the heap owns the array and re-sifts it on the next push/pop.
+   */
   entries(): ReadonlyArray<T> {
     return this.values;
   }
