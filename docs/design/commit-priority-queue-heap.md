@@ -7,7 +7,7 @@
 > FIFO-stable variant so `bisect-midpoint.ts` can converge onto the shared
 > structure. Behaviour-preserving; pinned by the existing bisect interop
 > goldens; profile to confirm the win before committing the churn.
-> Status: draft → self-reviewed ×3 → decision candidates open (ADR pending)
+> Status: draft → self-reviewed ×3 → decisions ratified (ADR-465, ADR-466, ADR-467) → revised against ADRs
 
 ## Context
 
@@ -32,7 +32,10 @@ commits the walk is **O(N²)**. Canonical git uses a binary min-heap
 (`prio_queue` in `prio-queue.c`): `prio_queue_put`/`prio_queue_get` are each
 O(log N) → **O(N log N)** total.
 
-### The five consumers of the shared queue
+### The consumers of the shared queue
+
+Three consumers use the shared date queue today (tabulated below); `bisect`
+becomes a fourth this PR by converging onto the shared heap (ADR-466, §below).
 
 | # | Consumer | File | enqueue site | pop site | Order-sensitivity of *output* |
 |---|----------|------|-------------|----------|-------------------------------|
@@ -40,20 +43,28 @@ O(log N) → **O(N log N)** total.
 | 2 | `mergeBase` | `application/primitives/merge-base.ts` | `enqueue(queue, { oid: id, date, value: undefined })` (~L62) | `const { oid: id } = queue.shift()!` (~L67) | order-independent (drains via `hasNonStale`) |
 | 3 | `blame` | `application/commands/blame.ts` | `enqueue(sb.queue, { oid: commit, date, value: {…} })` (~L357) | `sb.queue.shift() as QueueEntry<Suspect>` (~L235) | order-independent (scoreboard, date-priority) |
 
-Two structures are **not** consumers of the shared date queue and stay out of scope:
+One structure is **not** a consumer of the shared date queue and stays out of scope:
 
 - `application/primitives/walk-commits.ts` — a plain topo / first-parent FIFO
   (`push`/`shift`, **no date ordering**). Different scheduling concern; the
   23.3a architecture pass already ruled it correctly separate.
-- `application/primitives/bisect-midpoint.ts` — runs its **own** local
+
+A fourth consumer **joins** the shared queue this PR:
+
+- `application/primitives/bisect-midpoint.ts` — today runs its **own** local
   FIFO-stable sorted-array walk (`WalkEntry { id, date, ins }`,
   `entryPrecedes` = `date desc, ins asc`, `enqueueWalkEntry` splice,
-  `walkQueue.shift()`). Intentionally not shared per ADR-430 (different
-  tie-break). This design's decision B is whether it converges onto the shared
-  heap.
+  `walkQueue.shift()`). ADR-430 kept it "intentionally not shared" only because
+  the shared queue baked in an **oid** tie-break; ADR-465's comparator-parameterised
+  heap removes that reason, so **bisect converges onto the shared `BinaryHeap`**
+  this PR (decided — ADR-466, which amends ADR-430's "not shared" clause). It
+  constructs the heap with its own `(date desc, ins asc)` comparator, keeping the
+  `ins` counter as the equal-date tie-break key; the local `WalkEntry` /
+  `entryPrecedes` / `enqueueWalkEntry` are deleted.
 
 The bisect walk suffers the **same O(N²)** — `enqueueWalkEntry` is the identical
-linear-scan splice, and `walkCandidatesNewestFirst` pops with `shift()`.
+linear-scan splice, and `walkCandidatesNewestFirst` pops with `shift()` — so
+convergence gives it the O(N log N) win too.
 
 ## Why the tie-break is faithfulness-load-bearing (pinned empirically)
 
@@ -101,29 +112,34 @@ The scaled bench fixtures are **strictly linear** (verified in
 per commit, timestamps `BASE_TIMESTAMP + commit`). So `log-scale.bench.ts`,
 `describe.bench.ts`, and `name-rev.bench.ts` walk a width-1 frontier and **cannot
 demonstrate the heap win** — they would show a wash (or a tiny heap-overhead
-regression from the extra sift bookkeeping). This is the single most important
-finding for the profiling gate: **the churn must be justified against a
-wide-frontier micro-benchmark, not the existing suite.**
+regression from the extra sift bookkeeping). This finding is the *rationale* for
+why the profiling gate rests on the asymptotic argument rather than a new
+measurement: the existing suite shows a wash by construction, so it can only serve
+as a **no-regression** guard, not as a demonstration of the win (ADR-467).
 
 Frontier width, precisely: at any pop the queue holds the "open tips" of the
 reachability wavefront. For a repo with `B` long-lived concurrent branches
 (release lines, feature branches merged late), the frontier peaks near `B`, and
 the per-step cost is O(frontier). A 500-branch monorepo history is where
-O(frontier²·depth) hurts and O(depth·log frontier) wins.
+O(frontier²·depth) hurts and O(depth·log frontier) wins — the regime the
+asymptotic argument (git's own `prio_queue` is O(N log N)) covers without an
+in-repo fixture.
 
 ## Approach (structure and API)
 
 The API **must** move off `Array.shift()` — a raw array cannot pop in O(log N).
-The heap encapsulates a backing array behind `push`/`pop`/`size` (or `length`).
-The exact shape is decision A. All variants share this core:
+The chosen shape (ADR-465, decision A) is a generic `BinaryHeap<T>` in
+`src/domain/commit/`, parameterised by an injected `less(a, b)` comparator and
+exposing `push`/`pop`/`size` plus an unsorted `entries()` view; it stays internal
+(relative-import only, not re-exported through any barrel). Its core:
 
 - A binary **min-heap by "should pop first"**: the root is the entry that
   `precedes` all others. `push` appends then sifts up; `pop` swaps root↔last,
   pops last, sifts the new root down. Both O(log N). The comparator is `less(a, b)
   = precedes(a, b)` — a `true` means `a` outranks (pops before) `b`.
 - The backing array is **mutated in place** (sift swaps), exactly as today's
-  `splice`/`shift` already mutate. This is a local, fully-encapsulated mutation —
-  see decision E.
+  `splice`/`shift` already mutate. This is a local, fully-encapsulated mutation
+  (ADR-465, decision E).
 
 ### API surface beyond push/pop — frontier iteration (load-bearing)
 
@@ -151,8 +167,9 @@ For bisect's `(date desc, ins asc)` order, the heap takes a **different
 comparator**. The heap is comparator-parameterised, so "FIFO-stable" is not a
 second data structure — it is the same heap constructed with
 `entryPrecedes`-equivalent `less`. The `ins` monotonic counter stays the
-tie-break key (it is already unique and monotonic by construction). Whether
-bisect actually adopts this is decision B.
+tie-break key (it is already unique and monotonic by construction). **Bisect
+adopts this and converges onto the shared heap this PR** (decided — ADR-466,
+amends ADR-430).
 
 ### What does NOT change
 
@@ -193,9 +210,9 @@ claim above).**
 - `blame` — suspects carry distinct `commit` oids per schedule and a finalized
   suspect is never re-enqueued → at most one entry per oid → strict total order →
   identical pop sequence.
-- `bisect` (if it converges, decision B) — `(date desc, ins asc)`; `ins` is
-  `ins++` at each enqueue → **unique and monotonic**, no two entries share an
-  `ins` → strict total order → identical pop sequence. The existing
+- `bisect` (converges onto the shared heap — ADR-466) — `(date desc, ins asc)`;
+  `ins` is `ins++` at each enqueue → **unique and monotonic**, no two entries
+  share an `ins` → strict total order → identical pop sequence. The existing
   `equivalent-mutant` annotations in `bisect-midpoint.ts` already assert exactly
   this ("newly enqueued entries always receive the highest ins").
 
@@ -266,12 +283,18 @@ must stay green unchanged.
     for the sorted insert, now over the heap.
   - Tiered `numRuns`: 200 (cheap pop-order round-trip), 100 (invariants).
 - **Interop — unchanged, must stay green.** `bisect-midpoint-interop.test.ts`
-  (all four diamond fixtures) is the faithfulness net. If bisect converges
-  (decision B), these now exercise the shared FIFO heap; if not, they still guard
-  the local walk.
+  (all four diamond fixtures) is the faithfulness net. Bisect converges
+  (ADR-466), so these now exercise the shared FIFO heap's `(date desc, ins asc)`
+  comparator directly — they remain the FIFO-order regression guard and must stay
+  green unchanged.
 - **Regression — every consumer.** Existing unit + interop suites for log,
   describe, name-rev, shortlog, range-diff, whatchanged, merge-base, blame stay
   green unchanged (behaviour-preserving).
+- **No-regression bench guard (ADR-467).** The existing linear bench suite
+  (`log-scale.bench.ts`, `describe.bench.ts`, `name-rev.bench.ts`) must not
+  regress beyond noise — this is the (b) half of the profiling gate. No net-new
+  wide-frontier bench fixture is built (ADR-467); the win rests on the asymptotic
+  argument, not an in-repo measurement.
 - **Mutation.** Re-run Stryker on the heap module + touched consumers; target 0
   surviving killable mutants. The heap's sift-up/sift-down comparisons must be
   killed by the pop-order property + unit tests. Re-verify no equal-oid /
@@ -279,36 +302,40 @@ must stay green unchanged.
   tie-break sub-expression, it is a genuine equivalent only if the strict-total-
   order argument holds for that consumer; document, don't suppress.
 
-## Profiling gate (decision D — the churn justification)
+## Profiling gate (decided — ADR-467, ships on the asymptotic argument)
 
-The brief mandates "profile to confirm the win before committing the churn." The
-existing linear-fixture benches cannot show it (§Empirical profiling finding), so
-the gate is a **new wide-frontier micro-benchmark**:
+The brief mandates "profile to confirm the win before committing the churn."
+**ADR-467 settles how that gate is discharged: on the asymptotic argument, with
+no net-new wide-frontier benchmark fixture** (this deviates from an earlier draft
+recommendation to build a bushy-DAG micro-bench — the deviation is the substance
+of ADR-467). The gate is satisfied by two conditions, both required:
 
-- **Fixture:** a bushy DAG — `B` concurrent branches off a shared root, each of
-  depth `D`, merged at the tip (frontier peaks ≈ `B`). Parameterise `B ∈
-  {8, 64, 512}`, `D` fixed (e.g. 200). Equal-date clusters to maximise tie-break
-  work. Built the same way as the bench fixtures (deterministic, cache-keyed,
-  `git fast-import`), registered as a bench file (`priority-queue-frontier.bench.ts`)
-  driven through the same `scaledScenario` glue, tsgit-only (isomorphic-git has
-  no comparable primitive at this layer).
-- **Measured path:** a direct micro-bench of `enqueue`+drain vs heap
-  push/pop over the frontier — or `mergeBase` / `commitDateWalk` over the bushy
-  fixture (real consumer, so the win reflects a real command).
-- **Win threshold (churn is justified iff):** at `B = 512` the heap is
-  **materially faster** (target ≥ 2× on the frontier-dominated path) with **no
-  regression** worse than a few % at `B = 8` (narrow frontier, where the constant
-  factor of sift bookkeeping could bite). If the heap regresses narrow-frontier
-  real commands (log on linear history) beyond noise, that is a **blocker** — the
-  shared structure serves linear histories overwhelmingly, so a net loss there
-  sinks the change regardless of the wide-frontier win.
-- **Recorded in the doc after implementation:** the measured `B × time` table for
-  sorted-array vs heap, so the merge decision is evidence-based.
+- **(a) The complexity argument.** The migration reproduces git's `prio_queue`
+  behaviour — O(log N) per put/get, O(N log N) over N commits — an established
+  result. On a wide frontier the sorted array is O(frontier²·depth) and the heap
+  is O(depth·log frontier); the win is *argued from complexity*, not measured in a
+  new in-repo fixture.
+- **(b) No regression on the existing linear bench suite.** `log-scale.bench.ts`,
+  `describe.bench.ts`, and `name-rev.bench.ts` walk a width-1 frontier
+  (§Empirical profiling finding) — the overwhelmingly common case, and the one a
+  heap could plausibly *slow* via sift bookkeeping. The heap must not regress them
+  beyond noise. A **material narrow-frontier regression is a blocker**: the shared
+  structure serves linear histories overwhelmingly, so a net loss there sinks the
+  change regardless of the argued wide-frontier win.
+
+**Deliberately NOT built (ADR-467).** The net-new wide-frontier micro-bench
+fixture the earlier draft proposed — a bushy DAG with `B ∈ {8, 64, 512}`
+concurrent branches, `priority-queue-frontier.bench.ts` driven through
+`scaledScenario` — is **not** added in this change. No bench fixture or
+scenario-glue churn rides along with the structural change. Should a future change
+need the empirical curve, a bushy-DAG bench can be added then without disturbing
+this decision.
 
 ## Non-goals
 
-- No first-class rich collection API beyond `push`/`pop`/`size` — YAGNI; only the
-  operations the consumers need.
+- No first-class rich collection API beyond `push`/`pop`/`size`/`entries()`
+  (ADR-465) — YAGNI; only the operations the consumers need (`entries()` is the
+  unsorted frontier view the two frontier-scanning consumers require).
 - No change to `walk-commits.ts` (topo FIFO, not date-ordered) or to git's
   randomised bisect `skip` reshuffling (stays the consumer's, per ADR-430).
 - No public-API surface change (`reports/api.json` untouched).
@@ -320,13 +347,15 @@ the gate is a **new wide-frontier micro-benchmark**:
 
 ---
 
-## Decision candidates
+## Decisions (settled — see ADRs)
 
-Every load-bearing choice below is **open** for the ADR conversation — each lists
-≤3 alternatives with a recommendation; the recommendations are *not* decided
-here.
+Every load-bearing choice below is now **decided**. The alternatives and analytic
+content are retained (they remain load-bearing for the plan — the two-class
+pop-order proof and the FIFO-vs-oid empirical pin), each annotated with its
+ratified outcome and ADR reference. Candidates A, C, E → ADR-465; B → ADR-466
+(amends ADR-430); D → ADR-467.
 
-### A. Heap structure / API shape
+### A. Heap structure / API shape — DECIDED (ADR-465): option 1, `BinaryHeap<T>`
 
 The API must move off `Array.shift()` to encapsulated `push`/`pop`. Three shapes:
 
@@ -336,9 +365,9 @@ The API must move off `Array.shift()` to encapsulated `push`/`pop`. Three shapes
    *Consumer ripple:* every consumer swaps its `QueueEntry<T>[]` +
    `enqueue(...)` + `.shift()` for `heap.push(...)` + `heap.pop()` +
    `heap.size`; ~2 call-site edits + 1 construction each. **4 call sites** total
-   if bisect converges (the 3 shared-queue sites — `commit-date-walk.ts:126/86`,
-   `merge-base.ts:62/67`, `blame.ts:357/235` — plus `bisect-midpoint.ts`), or 3
-   if bisect stays local.
+   (bisect converges — ADR-466): the 3 shared-queue sites —
+   `commit-date-walk.ts:126/86`, `merge-base.ts:62/67`, `blame.ts:357/235` —
+   plus `bisect-midpoint.ts`.
 2. **A `CommitPriorityQueue` class baking in `precedes`, plus a separate
    `FifoCommitPriorityQueue`** (or a boolean/enum "mode" — rejected: boolean
    param is a house smell). Two named types; the FIFO one carries the `ins`
@@ -357,15 +386,18 @@ The API must move off `Array.shift()` to encapsulated `push`/`pop`. Three shapes
    add an `entries()` view for the two frontier consumers; option 3 gets it for
    free but at the cost of an unprotected invariant.
 
-**Recommendation: (1) generic `BinaryHeap<T>` with injected `less`.** It is the
+**Decision (ADR-465): (1) generic `BinaryHeap<T>` with injected `less`.** It is the
 single structure that serves both the oid and the FIFO comparators without
 duplicating the heap logic, encapsulates the backing array (killing the
 `.shift()`-corruption footgun of option 3), and stays FP-friendly (comparator is
 a pure function argument). It directly enables decision B (bisect converges by
 passing `entryPrecedes` as `less`). Trade-off vs option 3: more call-site churn
-across 5 consumers, but each edit is mechanical and the encapsulation win is real.
+across the consumers, but each edit is mechanical and the encapsulation win is
+real. Ratified as recommended; the heap exposes `push`/`pop`/`size` plus an
+unsorted `entries()` view, lives in `src/domain/commit/`, and stays internal
+(relative-import only, not re-exported through any barrel).
 
-### B. Does bisect converge onto the shared heap this PR?
+### B. Does bisect converge onto the shared heap this PR? — DECIDED (ADR-466): option 1, converge now
 
 1. **Converge now** — migrate `bisect-midpoint.ts` to the shared `BinaryHeap`
    constructed with `(date desc, ins asc)` `less`; delete the local
@@ -379,18 +411,21 @@ across 5 consumers, but each edit is mechanical and the encapsulation win is rea
 3. **Never converge** — keep bisect permanently separate on principle
    (ADR-430 unchanged), heap serves only the oid-comparator consumers.
 
-**Recommendation: (1) converge now.** The brief explicitly asks to "offer a
-FIFO-stable heap variant so bisect can converge," the pop-order identity proof
-holds for `(date desc, ins asc)` (unique monotonic `ins` → strict total order),
-the both-direction diamond goldens already exist as the exact regression net, and
-bisect suffers the identical O(N²) so it benefits equally. Convergence removes a
-duplicated structure (DRY) rather than perpetuating rule-of-two. This **must be
-surfaced to the user** because it amends an accepted ADR (430). *If* the
-profiling gate (D) shows the win is marginal even at wide frontier, fall back to
-(2) to keep the diff minimal. Per the house "no follow-ups by default" rule, (2)
-is only acceptable if the user explicitly wants the smaller diff.
+**Decision (ADR-466, amends ADR-430): (1) converge now.** The brief explicitly
+asks to "offer a FIFO-stable heap variant so bisect can converge," the pop-order
+identity proof holds for `(date desc, ins asc)` (unique monotonic `ins` → strict
+total order), the both-direction diamond goldens already exist as the exact
+regression net, and bisect suffers the identical O(N²) so it benefits equally.
+Convergence removes a duplicated structure (DRY) rather than perpetuating
+rule-of-two. `bisect-midpoint.ts`'s candidate walk moves to the shared
+`BinaryHeap<WalkEntry>` constructed with `a.date > b.date || (a.date === b.date
+&& a.ins < b.ins)`; the local `WalkEntry` / `entryPrecedes` / `enqueueWalkEntry`
+are deleted, and the `ins` counter stays the equal-date tie-break key so the
+candidate-list order is unchanged. This amends ADR-430's "intentionally not
+shared" clause; ADR-430's tie-break *semantics* and the verbatim `find_bisection`
+port stand.
 
-### C. Behaviour-preservation proof basis
+### C. Behaviour-preservation proof basis — DECIDED (ADR-465): option 1, plain non-stable heap
 
 1. **Two-class argument, plain heap** (adopted in §Behaviour preservation):
    Class I consumers (`commitDateWalk`, `blame`, bisect) have a strict total order
@@ -403,16 +438,14 @@ is only acceptable if the user explicitly wants the smaller diff.
    Costs an extra per-entry sequence field + comparison, and buys nothing
    observable (merge-base's result is already order-invariant).
 
-**Recommendation: (1) two-class argument, plain heap.** Class I is a clean strict
-total order; Class II's only ties (merge-base equal-oid duplicates) are absorbed
-by result-order-independence, which the module's existing Stryker annotations
-already assert and the mutation pass re-verifies. git's own `prio_queue` is
-non-stable, so a stable heap would over-engineer past faithfulness. This is a
-correctness-argument decision, not user-taste — flag it in the ADR as
-*adopted-as-recommended* unless the user wants the belt-and-braces stable heap for
-merge-base's intermediate order (no observable effect).
+**Decision (ADR-465): (1) two-class argument, plain heap.** Class I is a clean
+strict total order; Class II's only ties (merge-base equal-oid duplicates) are
+absorbed by result-order-independence, which the module's existing Stryker
+annotations already assert and the mutation pass re-verifies. git's own
+`prio_queue` is non-stable, so a stable heap would over-engineer past
+faithfulness. Adopted as recommended; **no stable heap is implemented.**
 
-### D. Profiling gate — what evidence justifies the churn
+### D. Profiling gate — what evidence justifies the churn — DECIDED (ADR-467): option 3, ship on the asymptotic argument (DEVIATES from this doc's earlier recommendation)
 
 1. **Wide-frontier micro-bench + narrow-frontier regression check** (§Profiling
    gate): new bushy-DAG fixture, `B ∈ {8, 64, 512}`; justify iff ≥ 2× at `B=512`
@@ -423,16 +456,22 @@ merge-base's intermediate order (no observable effect).
 3. **Ship on the asymptotic argument, no new bench** — trust O(N²)→O(N log N)
    and rely on existing (linear) benches for no-regression only.
 
-**Recommendation: (1) wide-frontier micro-bench with an explicit threshold.** The
-brief makes profiling a gate ("before committing the churn"), the existing benches
-provably cannot show the win, and a micro-bench isolates the queue cost from I/O
-noise (avoiding option 2's masking) while the narrow-frontier check guards the
-common case (linear history, where the heap must not regress). Option 3 violates
-the brief's explicit gate. **The wide-frontier fixture is net-new work this PR** —
-if the user wants the fixture deferred, that trades away the gate, so it needs an
-explicit call.
+**This doc recommended (1)** — a wide-frontier micro-bench with an explicit
+threshold — reasoning that the brief makes profiling a gate and the existing
+benches provably cannot show the win.
 
-### E. Immutability vs in-place heap mutation
+**Decision (ADR-467): (3) ship on the asymptotic argument — DEVIATES from the
+recommendation above.** No net-new wide-frontier benchmark fixture is added. The
+profiling gate is discharged by the complexity argument (the migration reproduces
+git's `prio_queue` O(N log N), an established result) plus no regression on the
+existing linear bench suite (`log-scale` / `describe` / `name-rev`) — the common
+case, and the one a heap could plausibly slow. The empirical frontier-width
+finding is retained as the *rationale* for why the existing benches show a wash;
+the wide-frontier fixture (`priority-queue-frontier.bench.ts`, bushy DAG,
+`B ∈ {8, 64, 512}`) is deliberately **not built**. A material narrow-frontier
+regression remains a blocker. See the revised §"Profiling gate" above.
+
+### E. Immutability vs in-place heap mutation — DECIDED (ADR-465): option 1, in-place encapsulated mutation
 
 1. **In-place mutation, locally encapsulated** — the heap mutates its backing
    array (sift swaps), exactly as today's `splice`/`shift` already do. The
@@ -442,10 +481,9 @@ explicit call.
    (structural sharing or copy). Pure, but allocates O(log N)–O(N) per operation,
    erasing much of the asymptotic win and adding GC pressure on the hot path.
 
-**Recommendation: (1) in-place, encapsulated.** The house style is "immutable by
-default" with local encapsulated mutation explicitly acceptable for performance
+**Decision (ADR-465): (1) in-place, encapsulated.** The house style is "immutable
+by default" with local encapsulated mutation explicitly acceptable for performance
 primitives (the hot-path perf precedent — the inflate decoder — mutates freely
 inside its boundary). The current sorted array already mutates in place; the heap
 keeps the same containment. A persistent heap would defeat the performance goal
-that is the entire point of this change. This is *adopted-as-recommended* unless
-the user wants a persistent structure for a different reason.
+that is the entire point of this change. Adopted as recommended.
