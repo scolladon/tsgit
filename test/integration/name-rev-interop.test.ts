@@ -58,6 +58,9 @@ const renderContains = (r: NameRevResult): string => {
 
 let clock = 1_700_000_000;
 
+/** git's `CUTOFF_DATE_SLOP` (one day, in seconds) — local to keep the fixtures self-contained. */
+const CUTOFF_DATE_SLOP = 86_400;
+
 const makeRepo = async (slug: string): Promise<string> => {
   const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-name-rev-${slug}-`));
   git(dir, 'init', '-q', '-b', 'main');
@@ -218,6 +221,65 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       }
       expect(gitResult.ok).toBe(false);
       expect(threw).toBe(true);
+    });
+  });
+
+  describe('Given a linear history with a far-older pruned ancestor', () => {
+    let dir = '';
+    let ctx: Context;
+    let c1 = '';
+
+    beforeAll(async () => {
+      dir = await makeRepo('cutoff-ancestor');
+      ctx = createNodeContext({ workDir: dir });
+      await commitFile(dir, 'c0'); // date(c0) far below cutoff — pruned from the walk
+      clock += CUTOFF_DATE_SLOP + 60; // advance clock > 1 day so the cutoff actually fires
+      c1 = await commitFile(dir, 'c1');
+      await commitFile(dir, 'c2');
+      await commitFile(dir, 'c3');
+      annotate(dir, 'rel', clock + 30); // annotated on c3 (HEAD)
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then the middle commit still resolves with the far-older ancestor pruned', async () => {
+      const sut = await nameRevCmd(ctx, c1);
+      expect(renderNameRev(sut)).toBe(gitNameRev(dir, c1));
+    });
+  });
+
+  describe('Given two tagged refs where the older tip is more than a day before the newer', () => {
+    let dir = '';
+    let ctx: Context;
+    let newCommit = '';
+
+    beforeAll(async () => {
+      dir = await makeRepo('cutoff-seed');
+      ctx = createNodeContext({ workDir: dir });
+      const oldCommit = await commitFile(dir, 'old');
+      git(dir, 'tag', 'oldtag', oldCommit);
+      clock += CUTOFF_DATE_SLOP + 60; // advance clock > 1 day so the seed-tip guard fires
+      newCommit = await commitFile(dir, 'new');
+      git(dir, 'tag', 'newtag', newCommit);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('Then the newer tag still names the newer commit with the older seed pruned', async () => {
+      const sut = await nameRevCmd(ctx, newCommit);
+      expect(renderNameRev(sut)).toBe(gitNameRev(dir, newCommit));
+    });
+
+    it('Then the --tags variant matches with the older seed pruned', async () => {
+      const sut = await nameRevCmd(ctx, newCommit, { tags: true });
+      // --tags queries only refs/tags/*, so git's short name drops the `tags/` prefix
+      // it otherwise disambiguates with — renderNameRev's general reconstruction keeps it.
+      const withoutTagsPrefix = renderNameRev(sut).replace(/^tags\//, '');
+      expect(withoutTagsPrefix).toBe(gitNameRev(dir, newCommit, '--tags'));
     });
   });
 });
