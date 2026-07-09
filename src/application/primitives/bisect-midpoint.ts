@@ -74,9 +74,9 @@ type HeapEntry = { readonly id: ObjectId; readonly date: number; readonly ins: n
 // FIFO-stable tie-break: smaller `ins` (earlier insertion) = higher priority. This
 // replicates git's `prio_queue` insertion-counter tie-break, the only ordering
 // faithful to `do_find_bisection`'s list-order tie-break.
-// equivalent-mutant (a.date===b.date variants and a.ins<=b.ins): newly enqueued entries
-// always receive the highest ins value; a.ins < b.ins never fires when a is new; FIFO
-// ordering is preserved by insertion order regardless of the tie-break sub-expression.
+// equivalent-mutant (a.ins<=b.ins): `ins` is assigned via a per-walk `ins++` counter, so
+// every heap entry gets a UNIQUE value; two entries with a.ins===b.ins never coexist, so
+// `<` and `<=` never differ.
 const less = (a: HeapEntry, b: HeapEntry): boolean =>
   a.date > b.date || (a.date === b.date && a.ins < b.ins);
 

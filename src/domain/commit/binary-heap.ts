@@ -51,6 +51,9 @@ export class BinaryHeap<T> {
   }
 
   pop(): T | undefined {
+    // equivalent-mutant (if false): on an empty heap this.values[0] and this.values.pop()
+    // are both already `undefined`, and the `this.values.length > 0` guard below skips
+    // siftDown — dropping this short-circuit is a no-op micro-optimization, not a behavior change.
     if (this.values.length === 0) return undefined;
     const root = this.values[0]!;
     const last = this.values.pop()!;
