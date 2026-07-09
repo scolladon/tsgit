@@ -19,6 +19,8 @@
     "MSDOS",
     "mydir",
     "namelen",
+    "newtag",
+    "oldtag",
     "organises",
     "RECORDSIZE",
     "typeflag",

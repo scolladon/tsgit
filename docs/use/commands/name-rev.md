@@ -49,6 +49,10 @@ interface NameRevResult {
   peels an annotated tag to its commit.
 - **Unnameable:** a commit reachable from no qualifying ref returns
   `ref: undefined` (git prints `undefined`) — `name-rev` never throws.
+- **Traversal cost:** the walk prunes commits older than the target's committer
+  date minus one day (git's date cutoff), so naming a commit reads O(nearby
+  history), not every ref's full ancestry. This is a pure traversal
+  optimisation: the returned data is identical to a full walk.
 - **Caller renders the string** — the full `ref`, `tagDeref`, and `steps` are
   enough to reconstruct git's line under either short-name rule (plain
   `name-rev`'s `tags/…`/bare-branch, or `describe --contains`'s `refs/tags/`-stripped
@@ -88,6 +92,6 @@ await repo.describe(commitOid, { contains: true });      // the nearest containi
 
 - Primitives: [`readObject`](../primitives/read-object.md), [`resolveRef`](../primitives/resolve-ref.md)
 - Related commands: [`describe`](describe.md), [`tag`](tag.md), [`log`](log.md)
-- ADRs: [283](../../adr/283-name-rev-structured-path.md), [284](../../adr/284-describe-contains-delegation.md), [285](../../adr/285-name-rev-ref-glob-dialect.md)
+- ADRs: [283](../../adr/283-name-rev-structured-path.md), [284](../../adr/284-describe-contains-delegation.md), [285](../../adr/285-name-rev-ref-glob-dialect.md), [461](../../adr/461-name-rev-cutoff-pure-domain-helpers.md), [462](../../adr/462-name-rev-cutoff-target-date-upfront-read.md), [463](../../adr/463-name-rev-cutoff-underflow-guard-transcription.md), [464](../../adr/464-name-rev-bench-and-read-count-pin.md)
 - Roadmap: Phase 23 — Inspection (v3)
 ```
