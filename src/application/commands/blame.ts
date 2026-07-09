@@ -14,7 +14,8 @@
 import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
 import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
-import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
+import { BinaryHeap } from '../../domain/commit/binary-heap.js';
+import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -105,7 +106,7 @@ interface Suspect {
 
 interface Scoreboard {
   readonly ctx: Context;
-  readonly queue: QueueEntry<Suspect>[];
+  readonly queue: BinaryHeap<QueueEntry<Suspect>>;
   readonly finalized: BlameLine[];
 }
 
@@ -118,7 +119,11 @@ export const blame = async (
 ): Promise<BlameResult> => {
   await assertOperationalRepository(ctx);
   const filePath = FilePathFactory.from(path);
-  const board: Scoreboard = { ctx, queue: [], finalized: [] };
+  const board: Scoreboard = {
+    ctx,
+    queue: new BinaryHeap<QueueEntry<Suspect>>(precedes),
+    finalized: [],
+  };
   if (opts.worktree === true) {
     if (opts.rev !== undefined) {
       throw invalidOption('worktree', 'cannot combine with a revision');
@@ -231,8 +236,8 @@ const seed = async (
 };
 
 const walk = async (sb: Scoreboard): Promise<void> => {
-  while (sb.queue.length > 0) {
-    const { value } = sb.queue.shift() as QueueEntry<Suspect>;
+  while (sb.queue.size() > 0) {
+    const { value } = sb.queue.pop() as QueueEntry<Suspect>;
     await processSuspect(sb, value);
   }
 };
@@ -354,7 +359,7 @@ const schedule = (
   // equivalent-mutant: an empty entry list would enqueue a suspect that finalizes
   // nothing; the guard only avoids needlessly walking ancestors, so output is identical.
   if (entries.length === 0) return;
-  enqueue(sb.queue, { oid: commit, date, value: { commit, path, blob, entries } });
+  sb.queue.push({ oid: commit, date, value: { commit, path, blob, entries } });
 };
 
 const blobAtPath = async (
