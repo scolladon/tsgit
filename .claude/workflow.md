@@ -33,8 +33,12 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   the merge confirmation.
 - **`pre-pr-gate: npm outdated`** — the CI `deps` job gates on freshness; catching it
   pre-PR saves a round. Remediation: bump in a `chore(deps): bump <pkgs>` commit,
-  re-validate. **Exception:** `@ls-lint/ls-lint` flags at its own installed version
-  (publisher bug) — local-only, ignore, don't bump.
+  re-validate. **Exceptions** (both skipped in the `check:deps` grep): `@ls-lint/ls-lint`
+  flags at its own installed version (publisher bug); `typescript` is pinned to 6.x because
+  7.x is the native ("tsgo") compiler — an API-breaking major whose main export is a version
+  stub and whose programmatic API moved under `./unstable/*`, so `@rollup/plugin-typescript`
+  and `rollup-plugin-dts` cannot load it (the `tsc` CLI still works). Unpin once the rollup
+  toolchain supports TS 7.
 - **`review-batch: check:spelling`** — the md-scoped commit hook misses words in TS test
   titles/comments and doc filenames; per-batch spelling beats a failed validate. The
   cspell dict lags on some British `-ising/-ised` forms — full validate is the authority.

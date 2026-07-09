@@ -289,7 +289,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -730,10 +730,10 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.4",
-    "@biomejs/biome": "2.5.2",
-    "@cloudflare/vitest-pool-workers": "0.18.2",
-    "@cloudflare/workers-types": "5.20260707.1",
-    "@commitlint/cli": "21.2.0",
+    "@biomejs/biome": "2.5.3",
+    "@cloudflare/vitest-pool-workers": "0.18.3",
+    "@cloudflare/workers-types": "5.20260708.1",
+    "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
     "@ls-lint/ls-lint": "2.3.1",
     "@playwright/test": "1.61.1",
@@ -744,14 +744,14 @@
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/typescript-checker": "9.6.1",
     "@stryker-mutator/vitest-runner": "9.6.1",
-    "@types/node": "26.1.0",
+    "@types/node": "26.1.1",
     "@vitest/coverage-v8": "4.1.10",
     "cspell": "10.0.1",
     "dependency-cruiser": "18.0.0",
-    "fast-check": "4.8.0",
+    "fast-check": "4.9.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.38.6",
-    "jscpd": "5.0.11",
+    "jscpd": "5.0.12",
     "knip": "6.25.0",
     "lint-staged": "17.0.8",
     "minimatch": "10.2.5",
@@ -763,6 +763,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.10",
     "wireit": "0.14.13",
-    "wrangler": "4.108.0"
+    "wrangler": "4.109.0"
   }
 }

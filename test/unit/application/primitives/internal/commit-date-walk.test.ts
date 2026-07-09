@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import {
   commitDateWalk,
+  type DateWalkStep,
   selectParents,
 } from '../../../../../src/application/primitives/internal/commit-date-walk.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -60,9 +61,9 @@ async function buildDiamond(
   return { a, b, c, d };
 }
 
-async function collectIds(iter: AsyncIterable<Commit>): Promise<ObjectId[]> {
+async function collectIds(iter: AsyncIterable<DateWalkStep>): Promise<ObjectId[]> {
   const out: ObjectId[] = [];
-  for await (const c of iter) out.push(c.id);
+  for await (const step of iter) out.push(step.commit.id);
   return out;
 }
 
@@ -159,6 +160,43 @@ describe('commit-date-walk core', () => {
           expect(result).toEqual([d, c, b, a]);
         });
       });
+    });
+  });
+});
+
+describe('Given a diamond history and frontier-aware steps', () => {
+  describe('When iterating commitDateWalk from the merge', () => {
+    it('Then each step reports frontier emptiness at its pop point', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const { a, b, c, d } = await buildDiamond(ctx);
+      const sut = commitDateWalk(ctx, { from: [d] });
+
+      // Act
+      const observed: Array<{ id: ObjectId; empty: boolean }> = [];
+      for await (const step of sut) {
+        observed.push({ id: step.commit.id, empty: step.frontierEmpty });
+      }
+
+      // Assert
+      expect(observed.map((o) => o.id)).toEqual([d, c, b, a]);
+      expect(observed.map((o) => o.empty)).toEqual([true, false, false, true]);
+    });
+
+    it('Then a mid-walk step snapshots the queued oids in its frontier', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const { a, b, d } = await buildDiamond(ctx);
+      const sut = commitDateWalk(ctx, { from: [d] });
+
+      // Act
+      const frontiers: Array<ReadonlyArray<ObjectId>> = [];
+      for await (const step of sut) {
+        frontiers.push(step.frontier());
+      }
+
+      // Assert
+      expect(frontiers).toEqual([[], [b], [a], []]);
     });
   });
 });

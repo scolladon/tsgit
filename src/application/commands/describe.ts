@@ -24,7 +24,11 @@ import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { commitDateWalk, selectParents } from '../primitives/internal/commit-date-walk.js';
+import {
+  commitDateWalk,
+  type DateWalkStep,
+  selectParents,
+} from '../primitives/internal/commit-date-walk.js';
 import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -240,6 +244,125 @@ interface SelectionOutcome {
  * `finish_depth_computation`). git's secondary "covered path" break is omitted:
  * it cannot change the winner or its finalised depth, only the commits traversed.
  */
+const ANNOTATED_PRIORITY = 2;
+
+const coveredByAllMinDepth = (
+  candidates: ReadonlyArray<Candidate>,
+  reached: ReadonlySet<number> | undefined,
+): boolean => {
+  // equivalent-mutant: an empty-frontier last-path pop always lies on a
+  // candidate's reachable frontier, so `reached` is defined here — the guard is
+  // defensive and its return value cannot steer a real walk.
+  if (reached === undefined) return false;
+  const minDepth = Math.min(...candidates.map((candidate) => candidate.depth));
+  // equivalent-mutant: once every min-depth candidate covers the last path the
+  // elected tag and its depth are fixed, so widening this to "all candidates"
+  // only delays the break — output is identical, only traversal count differs.
+  return candidates.every(
+    (candidate) => candidate.depth !== minDepth || reached.has(candidate.foundOrder),
+  );
+};
+
+type NameRegistration = {
+  readonly annotated: number;
+  readonly skippedLowPriority: boolean;
+};
+
+const registerName = (
+  named: DescribeName,
+  minPriority: number,
+  oid: ObjectId,
+  depth: number,
+  candidates: Candidate[],
+  reach: Map<ObjectId, Set<number>>,
+): NameRegistration => {
+  if (named.priority < minPriority) {
+    return { annotated: 0, skippedLowPriority: true };
+  }
+  const index = candidates.length;
+  candidates.push({ name: named.name, commitOid: oid, depth, foundOrder: index });
+  reachSet(reach, oid).add(index);
+  return { annotated: named.priority === ANNOTATED_PRIORITY ? 1 : 0, skippedLowPriority: false };
+};
+
+const frontierCovered = (
+  reach: Map<ObjectId, Set<number>>,
+  winner: Candidate,
+  step: DateWalkStep,
+  poppedOid: ObjectId,
+): boolean => {
+  if (reach.get(poppedOid)?.has(winner.foundOrder) !== true) return false;
+  // equivalent-mutant: the collection break (lastPathCovered) already ends the
+  // walk at the first empty-frontier covered pop, so this positive branch is only
+  // reached with an empty frontier — every() is then vacuously true and its
+  // per-oid predicate never changes the outcome. The scan still earns its keep by
+  // returning false when an uncovered commit is queued (that path IS exercised).
+  return step.frontier().every((oid) => reach.get(oid)?.has(winner.foundOrder) === true);
+};
+
+const lastPathCovered = (
+  annotatedCount: number,
+  step: DateWalkStep,
+  candidates: ReadonlyArray<Candidate>,
+  reached: ReadonlySet<number> | undefined,
+): boolean => annotatedCount > 0 && step.frontierEmpty && coveredByAllMinDepth(candidates, reached);
+
+type SelectionTally = {
+  annotatedCount: number;
+  sawUnannotated: boolean;
+};
+
+type CollectStepInput = {
+  readonly step: DateWalkStep;
+  readonly depth: number;
+  readonly nameMap: ReadonlyMap<ObjectId, DescribeName>;
+  readonly minPriority: number;
+  readonly candidates: Candidate[];
+  readonly reach: Map<ObjectId, Set<number>>;
+  readonly tally: SelectionTally;
+  readonly firstParent: boolean;
+};
+
+const collectStep = (input: CollectStepInput): boolean => {
+  const { step, candidates, reach, tally } = input;
+  const oid = step.commit.id;
+  const named = input.nameMap.get(oid);
+  if (named !== undefined) {
+    const registration = registerName(
+      named,
+      input.minPriority,
+      oid,
+      input.depth,
+      candidates,
+      reach,
+    );
+    tally.annotatedCount += registration.annotated;
+    // equivalent-mutant: sawUnannotated is only read when no candidate registers
+    // (best === undefined). Forcing it true here cannot be observed once any
+    // candidate exists, and the all-lightweight case already sets it true.
+    tally.sawUnannotated = tally.sawUnannotated || registration.skippedLowPriority;
+  }
+  incrementUnreached(candidates, reach.get(oid));
+  propagateReach(reach, step.commit, input.firstParent);
+  return lastPathCovered(tally.annotatedCount, step, candidates, reach.get(oid));
+};
+
+const frozen = (
+  candidates: ReadonlyArray<Candidate>,
+  maxCandidates: number,
+  totalNames: number,
+): boolean => candidates.length === maxCandidates || candidates.length === totalNames;
+
+const advanceWinner = (
+  reach: Map<ObjectId, Set<number>>,
+  winner: Candidate,
+  step: DateWalkStep,
+  firstParent: boolean,
+): boolean => {
+  finishWinner(reach, step.commit, winner, firstParent);
+  return frontierCovered(reach, winner, step, step.commit.id);
+};
+
 const selectNearest = async (
   ctx: Context,
   target: ObjectId,
@@ -251,43 +374,42 @@ const selectNearest = async (
   const reach = new Map<ObjectId, Set<number>>();
   const candidates: Candidate[] = [];
   let counter = 0;
-  let sawUnannotated = false;
+  const tally: SelectionTally = { annotatedCount: 0, sawUnannotated: false };
   let winner: Candidate | undefined;
 
-  for await (const commit of commitDateWalk(ctx, {
+  for await (const step of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
   })) {
-    if (winner !== undefined) {
-      finishWinner(reach, commit, winner, plan.firstParent);
-      continue;
-    }
-    if (candidates.length === plan.maxCandidates || candidates.length === totalNames) {
+    if (winner === undefined && frozen(candidates, plan.maxCandidates, totalNames)) {
       winner = pickNearest(candidates);
+      // equivalent-mutant: only reached when totalNames === 0 (freeze on an empty
+      // candidate set); breaking or not both leave winner undefined and yield the
+      // same no-describe error, differing only in unobservable traversal.
       if (winner === undefined) break;
-      finishWinner(reach, commit, winner, plan.firstParent);
+    }
+    if (winner !== undefined) {
+      if (advanceWinner(reach, winner, step, plan.firstParent)) break;
       continue;
     }
-    const oid = commit.id;
     counter += 1;
-    const named = nameMap.get(oid);
-    if (named !== undefined && named.priority >= minPriority) {
-      const index = candidates.length;
-      candidates.push({
-        name: named.name,
-        commitOid: oid,
+    if (
+      collectStep({
+        step,
         depth: counter - 1,
-        foundOrder: index,
-      });
-      reachSet(reach, oid).add(index);
-    } else if (named !== undefined) {
-      sawUnannotated = true;
+        nameMap,
+        minPriority,
+        candidates,
+        reach,
+        tally,
+        firstParent: plan.firstParent,
+      })
+    ) {
+      break;
     }
-    incrementUnreached(candidates, reach.get(oid));
-    propagateReach(reach, commit, plan.firstParent);
   }
 
-  return { best: winner ?? pickNearest(candidates), sawUnannotated };
+  return { best: winner ?? pickNearest(candidates), sawUnannotated: tally.sawUnannotated };
 };
 
 /** git's `compare_pt`: nearest (smallest depth) first, ties broken by found order. */

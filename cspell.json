@@ -1046,7 +1046,10 @@
     "nlen",
     "strm",
     "inftrees",
-    "unget"
+    "unget",
+    "oidset",
+    "fprintf",
+    "QSORT"
   ],
   "ignorePaths": [
     "node_modules",

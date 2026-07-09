@@ -24,7 +24,9 @@ export async function* walkCommitsByDate(
   options: WalkCommitsByDateOptions,
 ): AsyncIterable<Commit> {
   assertValidSeeds(options.from);
-  yield* commitDateWalk(ctx, options);
+  for await (const step of commitDateWalk(ctx, options)) {
+    yield step.commit;
+  }
 }
 
 const assertValidSeeds = (from: ReadonlyArray<ObjectId>): void => {

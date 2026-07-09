@@ -50,6 +50,12 @@ interface DescribeResult {
   farther first-met tag is kept, and a smaller `candidates` budget can change
   which tag is reported. Depth still beats priority (a depth-0 branch beats a
   deeper annotated tag under `all`).
+- **Traversal cost:** the walk stops as soon as the reported tag and distance are
+  settled — once the last remaining path is covered by every nearest candidate,
+  and once the winner covers the whole frontier — so a nearby tag on a deep
+  history reads O(distance) commits, not the full ancestry. This is a pure
+  traversal optimisation: the reported tag and distance are identical to a full
+  walk (git's two output-inert breaks).
 - **Same-commit ties:** two annotated tags on one commit resolve to the newer
   tagger date (git's `replace_name`).
 - **`exactMatch`:** only a tag on the target itself counts; otherwise refuses
@@ -83,5 +89,5 @@ const { dirty } = await repo.describe(undefined, { dirty: true });
 
 - Primitives: [`readObject`](../primitives/read-object.md), [`resolveRef`](../primitives/resolve-ref.md), [`walkCommits`](../primitives/walk-commits.md)
 - Related commands: [`tag`](tag.md), [`show`](show.md), [`log`](log.md)
-- ADRs: [249](../../adr/249-describe-structured-data-only.md), [276](../../adr/276-describe-early-termination-output-only.md)
+- ADRs: [249](../../adr/249-describe-structured-data-only.md), [276](../../adr/276-describe-early-termination-output-only.md), [460](../../adr/460-describe-early-termination-frontier-step.md)
 - Roadmap: Phase 23 — Inspection (v3)
