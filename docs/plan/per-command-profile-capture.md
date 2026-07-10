@@ -360,7 +360,7 @@ type ReadWorkload = {
   readonly setup?: (fixtureCwd: string, env: NodeJS.ProcessEnv) => Promise<unknown>;
   readonly run: (repo: Repository, fixture: ScaledFixture, target: unknown) => Promise<void>;
   readonly perIterationRepo?: boolean;                        // pack-read: fresh repo per iter
-  readonly iterations?: number;                               // override CHILD_ITERATIONS
+  readonly iterations?: number;                               // override READ_ITERATIONS (blame: HEAVY_READ_ITERATIONS)
 };
 type WriteWorkload = {
   readonly kind: 'write';
@@ -379,21 +379,58 @@ Type imports (type-only, erased by strip-only runtime): `FixtureSpec`, `ScaledFi
 - `status` → `await repo.status();`.
 - `pack-read` → `perIterationRepo: true`, `run: async (repo, fixture) => { await repo.primitives.readBlob(fixture.firstBlobId); }`
   (the current `runChild` else-branch, `profile.ts` line 51–56 — a fresh repo per iter reads `firstBlobId`).
-- Additional reads the bench suite already covers (add each only if it has a clean idempotent preamble
-  against the tag-less medium fixture; omit any that don't — design §D1 "A read command with no clean
-  idempotent preamble … is omitted"):
+- Additional reads the bench suite / design §D1 enumerate — **the registry ships all 10 read commands**
+  (ADR-476's full read enumeration: `log`, `status`, `pack-read`, `describe`, `name-rev`, `blame`, `diff`,
+  `show`, `cat-file`, `rev-parse`). Each facade call + fixture target below is **verified against
+  `src/repository.ts` (the `Repository` interface) and the command module's options type** — do NOT trust the
+  design's illustrative shapes:
   - `describe` → `setup` = the `ensureNearTag` idiom (`describe.bench.ts` lines 19–37: `git tag -f -a <name>
     HEAD~10` under `profileEnv()`), `run: async (repo) => { await repo.describe(); }`.
   - `name-rev` → `setup` = the `ensurePrunableTaggedTip` idiom (`name-rev.bench.ts` lines 52–64: `commit-tree`
     + `tag -f -a` with `withPinnedDate(profileEnv(), tipDate + DAY_AND_A_BIT)`), returning the target oid;
     `run: async (repo, _f, target) => { await repo.nameRev(target as string); }`.
-  - `blame`/`diff`/`show`/`cat-file`/`rev-parse` — the design lists these as candidates, but each needs a
-    concrete representative call + (for `blame`/`show`/`cat-file`) a real path/rev against the medium fixture.
-    **Ship `log`, `status`, `pack-read`, `describe`, `name-rev` in the initial read set** (the three legacy +
-    the two bench-proven preambles); the remaining reads are a registry-edit follow-up. **Per the repo's
-    no-silent-follow-ups default, call this initial-set decision out to the user in the plan review** rather
-    than silently dropping them — do not add a `blame`/`diff`/`show`/`cat-file`/`rev-parse` entry that needs a
-    fixture path/rev this plan hasn't pinned.
+  - `rev-parse` → facade `repo.revParse(expression: string): Promise<ObjectId>` (`repository.ts` line 231 /
+    `rev-parse.ts` line 30 — single string arg). Fixture target: `'HEAD'` (resolves against the fixture's
+    `main` ref — deterministic). `run: async (repo) => { await repo.revParse('HEAD'); }`. **No `setup`
+    preamble** (HEAD resolves directly; no tag/target needed).
+  - `cat-file` → facade `repo.catFile(opts: CatFileInput): Promise<CatFileResult>` where
+    `CatFileInput = { ids: ReadonlyArray<ObjectId | string>; maxBytes?: number }` (`repository.ts` line 183 /
+    `cat-file.ts` lines 20–38 — a single options object with an `ids` array). Fixture target:
+    `fixture.headCommitId` (exposed by `ScaledFixture`, exists deterministically).
+    `run: async (repo, fixture) => { await repo.catFile({ ids: [fixture.headCommitId] }); }`. **No `setup`
+    preamble** (the oid is already exposed by `ensureScaledFixture`).
+  - `show` → facade `repo.show(rev?: string | ReadonlyArray<string>, opts?: ShowOptions)` (`repository.ts`
+    lines 236–250 / `show.ts` lines 30–33, 83 — first arg is a rev, default `'HEAD'`). Fixture target:
+    `'HEAD'` (a commit `ShowResult` with a diff against `HEAD~1`, which exists in the 5k-commit history).
+    `run: async (repo) => { await repo.show('HEAD'); }`. **No `setup` preamble.**
+  - `diff` → facade `repo.diff(opts?: DiffOptions): Promise<TreeDiff>` where
+    `DiffOptions = { from?: string; to?: string; … }` (`repository.ts` lines 203–206 / `diff.ts` lines 8–57 —
+    a single options object; default `from` is `'HEAD'`). Fixture target: two adjacent commits
+    `{ from: 'HEAD~1', to: 'HEAD' }` (both resolve against the linear history — a representative, non-empty
+    one-commit diff). `run: async (repo) => { await repo.diff({ from: 'HEAD~1', to: 'HEAD' }); }`. **No
+    `setup` preamble.**
+  - `blame` → facade `repo.blame(blamePath: string, opts?: BlameOptions)` (`repository.ts` lines 178, 506–509
+    / `blame.ts` lines 37–53 — first arg is a working-tree path; default rev is HEAD). Fixture target:
+    `'d0/f0.dat'` — the medium fixture's `multi` strategy writes each commit's 4 new blobs at
+    `d{Math.floor(n/512)}/f{n}.dat` (`fixture-generator.ts` `blobPath` line 110–111 + `streamFastImport` line
+    150–153), so `d0/f0.dat` is added at commit 0 and present at HEAD (never removed). `firstBlobId` is exactly
+    `rev-parse HEAD:d0/f0.dat` (`fixture-generator.ts` line 349), confirming the path exists at HEAD.
+    `run: async (repo) => { await repo.blame('d0/f0.dat'); }`. **No `setup` preamble.**
+    **Iteration override — `blame` is the slow one:** `d0/f0.dat` was introduced at commit 0, so `blame` walks
+    the full 5k-commit history back to the root for every iteration. At `READ_ITERATIONS = 100` under `--prof`
+    the capture is impractically slow (the design §D1 "Per-command iteration count" names exactly this — "a
+    slow read (e.g. `blame` over a 5k-commit file) … at 100 iters under `--prof` may be impractically slow").
+    Use the descriptor's `iterations` override with a named constant `HEAVY_READ_ITERATIONS = 10` (a 10×
+    reduction — still enough samples for stable frame shares since each `blame` iteration is itself thousands
+    of frame samples). Set `blame`'s descriptor to `iterations: HEAVY_READ_ITERATIONS`; every other read keeps
+    the `READ_ITERATIONS = 100` default. `blame` is the only read heavy enough to warrant the override —
+    `describe`/`name-rev` prune at the date/tag cutoff (bench-proven O(distance)), and `diff`/`show`/`cat-file`/
+    `rev-parse` are single-object/single-commit reads.
+- **All five newly-added reads (`rev-parse`, `cat-file`, `show`, `diff`, `blame`) need NO `git`-spawning
+  `setup` preamble** — each resolves against an existing HEAD / an oid already exposed by `ScaledFixture` / a
+  path already present at HEAD, so none mutates the shared cache-keyed fixture. Only `describe` and `name-rev`
+  carry a `setup` (the two tag/commit-tree preambles). The deferral recorded in earlier revisions is
+  **resolved**: all 10 reads ship in Part 4 — there is no read-command follow-up.
 - Any `setup` that spawns `git` MUST use `profileEnv()`/`withPinnedDate` (Part 1) and be idempotent against
   the shared cache-keyed medium fixture (`tag -f` / deterministic `commit-tree` — never grow/move a branch;
   design §D1 obligations). Spawn `git` via `execFile` + `promisify` with `env` set (copy `name-rev.bench.ts`
@@ -435,13 +472,20 @@ drive real I/O and are exercised by Part 7).
   whose message lists the valid set` — use try/catch + assert `err.message` contains `usage: profile <cmd>`
   AND contains a known key (e.g. `commit`) — specific message assertion per the mutation-resistant-test rule
   (never a bare `toThrow(Class)`). Fails: module absent.
-- RED 4: `Given the registry, When inspected, Then commit/add/merge are kind 'write' and log/status/pack-read
-  are kind 'read'` — assert `WORKLOADS.commit.kind === 'write'` and `WORKLOADS.log.kind === 'read'` (pins the
-  descriptor discrimination; kills a swapped-kind mutant). This asserts on the exported constant, not a call.
-- GREEN: implement the descriptor types, `WORKLOADS`, `WRITE_ITERATIONS`, `UnknownCommandError`, and
-  `resolveWorkloads` (early return on `undefined`; lookup + `if (entry === undefined) throw`).
+- RED 4: `Given the registry, When inspected, Then commit/add/merge are kind 'write' and all 10 reads
+  (log/status/pack-read/describe/name-rev/blame/diff/show/cat-file/rev-parse) are kind 'read'` — assert
+  `WORKLOADS.commit.kind === 'write'` and that each of the 10 read keys has `kind === 'read'` (a small
+  parameterised sweep over the read-key list; pins the descriptor discrimination + kills a swapped-kind
+  mutant on any read). This asserts on the exported constant, not a call.
+- RED 5: `Given the registry, When inspected, Then blame carries the heavy-read iteration override and the
+  other reads do not` — assert `WORKLOADS.blame.iterations === HEAVY_READ_ITERATIONS` and, for a light read
+  (e.g. `log`), that `iterations` is `undefined` (so it falls back to `READ_ITERATIONS`). Pins the blame
+  slowness mitigation; kills a mutant that drops or spreads the override.
+- GREEN: implement the descriptor types, `WORKLOADS` (all 13 members — 10 read + 3 write), `WRITE_ITERATIONS`,
+  `READ_ITERATIONS`, `HEAVY_READ_ITERATIONS`, `UnknownCommandError`, and `resolveWorkloads` (early return on
+  `undefined`; lookup + `if (entry === undefined) throw`).
 - REFACTOR: build the usage string from `Object.keys(WORKLOADS).sort().join(', ')` once; keep `resolveWorkloads`
-  <20 lines; no magic literals (name `WRITE_ITERATIONS`, `READ_ITERATIONS = 100`).
+  <20 lines; no magic literals (name `WRITE_ITERATIONS`, `READ_ITERATIONS = 100`, `HEAVY_READ_ITERATIONS = 10`).
 
 ### Gate
 
@@ -628,11 +672,15 @@ registry and commits them.
 
 **This is a genuinely long-running part — budget for it, do not time out silently:**
 - `npm run profile` first runs `npm run build` (compiles `dist/`), then executes **one `node --prof` child
-  capture per resolved registry entry**: the initial registry is `log`, `status`, `pack-read`, `describe`,
-  `name-rev` (5 read) + `commit`, `add`, `merge` (3 write) = **8 captures** (not 13 — the read set shipped in
-  Part 4 is 5, not 10; if the plan-review conversation adds `blame`/`diff`/`show`/`cat-file`/`rev-parse`, it
-  rises accordingly). Each read capture loops `READ_ITERATIONS` (100); each write capture loops
-  `WRITE_ITERATIONS` (~10) with a scratch build+teardown per iter.
+  capture per resolved registry entry**: the registry is the full read set `log`, `status`, `pack-read`,
+  `describe`, `name-rev`, `blame`, `diff`, `show`, `cat-file`, `rev-parse` (10 read) + `commit`, `add`,
+  `merge` (3 write) = **13 captures**. Each read capture loops `READ_ITERATIONS` (100) — **except `blame`,
+  which loops `HEAVY_READ_ITERATIONS` (10)** because it walks the full 5k-commit history of `d0/f0.dat` per
+  iteration (the slowest command in the registry; the reduced count keeps its capture tractable while still
+  yielding stable frame shares). Each write capture loops `WRITE_ITERATIONS` (~10) with a scratch
+  build+teardown per iter. Budget accordingly: 13 sequential `--prof` child spawns (each preceded by the
+  shared `dist/` build only once), with `blame` and the five other new reads adding to the total wall-clock
+  over the previous 8-capture estimate.
 - The read captures need the **medium fixture** (5k commits / 20k blobs / ~50 MB), generated from `git` on
   first use via `ensureScaledFixture(MEDIUM_FIXTURE)` — **slow the first time** (fast-import + repack). Warm
   it first: `npm run bench:fixture -- medium` (design §gen-bench-fixture), so the profiling run itself does
