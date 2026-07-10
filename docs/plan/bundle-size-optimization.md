@@ -38,16 +38,15 @@ Baseline `npm pack` (map-shipping, current `HEAD` build): **135 files ·
 **Real post-D1 `npm pack` (the D2 contingency authority): 87 files ·
 515591 bytes (503.5 KiB) compressed · 1783939 unpacked.**
 
-> **D2 CONTINGENCY TRIGGERED — cap reconciled from 550 → 576 KiB.** ADR-469 sets
-> **550 KiB, contingent on the real pack ≤ ~500 KiB**, and mandates scaling by
-> **1.1–1.15** if it lands higher. The measured pack is **503.5 KiB > 500 KiB**,
-> so 550 KiB gives only **9.2%** headroom (below the 1.1 floor). Scaling into the
-> band: 503.5 × 1.1 = 553.9, × 1.15 = 579.0 KiB. The clean KiB boundary in-band
-> is **576 KiB (`576 * 1024` = 589824 bytes, ~14.4% ≈ 1.14× headroom)** — matches
-> the script's existing `$((N * 1024))` idiom. **This part sets `SIZE_CAP` to
-> `576 * 1024`, not 550.** (This is the ADR-mandated measurement reconciliation,
-> **not** a re-opened decision — see Decision candidates.) Part 1 re-measures once
-> more after its real edits to confirm 503–504 KiB still holds before committing.
+> **D2 — cap held at 550 KiB (user decision at measurement time).** ADR-469 set
+> **550 KiB, contingent on the real pack ≤ ~500 KiB**, with a 1.1–1.15 scaling
+> fallback if higher. The measured pack is **503.5 KiB (515591 bytes)** — 0.7%
+> over the ~500 KiB threshold, which would scale to ~576 KiB. Presented with the
+> measurement, the user **elected to hold 550 KiB** (9.2% headroom) rather than
+> loosen — the tighter cap wins over the extra buffer (see the amended ADR-469
+> Decision). **This part sets `SIZE_CAP` to `550 * 1024` (563200 bytes).** 550 KiB
+> passes (515591 < 563200). Part 1 re-measures once more after its real edits to
+> confirm the pack stays ≤ ~504 KiB (well under the 550 KiB cap) before committing.
 
 **D4 safety (measured live, then reverted):** dropping `declarationMap`+
 `sourceMap` from `tsconfig.build.json` → `npm run docs:json` **exits 0** and
@@ -114,10 +113,11 @@ rollup change that satisfies them (D1) co-locate so the RED→GREEN is real. D4
   # Compressed tarball cap. The published package ships dual ESM+CJS code plus
   # dual .d.ts/.d.cts types (both structurally required — dropping either is a
   # breaking change), so the honest floor is code+types ≈ 482 KiB compressed;
-  # the real pack measures ~504 KiB. The cap is set ~14% above that to absorb a
-  # few commits of growth before firing. Source maps are not shipped, so they do
-  # not count against this cap.
-  SIZE_CAP=$((576 * 1024))
+  # the real pack measures ~504 KiB. The cap is set ~9% above that — tight by
+  # choice: a change that adds ~47 KiB compressed fires the guard for a
+  # considered review rather than an automatic bump. Source maps are not shipped,
+  # so they do not count against this cap.
+  SIZE_CAP=$((550 * 1024))
   ```
   (No backlog / phase / ADR reference — repo rule.)
 - Line 52, the forbidden-path loop (verified):
@@ -168,11 +168,11 @@ pre-pay.
 
 1. Ensure the tree is at the map-shipping baseline: `npm run build` then
    `find dist -name '*.map' | wc -l` → **48** (24 `.js.map` + 24 `.cjs.map`).
-2. Apply the `verify-tarball.sh` edits **only** (D2 cap → `576 * 1024`, comment
+2. Apply the `verify-tarball.sh` edits **only** (D2 cap → `550 * 1024`, comment
    rewrite, D5 `*.map` forbidden-path). Do **not** touch rollup/tsconfig yet.
 3. `npm run verify:tarball` → **FAILS** two ways against the current build:
-   - size: `FAIL: tarball scolladon-tsgit-3.0.0.tgz is 1053491 bytes (cap 589824)`
-     (1029 KiB > 576 KiB cap), **and/or**
+   - size: `FAIL: tarball scolladon-tsgit-3.0.0.tgz is 1053491 bytes (cap 563200)`
+     (1029 KiB > 550 KiB cap), **and/or**
    - maps: `FAIL: tarball contains forbidden path matching ^package/.*\.map$`.
    (Size check runs first and exits, so you'll see the size FAIL; that alone is
    RED. To witness the `*.map` FAIL in isolation, temporarily confirm the grep
@@ -187,13 +187,13 @@ pre-pay.
 5. Rebuild clean: `rm -rf dist .wireit && npm run build` → **no** sourcemap
    warning in output; `find dist -name '*.map'` **empty**;
    `grep -l sourceMappingURL dist/esm/index.js dist/cjs/index.cjs` **empty**.
-6. **Re-measure + reconcile the cap (D2 contingency, ADR-469):**
-   `npm pack --dry-run --json | node -e 'const p=JSON.parse(require("fs").readFileSync(0))[0]; console.log(p.size, (p.size/1024).toFixed(1)+" KiB", ((576*1024/p.size-1)*100).toFixed(1)+"% headroom")'`
-   → expect **~515591 bytes (~503.5 KiB), ~14.4% headroom**. If the real pack is
-   within **503–504 KiB**, `576 * 1024` holds — commit it. If it drifts, re-scale
-   by 1.1–1.15 to the nearest clean KiB boundary and update both the `SIZE_CAP`
-   value and the "~504 KiB / ~14%" figures in the comment to match (the
-   measurement is the authority, per ADR-469).
+6. **Re-measure + confirm the cap (D2, ADR-469):**
+   `npm pack --dry-run --json | node -e 'const p=JSON.parse(require("fs").readFileSync(0))[0]; console.log(p.size, (p.size/1024).toFixed(1)+" KiB", ((550*1024/p.size-1)*100).toFixed(1)+"% headroom")'`
+   → expect **~515591 bytes (~503.5 KiB), ~9.2% headroom**. If the real pack is
+   within **503–504 KiB**, `550 * 1024` holds — commit it. If it drifts materially
+   (the pack rising toward or past the 550 KiB cap), STOP and escalate — the user
+   held 550 KiB deliberately, so a cap change is a user decision, not an
+   auto-rescale (the measurement is the authority for the pack size, per ADR-469).
 7. `npm run verify:tarball` → **PASSES**:
    `OK: tarball scolladon-tsgit-3.0.0.tgz verified at ~515591 bytes.` (size < cap, no
    `.map` in inventory, attw still resolves — types dual-emit unchanged).
@@ -325,7 +325,7 @@ the map-shipping build no longer exists — the regression Part 2 guards is a
    path hits the size check and stops before attw). Then run `npm run validate`
    → it **exits 1** because the new `check:tarball` dependency fails. This is the
    executable proof the per-PR gate now catches a cap regression (the ADR-470
-   invariant). **Restore `SIZE_CAP` to `576 * 1024` immediately.**
+   invariant). **Restore `SIZE_CAP` to `550 * 1024` immediately.**
 3. Confirm `--quick` truly skips attw (no double-attw with `check:exports`):
    `npm run check:tarball 2>&1 | grep -i attw` → **empty**;
    `npm run verify:tarball 2>&1 | grep -i attw` → **non-empty** (attw still runs
@@ -334,7 +334,7 @@ the map-shipping build no longer exists — the regression Part 2 guards is a
 
 **GREEN:**
 
-3. With `SIZE_CAP` restored to Part 1's `576 * 1024` and the optimized build:
+3. With `SIZE_CAP` restored to Part 1's `550 * 1024` and the optimized build:
    `npm run check:tarball` → **PASSES** (`OK: tarball … verified at ~515591
    bytes.`, attw skipped).
 4. `npm run validate` → **GREEN end-to-end**: the new `check:tarball` dependency
@@ -376,12 +376,11 @@ dependency. No provenance refs. Stage: `tooling/verify-tarball.sh`,
 
 - **D1 (source-map handling)** → ADR-468: no-emit (`sourcemap:false` on both code
   outputs + `sourceMap:false` in the TS plugin). Settled.
-- **D2 (cap value)** → ADR-469: 550 KiB, **contingent on the real pack ≤ ~500
-  KiB, else scale by 1.1–1.15**. The measurement fired the contingency (real pack
-  503.5 KiB > 500 KiB), so the plan sets **576 KiB (`576 * 1024`)** per the ADR's
-  own scaling rule. This is the **ADR-mandated measurement reconciliation, not a
-  re-opened fork** — ADR-469 explicitly delegates the final number to the
-  implement-time measurement.
+- **D2 (cap value)** → ADR-469: 550 KiB, originally contingent on the real pack
+  ≤ ~500 KiB with a 1.1–1.15 scaling fallback. The real pack measured 503.5 KiB —
+  0.7% over the threshold. Presented with the measurement, the user **elected to
+  hold 550 KiB (`550 * 1024`, 563200 bytes, 9.2% headroom)** rather than scale to
+  ~576 KiB, prioritising the tighter cap (amended ADR-469 Decision). Settled.
 - **D3 (enforcement cadence)** → ADR-470: lightweight per-PR gate (size + `*.map`,
   **no attw**). Settled. The **wiring vehicle** (a `--quick` flag on the one
   script + a `check:tarball` wireit key on `validate`) is an **implementation
@@ -392,6 +391,6 @@ dependency. No provenance refs. Stage: `tooling/verify-tarball.sh`,
   byte-identical). Settled.
 - **D5 (`*.map` guard)** → ADR-468: broad `^package/.*\.map$`. Settled.
 
-The exploration surfaced **no new load-bearing fork**. The single planning
-judgement call — reconciling the cap to 576 KiB — is a measurement outcome the
-ADR authorised, recorded in Pre-flight and Part 1.
+The exploration surfaced **no new load-bearing fork**. The cap was reconciled to
+the user's held **550 KiB** at measurement time (503.5 KiB pack, 9.2% headroom),
+recorded in Pre-flight, Part 1, and the amended ADR-469.

@@ -34,11 +34,19 @@ headroom, round to a clean KiB boundary.
 ## Decision
 
 Set `SIZE_CAP` to **550 KiB (563 200 bytes)** (user-ratified; matches the design
-recommendation), **contingent on the real post-ADR-468 `npm pack` measuring
-≤ ~500 KiB**. At implement time the real pack is re-measured; if it lands higher
-than the ~489 KiB projection, the cap is scaled by the same 1.1–1.15 rule and the
-number is reconciled (the 550 KiB target holds as long as the real pack is
-≤ ~500 KiB).
+recommendation). The original ratification was contingent on the real post-ADR-468
+`npm pack` measuring ≤ ~500 KiB, with a 1.1–1.15 scaling fallback if it landed
+higher. At implement time the real pack measured **503.5 KiB (515 591 bytes)** —
+marginally (0.7%) above the ~500 KiB threshold, which would scale the cap to
+~576 KiB. Presented with that measurement, the user **elected to hold 550 KiB**
+(9.2% headroom over the real pack) rather than loosen to the scaled value,
+prioritising a tighter cap consistent with the "smallest dist" principle over the
+extra buffer. 550 KiB still passes (515 591 < 563 200) and remains a 13.6×
+tightening from the 7680 KiB temporary ceiling.
+
+The `SIZE_CAP` comment is rewritten to explain the cap against the real
+dual-format floor and carries **no** backlog/phase/ADR reference (repo rule: no
+provenance refs in code — the commit and PR body are the join point).
 
 The `SIZE_CAP` comment is rewritten to explain the cap against the real
 dual-format floor and carries **no** backlog/phase/ADR reference (repo rule: no
@@ -46,9 +54,10 @@ provenance refs in code — the commit and PR body are the join point).
 
 ## Consequences
 
-- The cap is a real guard again — a ~13.6× tightening that leaves ~12% headroom
-  for near-term growth.
+- The cap is a real guard again — a ~13.6× tightening that leaves ~9.2% headroom
+  over the measured 503.5 KiB pack.
 - The comment states the honest floor (~482 KiB, dual ESM+CJS) so a future reader
   sets the next cap against reality, not the unreachable ~220 KiB v1 number.
-- The cap number is reconciled to the measured `npm pack` during implementation;
-  the value here is the target, the measurement is the authority.
+- The ~9.2% headroom is deliberately below the 1.1 scaling floor: a future change
+  that adds ~47 KiB compressed will fire the guard and prompt a considered cap
+  review rather than an automatic loosening — the tight-by-choice posture.
