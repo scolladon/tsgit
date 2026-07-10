@@ -37,10 +37,15 @@ function allBytesIndexes(haystack: Uint8Array, needle: Uint8Array): ReadonlyArra
 }
 
 /**
- * Single ASCII char excluding the LF line separator (0x0A). matchLine searches a
- * line WITHOUT its trailing newline, so an LF in the line or fixed pattern is
- * outside the line-oriented contract and would diverge from the naive byte oracle
- * (which has no notion of line terminators). Char-level filter → ~1/128 rejection.
+ * Single ASCII char excluding the LF byte (0x0A). matchLine is line-oriented: real
+ * lines arrive already split on LF, so a line never carries an embedded LF and at
+ * most a trailing one, which matchLine strips before searching. The naive byte
+ * oracle has no notion of line terminators, so the two diverge whenever a fixed
+ * *pattern* contains an LF that would match that stripped trailing LF. Constraining
+ * both arbitraries to the LF-free domain keeps every generated (line, pattern) pair
+ * inside matchLine's real input contract, where the byte oracle is valid — the
+ * conservative choice, since the excluded embedded-LF lines never occur post-split.
+ * Char-level filter → ~1/128 rejection (no fast-check filter-rate warning).
  */
 const asciiCharNoLf = fc
   .integer({ min: 0, max: 0x7f })
