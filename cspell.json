@@ -1059,7 +1059,12 @@
     "unget",
     "oidset",
     "fprintf",
-    "QSORT"
+    "QSORT",
+    "nonlib",
+    "finalising",
+    "cpus",
+    "backgrounded",
+    "nohup"
   ],
   "ignorePaths": [
     "node_modules",
