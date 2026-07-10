@@ -417,21 +417,26 @@ contaminates the other.
   per workload) and, for human reading, a sibling `reports/benchmarks/memory.md` table.
   Keep the timing summary (`bench-summarize.ts`) untouched — it keys on `tsgit`/
   `isomorphic-git` bench names and only knows timing; the probe writes alongside it.
-- **npm script:** add `bench:memory` = `node --expose-gc --experimental-strip-types
-  tooling/bench-memory.ts` (mirrors the existing `bench:fixture` /`profile` script form —
-  both use `node --experimental-strip-types tooling/<script>.ts`; `profile` is
-  `npm run build && node …`, but the memory probe reads the source `test/bench/support`
-  generator directly like `bench:fixture` does, so it needs no prior `build`). The
-  large-pack workload is reached by `TSGIT_BENCH_LARGE=1 npm run bench:memory`.
+- **npm script:** add `bench:memory` = `npm run build && node --expose-gc
+  --experimental-strip-types tooling/bench-memory.ts` — mirrors `profile`'s
+  `npm run build && node …` form exactly. **Correction (found at implementation): the
+  probe DOES need a prior `build`.** A strip-only runtime (`--experimental-strip-types`)
+  cannot reach `openRepository` from source: `src/index.node.ts`'s transitive imports use
+  `.js`-suffixed specifiers that strip-only mode won't resolve to their `.ts` siblings,
+  and `src/domain/error.ts`'s `TsgitError` uses a TS parameter-property constructor that
+  strip-only mode cannot even parse (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`). `bench:fixture`
+  works source-only *because it never imports `src/**`* — the memory probe does, so it
+  follows `profile.ts` and consumes the compiled `dist/` instead. The large-pack workload
+  is reached by `TSGIT_BENCH_LARGE=1 npm run bench:memory`.
 - **Symbols/imports:** `ensureScaledFixture`, `DELTA_CHAIN_FIXTURE`, `LARGE_FIXTURE` from
-  `../test/bench/support/fixture-generator.ts`; `openRepository` from the source entry
-  the other tooling uses for source-tree reads — note `profile.ts` imports from the
-  built `dist/esm/index.node.js` because it runs under `--prof` (plain `node`), but the
-  memory probe runs under `--experimental-strip-types` (like `gen-bench-fixture.ts`,
-  which imports the generator's `.ts` directly), so it imports `openRepository` from
-  `../src/index.node.ts` — no `dist/` build needed. `ObjectId` from
-  `../src/domain/objects/index.ts` to cast the resolved id strings (both
-  `fixture.firstBlobId` and the resolved spread ids are `string`).
+  `../test/bench/support/fixture-generator.ts` (a `node:`-only source module — strips
+  fine); `openRepository` is **dynamically imported from the built
+  `dist/esm/index.node.js`** exactly as `profile.ts` does
+  (`await import(pathToFileURL(DIST_ENTRY).href)`), typed via
+  `typeof import('../src/index.node.ts').openRepository` (a type-only query, erased at
+  runtime — no `any`). `ObjectId` from `../src/domain/objects/index.ts` is a type-only
+  import (also erased) used to cast the resolved id strings (both `fixture.firstBlobId`
+  and the resolved spread ids are `string`).
 - **Env-isolation:** the probe spawns no `git` itself — it only calls `ensureScaledFixture`
   (which spawns env-isolated `git` internally, unchanged) and reads through `openRepository`.
   So no new `git`-invocation isolation surface is added by Part E.

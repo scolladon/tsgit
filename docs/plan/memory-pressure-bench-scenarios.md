@@ -434,18 +434,24 @@ nightly CI never sets `TSGIT_BENCH_LARGE` and the large fixture is a local escap
   process.stderr.write('…fixture unavailable… install the git CLI…'); process.exit(1); }`
   (127-136), and the top-level `main().catch((err) => { …; process.exit(1); })` (146-149).
 
-**Import-path nuance (verified):** `profile.ts` imports `openRepository` from the built
-`dist/esm/index.node.js` (32, 41) because it runs under plain `node --prof`. The memory probe
-runs under `node --expose-gc --experimental-strip-types` (like `gen-bench-fixture.ts`, which
-imports the generator `.ts` source directly), so it imports **source**, no `dist/` build:
-- `import { openRepository } from '../src/index.node.ts'` — verified `src/index.node.ts`
-  exports `openRepository` (line 42).
-- `import type { ObjectId } from '../src/domain/objects/index.ts'` — verified `ObjectId`
-  branded type is exported there (`src/domain/objects/object-id.ts:7`, re-exported via the
-  barrel).
+**Import-path nuance — CORRECTED at implementation:** the memory probe imports
+`openRepository` from the built `dist/`, exactly like `profile.ts`, and `bench:memory`
+therefore runs `npm run build` first. The original "imports source, no build" plan was
+**wrong**: a strip-only runtime (`--experimental-strip-types`) cannot reach `openRepository`
+from source — `src/index.node.ts`'s transitive imports use `.js`-suffixed specifiers that
+strip-only mode won't resolve to `.ts` siblings, AND `src/domain/error.ts`'s `TsgitError`
+uses a TS parameter-property constructor strip-only mode cannot parse
+(`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`). `gen-bench-fixture.ts` works source-only only because
+it never imports `src/**`. So:
+- `openRepository` — dynamically imported from `dist/esm/index.node.js` via
+  `await import(pathToFileURL(DIST_ENTRY).href)`, typed by
+  `type OpenRepository = typeof import('../src/index.node.ts').openRepository` (a type-only
+  query, erased at runtime — no `any`). Mirrors `profile.ts:41`.
+- `import type { ObjectId } from '../src/domain/objects/index.ts'` — type-only (erased at
+  runtime), used to cast the resolved id strings.
 - `import { ensureScaledFixture, DELTA_CHAIN_FIXTURE, LARGE_FIXTURE } from
-  '../test/bench/support/fixture-generator.ts'` — the `.ts` extension, exactly like
-  `gen-bench-fixture.ts:12-16` and `profile.ts:23`.
+  '../test/bench/support/fixture-generator.ts'` — a `node:`-only source module, strips
+  fine (exactly like `gen-bench-fixture.ts:12-16`).
 
 **What it measures (new — `profile.ts` does CPU `--prof`, not memory):** around each workload,
 sample `process.memoryUsage()` (`rss` + `heapUsed`) at three points: **before** (post-GC
@@ -488,11 +494,11 @@ surface.
 
 **`package.json` script** — add alongside `bench:fixture` (192) / `profile` (193):
 ```json
-"bench:memory": "node --expose-gc --experimental-strip-types tooling/bench-memory.ts"
+"bench:memory": "npm run build && node --expose-gc --experimental-strip-types tooling/bench-memory.ts"
 ```
-(Mirrors the `node --experimental-strip-types tooling/<script>.ts` form of `bench:fixture`;
-adds `--expose-gc`. No prior `build` — it reads source, unlike `profile`.) The large-pack
-workload is reached by `TSGIT_BENCH_LARGE=1 npm run bench:memory`.
+(Mirrors `profile`'s `npm run build && node …` form — the build is required so
+`openRepository` is loadable from `dist/`, per the corrected import-path nuance above; adds
+`--expose-gc`.) The large-pack workload is reached by `TSGIT_BENCH_LARGE=1 npm run bench:memory`.
 
 **Error semantics (design):** `--expose-gc` omitted → throw loudly, non-zero exit. `git` absent →
 `ensureScaledFixture` throws → print "fixture unavailable — install the `git` CLI", non-zero exit
