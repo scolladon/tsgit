@@ -77,15 +77,19 @@ const spreadBlobPath = (blobIndex: number): string =>
 // many pack-index fanout buckets / pack regions in one measured call.
 const SPREAD_INDICES = [0, 25_000, 50_000, 75_000, 100_000, 125_000, 150_000, 175_000];
 
+// Child env with GIT_* stripped — GIT_DIR/GIT_WORK_TREE from a hook would override
+// `-C <cwd>` and redirect rev-parse to the wrong repo.
+const gitEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
 const resolveSpreadIds = async (cwd: string): Promise<ReadonlyArray<ObjectId>> => {
   const ids: ObjectId[] = [];
   for (const index of SPREAD_INDICES) {
-    const { stdout } = await execFileAsync('git', [
-      '-C',
-      cwd,
-      'rev-parse',
-      `HEAD:${spreadBlobPath(index)}`,
-    ]);
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', cwd, 'rev-parse', `HEAD:${spreadBlobPath(index)}`],
+      { env: gitEnv() },
+    );
     ids.push(stdout.trim() as ObjectId);
   }
   return ids;

@@ -143,15 +143,19 @@ const runDeltaChainWorkload = async (
   return toReport('delta-chain-cold-read', before, peak, after);
 };
 
+// Child env with GIT_* stripped — GIT_DIR/GIT_WORK_TREE from a hook would override
+// `-C <cwd>` and redirect rev-parse to the wrong repo.
+const gitEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
 const resolveSpreadIds = async (cwd: string): Promise<ReadonlyArray<ObjectId>> => {
   const ids: ObjectId[] = [];
   for (const index of SPREAD_INDICES) {
-    const { stdout } = await execFileAsync('git', [
-      '-C',
-      cwd,
-      'rev-parse',
-      `HEAD:${spreadBlobPath(index)}`,
-    ]);
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', cwd, 'rev-parse', `HEAD:${spreadBlobPath(index)}`],
+      { env: gitEnv() },
+    );
     ids.push(stdout.trim() as ObjectId);
   }
   return ids;

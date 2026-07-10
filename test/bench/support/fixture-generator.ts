@@ -161,7 +161,7 @@ const EVOLVING_PATH = 'evolving.dat';
 // of each commit's content with its predecessor, so chains grow deep.
 const EVOLVING_MUTATION_RATE = 0.01;
 
-/** xorshift32 stream, seeded once, reused across mutate calls (module-private PRNG state). */
+/** xorshift32 stream, seeded once, advanced across mutate calls (closure-encapsulated state). */
 const makeXorshift32 = (seed: number): (() => number) => {
   let state = (seed + 1) >>> 0;
   return () => {
@@ -235,16 +235,23 @@ export const maxChainDepthOid = (verifyPackOutput: string): string => {
   return deepestOid;
 };
 
+// Child env with every GIT_* var stripped. A husky hook (or a parent `git`) can
+// export GIT_DIR/GIT_WORK_TREE, which take precedence over `-C <repoDir>` and would
+// silently redirect these subprocesses to the wrong repository.
+const gitEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
 const runGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<string> => {
   const { stdout } = await execFileAsync('git', ['-C', repoDir, ...args], {
     maxBuffer: 16 * 1024 * 1024,
+    env: gitEnv(),
   });
   return stdout.trim();
 };
 
 const assertGitAvailable = async (): Promise<void> => {
   try {
-    await execFileAsync('git', ['--version']);
+    await execFileAsync('git', ['--version'], { env: gitEnv() });
   } catch {
     throw new FixtureUnavailableError('the `git` CLI is not on PATH');
   }
@@ -257,6 +264,7 @@ const runFastImport = async (
 ): Promise<void> => {
   const importer = spawn('git', ['-C', repoDir, 'fast-import', '--quiet'], {
     stdio: ['pipe', 'ignore', 'inherit'],
+    env: gitEnv(),
   });
   const stdin = importer.stdin;
   if (stdin === null) throw new Error('git fast-import: stdin pipe unavailable');
