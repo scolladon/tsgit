@@ -191,6 +191,7 @@
     "bench:summary": "wireit",
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
     "profile": "npm run build && node --experimental-strip-types tooling/profile.ts",
+    "bench:memory": "npm run build && node --expose-gc --experimental-strip-types tooling/bench-memory.ts",
     "docs": "wireit",
     "docs:check": "wireit",
     "docs:json": "wireit",
