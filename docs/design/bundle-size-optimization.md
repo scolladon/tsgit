@@ -259,7 +259,7 @@ Should the re-tightened cap run in **PR CI** or stay **tag-push-only**?
   Every PR packs + size-checks + attw-checks. Catches regressions at the PR
   that introduces them. Cost: `validate` already runs `check:exports`
   (`attw --pack .`) and `check:size` (size-limit) — so wiring the full
-  `verify:tarball` **double-packs and double-attws** (verify-tarball's `attw`
+  `verify:tarball` **double-packs and runs `attw` twice** (verify-tarball's `attw`
   vs `check:exports`, and its size check vs `check:size`). Overlap noted.
 - **(c) Add only the *size + forbidden-path* assertions to a lightweight PR
   gate**, leaving attw to the existing `check:exports`. Catches the regression
