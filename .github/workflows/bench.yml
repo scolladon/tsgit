@@ -29,7 +29,11 @@ jobs:
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
       - name: Pre-warm the medium fixture
         run: npm run bench:fixture -- medium
+      - name: Pre-warm the delta-chain fixture
+        run: npm run bench:fixture -- delta-chain
       - run: npm run bench:summary
+      - name: Capture memory probe
+        run: npm run bench:memory
       - uses: actions/upload-artifact@v7
         with:
           name: benchmarks
