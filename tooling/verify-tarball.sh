@@ -4,13 +4,14 @@
 
 set -euo pipefail
 
-# Compressed tarball cap. Originally 500 KiB (Phase 11 design §6) when the dist
-# was ~220 KiB; v2.0.0's feature set (cherry-pick / rebase / revert / stash /
-# snapshot engine / …) grew the compressed tarball to ~625 KiB, so the cap is
-# relaxed 10× to 7680 KiB (~7.5 MiB) as a generous temporary ceiling. Bringing
-# the bundle back down is tracked as 26.7 (Phase 26 perf pass) — see
-# docs/BACKLOG.md.
-SIZE_CAP=$((7680 * 1024))
+# Compressed tarball cap. The published package ships dual ESM+CJS code plus
+# dual .d.ts/.d.cts types (both structurally required — dropping either is a
+# breaking change), so the honest floor is code+types ≈ 482 KiB compressed;
+# the real pack measures ~504 KiB. The cap is set ~9% above that — tight by
+# choice: a change that adds ~47 KiB compressed fires the guard for a
+# considered review rather than an automatic bump. Source maps are not shipped,
+# so they do not count against this cap.
+SIZE_CAP=$((550 * 1024))
 
 # `npm pack` prints the tarball filename on stdout; capture that directly so
 # we never pick up a stale .tgz from a previously-interrupted run.
@@ -49,7 +50,7 @@ grep -E "^package/README\.md$" "$INVENTORY" >/dev/null || {
 }
 
 # Forbidden content.
-for forbidden in "^package/src/" "^package/test/" "^package/reports/" "^package/\.claude/" "^package/\.github/"; do
+for forbidden in "^package/src/" "^package/test/" "^package/reports/" "^package/\.claude/" "^package/\.github/" "^package/.*\.map$"; do
   if grep -E "$forbidden" "$INVENTORY" >/dev/null; then
     echo "FAIL: tarball contains forbidden path matching ${forbidden}" >&2
     exit 1
