@@ -46,6 +46,7 @@ npm install
 | `npm run check:spelling` | Spell checking (cspell) |
 | `npm run check:size` | Bundle size budget (size-limit) |
 | `npm run check:exports` | Package exports correctness (attw) |
+| `npm run check:tarball` | Per-PR published-tarball guard — compressed-size cap + no source maps (`verify-tarball.sh --quick`; skips attw, which `check:exports` already covers) |
 | `npm run check:security` | Dependency vulnerability audit |
 | `npm run check:doc-links` | Markdown link checker (`lychee` required) |
 | `npm run check:doc-coverage` | Verify every `repo.*` binding has a `docs/use/*` page |
@@ -169,6 +170,11 @@ macOS + Windows runs nightly via the `mutation-os.yml` workflow (ADR-055).
 4. `pre-publish.yml` runs `npm run verify:tarball` against the actual artifact
 5. The GitHub Release event triggers `npm-service.yml`, which runs
    `npm publish --provenance --access public` over OIDC
+
+The published package ships **no source maps** — the compressed-tarball cap in
+`tooling/verify-tarball.sh` is enforced both per-PR (`check:tarball`, wired into
+`validate` — size cap + `*.map` exclusion, attw left to `check:exports`) and at
+tag-push (`verify:tarball`, the full check including attw resolution).
 
 **Forcing a version (`Release-As`) — mind the squash.** To override the
 computed bump (e.g. cut a major for breaking changes that merged earlier as

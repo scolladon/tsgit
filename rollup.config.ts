@@ -39,7 +39,7 @@ export default defineConfig([
       {
         dir: 'dist/esm',
         format: 'esm',
-        sourcemap: true,
+        sourcemap: false,
         preserveModules: false,
         entryFileNames: '[name].js',
         chunkFileNames: 'chunks/[name]-[hash].js',
@@ -47,7 +47,7 @@ export default defineConfig([
       {
         dir: 'dist/cjs',
         format: 'cjs',
-        sourcemap: true,
+        sourcemap: false,
         preserveModules: false,
         entryFileNames: '[name].cjs',
         chunkFileNames: 'chunks/[name]-[hash].cjs',
@@ -63,7 +63,7 @@ export default defineConfig([
           outDir: undefined,
           declaration: false,
           declarationMap: false,
-          sourceMap: true,
+          sourceMap: false,
           module: 'ESNext',
           moduleResolution: 'bundler',
         },

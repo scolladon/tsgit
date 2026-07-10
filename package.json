@@ -203,6 +203,7 @@
     "check:write-surfaces": "wireit",
     "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
+    "check:tarball": "wireit",
     "check:size": "wireit",
     "check:exports": "wireit",
     "check:security": "wireit",
@@ -643,6 +644,20 @@
       ],
       "output": []
     },
+    "check:tarball": {
+      "command": "bash tooling/verify-tarball.sh --quick",
+      "dependencies": [
+        "build"
+      ],
+      "files": [
+        "tooling/verify-tarball.sh",
+        "dist/**",
+        "package.json",
+        "LICENSE",
+        "README.md"
+      ],
+      "output": []
+    },
     "check:size": {
       "command": "size-limit",
       "dependencies": [
@@ -703,6 +718,7 @@
         "check:deps",
         "check:size",
         "check:exports",
+        "check:tarball",
         "check:security",
         "check:doc-coverage",
         "check:doc-links",
@@ -732,7 +748,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.3",
     "@cloudflare/vitest-pool-workers": "0.18.4",
-    "@cloudflare/workers-types": "5.20260708.1",
+    "@cloudflare/workers-types": "5.20260710.1",
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
     "@ls-lint/ls-lint": "2.3.1",
