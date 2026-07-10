@@ -23,7 +23,7 @@ GitHub Actions runners introduce ±20% variance — trust direction more than ab
 
 - **Runner:** `vitest bench`. Each scenario is iterated until 95% confidence interval stabilises (typically 100–10000 samples depending on the scenario's runtime).
 - **Reported metric:** median, with ±RME (relative margin of error) captured in `reports/benchmarks/raw.json`.
-- **Fixtures:** committed under `test/fixtures/`. Reproducible bit-for-bit on every host. Larger fixtures (`medium`, `large`) are deterministically regenerable via `npm run bench:fixture` and cached in `~/.cache/tsgit-bench`.
+- **Fixtures:** committed under `test/fixtures/`. Reproducible bit-for-bit on every host. Larger fixtures (`medium`, `large`) are deterministically regenerable via `npm run bench:fixture` and cached in `~/.cache/tsgit-bench`. A third fixture, `delta-chain`, is a small evolving 4 KiB blob mutated ~1% per commit and repacked at `--depth=50 --window=250`, producing a near-cap delta chain (~43 deep, within git's default depth cap of 50) — pre-warmed via `npm run bench:fixture -- delta-chain` and cached the same way. See [ADR-471](../adr/471-deep-delta-chain-bench-fixture.md).
 - **Comparison set:** `isomorphic-git@1.38` invoked with equivalent options. CGI lifecycle for clone benchmarks documented in [ADR-017](../adr/017-bench-cgi-server-lifecycle.md).
 - **CI runs:** the `benchmark-snapshot` job runs on `main` pushes and feeds `github-action-benchmark@v1` ([ADR-056](../adr/056-benchmark-snapshot-converter-schema.md)).
 
@@ -32,7 +32,7 @@ GitHub Actions runners introduce ±20% variance — trust direction more than ab
 | Hot path | Mechanism |
 |---|---|
 | Pack-index lookup | Fanout binary search — O(log n) within fanout buckets of bounded size. |
-| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). |
+| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-471](../adr/471-deep-delta-chain-bench-fixture.md). |
 | Parsing | Zero-copy `DataView` over inflated buffers. No intermediate string allocations on the binary path. |
 | Inflate | `node:zlib` (Node) / `DecompressionStream` (Browser). Streaming where possible. |
 | Working-tree comparison (`status`) | Stat-cache fast path: `mtime/ctime/size/ino` match the index's recorded stat fields → no re-hash. |
@@ -65,7 +65,6 @@ The limits are CI gates. Real measured bytes (`npm run reports:bundle-sizes`) an
 - **Phase 26.3** — Per-command profile capture (`npm run profile <cmd>`); commit baseline.
 - **Phase 26.4** — Hot-path optimisations from 26.3 findings. Targets: `log:walk` ≥ 1.5× (currently 0.66×), `readBlob:cold` ≥ 1.0× (currently 0.67×).
 - **Phase 26.5** — Regression gate in CI: `bench:summary` diff must not exceed ±N% per scenario.
-- **Phase 26.6** — Memory-pressure scenarios (large packs, deep delta chains) added to bench suite.
 - **Phase 26.7** — Side-by-side competitor benchmarks (`isomorphic-git`, `simple-git`, `wasm-git`, `nodegit`). Maintained per release.
 - **Phase 26.8** — Bundle measurements as regenerable artifacts (`reports/bundle/{sizes,treeshake,load-time}.md`).
 
@@ -79,4 +78,7 @@ npm run build
 npm run bench:summary               # writes reports/benchmarks/summary.md
 TSGIT_BENCH_LARGE=1 npm run bench   # opt-in to the 50k/200k/~500 MB fixture
 npm run profile                     # node --prof captures
+npm run bench:memory                # builds first, runs under --expose-gc,
+                                     # writes reports/benchmarks/memory.{json,md}
+TSGIT_BENCH_LARGE=1 npm run bench:memory  # adds the large-pack memory workload
 ```
