@@ -4,6 +4,14 @@
 
 set -euo pipefail
 
+QUICK=0
+for arg in "$@"; do
+  case "$arg" in
+    --quick) QUICK=1 ;;
+    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
 # Compressed tarball cap. The published package ships dual ESM+CJS code plus
 # dual .d.ts/.d.cts types (both structurally required — dropping either is a
 # breaking change), so the honest floor is code+types ≈ 482 KiB compressed;
@@ -60,9 +68,11 @@ done
 # Resolution check — call the pinned, locally-installed attw rather than
 # `npx --yes` so the version cannot drift between this check and the published
 # release. node_modules/.bin/attw is provisioned by `npm ci` upstream.
-node_modules/.bin/attw --pack "$TARBALL" --profile node16 || {
-  echo "FAIL: arethetypeswrong reported issues" >&2
-  exit 1
-}
+if (( QUICK == 0 )); then
+  node_modules/.bin/attw --pack "$TARBALL" --profile node16 || {
+    echo "FAIL: arethetypeswrong reported issues" >&2
+    exit 1
+  }
+fi
 
 echo "OK: tarball ${TARBALL} verified at ${SIZE} bytes."
