@@ -8,6 +8,7 @@
 import { type BenchComparison, benchScenario } from './bench-dsl.js';
 import {
   ensureScaledFixture,
+  type FixtureSpec,
   LARGE_FIXTURE,
   MEDIUM_FIXTURE,
   type ScaledFixture,
@@ -19,13 +20,26 @@ export interface ScaledContext {
   readonly given: string;
 }
 
-/** Resolve the scaled fixture once — call at a bench file's module top level. */
-export const resolveScaledContext = async (): Promise<ScaledContext> => {
-  const spec = process.env.TSGIT_BENCH_LARGE !== undefined ? LARGE_FIXTURE : MEDIUM_FIXTURE;
-  const given = `Given a ${spec.label} repo (${spec.commits} commits, ${spec.blobs} blobs)`;
+/** Given-phrase for a resolved spec — evolving fixtures have no `blobs` file count. */
+const givenPhrase = (spec: FixtureSpec): string => {
+  if (spec.strategy === 'evolving') {
+    return `Given a ${spec.label} repo (${spec.commits} commits, deep delta chains)`;
+  }
+  return `Given a ${spec.label} repo (${spec.commits} commits, ${spec.blobs} blobs)`;
+};
+
+/**
+ * Resolve a scaled fixture once — call at a bench file's module top level.
+ * Defaults to the medium (or large, under `TSGIT_BENCH_LARGE`) fixture when
+ * no spec is given, preserving every existing zero-arg call site.
+ */
+export const resolveScaledContext = async (spec?: FixtureSpec): Promise<ScaledContext> => {
+  const resolved =
+    spec ?? (process.env.TSGIT_BENCH_LARGE !== undefined ? LARGE_FIXTURE : MEDIUM_FIXTURE);
+  const given = givenPhrase(resolved);
   if (process.env.STRYKER_MUTANT_ID !== undefined) return { given };
   try {
-    const fixture = await ensureScaledFixture(spec);
+    const fixture = await ensureScaledFixture(resolved);
     return { fixture, given };
   } catch {
     return { given };
