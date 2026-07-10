@@ -36,12 +36,23 @@ function allBytesIndexes(haystack: Uint8Array, needle: Uint8Array): ReadonlyArra
   return spans;
 }
 
+/**
+ * Single ASCII char excluding the LF line separator (0x0A). matchLine searches a
+ * line WITHOUT its trailing newline, so an LF in the line or fixed pattern is
+ * outside the line-oriented contract and would diverge from the naive byte oracle
+ * (which has no notion of line terminators). Char-level filter → ~1/128 rejection.
+ */
+const asciiCharNoLf = fc
+  .integer({ min: 0, max: 0x7f })
+  .filter((code) => code !== 0x0a)
+  .map((code) => String.fromCharCode(code));
+
 /** Arbitrary for a non-empty printable ASCII string (used as fixed pattern values). */
-const arbAsciiString = fc.string({ minLength: 1, maxLength: 20, unit: 'binary-ascii' });
+const arbAsciiString = fc.string({ minLength: 1, maxLength: 20, unit: asciiCharNoLf });
 
 /** Arbitrary for a Uint8Array of printable ASCII bytes. */
 const arbAsciiLine = fc
-  .string({ minLength: 0, maxLength: 80, unit: 'binary-ascii' })
+  .string({ minLength: 0, maxLength: 80, unit: asciiCharNoLf })
   .map((s) => new TextEncoder().encode(s));
 
 // ---------------------------------------------------------------------------
