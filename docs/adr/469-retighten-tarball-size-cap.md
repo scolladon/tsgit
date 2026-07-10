@@ -48,10 +48,6 @@ The `SIZE_CAP` comment is rewritten to explain the cap against the real
 dual-format floor and carries **no** backlog/phase/ADR reference (repo rule: no
 provenance refs in code — the commit and PR body are the join point).
 
-The `SIZE_CAP` comment is rewritten to explain the cap against the real
-dual-format floor and carries **no** backlog/phase/ADR reference (repo rule: no
-provenance refs in code — the commit and PR body are the join point).
-
 ## Consequences
 
 - The cap is a real guard again — a ~13.6× tightening that leaves ~9.2% headroom
