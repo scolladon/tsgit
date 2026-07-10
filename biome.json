@@ -12,8 +12,8 @@
       "test/**",
       "*.ts",
       "*.json",
-      "tooling/profile-env.ts",
-      "tooling/test/unit/profile-env.test.ts"
+      "tooling/profile-*.ts",
+      "tooling/test/unit/profile-*.test.ts"
     ]
   },
   "formatter": {
