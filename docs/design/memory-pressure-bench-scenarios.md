@@ -3,7 +3,12 @@
 > Brief: Add memory-pressure scenarios — large packs and deep delta chains — to the
 > bench suite so the Phase-26 baseline covers them, before per-command profile
 > capture (26.3) and the CI regression gate (26.5).
-> Status: draft → self-reviewed ×3 → accepted
+> Status: draft → self-reviewed ×3 → accepted → **scope-folded against ADR-471..474**
+> Ratified decisions: ADR-471 (delta-chain fixture: evolving blob at near-cap depth 43),
+> ADR-472 (large-pack: reuse `LARGE_FIXTURE`, spread read, gated), ADR-473 (measurement:
+> vitest-bench timing **plus a separate RSS/heap probe** — memory is IN scope), ADR-474
+> (generator topology: new `'delta-chain'` label + strategy discriminant, resolver
+> generalisation, no version bump).
 
 ## Context
 
@@ -86,14 +91,14 @@ Constraining prior art / ADRs:
   pin.
 - **11.1 / 12.4** — the existing vs-isomorphic-git benches (`log` / `readBlob` /
   `status` / `clone:small-repo`) establish the comparative-baseline idiom this follows.
-- **Bench files are excluded from coverage** — `vitest.config.ts` coverage runs over
-  `src/**` only; `test/bench/**` is never instrumented. So bench `.bench.ts` files
-  carry **no** coverage/mutation obligation. **Any change to the generator or a new
-  tooling knob is production-adjacent test-support code and IS under the normal
-  gates** where it is reachable by unit tests — but the generator is currently
-  untested (`git`-spawning, cache-backed) and lives under `test/bench/support`, which
-  is *not* in the coverage `include`. Confirm during planning that the generator edit
-  stays inside the already-uncovered support surface (it does).
+- **Bench files AND `tooling/` are excluded from coverage** — `vitest.config.ts`
+  coverage `include` is exactly
+  `src/{domain,ports,adapters/node,adapters/memory,operators}/**` (verified). `test/bench/**`
+  and `tooling/**` are never instrumented, so bench `.bench.ts` files, the generator edit,
+  and the Part E probe (`tooling/bench-memory.ts`, mirroring the already-uncovered
+  `tooling/profile.ts`) carry **no** coverage/mutation obligation. The generator lives
+  under `test/bench/support`, which is *not* in the coverage `include`; confirm during
+  planning that the generator edit stays inside that already-uncovered surface (it does).
 
 ## Requirements
 
@@ -112,15 +117,22 @@ When this ships:
    cap (empirically pinned depth target ≤ 50, saturating near it), so tsgit's own
    reader resolves every object and the scenario measures real chain-walk cost rather
    than tripping `DELTA_CHAIN_TOO_DEEP`.
-5. The new scenarios flow into `reports/benchmarks/summary.md` and `snapshot.json`
+5. The new timing scenarios flow into `reports/benchmarks/summary.md` and `snapshot.json`
    **with no tooling change** (the flatteners are generic — verified).
-6. **CI bench time stays sane**: the deep-delta fixture is small to generate
-   (< ~a few seconds) and runs on the **default medium path**; any purpose-built
-   large-pack fixture that is slow/GB-scale stays **gated** behind `TSGIT_BENCH_LARGE`
-   (or reuses the existing `LARGE_FIXTURE`) so nightly CI is unaffected.
-7. `FIXTURE_GENERATOR_VERSION` is bumped iff the shape of an existing cached fixture
-   changes; the `bench.yml` cache key (already source-hashed) stays compatible.
-8. Every `git` invocation added is env-isolated (author/committer/timestamp pinned, no
+6. The suite reports **real RSS + `heapUsed`** (before / peak / after) for **both**
+   memory-pressure workloads — the deep-delta-chain read and the large-pack spread — via
+   a **separate memory probe** (Part E), run under `node --expose-gc`, emitted as its own
+   artifact and **never merged into the timing summary** (ADR-473).
+7. **CI bench time stays sane**: the deep-delta fixture is small to generate
+   (< ~a few seconds) and runs on the **default medium path** (timing scenario + fast
+   memory probe); any purpose-built large-pack fixture that is slow/GB-scale stays
+   **gated** behind `TSGIT_BENCH_LARGE` (or reuses the existing `LARGE_FIXTURE`) so
+   nightly CI is unaffected — this applies to both the large-pack timing scenario and its
+   memory probe.
+8. `FIXTURE_GENERATOR_VERSION` is **not** bumped — a new label is a pure addition and the
+   `medium`/`large` cache shapes are untouched (ADR-474); the `bench.yml` cache key
+   (already source-hashed on `fixture-generator.ts`) stays compatible.
+9. Every `git` invocation added is env-isolated (author/committer/timestamp pinned, no
    `GIT_*` inheritance) — determinism + no worktree/global-config writes.
 
 ## Design
@@ -143,14 +155,19 @@ usable base, so **today's fixtures have no deep chains**. Deep chains require
 | 1 evolving 4 KiB blob, 300 commits | `--depth=100 --window=250` | **85** | 168 KiB |
 | 20 000 random blobs (today's medium) | `--depth` default (50) `--window` default (10) | ~1 (no deltas) | — |
 
-Load-bearing readings from this matrix:
+Load-bearing readings from this matrix (settled — **ADR-471** ratified the near-cap depth):
 
 - **Similar content is necessary and sufficient** for deep chains — the evolving blob
   reaches chain length 43 where random content stays at ~1. The strategy is an
   *evolving blob mutated per commit*, not the existing random `blobContent`.
 - **`--depth=50 --window=250` reaches chain length 43, near-saturating tsgit's
-  `MAX_DELTA_CHAIN_DEPTH = 50` cap without exceeding it.** This is the sweet spot: it
-  measures a deep walk while every object stays resolvable by tsgit.
+  `MAX_DELTA_CHAIN_DEPTH = 50` cap without exceeding it — this is the SETTLED choice
+  (ADR-471).** The user ratified the near-cap depth (43) over the git-default-window
+  moderate (chain 37, `--depth=50 --window=10`): a *memory-pressure* benchmark should
+  stress the delta walker at the deepest point tsgit will accept. Both keep git's default
+  depth cap of 50 — only the window differs — so a chain-43 pack is nothing a
+  default-packed real repository could not contain; `git gc --aggressive`'s `--depth=250`
+  is deliberately not used (tsgit refuses those chains).
 - **`--window` matters** — the git-default `window=10` under-fills the chain (37 vs 43);
   a wide `--window=250` is needed to let git pack a near-cap chain. So the generator
   must pass **both** `--depth` and `--window` (default repack window is too small).
@@ -167,36 +184,51 @@ Load-bearing readings from this matrix:
   walks the longest chain is *not* `HEAD:evolving.dat` — it is whichever version git
   placed at the chain tip, and git's base-direction heuristic is not something to
   assume. **The generator must therefore record the id of the object with the
-  *maximum* chain depth, read empirically from `git verify-pack -v`** — never assume
-  HEAD or root. This is deterministic (same seed + same git → same pack → same
-  deepest object) and correct regardless of git's chosen base direction.
+  *maximum* chain depth, read empirically from `git verify-pack -v`** (SETTLED —
+  ADR-471 ratifies the `verify-pack -v` deepest-object selection; never assume HEAD or
+  root). This is deterministic (same seed + same git → same pack → same deepest object)
+  and correct regardless of git's chosen base direction.
 
 > Isolation note: the throwaway above wrote only inside `mktemp -d` with a private
 > `HOME`; nothing touched the worktree's `.git/config` or any global config.
 
-### What "memory pressure" means here (honest scope)
+### What "memory pressure" means here (two signals, cleanly split)
 
-`vitest bench` measures **wall-clock time only** — it has no built-in heap/peak-RSS
-capture, and per-iteration RSS sampling inside the measured closure is unreliable
-(GC timing, shared-heap noise) and would pollute the timing signal. So "memory
-pressure" is expressed as **the two workloads that stress the reader's memory
-behaviour**, observed through timing:
+Memory pressure is measured through **two separate signals** that never contaminate each
+other (SETTLED — ADR-473 ratifies memory capture IN scope, kept out of the timed path):
+
+- **vitest bench = wall-clock.** The `.bench.ts` scenarios stay **timing-only**. `vitest
+  bench` has no heap/RSS capture, and per-iteration `process.memoryUsage()` sampling
+  inside the measured closure is unreliable (GC timing, shared-heap noise) and would
+  pollute the timing signal — so no memory sampling is ever added inside a timed `sut`.
+- **probe = memory.** A **separate memory probe** (Part E) captures RSS + `heapUsed`
+  *around* the two memory-pressure workloads, outside any timed iteration, under
+  `node --expose-gc` with a forced GC before each baseline reading. It emits its own
+  artifact and is never merged into the timing summary.
+
+The two workloads and what each stresses:
 
 1. **Deep delta chains** stress the **delta-base cache + iterative reconstruction**:
    a cold read replays the full chain (allocating each intermediate base buffer);
-   a warm read hits the LRU. The **cold-vs-warm timing gap** is the observable proxy
-   for how much work the chain walk + cache save. This is the direct memory-behaviour
-   signal.
+   a warm read hits the LRU.
+   - *Timing signal* — the **cold-vs-warm timing gap** is the observable proxy for how
+     much work the chain walk + cache save.
+   - *Memory signal* — the probe reports the actual RSS/heap footprint of replaying the
+     chain (before / peak / after), so the baseline carries real numbers, not only the
+     timing proxy.
 2. **Large pack** stresses the reader's ability to serve reads **without
    materialising the whole pack** — the fixture pack is far larger than any single
-   object, and the scenario reads a representative object (cold, paying full fanout +
-   inflate). Timing that read confirms the reader stays proportional to the object,
-   not the pack.
+   object.
+   - *Timing signal* — a spread read across the pack (Part C) confirms the reader stays
+     proportional to the objects touched, not the pack size.
+   - *Memory signal* — the probe reports RSS/heap around the same spread, confirming the
+     footprint tracks the objects touched, not the ~500 MB pack. (Gated behind
+     `TSGIT_BENCH_LARGE`, like the timing scenario.)
 
-Explicit heap / peak-RSS capture is **out of scope** for a `vitest bench` scenario
-(Decision candidate #4) — if the baseline wants memory numbers, that belongs in the
-`tooling/profile.ts` path (26.3), not here. This design states that boundary honestly
-rather than faking a memory metric inside a timing harness.
+Real heap/RSS numbers for both workloads are delivered here (ADR-473), via the separate
+probe — **not** faked inside the timing harness, and **not** deferred to 26.3. The 26.3
+per-command profile harness (a general, all-commands memory harness) remains a separate,
+broader item; this probe is narrow — just these two workloads.
 
 ### Part A — Teach the generator to build a deep-delta fixture
 
@@ -208,18 +240,18 @@ rather than faking a memory metric inside a timing harness.
   shape is a **different generation strategy** from the multi-blob fast-import, so it
   needs its own streaming path — but it reuses the same cache/rename/meta machinery
   (`ensureScaledFixture`, `cacheDirFor`, `readCachedMeta`, atomic rename).
-- **Field-semantics mismatch to resolve (feeds Decision candidate #3):** `FixtureSpec`
-  today is `{ label; commits; blobs; blobBytes }` where `blobs` = total distinct blobs.
-  The delta-chain fixture has **one evolving path** but `commits` distinct blob
-  *versions* — so `blobs` no longer maps to file count. Two clean options for the
-  planner: repurpose `blobs` = number of blob versions (= `commits` here, one file), or
-  add explicit `deltaDepth`/`deltaWindow` fields and a `strategy: 'multi' | 'evolving'`
-  discriminant so `streamFastImport` vs `streamEvolvingFastImport` is selected off the
-  spec, not the label. The `resolveScaledContext` `given` phrase currently interpolates
-  `${spec.commits} commits, ${spec.blobs} blobs` — for delta-chain it must read
-  sensibly (e.g. "N commits, deep delta chains"), so the spec should carry a
-  self-describing `given`-fragment or the resolver must branch on label. Surface both
-  as part of candidate #3's topology decision.
+- **Field semantics — SETTLED (ADR-474):** `FixtureSpec` today is
+  `{ label; commits; blobs; blobBytes }` where `blobs` = total distinct blobs, which is
+  meaningless for a single evolving path. The ratified topology adds a **`strategy:
+  'multi' | 'evolving'` discriminant** plus explicit **`deltaDepth`/`deltaWindow`**
+  fields, so `generateInto` selects `streamFastImport` vs `streamEvolvingFastImport` and
+  the repack knobs **off the spec (led by the discriminant), not the label**. `blobs` is
+  repurposed/led by the discriminant rather than overloaded (for the evolving strategy it
+  is not a file count). The `resolveScaledContext` `given` phrase currently interpolates
+  `${spec.commits} commits, ${spec.blobs} blobs` — for the delta-chain shape it must read
+  sensibly (e.g. "N commits, deep delta chains"); with the resolver generalisation
+  (candidate #6 / ADR-474) the scenario passes the explicit `DELTA_CHAIN_FIXTURE` and the
+  `given` branches off `strategy`. No `FIXTURE_GENERATOR_VERSION` bump (see below).
 - New generation strategy: `streamFastImport` currently writes `BLOBS_PER_COMMIT` fresh
   random blobs per commit. The delta-chain strategy writes **one path** (`evolving.dat`)
   re-content each commit from a seeded mutation of the previous bytes. Keep xorshift32
@@ -236,9 +268,10 @@ rather than faking a memory metric inside a timing harness.
   step is required.
 - `generateInto` currently ends with `git repack -ad --quiet`. The delta-chain path
   must run `git repack -adf --depth=50 --window=250 --quiet` instead (the `-f`
-  forces a full recompute so `--depth`/`--window` actually apply; `--depth`/`--window`
-  are the pinned knobs). **Decision candidate #1** covers whether these knobs become
-  spec fields (`deltaDepth`/`deltaWindow`) or a per-strategy constant.
+  forces a full recompute so `--depth`/`--window` actually apply). SETTLED (ADR-471 +
+  ADR-474): `--depth=50 --window=250` (chain ≈ 43) are the pinned knobs, carried on the
+  spec as `deltaDepth`/`deltaWindow` and applied when `strategy === 'evolving'`; the
+  `multi` strategy keeps today's `git repack -ad --quiet` unchanged.
 - `firstBlobId` today = `HEAD:d0/f0.dat`. For the delta-chain fixture the interesting
   object is the **object with the maximum delta-chain depth** — which the empirical
   pin shows is **NOT** `HEAD:evolving.dat` (git made HEAD the base and deltified older
@@ -247,17 +280,19 @@ rather than faking a memory metric inside a timing harness.
   id from `git verify-pack -v`** — parse the blob line whose chain-depth column is the
   maximum — and record that as `firstBlobId`. Keep the `firstBlobId` field name (the
   `ScaledFixture` contract); it now names the **deepest-chain object** for this
-  fixture. **Decision candidate #7** covers how to select the deepest object
-  (parse `verify-pack` vs. probe candidate versions).
+  fixture. SETTLED (ADR-471): select the deepest object by parsing `git verify-pack -v`
+  and picking the blob line with the maximum chain-depth column — the authoritative,
+  deterministic source; never assume HEAD or root.
 - `verify-pack -v` blob line format (pinned): `<oid> blob <size> <packed-size>
   <offset> <chain-depth> <base-oid>` for deltified objects; a base (non-delta) line
   has **no** chain-depth/base-oid columns. The generator picks the `<oid>` whose
   `<chain-depth>` is maximal. Run it env-isolated (as with every `git` call here).
-- `FIXTURE_GENERATOR_VERSION`: adding a **new** label does not change the shape of the
-  existing `medium`/`large` caches, and the new label's cache dir is
-  `delta-chain-v1`. A bump is **not required** for a pure addition — but bump to `2`
-  anyway iff the addition also touches the shared `streamFastImport` used by
-  medium/large (it should NOT — keep the strategies separate). **Decision candidate #3.**
+- `FIXTURE_GENERATOR_VERSION`: **NO bump — SETTLED (ADR-474).** Adding a new label is a
+  pure addition: the `medium`/`large` cache shapes are untouched, so their caches stay
+  valid and only the new `delta-chain-v1` cache dir is created. Editing the generator file
+  already re-keys CI's `actions/cache` (keyed on `hashFiles('…/fixture-generator.ts')`).
+  The shared `streamFastImport` **must not change** (the evolving path is a separate
+  `streamEvolvingFastImport` builder), which is what keeps a bump unnecessary.
 - `FixtureUnavailableError` / `assertGitAvailable` / concurrency-safe rename: reuse
   unchanged.
 
@@ -270,13 +305,14 @@ seeded xorshift32 mutation, one file → fully reproducible pack. Cache-keyed by
 - New file: `test/bench/delta-chain-read.bench.ts` (naming mirrors
   `pack-read-scale.bench.ts` / `read-blob.bench.ts`).
 - The deep-delta fixture is small and label-specific — it does **not** ride the
-  `TSGIT_BENCH_LARGE` env toggle (that only swaps medium↔large). So this scenario
-  resolves the `DELTA_CHAIN_FIXTURE` **directly** via `ensureScaledFixture`, not via
-  `resolveScaledContext()`. Wrap it so it skips cleanly when `git` is absent / under
-  `STRYKER_MUTANT_ID`, reusing the `benchScenario({ skip })` mechanism the same way
-  `scaledScenario` does. **Decision candidate #6** covers whether to generalise
-  `resolveScaledContext`/`scaledScenario` to take an arbitrary spec, or add a small
-  dedicated resolver.
+  `TSGIT_BENCH_LARGE` env toggle (that only swaps medium↔large). SETTLED (ADR-474,
+  candidate #6): **generalise `resolveScaledContext(spec?)` / `scaledScenario`** to accept
+  an explicit `FixtureSpec`, defaulting to the env-driven medium/large spec so all five
+  existing zero-arg call sites stay byte-for-byte compatible. The delta-chain scenario
+  passes `DELTA_CHAIN_FIXTURE` explicitly and reuses the same skip/Stryker/unavailable
+  logic (`benchScenario({ skip })`) — no duplicated resolver, no inlined skip logic. When
+  the resolver takes an explicit spec, its `given` phrase must branch on `strategy` (see
+  Part A) so it reads "N commits, deep delta chains" rather than "N blobs".
 - Scenario shape mirrors `pack-read-scale.bench.ts` exactly:
   - **Cold**: `sut` = fresh `openRepository({ cwd })` per call → `readBlob(leafId)` →
     `dispose()`. Pays full chain replay with an empty LRU every call.
@@ -284,41 +320,129 @@ seeded xorshift32 mutation, one file → fully reproducible pack. Cache-keyed by
     `afterAll(dispose)`; `sut` re-reads it → LRU base hits.
   - `deepId = fixture.firstBlobId as ObjectId` — for this fixture `firstBlobId` holds
     the **deepest-chain object** (Part A), so reading it walks the longest chain.
-- **Baseline**: include `isomorphic-git` (`git.readBlob({ fs, dir, oid })`) — the
-  fixture is tiny, iso-git is not impractically slow here, and a comparative number is
-  the point of a delta-chain reader benchmark. **Decision candidate #5.**
+- **Baseline — SETTLED (ADR-474, candidate #5):** include the `isomorphic-git` baseline
+  (`git.readBlob({ fs, dir, oid })`) — the fixture is tiny, iso-git is not impractically
+  slow here, and a comparative delta-chain-reader number is the point.
 - Symbols: `openRepository` from `../../src/index.node.js`, `ObjectId` from
   `../../src/domain/objects/index.js`, `benchScenario` from
-  `./support/bench-dsl.js`, `ensureScaledFixture` + `DELTA_CHAIN_FIXTURE` from
-  `./support/fixture-generator.js`.
+  `./support/bench-dsl.js`, the generalised `resolveScaledContext`/`scaledScenario` from
+  `./support/scaled-bench.js` (now spec-parameterised), `ensureScaledFixture` +
+  `DELTA_CHAIN_FIXTURE` from `./support/fixture-generator.js`.
 - Given/When/Then titles via `benchScenario`; body AAA; the tsgit closure named `sut`.
 
 ### Part C — Large-pack memory-pressure scenario
 
-**Pre-chewed context**
-- The existing `LARGE_FIXTURE` is already a 200 000-object (~500 MB) single pack —
-  a purpose-built larger fixture buys nothing and would blow the CI budget. **Reuse
-  `LARGE_FIXTURE`**, gated behind `TSGIT_BENCH_LARGE` exactly as the existing scaled
-  scenarios are (so it never runs in nightly CI, which sets no env). **Decision
-  candidate #2.**
+**Pre-chewed context** — SETTLED (ADR-472): reuse `LARGE_FIXTURE`, spread read,
+tsgit-only, gated behind `TSGIT_BENCH_LARGE`.
+- Reuse the existing `LARGE_FIXTURE` (already a 200 000-object / ~500 MB single pack —
+  ample pressure; a purpose-built larger fixture buys nothing and would blow the CI
+  budget), **gated behind `TSGIT_BENCH_LARGE`** exactly as the existing scaled scenarios
+  are (so it never runs in nightly CI, which sets no env).
 - What applies the pressure: rather than a single `readBlob` (already covered by
   `pack-read-scale.bench.ts` under `TSGIT_BENCH_LARGE`), read a **spread of objects
-  across the pack** in one measured call — e.g. walk N representative blob ids spanning
+  across the pack** in one measured call — walk N representative blob ids spanning
   the pack index — so the reader touches many pack regions / fanout buckets without
-  the scenario itself buffering the whole pack. **Decision candidate #2** enumerates
-  the exact workload (single-object cold read vs multi-object spread vs full walk).
-- File: extend `test/bench/pack-read-scale.bench.ts` with the spread scenario (it
-  already owns the scaled pack-read context) OR a new
-  `test/bench/pack-read-large.bench.ts`. Recommendation: add the spread scenario to
-  the existing `pack-read-scale.bench.ts` — it already resolves the scaled context and
-  is the home of pack-read scenarios.
-- Must derive the spread of ids deterministically from the fixture (e.g.
-  `blobPath(k)` for a fixed set of `k`, resolved once via a cheap `readTree`/`rev-parse`
-  at setup, outside the measured `sut`). Keep id resolution in `build`, not in `sut`.
-- Baseline: **tsgit-only** for the multi-object spread at large scale (iso-git's
-  repeated `readBlob` over a 200k pack is impractically slow) — matches
-  `log-scale`/`status-scale`, which are also tsgit-only at scale. `BenchComparison.baseline`
-  is optional. **Decision candidate #5.**
+  the scenario itself buffering the whole pack. This is the net-new "large pack" signal
+  beyond the existing single-object cold read.
+- File — SETTLED: **extend `test/bench/pack-read-scale.bench.ts`** with the spread
+  scenario (it already resolves the scaled context and is the home of pack-read
+  scenarios), not a new `pack-read-large.bench.ts`.
+- Must derive the spread of ids deterministically from the fixture. The generator's
+  `blobPath(blobIndex)` is a **module-private** `const` (not exported), so the bench cannot
+  import it — instead resolve a fixed set of index-derived paths at setup via a cheap
+  `rev-parse HEAD:<path>` / `readTree` (`d<k/…>/f<…>.dat` follows the generator's own
+  `blobPath` convention, spanning the pack index). Resolve once in `build`, cast the
+  resulting id strings `as ObjectId`, keep id resolution **out of the measured `sut`**.
+  (If the planner prefers not to reproduce the path convention, export `blobPath` from the
+  generator — a trivial, side-effect-free addition on the already-uncovered support
+  surface — and import it; either path is fine.)
+- Baseline — SETTLED (ADR-472): **tsgit-only** for the multi-object spread at large scale
+  (iso-git's repeated `readBlob` over a 200k pack is impractically slow) — matches
+  `log-scale`/`status-scale`, which are also tsgit-only at scale;
+  `BenchComparison.baseline` is optional by design.
+
+### Part E — Memory probe (RSS/heap capture)
+
+SETTLED (ADR-473): real RSS + `heapUsed` are captured for **both** memory-pressure
+workloads, in a **separate harness** outside the `vitest bench` timed path — the
+`.bench.ts` scenarios stay wall-clock-only; this probe is its own path so neither signal
+contaminates the other.
+
+**Pre-chewed context**
+- **Where it lives:** a new `tooling/bench-memory.ts` script — the natural home, mirroring
+  `tooling/profile.ts` (the existing per-hot-path capture harness). Study `profile.ts` for
+  the idioms this reuses **verbatim**:
+  - `SCRIPT_PATH`/`ROOT` via `fileURLToPath(import.meta.url)` + `path.resolve(..,'..')`;
+    a report dir under `reports/` (`profile.ts` → `reports/profiles/`; this →
+    `reports/benchmarks/`), `await mkdir(REPORT_DIR, { recursive: true })`.
+  - Booting a repo: `const fixture = await ensureScaledFixture(SPEC)` then
+    `const repo = await openRepository({ cwd: fixture.cwd })`, `try { … } finally {
+    await repo.dispose() }`. For the cold-chain workload, re-open a fresh repo per
+    iteration exactly like `profile.ts`'s `pack-read` branch
+    (`openRepository → primitives.readBlob(fixture.firstBlobId) → dispose`).
+  - Reading the workload objects through the same primitive the bench uses:
+    `repo.primitives.readBlob(id)` (`fixture.firstBlobId` — a `string` on `ScaledFixture`,
+    cast `as ObjectId` — is the deepest-chain object for the delta-chain fixture; for the
+    large fixture, the **same deterministic index-derived spread as Part C's timing
+    scenario**, resolved at setup via `rev-parse HEAD:<path>`, not the private
+    `blobPath`).
+  - The graceful-degrade guard: wrap `ensureScaledFixture` in try/catch and exit with a
+    clear "fixture unavailable — install the `git` CLI" message + `process.exit(1)`,
+    exactly as `profile.ts`'s `main()` does. Skip cleanly, never crash silently.
+- **What it measures (new to this script — `profile.ts` does NOT do memory today, only
+  CPU `--prof`):** around each workload, sample `process.memoryUsage()` (`rss` +
+  `heapUsed`) at three points — **before** (post-GC baseline), **peak** (max sampled
+  across the workload run), **after** (post-workload, post-GC). Force GC before each
+  baseline reading via the exposed `global.gc()` for stability; the script therefore runs
+  under **`node --expose-gc`**. Guard the GC call (`if (typeof global.gc === 'function')`)
+  and fail loud if `--expose-gc` was omitted (the whole point is stable baselines) — a
+  thrown error, not a silent skip. Peak is captured by sampling `process.memoryUsage()`
+  immediately after each `readBlob` in the workload loop and keeping the max (sampling is
+  *outside* any timed region — there is no wall-clock measurement here, so sampling cost
+  is irrelevant, which is exactly why memory lives here and not in the `.bench.ts` timed
+  `sut`).
+- **Workloads (reuse the generator fixtures, no new fixture):**
+  1. **Deep-delta chain** — `ensureScaledFixture(DELTA_CHAIN_FIXTURE)`; cold read of the
+     deepest-chain object (`fixture.firstBlobId`) with a fresh repo per iteration (empty
+     LRU → full chain replay, the allocation-heavy path). Reports before/peak/after
+     RSS + heapUsed for the chain replay. Fast + small — runs on the default path.
+  2. **Large-pack spread** — `ensureScaledFixture(LARGE_FIXTURE)`; the same deterministic
+     index-derived spread as Part C's timing scenario (resolved at setup via
+     `rev-parse HEAD:<path>`), read in one pass. **Gated behind `TSGIT_BENCH_LARGE`** (skip
+     when unset), mirroring the timing scenario, so the ~500 MB fixture never generates in
+     nightly CI.
+- **What it emits and where:** its **own artifact**, never merged into
+  `reports/benchmarks/summary.md`. Emit `reports/benchmarks/memory.json` (structured —
+  `{ workload, rss: {before,peak,after}, heapUsed: {before,peak,after}, node, platform }`
+  per workload) and, for human reading, a sibling `reports/benchmarks/memory.md` table.
+  Keep the timing summary (`bench-summarize.ts`) untouched — it keys on `tsgit`/
+  `isomorphic-git` bench names and only knows timing; the probe writes alongside it.
+- **npm script:** add `bench:memory` = `node --expose-gc --experimental-strip-types
+  tooling/bench-memory.ts` (mirrors the existing `bench:fixture` /`profile` script form —
+  both use `node --experimental-strip-types tooling/<script>.ts`; `profile` is
+  `npm run build && node …`, but the memory probe reads the source `test/bench/support`
+  generator directly like `bench:fixture` does, so it needs no prior `build`). The
+  large-pack workload is reached by `TSGIT_BENCH_LARGE=1 npm run bench:memory`.
+- **Symbols/imports:** `ensureScaledFixture`, `DELTA_CHAIN_FIXTURE`, `LARGE_FIXTURE` from
+  `../test/bench/support/fixture-generator.ts`; `openRepository` from the source entry
+  the other tooling uses for source-tree reads — note `profile.ts` imports from the
+  built `dist/esm/index.node.js` because it runs under `--prof` (plain `node`), but the
+  memory probe runs under `--experimental-strip-types` (like `gen-bench-fixture.ts`,
+  which imports the generator's `.ts` directly), so it imports `openRepository` from
+  `../src/index.node.ts` — no `dist/` build needed. `ObjectId` from
+  `../src/domain/objects/index.ts` to cast the resolved id strings (both
+  `fixture.firstBlobId` and the resolved spread ids are `string`).
+- **Env-isolation:** the probe spawns no `git` itself — it only calls `ensureScaledFixture`
+  (which spawns env-isolated `git` internally, unchanged) and reads through `openRepository`.
+  So no new `git`-invocation isolation surface is added by Part E.
+
+**Coverage / gate obligation (verified against `vitest.config.ts`):** the coverage
+`include` is `src/{domain,ports,adapters/node,adapters/memory,operators}/**` only —
+**`tooling/` is not in the coverage include at all**, so `tooling/bench-memory.ts`
+carries **no coverage or mutation obligation**, exactly the precedent set by
+`tooling/profile.ts` (also uncovered tooling). (`tooling/test/unit` and
+`tooling/test/integration` *projects* exist, so a pure helper extracted from the probe
+*could* get an optional unit test, but nothing gates it.) See Test strategy.
 
 ### Part D — Wiring: fixture pre-warm + CI
 
@@ -331,6 +455,15 @@ seeded xorshift32 mutation, one file → fully reproducible pack. Cache-keyed by
   pre-warms the (fast, small) delta-chain fixture before `bench:summary`. The
   large-pack scenario stays gated (no `TSGIT_BENCH_LARGE` in CI) so it is skipped and
   costs nothing.
+- **Memory probe in CI (Part E) — SETTLED (ADR-473 wiring):** add a `bench:memory` step to
+  `bench.yml` after `bench:summary`, running the **fast delta-chain memory probe only**
+  (`npm run bench:memory`, which under `node --expose-gc` measures the delta-chain
+  workload and skips the large-pack one since `TSGIT_BENCH_LARGE` is unset in CI) — mirror
+  of the timing scenarios' gating. Extend the existing `upload-artifact` `path:
+  reports/benchmarks/` to carry `memory.json`/`memory.md` alongside `summary.md` (no path
+  change needed — it already uploads the whole `reports/benchmarks/` dir). The large-pack
+  memory probe stays **local/manual** (`TSGIT_BENCH_LARGE=1 npm run bench:memory`),
+  exactly like the large-pack timing scenario.
 - No change needed to `tooling/bench-summarize.ts` / `bench-to-snapshot.ts` — both
   flatten every group generically; the new scenarios appear automatically. (Confirmed
   by reading both: they iterate `raw.files[].groups[].benchmarks[]` with no scenario
@@ -351,26 +484,46 @@ seeded xorshift32 mutation, one file → fully reproducible pack. Cache-keyed by
   signal to re-pin.
 - **Concurrency**: reuse the existing unique-temp-dir + atomic-rename race handling in
   `ensureScaledFixture` unchanged.
+- **Memory probe, `--expose-gc` omitted** (Part E) → the probe throws loudly and exits
+  non-zero (stable post-GC baselines are the point) — not a silent skip. The `bench:memory`
+  npm script always passes `--expose-gc`, so this only bites an ad-hoc `node` invocation.
+- **Memory probe, `git` absent** → `ensureScaledFixture` throws → the probe prints the
+  "fixture unavailable — install `git`" message and exits non-zero (mirrors `profile.ts`).
+- **Memory probe, large fixture without `TSGIT_BENCH_LARGE`** → the large-pack workload is
+  skipped (only the delta-chain workload runs), mirroring the timing scenario's gate.
 
-## Decision candidates
+## Decisions (ratified — ADR-471..474)
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| 1 | How to force deep chains — content strategy + depth/window knobs | (a) Evolving single blob mutated ~1 %/commit + `repack -adf --depth=50 --window=250`; (b) evolving blob but keep repack at git-default window (depth 50 / window 10 → max chain 37); (c) many near-duplicate blobs (copies of a base with small edits) instead of one evolving file | **(a)** | Pinned matrix: (a) reaches chain 43, near-saturating tsgit's cap-50 without exceeding it; git-default window (b) under-fills to 37; (c) is more code for the same effect and muddies "one deep chain" with cross-blob deltas. `--depth=50` is the hard ceiling — `--depth=100` gives chain 85 and trips `DELTA_CHAIN_TOO_DEEP`. |
-| 2 | Large-pack memory-pressure fixture + workload | (a) Reuse `LARGE_FIXTURE`, read a deterministic **spread of objects** across the pack in one measured call, gated by `TSGIT_BENCH_LARGE`; (b) reuse `LARGE_FIXTURE`, single cold `readBlob` (already exists in `pack-read-scale`); (c) purpose-built even-larger fixture | **(a)** | `LARGE_FIXTURE` is already ~500 MB / 200k objects — enough pressure; a purpose-built bigger one blows the budget. A single cold read is already covered; the spread is the net-new "touch many pack regions" signal. Gated so nightly CI is unaffected. |
-| 3 | Fixture topology + how the delta-chain spec is shaped | (a) New `'delta-chain'` label + `DELTA_CHAIN_FIXTURE` spec + separate `streamEvolvingFastImport` strategy in the **same** generator file, sharing cache/rename machinery, NO `FIXTURE_GENERATOR_VERSION` bump (pure addition); spec gains a `strategy` discriminant + `deltaDepth`/`deltaWindow` (repurposing/replacing the `blobs` field which is meaningless for one evolving file); (b) same but bump version to 2 defensively; (c) a separate generator module | **(a)** | A new label is a pure addition — the `medium`/`large` cache shapes are untouched, so their caches stay valid; only the new `delta-chain-v1` dir is created. Editing the file already re-keys CI's cache. A separate module duplicates the cache/rename/race logic. Bump only if the shared `streamFastImport` changes (it must not). The `strategy` discriminant keeps `generateInto`'s repack args + stream-builder choice off the spec, and fixes the `blobs`/`given`-phrase mismatch for the one-file shape. |
-| 4 | What to measure — is heap / peak-RSS in scope? | (a) Timing only (cold-vs-warm delta-chain gap + large-pack spread), explicitly declare heap/RSS out of scope for `vitest bench`; (b) add per-iteration `process.memoryUsage()` sampling inside/around the closure; (c) route memory capture through `tooling/profile.ts` now | **(a)** | `vitest bench` measures wall-clock; in-closure RSS sampling is noisy (GC/shared-heap) and pollutes timing. Cold-vs-warm timing is the honest proxy for cache/chain memory behaviour. If real memory numbers are wanted, they belong in the profile path (26.3), not a timing harness — state the boundary, don't fake it. |
-| 5 | isomorphic-git baseline per scenario | (a) Deep-delta = comparative (include iso-git, tiny fixture); large-pack spread = tsgit-only (iso-git impractically slow at 200k); (b) both comparative; (c) both tsgit-only | **(a)** | The delta-chain fixture is tiny — iso-git runs fine and a comparative delta-chain-reader number is valuable. At 200k-object scale iso-git's repeated `readBlob` is impractically slow, matching the tsgit-only precedent of `log-scale`/`status-scale`. `baseline?` is optional by design. |
-| 6 | How the delta-chain scenario resolves its fixture (it is label-specific, off the medium/large toggle) | (a) Add a small dedicated resolver mirroring `resolveScaledContext` for an explicit spec (skip on unavailable/Stryker), keep `scaledScenario` for medium/large; (b) generalise `resolveScaledContext(spec?)` / `scaledScenario` to accept any `FixtureSpec`; (c) inline the `ensureScaledFixture` + try/catch + `benchScenario({skip})` in the bench file | **(b)** | The medium/large toggle and the delta-chain fixture share the same skip/Stryker/unavailable logic; generalising `resolveScaledContext` to take an optional explicit spec (defaulting to the env-driven medium/large) is the DRY, low-churn move and keeps all 5 existing zero-arg call sites compatible via the default. (a) duplicates the resolver; (c) scatters the skip logic. |
-| 7 | How the generator finds the deepest-chain object to record as `firstBlobId` | (a) Parse `git verify-pack -v` output and pick the blob line with the maximum chain-depth column; (b) probe a fixed candidate set (root + HEAD + midpoint versions) via `readObject` and keep whichever git reports deepest; (c) assume a fixed version (root or HEAD) | **(a)** | The pin proves the deepest object is neither reliably HEAD nor root — git's base direction is heuristic. `verify-pack -v` is the authoritative, deterministic source of per-object chain depth; parsing it is a handful of lines and needs no repeated `readObject`. (b) is more code and still guesses the candidate set; (c) is empirically wrong (HEAD was the *base*, depth 1). |
+Every candidate below is **settled**; the ADR that closed it is named. Nothing here is
+open.
+
+| # | Choice | Outcome (settled) | ADR |
+|---|---|---|---|
+| 1 | How to force deep chains — content strategy + depth/window knobs | Evolving single 4 KiB blob mutated ~1 %/commit + `git repack -adf --depth=50 --window=250` → max chain ≈ **43** (near-cap). **User-ratified** the near-cap depth over the git-default-window moderate (chain 37); `--depth=50` is the hard ceiling (`--depth=100` → chain 85 → `DELTA_CHAIN_TOO_DEEP`). | ADR-471 |
+| 2 | Large-pack memory-pressure fixture + workload | **Reuse `LARGE_FIXTURE`**, read a deterministic **spread of objects** across the pack in one measured call, **gated by `TSGIT_BENCH_LARGE`**. Adopted as recommended. | ADR-472 |
+| 3 | Fixture topology + delta-chain spec shape | New `'delta-chain'` label + `DELTA_CHAIN_FIXTURE`, a separate `streamEvolvingFastImport` builder in the **same** generator file (shared cache/rename machinery), a **`strategy: 'multi' \| 'evolving'` discriminant** + explicit `deltaDepth`/`deltaWindow` (blobs led by the discriminant), and **no `FIXTURE_GENERATOR_VERSION` bump** (pure addition). The field-semantics sub-question is closed to the discriminant form. Adopted as recommended. | ADR-474 |
+| 4 | What to measure — is heap / peak-RSS in scope? | **IN scope. User-ratified — deviates from the design's timing-only recommendation.** Real RSS + `heapUsed` are captured for both workloads by a **separate memory probe** (Part E) under `node --expose-gc`, kept **out of the `vitest bench` timed path** (the honour of the design's noise concern); emitted as its own artifact, never merged into the timing summary. | ADR-473 |
+| 5 | isomorphic-git baseline per scenario | Deep-delta = **comparative** (include iso-git, tiny fixture); large-pack spread = **tsgit-only** (iso-git impractically slow at 200k). Adopted as recommended. | ADR-472, ADR-474 |
+| 6 | How the delta-chain scenario resolves its fixture | **Generalise `resolveScaledContext(spec?)` / `scaledScenario`** to accept an explicit `FixtureSpec`, defaulting to the env-driven medium/large spec so all five zero-arg call sites stay compatible; the delta-chain scenario passes `DELTA_CHAIN_FIXTURE` explicitly. Adopted as recommended. | ADR-474 |
+| 7 | How the generator finds the deepest-chain object to record as `firstBlobId` | **Parse `git verify-pack -v`** and pick the blob line with the maximum chain-depth column — the authoritative, deterministic source; never assume HEAD or root (the pin proved HEAD is the *base*, depth 1). Folded in as settled. | ADR-471 |
 
 ## Test strategy
 
-- **Bench files are excluded from coverage** (`vitest.config.ts` instruments `src/**`
-  only; `test/bench/**` is never covered) — so `delta-chain-read.bench.ts` and the
-  generator/tooling edits carry **no coverage or mutation obligation**. Confirm during
-  planning that the generator edit stays within the already-uncovered
-  `test/bench/support` surface (it does — that path is not in the coverage `include`).
+- **Bench files and `tooling/` are excluded from coverage.** Verified against
+  `vitest.config.ts`: the coverage `include` is
+  `src/{domain,ports,adapters/node,adapters/memory,operators}/**` only — `test/bench/**`
+  and **`tooling/**` are never instrumented. So `delta-chain-read.bench.ts`, the generator
+  edits, and the Part E probe `tooling/bench-memory.ts` all carry **no coverage or
+  mutation obligation** — the probe follows the exact precedent of `tooling/profile.ts`
+  (uncovered tooling). The generator edit stays within the already-uncovered
+  `test/bench/support` surface (confirmed not in the coverage `include`).
+- **Probe: no mandated unit test, optional helper test allowed.** Because `tooling/` is
+  outside the coverage gate, the probe needs no unit test to satisfy any threshold. The
+  `tooling/test/unit` + `tooling/test/integration` vitest *projects* exist, so if the
+  probe grows a pure, easily-isolated helper (e.g. the `blobPath(k)` spread computation or
+  the `{before,peak,after}` aggregation), a small optional unit test there is welcome —
+  but nothing gates it, and the memory numbers themselves are host-specific artefacts, not
+  assertable SUTs (same reasoning as `profile.ts` outputs).
 - **Correctness of the fixture is proven by the pinned matrix**, reproduced in the
   design against the real `git` binary: the deep-delta fixture yields max chain length
   ≈ 43 (≤ 50). During implementation, a one-shot `git verify-pack -v` on the freshly
@@ -389,16 +542,29 @@ seeded xorshift32 mutation, one file → fully reproducible pack. Cache-keyed by
   and (b) skip cleanly when `git` is absent or under Stryker. Verify both:
   `npm run test:bench` locally (delta-chain runs, large-pack spread skips without
   `TSGIT_BENCH_LARGE`), and confirm `reports/benchmarks/summary.md` gains the new rows.
+- **The memory probe (Part E) is verified by running it**, not by an assertion: `npm run
+  bench:memory` (under `--expose-gc`) must emit `reports/benchmarks/memory.json` +
+  `memory.md` for the delta-chain workload and skip the large-pack one; `TSGIT_BENCH_LARGE=1
+  npm run bench:memory` must additionally emit the large-pack workload numbers. It must
+  degrade gracefully when `git` is absent (clear message, non-zero exit) and throw loudly
+  if `--expose-gc` is missing. Confirm `summary.md` is **untouched** by the probe (the two
+  artifacts are separate).
 - **Env-isolation** of every added `git` call (author/committer/date pinned, no
   `GIT_*` inheritance, `commit.gpgsign` off implicitly via fast-import which sets no
-  signature) — matches the existing generator.
+  signature) — matches the existing generator. The probe adds **no** new `git`-invocation
+  surface (it drives `git` only through `ensureScaledFixture`, unchanged).
 
 ## Out of scope
 
-- **Explicit heap / peak-RSS metrics** — `vitest bench` measures wall-clock; memory
-  numbers belong in the profile path (26.3). See Decision candidate #4.
-- **Per-command profile capture (26.3)** — this only *adds the scenarios* so 26.3's
-  baseline covers them; the profile harness itself is a separate item.
+- **The general 26.3 per-command profile harness** — a broad, all-commands memory/CPU
+  harness is still 26.3. The Part E probe here is **narrow**: just the two memory-pressure
+  workloads (deep-delta read + large-pack spread). Real RSS/heap for *those two* is IN
+  scope (ADR-473, Part E); a general profile harness that covers every command is not.
+- **Merging memory numbers into the timing summary** — the probe emits its own
+  `memory.json`/`memory.md` artifact; `reports/benchmarks/summary.md` stays timing-only
+  (ADR-473). Cross-plotting timing vs memory is not built here.
+- **Per-command profile capture (26.3)** — this only *adds the two scenarios + narrow
+  probe* so 26.3's baseline covers them; the general profile harness itself is separate.
 - **CI regression gate (26.5)** — thresholding the `bench:summary` diff is a later item;
   here the new scenarios only need to *appear* in the summary/snapshot.
 - **Competitor comparison (26.7)** — the deep-delta comparative number feeds it later,
