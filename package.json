@@ -242,6 +242,7 @@
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
+        "tooling/**/*.ts",
         "biome.json"
       ],
       "output": []
@@ -260,6 +261,7 @@
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
+        "tooling/**/*.ts",
         "tsconfig.json"
       ],
       "output": []
@@ -318,6 +320,7 @@
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
+        "tooling/**/*.ts",
         "vitest.config.ts"
       ],
       "output": []
@@ -447,6 +450,7 @@
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
+        "tooling/**/*.ts",
         "vitest.config.ts"
       ],
       "output": [
