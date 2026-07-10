@@ -4,12 +4,14 @@
  *
  *   npm run bench:fixture -- medium
  *   npm run bench:fixture -- large
+ *   npm run bench:fixture -- delta-chain
  *
  * First run generates the repo under ~/.cache/tsgit-bench; later runs are
  * cache hits. Run this before `npm run test:bench` / `npm run profile` so the
  * scaled benches never pay generation cost inside the measured run.
  */
 import {
+  DELTA_CHAIN_FIXTURE,
   LARGE_FIXTURE,
   MEDIUM_FIXTURE,
   ensureScaledFixture,
@@ -18,9 +20,15 @@ import {
 const main = async (): Promise<void> => {
   const label = process.argv[2];
   const spec =
-    label === 'large' ? LARGE_FIXTURE : label === 'medium' ? MEDIUM_FIXTURE : undefined;
+    label === 'large'
+      ? LARGE_FIXTURE
+      : label === 'medium'
+        ? MEDIUM_FIXTURE
+        : label === 'delta-chain'
+          ? DELTA_CHAIN_FIXTURE
+          : undefined;
   if (spec === undefined) {
-    process.stderr.write('usage: gen-bench-fixture <medium|large>\n');
+    process.stderr.write('usage: gen-bench-fixture <medium|large|delta-chain>\n');
     process.exit(1);
   }
 

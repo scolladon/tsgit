@@ -36,12 +36,28 @@ function allBytesIndexes(haystack: Uint8Array, needle: Uint8Array): ReadonlyArra
   return spans;
 }
 
+/**
+ * Single ASCII char excluding the LF byte (0x0A). matchLine is line-oriented: real
+ * lines arrive already split on LF, so a line never carries an embedded LF and at
+ * most a trailing one, which matchLine strips before searching. The naive byte
+ * oracle has no notion of line terminators, so the two diverge whenever a fixed
+ * *pattern* contains an LF that would match that stripped trailing LF. Constraining
+ * both arbitraries to the LF-free domain keeps every generated (line, pattern) pair
+ * inside matchLine's real input contract, where the byte oracle is valid — the
+ * conservative choice, since the excluded embedded-LF lines never occur post-split.
+ * Char-level filter → ~1/128 rejection (no fast-check filter-rate warning).
+ */
+const asciiCharNoLf = fc
+  .integer({ min: 0, max: 0x7f })
+  .filter((code) => code !== 0x0a)
+  .map((code) => String.fromCharCode(code));
+
 /** Arbitrary for a non-empty printable ASCII string (used as fixed pattern values). */
-const arbAsciiString = fc.string({ minLength: 1, maxLength: 20, unit: 'binary-ascii' });
+const arbAsciiString = fc.string({ minLength: 1, maxLength: 20, unit: asciiCharNoLf });
 
 /** Arbitrary for a Uint8Array of printable ASCII bytes. */
 const arbAsciiLine = fc
-  .string({ minLength: 0, maxLength: 80, unit: 'binary-ascii' })
+  .string({ minLength: 0, maxLength: 80, unit: asciiCharNoLf })
   .map((s) => new TextEncoder().encode(s));
 
 // ---------------------------------------------------------------------------

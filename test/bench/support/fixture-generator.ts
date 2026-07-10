@@ -9,7 +9,7 @@
  * benchmarks have a real working tree to scan.
  */
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Writable } from 'node:stream';
@@ -30,14 +30,21 @@ const AUTHOR = 'tsgit bench <bench@tsgit.invalid>';
 const BASE_TIMESTAMP = 1_700_000_000;
 
 export interface FixtureSpec {
-  readonly label: 'medium' | 'large';
+  readonly label: 'medium' | 'large' | 'delta-chain';
+  readonly strategy: 'multi' | 'evolving';
   readonly commits: number;
+  /** Led by strategy; for 'evolving' this is NOT a file count. */
   readonly blobs: number;
   readonly blobBytes: number;
+  /** `git repack --depth`, evolving strategy only. */
+  readonly deltaDepth?: number;
+  /** `git repack --window`, evolving strategy only. */
+  readonly deltaWindow?: number;
 }
 
 export const MEDIUM_FIXTURE: FixtureSpec = {
   label: 'medium',
+  strategy: 'multi',
   commits: 5_000,
   blobs: 20_000,
   blobBytes: 2_560,
@@ -45,9 +52,27 @@ export const MEDIUM_FIXTURE: FixtureSpec = {
 
 export const LARGE_FIXTURE: FixtureSpec = {
   label: 'large',
+  strategy: 'multi',
   commits: 50_000,
   blobs: 200_000,
   blobBytes: 2_560,
+};
+
+const DELTA_CHAIN_COMMITS = 300;
+const DELTA_CHAIN_BLOB_BYTES = 4_096;
+// --depth caps chain length at DELTA_CHAIN_DEPTH; a wider --window than
+// git's default (10) is needed to walk deep enough to approach that cap.
+const DELTA_CHAIN_DEPTH = 50;
+const DELTA_CHAIN_WINDOW = 250;
+
+export const DELTA_CHAIN_FIXTURE: FixtureSpec = {
+  label: 'delta-chain',
+  strategy: 'evolving',
+  commits: DELTA_CHAIN_COMMITS,
+  blobs: 1,
+  blobBytes: DELTA_CHAIN_BLOB_BYTES,
+  deltaDepth: DELTA_CHAIN_DEPTH,
+  deltaWindow: DELTA_CHAIN_WINDOW,
 };
 
 export interface ScaledFixture {
@@ -130,27 +155,116 @@ const streamFastImport = async (stdin: Writable, spec: FixtureSpec): Promise<voi
   }
 };
 
+const EVOLVING_PATH = 'evolving.dat';
+// ~1% of bytes flipped per commit — enough drift that repack keeps
+// deltifying (never falls back to a literal copy) while still sharing most
+// of each commit's content with its predecessor, so chains grow deep.
+const EVOLVING_MUTATION_RATE = 0.01;
+
+/** xorshift32 stream, seeded once, advanced across mutate calls (closure-encapsulated state). */
+const makeXorshift32 = (seed: number): (() => number) => {
+  let state = (seed + 1) >>> 0;
+  return () => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state;
+  };
+};
+
+const mutateEvolvingContent = (previous: Buffer, next: () => number): Buffer => {
+  const buf = Buffer.from(previous);
+  const flips = Math.max(1, Math.round(buf.byteLength * EVOLVING_MUTATION_RATE));
+  for (let i = 0; i < flips; i += 1) {
+    const offset = next() % buf.byteLength;
+    buf[offset] = next() & 0xff;
+  }
+  return buf;
+};
+
+/**
+ * Streams a `git fast-import` script that re-writes ONE path (`evolving.dat`)
+ * every commit, each version a small mutation of the last. A single evolving
+ * file — rather than many fresh ones — is what gives `git repack` a long
+ * chain of similar objects to deltify against.
+ */
+const streamEvolvingFastImport = async (stdin: Writable, spec: FixtureSpec): Promise<void> => {
+  const next = makeXorshift32(0);
+  let content = blobContent(0, spec.blobBytes);
+  for (let commit = 0; commit < spec.commits; commit += 1) {
+    if (commit > 0) content = mutateEvolvingContent(content, next);
+    const mark = commit + 1;
+    await writeChunk(stdin, `blob\nmark :${mark}\ndata ${content.byteLength}\n`);
+    await writeChunk(stdin, content);
+    await writeChunk(stdin, '\n');
+
+    const message = `evolve ${commit}\n`;
+    const ts = BASE_TIMESTAMP + commit;
+    let header = 'commit refs/heads/main\n';
+    header += `author ${AUTHOR} ${ts} +0000\n`;
+    header += `committer ${AUTHOR} ${ts} +0000\n`;
+    header += `data ${Buffer.byteLength(message)}\n${message}`;
+    header += `M 100644 :${mark} ${EVOLVING_PATH}\n`;
+    await writeChunk(stdin, header);
+  }
+};
+
+/**
+ * Pure parser for `git verify-pack -v` output. Deltified blob lines carry a
+ * chain-depth column (6+ whitespace-separated tokens); base blob lines and
+ * non-blob lines (commit/tree, header/footer, `chain length = N:` histogram)
+ * do not, so they are excluded by the token-count + `blob` filter. Returns
+ * the oid of the deltified blob line with the maximum chain depth.
+ */
+export const maxChainDepthOid = (verifyPackOutput: string): string => {
+  let deepestOid: string | undefined;
+  let deepestDepth = -1;
+  for (const line of verifyPackOutput.split('\n')) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens[1] !== 'blob' || tokens.length < 6) continue;
+    const depth = Number(tokens[5]);
+    if (depth <= deepestDepth) continue;
+    deepestDepth = depth;
+    deepestOid = tokens[0];
+  }
+  if (deepestOid === undefined) {
+    throw new Error('verify-pack output has no deltified blob lines');
+  }
+  return deepestOid;
+};
+
+// Child env with every GIT_* var stripped. A husky hook (or a parent `git`) can
+// export GIT_DIR/GIT_WORK_TREE, which take precedence over `-C <repoDir>` and would
+// silently redirect these subprocesses to the wrong repository.
+const gitEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
 const runGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<string> => {
   const { stdout } = await execFileAsync('git', ['-C', repoDir, ...args], {
     maxBuffer: 16 * 1024 * 1024,
+    env: gitEnv(),
   });
   return stdout.trim();
 };
 
 const assertGitAvailable = async (): Promise<void> => {
   try {
-    await execFileAsync('git', ['--version']);
+    await execFileAsync('git', ['--version'], { env: gitEnv() });
   } catch {
     throw new FixtureUnavailableError('the `git` CLI is not on PATH');
   }
 };
 
-const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<FixtureMeta> => {
-  await mkdir(repoDir, { recursive: true });
-  await runGit(repoDir, ['init', '--initial-branch=main', '--quiet']);
-
+const runFastImport = async (
+  repoDir: string,
+  spec: FixtureSpec,
+  stream: (stdin: Writable, spec: FixtureSpec) => Promise<void>,
+): Promise<void> => {
   const importer = spawn('git', ['-C', repoDir, 'fast-import', '--quiet'], {
     stdio: ['pipe', 'ignore', 'inherit'],
+    env: gitEnv(),
   });
   const stdin = importer.stdin;
   if (stdin === null) throw new Error('git fast-import: stdin pipe unavailable');
@@ -161,7 +275,7 @@ const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<Fixture
     );
   });
   try {
-    await streamFastImport(stdin, spec);
+    await stream(stdin, spec);
     stdin.end();
     await finished;
   } catch (err) {
@@ -171,12 +285,68 @@ const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<Fixture
     await finished.catch(() => undefined);
     throw err;
   }
+};
 
+/** Locates the (single, post-repack) pack index inside a fixture repo. */
+const packIndexPath = async (repoDir: string): Promise<string> => {
+  const packDir = await runGit(repoDir, ['rev-parse', '--git-path', 'objects/pack']);
+  const absolutePackDir = path.isAbsolute(packDir) ? packDir : path.join(repoDir, packDir);
+  const files = await readdir(absolutePackDir);
+  const idx = files.find((f) => f.endsWith('.idx'));
+  if (idx === undefined) throw new Error(`no pack .idx found under ${absolutePackDir}`);
+  return path.join(absolutePackDir, idx);
+};
+
+/**
+ * git deltifies backwards in time — HEAD's content is stored as the
+ * depth-1 base, and the deepest chain link is an OLDER version reached by
+ * repeatedly reversing a delta. So the deepest-chain object must come from
+ * `verify-pack -v`, never from `rev-parse HEAD:<path>`.
+ */
+const deepestChainBlobId = async (repoDir: string): Promise<string> => {
+  const idxPath = await packIndexPath(repoDir);
+  const output = await runGit(repoDir, ['verify-pack', '-v', idxPath]);
+  return maxChainDepthOid(output);
+};
+
+const generateEvolving = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
+  if (spec.deltaDepth === undefined || spec.deltaWindow === undefined) {
+    throw new Error('evolving strategy requires deltaDepth and deltaWindow');
+  }
+  await runFastImport(repoDir, spec, streamEvolvingFastImport);
+  await runGit(repoDir, ['checkout', '-f', 'main']);
+  // -f forces a full recompute so --depth/--window actually apply (an
+  // incremental repack would otherwise reuse the existing delta choices).
+  await runGit(repoDir, [
+    'repack',
+    '-adf',
+    `--depth=${spec.deltaDepth}`,
+    `--window=${spec.deltaWindow}`,
+    '--quiet',
+  ]);
+};
+
+const generateMulti = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
+  await runFastImport(repoDir, spec, streamFastImport);
   await runGit(repoDir, ['checkout', '-f', 'main']);
   await runGit(repoDir, ['repack', '-ad', '--quiet']);
+};
+
+const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<FixtureMeta> => {
+  await mkdir(repoDir, { recursive: true });
+  await runGit(repoDir, ['init', '--initial-branch=main', '--quiet']);
+
+  if (spec.strategy === 'evolving') {
+    await generateEvolving(repoDir, spec);
+  } else {
+    await generateMulti(repoDir, spec);
+  }
 
   const headCommitId = await runGit(repoDir, ['rev-parse', 'HEAD']);
-  const firstBlobId = await runGit(repoDir, ['rev-parse', `HEAD:${blobPath(0)}`]);
+  const firstBlobId =
+    spec.strategy === 'evolving'
+      ? await deepestChainBlobId(repoDir)
+      : await runGit(repoDir, ['rev-parse', `HEAD:${blobPath(0)}`]);
   return { version: FIXTURE_GENERATOR_VERSION, headCommitId, firstBlobId, spec };
 };
 
