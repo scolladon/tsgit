@@ -167,6 +167,44 @@ describe('bisectMidpoint', () => {
     });
   });
 
+  describe('Given a 3-way octopus whose heap walk order decides a 3-way weight tie', () => {
+    describe('When bisectMidpoint runs', () => {
+      it('Then the FIFO/date tie-break resolves the tie to n1 (candidateCount=6)', async () => {
+        // Arrange: root (good) -> n0(ts=101); n1(ts=100,[n0]) and n2(ts=101,[n0]) each
+        // propagate n0's weight by fill (+1 = 2); n3(ts=102) seeds weight 1; n4(ts=100,
+        // [n2,n3]) is an inner merge whose countDistance={n4,n2,n0,n3}=4 misses the
+        // halfway band (2*4-6=2). bad(ts=103,[n0,n4,n1]) is the outer 3-way octopus.
+        // n1, n2 and n4 all end up dist=min(weight,6-weight)=2 — a genuine 3-way tie
+        // resolved only by which one is FIRST in the oldest-first candidate list, which
+        // in turn depends on the heap's pop order (FIFO on equal dates, date order
+        // otherwise) — exactly the `less` tie-break under test.
+        const sut = bisectMidpoint;
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const root = await commitAt(ctx, treeId, 100, []);
+        const n0 = await commitAt(ctx, treeId, 101, [root]);
+        const n1 = await commitAt(ctx, treeId, 100, [n0]);
+        const n2 = await commitAt(ctx, treeId, 101, [n0]);
+        const n3 = await commitAt(ctx, treeId, 102, [root]);
+        const n4 = await commitAt(ctx, treeId, 100, [n2, n3]);
+        const bad = await commitAt(ctx, treeId, 103, [n0, n4, n1]);
+
+        // Act — candidates = {n1,n2,n3,n4,n0,bad} = 6; no merge/fill early-return fires
+        // (n4's weight=4 misses the band, n1/n2's weight=2 misses it too) so the winner
+        // comes from bestBisection's list-order tie-break among the weight=2 trio.
+        const result = await sut(ctx, [root], bad);
+
+        // Assert
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(n1);
+        expect(result?.candidateCount).toBe(6);
+        expect(result?.remainingIfGood).toBe(3); // 6 - 2 - 1
+        expect(result?.remainingIfBad).toBe(1); // 2 - 1
+        expect(result?.remainingSteps).toBe(2); // estimateSteps(6)
+      });
+    });
+  });
+
   describe('Given multiple good commits (two branches)', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then excludes all good-reachable commits from candidates', async () => {

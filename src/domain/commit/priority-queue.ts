@@ -20,10 +20,3 @@ interface Ordered {
  */
 export const precedes = (a: Ordered, b: Ordered): boolean =>
   a.date > b.date || (a.date === b.date && a.oid < b.oid);
-
-/** Insert keeping the queue ordered by {@link precedes} (stable on full equality). */
-export const enqueue = <T>(queue: QueueEntry<T>[], entry: QueueEntry<T>): void => {
-  let i = 0;
-  while (i < queue.length && !precedes(entry, queue[i]!)) i += 1;
-  queue.splice(i, 0, entry);
-};

@@ -1,4 +1,5 @@
-import { enqueue, type QueueEntry } from '../../domain/commit/priority-queue.js';
+import { BinaryHeap } from '../../domain/commit/binary-heap.js';
+import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import { invalidWalkInput } from '../../domain/error.js';
 import type { Commit } from '../../domain/objects/index.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
@@ -56,15 +57,15 @@ const paint = async (
   twos: readonly ObjectId[],
 ): Promise<Map<ObjectId, number>> => {
   const flags = new Map<ObjectId, number>();
-  const queue: QueueEntry<undefined>[] = [];
+  const heap = new BinaryHeap<QueueEntry<undefined>>(precedes);
   const mark = async (id: ObjectId, bits: number): Promise<void> => {
     flags.set(id, (flags.get(id) ?? 0) | bits);
-    enqueue(queue, { oid: id, date: dateOf(await read(id)), value: undefined });
+    heap.push({ oid: id, date: dateOf(await read(id)), value: undefined });
   };
   await mark(one, PARENT1);
   for (const two of twos) await mark(two, PARENT2);
-  while (hasNonStale(queue, flags)) {
-    const { oid: id } = queue.shift()!;
+  while (hasNonStale(heap.entries(), flags)) {
+    const { oid: id } = heap.pop()!;
     let f = (flags.get(id) ?? 0) & (BOTH | STALE);
     if (f === BOTH) {
       flags.set(id, (flags.get(id) ?? 0) | RESULT);

@@ -1,4 +1,5 @@
-import { enqueue, type QueueEntry } from '../../../domain/commit/priority-queue.js';
+import { BinaryHeap } from '../../../domain/commit/binary-heap.js';
+import { precedes, type QueueEntry } from '../../../domain/commit/priority-queue.js';
 import { operationAborted } from '../../../domain/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -37,7 +38,7 @@ export interface CommitDateWalkOptions {
 
 /** Mutable state threaded through the date-ordered walk. */
 interface DateWalk {
-  readonly queue: QueueEntry<Commit>[];
+  readonly heap: BinaryHeap<QueueEntry<Commit>>;
   readonly seen: Set<ObjectId>;
   readonly until: Set<ObjectId>;
   readonly firstParent: boolean;
@@ -72,7 +73,7 @@ export async function* commitDateWalk(
 ): AsyncIterable<DateWalkStep> {
   const shallow = options.shallow ?? new Set<ObjectId>();
   const walk: DateWalk = {
-    queue: [],
+    heap: new BinaryHeap<QueueEntry<Commit>>(precedes),
     seen: new Set<ObjectId>(options.from),
     until: new Set<ObjectId>(options.until ?? []),
     firstParent: options.firstParent ?? false,
@@ -81,13 +82,13 @@ export async function* commitDateWalk(
 
   await enqueueSeeds(walk);
 
-  while (walk.queue.length > 0) {
+  while (walk.heap.size() > 0) {
     if (ctx.signal?.aborted) throw operationAborted();
-    const { value: commit } = walk.queue.shift() as QueueEntry<Commit>;
+    const { value: commit } = walk.heap.pop() as QueueEntry<Commit>;
     yield {
       commit,
-      frontierEmpty: walk.queue.length === 0,
-      frontier: () => walk.queue.map((entry) => entry.oid),
+      frontierEmpty: walk.heap.size() === 0,
+      frontier: () => walk.heap.entries().map((entry) => entry.oid),
     };
     if (shallow.has(commit.id)) continue;
     await enqueueParents(walk, commit);
@@ -123,6 +124,6 @@ const enqueueParents = async (walk: DateWalk, commit: Commit): Promise<void> => 
 const enqueueCommit = async (walk: DateWalk, id: ObjectId): Promise<void> => {
   const commit = await walk.read(id);
   if (commit !== undefined) {
-    enqueue(walk.queue, { oid: id, date: commit.data.committer.timestamp, value: commit });
+    walk.heap.push({ oid: id, date: commit.data.committer.timestamp, value: commit });
   }
 };
