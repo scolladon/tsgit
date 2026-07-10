@@ -65,4 +65,23 @@ describe('maxChainDepthOid', () => {
       });
     });
   });
+
+  describe('Given a verify-pack -v output with only base blob lines (no deltified lines)', () => {
+    describe('When maxChainDepthOid runs', () => {
+      it('Then it throws, because base lines carry no chain-depth column to rank', () => {
+        // Arrange — five-token base blob lines only: no chain-depth column, so the
+        // length guard must exclude every one and leave no candidate. A guard that
+        // admitted them would rank Number(undefined)=NaN and return the last oid.
+        const output = [
+          'aaaa0000000000000000000000000000000000 blob   4096 512 12345',
+          'bbbb0000000000000000000000000000000000 blob   4096 600 16441',
+        ].join('\n');
+
+        // Act / Assert
+        expect(() => maxChainDepthOid(output)).toThrow(
+          'verify-pack output has no deltified blob lines',
+        );
+      });
+    });
+  });
 });
