@@ -8,7 +8,10 @@
 > format/type emission), measure per-module contribution, then re-tighten the
 > `tooling/verify-tarball.sh` cap once optimized. Honours the "dist must be the
 > smallest possible" principle.
-> Status: draft → self-reviewed ×3 → awaiting decisions (D1–D5)
+> Status: draft → self-reviewed ×3 → decisions ratified → reconciled against
+> ADRs 468–470. D1/D2/D4/D5 adopted as recommended; **D3 deviated** — the
+> re-tightened cap is now enforced in the per-PR gate in this change (ADR-470),
+> not deferred to a follow-up. See [§ Decision candidates](#decision-candidates).
 
 ## Context
 
@@ -33,9 +36,16 @@ matrix**, pinned by re-running `npm pack` and `gzip -9` on the built `dist/`.
 
 ### Enforcement wiring (measured)
 
-- `verify:tarball` is **not** in the `validate` wireit dependency list — it runs
-  only on tag-push CI. `check:size` (size-limit) and `check:exports`
-  (attw `--pack`) **are** in `validate`.
+- `verify:tarball` is **not** in the `validate` wireit dependency list *today* —
+  it runs only on tag-push CI. `check:size` (size-limit) and `check:exports`
+  (attw `--pack`) **are** in `validate`. Per ADR-470 (D3 deviation) this change
+  adds a **third slice**: a lightweight tarball-size + `*.map` forbidden-path
+  check wired into the per-PR gate, so cap + map regressions surface at the PR
+  that introduces them — the tag-push `verify:tarball` is retained on top (it
+  still guards the published artefact and owns the `attw` resolution check).
+- The per-PR check must **not** re-run `attw` — that stays with the existing
+  `check:exports` (attw `--pack`) to avoid a double-attw. It asserts only the
+  compressed-tarball size cap (D2) and the `*.map` forbidden-path guard (D5).
 - There are **no vitest tests** for packaging; the executable spec is the bash
   guard itself.
 - `dist/` is gitignored (`.gitignore:5`). Source maps are pure build artefacts,
@@ -168,7 +178,10 @@ behaviour matrix.
 
 ## Decision candidates
 
-Load-bearing choices for the ADR conversation. **Not decided here.**
+Load-bearing choices for the ADR conversation. **Now ratified** — the options
+trail is kept for provenance, but each decision below states its settled
+outcome. D1/D2/D4/D5 landed as recommended; **D3 deviated** (PR-gate-now, not
+tag-push-only). See ADRs 468 (D1 + D4 + D5), 469 (D2), 470 (D3).
 
 ### D1 — Source-map handling
 
@@ -200,12 +213,13 @@ The dominant lever (547 KiB, 53%). *How* to stop shipping maps:
   bloat; there is no consumer benefit to shipping maps for a minified library
   whose sources are on GitHub.
 
-**Recommendation: (a).** It removes the map files *and* the trailer atomically
-in one flag flip, needs no `files`/`.npmignore` surgery, and cannot leave a
-dangling trailer. (b) reintroduces the exact 404 footgun the brief warns about
-and buys nothing — maps aren't committed, so keeping them emitted has no repo
-value. If maps are ever wanted for a debug artefact, they can be published to a
-separate sourcemap store out of band; that is not this change.
+**Ratified: (a)** (ADR-468, as recommended). It removes the map files *and* the
+trailer atomically in one flag flip, needs no `files`/`.npmignore` surgery, and
+cannot leave a dangling trailer. (b) reintroduces the exact 404 footgun the
+brief warns about and buys nothing — maps aren't committed, so keeping them
+emitted has no repo value. If maps are ever wanted for a debug artefact, they
+can be published to a separate sourcemap store out of band; that is not this
+change.
 
 ### D2 — New `SIZE_CAP` value
 
@@ -226,12 +240,12 @@ a real post-D1 `npm pack` before commit — but the projection is the anchor.
   regressions slip under it. A reasonable alternative if the team wants a wider
   buffer between size-review cycles.
 
-**Recommendation: 550 KiB (563 200 bytes)**, contingent on the real post-D1
-`npm pack` measuring ≤ ~500 KiB (re-measure at implement time; if it lands
-higher, scale the cap by the same 1.1–1.15 rule and note it). Honest-floor
-caveat baked into the rewritten comment: dual ESM+CJS shipping puts the code+
-types floor at ~482 KiB, so the ~220 KiB v1 floor is unreachable — the cap is
-set against the real floor, not the v1 one.
+**Ratified: 550 KiB (563 200 bytes)** (ADR-469, as recommended), contingent on
+the real post-D1 `npm pack` measuring ≤ ~500 KiB (re-measure at implement time;
+if it lands higher, scale the cap by the same 1.1–1.15 rule and note it).
+Honest-floor caveat baked into the rewritten comment: dual ESM+CJS shipping puts
+the code+types floor at ~482 KiB, so the ~220 KiB v1 floor is unreachable — the
+cap is set against the real floor, not the v1 one.
 
 ### D3 — Enforcement cadence
 
@@ -252,13 +266,30 @@ Should the re-tightened cap run in **PR CI** or stay **tag-push-only**?
   this change guards (maps returning, tarball bloat) at PR time without the
   double-attw. Slightly more wiring than (a); avoids (b)'s redundancy.
 
-**Recommendation: (a) status quo for this change, note (c) as the natural
-follow-up.** The immediate deliverable is the *lowered cap + the `*.map`
-forbidden-path guard* (D5); those already run on tag-push where they matter
-most (they gate the actual published artefact). Promoting the cap to PR CI is a
-separable cadence decision with real overlap cost against `check:size` /
-`check:exports` — worth doing but as its own scoped change, not folded silently
-in here. Flagged for the ADR so the user can choose to pull it forward.
+**Ratified: (c) — lightweight PR gate now** (ADR-470, option 1; this
+**deviates** from the design's original tag-push-only recommendation). The
+user's standing no-follow-ups delivery default lands the full guard in this
+change rather than deferring PR-time enforcement. The per-PR check asserts the
+*compressed-tarball size cap* (D2) and the *`*.map` forbidden-path guard* (D5);
+it deliberately leaves `attw` resolution to the existing `check:exports` — so no
+double-attw (that was option (b)'s cost). The tag-push `verify:tarball`
+invocation is **retained** on top: it still guards the published artefact at
+release and owns the `attw --pack` resolution check. So option (a)'s tag-push
+guard stays *and* the option (c) lighter check is added at PR cadence — the
+`*.map`/size regressions are caught at the PR that introduces them.
+
+*(Superseded original recommendation, kept for provenance: "(a) status quo for
+this change, note (c) as the natural follow-up" — the concern was the overlap
+cost of promoting the cap to PR CI; ADR-470 resolves it by scoping the per-PR
+check to size + forbidden-path only, which does not duplicate `check:exports`.)*
+
+The **exact wiring point** is an open planning detail: either add a
+`verify:tarball` wireit dependency to `validate` (reusing the existing script,
+but it must be reduced to *not* re-run attw at PR cadence to avoid the
+double-attw), or add a dedicated lightweight script/CI job that packs once and
+runs only the size + `*.map`-inventory assertions. The invariant fixed here is
+*the cap + map guard run per PR*; which vehicle carries them is settled in
+planning.
 
 ### D4 — Drop the vestigial `sourceMap`/`declarationMap` from `tsconfig.build.json`?
 
@@ -275,10 +306,22 @@ emit, which the build does not use.
   `tsconfig.build.json` (typedoc `docs:json`, the parity bundle builder) relies
   on them — a quick grep at implement time.
 
-**Recommendation: (b), guarded.** Align the config with the no-maps decision so
-a future reader isn't misled — but only after confirming `docs`/`docs:json`/
-`build:parity` don't depend on tsc-side maps (they emit their own or none).
-If any dependency surfaces, keep the flag and add a one-line "why" comment.
+**Ratified: (b), guarded** (ADR-468, as recommended). Align the config with the
+no-maps decision so a future reader isn't misled — after confirming
+`docs`/`docs:json`/`build:parity` don't depend on tsc-side maps.
+
+**Guard result (grepped at revision time):** the only non-build consumer of
+`tsconfig.build.json` is **typedoc** (`typedoc.json:20` →
+`"tsconfig": "./tsconfig.build.json"`, driving `docs`/`docs:json`). Typedoc uses
+that tsconfig for entry-point resolution and type analysis — it emits its own
+JSON/HTML API docs, **not** `.js.map`/`.d.ts.map`, and does not read
+`sourceMap`/`declarationMap` to produce map artefacts. `build:parity` does
+**not** read `tsconfig.build.json` at all (it runs
+`tooling/build-parity-bundle.ts`, which emits its own
+`parity-scenarios.bundle.js.map` independently). **Conclusion: dropping both
+flags is safe** — no consumer relies on tsc-side maps, so (b) lands clean and no
+"why"-comment fallback is needed. (Planning still re-confirms with a live
+`docs:json` run.)
 
 ### D5 — Regression guard: `*.map` forbidden-path check
 
@@ -293,9 +336,10 @@ durable. Listed as a decision only for the exact pattern:
 - **(b) `"^package/dist/.*\.(js|cjs)\.map$"`** — narrower, matches only the two
   known code-map kinds. More precise but misses a future `.d.ts.map`.
 
-**Recommendation: (a).** No legitimate `.map` belongs in the published tarball
-of a minified library; the broad pattern is the correct guard and self-
-documents the intent.
+**Ratified: (a)** (ADR-468, as recommended). No legitimate `.map` belongs in the
+published tarball of a minified library; the broad pattern is the correct guard
+and self-documents the intent. This same `*.map` forbidden-path assertion is
+reused by the per-PR gate (D3 → ADR-470), so the guard fires at both cadences.
 
 ## Test plan (TDD framing)
 
@@ -322,8 +366,26 @@ implementation that makes them pass.
   the real `npm pack` and confirm the cap × headroom holds; adjust the cap
   number if the real pack differs from the 489 KiB projection.
 
-So **stricter script + old rollup = RED; rollup change = GREEN** — the two
-slices are a genuine failing-first sequence, not a rubber stamp.
+**Slice 3 — per-PR gate wiring (D3 → ADR-470), RED→GREEN**
+
+The cap + `*.map` guard must fire at PR cadence, not just tag-push. Wire the
+lightweight size + `*.map` forbidden-path check into the per-PR gate
+(`validate`/CI) — the exact vehicle (a `verify:tarball` wireit dep on `validate`
+reduced to skip attw, vs a dedicated lightweight pack-once script/CI job) is the
+open planning detail; the invariant is *the cap + map guard run per PR*, without
+re-running attw (that stays with `check:exports`).
+
+- RED: wire the per-PR check against the **current** map-shipping build and run
+  `npm run validate` → the check packs, sees the 1029 KiB tarball over the
+  ~550 KiB cap **and** `.map` files in the inventory → `validate` exits 1. This
+  is the executable proof that the PR gate now catches both the size and map
+  regressions this change guards.
+- GREEN: with D1 + D2 applied, `npm run validate` packs ~489 KiB < cap with no
+  `.map` in the inventory → the per-PR check passes and `validate` is green.
+
+So **stricter guard (script + per-PR wiring) + old rollup = RED; rollup change =
+GREEN** across all three slices — a genuine failing-first sequence at both the
+tag-push and per-PR cadences, not a rubber stamp.
 
 **Reproduction commands (the size matrix — re-run to pin):**
 
@@ -359,10 +421,14 @@ plugin flag only governs the warning. This is the empirical basis for D1a.
   unchanged. (Types dual-emit stays intact per [§ Non-goals](#non-goals), so
   attw's `node16` profile stays satisfied.)
 - `verify:tarball` (tag-push) is the gate that actually tightens: lower cap +
-  `*.map` forbidden-path. Both are exercised by the two RED→GREEN slices above.
+  `*.map` forbidden-path. Both are exercised by the RED→GREEN slices above.
+- The **per-PR gate** (D3 → ADR-470) newly runs the lightweight size + `*.map`
+  check: it adds one `npm pack` per `validate` run but does **not** re-run attw
+  (that stays with `check:exports`), so no double-attw. Exercised by slice 3.
 
-No existing gate regresses; the only *new* enforcement is inside
-`verify-tarball.sh`.
+No existing gate regresses. The *new* enforcement is the lowered cap + `*.map`
+forbidden-path assertion (in `verify-tarball.sh`, at tag-push) **and** the
+lightweight size + `*.map` check newly wired into the per-PR gate.
 
 ## Non-goals
 
@@ -388,11 +454,19 @@ No existing gate regresses; the only *new* enforcement is inside
 - [ ] `tooling/verify-tarball.sh` — `SIZE_CAP` lowered (D2); comment rewritten
       with **no** backlog/phase/ADR reference (repo rule); `*.map` added to the
       forbidden-path loop (D5).
-- [ ] `tsconfig.build.json` — vestigial map flags dropped if D4(b) confirmed
-      safe against `docs`/`build:parity`.
+- [ ] **Per-PR gate wiring (D3 → ADR-470)** — the lightweight tarball-size +
+      `*.map` forbidden-path check runs in `validate`/CI (a `verify:tarball`
+      wireit dep reduced to skip attw, or a dedicated lightweight pack-once
+      script/CI job — vehicle settled in planning); it must **not** re-run attw
+      (`check:exports` keeps that). RED against the current map-shipping build,
+      GREEN after D1.
+- [ ] `tsconfig.build.json` — vestigial map flags dropped (D4b); grep confirmed
+      safe (typedoc reads the tsconfig for entry resolution, not map emission;
+      `build:parity` doesn't read it) — re-confirm with a live `docs:json` run.
 - [ ] `.size-limit.json` — unchanged (map-agnostic); re-confirm green.
 - [ ] Real `npm pack` re-measured post-D1; cap number reconciled to
       measured × headroom.
 - [ ] `npm run validate` green (`check:size` + `check:exports` neutral to the
-      map removal); `npm run verify:tarball` green under the new cap.
+      map removal; per-PR size + `*.map` check passes); `npm run verify:tarball`
+      green under the new cap at tag-push.
 - [ ] No `src/` diff; no interop test needed (build-artefact-only change).
