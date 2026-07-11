@@ -1,0 +1,635 @@
+{
+  "generatedOn": "darwin-arm64 / node v22.22.3 / Apple M3 Pro",
+  "commands": {
+    "log": {
+      "hotShares": [
+        {
+          "frame": "exists",
+          "self": 0.21
+        },
+        {
+          "frame": "lookupPackIndex",
+          "self": 0.13
+        },
+        {
+          "frame": "parseRequiredFields",
+          "self": 0.1
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.09
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.05
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.04
+        },
+        {
+          "frame": "commitDateWalk",
+          "self": 0.04
+        },
+        {
+          "frame": "log",
+          "self": 0.04
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.03
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.03
+        },
+        {
+          "frame": "enqueueCommit",
+          "self": 0.02
+        },
+        {
+          "frame": "resolvePackChain",
+          "self": 0.02
+        },
+        {
+          "frame": "walkCommitsByDate",
+          "self": 0.02
+        },
+        {
+          "frame": "finalize$3",
+          "self": 0.02
+        },
+        {
+          "frame": "readObject",
+          "self": 0.02
+        },
+        {
+          "frame": "parseHeader$1",
+          "self": 0.02
+        },
+        {
+          "frame": "parseObject",
+          "self": 0.02
+        },
+        {
+          "frame": "removeNode",
+          "self": 0.01
+        },
+        {
+          "frame": "hashHex",
+          "self": 0.01
+        },
+        {
+          "frame": "readEntryHeaderWithChunk",
+          "self": 0.01
+        },
+        {
+          "frame": "looseObjectPath",
+          "self": 0.01
+        },
+        {
+          "frame": "addToHead",
+          "self": 0.01
+        }
+      ]
+    },
+    "status": {
+      "hotShares": [
+        {
+          "frame": "lstat",
+          "self": 0.22
+        },
+        {
+          "frame": "resolveForMode",
+          "self": 0.15
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.11
+        },
+        {
+          "frame": "visitEntry",
+          "self": 0.1
+        },
+        {
+          "frame": "validateWorkingTreePath",
+          "self": 0.1
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.07
+        },
+        {
+          "frame": "walkInternal$1",
+          "self": 0.03
+        },
+        {
+          "frame": "basename",
+          "self": 0.03
+        },
+        {
+          "frame": "compareWorkingTreeDelta",
+          "self": 0.02
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.02
+        },
+        {
+          "frame": "loadAndParse$1",
+          "self": 0.02
+        },
+        {
+          "frame": "guard",
+          "self": 0.02
+        },
+        {
+          "frame": "parseIndex",
+          "self": 0.01
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01
+        },
+        {
+          "frame": "joinPath",
+          "self": 0.01
+        },
+        {
+          "frame": "walkInternal",
+          "self": 0.01
+        },
+        {
+          "frame": "sourcesForPath",
+          "self": 0.01
+        },
+        {
+          "frame": "parseTreeContent",
+          "self": 0.01
+        },
+        {
+          "frame": "mapStat",
+          "self": 0.01
+        },
+        {
+          "frame": "loadCappedUtf8",
+          "self": 0.01
+        }
+      ]
+    },
+    "pack-read": {
+      "hotShares": [
+        {
+          "frame": "<anonymous>",
+          "self": 0.98
+        },
+        {
+          "frame": "entryOffsets",
+          "self": 0.02
+        }
+      ]
+    },
+    "describe": {
+      "hotShares": [
+        {
+          "frame": "resolveDirect",
+          "self": 0.25
+        },
+        {
+          "frame": "inflate",
+          "self": 0.25
+        },
+        {
+          "frame": "buildNameMap",
+          "self": 0.25
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.25
+        }
+      ]
+    },
+    "name-rev": {
+      "hotShares": [
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.5
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.5
+        }
+      ]
+    },
+    "rev-parse": {
+      "hotShares": []
+    },
+    "cat-file": {
+      "hotShares": []
+    },
+    "show": {
+      "hotShares": [
+        {
+          "frame": "walkInternal",
+          "self": 0.21
+        },
+        {
+          "frame": "parseTreeContent",
+          "self": 0.19
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.14
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.11
+        },
+        {
+          "frame": "walkTree",
+          "self": 0.07
+        },
+        {
+          "frame": "flattenTree",
+          "self": 0.07
+        },
+        {
+          "frame": "diffTrees$1",
+          "self": 0.04
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.02
+        },
+        {
+          "frame": "readEntryHeaderWithChunk",
+          "self": 0.02
+        },
+        {
+          "frame": "lookupPackIndex",
+          "self": 0.02
+        },
+        {
+          "frame": "compareBytes",
+          "self": 0.02
+        },
+        {
+          "frame": "readVariableLengthInt",
+          "self": 0.01
+        },
+        {
+          "frame": "decode$1",
+          "self": 0.01
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.01
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.01
+        },
+        {
+          "frame": "exists",
+          "self": 0.01
+        }
+      ]
+    },
+    "diff": {
+      "hotShares": [
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.2
+        },
+        {
+          "frame": "evaluate",
+          "self": 0.2
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.2
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.2
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.2
+        }
+      ]
+    },
+    "blame": {
+      "hotShares": [
+        {
+          "frame": "checkContainment",
+          "self": 0.24
+        },
+        {
+          "frame": "parseTreeContent",
+          "self": 0.23
+        },
+        {
+          "frame": "walkInternal",
+          "self": 0.21
+        },
+        {
+          "frame": "walkTree",
+          "self": 0.1
+        },
+        {
+          "frame": "flattenTree",
+          "self": 0.09
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.04
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.03
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.02
+        },
+        {
+          "frame": "readEntryHeaderWithChunk",
+          "self": 0.01
+        }
+      ]
+    },
+    "commit": {
+      "hotShares": [
+        {
+          "frame": "commit$1",
+          "self": 0.22
+        },
+        {
+          "frame": "commitReflogMessage",
+          "self": 0.11
+        },
+        {
+          "frame": "runFs",
+          "self": 0.11
+        },
+        {
+          "frame": "repoPath",
+          "self": 0.11
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.11
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.11
+        },
+        {
+          "frame": "guard",
+          "self": 0.11
+        },
+        {
+          "frame": "check",
+          "self": 0.11
+        }
+      ],
+      "setupShares": []
+    },
+    "add": {
+      "hotShares": [
+        {
+          "frame": "check",
+          "self": 0.25
+        },
+        {
+          "frame": "stageFromStat",
+          "self": 0.13
+        },
+        {
+          "frame": "runFs",
+          "self": 0.13
+        },
+        {
+          "frame": "resolveForMode",
+          "self": 0.13
+        },
+        {
+          "frame": "openRepository",
+          "self": 0.13
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.13
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.13
+        }
+      ],
+      "setupShares": []
+    },
+    "merge": {
+      "hotShares": [
+        {
+          "frame": "checkContainment",
+          "self": 0.22
+        },
+        {
+          "frame": "exists",
+          "self": 0.09
+        },
+        {
+          "frame": "guard",
+          "self": 0.07
+        },
+        {
+          "frame": "check",
+          "self": 0.07
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.05
+        },
+        {
+          "frame": "basename",
+          "self": 0.04
+        },
+        {
+          "frame": "from",
+          "self": 0.04
+        },
+        {
+          "frame": "mkdir",
+          "self": 0.03
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.03
+        },
+        {
+          "frame": "resolveDirect",
+          "self": 0.02
+        },
+        {
+          "frame": "commit$1",
+          "self": 0.02
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.02
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.02
+        },
+        {
+          "frame": "runFs",
+          "self": 0.02
+        },
+        {
+          "frame": "writeRegularFileStream",
+          "self": 0.01
+        },
+        {
+          "frame": "writeObject",
+          "self": 0.01
+        },
+        {
+          "frame": "tokenizeConfig",
+          "self": 0.01
+        },
+        {
+          "frame": "stripspace",
+          "self": 0.01
+        },
+        {
+          "frame": "streamLooseBlob",
+          "self": 0.01
+        },
+        {
+          "frame": "set",
+          "self": 0.01
+        },
+        {
+          "frame": "serializeAndHash",
+          "self": 0.01
+        },
+        {
+          "frame": "scanKey",
+          "self": 0.01
+        },
+        {
+          "frame": "sanitizeMessage",
+          "self": 0.01
+        },
+        {
+          "frame": "resolveRef",
+          "self": 0.01
+        },
+        {
+          "frame": "resolveCommitter",
+          "self": 0.01
+        },
+        {
+          "frame": "rename",
+          "self": 0.01
+        },
+        {
+          "frame": "readRawConfig",
+          "self": 0.01
+        },
+        {
+          "frame": "peelChain",
+          "self": 0.01
+        },
+        {
+          "frame": "parseLooseRef",
+          "self": 0.01
+        },
+        {
+          "frame": "materializeTree",
+          "self": 0.01
+        },
+        {
+          "frame": "mapStat",
+          "self": 0.01
+        },
+        {
+          "frame": "isKeyHead",
+          "self": 0.01
+        },
+        {
+          "frame": "inflate",
+          "self": 0.01
+        },
+        {
+          "frame": "hasDeclaredId",
+          "self": 0.01
+        },
+        {
+          "frame": "get",
+          "self": 0.01
+        },
+        {
+          "frame": "exceedsMaxIndexBytes",
+          "self": 0.01
+        },
+        {
+          "frame": "evict",
+          "self": 0.01
+        },
+        {
+          "frame": "buildTreeFromIndex",
+          "self": 0.01
+        },
+        {
+          "frame": "assertRepository",
+          "self": 0.01
+        },
+        {
+          "frame": "assertCoreConfigValid",
+          "self": 0.01
+        },
+        {
+          "frame": "applyCommitMessageHooks",
+          "self": 0.01
+        },
+        {
+          "frame": "applyAllEntries",
+          "self": 0.01
+        },
+        {
+          "frame": "appendUtf8",
+          "self": 0.01
+        },
+        {
+          "frame": "appendReflog",
+          "self": 0.01
+        },
+        {
+          "frame": "throwIfBadChars",
+          "self": 0.01
+        },
+        {
+          "frame": "readConfig",
+          "self": 0.01
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.01
+        },
+        {
+          "frame": "dirname",
+          "self": 0.01
+        }
+      ],
+      "setupShares": [
+        {
+          "frame": "bootstrapRepository",
+          "self": 0.01
+        }
+      ]
+    }
+  }
+}
