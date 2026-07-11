@@ -19,10 +19,14 @@ export const SETUP_FRAMES: ReadonlySet<string> = new Set(['init', 'bootstrapRepo
 const NOISE_FLOOR_SELF = 0.01;
 
 // A tsgit frame line has the shape `<ticks> <total%> <nonlib%> <symbol> <location>`.
-// Only lines whose location resolves into the compiled tsgit tree (`dist/esm/…`)
-// are frames we own; everything else (shared libraries, node internals,
+// Only lines whose location resolves into the profiled tsgit bundle
+// (`dist-profile/esm/…`, the names-preserved build the profiler imports) are
+// frames we own; everything else (shared libraries, node internals,
 // Builtin:/Stub:/RegExp: entries, the Unaccounted/Summary rollups) is noise.
-const TSGIT_FRAME_LINE = /^\s*(\d+)\s+[\d.]+%\s+[\d.]+%\s+(?:\S+:\s+)?\*?(\S+)\s+.*\bdist\/esm\//;
+// The `[*~^]?` strips V8's tier markers (optimised / unoptimised / etc.) so a
+// function is one frame regardless of the tier it was sampled in.
+const TSGIT_FRAME_LINE =
+  /^\s*(\d+)\s+[\d.]+%\s+[\d.]+%\s+(?:\S+:\s+)?[*~^]?(\S+)\s+.*dist-profile\/esm\//;
 
 const extractTsgitFrames = (digestText: string): Array<{ frame: string; ticks: number }> =>
   digestText
@@ -30,6 +34,19 @@ const extractTsgitFrames = (digestText: string): Array<{ frame: string; ticks: n
     .map((line) => TSGIT_FRAME_LINE.exec(line))
     .filter((match): match is RegExpExecArray => match !== null)
     .map((match) => ({ frame: match[2] as string, ticks: Number(match[1]) }));
+
+// V8 lists a function once per code location it was seen at (interpreter vs
+// optimised tiers), so the same frame name can appear on several lines. Sum
+// their ticks so a function's true share is one entry, never split across rows.
+const sumByFrame = (
+  frames: ReadonlyArray<{ frame: string; ticks: number }>,
+): Array<{ frame: string; ticks: number }> => {
+  const totals = new Map<string, number>();
+  for (const { frame, ticks } of frames) {
+    totals.set(frame, (totals.get(frame) ?? 0) + ticks);
+  }
+  return [...totals].map(([frame, ticks]) => ({ frame, ticks }));
+};
 
 const normaliseShares = (frames: ReadonlyArray<{ frame: string; ticks: number }>): FrameShare[] => {
   const totalTicks = frames.reduce((sum, f) => sum + f.ticks, 0);
@@ -43,7 +60,7 @@ const normaliseShares = (frames: ReadonlyArray<{ frame: string; ticks: number }>
 };
 
 export const parseDigest = (digestText: string): ReadonlyArray<FrameShare> =>
-  normaliseShares(extractTsgitFrames(digestText));
+  normaliseShares(sumByFrame(extractTsgitFrames(digestText)));
 
 export const partitionWriteDigest = (
   digestText: string,

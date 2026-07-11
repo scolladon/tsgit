@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { parseDigest, partitionWriteDigest } from '../../profile-digest.js';
 
+// The profiler imports the names-preserved bundle, so every tsgit frame's
+// location is that single file at a distinct line — the parser keys on the
+// symbol, not the path, so distinct line numbers keep frames on distinct rows.
+const BUNDLE = 'file:///repo/dist-profile/esm/index.node.js';
+
 const digestHeader = [
   'Statistical profiling result from isolate-0x1234-v8.log, (66 ticks, 31 unaccounted, 0 excluded).',
   '',
@@ -21,7 +26,7 @@ describe('parseDigest', () => {
           '',
           ' [JavaScript]:',
           '   ticks  total  nonlib   name',
-          '     37   56.1%   100.0%  LazyCompile: *walkCommitsByDate /repo/dist/esm/application/primitives/walk-commits.js:12:34',
+          `     37   56.1%   100.0%  LazyCompile: *walkCommitsByDate ${BUNDLE}:120:34`,
           '',
           ' [Summary]:',
           '     37   56.1%   100.0%  JavaScript',
@@ -46,8 +51,8 @@ describe('parseDigest', () => {
           ...digestHeader,
           ' [JavaScript]:',
           '   ticks  total  nonlib   name',
-          '     10   15.0%    25.0%  LazyCompile: *readBlob /repo/dist/esm/application/primitives/read-object.js:20:10',
-          '     30   45.0%    75.0%  LazyCompile: *walkCommitsByDate /repo/dist/esm/application/primitives/walk-commits.js:12:34',
+          `     10   15.0%    25.0%  LazyCompile: *readBlob ${BUNDLE}:200:10`,
+          `     30   45.0%    75.0%  LazyCompile: *walkCommitsByDate ${BUNDLE}:120:34`,
           '',
           ' [Summary]:',
           '     40   60.0%   100.0%  JavaScript',
@@ -65,7 +70,7 @@ describe('parseDigest', () => {
     });
   });
 
-  describe('Given a digest whose only tsgit frame has self below the 1% floor', () => {
+  describe('Given a digest whose only JavaScript frame is node-internal noise', () => {
     describe('When parseDigest runs', () => {
       it('Then it returns an empty array', () => {
         // Arrange — no tsgit frame is present at all (every candidate line
@@ -109,8 +114,8 @@ describe('parseDigest', () => {
           ...digestHeader,
           ' [JavaScript]:',
           '   ticks  total  nonlib   name',
-          '    999   99.9%    99.9%  LazyCompile: *walkCommitsByDate /repo/dist/esm/application/primitives/walk-commits.js:12:34',
-          '      1    0.1%     0.1%  LazyCompile: *rareHelper /repo/dist/esm/application/primitives/rare-helper.js:3:1',
+          `    999   99.9%    99.9%  LazyCompile: *walkCommitsByDate ${BUNDLE}:120:34`,
+          `      1    0.1%     0.1%  LazyCompile: *rareHelper ${BUNDLE}:900:1`,
           '',
           ' [Summary]:',
           '   1000  100.0%   100.0%  JavaScript',
@@ -121,6 +126,37 @@ describe('parseDigest', () => {
 
         // Assert
         expect(result).toEqual([{ frame: 'walkCommitsByDate', self: 1 }]);
+      });
+    });
+  });
+
+  describe('Given a digest where one tsgit frame appears on two rows under different V8 tier markers', () => {
+    describe('When parseDigest runs', () => {
+      it('Then the markers are stripped and the frame is a single entry whose ticks are summed', () => {
+        // Arrange — V8 samples `readSlice` in two tiers (`~` unoptimised, `^`),
+        // 30 + 10 ticks; `walkTree` (`*` optimised) is 60. The markers must be
+        // stripped so both readSlice rows collapse to one entry: 40/100 = 0.40,
+        // never two split rows or a `~readSlice`/`^readSlice` leak.
+        const digestText = [
+          ...digestHeader,
+          ' [JavaScript]:',
+          '   ticks  total  nonlib   name',
+          `     60   60.0%   60.0%  JS: *walkTree ${BUNDLE}:300:5`,
+          `     30   30.0%   30.0%  JS: ~readSlice ${BUNDLE}:410:9`,
+          `     10   10.0%   10.0%  JS: ^readSlice ${BUNDLE}:410:9`,
+          '',
+          ' [Summary]:',
+          '    100  100.0%   100.0%  JavaScript',
+        ].join('\n');
+
+        // Act
+        const result = parseDigest(digestText);
+
+        // Assert
+        expect(result).toEqual([
+          { frame: 'walkTree', self: 0.6 },
+          { frame: 'readSlice', self: 0.4 },
+        ]);
       });
     });
   });
@@ -135,8 +171,8 @@ describe('partitionWriteDigest', () => {
           ...digestHeader,
           ' [JavaScript]:',
           '   ticks  total  nonlib   name',
-          '     10   25.0%    25.0%  LazyCompile: *bootstrapRepository /repo/dist/esm/application/commands/internal/bootstrap.js:41:1',
-          '     30   75.0%    75.0%  LazyCompile: *writeCommitObject /repo/dist/esm/application/primitives/write-commit-object.js:9:1',
+          `     10   25.0%    25.0%  LazyCompile: *bootstrapRepository ${BUNDLE}:410:1`,
+          `     30   75.0%    75.0%  LazyCompile: *writeCommitObject ${BUNDLE}:90:1`,
           '',
           ' [Summary]:',
           '     40  100.0%   100.0%  JavaScript',
@@ -160,7 +196,7 @@ describe('partitionWriteDigest', () => {
           ...digestHeader,
           ' [JavaScript]:',
           '   ticks  total  nonlib   name',
-          '     50  100.0%   100.0%  LazyCompile: *writeObject /repo/dist/esm/application/primitives/write-object.js:15:1',
+          `     50  100.0%   100.0%  LazyCompile: *writeObject ${BUNDLE}:150:1`,
           '',
           ' [Summary]:',
           '     50  100.0%   100.0%  JavaScript',
