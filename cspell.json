@@ -1064,7 +1064,13 @@
     "finalising",
     "cpus",
     "backgrounded",
-    "nohup"
+    "nohup",
+    "profilable",
+    "unprofilable",
+    "loopable",
+    "ungated",
+    "neighbourhood",
+    "realisation"
   ],
   "ignorePaths": [
     "node_modules",
