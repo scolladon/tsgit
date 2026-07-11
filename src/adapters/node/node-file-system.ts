@@ -459,7 +459,9 @@ export class NodeFileSystem implements FileSystem {
 
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    await this.getCanonicalRoot();
+    if (this.normalizedCanonicalRoot === undefined) {
+      await this.getCanonicalRoot();
+    }
     const normalizedRoot = this.getNormalizedRootDir();
     const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
     try {
@@ -564,7 +566,9 @@ export class NodeFileSystem implements FileSystem {
       // — never the link entry, which doesn't exist yet.
       const lexical = this.pathPolicy.resolve(target);
       const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
-      await this.getCanonicalRoot();
+      if (this.normalizedCanonicalRoot === undefined) {
+        await this.getCanonicalRoot();
+      }
       const normalizedRoot = this.getNormalizedRootDir();
       const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
       if (
@@ -757,7 +761,9 @@ export class NodeFileSystem implements FileSystem {
     // normalised forms as instance fields so the case-fold allocation on
     // the hot path runs once per parent rather than once per containment
     // check.
-    await this.getCanonicalRoot();
+    if (this.normalizedCanonicalRoot === undefined) {
+      await this.getCanonicalRoot();
+    }
     const normalizedRoot = this.getNormalizedRootDir();
     const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
     const check = (abs: string): void => {

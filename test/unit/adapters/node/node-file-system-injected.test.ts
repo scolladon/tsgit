@@ -368,6 +368,85 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
   });
 });
 
+describe('NodeFileSystem — guarded canonical-root await, first-call resolution (DI)', () => {
+  describe('Given a fresh adapter', () => {
+    describe('When the first FS op is a read (checkContainment)', () => {
+      it('Then it resolves the canonical root before checking containment', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          readFile: vi.fn().mockResolvedValue(Buffer.from([1, 2, 3])),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.read('/root/leaf.bin');
+
+        // Assert — the guarded `if (normalizedCanonicalRoot === undefined)`
+        // still resolves the canonical root on the first call. A `→false`
+        // (never-await) mutant would leave the field undefined, and the
+        // non-null-asserting getter would read `undefined`, corrupting the
+        // containment verdict.
+        expect(result).toEqual(new Uint8Array([1, 2, 3]));
+        expect(realpathSpy.mock.calls.some(([arg]: readonly unknown[]) => arg === rootDir)).toBe(
+          true,
+        );
+      });
+    });
+
+    describe('When the first FS op is exists', () => {
+      it('Then it resolves the canonical root before checking containment', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.exists('/root/leaf.bin');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(realpathSpy.mock.calls.some(([arg]: readonly unknown[]) => arg === rootDir)).toBe(
+          true,
+        );
+      });
+    });
+
+    describe('When the first FS op is symlink with an absolute in-root target', () => {
+      it('Then it resolves the canonical root before validating the target', async () => {
+        // Arrange — the absolute-target branch is the only path in `symlink`
+        // that reaches `getCanonicalRoot`.
+        const rootDir = '/root';
+        const target = '/root/target.txt';
+        const link = '/root/sub/link.txt';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return rootDir;
+          throw enoent();
+        });
+        const symlinkOp = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          symlink: symlinkOp,
+          lstat: vi.fn().mockRejectedValue(enoent()),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.symlink(target, link);
+
+        // Assert
+        expect(symlinkOp).toHaveBeenCalledWith(target, link);
+        expect(realpathSpy.mock.calls.some(([arg]: readonly unknown[]) => arg === rootDir)).toBe(
+          true,
+        );
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () => {
   describe('Given Windows host, symlink leaf', () => {
     describe('When openWithNoFollow(write) is called', () => {
