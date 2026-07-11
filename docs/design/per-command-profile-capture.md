@@ -795,6 +795,38 @@ surfaced here for the planner rather than decided unilaterally.
   no worktree / global-config / `reports/` writes. The write-command scratch
   repos likewise live only in `os.tmpdir()` `mkdtemp` dirs and are `rm`'d.
 
+## Measurement limitations
+
+The committed baseline is a normalised, self-relative signal — read it as a *ranking of
+tsgit's own hot functions per command*, not as absolute cost. Known limitations a reader
+(and the 26.4 hot-path work) should keep in mind:
+
+- **`<anonymous>` is an aggregate bucket.** The names-preserved build is still a single
+  bundle, so distinct arrow/closure functions with no bound name collapse to one
+  `<anonymous>` frame. It can dominate a command's shares (e.g. `pack-read`) without
+  pointing at one optimisable function — treat a large `<anonymous>` share as "look
+  closer", not a target.
+- **Write-command shares are conservatively over-reported for heavy builds.** Each write
+  iteration builds a fresh scratch repo inside the sampled loop; frames the build reaches
+  *exclusively* (`openRepository`/`init`/`bootstrapRepository`) are quarantined into
+  `setupShares`, but frames shared by both the build and the measured command (object /
+  tree / commit writes) stay in `hotShares` under the conservative rule (never
+  under-report the command). For a command with a heavy build (`merge` runs three build
+  commits per iteration) those shared frames are inflated by the build's contribution —
+  the shape is right, the magnitude is an upper bound. A per-command setup attribution (or
+  a `git`-subprocess scratch build off the sampled process) would tighten this and is a
+  possible future refinement.
+- **The trivially-fast reads need many iterations.** `rev-parse`/`cat-file`/`describe`/
+  `name-rev`/`diff` do sub-millisecond work per call and are looped far more
+  (`FAST_READ_ITERATIONS`) so their tsgit tick total clears the noise floor; a command
+  that still yields no frame above the floor records empty `hotShares` **with a warning**
+  — an honest "not a hot path" signal, not a bug.
+- **Most samples are Unaccounted.** A `--prof` capture of any command is dominated by
+  Unaccounted + one-time bundle-load ticks (often 85–97 %); the committed baseline is the
+  tsgit frames *self-normalised over their own surface*, which is stable in rank across
+  machines even though absolute ticks are not. This is exactly why shares — not ticks —
+  are committed.
+
 ## Out of scope
 
 - **The 26.5 CI regression-gate script + threshold** — 26.3 commits the baseline

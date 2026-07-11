@@ -1070,7 +1070,8 @@
     "loopable",
     "ungated",
     "neighbourhood",
-    "realisation"
+    "realisation",
+    "optimisable"
   ],
   "ignorePaths": [
     "node_modules",
