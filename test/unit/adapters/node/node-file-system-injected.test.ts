@@ -447,6 +447,67 @@ describe('NodeFileSystem — guarded canonical-root await, first-call resolution
   });
 });
 
+describe('NodeFileSystem — checkContainment dual-root OR disjuncts (DI)', () => {
+  describe('Given a path contained by the RAW root only (canonical root differs)', () => {
+    describe('When read is called', () => {
+      it('Then it passes (no throw)', async () => {
+        // Arrange — the canonical root (realpath(rootDir)) resolves to a
+        // DIFFERENT directory than the raw rootDir string. The requested
+        // leaf lives under the raw root only; its own realpath stays under
+        // the raw root too (no short-name flip on the leaf itself). Dropping
+        // the raw-root disjunct of the containment OR would make this throw.
+        const rootDir = '/root-raw';
+        const canonicalRoot = '/canon';
+        const leaf = '/root-raw/leaf.bin';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return canonicalRoot;
+          return input;
+        });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          readFile: vi.fn().mockResolvedValue(Buffer.from([9])),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.read(leaf);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array([9]));
+      });
+    });
+  });
+
+  describe('Given a path contained by the CANONICAL root only (raw root differs)', () => {
+    describe('When read is called', () => {
+      it('Then it passes (no throw)', async () => {
+        // Arrange — mirror image: the raw rootDir string does NOT textually
+        // contain the requested absolute path, but that path lives under the
+        // canonical root (realpath(rootDir)). Dropping the canonical-root
+        // disjunct of the containment OR would make this throw.
+        const rootDir = '/root-raw';
+        const canonicalRoot = '/canon';
+        const leaf = '/canon/leaf.bin';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return canonicalRoot;
+          return input;
+        });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          readFile: vi.fn().mockResolvedValue(Buffer.from([7])),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.read(leaf);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array([7]));
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () => {
   describe('Given Windows host, symlink leaf', () => {
     describe('When openWithNoFollow(write) is called', () => {

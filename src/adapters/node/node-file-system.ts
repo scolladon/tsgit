@@ -725,10 +725,12 @@ export class NodeFileSystem implements FileSystem {
     path: string,
     resolved: string,
     mode: ContainmentMode,
-    check: (abs: string) => void,
+    normRoot: string,
+    normCanon: string,
   ): Promise<string> {
     if (mode === 'read') {
-      check(resolved);
+      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon))
+        throw permissionDenied(path);
       return this.fsOps.realpath(resolved);
     }
     if (mode === 'lstat') {
@@ -736,11 +738,19 @@ export class NodeFileSystem implements FileSystem {
       // BEFORE issuing the realpath I/O. Without this gate, an absolute
       // escape path (`../../etc`) would still walk through
       // `realpath(dirname)` before the post-check catches it.
-      check(resolved);
+      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon))
+        throw permissionDenied(path);
       const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved));
       return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
     }
     return this.resolveForCreation(path, resolved);
+  }
+
+  private isContainedInEitherRoot(abs: string, normRoot: string, normCanon: string): boolean {
+    return (
+      pathContainsNormalized(normRoot, abs, this.pathPolicy) ||
+      pathContainsNormalized(normCanon, abs, this.pathPolicy)
+    );
   }
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
@@ -766,17 +776,17 @@ export class NodeFileSystem implements FileSystem {
     }
     const normalizedRoot = this.getNormalizedRootDir();
     const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
-    const check = (abs: string): void => {
-      if (
-        !pathContainsNormalized(normalizedRoot, abs, this.pathPolicy) &&
-        !pathContainsNormalized(normalizedCanonical, abs, this.pathPolicy)
-      ) {
+    try {
+      const real = await this.resolveForMode(
+        path,
+        resolved,
+        mode,
+        normalizedRoot,
+        normalizedCanonical,
+      );
+      if (!this.isContainedInEitherRoot(real, normalizedRoot, normalizedCanonical)) {
         throw permissionDenied(path);
       }
-    };
-    try {
-      const real = await this.resolveForMode(path, resolved, mode, check);
-      check(real);
       return real;
     } catch (err) {
       // Stryker disable next-line ConditionalExpression: equivalent — a TsgitError is never an ErrnoException (no own `code`), so skipping this early rethrow lands it at the final `throw err` with the identical instance.
