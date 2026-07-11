@@ -1,4 +1,4 @@
-# Design — checkContainment + object-lookup hot path: gate the settled-promise await, hoist the per-call closure, cache the lstat-mode parent realpath, drop the wasted per-object loose probe
+# Design — checkContainment + object-lookup hot path: gate the settled-promise await, hoist the per-call closure, cache the lstat-mode parent realpath, cheapen the loose existence probe (faithful, loose-first preserved)
 
 > Brief: `checkContainment` is the single hottest cross-cutting frame in the
 > committed profile baseline (`docs/perf/baseline.json` / `.md`) — self-share
@@ -12,21 +12,26 @@
 > re-`realpath`s the same parent directory once per entry (N same-directory files
 > in `status` ⇒ N identical parent realpaths) — extend the existing
 > `creationParentCache` template to the lstat mode so the parent realpath is paid
-> once per directory; **plus** baseline finding (5): the wasted per-object
+> once per directory; **plus** baseline finding (5): the wasted per-object loose
 > `exists(looseObjectPath)` on packed-repo history walks (`exists` self-share 0.18
-> in log/describe/name-rev) — fold `exists`+`read` into a single try-`read`
-> (5a, faithfulness-neutral, always ships) and reorder `resolveObject` pack-first
-> (5b, the big packed-repo win, **gated on a user/ADR decision because git is
-> empirically loose-first** — see the pinned matrix). Findings (1)/(3)/(5a) are
-> behaviour-preserving; (5b) changes one already-divergent corruption corner and
-> needs sign-off. Pure internal/primitive refactor — NOT a healthy-repo-observable
-> change; the faithfulness pin is the existing suite staying green with unchanged
-> assertions, plus a re-profile showing the self-share drop, with the improved
+> in log/describe/name-rev, an uncached full-path `realpath`-follow per object) —
+> keeping git's **loose-first** precedence (DC-7 → STAY FAITHFUL, the pack-first
+> reorder is REJECTED), make the same probe cheaper: fold `exists`+`read` into one
+> try-`read` (5a) and switch the loose existence probe from `exists` to an
+> `lstat`-based probe (5e) that **reuses finding-3's fanout-dir realpath cache** —
+> `dirname(looseObjectPath)` is one of only 256 fanout dirs, so the per-object
+> uncached `realpath` collapses to a cached `realpath(fanout dir)` + a cheap
+> `lstat`. **All of findings (1)/(3)/(5) are now behaviour-preserving** — precedence
+> untouched, no git divergence, no new ADR. The one caveat is a shared-cache size
+> bump (DC-9). Pure internal/primitive refactor — NOT a git-observable change; the
+> faithfulness pin is the existing suite staying green with unchanged assertions
+> (plus new defensive tests for the pathological symlinked-loose corner), a
+> re-profile showing the self-share drop, and the improved
 > `docs/perf/baseline.{json,md}` re-committed.
 > Status: draft → self-reviewed ×3 → decisions ratified (DC-1→B widen, DC-2→B
-> ship, DC-3→A commit baseline, DC-4→no refactor ADR, DC-6→EXPAND exists-share)
-> → revised against decisions (Lever B + finding (3) + finding (5); git
-> object-order pinned loose-first; DC-7/DC-8 opened for the reorder)
+> ship, DC-3→A commit baseline, DC-4→no refactor ADR, DC-6→EXPAND exists-share,
+> DC-7→STAY FAITHFUL / reorder rejected, DC-8→N/A) → revised (finding (5) reshaped
+> to the faithful cheaper-probe; DC-9 opened for the cache-size bump)
 
 ## Context
 
@@ -315,15 +320,20 @@ malicious leaf symlink would pass containment against the cached-parent path →
 - **read/exists-mode: NOT safe to parent-cache** — the leaf follow is
   load-bearing for containment. Left as-is.
 
-**Honest share accounting.** Finding (3) therefore addresses the `status`
+**Honest share accounting (finding 3 scope).** Finding (3) addresses the `status`
 `lstat`/`resolveForMode` shares (the lstat-heavy working-tree scan) — the biggest
-concrete redundancy. It does **not** reduce the `exists` self-share (0.18 in
-describe/name-rev/log): `exists` follows the leaf and cannot be parent-cached
-safely. The `exists` frame's own *settled-await microtask* is removed by Lever A
-(that part of its share drops), but its *realpath-follow* cost is irreducible
-without weakening containment, so we do **not** claim an `exists` realpath-share
-drop from finding (3). Read-mode object reads (loose object `read`) likewise keep
-their leaf-follow realpath. This is the realistic boundary of safe batching.
+concrete redundancy. Within **finding (3) alone** it does **not** reduce the
+`exists` self-share (0.18 in describe/name-rev/log): `exists` follows the leaf and
+so its *own* `realpath` cannot be parent-cached without weakening containment. The
+`exists` frame's *settled-await microtask* is removed by Lever A, but finding (3)
+does not touch its realpath-follow. **Finding (5e) is what reduces the `exists`
+share** — not by caching `exists`'s follow, but by switching the *object-store
+callers* off `exists` entirely onto an `lstat`-based probe (safe there because the
+loose probe never needs the leaf followed at probe time — the subsequent `read`
+does the follow). So the two findings compose: finding (3) builds the fanout-dir
+cache; finding (5e) routes the object-store probe through it. Read-mode object
+*reads* (the actual `read` of a loose object) still keep their leaf-follow realpath
+— that is the genuine, irreducible containment cost, unchanged.
 
 **Cache shape (recommend: reuse the single `creationParentCache`, renamed to its
 now-broader role).** The existing LRU (`createLruCache<string>`, L314) already
@@ -378,47 +388,35 @@ assumption and outside `creationParentCache`'s existing guarantee too, so findin
 (3) inherits exactly the creation cache's (already-shipped, already-mutation-
 proven) TOCTOU envelope, not a weaker one.
 
-### Finding (5) — the wasted per-object `exists` on packed-repo history walks (SHIPS — ratified DC-6 → EXPAND)
+### Finding (5) — the wasted per-object loose `exists` on packed-repo history walks (SHIPS — ratified DC-6 → EXPAND, DC-7 → STAY FAITHFUL)
 
 **The redundancy.** `resolveObject` (`src/application/primitives/object-resolver.ts`
-L36) resolves **every** object loose-first:
-
-```ts
-const loose = await tryLoose(ctx, id);   // exists(looseObjectPath) THEN read
-if (loose !== undefined) { … return … }
-const hit = await registry.lookup(id);   // in-memory pack index (cheap) — only on loose-miss
-```
-
-and `tryLoose` (L148–153) is a **check-then-read**:
+L36) resolves **every** object loose-first, and `tryLoose` (L148–153) is a
+**check-then-read**:
 
 ```ts
 const path = looseObjectPath(commonGitDir(ctx), id);
-if (!(await ctx.fs.exists(path))) return undefined;   // full realpath + dual-root containment; ENOENTs for packed objects
+if (!(await ctx.fs.exists(path))) return undefined;   // exists = realpath-FOLLOW + dual-root containment; ENOENTs for packed objects
 const compressed = await ctx.fs.read(path);           // ANOTHER full realpath + containment + open
 return ctx.compressor.inflate(compressed);
 ```
 
 On a **packed** repo (the common case: clone, then all history in packs), a walk
 that reads thousands of commits+trees (log / describe / name-rev) issues one
-wasted `exists(looseObjectPath)` per object — a `realpath` that ENOENTs plus the
-dual-root containment check — before falling through to the pack index. That
-wasted per-object `exists` is the `exists` self-share **0.18** in log / describe /
-name-rev. `looseCompressedBytes` (L160–167) carries the same `exists`-then-`read`
-double-probe for the loose-hit path.
+wasted `exists(looseObjectPath)` per object. Critically, `exists` (node-file-system
+L460–493) resolves via `realpath(RESOLVED-full-path)` — an **uncached full-path
+realpath that follows the leaf** — per object. That per-object uncached `realpath`
+is the `exists` self-share **0.18** in log / describe / name-rev. `looseCompressedBytes`
+(L160–167) carries the same `exists`-then-`read` double-probe on the loose-hit path.
 
-**Sibling callers — the codebase is already inconsistent.** Two of the three
-existence-probe sites are loose-first, one is already pack-first:
+**DC-7 resolution — STAY FAITHFUL (loose-first preserved).** The user rejected the
+pack-first reorder: git's object-lookup precedence is **loose-first** (pinned below),
+and tsgit keeps it. So the win must come **without** changing precedence — make the
+*same* loose-first probe **cheaper**, not reorder it. The pack-first reorder (former
+Lever 5b) is **REJECTED**; DC-8 (its ADR) is **N/A**; there is **no git-precedence
+divergence** and therefore **no ADR needed** for the exists-share.
 
-| Caller | File / line | Order today |
-|--------|-------------|-------------|
-| `resolveObject` | `object-resolver.ts` L36 | **loose-first** |
-| `objectExistsLocally` | `commands/fetch-missing.ts` L56 | **loose-first** |
-| `hasObject` | `has-object.ts` L14 | **pack-first** (already) |
-
-So `hasObject` already probes the pack index before the loose `exists` — the
-reorder makes the other two *consistent with an existing sibling*, not novel.
-
-#### Empirical git object-lookup order — PINNED (loose-first)
+#### Empirical git object-lookup order — PINNED (loose-first) — retained for the record
 
 Per `.claude/workflow/faithfulness.md`, pinned against **git 2.55.0** in two
 independent `mktemp` throwaways (scrubbed `GIT_*`, isolated `HOME`,
@@ -428,67 +426,22 @@ independent `mktemp` throwaways (scrubbed `GIT_*`, isolated `HOME`,
 Setup:   commit a blob, `git repack -a` (object now BOTH loose AND packed).
 Probe:   make the LOOSE copy writable, overwrite it with non-zlib garbage,
          `git cat-file -p <blob>`  (packed copy still valid).
-
 Result (reproduced twice, deterministic):
-  stderr: error: inflate: data stream error (incorrect header check)
-  stdout: <the real blob content>
+  stderr: error: inflate: data stream error (incorrect header check)   ← tried LOOSE first
+  stdout: <the real blob content>                                       ← fell back to PACK
   exit:   0
 ```
 
-**Reading:** git attempts the **loose** object first (hence the inflate error on
-the corrupt loose copy), then **falls back to the pack** and returns the valid
-content with exit 0. So canonical git's content-read precedence is
-**loose-first-then-pack** (git's `oid_object_info_extended` consults
-`loose_object_info` before the packed stores, with reprepare/fallback). The
-`hasObject`-style *existence* probe order is not separately observable via
-`cat-file`, but the content path is what governs `resolveObject`, and it is
-loose-first.
+git attempts the **loose** object first, then falls back to the pack — canonical
+precedence is **loose-first-then-pack** (`oid_object_info_extended` →
+`loose_object_info` before packed stores). tsgit keeps this order (DC-7). This
+matrix is retained because it is the *reason* we do not reorder.
 
-#### Consequence for the reorder — it is NOT a blind faithful win
+#### The shipping fix — two behaviour-preserving levers, precedence untouched
 
-Because git is **loose-first**, reordering `resolveObject` to `registry.lookup(id)`
-**pack-first** changes the store-precedence in the one corner where loose and pack
-**disagree**: an object present as a **corrupt/unreadable loose** file *and* a
-**valid packed** copy. There the observable differs:
-
-- **git (loose-first):** tries loose → fails → warns → returns the packed content,
-  **exit 0**.
-- **A pack-first tsgit:** finds the object in the pack index first → returns the
-  packed content → **never touches the corrupt loose file** → succeeds silently
-  (no warning).
-
-Both return the **same bytes** (content-addressed), so the *object* is
-byte-identical; the divergence is only whether the corrupt-loose shadow is
-*observed*. **Additional pinned fact about tsgit today:** tsgit's current
-loose-first path does **not** match git in this corner either — `tryLoose` reads
-the corrupt loose file and `ctx.compressor.inflate` **throws**, and that error
-**propagates out of `resolveObject`** (there is no loose→pack fallback on an
-inflate failure). So:
-
-| Scenario (corrupt loose + valid pack) | git 2.55 | tsgit **today** / **5a-only** (loose-first, no fallback) | tsgit **5b pack-first** (proposed) |
-|---|---|---|---|
-| Returned bytes when resolvable | packed content, exit 0, warning | **throws** (inflate error propagates) | packed content, no warning |
-| Faithful to git? | — | **NO** (already divergent — errors where git succeeds) | **NO** (succeeds silently where git warns) — but *closer*: succeeds like git |
-
-(5a keeps loose-first, so 5a-only behaves like "today" in this corner — it still
-throws; 5a's `read` fold does not add a loose→pack fallback. Only 5b changes the
-corner, by never reading the loose file for a packed object.)
-
-So neither today's code nor pack-first is byte-faithful in this corruption corner
-— **tsgit is already divergent here**, and there is no existing ADR sanctioning
-either behaviour (the healthy repo, which is all the goldens exercise, is
-order-invariant because the bytes are identical). This reframes the decision:
-reordering does not *introduce* a divergence into faithful code; it *changes one
-already-divergent corner* from "throws" to "silently succeeds with correct bytes"
-(arguably *less* surprising than today, and closer to git's exit-0, though without
-git's warning). This is precisely why the ordering choice is a **decision
-candidate for the user + an ADR** (DC-8), not a designer call.
-
-#### The two levers for finding (5)
-
-**Lever 5a — fold `exists`+`read` → single try-`read` (SHIPS regardless; faithfulness-neutral).**
-Replace the check-then-read in `tryLoose` and `looseCompressedBytes` with a
-single `read` that catches **exactly** the not-found code:
+**Lever 5a — fold `exists`+`read` → single try-`read` (faithfulness-neutral).**
+Replace the check-then-read in `tryLoose` and `looseCompressedBytes` with a single
+`read` catching **exactly** the not-found code:
 
 ```ts
 async function tryLoose(ctx, id) {
@@ -500,71 +453,191 @@ async function tryLoose(ctx, id) {
     if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     throw err;                                    // every other error propagates UNCHANGED
   }
-  return ctx.compressor.inflate(compressed);
+  return ctx.compressor.inflate(compressed);       // outside the try: a corrupt-loose inflate error still propagates (today's behaviour, unchanged)
 }
 ```
 
 Pinned: `ctx.fs.read` on a missing path throws `fileNotFound(path)` (code
 `FILE_NOT_FOUND`) — `read` → `runFs` → `mapErrno` ENOENT arm → `fileNotFound`
-(node-file-system.ts L137/L779, verified). So the catch is **precise** (one code,
-return `undefined`), not a blanket swallow — every other error (EACCES,
-PERMISSION_DENIED, inflate errors from the later `inflate` call which is outside
-the try) propagates unchanged. This is exactly git's "just open the loose file and
-handle ENOENT" idiom. It removes the double realpath+containment for objects that
-**are** loose, and — critically — it removes the standalone `exists` frame
-entirely (the `read`'s own containment is the single probe). **Faithfulness- and
-security-neutral**: same bytes, same errors (bar the removed redundant probe),
-same containment (the `read` still checks). Ships independent of the ordering
-decision.
+(node-file-system.ts L137, and `mapErrno`'s ENOENT arm L779, verified). So the
+catch is **precise** (one code → `undefined`), not a blanket `.catch(()=>undefined)`
+— every other error (EACCES, PERMISSION_DENIED, EIO) propagates unchanged, and the
+`inflate` call sits **outside** the try so a corrupt-loose object still throws
+exactly as today. Removes the double realpath+containment on the loose-hit path.
 
-Note Lever 5a **alone** does NOT fix the packed-repo hot case: for a packed
-object the single `read` still ENOENTs (one containment+realpath) before the pack
-fallback — it halves the loose-miss cost (one probe instead of two) but a wasted
-probe remains. The packed-repo `exists`-share collapse needs the reorder (5b).
+**Lever 5e — switch the loose EXISTENCE probe from `exists` to an `lstat`-based
+probe that reuses finding-3's `parentRealpathCache` (the packed-repo win, faithful).**
+This is the lever that drops the 0.18 share **without** reordering. For a packed
+object `tryLoose` still probes loose first — but the probe changes from `exists`
+(uncached full-path `realpath`-follow) to `lstat` (lstat-mode containment =
+`realpath(dirname)` + join basename, **no leaf follow**). And `dirname` of a loose
+path is the **fanout dir** `${gitDir}/objects/${xx}` (confirmed: `looseObjectPath`
+= `${gitDir}/objects/${id[0:2]}/${id[2:]}`), of which there are only **256**
+(`00`..`ff`). Finding (3) now **caches** `realpath(fanout dir)` in
+`parentRealpathCache`, so during a walk the per-object cost drops from an
+uncached full-path `realpath` to a **cached** `realpath(fanout dir)` (≤256 misses
+total, then all hits) plus a cheap `fsOps.lstat` syscall per object:
 
-**Lever 5b — reorder `resolveObject` pack-first (the big packed-repo win; gated on DC-8).**
-Move `registry.lookup(id)` **before** `tryLoose`. For a packed object the
-in-memory pack index answers immediately and the loose probe is **never issued** —
-eliminating the wasted per-object `exists`/`read` for the entire history walk.
-This is the lever that actually drops the `exists` 0.18 share on log/describe/
-name-rev. But per the pin it changes the corruption-corner precedence (table
-above), so it requires **user sign-off + an ADR** (DC-8). If ratified, apply the
-**same reorder** to `objectExistsLocally` (fetch-missing.ts L56) for consistency
-with the (already pack-first) `hasObject`, so all three sibling probes agree.
+```ts
+async function tryLoose(ctx, id) {
+  const path = looseObjectPath(commonGitDir(ctx), id);
+  let stat: FileStat;
+  try {
+    stat = await ctx.fs.lstat(path);              // lstat-mode: realpath(fanout dir) CACHED by finding 3, no leaf follow
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
+    throw err;                                    // permissionDenied / EIO / EACCES propagate UNCHANGED
+  }
+  // presence confirmed (loose-first precedence preserved); now read the bytes:
+  const compressed = await ctx.fs.read(path);     // read-mode: follows the leaf, re-checks containment (TOCTOU fresh)
+  return ctx.compressor.inflate(compressed);
+}
+```
 
-**Lever 5c — trusted-internal-path fast-path in the node adapter (NOT proposed; documented + rejected for this PR).**
-Skipping realpath+containment for paths lexically under the canonical gitDir
-(library-constructed, never user input) would remove the containment cost itself.
-It **carves a hole in the "every FS op is containment-checked" invariant** — a
-security-boundary change. Per the coordinator's steer (prefer 5a+5b over 5c) and
-because 5a+5b address the hot share without touching the security invariant,
-**5c is not proposed** here. If a future profile shows containment *itself*
-(not the redundant probe) dominating even after 5a+5b, 5c returns as its own
-security-reviewed proposal with a precisely-defined trust boundary. Recorded as
-rejected-for-now, not designed.
+The precedence is **identical** (still probe loose before pack — a loose object is
+still preferred over the packed copy, matching git). Only the *probe mechanism*
+gets cheaper. `looseCompressedBytes` takes the same treatment. Note 5a and 5e
+combine: 5e is "probe with lstat instead of exists", 5a is "don't double-probe" —
+the final `tryLoose` does **one** `lstat` presence probe (cached-realpath cheap) +,
+on a hit, **one** `read`. On the packed common case only the `lstat` runs (throws
+`FILE_NOT_FOUND`, falls to pack).
+
+##### Behaviour-preservation of `exists`→`lstat` as the loose existence probe — the case walk
+
+The observable that must stay byte-identical is: (i) whether the probe leads to
+"use the loose object" vs "fall through to pack", and (ii) the error on the
+pathological escape case.
+
+| Case | `exists` probe (today) | `lstat` probe (5e) | Same observable? |
+|------|------------------------|--------------------|------------------|
+| **(a) normal loose object** (regular file at the loose path) | `realpath` succeeds, contained → `true` → read+inflate | `lstat` succeeds (regular file) → read+inflate | **yes** — both use the loose object, identical bytes |
+| **(b) packed object** (no loose file) | `realpath` ENOENTs → `exists` returns `false` → `undefined` → pack | `lstat` ENOENTs → `checkContainment` catch → `fileNotFound` → 5e catch → `undefined` → pack | **yes** — both fall to pack |
+| **(c) loose path is a symlink whose target escapes root** (pathological; git never writes this) | `exists` `realpath`-**follows** the leaf → resolves outside root → containment `false` → **throws `PERMISSION_DENIED` at the probe** (`tryLoose` does not catch it → propagates) | `lstat` does **not** follow the leaf → `realpath(fanout dir)` is inside root → probe **succeeds** ("present") → then `ctx.fs.read(path)` (read-mode, **follows**) resolves outside root → **throws `PERMISSION_DENIED` at the read** | **yes** — same `TsgitError`, same `PERMISSION_DENIED` code, same `path`; only the *throw point* differs (probe vs read). The 5e catch is `FILE_NOT_FOUND`-only, so it does **not** swallow the probe-side PERMISSION_DENIED either — and the read-side one is what today's code would surface. |
+
+**Case (c) is the crux and it holds.** Proof it is not a counterexample: the
+existing real-FS test `node-file-system.test.ts` L71–95 ("Given symlink in root
+pointing outside root / When reading through it / Then throws PERMISSION_DENIED")
+**already guarantees** that `ctx.fs.read` through an escaping symlink throws
+`PERMISSION_DENIED`. So in case (c) the 5e path reaches that exact tested throw.
+The only difference from today is *which* FS call raises it (the read, not the
+existence probe) — the surfaced error object (`code`, `path`) is identical, and
+nothing in `resolveObject`/`tryLoose` inspects the throw *origin*. No swallow: the
+5e catch matches only `FILE_NOT_FOUND`; a PERMISSION_DENIED from either the probe
+(if `lstat`'s parent somehow escaped — it can't, the fanout dir is inside `.git`)
+or the read propagates unchanged.
+
+##### Why ADR-343 is the established precedent (and it transfers)
+
+ADR-343 ("Fold the untracked overwrite guard … with an lstat presence probe",
+accepted 2026-06-15) switched an untracked-**presence** probe from `ctx.fs.exists`
+to `ctx.fs.lstat` for exactly this reason: `fs.exists` **follows** the leaf and so
+mis-answers on a symlink, whereas `lstat` reports *presence without follow*. That
+is the same substitution proposed here (existence probe: `exists`→`lstat`).
+
+**Verified transfer — the semantics line up, not just the API.** ADR-343's driver
+was **DG1**: a *dangling* untracked symlink must still count as "present" (git's
+untracked probe is `lstat`-based), and `fs.exists` regressed that by following the
+(broken) link and returning `false`. For the object-store probe the concern is the
+**mirror image** — a symlinked-loose object whose target *escapes root*: here
+`exists` does not under-report, it *throws PERMISSION_DENIED at the probe*. In both
+cases the fix is identical (probe presence with `lstat`, don't follow the leaf) and
+the *direction* is safe:
+
+- ADR-343 case (dangling link): `exists`=false (wrong) → `lstat`=present (right,
+  git-faithful). The switch **fixes** an under-report.
+- Object-store case (a) normal loose: both agree "present" — no change.
+- Object-store case (c) escaping symlink: `exists`=throws-at-probe →
+  `lstat`=present-then-read-throws — **same final error**, so the switch is
+  **neutral** (not a regression, not a fix — the pathological case observably
+  unchanged).
+
+So ADR-343's reasoning (lstat = presence-without-follow, git-faithful) applies
+directly, and the one place the object-store probe differs from ADR-343's untracked
+probe (escaping vs dangling target) is precisely the case walk's case (c), which is
+shown neutral above. No new divergence; ADR-343 is a genuine precedent, not a
+name-drop. (Because the switch is *behaviour-preserving* here — unlike ADR-343,
+which was a faithfulness *fix* — the object-store switch needs **no** ADR of its
+own; it is a performance-only mechanism change under an unchanged precedence.)
+
+##### The win is real given finding (3)'s cache — with a size caveat
+
+`dirname(looseObjectPath(id))` = `${gitDir}/objects/${id[0:2]}` — a fanout dir.
+There are exactly **256** fanout dirs. During a history walk the objects read are
+spread across these 256 dirs, and every same-fanout probe after the first is a
+`parentRealpathCache` **hit** → `realpath` runs ≤256 times total instead of once
+per object (thousands). Combined with 5a's fold, the per-object loose probe becomes:
+one `fsOps.lstat` syscall + a cached-string join — the uncached full-path `realpath`
+that was the 0.18 share is gone.
+
+**Cache-size caveat (recommendation).** `parentRealpathCache` is
+`createLruCache(64 * 1024, 64)` — `maxEntries = 64` (node-file-system.ts L314,
+`createLruCache` signature `(maxSizeBytes, maxEntries)` verified). **64 < 256
+fanout dirs.** If a walk touches more than 64 distinct fanout dirs (large repos
+routinely touch all 256), the LRU **thrashes**: fanout entries evict each other and
+the realpath is re-paid, blunting the win. **Recommendation: raise `maxEntries` to
+≥ 256** (e.g. `createLruCache(64 * 1024, 512)`) so all 256 fanout dirs plus the
+handful of creation-mode parents coexist. The byte budget (64 KiB) already
+comfortably holds ~300 short `${gitDir}/objects/xx` strings (each ~40–60 bytes →
+~18 KiB), so only the entry cap needs raising; keep the byte cap as the real
+ceiling. Surfaced as **DC-9** (it is a shared-cache tuning that interacts with
+finding 3). Without the bump the win still exists on smaller repos and on the
+common case where a walk clusters in few fanout dirs, but the bump makes it robust
+for full-history walks.
+
+**Lever 5c — trusted-internal-path fast-path (NOT proposed; documented + rejected).**
+Skipping realpath+containment for paths lexically under the canonical gitDir would
+remove the containment cost itself but **carves a hole in the "every FS op is
+containment-checked" invariant** — a security-boundary change. 5a+5e address the
+share without it, so 5c is **not proposed**. Returns only if a future profile shows
+containment *itself* dominating after 5a+5e, as its own security-reviewed proposal
+with a precisely-defined trust boundary (only paths lexically under the canonical
+gitDir, library-constructed, never user-derived) — requiring explicit user sign-off.
 
 **Lever 5d — object-existence caching (REJECTED — does not address the hot case).**
-Positive-only caching of loose existence (git objects are immutable/append-only,
-so "exists loose" is stable; negatives are not cacheable — an object may be
-written mid-command). **Rejected:** the hot case is a **packed** repo where
-objects are **never loose**, so caching *positive loose existence* yields zero
-hits on the walk — it does not touch the 0.18 share. Documented as rejected for
-not addressing the packed common case.
+Positive-only caching of loose existence yields zero hits on the **packed** common
+case (packed objects are never loose), so it does not touch the 0.18 share.
+Rejected.
+
+#### Sibling probes — the same `exists`→`lstat` switch generalises (precedence unchanged in each)
+
+All three sibling probes probe a **loose object path** with `ctx.fs.exists`, so the
+same switch applies to each — **only the probe mechanism changes; each keeps its
+own precedence**:
+
+| Caller | File / line | Precedence (UNCHANGED) | Probe today | Probe after |
+|--------|-------------|------------------------|-------------|-------------|
+| `resolveObject`/`tryLoose` | `object-resolver.ts` L148 | loose-first | `exists(loosePath)` then read | `lstat(loosePath)` presence + read (5a+5e) |
+| `hasObject` | `has-object.ts` L16 | **pack-first** (already) | `exists(loosePath)` (after pack miss) | `lstat(loosePath)` presence probe |
+| `objectExistsLocally` | `commands/fetch-missing.ts` L56 | loose-first | `exists(loosePath)` then pack | `lstat(loosePath)` presence probe then pack |
+
+`hasObject` and `objectExistsLocally` are **pure presence probes** (they return a
+boolean / fall to pack; they never read the bytes), so the 5e switch there is even
+simpler — an `lstat` presence check with the same `FILE_NOT_FOUND`→`false`/undefined
+catch, no read. Their precedence is left exactly as-is (pack-first stays pack-first;
+loose-first stays loose-first). Note: a pure-presence `lstat` probe drops the
+`exists`-side realpath-follow, so the **case (c)** escaping-symlink observable *does*
+change for these two — but only from "throws PERMISSION_DENIED" to "reports present"
+(there is no subsequent read to re-throw). This is a **presence** query, and an
+escaping symlink at a loose object path **is** present-on-disk; git's own probe is
+`lstat`-based (reports present), so reporting present is the **more** faithful
+answer — and it is the pathological, git-never-writes-it corner. Because
+`hasObject`/`objectExistsLocally` are presence predicates (not content reads), this
+matches git's `lstat` presence semantics exactly (the ADR-343 rationale). Still no
+ADR: the affected case is a corruption corner with no existing golden, and the new
+answer is the git-faithful one; a defensive unit test pins it (see mutation plan).
 
 #### Faithfulness pin for finding (5)
 
-- **Healthy repo (all existing goldens):** order-invariant — content-addressing
-  makes loose and packed bytes identical, so 5a and 5b return byte-identical
-  objects and `objectNotFound` on the same missing oids. The existing
-  read-object / object-storage / per-command interop suites stay green with
-  **unchanged assertions** — that is the pin.
-- **Corruption corner:** pinned above; tsgit is already divergent; DC-8 decides
-  whether pack-first (silent success, git-like exit 0, no warning) is the accepted
-  behaviour and records it in an ADR. No *new* interop golden is added for the
-  corrupt-shadow corner unless the ADR chooses to pin the new behaviour explicitly
-  (recommended if 5b ships — a `test/integration/*-interop.test.ts` that builds a
-  corrupt-loose + valid-pack object and asserts tsgit returns the packed bytes,
-  documenting the *intentional* divergence from git's warning).
+- **Healthy repo (all existing goldens):** every object read (loose-hit,
+  packed-hit, missing→`objectNotFound`) is byte-identical under 5a+5e — the probe
+  mechanism changes but the resolution decision and returned bytes do not. The
+  existing read-object / object-storage / per-command interop suites stay green with
+  **unchanged assertions** — the pin.
+- **Escaping-symlink corner (pathological):** `resolveObject`/`tryLoose` throws the
+  same `PERMISSION_DENIED` (case (c) above, guaranteed by the existing read test);
+  `hasObject`/`objectExistsLocally` report **present** (git-faithful `lstat`
+  semantics). Both pinned by new defensive unit tests (mutation plan), **no** ADR,
+  **no** git-precedence divergence.
 
 ### What does NOT change
 
@@ -586,31 +659,35 @@ not addressing the packed common case.
   replaced by the two normalised-root strings (Lever B) — a private internal
   method, no public surface.
 - `creationParentCache` field renamed `parentRealpathCache`, gains a second reader
-  (the lstat arm) (finding 3).
+  (the lstat arm) (finding 3), and its `maxEntries` raised 64→≥256 (finding 5e /
+  DC-9) so the 256 fanout dirs do not thrash.
 - `tryLoose` and `looseCompressedBytes` (`object-resolver.ts`) lose their `exists`
-  probe, folding to try-`read`-catch-`FILE_NOT_FOUND` (finding 5a). No signature
-  change; internal only.
-- **If DC-8 ratifies 5b:** `resolveObject` reorders `registry.lookup` before
-  `tryLoose`, and `objectExistsLocally` (fetch-missing.ts) reorders to pack-first
-  to match the already-pack-first `hasObject`. Internal ordering; no public
-  surface. Also updates `object-resolver.ts`'s module docstring ("loose-first-
-  then-pack" → "pack-first-then-loose").
+  probe: the loose **presence** probe switches to `ctx.fs.lstat` (5e), folded with
+  the read via one `FILE_NOT_FOUND`-catch (5a). No signature change; internal only.
+- `hasObject` (`has-object.ts`) and `objectExistsLocally` (`fetch-missing.ts`)
+  switch their loose presence probe `ctx.fs.exists`→`ctx.fs.lstat` (5e). Precedence
+  unchanged in each (pack-first stays pack-first; loose-first stays loose-first).
+- **Precedence and store order are NOT changed** — the pack-first reorder is
+  rejected (DC-7). `object-resolver.ts`'s "loose-first-then-pack" docstring stays.
 
 ## Behaviour preservation — the pin is the existing suite, unchanged
 
-Contract A applies to **Levers A, B, finding (3), and finding (5a)** — all internal
-FS-adapter / object-resolver refactors that are **not git-observable on a healthy
-repo**: no new real-git interop golden is needed for them; the pin is the existing
-behavioural suite staying green with **unchanged assertions**. If any of these
-required editing an existing behavioural assertion, it would not be
+Contract A applies to **all shipping work — Levers A, B, finding (3), finding (5a)
+and finding (5e)** — every one an internal FS-adapter / object-resolver refactor
+that is **not git-observable on a healthy repo**, with git's loose-first object
+precedence preserved. No new real-git interop golden is needed; the pin is the
+existing behavioural suite staying green with **unchanged assertions**. If any of
+these required editing an existing behavioural assertion it would not be
 behaviour-preserving and would be rejected — none do.
 
-**Finding (5b) is the one exception** and is explicitly carved out of the
-"behaviour-preserving" umbrella: it changes the object-lookup precedence in the
-corrupt-loose+valid-pack corner (pinned in finding (5)'s matrix), is gated on user
-sign-off (DC-7) + an ADR (DC-8), and — if it ships — adds **one new** interop
-golden for the intentional divergence rather than editing an existing assertion.
-Every *healthy-repo* assertion stays unchanged even with 5b.
+The **only** observable deltas are in the pathological escaping-symlink-loose-object
+corner (git never writes such a file): `resolveObject` throws the same
+`PERMISSION_DENIED` (throw point moves probe→read, error identical), and
+`hasObject`/`objectExistsLocally` move from "throws" to "reports present" — the
+*more* git-faithful `lstat` presence answer. These have no existing golden and are
+pinned by **new defensive unit tests** (mutation plan), not by editing any existing
+assertion. There is **no** git-precedence divergence and **no** ADR (DC-7 kept
+loose-first; DC-8 N/A).
 
 ### Exact guarding test files (must stay green, assertions unchanged)
 
@@ -619,7 +696,8 @@ Every *healthy-repo* assertion stays unchanged even with 5b.
 | `test/unit/adapters/node/node-file-system.test.ts` | Real-FS containment security: symlink-escape → `PERMISSION_DENIED` (L73–91), symlink-swap escape (L99–117), lstat-mode escaped-parent (L125–142), rename-escape via absolute path (L349–369), `rootDir===resolved` short-circuit (L288), FILE_NOT_FOUND vs PERMISSION_DENIED distinction (L249). |
 | `test/unit/adapters/node/node-file-system-injected.test.ts` | DI-mocked `fsOps.realpath` call-**count** pins: creation LRU (L58–), non-ENOENT parent → PERMISSION_DENIED (L150–175), missing-parent slow walk-up call count = 4 (L181–212), rmRecursive cache-clear count = 3 (L216–248). These count `realpath` invocations — the direct observable of Lever A *and* finding (3)'s cache behaviour (see mutation plan). |
 | `test/integration/checkout-replace-symlink-with-file-interop.test.ts` | The one path-containment-adjacent interop test; exercises symlink→file replacement through the adapter. Stays green unchanged. |
-| read-object / object-storage unit + interop suites (`object-resolver`, `read-object` consumers) | Finding (5): every object read (loose-hit, packed-hit, missing→`objectNotFound`) on a **healthy** repo returns byte-identical results under 5a's fold and 5b's reorder. Stays green with unchanged assertions. |
+| read-object / object-storage unit + interop suites (`object-resolver`, `read-object` consumers) | Finding (5): every object read (loose-hit, packed-hit, missing→`objectNotFound`) on a **healthy** repo returns byte-identical results under 5a's fold and 5e's probe switch — precedence unchanged. Stays green with unchanged assertions. |
+| `node-file-system.test.ts` L71–95 (escaping-symlink read → `PERMISSION_DENIED`) | Finding (5e) case (c): after the `lstat` probe reports present, the subsequent `read` through an escaping symlink throws `PERMISSION_DENIED` — this existing test guarantees the throw, unchanged. |
 
 Additionally the whole `npm run test:unit` + `npm run test:integration` suites
 (every command that drives the adapter) must stay green with zero assertion edits.
@@ -655,19 +733,21 @@ No new git-behaviour to pin (internal refactor). The matrix here is the
 | lstat leaf NOT followed; leaf re-stat'd fresh every call (TOCTOU) | yes | yes | finding (3) caches parent only; leaf stat by caller unchanged |
 | lstat-parent realpath deduped per directory, invalidated on rename/rmRecursive | (n/a) | yes | new injected call-count tests (mirror creation LRU L58/L216) |
 | Per-path realpath re-run every op (read/exists TOCTOU) | yes | yes | read/exists arms untouched |
-| Object bytes returned (healthy repo) identical under any store order | yes | yes | finding (5): content-addressed; read-object/object-storage interop unchanged |
-| `objectNotFound` on the same missing oids | yes | yes | finding (5a) catches only `FILE_NOT_FOUND`→undefined; miss still throws `objectNotFound` |
-| Loose read errors (non-ENOENT) propagate unchanged | yes | yes | finding (5a) precise catch; every other error rethrown |
-| Corrupt-loose + valid-pack shadow behaviour | divergent today (throws) | changes with 5b (see matrix) | DC-8 / ADR decides; optional new interop golden |
+| Object bytes returned (healthy repo) identical; loose-first precedence preserved | yes | yes | finding (5): probe mechanism only; read-object/object-storage interop unchanged |
+| `objectNotFound` on the same missing oids | yes | yes | finding (5): probe returns undefined on `FILE_NOT_FOUND` → pack → miss still throws `objectNotFound` |
+| Loose read/probe errors (non-ENOENT) propagate unchanged | yes | yes | finding (5) precise `FILE_NOT_FOUND`-only catch; every other error rethrown |
+| Escaping-symlink loose object → `resolveObject` throws `PERMISSION_DENIED` | yes (at probe) | yes (at read) | finding (5e) case (c): same code/path, throw point moves probe→read; existing L71–95 read test |
+| Escaping-symlink loose path → `hasObject`/`objectExistsLocally` presence | throws today | reports present (git-faithful `lstat`) | new defensive unit test; pathological, no golden, more faithful |
+| Corrupt-loose + valid-pack shadow behaviour | divergent today (throws) | **unchanged** (still throws — loose-first kept, no reorder) | 5a's inflate stays outside the try; precedence untouched |
 | Transient-ENOENT rootDir retries | yes | yes | rejection arm clears sentinel (L384–385), guard re-awaits |
 | Concurrent first-call de-dup | yes | yes | shared `canonicalRootPromise` (unchanged) |
 | Error object identity / codes / messages | yes | yes | catch arms untouched; Stryker-disable comments intact |
 
-Should any downstream reviewer want a belt-and-braces git cross-check, the
-existing per-command interop/e2e suites already exercise these adapters end to
-end; no new golden is warranted for the healthy path (see DC-4). The **one**
-place a new interop golden may be warranted is the corrupt-shadow corner **iff 5b
-ships** — see finding (5)'s faithfulness pin and DC-8.
+No new git interop golden is warranted: finding (5) preserves git's loose-first
+precedence and is byte-identical on healthy repos; the only observable deltas are
+in the pathological escaping-symlink corner (no existing golden, and the new
+`hasObject`/`objectExistsLocally` answer is the *more* git-faithful one), pinned by
+new defensive **unit** tests, not interop goldens (see DC-4).
 
 ## Perf pinning plan
 
@@ -681,13 +761,13 @@ lstat-heavy `status`), with current self-share and expected direction:
 | Command | Kind | `checkContainment` self | `exists` self | `lstat`/`resolveForMode` self | Expected after A+B+3+5 |
 |---------|------|-------|-------|-------|-------|
 | diff | read | 0.36 | 0.05 | — | `checkContainment`+`check` ↓ |
-| name-rev | read | 0.26 | 0.18 | — | `checkContainment`+`check` ↓; **`exists` collapses (5b, packed walk)** |
+| name-rev | read | 0.26 | 0.18 | — | `checkContainment`+`check` ↓; **`exists` ↓↓ (5e cached probe)** |
 | blame | read | 0.24 | — | — | `checkContainment`+`check` ↓ |
-| describe | read | 0.18 | 0.18 | — | `checkContainment`+`check` ↓; **`exists` collapses (5b)** |
+| describe | read | 0.18 | 0.18 | — | `checkContainment`+`check` ↓; **`exists` ↓↓ (5e)** |
 | show | read | 0.13 | 0.01 | — | `checkContainment`+`check` ↓ |
 | status | read | 0.12 | — | `lstat` 0.25 / `resolveForMode` 0.14 | `checkContainment`+`check` ↓ **and** `lstat`/`resolveForMode` ↓ (finding 3) |
 | merge | write | 0.16 | 0.13 | — | ↓ (command partition) |
-| log | read | 0.09 | 0.18 | — | `checkContainment`+`check` ↓; **`exists` collapses (5b)** |
+| log | read | 0.09 | 0.18 | — | `checkContainment`+`check` ↓; **`exists` ↓↓ (5e)** |
 
 Direction, not magnitude, is the gate (shares are self-relative and host-portable,
 ADR-475). Four expected shifts:
@@ -698,25 +778,30 @@ ADR-475). Four expected shifts:
    drops (folded into the named predicate / call sites).
 3. **Finding (3)** dedupes the lstat-mode parent realpath → `status`'s `lstat` /
    `resolveForMode` self-shares drop as N same-directory realpaths collapse to 1.
-4. **Finding (5)** removes the wasted per-object loose probe on packed-repo walks:
-   **5a** folds `exists`+`read` (removes the standalone `exists` frame on
-   loose-hits and halves loose-miss cost); **5b** (if ratified) reorders pack-first
-   so a **packed** object never issues the loose probe at all → the `exists` 0.18
-   share on log/describe/name-rev **collapses** (the DAG is fully packed).
+4. **Finding (5)** removes the wasted per-object loose-probe cost on packed-repo
+   walks **without reordering** (loose-first kept): **5a** folds `exists`+`read`
+   into one probe path, and **5e** switches that probe from an *uncached full-path
+   `realpath`-follow* (`exists`) to a *cached `realpath(fanout dir)` + cheap `lstat`*
+   (`lstat`-mode, reusing finding (3)'s cache). The **mechanism** of the drop: the
+   per-object uncached `realpath` that was the 0.18 `exists` share becomes ≤256
+   fanout-dir realpaths (cached after first touch) — so the `exists` self-share
+   drops on log/describe/name-rev because the expensive per-object realpath is gone,
+   **not** because the probe stops firing (it still fires, loose-first).
 
-**Honest caveat on the `exists` share:** the 0.18 `exists` share collapses **only
-if 5b (pack-first reorder) ships** — that is the lever that stops issuing the loose
-probe for packed objects. If DC-8 keeps loose-first, only **5a** applies: the
-standalone `exists` frame is removed (folded into `read`), but a per-object
-loose-`read` that ENOENTs still runs before the pack fallback, so the share
-*shrinks* (one probe not two) rather than *collapses*. Lever A additionally removes
-`exists`'s microtask component regardless. State clearly in the PR body which of
-these landed, tied to the DC-8 outcome.
+**Honest caveat on the `exists` share:** the drop is real and needs **no reorder**,
+but it is **gated on the cache-size bump (DC-9)**: with `maxEntries=64 < 256` fanout
+dirs, a full-history walk **thrashes** the LRU and re-pays the fanout realpath,
+blunting the win. With the bump to ≥256 the 256 fanout realpaths are paid once each
+and the share collapses toward the residual `lstat` syscall cost. If DC-9 is
+declined, the win degrades to "cheaper on walks that cluster in few fanout dirs" —
+state the landed cache size in the PR body alongside the measured `exists` share.
+Lever A additionally removes `exists`'s microtask component regardless.
 
 **Baseline handling — RATIFIED (DC-3 → Option A): regenerate + commit**
 `docs/perf/baseline.json` (+ sibling `docs/perf/baseline.md`) in this PR as the
 new post-optimisation reference; quote before/after `checkContainment`, `check`,
-`lstat`, `resolveForMode` (and the partial `exists`) shares in the PR body. ADR-475
+`lstat`, `resolveForMode`, and `exists` shares in the PR body (note whether the
+DC-9 cache bump landed, since the `exists` drop depends on it). ADR-475
 established the committed baseline as the moving optimisation-license + regression
 reference the 26.5 CI gate diffs against; 26.4 spends that license, so the artifact
 advances. `generatedOn` banner stays metadata, never compared (ADR-475).
@@ -800,52 +885,74 @@ These all assert `fsOps.realpath` call counts — the same observable the creati
 cache tests already pin, so finding (3) rides the established, mutation-hard
 harness rather than inventing new assertions.
 
-**Finding (5a) — the precise catch.** The fold `try { read } catch (err) { if
-(err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return
-undefined; throw err }` has three mutation-critical pieces:
-- **`code === 'FILE_NOT_FOUND'` StringLiteral mutant** (→`""`): would make the
-  catch never match → a missing loose object throws instead of returning
-  `undefined` → the pack fallback is never reached → `objectNotFound` for a
-  *packed* object. Killed by a test: a **packed-only** object (no loose file)
-  resolves successfully — proves the ENOENT is caught and the fallthrough reached.
-- **`instanceof TsgitError` / `&&`→`||` mutant:** would broaden the catch to
-  swallow non-TsgitError or non-FILE_NOT_FOUND errors → a corrupt-permission
-  (PERMISSION_DENIED) or other errno would be wrongly turned into `undefined`.
-  Killed by a test injecting a `fs.read` that throws PERMISSION_DENIED for the
-  loose path → `resolveObject` must **propagate** it, not return undefined / fall
-  to pack. (Per contract: no swallowed errors.)
-- **`return undefined` → `throw` / drop:** killed by the packed-only resolve test
-  above (loose-miss must yield undefined to reach the pack).
+**Finding (5a + 5e) — the precise catch on the `lstat` probe.** The probe becomes
+`try { stat = await ctx.fs.lstat(path) } catch (err) { if (err instanceof
+TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined; throw err }`
+followed, on success, by the `read`. Mutation-critical pieces:
+- **`code === 'FILE_NOT_FOUND'` StringLiteral mutant** (→`""`): the catch never
+  matches → a missing loose object throws instead of returning `undefined` → the
+  pack fallback is never reached → `objectNotFound` for a *packed* object. Killed
+  by a test: a **packed-only** object (`ctx.fs.lstat` ENOENT→`FILE_NOT_FOUND`)
+  resolves successfully via the pack — proves the not-found is caught and the
+  fallthrough reached.
+- **`instanceof TsgitError` / `&&`→`||` mutant:** broadens the catch to swallow
+  non-`FILE_NOT_FOUND` errors. Killed by a test injecting a `ctx.fs.lstat` (or the
+  subsequent `read`) that throws `PERMISSION_DENIED` for the loose path →
+  `resolveObject` must **propagate** it, not return `undefined`/fall to pack. (No
+  swallowed errors.)
+- **`return undefined` → `throw`/drop:** killed by the packed-only resolve test
+  (loose-miss must yield `undefined` to reach the pack).
+
+**Finding (5e) — the `exists`→`lstat` probe switch itself.** The observable is the
+probe *mechanism* under an unchanged precedence. Kill with DI/injected-`ctx.fs`
+tests:
+- (a) **loose-only** object resolves via loose (probe present → read) — proves the
+  loose-first precedence is preserved and the `lstat` probe correctly reports
+  present. A mutant that reverted `lstat`→`exists` still passes this (both work on a
+  regular file), so this test is about *precedence preservation*, not the switch.
+- (b) **case (c) — escaping-symlink loose object:** `resolveObject` must throw
+  `PERMISSION_DENIED` (via the subsequent read), and the injected `ctx.fs.lstat`
+  must be called with the loose path and **not** follow the leaf (the probe
+  succeeds; the read raises). Assert `TsgitError.data.code === 'PERMISSION_DENIED'`
+  via try/catch. Kills a mutant that reverts to `exists` **only if** the error
+  identity differs — since both surface PERMISSION_DENIED, this test primarily pins
+  that the switch did not *change* the surfaced error (the behaviour-preservation
+  claim), which is the load-bearing assertion.
+- (c) **`hasObject`/`objectExistsLocally` presence on the escaping-symlink loose
+  path:** must **report present** (`true` / not-missing) under the `lstat` probe —
+  the new git-faithful answer. Kills a mutant reverting to `exists` (which would
+  throw / report absent). This is the one place the switch changes an observable,
+  so it gets a dedicated defensive test.
+- (d) **cache reuse (the perf-behavioural pin):** a walk resolving N packed objects
+  spread across ≤256 fanout dirs issues `realpath(fanout dir)` **at most once per
+  distinct fanout dir** (spy on `fsOps.realpath`), not once per object — proves 5e
+  actually rides finding (3)'s `parentRealpathCache`. Kills a mutant that bypasses
+  the cache (would show N realpaths). This test also **regression-guards DC-9**:
+  run it with > `maxEntries` distinct fanout dirs and assert no re-realpath of an
+  already-seen dir within the LRU window.
 
 Assert against `TsgitError.data.code` directly (try/catch, not `toThrow(Class)`)
 per the mutation-resistant-patterns rule.
-
-**Finding (5b) — the reorder (if ratified).** Mutation targets: the two lookups'
-*order* is not directly a Stryker operator, but the observable is which store is
-consulted. Kill with DI/injected-registry tests: (a) a **packed-only** object
-resolves with **zero** loose `exists`/`read` calls (spy on `ctx.fs`) — proves
-pack-first short-circuits the loose probe (the perf-behavioural pin, and it kills a
-mutant that reverts to loose-first); (b) a **loose-only** object still resolves
-(pack-miss → loose fallback); (c) missing-in-both → `objectNotFound`. If 5b ships,
-the **corrupt-loose + valid-pack** interop golden (per the ADR) asserts the packed
-bytes are returned — the mutation-hard pin for the intentional divergence.
 
 ## Non-goals / explicitly deferred
 
 This PR ships baseline findings **(1) checkContainment** (Levers A + B), **(3)
 lstat-mode parent-realpath batching**, and **(5) the packed-repo `exists`-share**
-(5a always; 5b gated on DC-8). The remaining 26.3 findings stay out of scope and
-become follow-up backlog entries — **only these two now**:
+(5a + 5e, both behaviour-preserving, loose-first preserved). The remaining 26.3
+findings stay out of scope and become follow-up backlog entries — **only these two
+now**:
 
 - **(2) TREESAME pruning** — deferred (separate walk-pruning concern).
 - **(4) tree walk / parse** — deferred.
 
 Also documented but **not** in this PR:
 
-- **Lever 5c (trusted-internal-path fast-path)** — security-boundary change,
-  not proposed (5a+5b address the share without it); returns only if a future
-  profile shows containment *itself* dominating, as its own security-reviewed
-  proposal (see finding (5)).
+- **Pack-first reorder (former Lever 5b)** — **REJECTED** (DC-7 → stay faithful to
+  git's loose-first precedence). Not deferred — rejected; not revisited.
+- **Lever 5c (trusted-internal-path fast-path)** — security-boundary change, not
+  proposed (5a+5e address the share without it); returns only if a future profile
+  shows containment *itself* dominating, as its own security-reviewed proposal
+  (see finding (5)).
 - **`status` `readdir`-coalesce** for the *working-tree* `exists`/`lstat` batching
   at the command layer — a distinct, larger `status` redesign; deferred (this PR's
   finding (3) covers the safe adapter-level lstat-parent cache; the command-layer
@@ -855,12 +962,12 @@ Also documented but **not** in this PR:
 
 ## Decision candidates
 
-DC-1, DC-2, DC-3, DC-4, DC-6 are **ratified** at the decisions gate (recorded for
-the audit trail). **DC-5 (cache shape)** was opened by the earlier widening and is
-**still open** (recommendation stated). **DC-7 and DC-8 are NEW** — opened by the
-finding (5) reorder — and left for the gate + user. ★ marks the ones the user must
-sign off (the pinned git order makes the reorder a behaviour-precedence decision,
-not a designer call).
+DC-1, DC-2, DC-3, DC-4, DC-6, DC-7 are **ratified** at the decisions gate (recorded
+for the audit trail); **DC-8 is now N/A** (its reorder was rejected by DC-7).
+**DC-5 (cache shape)** and **DC-9 (cache-size bump)** are the remaining open items —
+recommendations stated. With DC-7 resolved to stay faithful, the entire PR is
+behaviour-preserving and there are **no more ★ user-sign-off items** on the object
+path (DC-9 is a routine tuning call).
 
 ### DC-1 — Scope — **RATIFIED → Option B (widen)**
 
@@ -883,15 +990,16 @@ Regenerate and commit `docs/perf/baseline.{json,md}` reflecting the
 post-optimisation shares; quote before/after in the PR body. `generatedOn` banner
 stays metadata (ADR-475).
 
-### DC-4 — ADR need (refactor + finding 3) — **RATIFIED → no refactor ADR; finding (5b) reorder handled separately in DC-8**
+### DC-4 — ADR need — **RATIFIED → no ADR anywhere in this PR**
 
-No standalone ADR for the Lever A/B/finding-3/finding-5a refactor (all
-behaviour-preserving on healthy repos, no git divergence, no public-contract
-change). ADR-475 already establishes the baseline-as-moving-reference policy, so
-committing an updated baseline is *using* that policy, not new policy — no ADR for
-DC-3 either. **The finding (5b) pack-first reorder is the exception** — it changes
-an observable precedence and gets its own ADR question in **DC-8** (the earlier
-"no ADR" verdict covered only the cache reuse + the healthy-path refactor).
+No standalone ADR for **any** shipping work (Levers A/B, finding (3), finding (5a),
+finding (5e)) — all behaviour-preserving, no git-precedence divergence, no
+public-contract change. ADR-475 already establishes the baseline-as-moving-reference
+policy, so committing an updated baseline is *using* that policy, not new policy — no
+ADR for DC-3 either. The one thing that *would* have needed an ADR — the pack-first
+reorder — was **rejected** (DC-7), so DC-8 is N/A. The `exists`→`lstat` probe switch
+(finding 5e) rides the **existing** ADR-343 precedent (verified to transfer), so it
+needs no ADR of its own.
 
 **Re-assessment (finding (3) caching policy): no new ADR.** Finding (3) does
 **not** introduce a new cache *with a new invalidation contract* — it **extends an
@@ -932,64 +1040,62 @@ warranted.
 ### DC-6 — exists-share scope — **RATIFIED → EXPAND (ship in this PR)**
 
 The user accepted "higher risk, larger diff" and chose to ship the `exists`-share
-reduction in **this** PR rather than defer it. Finding (5) (5a always; 5b per DC-8)
-is therefore in scope. (Superseded the prior draft's "defer" recommendation.) The
-distinct **`status` `readdir`-coalesce** for the *working-tree* exists/lstat batch
-stays a separate follow-up — finding (5) is about the *object-store* loose probe on
-history walks, a different code path from the working-tree scan.
+reduction in **this** PR rather than defer it. Finding (5) (5a + 5e) is in scope.
+The distinct **`status` `readdir`-coalesce** for the *working-tree* exists/lstat
+batch stays a separate follow-up — finding (5) is about the *object-store* loose
+probe on history walks, a different code path from the working-tree scan.
 
-### DC-7 ★ — **NEW** — Object-lookup ordering: reorder pack-first (5b) vs keep loose-first + 5a only
+### DC-7 ★ — Object-lookup ordering — **RATIFIED → STAY FAITHFUL (loose-first; reorder REJECTED)**
 
-Empirically pinned (git 2.55.0, matrix above): **git is loose-first-then-pack**.
-So this is a behaviour-precedence choice, for the user:
+Empirically pinned (git 2.55.0, matrix in finding (5)): **git is
+loose-first-then-pack**. The user chose to **preserve git's loose-first
+precedence** and **reject** the pack-first reorder. So the exists-share win is
+delivered **without** any precedence change: **5a** (fold the check-then-read) +
+**5e** (switch the loose *presence* probe from `exists`'s uncached full-path
+`realpath`-follow to an `lstat`-based probe reusing finding-3's fanout-dir realpath
+cache). This keeps the same loose-first probe order and makes it cheaper — zero
+git-precedence divergence, no corruption-corner change, no ADR. (Superseded the
+prior draft's Option-A/reorder recommendation.)
 
-- **Option A (recommended):** **reorder `resolveObject` (and `objectExistsLocally`)
-  pack-first (ship 5b)** alongside 5a. Rationale: (i) it is the only lever that
-  actually collapses the 0.18 `exists` share on packed-repo walks (the stated goal
-  of the expanded scope); (ii) on **healthy** repos it is byte-identical to git
-  (content-addressed) and to `hasObject`, which is *already* pack-first — so this
-  makes the three sibling probes consistent; (iii) in the corrupt-loose+valid-pack
-  corner tsgit is **already divergent today** (it throws where git warns-and-
-  succeeds), so 5b does not break faithful code — it moves an already-broken corner
-  to "silently returns the correct packed bytes" (exit-0 like git, minus git's
-  warning), which is recorded via DC-8's ADR + an optional interop golden.
-- **Option B:** **keep loose-first; ship 5a only.** Matches git's *store
-  precedence* exactly (loose-first) and touches nothing observable, but leaves the
-  0.18 `exists` share largely intact on packed repos (5a only halves the loose-miss
-  probe, does not eliminate it) — i.e. it does **not** deliver the expanded scope's
-  goal. Choose this if preserving git's exact loose-first precedence (even in the
-  corruption corner) outweighs the perf win.
-- **Recommendation: Option A (reorder pack-first, ship 5b)** — the divergence is
-  confined to an already-divergent corruption corner, the healthy path is identical,
-  it aligns with the existing pack-first `hasObject`, and it is the only option that
-  meets the ratified EXPAND goal. Pin the intentional divergence via DC-8's ADR +
-  a corrupt-shadow interop golden.
+### DC-8 — ADR for the reorder — **N/A (reorder rejected by DC-7)**
 
-### DC-8 ★ — **NEW** — ADR for the pack-first reorder (only relevant if DC-7 → Option A)
+The reorder is not happening, so its ADR is moot. The remaining exists-share work
+(5a + 5e) is behaviour-preserving under an unchanged precedence and needs **no**
+ADR — consistent with DC-4's verdict for the rest of the refactor. ADR-343 is cited
+as the *established precedent* for the `exists`→`lstat` presence-probe substitution
+(verified to transfer — see finding (5)), which is what lets 5e ship without a new
+ADR.
 
-- **Option A (recommended if DC-7=A):** **write a short ADR** recording the
-  object-lookup precedence decision: "tsgit resolves objects **pack-first** (unlike
-  git's loose-first) for the packed-repo hot path; healthy repos are byte-identical;
-  the sole observable difference is the corrupt-loose+valid-pack corner, where tsgit
-  returns the valid packed bytes silently (git warns then returns them). This is an
-  intentional, ADR-sanctioned divergence, pinned by a corrupt-shadow interop test."
-  This is a genuine behaviour-precedence decision with a consequence (the corruption
-  corner) — exactly what an ADR is for, and it converts tsgit's *current unrecorded*
-  divergence into a *documented, tested* one. Note the prime directive (CLAUDE.md):
-  git-faithfulness holds "unless an ADR explicitly diverges and says why" — so 5b
-  **requires** this ADR to be legitimate.
-- **Option B:** no ADR; rely on the design doc + PR body. Rejected as recommendation
-  — a divergence from git's observable behaviour without an ADR violates the prime
-  directive's "unless an ADR explicitly diverges" clause.
-- **Recommendation: Option A (write the ADR)** if DC-7 ratifies the reorder;
-  N/A if DC-7 keeps loose-first (5a alone is behaviour-preserving and needs no ADR).
+### DC-9 — **NEW (open)** — `parentRealpathCache` size: keep `maxEntries=64` vs raise to ≥256
+
+Finding (5e) makes the loose probe hit `parentRealpathCache` for the **256** object
+fanout dirs. The cache is `createLruCache(64 * 1024, 64)` — `maxEntries=64 < 256`,
+so a full-history walk **thrashes** the fanout entries and re-pays the realpath,
+blunting the win.
+
+- **Option A (recommended):** **raise `maxEntries` to ≥256** (e.g.
+  `createLruCache(64 * 1024, 512)` for headroom over the 256 fanout dirs + a few
+  creation-mode parents). The 64 KiB byte cap already holds ~300 short
+  `${gitDir}/objects/xx` strings (~18 KiB), so only the entry cap needs raising;
+  the byte cap stays the real ceiling. Delivers the finding-5e win robustly on
+  full-history walks.
+- **Option B:** **keep `maxEntries=64`.** No tuning churn, but the fanout dirs
+  thrash on large walks and the exists-share win degrades to "cheaper only when the
+  walk clusters in ≤64 fanout dirs". Undersells the ratified EXPAND goal.
+- **Option C:** decouple — a **separate** larger cache dedicated to the object
+  fanout dirs, leaving the creation/lstat cache at 64. More surface, and it forfeits
+  the cross-mode sharing DC-5 Option A chose; no benefit over simply raising the one
+  cache's entry cap.
+- **Recommendation: Option A** (raise to ≥256). It is the cheap enabler that makes
+  finding (5e) actually collapse the share on real walks. Interacts with DC-5
+  (Option A single cache) — the bump applies to that one shared `parentRealpathCache`.
 
 ### Lever 5c note (★ if ever proposed) — trusted-internal-path fast-path
 
-Not proposed in this PR (5a+5b address the share without carving a hole in the
+Not proposed in this PR (5a+5e address the share without carving a hole in the
 "every FS op is containment-checked" invariant). Recorded so the gate knows it was
 considered and consciously set aside. **If** a future profile shows containment
-*itself* dominating after 5a+5b, 5c returns as a standalone proposal requiring
+*itself* dominating after 5a+5e, 5c returns as a standalone proposal requiring
 **explicit user sign-off + a security-review focus**, with the trust boundary
 defined precisely (only paths lexically under the canonical gitDir, library-
 constructed, never derived from user input) — the coordinator routes it to the
