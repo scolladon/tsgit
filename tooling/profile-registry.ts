@@ -24,7 +24,11 @@ export const READ_ITERATIONS = 100;
 // (blame's cost is linear in the blamed file's history depth — see BLAME_TARGET),
 // so a couple of iterations give a stable profile; more only add wall-clock.
 export const HEAVY_READ_ITERATIONS = 2;
-export const WRITE_ITERATIONS = 10;
+// Write commands run against a TINY scratch repo, so a single iteration is
+// sub-millisecond — far below the one-time bundle-load cost that shares the
+// profile. Loop enough that the write path (index/tree/object writes) clears
+// the noise floor and surfaces real frames rather than an under-sampled blank.
+export const WRITE_ITERATIONS = 100;
 
 // Blame walks the full commit history back to where the file was introduced.
 // Bench-fixture blobs are add-once / never-modified, so a blob introduced ~200
