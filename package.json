@@ -167,6 +167,7 @@
     "prepare": "husky",
     "build": "wireit",
     "build:parity": "wireit",
+    "build:profile": "wireit",
     "check": "wireit",
     "check:fix": "wireit",
     "check:types": "wireit",
@@ -190,7 +191,7 @@
     "test:bench": "wireit",
     "bench:summary": "wireit",
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
-    "profile": "npm run build && node --experimental-strip-types tooling/profile.ts",
+    "profile": "npm run build:profile && node --experimental-strip-types tooling/profile.ts",
     "bench:memory": "npm run build && node --expose-gc --experimental-strip-types tooling/bench-memory.ts",
     "docs": "wireit",
     "docs:check": "wireit",
@@ -237,11 +238,24 @@
       ],
       "clean": "if-file-deleted"
     },
+    "build:profile": {
+      "command": "rollup -c rollup.profile.config.ts --configPlugin @rollup/plugin-typescript",
+      "files": [
+        "src/**/*.ts",
+        "rollup.profile.config.ts",
+        "tsconfig.build.json"
+      ],
+      "output": [
+        "dist-profile/esm/**"
+      ],
+      "clean": "if-file-deleted"
+    },
     "check": {
       "command": "biome check .",
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
+        "tooling/**/*.ts",
         "biome.json"
       ],
       "output": []
@@ -260,6 +274,7 @@
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
+        "tooling/**/*.ts",
         "tsconfig.json"
       ],
       "output": []
@@ -318,6 +333,7 @@
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
+        "tooling/**/*.ts",
         "vitest.config.ts"
       ],
       "output": []
@@ -447,6 +463,7 @@
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
+        "tooling/**/*.ts",
         "vitest.config.ts"
       ],
       "output": [
@@ -749,7 +766,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.3",
     "@cloudflare/vitest-pool-workers": "0.18.4",
-    "@cloudflare/workers-types": "5.20260710.1",
+    "@cloudflare/workers-types": "5.20260711.1",
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
     "@ls-lint/ls-lint": "2.3.1",

@@ -161,6 +161,11 @@ npm run test:bench                                      # raw JSON in reports/be
 npm run bench:summary                                   # markdown summary
 npm run bench:fixture -- medium                         # pre-warm the scaled-bench fixture
 
+# Per-command CPU profiling (names-preserved build; commits docs/perf/baseline.{json,md})
+npm run profile                                        # profile every registered command
+npm run profile status                                 # profile a single command
+
+
 # Runtime-parity matrix (Phase 19.8) — CI-gated; local-optional
 npm run test:parity:deno                                # requires Deno on PATH
 npm run test:parity:bun                                 # requires Bun on PATH

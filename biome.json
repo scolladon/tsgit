@@ -7,7 +7,15 @@
     "defaultBranch": "main"
   },
   "files": {
-    "includes": ["src/**", "test/**", "*.ts", "*.json"]
+    "includes": [
+      "src/**",
+      "test/**",
+      "*.ts",
+      "*.json",
+      "tooling/profile.ts",
+      "tooling/profile-*.ts",
+      "tooling/test/unit/profile-*.test.ts"
+    ]
   },
   "formatter": {
     "enabled": true,

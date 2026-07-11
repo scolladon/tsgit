@@ -1059,7 +1059,19 @@
     "unget",
     "oidset",
     "fprintf",
-    "QSORT"
+    "QSORT",
+    "nonlib",
+    "finalising",
+    "cpus",
+    "backgrounded",
+    "nohup",
+    "profilable",
+    "unprofilable",
+    "loopable",
+    "ungated",
+    "neighbourhood",
+    "realisation",
+    "optimisable"
   ],
   "ignorePaths": [
     "node_modules",

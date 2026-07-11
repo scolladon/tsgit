@@ -1,0 +1,1014 @@
+{
+  "generatedOn": "darwin-arm64 / node v22.22.3 / Apple M3 Pro",
+  "commands": {
+    "log": {
+      "hotShares": [
+        {
+          "frame": "exists",
+          "self": 0.18
+        },
+        {
+          "frame": "lookupPackIndex",
+          "self": 0.13
+        },
+        {
+          "frame": "parseRequiredFields",
+          "self": 0.12
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.09
+        },
+        {
+          "frame": "commitDateWalk",
+          "self": 0.06
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.04
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.04
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.04
+        },
+        {
+          "frame": "parseObject",
+          "self": 0.03
+        },
+        {
+          "frame": "enqueueCommit",
+          "self": 0.03
+        },
+        {
+          "frame": "readEntryHeaderWithChunk",
+          "self": 0.03
+        },
+        {
+          "frame": "readObject",
+          "self": 0.03
+        },
+        {
+          "frame": "log",
+          "self": 0.03
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.02
+        },
+        {
+          "frame": "walkCommitsByDate",
+          "self": 0.02
+        },
+        {
+          "frame": "resolvePackChain",
+          "self": 0.02
+        },
+        {
+          "frame": "finalize$3",
+          "self": 0.01
+        },
+        {
+          "frame": "removeNode",
+          "self": 0.01
+        },
+        {
+          "frame": "looseObjectPath",
+          "self": 0.01
+        },
+        {
+          "frame": "hashHex",
+          "self": 0.01
+        },
+        {
+          "frame": "decodeTypeAndSize",
+          "self": 0.01
+        }
+      ]
+    },
+    "status": {
+      "hotShares": [
+        {
+          "frame": "lstat",
+          "self": 0.25
+        },
+        {
+          "frame": "resolveForMode",
+          "self": 0.14
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.12
+        },
+        {
+          "frame": "visitEntry",
+          "self": 0.1
+        },
+        {
+          "frame": "validateWorkingTreePath",
+          "self": 0.08
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.07
+        },
+        {
+          "frame": "basename",
+          "self": 0.03
+        },
+        {
+          "frame": "walkInternal$1",
+          "self": 0.03
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.02
+        },
+        {
+          "frame": "loadAndParse$1",
+          "self": 0.02
+        },
+        {
+          "frame": "compareWorkingTreeDelta",
+          "self": 0.02
+        },
+        {
+          "frame": "guard",
+          "self": 0.02
+        },
+        {
+          "frame": "parseIndex",
+          "self": 0.01
+        },
+        {
+          "frame": "joinPath",
+          "self": 0.01
+        },
+        {
+          "frame": "mapStat",
+          "self": 0.01
+        },
+        {
+          "frame": "parseTreeContent",
+          "self": 0.01
+        },
+        {
+          "frame": "walkInternal",
+          "self": 0.01
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01
+        },
+        {
+          "frame": "sourcesForPath",
+          "self": 0.01
+        }
+      ]
+    },
+    "pack-read": {
+      "hotShares": [
+        {
+          "frame": "<anonymous>",
+          "self": 0.9
+        },
+        {
+          "frame": "entryOffsets",
+          "self": 0.08
+        },
+        {
+          "frame": "guard",
+          "self": 0.03
+        }
+      ]
+    },
+    "describe": {
+      "hotShares": [
+        {
+          "frame": "checkContainment",
+          "self": 0.18
+        },
+        {
+          "frame": "exists",
+          "self": 0.18
+        },
+        {
+          "frame": "parseRequiredFields",
+          "self": 0.09
+        },
+        {
+          "frame": "read",
+          "self": 0.08
+        },
+        {
+          "frame": "readLooseContent",
+          "self": 0.05
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.05
+        },
+        {
+          "frame": "toAbsolute",
+          "self": 0.03
+        },
+        {
+          "frame": "findFirstInvalidCompression",
+          "self": 0.03
+        },
+        {
+          "frame": "selectNearest",
+          "self": 0.03
+        },
+        {
+          "frame": "finalize$3",
+          "self": 0.02
+        },
+        {
+          "frame": "enumerateRefs",
+          "self": 0.02
+        },
+        {
+          "frame": "describe",
+          "self": 0.02
+        },
+        {
+          "frame": "readObject",
+          "self": 0.02
+        },
+        {
+          "frame": "parseIdentity",
+          "self": 0.02
+        },
+        {
+          "frame": "guard",
+          "self": 0.02
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.02
+        },
+        {
+          "frame": "parseTagContent",
+          "self": 0.02
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.02
+        },
+        {
+          "frame": "resolveForMode",
+          "self": 0.01
+        },
+        {
+          "frame": "peelRefToCommit",
+          "self": 0.01
+        },
+        {
+          "frame": "parseDescribeOptions",
+          "self": 0.01
+        },
+        {
+          "frame": "makeReader",
+          "self": 0.01
+        },
+        {
+          "frame": "getCanonicalRoot",
+          "self": 0.01
+        },
+        {
+          "frame": "collectLooseRefs",
+          "self": 0.01
+        },
+        {
+          "frame": "buildNameMap",
+          "self": 0.01
+        },
+        {
+          "frame": "assertCoreConfigValid",
+          "self": 0.01
+        },
+        {
+          "frame": "walkLooseRefs",
+          "self": 0.01
+        },
+        {
+          "frame": "tryLoose",
+          "self": 0.01
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.01
+        },
+        {
+          "frame": "readEntryHeaderWithChunk",
+          "self": 0.01
+        },
+        {
+          "frame": "parseLooseRef",
+          "self": 0.01
+        },
+        {
+          "frame": "lookupPackIndex",
+          "self": 0.01
+        },
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.01
+        },
+        {
+          "frame": "enqueueParents",
+          "self": 0.01
+        },
+        {
+          "frame": "check",
+          "self": 0.01
+        }
+      ]
+    },
+    "name-rev": {
+      "hotShares": [
+        {
+          "frame": "checkContainment",
+          "self": 0.26
+        },
+        {
+          "frame": "exists",
+          "self": 0.18
+        },
+        {
+          "frame": "tryLoose",
+          "self": 0.08
+        },
+        {
+          "frame": "parseRequiredFields",
+          "self": 0.05
+        },
+        {
+          "frame": "readLooseContent",
+          "self": 0.04
+        },
+        {
+          "frame": "peelRefToCommit",
+          "self": 0.04
+        },
+        {
+          "frame": "walkRef",
+          "self": 0.04
+        },
+        {
+          "frame": "seedRef",
+          "self": 0.04
+        },
+        {
+          "frame": "parseObject",
+          "self": 0.03
+        },
+        {
+          "frame": "splitHeaderAndMessage",
+          "self": 0.03
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.03
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.02
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.02
+        },
+        {
+          "frame": "guard",
+          "self": 0.02
+        },
+        {
+          "frame": "nameRev",
+          "self": 0.02
+        },
+        {
+          "frame": "resolveDirect",
+          "self": 0.01
+        },
+        {
+          "frame": "resolveCommit",
+          "self": 0.01
+        },
+        {
+          "frame": "refDir",
+          "self": 0.01
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.01
+        },
+        {
+          "frame": "isErrnoException",
+          "self": 0.01
+        },
+        {
+          "frame": "evict",
+          "self": 0.01
+        },
+        {
+          "frame": "assertRepository",
+          "self": 0.01
+        },
+        {
+          "frame": "toAbsolute",
+          "self": 0.01
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.01
+        },
+        {
+          "frame": "read",
+          "self": 0.01
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.01
+        },
+        {
+          "frame": "parseTagContent",
+          "self": 0.01
+        },
+        {
+          "frame": "getPackRegistry",
+          "self": 0.01
+        },
+        {
+          "frame": "check",
+          "self": 0.01
+        }
+      ]
+    },
+    "rev-parse": {
+      "hotShares": [
+        {
+          "frame": "check",
+          "self": 0.23
+        },
+        {
+          "frame": "findFirstInvalidCompression",
+          "self": 0.15
+        },
+        {
+          "frame": "refDir",
+          "self": 0.08
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.08
+        },
+        {
+          "frame": "guard",
+          "self": 0.08
+        },
+        {
+          "frame": "evaluate",
+          "self": 0.08
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.08
+        },
+        {
+          "frame": "assertCoreConfigValid",
+          "self": 0.08
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.08
+        },
+        {
+          "frame": "findTreePathColon",
+          "self": 0.08
+        }
+      ]
+    },
+    "cat-file": {
+      "hotShares": [
+        {
+          "frame": "findFirstInvalidCompression",
+          "self": 0.56
+        },
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.44
+        }
+      ]
+    },
+    "show": {
+      "hotShares": [
+        {
+          "frame": "walkInternal",
+          "self": 0.22
+        },
+        {
+          "frame": "parseTreeContent",
+          "self": 0.16
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.13
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.12
+        },
+        {
+          "frame": "flattenTree",
+          "self": 0.07
+        },
+        {
+          "frame": "walkTree",
+          "self": 0.07
+        },
+        {
+          "frame": "diffTrees$1",
+          "self": 0.05
+        },
+        {
+          "frame": "readEntryHeaderWithChunk",
+          "self": 0.03
+        },
+        {
+          "frame": "lookupPackIndex",
+          "self": 0.03
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.02
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.02
+        },
+        {
+          "frame": "compareBytes",
+          "self": 0.01
+        },
+        {
+          "frame": "readVariableLengthInt",
+          "self": 0.01
+        },
+        {
+          "frame": "exists",
+          "self": 0.01
+        },
+        {
+          "frame": "decode$1",
+          "self": 0.01
+        },
+        {
+          "frame": "resolvePackChain",
+          "self": 0.01
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.01
+        }
+      ]
+    },
+    "diff": {
+      "hotShares": [
+        {
+          "frame": "checkContainment",
+          "self": 0.36
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.1
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.09
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.08
+        },
+        {
+          "frame": "diff",
+          "self": 0.05
+        },
+        {
+          "frame": "exists",
+          "self": 0.05
+        },
+        {
+          "frame": "assertCoreConfigValid",
+          "self": 0.04
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.03
+        },
+        {
+          "frame": "findFirstInvalidCompression",
+          "self": 0.03
+        },
+        {
+          "frame": "revParse",
+          "self": 0.02
+        },
+        {
+          "frame": "readLooseContent",
+          "self": 0.02
+        },
+        {
+          "frame": "parseRequiredFields",
+          "self": 0.02
+        },
+        {
+          "frame": "resolveTreeish",
+          "self": 0.01
+        },
+        {
+          "frame": "resolvePackChain",
+          "self": 0.01
+        },
+        {
+          "frame": "readEntryHeaderWithChunk",
+          "self": 0.01
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.01
+        },
+        {
+          "frame": "getCanonicalRoot",
+          "self": 0.01
+        },
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.01
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.01
+        },
+        {
+          "frame": "parseExpression",
+          "self": 0.01
+        },
+        {
+          "frame": "getRefStore",
+          "self": 0.01
+        },
+        {
+          "frame": "assertRepository",
+          "self": 0.01
+        },
+        {
+          "frame": "finalize$3",
+          "self": 0.01
+        },
+        {
+          "frame": "evaluate",
+          "self": 0.01
+        },
+        {
+          "frame": "diffTrees$1",
+          "self": 0.01
+        },
+        {
+          "frame": "check",
+          "self": 0.01
+        },
+        {
+          "frame": "bisectLeft",
+          "self": 0.01
+        }
+      ]
+    },
+    "blame": {
+      "hotShares": [
+        {
+          "frame": "walkInternal",
+          "self": 0.24
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.24
+        },
+        {
+          "frame": "parseTreeContent",
+          "self": 0.22
+        },
+        {
+          "frame": "flattenTree",
+          "self": 0.08
+        },
+        {
+          "frame": "walkTree",
+          "self": 0.07
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.04
+        },
+        {
+          "frame": "collectDeltaChain",
+          "self": 0.03
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.03
+        },
+        {
+          "frame": "decode$1",
+          "self": 0.01
+        },
+        {
+          "frame": "readVariableLengthInt",
+          "self": 0.01
+        }
+      ]
+    },
+    "commit": {
+      "hotShares": [
+        {
+          "frame": "<anonymous>",
+          "self": 0.14
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.14
+        },
+        {
+          "frame": "writeExclusive",
+          "self": 0.07
+        },
+        {
+          "frame": "stripspace",
+          "self": 0.07
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.07
+        },
+        {
+          "frame": "join",
+          "self": 0.07
+        },
+        {
+          "frame": "invokeHook",
+          "self": 0.07
+        },
+        {
+          "frame": "getCanonicalRoot",
+          "self": 0.07
+        },
+        {
+          "frame": "commit$1",
+          "self": 0.07
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.07
+        },
+        {
+          "frame": "check",
+          "self": 0.07
+        }
+      ],
+      "setupShares": [
+        {
+          "frame": "openRepository",
+          "self": 0.07
+        }
+      ]
+    },
+    "add": {
+      "hotShares": [
+        {
+          "frame": "resolveForCreation",
+          "self": 0.2
+        },
+        {
+          "frame": "lstat",
+          "self": 0.1
+        },
+        {
+          "frame": "isErrnoException",
+          "self": 0.1
+        },
+        {
+          "frame": "discoverLayout",
+          "self": 0.1
+        },
+        {
+          "frame": "checkContainment",
+          "self": 0.1
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.1
+        },
+        {
+          "frame": "check",
+          "self": 0.1
+        }
+      ],
+      "setupShares": [
+        {
+          "frame": "openRepository",
+          "self": 0.2
+        }
+      ]
+    },
+    "merge": {
+      "hotShares": [
+        {
+          "frame": "checkContainment",
+          "self": 0.16
+        },
+        {
+          "frame": "exists",
+          "self": 0.13
+        },
+        {
+          "frame": "guard",
+          "self": 0.08
+        },
+        {
+          "frame": "check",
+          "self": 0.08
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.05
+        },
+        {
+          "frame": "runFs",
+          "self": 0.05
+        },
+        {
+          "frame": "resolveForMode",
+          "self": 0.03
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.03
+        },
+        {
+          "frame": "tryLoose",
+          "self": 0.02
+        },
+        {
+          "frame": "resolveForCreation",
+          "self": 0.02
+        },
+        {
+          "frame": "pathContainsNormalized",
+          "self": 0.02
+        },
+        {
+          "frame": "dirname",
+          "self": 0.02
+        },
+        {
+          "frame": "resolveDirectChain",
+          "self": 0.02
+        },
+        {
+          "frame": "readIndex",
+          "self": 0.02
+        },
+        {
+          "frame": "parseLooseRef",
+          "self": 0.02
+        },
+        {
+          "frame": "interpretCreationLstat",
+          "self": 0.02
+        },
+        {
+          "frame": "unsafeReason",
+          "self": 0.02
+        },
+        {
+          "frame": "materialiseAndApply",
+          "self": 0.01
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.01
+        },
+        {
+          "frame": "set",
+          "self": 0.01
+        },
+        {
+          "frame": "serializeIdentity",
+          "self": 0.01
+        },
+        {
+          "frame": "serializeHeader",
+          "self": 0.01
+        },
+        {
+          "frame": "serializeCommitContent",
+          "self": 0.01
+        },
+        {
+          "frame": "scanKey",
+          "self": 0.01
+        },
+        {
+          "frame": "sanitizeMessage",
+          "self": 0.01
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01
+        },
+        {
+          "frame": "resolveFilterDriver",
+          "self": 0.01
+        },
+        {
+          "frame": "resolveDirect",
+          "self": 0.01
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.01
+        },
+        {
+          "frame": "readHeadRaw",
+          "self": 0.01
+        },
+        {
+          "frame": "readConfigEntry",
+          "self": 0.01
+        },
+        {
+          "frame": "parseIndex",
+          "self": 0.01
+        },
+        {
+          "frame": "mergeNewIndexEntries",
+          "self": 0.01
+        },
+        {
+          "frame": "lstat",
+          "self": 0.01
+        },
+        {
+          "frame": "from",
+          "self": 0.01
+        },
+        {
+          "frame": "createInflateStream",
+          "self": 0.01
+        },
+        {
+          "frame": "commit$1",
+          "self": 0.01
+        },
+        {
+          "frame": "clearResolvedState",
+          "self": 0.01
+        },
+        {
+          "frame": "chmod",
+          "self": 0.01
+        },
+        {
+          "frame": "assertRepository",
+          "self": 0.01
+        },
+        {
+          "frame": "assertCoreConfigValid",
+          "self": 0.01
+        },
+        {
+          "frame": "applyEntry",
+          "self": 0.01
+        },
+        {
+          "frame": "toAbsolute",
+          "self": 0.01
+        },
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.01
+        }
+      ],
+      "setupShares": []
+    }
+  }
+}
