@@ -10,18 +10,28 @@ import type { ObjectId } from '../src/domain/objects/index.ts';
 import type { Repository } from '../src/repository.ts';
 import type { FixtureSpec, ScaledFixture } from '../test/bench/support/fixture-generator.ts';
 import { MEDIUM_FIXTURE } from '../test/bench/support/fixture-generator.ts';
-import { withPinnedDate } from './profile-env.js';
+import { withPinnedDate } from './profile-env.ts';
 import {
   buildAddScratch,
   buildCommitScratch,
   buildMergeScratch,
   PROFILE_AUTHOR,
   type ScratchRepo,
-} from './profile-scratch-repo.js';
+} from './profile-scratch-repo.ts';
 
 export const READ_ITERATIONS = 100;
-export const HEAVY_READ_ITERATIONS = 10;
+// A single blame over a moderately deep file already samples for tens of seconds
+// (blame's cost is linear in the blamed file's history depth — see BLAME_TARGET),
+// so a couple of iterations give a stable profile; more only add wall-clock.
+export const HEAVY_READ_ITERATIONS = 2;
 export const WRITE_ITERATIONS = 10;
+
+// Blame walks the full commit history back to where the file was introduced.
+// Bench-fixture blobs are add-once / never-modified, so a blob introduced ~200
+// commits before HEAD exercises a real history walk (which dominates the profile)
+// while terminating in tens of seconds — the root blob (`d0/f0.dat`, ~5000 deep)
+// takes minutes to blame.
+const BLAME_TARGET = 'd37/f19200.dat';
 
 const NEAR_TAG_DISTANCE = 10;
 const DESCRIBE_NEAR_TAG = 'profile-describe-near';
@@ -176,7 +186,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
     fixture: MEDIUM_FIXTURE,
     iterations: HEAVY_READ_ITERATIONS,
     run: async (repo) => {
-      await repo.blame('d0/f0.dat');
+      await repo.blame(BLAME_TARGET);
     },
   },
 };

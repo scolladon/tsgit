@@ -3,8 +3,8 @@
 // spawning `git` — so the captured `commit`/`add`/`merge` frames are tsgit's
 // own write path, not a child git process. Mirrors the dynamic dist-import
 // idiom from `bench-memory.ts` (a strip-only runtime cannot resolve the
-// source tree's `.js`-extension imports, so the scratch build runs against
-// compiled `dist/`).
+// source tree's `.js`-extension imports), but reads the names-preserved
+// profiling build so the captured write frames carry readable names.
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -18,7 +18,7 @@ type OpenRepository = typeof import('../src/index.node.ts').openRepository;
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
-const DIST_ENTRY = path.join(ROOT, 'dist', 'esm', 'index.node.js');
+const DIST_ENTRY = path.join(ROOT, 'dist-profile', 'esm', 'index.node.js');
 
 /** Pinned identity, reused across the module so every scratch commit is byte-stable. */
 export const PROFILE_AUTHOR: AuthorIdentity = {

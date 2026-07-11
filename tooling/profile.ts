@@ -27,18 +27,18 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { ensureScaledFixture, MEDIUM_FIXTURE } from '../test/bench/support/fixture-generator.ts';
-import { type Baseline, machineBanner, writeBaseline } from './profile-baseline.js';
-import { parseDigest, partitionWriteDigest } from './profile-digest.js';
-import { profileEnv } from './profile-env.js';
-import type { ProfileWorkload } from './profile-registry.js';
+import { type Baseline, machineBanner, writeBaseline } from './profile-baseline.ts';
+import { parseDigest, partitionWriteDigest } from './profile-digest.ts';
+import { profileEnv } from './profile-env.ts';
+import type { ProfileWorkload } from './profile-registry.ts';
 import {
   READ_ITERATIONS,
   resolveWorkloads,
   UnknownCommandError,
   WORKLOADS,
   WRITE_ITERATIONS,
-} from './profile-registry.js';
-import type { ScratchRepo } from './profile-scratch-repo.js';
+} from './profile-registry.ts';
+import type { ScratchRepo } from './profile-scratch-repo.ts';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');

@@ -5,7 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import type { DigestPartition, FrameShare } from './profile-digest.js';
+import type { DigestPartition, FrameShare } from './profile-digest.ts';
 
 export type CommandBaseline = DigestPartition;
 
