@@ -32,6 +32,37 @@ describe('profileEnv', () => {
     });
   });
 
+  describe('Given process.env carries a non-GIT key', () => {
+    const SENTINEL = 'TSGIT_PROFILE_SENTINEL';
+    const originalSentinel = process.env[SENTINEL];
+
+    beforeEach(() => {
+      process.env[SENTINEL] = 'keep-me';
+    });
+
+    afterEach(() => {
+      if (originalSentinel === undefined) {
+        delete process.env[SENTINEL];
+      } else {
+        process.env[SENTINEL] = originalSentinel;
+      }
+    });
+
+    describe('When profileEnv() runs', () => {
+      it('Then the non-GIT key survives (only GIT_* is scrubbed, not the whole env)', () => {
+        // Arrange
+        const sut = profileEnv;
+
+        // Act
+        const result = sut();
+
+        // Assert — a mutant that scrubbed the whole env (then re-pinned the GIT_
+        // identity) would drop this; proving it survives pins the GIT_-only scrub.
+        expect(result[SENTINEL]).toBe('keep-me');
+      });
+    });
+  });
+
   describe('Given any process.env', () => {
     describe('When profileEnv() runs', () => {
       it('Then GIT_AUTHOR_NAME/EMAIL, GIT_COMMITTER_NAME/EMAIL are the pinned profile identity and GIT_CONFIG_NOSYSTEM is 1', () => {

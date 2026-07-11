@@ -163,8 +163,15 @@ const captureBaseline = async (
   for (const [name, workload] of resolved) {
     process.stdout.write(`profiling ${name}…\n`);
     const digest = await captureProfile(name);
-    commands[name] =
+    const entry =
       workload.kind === 'read' ? { hotShares: parseDigest(digest) } : partitionWriteDigest(digest);
+    if (entry.hotShares.length === 0) {
+      process.stderr.write(
+        `warning: ${name} produced no tsgit frames above the noise floor — ` +
+          'it may be too fast to sample or may not belong in the registry\n',
+      );
+    }
+    commands[name] = entry;
   }
   return { generatedOn: machineBanner(), commands };
 };

@@ -9,12 +9,17 @@ export type DigestPartition = {
   readonly setupShares?: ReadonlyArray<FrameShare>;
 };
 
-// Frames on the build-only path (`init` → `bootstrapRepository`) that the
-// write commands under measurement never reach themselves. Deliberately
-// excludes shared object-write primitives (`writeObject`, `writeTree`, …)
-// that BOTH the scratch build and the measured command call — those stay in
-// `hotShares` so a write command's cost is never under-reported.
-export const SETUP_FRAMES: ReadonlySet<string> = new Set(['init', 'bootstrapRepository']);
+// Frames on the build-only path (repo creation: `openRepository` → `init` →
+// `bootstrapRepository`) that no write command under measurement reaches itself
+// — every measured command runs against an already-open, already-initialised
+// scratch. Deliberately excludes shared object-write primitives (`writeObject`,
+// `writeTree`, …) that BOTH the scratch build and the measured command call —
+// those stay in `hotShares` so a write command's cost is never under-reported.
+export const SETUP_FRAMES: ReadonlySet<string> = new Set([
+  'openRepository',
+  'init',
+  'bootstrapRepository',
+]);
 
 const NOISE_FLOOR_SELF = 0.01;
 
@@ -23,10 +28,11 @@ const NOISE_FLOOR_SELF = 0.01;
 // (`dist-profile/esm/…`, the names-preserved build the profiler imports) are
 // frames we own; everything else (shared libraries, node internals,
 // Builtin:/Stub:/RegExp: entries, the Unaccounted/Summary rollups) is noise.
-// The `[*~^]?` strips V8's tier markers (optimised / unoptimised / etc.) so a
-// function is one frame regardless of the tier it was sampled in.
+// The `[*~^+]?` strips V8's tier markers (optimised `*` / unoptimised `~` / `^`
+// / `+`) so a function is one frame regardless of the tier it was sampled in —
+// a JS identifier can never start with one of these, so stripping is safe.
 const TSGIT_FRAME_LINE =
-  /^\s*(\d+)\s+[\d.]+%\s+[\d.]+%\s+(?:\S+:\s+)?[*~^]?(\S+)\s+.*dist-profile\/esm\//;
+  /^\s*(\d+)\s+[\d.]+%\s+[\d.]+%\s+(?:\S+:\s+)?[*~^+]?(\S+)\s+.*dist-profile\/esm\//;
 
 const extractTsgitFrames = (digestText: string): Array<{ frame: string; ticks: number }> =>
   digestText

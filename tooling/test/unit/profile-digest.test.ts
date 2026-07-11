@@ -130,20 +130,50 @@ describe('parseDigest', () => {
     });
   });
 
+  describe('Given a digest with a tsgit frame whose share is exactly the 1% floor', () => {
+    describe('When parseDigest runs', () => {
+      it('Then the frame is kept, proving the floor is inclusive (>=, not >)', () => {
+        // Arrange — 1:99 tick ratio: the minor frame normalises to exactly
+        // 0.01, which must be KEPT (the floor is `>= 0.01`). Pins both the 0.01
+        // constant and the inclusive boundary — a `>=`→`>` mutant drops it.
+        const digestText = [
+          ...digestHeader,
+          ' [JavaScript]:',
+          '   ticks  total  nonlib   name',
+          `     99   99.0%   99.0%  JS: *walkCommitsByDate ${BUNDLE}:120:34`,
+          `      1    1.0%    1.0%  JS: *boundaryFrame ${BUNDLE}:500:1`,
+          '',
+          ' [Summary]:',
+          '    100  100.0%   100.0%  JavaScript',
+        ].join('\n');
+
+        // Act
+        const result = parseDigest(digestText);
+
+        // Assert
+        expect(result).toEqual([
+          { frame: 'walkCommitsByDate', self: 0.99 },
+          { frame: 'boundaryFrame', self: 0.01 },
+        ]);
+      });
+    });
+  });
+
   describe('Given a digest where one tsgit frame appears on two rows under different V8 tier markers', () => {
     describe('When parseDigest runs', () => {
       it('Then the markers are stripped and the frame is a single entry whose ticks are summed', () => {
-        // Arrange — V8 samples `readSlice` in two tiers (`~` unoptimised, `^`),
-        // 30 + 10 ticks; `walkTree` (`*` optimised) is 60. The markers must be
-        // stripped so both readSlice rows collapse to one entry: 40/100 = 0.40,
-        // never two split rows or a `~readSlice`/`^readSlice` leak.
+        // Arrange — V8 samples `readSlice` in three tiers (`~` unoptimised, `^`,
+        // `+`), 20 + 10 + 10 ticks; `walkTree` (`*` optimised) is 60. Every
+        // marker must be stripped so all three readSlice rows collapse to one
+        // entry: 40/100 = 0.40, never split rows or a `~`/`^`/`+`-prefixed leak.
         const digestText = [
           ...digestHeader,
           ' [JavaScript]:',
           '   ticks  total  nonlib   name',
           `     60   60.0%   60.0%  JS: *walkTree ${BUNDLE}:300:5`,
-          `     30   30.0%   30.0%  JS: ~readSlice ${BUNDLE}:410:9`,
+          `     20   20.0%   20.0%  JS: ~readSlice ${BUNDLE}:410:9`,
           `     10   10.0%   10.0%  JS: ^readSlice ${BUNDLE}:410:9`,
+          `     10   10.0%   10.0%  JS: +readSlice ${BUNDLE}:410:9`,
           '',
           ' [Summary]:',
           '    100  100.0%   100.0%  JavaScript',
@@ -163,27 +193,57 @@ describe('parseDigest', () => {
 });
 
 describe('partitionWriteDigest', () => {
-  describe('Given a write digest containing a build-only frame (bootstrapRepository) and a command frame (writeCommitObject)', () => {
+  describe('Given a write digest containing build-only frames (openRepository, bootstrapRepository) and a command frame (writeCommitObject)', () => {
     describe('When partitionWriteDigest runs with the default denylist', () => {
-      it('Then the build-only frame is in setupShares and the command frame is in hotShares', () => {
+      it('Then the build-only frames are in setupShares and the command frame is in hotShares', () => {
         // Arrange
         const digestText = [
           ...digestHeader,
           ' [JavaScript]:',
           '   ticks  total  nonlib   name',
-          `     10   25.0%    25.0%  LazyCompile: *bootstrapRepository ${BUNDLE}:410:1`,
-          `     30   75.0%    75.0%  LazyCompile: *writeCommitObject ${BUNDLE}:90:1`,
+          `     10   20.0%    20.0%  LazyCompile: *openRepository ${BUNDLE}:30:1`,
+          `     10   20.0%    20.0%  LazyCompile: *bootstrapRepository ${BUNDLE}:410:1`,
+          `     30   60.0%    60.0%  LazyCompile: *writeCommitObject ${BUNDLE}:90:1`,
           '',
           ' [Summary]:',
-          '     40  100.0%   100.0%  JavaScript',
+          '     50  100.0%   100.0%  JavaScript',
         ].join('\n');
 
         // Act
         const result = partitionWriteDigest(digestText);
 
         // Assert
-        expect(result.hotShares).toEqual([{ frame: 'writeCommitObject', self: 0.75 }]);
-        expect(result.setupShares).toEqual([{ frame: 'bootstrapRepository', self: 0.25 }]);
+        expect(result.hotShares).toEqual([{ frame: 'writeCommitObject', self: 0.6 }]);
+        expect(result.setupShares).toEqual([
+          { frame: 'openRepository', self: 0.2 },
+          { frame: 'bootstrapRepository', self: 0.2 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a caller-supplied setup-frame denylist', () => {
+    describe('When partitionWriteDigest runs with that explicit set', () => {
+      it('Then the override is honoured, not the default SETUP_FRAMES', () => {
+        // Arrange — `customFrame` is NOT in the default denylist; a bespoke set
+        // must route it to setupShares, proving the parameter is wired through.
+        const digestText = [
+          ...digestHeader,
+          ' [JavaScript]:',
+          '   ticks  total  nonlib   name',
+          `     40   80.0%    80.0%  JS: *writeCommitObject ${BUNDLE}:90:1`,
+          `     10   20.0%    20.0%  JS: *customFrame ${BUNDLE}:700:1`,
+          '',
+          ' [Summary]:',
+          '     50  100.0%   100.0%  JavaScript',
+        ].join('\n');
+
+        // Act
+        const result = partitionWriteDigest(digestText, new Set(['customFrame']));
+
+        // Assert
+        expect(result.hotShares).toEqual([{ frame: 'writeCommitObject', self: 0.8 }]);
+        expect(result.setupShares).toEqual([{ frame: 'customFrame', self: 0.2 }]);
       });
     });
   });

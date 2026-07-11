@@ -20,6 +20,12 @@ import {
 } from './profile-scratch-repo.ts';
 
 export const READ_ITERATIONS = 100;
+// The lightest reads (single-object lookups, a one-commit diff, an
+// early-terminating describe/name-rev) do sub-millisecond work per call, so at
+// READ_ITERATIONS they collect only a handful of ticks and the shares are
+// sampling luck. Loop them far more so their tsgit tick total is high enough
+// for a stable rank (or an honestly-empty result the caller warns on).
+export const FAST_READ_ITERATIONS = 2000;
 // A single blame over a moderately deep file already samples for tens of seconds
 // (blame's cost is linear in the blamed file's history depth — see BLAME_TARGET),
 // so a couple of iterations give a stable profile; more only add wall-clock.
@@ -144,6 +150,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   describe: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    iterations: FAST_READ_ITERATIONS,
     setup: (fixtureCwd, env) => ensureNearTag(fixtureCwd, env),
     run: async (repo) => {
       await repo.describe();
@@ -152,6 +159,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'name-rev': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    iterations: FAST_READ_ITERATIONS,
     setup: (fixtureCwd, env) => ensurePrunableTaggedTip(fixtureCwd, env),
     run: async (repo, _fixture, target) => {
       await repo.nameRev(target as string);
@@ -160,6 +168,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'rev-parse': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    iterations: FAST_READ_ITERATIONS,
     run: async (repo) => {
       await repo.revParse('HEAD');
     },
@@ -167,6 +176,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'cat-file': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    iterations: FAST_READ_ITERATIONS,
     run: async (repo, fixture) => {
       await repo.catFile({ ids: [fixture.headCommitId] });
     },
@@ -181,6 +191,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   diff: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    iterations: FAST_READ_ITERATIONS,
     run: async (repo) => {
       await repo.diff({ from: 'HEAD~1', to: 'HEAD' });
     },

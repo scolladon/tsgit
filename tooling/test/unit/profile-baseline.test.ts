@@ -6,7 +6,7 @@ import { renderBaselineJson, renderBaselineMarkdown } from '../../profile-baseli
 describe('renderBaselineJson', () => {
   describe('Given a baseline with a read command carrying hotShares', () => {
     describe('When renderBaselineJson runs', () => {
-      it('Then the JSON parses back to the same commands object and omits nothing', () => {
+      it('Then the JSON parses back to the whole baseline (banner included) and ends in a newline', () => {
         // Arrange
         const baseline: Baseline = {
           generatedOn: 'darwin-arm64 / node v20.0.0 / Apple M1',
@@ -18,8 +18,11 @@ describe('renderBaselineJson', () => {
         // Act
         const result = renderBaselineJson(baseline);
 
-        // Assert
-        expect(JSON.parse(result).commands).toEqual(baseline.commands);
+        // Assert — the whole object round-trips (a dropped `generatedOn` mutant
+        // survives an assertion on `.commands` alone), and the trailing newline
+        // is present (a POSIX-friendly file, pinned against a dropped `+ '\n'`).
+        expect(JSON.parse(result)).toEqual(baseline);
+        expect(result.endsWith('\n')).toBe(true);
       });
     });
   });
