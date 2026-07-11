@@ -132,6 +132,156 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given a packed-only object with no loose copy', () => {
+    describe('When resolveObject is called', () => {
+      it('Then resolves via the pack (loose probe misses and falls through)', async () => {
+        // Arrange — the loose lstat probe throws FILE_NOT_FOUND (no loose file
+        // written anywhere), so resolution must fall through to the pack.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('packed-only, no loose copy');
+        const [id] = await writeSyntheticPack(ctx, 'loose-probe-miss', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const registry = createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObject(ctx, registry, id as ObjectId, true);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a loose object also present, When resolveObject is called', () => {
+    it('Then resolves via loose (loose-first precedence preserved)', async () => {
+      // Arrange — seed only a loose copy (no pack entry for this id); the lstat
+      // probe must succeed and the object must resolve from the loose file.
+      const blob: Blob = {
+        type: 'blob',
+        content: new Uint8Array([9, 8, 7]),
+        id: '' as ObjectId,
+      };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+      const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+      const registry = createPackRegistry(ctx);
+
+      // Act
+      const result = await resolveObject(ctx, registry, id, true);
+
+      // Assert
+      expect(result.type).toBe('blob');
+      expect((result as Blob).content).toEqual(new Uint8Array([9, 8, 7]));
+    });
+  });
+
+  describe('Given a corrupt loose object (present but non-inflatable)', () => {
+    describe('When resolveObject is called', () => {
+      it('Then the inflate error propagates (inflate stays outside the presence probe)', async () => {
+        // Arrange — write garbage (non-deflate) bytes at the loose path so the
+        // lstat probe succeeds (the file exists) but inflate fails.
+        const ctx = await buildSeededContext();
+        const fakeId = 'c'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`;
+        await ctx.fs.write(loosePath, new Uint8Array([0xff, 0xff, 0xff, 0xff]));
+        const registry = createPackRegistry(ctx);
+
+        // Act / Assert — the lstat probe succeeds (file exists), so inflate
+        // runs and rejects with DECOMPRESS_FAILED; it must propagate
+        // unchanged, not be swallowed by the FILE_NOT_FOUND-only catch.
+        try {
+          await resolveObject(ctx, registry, fakeId, false);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          if (data.code !== 'DECOMPRESS_FAILED') {
+            expect.fail(`expected DECOMPRESS_FAILED, got ${data.code}`);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given the loose probe throws a non-FILE_NOT_FOUND error', () => {
+    describe('When resolveObject is called', () => {
+      it('Then it PROPAGATES (does not fall through to the pack)', async () => {
+        // Arrange — override lstat to throw PERMISSION_DENIED instead of the
+        // expected FILE_NOT_FOUND. This is the first-class isolated test for
+        // the precise catch: only FILE_NOT_FOUND is swallowed into `undefined`.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        const registry = createPackRegistry(ctx);
+        const deniedPath = `${ctx.layout.gitDir}/objects/denied`;
+        const ctxWithDeniedLstat: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async () => {
+              throw new TsgitError({ code: 'PERMISSION_DENIED', path: deniedPath });
+            },
+          },
+        };
+
+        // Act / Assert
+        try {
+          await resolveObject(ctxWithDeniedLstat, registry, id, false);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('PERMISSION_DENIED');
+          if (data.code !== 'PERMISSION_DENIED') {
+            expect.fail(`expected PERMISSION_DENIED, got ${data.code}`);
+          }
+          expect(data.path).toBe(deniedPath);
+        }
+      });
+    });
+
+    describe('When the subsequent read throws a non-FILE_NOT_FOUND error (escaping-symlink shape)', () => {
+      it('Then it PROPAGATES from the read (not swallowed by the probe catch)', async () => {
+        // Arrange — the probe (lstat) succeeds, but the follow-up read throws
+        // PERMISSION_DENIED. Mirrors case (c): an escaping loose symlink is
+        // caught at the read, not the probe.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([2]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        const registry = createPackRegistry(ctx);
+        const deniedPath = `${ctx.layout.gitDir}/objects/escaped`;
+        const ctxWithDeniedRead: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async () => {
+              throw new TsgitError({ code: 'PERMISSION_DENIED', path: deniedPath });
+            },
+          },
+        };
+
+        // Act / Assert
+        try {
+          await resolveObject(ctxWithDeniedRead, registry, id, false);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('PERMISSION_DENIED');
+          if (data.code !== 'PERMISSION_DENIED') {
+            expect.fail(`expected PERMISSION_DENIED, got ${data.code}`);
+          }
+          expect(data.path).toBe(deniedPath);
+        }
+      });
+    });
+  });
+
   describe('Given an aborted signal', () => {
     describe('When resolveObject is called', () => {
       it('Then throws OPERATION_ABORTED before any fs call', async () => {

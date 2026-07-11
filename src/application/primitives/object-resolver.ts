@@ -2,7 +2,7 @@
  * Internal object resolver — loose-first-then-pack, iterative delta walker.
  * Consumed only by readObject.
  */
-import { operationAborted } from '../../domain/error.js';
+import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
   type GitObject,
@@ -147,7 +147,12 @@ function checkAborted(ctx: Context): void {
 
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
   const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.exists(path))) return undefined;
+  try {
+    await ctx.fs.lstat(path);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
+    throw err;
+  }
   const compressed = await ctx.fs.read(path);
   return ctx.compressor.inflate(compressed);
 }
@@ -162,7 +167,12 @@ export async function looseCompressedBytes(
   id: ObjectId,
 ): Promise<Uint8Array | undefined> {
   const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.exists(path))) return undefined;
+  try {
+    await ctx.fs.lstat(path);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
+    throw err;
+  }
   return ctx.fs.read(path);
 }
 

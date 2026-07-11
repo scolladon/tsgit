@@ -1348,6 +1348,62 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
       });
     });
   });
+
+  describe('Given N loose-object lstats sharing one fanout dir (object-resolver probe shape)', () => {
+    describe('When each loose probe fires an lstat', () => {
+      it('Then realpath(fanout dir) is invoked at most once per distinct fanout dir', async () => {
+        // Arrange — 5 loose-object paths under the same fanout dir, mirroring
+        // the object-resolver's `looseObjectPath` layout (objects/xx/<38 hex>).
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const fanoutDir = '/root/objects/ab';
+
+        // Act
+        for (let i = 0; i < 5; i += 1) {
+          await sut.lstat(`${fanoutDir}/leaf${i}`);
+        }
+
+        // Assert — the fanout dir is realpath'd exactly once, not once per object.
+        const fanoutCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === fanoutDir,
+        );
+        expect(fanoutCalls.length).toBe(1);
+      });
+    });
+
+    describe('When more than the OLD 64-entry cap but within the NEW 512-entry cap of distinct fanout dirs are touched', () => {
+      it('Then an already-seen dir is NOT re-realpathed (DC-9 resize regression guard)', async () => {
+        // Arrange — 300 distinct fanout dirs (> old cap 64, within new cap 512).
+        // If the resize regressed to the old 64-entry cap, dir #1 would be
+        // evicted long before we re-touch it, forcing a second realpath.
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const fanoutDir = (n: number): string => `/root/objects/${n.toString(16).padStart(2, '0')}`;
+
+        // Act — touch 300 distinct fanout dirs, then re-touch dir #1.
+        for (let i = 0; i < 300; i += 1) {
+          await sut.lstat(`${fanoutDir(i)}/leaf`);
+        }
+        await sut.lstat(`${fanoutDir(1)}/leaf-again`);
+
+        // Assert — dir #1's realpath was invoked exactly once across the whole run.
+        const dir1Calls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === fanoutDir(1),
+        );
+        expect(dir1Calls.length).toBe(1);
+      });
+    });
+  });
 });
 
 describe('resolveForCreation — non-ENOENT errno on leaf lstat (DI)', () => {

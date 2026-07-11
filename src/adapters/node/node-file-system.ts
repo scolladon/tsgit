@@ -749,12 +749,14 @@ export class NodeFileSystem implements FileSystem {
       // pays the realpath once per parent, not once per entry. The leaf
       // itself is never cached — only the parent directory realpath.
       const parent = this.pathPolicy.dirname(resolved);
+      const basename = this.pathPolicy.basename(resolved);
       const cached = this.parentRealpathCache.get(parent);
-      const realParent = cached ?? (await this.fsOps.realpath(parent));
-      if (cached === undefined) {
-        this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+      if (cached !== undefined) {
+        return this.pathPolicy.join(cached, basename);
       }
-      return this.pathPolicy.join(realParent, this.pathPolicy.basename(resolved));
+      const realParent = await this.fsOps.realpath(parent);
+      this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+      return this.pathPolicy.join(realParent, basename);
     }
     return this.resolveForCreation(path, resolved);
   }
