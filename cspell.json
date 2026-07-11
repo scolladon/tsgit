@@ -1071,7 +1071,10 @@
     "ungated",
     "neighbourhood",
     "realisation",
-    "optimisable"
+    "optimisable",
+    "memoising",
+    "checkcontainment",
+    "realpathed"
   ],
   "ignorePaths": [
     "node_modules",
