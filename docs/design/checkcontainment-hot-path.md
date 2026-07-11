@@ -1,4 +1,4 @@
-# Design — checkContainment hot path: gate the settled-promise await, hoist the per-call closure
+# Design — checkContainment hot path: gate the settled-promise await, hoist the per-call closure, cache the lstat-mode parent realpath
 
 > Brief: `checkContainment` is the single hottest cross-cutting frame in the
 > committed profile baseline (`docs/perf/baseline.json` / `.md`) — self-share
@@ -7,12 +7,19 @@
 > Its remaining per-call self-cost, after root-normalisation was already
 > amortised, is (1) a guaranteed microtask suspension from `await
 > this.getCanonicalRoot()` on an **already-settled** promise, and (2) a per-call
-> closure allocation for `check`. Drop both, byte-identical behaviour. Pure
-> internal FS-adapter refactor — NOT a git-observable change, so no new interop
-> golden against `checkContainment` itself; the faithfulness pin is the existing
-> suite staying green with unchanged assertions, plus a re-profile showing the
-> self-share drop.
-> Status: draft → self-reviewed ×3 → decision candidates opened (awaiting ADR gate)
+> closure allocation for `check`. This PR ships **both** (Lever A + Lever B),
+> **plus** baseline finding (3): the `lstat`-mode arm of `resolveForMode`
+> re-`realpath`s the same parent directory once per entry (N same-directory files
+> in `status` ⇒ N identical parent realpaths) — extend the existing
+> `creationParentCache` template to the lstat mode so the parent realpath is paid
+> once per directory. All three changes are behaviour-preserving. Pure internal
+> FS-adapter refactor — NOT a git-observable change, so no new interop golden
+> against `checkContainment` itself; the faithfulness pin is the existing suite
+> staying green with unchanged assertions, plus a re-profile showing the
+> self-share drop, with the improved `docs/perf/baseline.{json,md}` re-committed.
+> Status: draft → self-reviewed ×3 → decisions ratified (DC-1→B widen, DC-2→B
+> ship, DC-3→A commit baseline, DC-4→no refactor ADR) → revised against decisions
+> (Lever B promoted to shipping; finding (3) added)
 
 ## Context
 
@@ -174,10 +181,14 @@ no microtask suspension. The `checkContainment` method stays `async` (it awaits
    the same sentinel the rejection arm resets, so retry semantics are exactly
    preserved.
 
-**TOCTOU unchanged.** Lever A touches only the *root canonicalisation* await
-(instance-stable data), never the per-path realpath in `resolveForMode`/`exists`.
-Every op still re-realpaths its own path every call, so a symlink swapped between
-two ops is still re-checked — the security re-stat is untouched.
+**TOCTOU unchanged (Lever A).** Lever A touches only the *root canonicalisation*
+await (instance-stable data), never the per-path realpath in
+`resolveForMode`/`exists`. Every op still re-realpaths its own path every call, so
+a symlink swapped between two ops is still re-checked — the security re-stat is
+untouched. (Finding (3) *does* dedupe one narrow piece of this — the lstat-mode
+*parent-directory* realpath — but never the leaf; its TOCTOU envelope is argued
+separately in the finding (3) section and matches the already-shipped creation
+cache.)
 
 Applies identically to `exists` (L462) and to the `symlink` absolute-target
 branch (L567): same `normalizedCanonicalRoot` sentinel, same three-part argument.
@@ -185,31 +196,58 @@ Both those sites also read `getResolvedNormalizedCanonicalRoot()` immediately
 after, so the "field defined ⇒ getter safe" post-condition is what each relies on
 — identical to `checkContainment`.
 
-### Lever B — hoist the per-call `check` closure (SECONDARY; recommend DEFER — see DC-2)
+### Lever B — hoist the per-call `check` closure (SHIPS — ratified DC-2 → Option B)
 
 The `check` closure (L763–770) is allocated fresh on every call. It captures
 three instance-stable values (`normalizedRoot`, `normalizedCanonical`,
 `this.pathPolicy`) and one per-call value (`path` — used only to build the
-`permissionDenied(path)` error). Options:
+`permissionDenied(path)` error). The `check` frame is separately attributed in
+the baseline (`check` self 0.23 rev-parse, 0.08 merge, 0.01 diff/name-rev/
+describe), so the allocation + call is a real, measurable frame — not noise.
 
-- **B(i) — instance predicate + throw at call sites.** Add
-  `private isContained(abs: string, normRoot: string, normCanon: string): boolean`
-  returning the boolean; `checkContainment` throws `permissionDenied(path)` on
-  `false`. But `resolveForMode` takes `check: (abs) => void` as a callback and
-  calls it internally (`read`/`lstat` arms, L727/L735), so removing the closure
-  forces `resolveForMode` to be rebound to either take the trio + `path` or to
-  return the abs-to-check for the caller to verify. That reshapes an internal
-  method signature and its two arms — real churn for a sub-microtask alloc.
-- **B(ii) — leave the closure as-is.** V8 allocates the closure on the young
-  generation; it is short-lived and cheap relative to the microtask Lever A
-  removes. The profiler self-share is dominated by the suspension, not the alloc.
+**Chosen shape — B(i): an instance predicate, throw at the call sites.**
 
-**Recommendation: defer B.** Lever A captures the dominant win (the guaranteed
-microtask on the busiest frame). B's churn touches `resolveForMode`'s callback
-contract for a marginal alloc saving and risks perturbing the closure-related
-mutation coverage. If the post-Lever-A re-profile still shows `checkContainment`
-disproportionately hot *and* attributable to allocation, B becomes a clean
-follow-up. Recorded as DC-2.
+Add a pure private predicate that takes the containment inputs explicitly (no
+capture):
+
+```ts
+private isContainedInEitherRoot(abs: string, normRoot: string, normCanon: string): boolean {
+  return (
+    pathContainsNormalized(normRoot, abs, this.pathPolicy) ||
+    pathContainsNormalized(normCanon, abs, this.pathPolicy)
+  );
+}
+```
+
+`checkContainment` throws on `false` at each check point, replacing the closure.
+The obstacle the prior draft flagged — `resolveForMode(path, resolved, mode,
+check)` takes `check: (abs) => void` and invokes it internally in the `read`
+(L727) and `lstat` (L735) arms — is resolved by **making the containment guard
+`resolveForMode`'s own responsibility**: `resolveForMode` receives the two
+normalised roots (`normRoot`, `normCanon`) plus `path` and calls
+`this.isContainedInEitherRoot(...)` directly, throwing `permissionDenied(path)`
+on `false`. This deletes the callback parameter entirely (a *narrower* signature,
+not a wider one) — `resolveForMode(path, resolved, mode, normRoot, normCanon)` —
+and both arms call the shared predicate. `checkContainment`'s own post-resolution
+check (`check(real)` at L773) becomes a direct
+`if (!this.isContainedInEitherRoot(real, normRoot, normCanon)) throw
+permissionDenied(path);`.
+
+**Behaviour-preserving.** The predicate is the exact boolean the closure
+computed (`!A && !B` throwing ⇔ `!(A || B)` throwing ⇔ `A || B` false throwing) —
+De Morgan, same verdict, same `permissionDenied(path)` error with the same
+`path`. The throw sites are identical in count and location (each former
+`check(x)` becomes a guarded throw on the same `x`). No new I/O, no new microtask.
+The dual-root OR semantics and short-name/canonical handling are untouched.
+
+**Mutation note.** The predicate's `||` and each `pathContainsNormalized`
+argument are now first-class mutation targets. The existing containment tests
+(symlink escape, absolute escape, short-name dual-root) already exercise both
+disjuncts; separate isolated tests for each disjunct (one path contained by raw
+root only, one by canonical root only) kill the `||`→`&&` and disjunct-drop
+mutants — mirroring the "guard clauses need isolated tests" rule. This is
+mechanically simpler to kill than the closure was (a named method vs an inline
+capture), which is a coverage *improvement*, not a risk.
 
 ### Lever C — memoise checkContainment(path,mode)→real across a command (REJECTED)
 
@@ -228,14 +266,131 @@ set. **Rejected on two independent grounds:**
 
 Documented as rejected; not deferred (it is unsafe, not merely out of scope).
 
+### Finding (3) — cache the lstat-mode parent realpath (SHIPS — ratified DC-1 → Option B)
+
+**The redundancy.** `status` scans the working tree via
+`scanWorkingTree` (`src/application/commands/status.ts` L167) →
+`compareWorkingTreeDelta` (`src/application/primitives/compare-working-tree-entry.ts`
+L84: `await ctx.fs.lstat(absPath)`), one adapter `lstat` per tracked file. Each
+adapter `lstat` → `checkContainment(path, 'lstat')` → `resolveForMode`'s **lstat
+arm** (L730–737):
+
+```ts
+if (mode === 'lstat') {
+  check(resolved);
+  const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved)); // UNCACHED
+  return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
+}
+```
+
+For N files in the **same directory**, `realpath(dirname)` runs N times on the
+**identical** parent string. This is the `lstat` self-share 0.25 and
+`resolveForMode` self-share 0.14 in `status`. The fix is to memoise the parent
+realpath — the *exact same* optimisation `creationParentCache` already does for
+creation mode.
+
+**Why this is safe where read/exists caching is NOT.** The lstat arm
+deliberately does **not** realpath the leaf — it realpaths the *parent* and joins
+the raw basename, because `lstat` must not follow a leaf symlink (git lstats the
+link itself). So caching the *parent* realpath changes nothing about leaf
+handling: the leaf is never followed either way, and the leaf is still `lstat`'d
+fresh by the caller (`compareWorkingTreeDelta` L84) on every call. Contrast the
+**read arm** (L728) and **`exists`** (L468): both call
+`realpath(RESOLVED-full-path)`, which **follows the leaf symlink** — and the
+containment check *depends on* the followed leaf to catch a leaf-symlink escape
+(a leaf `evil → /etc/passwd` inside root must resolve to `/etc/passwd` and fail
+containment). Parent-caching read/exists would stop following the leaf, so a
+malicious leaf symlink would pass containment against the cached-parent path →
+**a security regression**. Therefore:
+
+- **lstat-mode parent realpath: SAFE to cache** (leaf never followed; parent is a
+  stable directory realpath under git's directory-stability assumption).
+- **read/exists-mode: NOT safe to parent-cache** — the leaf follow is
+  load-bearing for containment. Left as-is.
+
+**Honest share accounting.** Finding (3) therefore addresses the `status`
+`lstat`/`resolveForMode` shares (the lstat-heavy working-tree scan) — the biggest
+concrete redundancy. It does **not** reduce the `exists` self-share (0.18 in
+describe/name-rev/log): `exists` follows the leaf and cannot be parent-cached
+safely. The `exists` frame's own *settled-await microtask* is removed by Lever A
+(that part of its share drops), but its *realpath-follow* cost is irreducible
+without weakening containment, so we do **not** claim an `exists` realpath-share
+drop from finding (3). Read-mode object reads (loose object `read`) likewise keep
+their leaf-follow realpath. This is the realistic boundary of safe batching.
+
+**Cache shape (recommend: reuse the single `creationParentCache`, renamed to its
+now-broader role).** The existing LRU (`createLruCache<string>`, L314) already
+holds `parent → realParent`. lstat-mode wants the identical mapping. The cleanest
+shape is to **reuse the one cache** for both creation and lstat modes — the value
+(a parent's realpath) is mode-independent, so a parent realpath'd for a write and
+later lstat'd shares one entry (a bonus hit). Rename it `parentRealpathCache` to
+reflect the broadened role. The alternatives (a second dedicated lstat cache; a
+`(parent, mode-class)`-keyed unified cache) add a field or a composite key for no
+semantic gain, since the cached value is the same string regardless of mode.
+Surfaced as DC-5.
+
+**The lstat-arm change** mirrors `realpathForCreation` (L693–718) exactly:
+
+```ts
+if (mode === 'lstat') {
+  // containment guard (Lever B form) on `resolved`
+  const parent = this.pathPolicy.dirname(resolved);
+  const cached = this.parentRealpathCache.get(parent);
+  const realParent = cached ?? await this.fsOps.realpath(parent);
+  if (cached === undefined) {
+    this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+  }
+  return this.pathPolicy.join(realParent, this.pathPolicy.basename(resolved));
+}
+```
+
+(The `realpath` here can throw ENOENT for a nonexistent parent; the lstat arm
+already lets that propagate to `checkContainment`'s catch → `fileNotFound`. A
+miss is **not** cached on throw — identical to `realpathForCreation`'s
+ENOENT-not-cached discipline, so a directory that appears mid-command is not
+frozen "absent".)
+
+**Invalidation contract (MUST match `creationParentCache` exactly).** The cache
+is cleared by the two mutators that can change a parent's realpath:
+`rmRecursive` (L604 `this.creationParentCache.clear()`) and `rename` (L543). Since
+finding (3) reuses that same cache, those clears already cover the lstat entries —
+no new invalidation site is needed, and none may be *removed*. The leaf stat is
+**never** cached (only the parent directory realpath), so the TOCTOU re-stat of
+the leaf is preserved: every `lstat` call re-issues the caller's fresh leaf stat,
+matching git's per-access re-stat. This is faithful under git's standing
+assumption that the worktree directory structure is stable for a command's
+duration — the identical assumption `creationParentCache` already relies on.
+
+**TOCTOU precisely.** What is cached: a *directory* realpath (stable per git's
+assumption, invalidated on the two structural mutators). What is NOT cached: any
+leaf stat / leaf realpath / containment decision. So a leaf swapped between two
+`lstat`s is still seen freshly; a parent *directory* swapped is covered because
+the swap goes through `rename`/`rmRecursive` (which clear the cache) — a raw
+external `mv` of the parent outside the adapter is outside git's stability
+assumption and outside `creationParentCache`'s existing guarantee too, so finding
+(3) inherits exactly the creation cache's (already-shipped, already-mutation-
+proven) TOCTOU envelope, not a weaker one.
+
 ### What does NOT change
 
 - Method signatures of the 18 public FS ops — unchanged.
-- `resolveForMode` signature (unless B is taken later) — unchanged.
-- The dual-root (`raw` OR `canonical`) containment logic, the `permissionDenied`
-  / `fileNotFound` / `mapErrno` mapping, the two `Stryker disable` equivalent
-  comments on the catch arms (L776, L778) — untouched. The change is confined to
-  one `await` → guarded-`await` on lines 760 and 462.
+- The dual-root (`raw` OR `canonical`) containment *logic* and its verdict — the
+  closure→predicate hoist (Lever B) is a mechanical refactor of *where* the
+  boolean is computed, not *what* it computes.
+- The `permissionDenied` / `fileNotFound` / `mapErrno` mapping and the two
+  `Stryker disable` equivalent comments on the catch arms (L776, L778) —
+  untouched.
+- The leaf-follow behaviour of read/exists mode — untouched (finding (3) is
+  lstat-mode only).
+- `creationParentCache`'s invalidation sites (`rmRecursive` L604, `rename` L543) —
+  reused, not removed; the rename may be the only textual change (`creationParent`
+  → `parentRealpath`).
+
+**What DOES change (signatures):** `resolveForMode`'s callback parameter `check:
+(abs) => void` is **removed** and replaced by the two normalised-root strings
+(Lever B) — a private internal method, no public surface. The
+`creationParentCache` field is renamed `parentRealpathCache` and gains a second
+reader (the lstat arm).
 
 ## Behaviour preservation — the pin is the existing suite, unchanged
 
@@ -250,11 +405,14 @@ not be behaviour-preserving and would be rejected. Lever A does not.
 | File | What it guards on `checkContainment` / `exists` |
 |------|--------------------------------------------------|
 | `test/unit/adapters/node/node-file-system.test.ts` | Real-FS containment security: symlink-escape → `PERMISSION_DENIED` (L73–91), symlink-swap escape (L99–117), lstat-mode escaped-parent (L125–142), rename-escape via absolute path (L349–369), `rootDir===resolved` short-circuit (L288), FILE_NOT_FOUND vs PERMISSION_DENIED distinction (L249). |
-| `test/unit/adapters/node/node-file-system-injected.test.ts` | DI-mocked `fsOps.realpath` call-**count** pins: creation LRU (L58–), non-ENOENT parent → PERMISSION_DENIED (L150–175), missing-parent slow walk-up call count = 4 (L181–212), rmRecursive cache-clear count = 3 (L216–248). These count `realpath` invocations — the direct observable of Lever A's behaviour (see mutation plan). |
+| `test/unit/adapters/node/node-file-system-injected.test.ts` | DI-mocked `fsOps.realpath` call-**count** pins: creation LRU (L58–), non-ENOENT parent → PERMISSION_DENIED (L150–175), missing-parent slow walk-up call count = 4 (L181–212), rmRecursive cache-clear count = 3 (L216–248). These count `realpath` invocations — the direct observable of Lever A *and* finding (3)'s cache behaviour (see mutation plan). |
 | `test/integration/checkout-replace-symlink-with-file-interop.test.ts` | The one path-containment-adjacent interop test; exercises symlink→file replacement through the adapter. Stays green unchanged. |
 
 Additionally the whole `npm run test:unit` + `npm run test:integration` suites
 (every command that drives the adapter) must stay green with zero assertion edits.
+The existing containment tests double as the Lever B safety net: the closure→
+predicate hoist is behaviour-preserving iff every escape test still throws
+`PERMISSION_DENIED` with the same code, unchanged.
 
 ### First-call vs later-call realpath(rootDir) count — the observable of Lever A
 
@@ -274,12 +432,16 @@ which IS killable. See the mutation plan.
 No new git-behaviour to pin (internal refactor). The matrix here is the
 **invariant-preservation** matrix rather than a git-bytes matrix:
 
-| Property | Before | After (Lever A) | Pinned by |
+| Property | Before | After (A+B+3) | Pinned by |
 |----------|--------|------------------|-----------|
 | `PERMISSION_DENIED` on every escape (symlink / absolute / short-name) | yes | yes | `node-file-system.test.ts` L73–369 (unchanged) |
 | `FILE_NOT_FOUND` vs `PERMISSION_DENIED` split | yes | yes | `node-file-system.test.ts` L249 (unchanged) |
 | `realpath(rootDir)` runs exactly once per adapter lifetime | yes | yes | memoisation intact; injected count tests |
-| Per-path realpath re-run every op (TOCTOU) | yes | yes | `resolveForMode` untouched |
+| Dual-root OR verdict (closure vs predicate) | yes | yes | Lever B: escape tests + new per-disjunct isolated tests |
+| Leaf symlink still followed in read/exists mode (containment catches leaf escape) | yes | yes | finding (3) leaves read/exists untouched; symlink-escape test L73 |
+| lstat leaf NOT followed; leaf re-stat'd fresh every call (TOCTOU) | yes | yes | finding (3) caches parent only; leaf stat by caller unchanged |
+| lstat-parent realpath deduped per directory, invalidated on rename/rmRecursive | (n/a) | yes | new injected call-count tests (mirror creation LRU L58/L216) |
+| Per-path realpath re-run every op (read/exists TOCTOU) | yes | yes | read/exists arms untouched |
 | Transient-ENOENT rootDir retries | yes | yes | rejection arm clears sentinel (L384–385), guard re-awaits |
 | Concurrent first-call de-dup | yes | yes | shared `canonicalRootPromise` (unchanged) |
 | Error object identity / codes / messages | yes | yes | catch arms untouched; Stryker-disable comments intact |
@@ -294,39 +456,43 @@ Mechanism: `npm run profile <cmd>` (26.3 / PR #224; `tooling/profile.ts` +
 `tooling/profile-registry.ts`). Every hot command below is already in the
 registry and re-profilable.
 
-**Commands to re-profile** (the baseline's `checkContainment`-heavy set), with
-current self-share and expected direction:
+**Commands to re-profile** (the baseline's `checkContainment`-heavy set plus the
+lstat-heavy `status`), with current self-share and expected direction:
 
-| Command | Kind | `checkContainment` self (baseline) | `exists` self (baseline) | Expected after Lever A |
-|---------|------|-----------------------------------|--------------------------|------------------------|
-| diff | read | 0.36 | 0.05 | `checkContainment` ↓ |
-| name-rev | read | 0.26 | 0.18 | both ↓ |
-| blame | read | 0.24 | — | `checkContainment` ↓ |
-| describe | read | 0.18 | 0.18 | both ↓ |
-| show | read | 0.13 | 0.01 | `checkContainment` ↓ |
-| status | read | 0.12 | — | `checkContainment` ↓ |
-| merge | write | 0.16 | 0.13 | both ↓ (command partition) |
-| log | read | 0.09 | 0.18 | both ↓ |
+| Command | Kind | `checkContainment` self | `exists` self | `lstat`/`resolveForMode` self | Expected after A+B+3 |
+|---------|------|-------|-------|-------|-------|
+| diff | read | 0.36 | 0.05 | — | `checkContainment`+`check` ↓ |
+| name-rev | read | 0.26 | 0.18 | — | `checkContainment`+`check` ↓; `exists` partial ↓ (microtask only) |
+| blame | read | 0.24 | — | — | `checkContainment`+`check` ↓ |
+| describe | read | 0.18 | 0.18 | — | `checkContainment`+`check` ↓; `exists` partial ↓ |
+| show | read | 0.13 | 0.01 | — | `checkContainment`+`check` ↓ |
+| status | read | 0.12 | — | `lstat` 0.25 / `resolveForMode` 0.14 | `checkContainment`+`check` ↓ **and** `lstat`/`resolveForMode` ↓ (finding 3) |
+| merge | write | 0.16 | 0.13 | — | ↓ (command partition) |
+| log | read | 0.09 | 0.18 | — | `checkContainment`+`check` ↓; `exists` partial ↓ |
 
-Direction, not magnitude, is the gate: shares are self-relative and host-portable
-(ADR-475), so the pin is "`checkContainment` self-share **drops** across the
-I/O-heavy commands" — a microtask removed from the busiest frame necessarily
-shifts self-share off it and onto the genuine work frames (`resolveForMode`,
-`readSlice`, `pathContainsNormalized`). A wash or an increase would be a red flag
-to investigate.
+Direction, not magnitude, is the gate (shares are self-relative and host-portable,
+ADR-475). Three expected shifts:
 
-**Baseline handling — recommendation: regenerate + commit** `docs/perf/baseline.json`
-(+ the sibling `docs/perf/baseline.md`) in this PR as the new post-optimisation
-reference, and quote the before/after `checkContainment` (and `exists`) shares in
-the PR body. Rationale: ADR-475 established the committed baseline precisely as
-the *optimisation license and regression reference*; 26.4 is the first item to
-spend that license, so the artifact should advance to reflect the improved surface
-(the CI regression gate 26.5 will diff future captures against *this* number). Not
-regenerating would leave the committed reference describing a surface the code no
-longer has. This is load-bearing enough to be a formal decision candidate (DC-3)
-because it changes a committed artifact the downstream gate depends on. Note: the
-`generatedOn` banner is metadata, never a compared value (ADR-475), so a
-host-change in the re-capture is expected and fine.
+1. **Lever A** removes the guaranteed microtask from `checkContainment`, `exists`,
+   `symlink` → those self-shares drop, share moves onto genuine work frames.
+2. **Lever B** removes the per-call closure alloc → the `check` frame's self-share
+   drops (folded into the named predicate / call sites).
+3. **Finding (3)** dedupes the lstat-mode parent realpath → `status`'s `lstat` /
+   `resolveForMode` self-shares drop as N same-directory realpaths collapse to 1.
+
+**Honest caveat (repeated from finding 3):** `exists`'s self-share drops only by
+its *microtask* component (Lever A); its *realpath-follow* cost is irreducible
+(leaf follow is load-bearing), so a full `exists` share collapse is NOT expected
+or claimed. A wash/increase on the `checkContainment`/`lstat` frames is the
+red-flag to investigate.
+
+**Baseline handling — RATIFIED (DC-3 → Option A): regenerate + commit**
+`docs/perf/baseline.json` (+ sibling `docs/perf/baseline.md`) in this PR as the
+new post-optimisation reference; quote before/after `checkContainment`, `check`,
+`lstat`, `resolveForMode` (and the partial `exists`) shares in the PR body. ADR-475
+established the committed baseline as the moving optimisation-license + regression
+reference the 26.5 CI gate diffs against; 26.4 spends that license, so the artifact
+advances. `generatedOn` banner stays metadata, never compared (ADR-475).
 
 ## Mutation plan
 
@@ -369,94 +535,151 @@ test). Stryker mutants to consider and how each is killed:
   first call → killed by the same first-call test.
 
 Make the gate observable/killable via the **injected `fsOps.realpath` call
-sequence on a fresh adapter** — that is the existing, mutation-proven mechanism in
-`node-file-system-injected.test.ts`, so the new test extends an established
-pattern rather than inventing timing assertions. Timing (microtask counting) is
-deliberately NOT asserted; the functional first-call-correctness assertion is what
-kills the meaningful mutants, and the always-await mutant is accepted as provably
-equivalent.
+sequence on a fresh adapter** — the existing, mutation-proven mechanism in
+`node-file-system-injected.test.ts`. Timing (microtask counting) is deliberately
+NOT asserted; the functional first-call-correctness assertion kills the meaningful
+mutants, and the always-await mutant is accepted as provably equivalent.
+
+**Lever B — predicate mutants.** `isContainedInEitherRoot`'s `||` (→`&&`) and
+each `pathContainsNormalized` disjunct (→`false`) are new mutation targets. Kill
+with **isolated per-disjunct tests** (per the "guard clauses need isolated tests"
+rule): (a) a path contained by the **raw** root only (canonical differs, e.g.
+8.3-shortname divergence) must pass — kills "drop the raw disjunct"; (b) a path
+contained by the **canonical** root only must pass — kills "drop the canonical
+disjunct"; (c) a path outside **both** must throw `PERMISSION_DENIED` — kills
+`||`→`&&` (which would demand containment in both). The existing escape tests
+cover (c); (a)/(b) are the additions.
+
+**Finding (3) — cache mutants.** The lstat-arm cache reuses `createLruCache`
+(already mutation-proven for creation mode), so the *cache internals* are covered.
+The new decision points are the lstat-arm `get`/`set`/miss branch. Mirror the
+existing creation call-count tests (L58 LRU-hit, L216 rmRecursive-clear):
+- **Hit test:** two `lstat`s of **same-directory** siblings on a fresh adapter →
+  `realpath(dirname)` called **once** (second is a cache hit). Kills a mutant that
+  skips the `get` (would call realpath twice) or skips the `set` (same).
+- **Miss/distinct-dir test:** two `lstat`s in **different** directories →
+  `realpath` called **twice** (no false sharing). Kills a mutant that keys the
+  cache wrong or over-shares.
+- **Invalidation test:** `lstat` (populates) → `rmRecursive` or `rename` (clears)
+  → `lstat` same dir → `realpath(dirname)` called **twice total** across the
+  sequence. Kills a mutant that drops the `clear()` (would stay at once) — this is
+  the exact shape of the existing L216 rmRecursive count=3 test, extended to the
+  lstat entry.
+- **ENOENT-not-cached test:** `lstat` of a path whose parent is ENOENT does not
+  populate the cache (mirror L181 slow-walk-nothing-cached), so a later
+  same-parent call re-attempts. Kills a mutant that caches on the throw path.
+
+These all assert `fsOps.realpath` call counts — the same observable the creation
+cache tests already pin, so finding (3) rides the established, mutation-hard
+harness rather than inventing new assertions.
 
 ## Non-goals / explicitly deferred
 
-Scoped to baseline finding (1) — `checkContainment` — **only**. The other 26.3
-findings are out of scope for this run and become follow-up backlog entries:
+This PR ships baseline findings **(1) checkContainment** (Levers A + B) **and (3)
+lstat-mode parent-realpath batching**. The remaining 26.3 findings stay out of
+scope and become follow-up backlog entries:
 
-- **(2) TREESAME pruning** — deferred.
-- **(3) `exists`/`lstat` batching** — deferred. (Note: Lever A *incidentally*
-  also fixes `exists`'s own settled-await microtask because it shares the
-  `normalizedCanonicalRoot` sentinel; the *batching* of exists/lstat syscalls is a
-  distinct, larger change and stays deferred.)
+- **(2) TREESAME pruning** — deferred (separate walk-pruning concern).
 - **(4) tree walk / parse** — deferred.
+- **Read/exists-mode syscall batching** — the part of finding (3) that is **not**
+  safely parent-cacheable (read/exists follow the leaf; caching the parent would
+  weaken leaf-symlink containment). Deferred as a *distinct* follow-up that would
+  need a different mechanism (e.g. a `status` `readdir`-then-compare-in-memory
+  coalesce at the command layer, not the adapter) — see DC-6. This PR does NOT
+  claim the `exists` realpath-share; only its Lever-A microtask component drops.
 
-Also out of scope: any change to browser/memory adapters (they do not carry this
-node-specific canonicalisation), and Lever B (the closure hoist) unless the
-re-profile motivates it (DC-2).
+Also out of scope: any change to browser/memory adapters (they carry neither this
+node-specific canonicalisation nor the creation-cache template).
 
 ## Decision candidates
 
-Every load-bearing choice below is left for the ADR/decisions gate; the
-recommendation is stated but not self-ratified.
+DC-1 through DC-4 are **ratified** at the decisions gate (recorded here for the
+audit trail). DC-5 and DC-6 are **new**, opened by the widened scope, and left for
+the gate — recommendations stated, not self-ratified.
 
-### DC-1 — Scope: `checkContainment` only, vs widen to other findings
+### DC-1 — Scope — **RATIFIED → Option B (widen)**
 
-- **Option A (recommended):** fix the settled-await microtask at **all three
-  sites that share the `normalizedCanonicalRoot` sentinel** — `checkContainment`,
-  its inline twin `exists`, and `symlink`'s absolute-target branch — **only** this
-  run; findings (2) TREESAME, (3) exists/lstat *batching*, (4) tree walk/parse
-  become separate follow-up backlog entries. All three sites are the *same* lever
-  (one guarded-await edit each), so gating all three is one coherent change, not
-  scope creep; leaving one un-gated would be an inconsistency. Matches the user's
-  explicit scoping instruction and keeps the PR a tight, provably
-  behaviour-preserving refactor.
-- **Option B:** widen to include finding (3) exists/lstat batching now, since
-  Lever A already touches `exists`. Rejected as recommendation: batching is a
-  syscall-count change (different risk surface, different pins) versus this PR's
-  microtask/alloc-only change.
-- **Recommendation: Option A.**
+Ship finding (1) `checkContainment` **and** finding (3) lstat-mode parent-realpath
+batching this PR. Findings (2) TREESAME and (4) tree walk/parse remain follow-up
+backlog entries. (The prior draft recommended Option A / checkContainment-only;
+the user widened.)
 
-### DC-2 — Approach: Lever A only, vs Lever A + Lever B
+### DC-2 — Approach — **RATIFIED → Option B (Lever A + Lever B)**
 
-- **Option A (recommended):** **Lever A only** — gate the settled-promise await
-  at all three sites (`checkContainment` L760, `exists` L462, `symlink` L567).
-  Captures the dominant win (guaranteed microtask off the busiest frame) with a
-  single guarded-`await` edit per site, no signature churn, minimal
-  mutation-surface disturbance.
-- **Option B:** **Lever A + Lever B** — additionally hoist the per-call `check`
-  closure to an instance predicate, rebinding `resolveForMode`'s callback
-  contract. More alloc saved, but reshapes an internal method signature + two arms
-  for a sub-microtask gain and risks the closure-related mutation coverage.
-- **Option C:** Lever A + B + reconsider C (memoisation) — **rejected outright**;
-  C is TOCTOU-unfaithful and targets the wrong frame.
-- **Recommendation: Option A.** Ship Lever A; re-profile; open Lever B as a
-  follow-up only if allocation still dominates `checkContainment` self-share.
+Ship **both** Lever A (gate the settled-promise await at all three sites) **and**
+Lever B (hoist the `check` closure to the `isContainedInEitherRoot` predicate,
+narrowing `resolveForMode`'s signature by dropping the callback). Lever C
+(whole-decision memoisation) stays rejected (TOCTOU-unfaithful, wrong frame). (The
+prior draft recommended deferring B; the user included it.)
 
-### DC-3 — Baseline: regenerate + commit `docs/perf/baseline.json` in this PR, vs leave as before-reference
+### DC-3 — Baseline — **RATIFIED → Option A (regenerate + commit)**
 
-- **Option A (recommended):** regenerate and **commit** the updated
-  `docs/perf/baseline.{json,md}` reflecting the post-optimisation shares; quote
-  before/after in the PR body. ADR-475 established the committed baseline as the
-  moving optimisation reference the 26.5 CI gate diffs against; 26.4 spends that
-  license, so the artifact should advance.
-- **Option B:** leave the committed baseline as the immutable "before" snapshot;
-  record the after-numbers only in the PR body. Keeps a historical anchor but
-  leaves the committed reference describing a surface the code no longer has,
-  and de-syncs the 26.5 gate's baseline.
-- **Recommendation: Option A** (commit the improved baseline; `generatedOn`
-  banner remains metadata-only per ADR-475).
+Regenerate and commit `docs/perf/baseline.{json,md}` reflecting the
+post-optimisation shares; quote before/after in the PR body. `generatedOn` banner
+stays metadata (ADR-475).
 
-### DC-4 — Formal ADR file, or design doc + decision-candidates only
+### DC-4 — ADR need — **RATIFIED → no refactor ADR; re-assessed below for finding (3)**
 
-- **Option A (recommended):** **No standalone ADR** for the implementation
-  itself — this is a behaviour-preserving internal FS-adapter refactor with no
-  divergence from git and no new public contract; the design doc + these decision
-  candidates suffice as the record. *If* the decisions gate ratifies DC-3
-  (committing an updated baseline) as a policy-bearing choice, capture **that**
-  one decision as a short ADR (it changes a committed, gate-consumed artifact),
-  mirroring how ADR-475 recorded the baseline policy — but the code change needs
-  none.
-- **Option B:** write a full ADR covering the await-gate rationale and the
-  equivalent-mutant acceptance. Heavier than the change warrants; the design doc
-  already carries the correctness argument and the mutant analysis.
-- **Recommendation: Option A** — design doc + decision candidates for the
-  refactor; a one-paragraph ADR only if DC-3's baseline-commit is deemed
-  policy-bearing at the gate.
+No standalone ADR for the refactor itself (behaviour-preserving, no git
+divergence, no public-contract change). ADR-475 already establishes the
+baseline-as-moving-reference policy, so committing an updated baseline is *using*
+that policy, not new policy — no ADR for DC-3 either.
+
+**Re-assessment (coordinator's question): does finding (3) introduce a caching
+policy that warrants a short ADR?** **Decision: no new ADR.** Finding (3) does
+**not** introduce a new cache *with a new invalidation contract* — it **extends an
+existing, already-shipped cache** (`creationParentCache`) to a second read mode,
+reusing its *exact* invalidation contract (cleared by `rmRecursive` + `rename`)
+and its exact TOCTOU envelope (parent-directory realpath cached; leaf never
+cached; stable-directory assumption). No new policy is being decided — the policy
+(parent-realpath caching under git's directory-stability assumption, invalidated
+on structural mutators) was already decided when `creationParentCache` shipped.
+An ADR records a *choice between alternatives with consequences*; here the only
+genuine choice is the **cache shape** (one cache vs two vs composite key), which is
+a design-doc-level implementation detail surfaced as DC-5, not an
+architecture-level policy. If the gate *disagrees* and considers "widening a
+security-adjacent cache's read surface" policy-bearing, a ≤1-paragraph ADR noting
+"lstat-mode reuses the creation parent cache; leaf-follow modes deliberately
+excluded for containment safety" would suffice — but the recommendation is that
+the design doc's finding-(3) section already carries that reasoning and no ADR is
+warranted.
+
+### DC-5 — **NEW** — Cache shape for the lstat-mode parent realpath
+
+- **Option A (recommended):** **reuse the single `creationParentCache`**, renamed
+  `parentRealpathCache`, for both creation and lstat modes. The cached value (a
+  parent's realpath) is mode-independent, so entries are shared (a parent
+  realpath'd for a write and later lstat'd is one entry — a free cross-mode hit),
+  and the existing `clear()` invalidation already covers both. Smallest diff,
+  no new field, no composite key.
+- **Option B:** a **separate dedicated `lstatParentCache`** field alongside the
+  creation one. Keeps the two modes' caches independent (easier to reason about in
+  isolation) but duplicates the field, the size budget, and every invalidation
+  `clear()` call — and loses the cross-mode hit for no semantic gain.
+- **Option C:** a **unified cache keyed by `(parent, modeClass)`**. Most explicit,
+  but the value is identical across modes so the mode in the key is dead
+  discrimination — pure overhead.
+- **Recommendation: Option A.** The value is mode-independent; one cache is the
+  honest model.
+
+### DC-6 — **NEW** — How far to push read/exists-mode batching (now or defer)
+
+Finding (3) safely covers lstat mode only; read/exists mode cannot parent-cache
+without weakening leaf-symlink containment. The residual `exists`/read realpath
+share (0.18 `exists` in describe/name-rev/log) is therefore **not** addressed by
+safe adapter-level caching. Options for that residual:
+
+- **Option A (recommended — defer):** **defer** any read/exists batching to a
+  follow-up backlog entry. The only safe coalescing is at the **command layer**
+  (e.g. `status` issuing one `readdir` of the working directory and comparing
+  against the in-memory index, instead of N per-entry `lstat`s) — that is a
+  `status`-command redesign touching `scanWorkingTree`/`compareWorkingTreeDelta`,
+  a materially larger and higher-risk change than this adapter refactor, and it
+  belongs in its own PR with its own faithfulness pins (git's readdir-vs-lstat
+  ordering and untracked-file handling). Keep this PR's scope tight.
+- **Option B:** include a `status` `readdir`-coalesce in this PR. Bigger blast
+  radius (command-layer behaviour, untracked/ignored interplay), risks
+  overloading a clean adapter refactor with a command redesign.
+- **Recommendation: Option A (defer).** Ship the safe adapter-level lstat cache
+  now; open a `status` readdir-coalesce follow-up. Be honest in the PR body that
+  the `exists`/read realpath share is intentionally left for that follow-up.
