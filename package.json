@@ -167,6 +167,7 @@
     "prepare": "husky",
     "build": "wireit",
     "build:parity": "wireit",
+    "build:profile": "wireit",
     "check": "wireit",
     "check:fix": "wireit",
     "check:types": "wireit",
@@ -190,7 +191,7 @@
     "test:bench": "wireit",
     "bench:summary": "wireit",
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
-    "profile": "npm run build && node --experimental-strip-types tooling/profile.ts",
+    "profile": "npm run build:profile && node --experimental-strip-types tooling/profile.ts",
     "bench:memory": "npm run build && node --expose-gc --experimental-strip-types tooling/bench-memory.ts",
     "docs": "wireit",
     "docs:check": "wireit",
@@ -234,6 +235,18 @@
         "dist/esm/**",
         "dist/cjs/**",
         "dist/types/**"
+      ],
+      "clean": "if-file-deleted"
+    },
+    "build:profile": {
+      "command": "rollup -c rollup.profile.config.ts --configPlugin @rollup/plugin-typescript",
+      "files": [
+        "src/**/*.ts",
+        "rollup.profile.config.ts",
+        "tsconfig.build.json"
+      ],
+      "output": [
+        "dist-profile/esm/**"
       ],
       "clean": "if-file-deleted"
     },

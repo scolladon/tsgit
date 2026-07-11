@@ -2,7 +2,7 @@
 /**
  * V8 CPU profiling captures, per registered command.
  *
- *   npm run profile          # builds dist/, then profiles every registered command
+ *   npm run profile          # builds the profiling bundle, then profiles every registered command
  *   npm run profile <cmd>    # profiles a single command (e.g. `npm run profile log`)
  *
  * Parent mode: for each resolved command, spawn a `node --prof` child, post-process
@@ -13,9 +13,11 @@
  * read command loops over the cached medium fixture, a write command loops a
  * fresh scratch repo built through the library's own structured API.
  *
- * Profiles the compiled `dist/` (a plain `node` script cannot resolve the
- * source tree's `.js`-extension imports) — the `profile` npm script builds
- * first. Read commands need the cached medium fixture (and therefore the
+ * Profiles a names-preserved build (`dist-profile/`, produced by `npm run
+ * build:profile`) rather than the shipped minified `dist/`: a plain `node`
+ * script cannot resolve the source tree's `.js`-extension imports, and the
+ * shipped bundle mangles FP-first function names that the frame baseline needs
+ * readable. Read commands need the cached medium fixture (and therefore the
  * `git` CLI); write commands build their own scratch repos and do not.
  */
 import { spawn } from 'node:child_process';
@@ -40,7 +42,7 @@ import type { ScratchRepo } from './profile-scratch-repo.js';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
-const DIST_ENTRY = path.join(ROOT, 'dist', 'esm', 'index.node.js');
+const DIST_ENTRY = path.join(ROOT, 'dist-profile', 'esm', 'index.node.js');
 
 // ── Child mode — runs under `node --prof` ───────────────────────────────────
 
