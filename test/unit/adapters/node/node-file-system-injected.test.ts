@@ -236,16 +236,19 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
 
         // Assert — `/root/sub` realpath count after the full sequence:
         //   1 from the first write (cache miss → set)
-        //   1 from rmRecursive's lstat-mode containment (realpath(dirname))
+        //   0 from rmRecursive's lstat-mode containment — the parent
+        //     realpath cache is now SHARED across creation and lstat modes
+        //     (DC-5), so this lookup HITS the entry the first write set
         //   1 from the second write (cache was cleared by rmRecursive → miss)
-        // Total: 3. Pinning the count kills mutants that would skip
-        // invalidation (afterCount stays at 2) or invalidate too eagerly
-        // (afterCount jumps to 4).
+        // Total: 2. Pinning the count still kills mutants that would skip
+        // invalidation (afterCount would stay at 1 — the second write would
+        // also hit the still-populated cache) or invalidate too eagerly
+        // (afterCount would jump to 3+).
         const afterCount = realpathSpy.mock.calls.filter(
           ([arg]: readonly unknown[]) => arg === '/root/sub',
         ).length;
         expect(beforeRmCount).toBe(1);
-        expect(afterCount).toBe(3);
+        expect(afterCount).toBe(2);
       });
     });
   });
@@ -1182,6 +1185,166 @@ describe('resolveForMode — lstat mode pre-realpath check (DI)', () => {
           ([arg]: readonly unknown[]) => arg === '/elsewhere',
         );
         expect(dirnameCalls.length).toBe(0);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
+  const fileStat = {
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o100644),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(0),
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  };
+
+  describe('Given two lstats of same-directory siblings', () => {
+    describe('When the second fires', () => {
+      it('Then realpath(dirname) is invoked exactly once', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/sub/a');
+        await sut.lstat('/root/sub/b');
+
+        // Assert
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/sub',
+        );
+        expect(parentCalls.length).toBe(1);
+      });
+    });
+  });
+
+  describe('Given lstats in different directories', () => {
+    describe('When both fire', () => {
+      it('Then realpath is invoked once per distinct dirname', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/x/a');
+        await sut.lstat('/root/y/a');
+
+        // Assert
+        const xCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/x',
+        );
+        const yCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/y',
+        );
+        expect(xCalls.length).toBe(1);
+        expect(yCalls.length).toBe(1);
+      });
+    });
+  });
+
+  describe('Given an lstat populates the cache', () => {
+    describe('When rmRecursive then a same-dir lstat fires', () => {
+      it('Then realpath(dirname) is invoked twice total', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+          rm: vi.fn().mockResolvedValue(undefined),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/sub/a');
+        await sut.rmRecursive('/root/sub/a');
+        await sut.lstat('/root/sub/b');
+
+        // Assert
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/sub',
+        );
+        expect(parentCalls.length).toBe(2);
+      });
+    });
+
+    describe('When rename then a same-dir lstat fires', () => {
+      it('Then realpath(dirname) is invoked twice total', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/sub/a');
+        await sut.rename('/root/sub/a', '/root/sub/renamed');
+        await sut.lstat('/root/sub/b');
+
+        // Assert
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/sub',
+        );
+        expect(parentCalls.length).toBe(2);
+      });
+    });
+  });
+
+  describe('Given an lstat whose parent is ENOENT', () => {
+    describe('When it fires', () => {
+      it('Then nothing is cached and a later same-parent lstat re-attempts', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return rootDir;
+          throw enoent();
+        });
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        let firstCaught: unknown;
+        try {
+          await sut.lstat('/root/missing/a');
+        } catch (err) {
+          firstCaught = err;
+        }
+        let secondCaught: unknown;
+        try {
+          await sut.lstat('/root/missing/b');
+        } catch (err) {
+          secondCaught = err;
+        }
+
+        // Assert
+        expect(firstCaught).toBeInstanceOf(TsgitError);
+        expect((firstCaught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+        expect(secondCaught).toBeInstanceOf(TsgitError);
+        expect((secondCaught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/missing',
+        );
+        expect(parentCalls.length).toBe(2);
       });
     });
   });

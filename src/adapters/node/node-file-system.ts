@@ -299,19 +299,23 @@ export class NodeFileSystem implements FileSystem {
 
   /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
-   * (pre-realpath) parent path. Populated on every cache-miss inside
-   * `resolveForCreation` so a clone/checkout that writes N files into the
-   * same tree pays the realpath walk-up once per parent rather than once
-   * per file.
+   * (pre-realpath) parent path. The cached value is mode-independent, so
+   * this single cache serves BOTH `resolveForCreation` (creation mode) and
+   * `resolveForMode`'s lstat arm (lstat mode): a clone/checkout writing N
+   * files into the same tree, or a status walk lstat-ing N entries under
+   * the same directory, pays the realpath walk-up once per parent rather
+   * than once per file/entry.
    *
    * Invariants:
    * - Only EXISTING parents are cached. ENOENT walks fall back to
-   *   `realpathNearestExisting` and are never recorded.
+   *   `realpathNearestExisting` (creation) or propagate (lstat) and are
+   *   never recorded.
    * - `rmRecursive` and `rename` clear the cache, which is correct (the
-   *   parent realpath may have changed) and cheap (the cache holds at
-   *   most a handful of small strings).
+   *   parent realpath may have changed) and cheap relative to a re-walk.
+   * - Sized to exceed the 256 loose-object fanout directories so a
+   *   full-history walk does not thrash the cache.
    */
-  private readonly creationParentCache = createLruCache<string>(64 * 1024, 64);
+  private readonly parentRealpathCache = createLruCache<string>(128 * 1024, 512);
 
   /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
@@ -542,7 +546,7 @@ export class NodeFileSystem implements FileSystem {
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
       await this.fsOps.rename(realSrc, realDst);
     }, src);
-    this.creationParentCache.clear();
+    this.parentRealpathCache.clear();
   };
 
   readlink = async (path: string): Promise<string> => {
@@ -605,7 +609,7 @@ export class NodeFileSystem implements FileSystem {
       throw err;
     }
     await this.removeTree(real, path);
-    this.creationParentCache.clear();
+    this.parentRealpathCache.clear();
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
@@ -700,7 +704,7 @@ export class NodeFileSystem implements FileSystem {
     // parent only and join the basename.
     const parent = this.pathPolicy.dirname(resolved);
     const basename = this.pathPolicy.basename(resolved);
-    const cached = this.creationParentCache.get(parent);
+    const cached = this.parentRealpathCache.get(parent);
     if (cached !== undefined) {
       return this.pathPolicy.join(cached, basename);
     }
@@ -708,7 +712,7 @@ export class NodeFileSystem implements FileSystem {
     // exists this is a single call instead of the full walk-up.
     try {
       const realParent = await this.fsOps.realpath(parent);
-      this.creationParentCache.set(parent, realParent, parent.length + realParent.length);
+      this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
       return this.pathPolicy.join(realParent, basename);
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') {
@@ -740,8 +744,17 @@ export class NodeFileSystem implements FileSystem {
       // `realpath(dirname)` before the post-check catches it.
       if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon))
         throw permissionDenied(path);
-      const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved));
-      return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
+      // The parent realpath is cached (shared with `realpathForCreation`)
+      // so a status/walk lstat-ing many entries under the same directory
+      // pays the realpath once per parent, not once per entry. The leaf
+      // itself is never cached — only the parent directory realpath.
+      const parent = this.pathPolicy.dirname(resolved);
+      const cached = this.parentRealpathCache.get(parent);
+      const realParent = cached ?? (await this.fsOps.realpath(parent));
+      if (cached === undefined) {
+        this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+      }
+      return this.pathPolicy.join(realParent, this.pathPolicy.basename(resolved));
     }
     return this.resolveForCreation(path, resolved);
   }
