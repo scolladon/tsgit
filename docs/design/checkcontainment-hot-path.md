@@ -607,24 +607,28 @@ own precedence**:
 | Caller | File / line | Precedence (UNCHANGED) | Probe today | Probe after |
 |--------|-------------|------------------------|-------------|-------------|
 | `resolveObject`/`tryLoose` | `object-resolver.ts` L148 | loose-first | `exists(loosePath)` then read | `lstat(loosePath)` presence + read (5a+5e) |
-| `hasObject` | `has-object.ts` L16 | **pack-first** (already) | `exists(loosePath)` (after pack miss) | `lstat(loosePath)` presence probe |
-| `objectExistsLocally` | `commands/fetch-missing.ts` L56 | loose-first | `exists(loosePath)` then pack | `lstat(loosePath)` presence probe then pack |
+| `hasObject` | `has-object.ts` L16 | **pack-first** (already) | `exists(loosePath)` (after pack miss) | **unchanged — kept on `exists`** (see session narrowing) |
+| `objectExistsLocally` | `commands/fetch-missing.ts` L56 | loose-first | `exists(loosePath)` then pack | **unchanged — kept on `exists`** (see session narrowing) |
 
-`hasObject` and `objectExistsLocally` are **pure presence probes** (they return a
-boolean / fall to pack; they never read the bytes), so the 5e switch there is even
-simpler — an `lstat` presence check with the same `FILE_NOT_FOUND`→`false`/undefined
-catch, no read. Their precedence is left exactly as-is (pack-first stays pack-first;
-loose-first stays loose-first). Note: a pure-presence `lstat` probe drops the
-`exists`-side realpath-follow, so the **case (c)** escaping-symlink observable *does*
-change for these two — but only from "throws PERMISSION_DENIED" to "reports present"
-(there is no subsequent read to re-throw). This is a **presence** query, and an
-escaping symlink at a loose object path **is** present-on-disk; git's own probe is
-`lstat`-based (reports present), so reporting present is the **more** faithful
-answer — and it is the pathological, git-never-writes-it corner. Because
-`hasObject`/`objectExistsLocally` are presence predicates (not content reads), this
-matches git's `lstat` presence semantics exactly (the ADR-343 rationale). Still no
-ADR: the affected case is a corruption corner with no existing golden, and the new
-answer is the git-faithful one; a defensive unit test pins it (see mutation plan).
+**Session narrowing (supersedes the original all-three proposal) — switch `tryLoose`
+ONLY; leave `hasObject`/`objectExistsLocally` on `exists`.** The two sibling probes
+are **pure presence probes** (they return a boolean / fall to pack; they never read
+the bytes), so — unlike `tryLoose`, where the subsequent `read` re-throws — an
+`exists`→`lstat` switch there is **not** behaviour-preserving in case (c): the
+escaping-symlink observable would change from "throws `PERMISSION_DENIED`" to
+"reports present" (no subsequent read to re-throw). That answer is arguably *more*
+git-faithful (git's presence probe is `lstat`-based), but it is a **behaviour
+change**, and this PR's binding contract is **behaviour-preserving**. Decisively:
+the 0.18 `exists` self-share lives entirely in the **history-walk read path**
+(`resolveObject`/`tryLoose` in log/describe/name-rev) — `hasObject` and
+`objectExistsLocally` are fetch/negotiation probes, **not** hot frames — so
+switching them buys ~no perf while spending strict behaviour-preservation on a
+pathological corner. They are therefore **left on `exists`** (strictly
+behaviour-preserving, precedence untouched). The `exists`→`lstat` *faithfulness*
+improvement for pure-presence probes is a separate, behaviour-changing concern noted
+for a possible future faithfulness item — out of scope for this behaviour-preserving
+perf PR. Only `tryLoose`/`looseCompressedBytes` switch (5a+5e), where the switch is
+provably behaviour-preserving via the following read.
 
 #### Faithfulness pin for finding (5)
 
@@ -634,10 +638,10 @@ answer is the git-faithful one; a defensive unit test pins it (see mutation plan
   existing read-object / object-storage / per-command interop suites stay green with
   **unchanged assertions** — the pin.
 - **Escaping-symlink corner (pathological):** `resolveObject`/`tryLoose` throws the
-  same `PERMISSION_DENIED` (case (c) above, guaranteed by the existing read test);
-  `hasObject`/`objectExistsLocally` report **present** (git-faithful `lstat`
-  semantics). Both pinned by new defensive unit tests (mutation plan), **no** ADR,
-  **no** git-precedence divergence.
+  same `PERMISSION_DENIED` (case (c) above, guaranteed by the existing read test) —
+  behaviour-preserving. `hasObject`/`objectExistsLocally` are **unchanged** (kept on
+  `exists`), so their escaping-symlink behaviour is byte-identical to today. **No** ADR,
+  **no** git-precedence divergence, **no** behaviour change anywhere in the PR.
 
 ### What does NOT change
 
