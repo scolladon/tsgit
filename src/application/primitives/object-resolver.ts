@@ -147,7 +147,7 @@ function checkAborted(ctx: Context): void {
 
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
   const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.existsContained(path))) return undefined;
+  if (!(await ctx.fs.exists(path))) return undefined;
   const compressed = await ctx.fs.read(path);
   return ctx.compressor.inflate(compressed);
 }
@@ -162,7 +162,7 @@ export async function looseCompressedBytes(
   id: ObjectId,
 ): Promise<Uint8Array | undefined> {
   const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.existsContained(path))) return undefined;
+  if (!(await ctx.fs.exists(path))) return undefined;
   return ctx.fs.read(path);
 }
 

@@ -137,12 +137,6 @@ export class MemoryFileSystem implements FileSystem {
     );
   };
 
-  existsContained = async (path: string): Promise<boolean> => {
-    // Memory has no realpath/leaf-follow; `exists` already checks the symlink
-    // key without dereferencing, matching lstat-semantics + containment.
-    return this.exists(path);
-  };
-
   /** POSIX ELOOP threshold — symlink chains longer than this are cycle-detected. */
   private static readonly SYMLINK_FOLLOW_LIMIT = 40;
 

@@ -111,10 +111,6 @@ export function instrumentedContext(base: Context): InstrumentedContext {
       record('exists', p);
       return base.fs.exists(p);
     },
-    existsContained: async (p) => {
-      record('existsContained', p);
-      return base.fs.existsContained(p);
-    },
     stat: async (p): Promise<FileStat> => {
       record('stat', p);
       return base.fs.stat(p);

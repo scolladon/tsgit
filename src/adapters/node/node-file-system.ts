@@ -498,59 +498,6 @@ export class NodeFileSystem implements FileSystem {
     }
   };
 
-  existsContained = async (path: string): Promise<boolean> => {
-    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    if (this.normalizedCanonicalRoot === undefined) {
-      await this.getCanonicalRoot();
-    }
-    const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
-    // ONE containment check on the lexical resolved path (fail-fast, no post-check).
-    if (!this.isContainedInEitherRoot(resolved, normalizedRoot, normalizedCanonical)) {
-      throw permissionDenied(path);
-    }
-    const parent = this.pathPolicy.dirname(resolved);
-    const realParent = await this.realpathParentCached(parent, path);
-    if (realParent === undefined) return false;
-    const basename = this.pathPolicy.basename(resolved);
-    return this.lstatPresent(this.pathPolicy.join(realParent, basename), path);
-  };
-
-  /**
-   * Parent-cached realpath (shared with the lstat arm / creation) — THIS is
-   * the packed-walk win: 256 fanout dirs, realpath'd once each, then all
-   * hits. Returns `undefined` when the parent directory itself is absent
-   * (ENOENT, not cached — mirrors `realpathForCreation`'s discipline).
-   */
-  private async realpathParentCached(parent: string, path: string): Promise<string | undefined> {
-    const cached = this.parentRealpathCache.get(parent);
-    if (cached !== undefined) return cached;
-    try {
-      const realParent = await this.fsOps.realpath(parent);
-      this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
-      return realParent;
-    } catch (err) {
-      if (isErrnoException(err) && err.code === 'ENOENT') return undefined;
-      throw this.toTsgitError(err, path);
-    }
-  }
-
-  /** Bare presence check on a leaf — NO mapStat/FileStat, NO runFs wrapper. */
-  private async lstatPresent(realPath: string, path: string): Promise<boolean> {
-    try {
-      await this.fsOps.lstat(realPath);
-      return true;
-    } catch (err) {
-      if (isErrnoException(err) && err.code === 'ENOENT') return false;
-      throw this.toTsgitError(err, path);
-    }
-  }
-
-  /** Map a genuine (non-ENOENT) errno to `TsgitError`; re-throw non-errno faults as-is. */
-  private toTsgitError(err: unknown, path: string): unknown {
-    return isErrnoException(err) ? mapErrno(err, path) : err;
-  }
-
   stat = async (path: string): Promise<FileStat> => {
     const real = await this.checkContainment(path, 'read');
     return runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path);
