@@ -1071,7 +1071,13 @@
     "ungated",
     "neighbourhood",
     "realisation",
-    "optimisable"
+    "optimisable",
+    "memoising",
+    "checkcontainment",
+    "realpathed",
+    "amortising",
+    "fullpath",
+    "uncacheable"
   ],
   "ignorePaths": [
     "node_modules",

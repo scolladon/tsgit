@@ -236,16 +236,19 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
 
         // Assert — `/root/sub` realpath count after the full sequence:
         //   1 from the first write (cache miss → set)
-        //   1 from rmRecursive's lstat-mode containment (realpath(dirname))
+        //   0 from rmRecursive's lstat-mode containment — the parent
+        //     realpath cache is now SHARED across creation and lstat modes
+        //     (DC-5), so this lookup HITS the entry the first write set
         //   1 from the second write (cache was cleared by rmRecursive → miss)
-        // Total: 3. Pinning the count kills mutants that would skip
-        // invalidation (afterCount stays at 2) or invalidate too eagerly
-        // (afterCount jumps to 4).
+        // Total: 2. Pinning the count still kills mutants that would skip
+        // invalidation (afterCount would stay at 1 — the second write would
+        // also hit the still-populated cache) or invalidate too eagerly
+        // (afterCount would jump to 3+).
         const afterCount = realpathSpy.mock.calls.filter(
           ([arg]: readonly unknown[]) => arg === '/root/sub',
         ).length;
         expect(beforeRmCount).toBe(1);
-        expect(afterCount).toBe(3);
+        expect(afterCount).toBe(2);
       });
     });
   });
@@ -363,6 +366,151 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
           ([arg]: readonly unknown[]) => arg === rootDir,
         );
         expect(rootCalls.length).toBe(2);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — guarded canonical-root await, first-call resolution (DI)', () => {
+  describe('Given a fresh adapter', () => {
+    describe('When the first FS op is a read (checkContainment)', () => {
+      it('Then it resolves the canonical root before checking containment', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          readFile: vi.fn().mockResolvedValue(Buffer.from([1, 2, 3])),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.read('/root/leaf.bin');
+
+        // Assert — the guarded `if (normalizedCanonicalRoot === undefined)`
+        // still resolves the canonical root on the first call. A `→false`
+        // (never-await) mutant would leave the field undefined, and the
+        // non-null-asserting getter would read `undefined`, corrupting the
+        // containment verdict.
+        expect(result).toEqual(new Uint8Array([1, 2, 3]));
+        expect(realpathSpy.mock.calls.some(([arg]: readonly unknown[]) => arg === rootDir)).toBe(
+          true,
+        );
+      });
+    });
+
+    describe('When the first FS op is exists', () => {
+      it('Then it resolves the canonical root before checking containment', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.exists('/root/leaf.bin');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(realpathSpy.mock.calls.some(([arg]: readonly unknown[]) => arg === rootDir)).toBe(
+          true,
+        );
+      });
+    });
+
+    describe('When the first FS op is symlink with an absolute canonical-root-only target', () => {
+      it('Then it resolves the canonical root before validating the target', async () => {
+        // Arrange — the absolute-target branch is the only path in `symlink`
+        // that reaches `getCanonicalRoot`. The target is contained by the
+        // CANONICAL root only (realpath(rootDir) differs from the raw rootDir),
+        // so it is load-bearing on the canonical disjunct: a never-await mutant
+        // that leaves `normalizedCanonicalRoot` undefined makes the dual-root OR
+        // refuse this legitimate target, so `symlink` never runs — killed.
+        const rootDir = '/root';
+        const canonicalRoot = '/canon';
+        const target = '/canon/target.txt';
+        const link = '/root/sub/link.txt';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return canonicalRoot;
+          if (input === '/root/sub') return '/root/sub';
+          if (input === target) return target;
+          throw enoent();
+        });
+        const symlinkOp = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          symlink: symlinkOp,
+          lstat: vi.fn().mockRejectedValue(enoent()),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.symlink(target, link);
+
+        // Assert — succeeds only when the canonical root was resolved: the
+        // target is outside the raw root and inside the canonical root.
+        expect(symlinkOp).toHaveBeenCalledWith(target, link);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — checkContainment dual-root OR disjuncts (DI)', () => {
+  describe('Given a path contained by the RAW root only (canonical root differs)', () => {
+    describe('When read is called', () => {
+      it('Then it passes (no throw)', async () => {
+        // Arrange — the canonical root (realpath(rootDir)) resolves to a
+        // DIFFERENT directory than the raw rootDir string. The requested
+        // leaf lives under the raw root only; its own realpath stays under
+        // the raw root too (no short-name flip on the leaf itself). Dropping
+        // the raw-root disjunct of the containment OR would make this throw.
+        const rootDir = '/root-raw';
+        const canonicalRoot = '/canon';
+        const leaf = '/root-raw/leaf.bin';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return canonicalRoot;
+          return input;
+        });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          readFile: vi.fn().mockResolvedValue(Buffer.from([9])),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.read(leaf);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array([9]));
+      });
+    });
+  });
+
+  describe('Given a path contained by the CANONICAL root only (raw root differs)', () => {
+    describe('When read is called', () => {
+      it('Then it passes (no throw)', async () => {
+        // Arrange — mirror image: the raw rootDir string does NOT textually
+        // contain the requested absolute path, but that path lives under the
+        // canonical root (realpath(rootDir)). Dropping the canonical-root
+        // disjunct of the containment OR would make this throw.
+        const rootDir = '/root-raw';
+        const canonicalRoot = '/canon';
+        const leaf = '/canon/leaf.bin';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return canonicalRoot;
+          return input;
+        });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          readFile: vi.fn().mockResolvedValue(Buffer.from([7])),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.read(leaf);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array([7]));
       });
     });
   });
@@ -1042,6 +1190,222 @@ describe('resolveForMode — lstat mode pre-realpath check (DI)', () => {
           ([arg]: readonly unknown[]) => arg === '/elsewhere',
         );
         expect(dirnameCalls.length).toBe(0);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
+  const fileStat = {
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o100644),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(0),
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  };
+
+  describe('Given two lstats of same-directory siblings', () => {
+    describe('When the second fires', () => {
+      it('Then realpath(dirname) is invoked exactly once', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/sub/a');
+        await sut.lstat('/root/sub/b');
+
+        // Assert
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/sub',
+        );
+        expect(parentCalls.length).toBe(1);
+      });
+    });
+  });
+
+  describe('Given lstats in different directories', () => {
+    describe('When both fire', () => {
+      it('Then realpath is invoked once per distinct dirname', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/x/a');
+        await sut.lstat('/root/y/a');
+
+        // Assert
+        const xCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/x',
+        );
+        const yCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/y',
+        );
+        expect(xCalls.length).toBe(1);
+        expect(yCalls.length).toBe(1);
+      });
+    });
+  });
+
+  describe('Given an lstat populates the cache', () => {
+    describe('When rmRecursive then a same-dir lstat fires', () => {
+      it('Then realpath(dirname) is invoked twice total', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+          rm: vi.fn().mockResolvedValue(undefined),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/sub/a');
+        await sut.rmRecursive('/root/sub/a');
+        await sut.lstat('/root/sub/b');
+
+        // Assert
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/sub',
+        );
+        expect(parentCalls.length).toBe(2);
+      });
+    });
+
+    describe('When rename then a same-dir lstat fires', () => {
+      it('Then realpath(dirname) is invoked twice total', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.lstat('/root/sub/a');
+        await sut.rename('/root/sub/a', '/root/sub/renamed');
+        await sut.lstat('/root/sub/b');
+
+        // Assert
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/sub',
+        );
+        expect(parentCalls.length).toBe(2);
+      });
+    });
+  });
+
+  describe('Given an lstat whose parent is ENOENT', () => {
+    describe('When it fires', () => {
+      it('Then nothing is cached and a later same-parent lstat re-attempts', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return rootDir;
+          throw enoent();
+        });
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        let firstCaught: unknown;
+        try {
+          await sut.lstat('/root/missing/a');
+        } catch (err) {
+          firstCaught = err;
+        }
+        let secondCaught: unknown;
+        try {
+          await sut.lstat('/root/missing/b');
+        } catch (err) {
+          secondCaught = err;
+        }
+
+        // Assert
+        expect(firstCaught).toBeInstanceOf(TsgitError);
+        expect((firstCaught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+        expect(secondCaught).toBeInstanceOf(TsgitError);
+        expect((secondCaught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/missing',
+        );
+        expect(parentCalls.length).toBe(2);
+      });
+    });
+  });
+
+  describe('Given N loose-object lstats sharing one fanout dir (object-resolver probe shape)', () => {
+    describe('When each loose probe fires an lstat', () => {
+      it('Then realpath(fanout dir) is invoked at most once per distinct fanout dir', async () => {
+        // Arrange — 5 loose-object paths under the same fanout dir, mirroring
+        // the object-resolver's `looseObjectPath` layout (objects/xx/<38 hex>).
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const fanoutDir = '/root/objects/ab';
+
+        // Act
+        for (let i = 0; i < 5; i += 1) {
+          await sut.lstat(`${fanoutDir}/leaf${i}`);
+        }
+
+        // Assert — the fanout dir is realpath'd exactly once, not once per object.
+        const fanoutCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === fanoutDir,
+        );
+        expect(fanoutCalls.length).toBe(1);
+      });
+    });
+
+    describe('When more than the OLD 64-entry cap but within the NEW 512-entry cap of distinct fanout dirs are touched', () => {
+      it('Then an already-seen dir is NOT re-realpathed (DC-9 resize regression guard)', async () => {
+        // Arrange — 300 distinct fanout dirs (> old cap 64, within new cap 512).
+        // If the resize regressed to the old 64-entry cap, dir #1 would be
+        // evicted long before we re-touch it, forcing a second realpath.
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const fanoutDir = (n: number): string => `/root/objects/${n.toString(16).padStart(2, '0')}`;
+
+        // Act — touch 300 distinct fanout dirs, then re-touch dir #1.
+        for (let i = 0; i < 300; i += 1) {
+          await sut.lstat(`${fanoutDir(i)}/leaf`);
+        }
+        await sut.lstat(`${fanoutDir(1)}/leaf-again`);
+
+        // Assert — dir #1's realpath was invoked exactly once across the whole run.
+        const dir1Calls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === fanoutDir(1),
+        );
+        expect(dir1Calls.length).toBe(1);
       });
     });
   });

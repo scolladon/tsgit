@@ -299,19 +299,23 @@ export class NodeFileSystem implements FileSystem {
 
   /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
-   * (pre-realpath) parent path. Populated on every cache-miss inside
-   * `resolveForCreation` so a clone/checkout that writes N files into the
-   * same tree pays the realpath walk-up once per parent rather than once
-   * per file.
+   * (pre-realpath) parent path. The cached value is mode-independent, so
+   * this single cache serves BOTH `resolveForCreation` (creation mode) and
+   * `resolveForMode`'s lstat arm (lstat mode): a clone/checkout writing N
+   * files into the same tree, or a status walk lstat-ing N entries under
+   * the same directory, pays the realpath walk-up once per parent rather
+   * than once per file/entry.
    *
    * Invariants:
    * - Only EXISTING parents are cached. ENOENT walks fall back to
-   *   `realpathNearestExisting` and are never recorded.
+   *   `realpathNearestExisting` (creation) or propagate (lstat) and are
+   *   never recorded.
    * - `rmRecursive` and `rename` clear the cache, which is correct (the
-   *   parent realpath may have changed) and cheap (the cache holds at
-   *   most a handful of small strings).
+   *   parent realpath may have changed) and cheap relative to a re-walk.
+   * - Sized to exceed the 256 loose-object fanout directories so a
+   *   full-history walk does not thrash the cache.
    */
-  private readonly creationParentCache = createLruCache<string>(64 * 1024, 64);
+  private readonly parentRealpathCache = createLruCache<string>(128 * 1024, 512);
 
   /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks.
@@ -459,7 +463,13 @@ export class NodeFileSystem implements FileSystem {
 
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    await this.getCanonicalRoot();
+    // equivalent-mutant: forcing this guard true (always-await) is timing-only —
+    // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
+    // reruns no I/O and yields identical results and call counts; the false
+    // (never-await) mutant is killed by the first-call resolution tests.
+    if (this.normalizedCanonicalRoot === undefined) {
+      await this.getCanonicalRoot();
+    }
     const normalizedRoot = this.getNormalizedRootDir();
     const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
     try {
@@ -529,7 +539,7 @@ export class NodeFileSystem implements FileSystem {
     await runFs(() => this.fsOps.rm(real), path);
     // Node's `fs.rm` without `recursive` only removes leaves — a regular
     // file or symlink. The parent directory and its realpath are
-    // unchanged, so the creation-parent cache entry for `dirname(real)`
+    // unchanged, so the parent-realpath cache entry for `dirname(real)`
     // remains valid. No invalidation needed.
   };
 
@@ -540,7 +550,7 @@ export class NodeFileSystem implements FileSystem {
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
       await this.fsOps.rename(realSrc, realDst);
     }, src);
-    this.creationParentCache.clear();
+    this.parentRealpathCache.clear();
   };
 
   readlink = async (path: string): Promise<string> => {
@@ -564,7 +574,13 @@ export class NodeFileSystem implements FileSystem {
       // — never the link entry, which doesn't exist yet.
       const lexical = this.pathPolicy.resolve(target);
       const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
-      await this.getCanonicalRoot();
+      // equivalent-mutant: forcing this guard true (always-await) is timing-only —
+      // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
+      // reruns no I/O and yields identical results and call counts; the false
+      // (never-await) mutant is killed by the first-call resolution tests.
+      if (this.normalizedCanonicalRoot === undefined) {
+        await this.getCanonicalRoot();
+      }
       const normalizedRoot = this.getNormalizedRootDir();
       const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
       if (
@@ -601,7 +617,7 @@ export class NodeFileSystem implements FileSystem {
       throw err;
     }
     await this.removeTree(real, path);
-    this.creationParentCache.clear();
+    this.parentRealpathCache.clear();
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
@@ -690,21 +706,32 @@ export class NodeFileSystem implements FileSystem {
     return real;
   }
 
+  // Shared by `realpathForCreation` and the `resolveForMode` lstat arm: a
+  // status/walk touching many entries under the same directory pays the
+  // parent realpath once, not once per entry. The leaf itself is never
+  // cached — only the parent directory realpath. Throws on ENOENT (the
+  // `.set` below only runs after a successful await, so a failed realpath
+  // is never cached) — callers that need a fallback catch it themselves.
+  private async cachedParentRealpath(parent: string): Promise<string> {
+    const cached = this.parentRealpathCache.get(parent);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const realParent = await this.fsOps.realpath(parent);
+    this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+    return realParent;
+  }
+
   private async realpathForCreation(resolved: string): Promise<string> {
     // Fast path: parent already cached. The leaf realpath is meaningless
     // for creation (the leaf often doesn't exist yet), so we cache the
     // parent only and join the basename.
     const parent = this.pathPolicy.dirname(resolved);
     const basename = this.pathPolicy.basename(resolved);
-    const cached = this.creationParentCache.get(parent);
-    if (cached !== undefined) {
-      return this.pathPolicy.join(cached, basename);
-    }
-    // Cache miss. Try a direct parent realpath first — when the parent
-    // exists this is a single call instead of the full walk-up.
+    // Cache miss falls through to a direct parent realpath — when the
+    // parent exists this is a single call instead of the full walk-up.
     try {
-      const realParent = await this.fsOps.realpath(parent);
-      this.creationParentCache.set(parent, realParent, parent.length + realParent.length);
+      const realParent = await this.cachedParentRealpath(parent);
       return this.pathPolicy.join(realParent, basename);
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') {
@@ -721,10 +748,13 @@ export class NodeFileSystem implements FileSystem {
     path: string,
     resolved: string,
     mode: ContainmentMode,
-    check: (abs: string) => void,
+    normRoot: string,
+    normCanon: string,
   ): Promise<string> {
     if (mode === 'read') {
-      check(resolved);
+      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon)) {
+        throw permissionDenied(path);
+      }
       return this.fsOps.realpath(resolved);
     }
     if (mode === 'lstat') {
@@ -732,11 +762,25 @@ export class NodeFileSystem implements FileSystem {
       // BEFORE issuing the realpath I/O. Without this gate, an absolute
       // escape path (`../../etc`) would still walk through
       // `realpath(dirname)` before the post-check catches it.
-      check(resolved);
-      const parent = await this.fsOps.realpath(this.pathPolicy.dirname(resolved));
-      return this.pathPolicy.join(parent, this.pathPolicy.basename(resolved));
+      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon)) {
+        throw permissionDenied(path);
+      }
+      // The parent realpath is cached (shared with `realpathForCreation`
+      // via `cachedParentRealpath`). ENOENT propagates to the caller here
+      // (no fallback), unlike the creation path.
+      const parent = this.pathPolicy.dirname(resolved);
+      const basename = this.pathPolicy.basename(resolved);
+      const realParent = await this.cachedParentRealpath(parent);
+      return this.pathPolicy.join(realParent, basename);
     }
     return this.resolveForCreation(path, resolved);
+  }
+
+  private isContainedInEitherRoot(abs: string, normRoot: string, normCanon: string): boolean {
+    return (
+      pathContainsNormalized(normRoot, abs, this.pathPolicy) ||
+      pathContainsNormalized(normCanon, abs, this.pathPolicy)
+    );
   }
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
@@ -757,20 +801,26 @@ export class NodeFileSystem implements FileSystem {
     // normalised forms as instance fields so the case-fold allocation on
     // the hot path runs once per parent rather than once per containment
     // check.
-    await this.getCanonicalRoot();
+    // equivalent-mutant: forcing this guard true (always-await) is timing-only —
+    // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
+    // reruns no I/O and yields identical results and call counts; the false
+    // (never-await) mutant is killed by the first-call resolution tests.
+    if (this.normalizedCanonicalRoot === undefined) {
+      await this.getCanonicalRoot();
+    }
     const normalizedRoot = this.getNormalizedRootDir();
     const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
-    const check = (abs: string): void => {
-      if (
-        !pathContainsNormalized(normalizedRoot, abs, this.pathPolicy) &&
-        !pathContainsNormalized(normalizedCanonical, abs, this.pathPolicy)
-      ) {
+    try {
+      const real = await this.resolveForMode(
+        path,
+        resolved,
+        mode,
+        normalizedRoot,
+        normalizedCanonical,
+      );
+      if (!this.isContainedInEitherRoot(real, normalizedRoot, normalizedCanonical)) {
         throw permissionDenied(path);
       }
-    };
-    try {
-      const real = await this.resolveForMode(path, resolved, mode, check);
-      check(real);
       return real;
     } catch (err) {
       // Stryker disable next-line ConditionalExpression: equivalent — a TsgitError is never an ErrnoException (no own `code`), so skipping this early rethrow lands it at the final `throw err` with the identical instance.
