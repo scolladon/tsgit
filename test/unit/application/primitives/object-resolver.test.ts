@@ -135,8 +135,8 @@ describe('object-resolver', () => {
   describe('Given a packed-only object with no loose copy', () => {
     describe('When resolveObject is called', () => {
       it('Then resolves via the pack (loose probe misses and falls through)', async () => {
-        // Arrange — the loose lstat probe throws FILE_NOT_FOUND (no loose file
-        // written anywhere), so resolution must fall through to the pack.
+        // Arrange — the loose existsContained probe reports absence (no loose
+        // file written anywhere), so resolution must fall through to the pack.
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('packed-only, no loose copy');
         const [id] = await writeSyntheticPack(ctx, 'loose-probe-miss', [
@@ -156,8 +156,8 @@ describe('object-resolver', () => {
 
   describe('Given a loose object also present, When resolveObject is called', () => {
     it('Then resolves via loose (loose-first precedence preserved)', async () => {
-      // Arrange — seed only a loose copy (no pack entry for this id); the lstat
-      // probe must succeed and the object must resolve from the loose file.
+      // Arrange — seed only a loose copy (no pack entry for this id); the
+      // existsContained probe must report presence and the object must resolve from the loose file.
       const blob: Blob = {
         type: 'blob',
         content: new Uint8Array([9, 8, 7]),
@@ -181,7 +181,7 @@ describe('object-resolver', () => {
     describe('When resolveObject is called', () => {
       it('Then the inflate error propagates (inflate stays outside the presence probe)', async () => {
         // Arrange — write garbage (non-deflate) bytes at the loose path so the
-        // lstat probe succeeds (the file exists) but inflate fails.
+        // existsContained probe reports presence (the file exists) but inflate fails.
         const ctx = await buildSeededContext();
         const fakeId = 'c'.repeat(40) as ObjectId;
         const { computeLooseObjectPath } = await import(
@@ -191,7 +191,7 @@ describe('object-resolver', () => {
         await ctx.fs.write(loosePath, new Uint8Array([0xff, 0xff, 0xff, 0xff]));
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert — the lstat probe succeeds (file exists), so inflate
+        // Act / Assert — the existsContained probe reports presence (file exists), so inflate
         // runs and rejects with DECOMPRESS_FAILED; it must propagate
         // unchanged, not be swallowed by the FILE_NOT_FOUND-only catch.
         try {
@@ -211,20 +211,21 @@ describe('object-resolver', () => {
   describe('Given the loose probe throws a non-FILE_NOT_FOUND error', () => {
     describe('When resolveObject is called', () => {
       it('Then it PROPAGATES (does not fall through to the pack)', async () => {
-        // Arrange — override lstat to throw PERMISSION_DENIED instead of the
-        // expected FILE_NOT_FOUND. This is the first-class isolated test for
-        // the precise catch: only FILE_NOT_FOUND is swallowed into `undefined`.
+        // Arrange — override existsContained (the lean loose probe) to throw
+        // PERMISSION_DENIED instead of resolving `false`. This is the
+        // first-class isolated test for the precise catch: only absence
+        // (`false`) is swallowed into `undefined`.
         const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
         const ctx = await buildSeededContext({ objects: [blob] });
         const { serializeObject } = await import('../../../../src/domain/objects/index.js');
         const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
         const registry = createPackRegistry(ctx);
         const deniedPath = `${ctx.layout.gitDir}/objects/denied`;
-        const ctxWithDeniedLstat: Context = {
+        const ctxWithDeniedProbe: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            lstat: async () => {
+            existsContained: async () => {
               throw new TsgitError({ code: 'PERMISSION_DENIED', path: deniedPath });
             },
           },
@@ -232,7 +233,7 @@ describe('object-resolver', () => {
 
         // Act / Assert
         try {
-          await resolveObject(ctxWithDeniedLstat, registry, id, false);
+          await resolveObject(ctxWithDeniedProbe, registry, id, false);
           expect.unreachable();
         } catch (error) {
           const data = (error as TsgitError).data;
@@ -247,9 +248,9 @@ describe('object-resolver', () => {
 
     describe('When the subsequent read throws a non-FILE_NOT_FOUND error (escaping-symlink shape)', () => {
       it('Then it PROPAGATES from the read (not swallowed by the probe catch)', async () => {
-        // Arrange — the probe (lstat) succeeds, but the follow-up read throws
-        // PERMISSION_DENIED. Mirrors case (c): an escaping loose symlink is
-        // caught at the read, not the probe.
+        // Arrange — the probe (existsContained) reports presence, but the
+        // follow-up read throws PERMISSION_DENIED. Mirrors case (c): an
+        // escaping loose symlink is caught at the read, not the probe.
         const blob: Blob = { type: 'blob', content: new Uint8Array([2]), id: '' as ObjectId };
         const ctx = await buildSeededContext({ objects: [blob] });
         const { serializeObject } = await import('../../../../src/domain/objects/index.js');

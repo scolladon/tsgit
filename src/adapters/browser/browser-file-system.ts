@@ -96,6 +96,11 @@ export class BrowserFileSystem implements FileSystem {
     }
   }
 
+  async existsContained(path: string): Promise<boolean> {
+    // OPFS has no symlinks, so lstat-semantics ≡ exists-semantics here.
+    return this.exists(path);
+  }
+
   async stat(path: string): Promise<FileStat> {
     try {
       const handle = await this.resolveFileHandle(path, false);

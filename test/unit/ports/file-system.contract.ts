@@ -34,6 +34,7 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'writeUtf8', invoke: (e, p) => e.fs.writeUtf8(p, '') },
   { name: 'appendUtf8', invoke: (e, p) => e.fs.appendUtf8(p, '') },
   { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
+  { name: 'existsContained', invoke: (e, p) => e.fs.existsContained(p) },
   { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
   { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
   { name: 'readdir', invoke: (e, p) => e.fs.readdir(p) },
@@ -162,6 +163,28 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
       // Act
       const result = await env.fs.exists(path);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('Given non-existent path, When existsContained, Then returns false', async () => {
+      // Arrange
+      const path = `${env.rootDir}/missing-contained.bin`;
+
+      // Act
+      const result = await env.fs.existsContained(path);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('Given existing file, When existsContained, Then returns true', async () => {
+      // Arrange
+      const path = await env.getExistingInRoot();
+
+      // Act
+      const result = await env.fs.existsContained(path);
 
       // Assert
       expect(result).toBe(true);

@@ -80,6 +80,10 @@ export const wrapFsValidator = (
       guard(p);
       return fs.exists(p);
     },
+    existsContained: (p) => {
+      guard(p);
+      return fs.existsContained(p);
+    },
     stat: (p) => {
       guard(p);
       return fs.stat(p);

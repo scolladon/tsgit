@@ -1074,7 +1074,10 @@
     "optimisable",
     "memoising",
     "checkcontainment",
-    "realpathed"
+    "realpathed",
+    "amortising",
+    "fullpath",
+    "uncacheable"
   ],
   "ignorePaths": [
     "node_modules",

@@ -91,6 +91,18 @@ export interface FileSystem {
   /** Check if path exists. */
   readonly exists: (path: string) => Promise<boolean>;
 
+  /**
+   * Lean presence probe with containment pre-filter, lstat-SEMANTICS (does NOT
+   * follow a leaf symlink). Returns `true` iff an entry exists at `path` (regular
+   * file, directory, OR symlink leaf — the leaf is not dereferenced), `false` iff
+   * it is absent. Unlike `exists`, this never dereferences a leaf symlink, so an
+   * escaping-target symlink at `path` reports `true` (present) rather than throwing
+   * — the caller's subsequent `read` is the leaf-following security gate. Applies
+   * the same containment pre-filter as the other path ops; genuine errors
+   * (EACCES/EIO/…) propagate as `TsgitError`, only absence is `false`.
+   */
+  readonly existsContained: (path: string) => Promise<boolean>;
+
   /** Get file/directory metadata. Throws FILE_NOT_FOUND if not found. Follows symlinks. */
   readonly stat: (path: string) => Promise<FileStat>;
 

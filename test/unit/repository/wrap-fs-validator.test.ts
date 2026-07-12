@@ -14,6 +14,7 @@ const stubFs = (): FileSystem =>
     writeUtf8: vi.fn(async () => {}),
     appendUtf8: vi.fn(async () => {}),
     exists: vi.fn(async () => true),
+    existsContained: vi.fn(async () => true),
     stat: vi.fn(async () => ({})),
     lstat: vi.fn(async () => ({})),
     readdir: vi.fn(async () => []),
@@ -246,6 +247,39 @@ describe('wrapFsValidator — outside cwd rejected', () => {
   });
 });
 
+describe('wrapFsValidator — existsContained forwarding', () => {
+  describe('Given an in-cwd path', () => {
+    describe('When existsContained runs', () => {
+      it('Then it guards then delegates to the underlying fs', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        const result = await sut.existsContained('/repo/objects/ab/leaf');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(fs.existsContained).toHaveBeenCalledWith('/repo/objects/ab/leaf');
+      });
+    });
+  });
+
+  describe('Given an out-of-tree path', () => {
+    describe('When existsContained runs', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO before touching the delegate', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        await expectOutside(() => sut.existsContained('/etc/passwd'));
+        expect(fs.existsContained).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — coverage of every wrapped method', () => {
   describe('Given an in-cwd path', () => {
     describe('When %s is called', () => {
@@ -256,6 +290,7 @@ describe('wrapFsValidator — coverage of every wrapped method', () => {
         ['writeUtf8', (s: FileSystem) => s.writeUtf8('/repo/x', '')],
         ['appendUtf8', (s: FileSystem) => s.appendUtf8('/repo/x', '')],
         ['exists', (s: FileSystem) => s.exists('/repo/x')],
+        ['existsContained', (s: FileSystem) => s.existsContained('/repo/x')],
         ['stat', (s: FileSystem) => s.stat('/repo/x')],
         ['lstat', (s: FileSystem) => s.lstat('/repo/x')],
         ['readdir', (s: FileSystem) => s.readdir('/repo/x')],
@@ -285,6 +320,7 @@ describe('wrapFsValidator — coverage of every wrapped method', () => {
         ['writeUtf8', (s: FileSystem) => s.writeUtf8('/etc/x', '')],
         ['appendUtf8', (s: FileSystem) => s.appendUtf8('/etc/x', '')],
         ['exists', (s: FileSystem) => s.exists('/etc/x')],
+        ['existsContained', (s: FileSystem) => s.existsContained('/etc/x')],
         ['stat', (s: FileSystem) => s.stat('/etc/x')],
         ['lstat', (s: FileSystem) => s.lstat('/etc/x')],
         ['readdir', (s: FileSystem) => s.readdir('/etc/x')],
