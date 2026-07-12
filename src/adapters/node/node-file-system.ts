@@ -463,6 +463,10 @@ export class NodeFileSystem implements FileSystem {
 
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
+    // equivalent-mutant: forcing this guard true (always-await) is timing-only —
+    // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
+    // reruns no I/O and yields identical results and call counts; the false
+    // (never-await) mutant is killed by the first-call resolution tests.
     if (this.normalizedCanonicalRoot === undefined) {
       await this.getCanonicalRoot();
     }
@@ -570,6 +574,10 @@ export class NodeFileSystem implements FileSystem {
       // — never the link entry, which doesn't exist yet.
       const lexical = this.pathPolicy.resolve(target);
       const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
+      // equivalent-mutant: forcing this guard true (always-await) is timing-only —
+      // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
+      // reruns no I/O and yields identical results and call counts; the false
+      // (never-await) mutant is killed by the first-call resolution tests.
       if (this.normalizedCanonicalRoot === undefined) {
         await this.getCanonicalRoot();
       }
@@ -793,6 +801,10 @@ export class NodeFileSystem implements FileSystem {
     // normalised forms as instance fields so the case-fold allocation on
     // the hot path runs once per parent rather than once per containment
     // check.
+    // equivalent-mutant: forcing this guard true (always-await) is timing-only —
+    // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
+    // reruns no I/O and yields identical results and call counts; the false
+    // (never-await) mutant is killed by the first-call resolution tests.
     if (this.normalizedCanonicalRoot === undefined) {
       await this.getCanonicalRoot();
     }
