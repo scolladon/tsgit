@@ -1,5 +1,6 @@
 # Plan — checkContainment + object-lookup hot path: gate the settled-promise await, hoist the per-call closure, cache the lstat-mode parent realpath, cheapen the loose existence probe
 
+> **Shipped outcome:** Parts 1–3 (Lever A, Lever B, Finding 3) + the baseline regen shipped. Parts 4/5f (the object-store loose-probe `exists`→`lstat` switch + the `existsContained` port method) were implemented then **reverted** — see the design doc's "Shipped outcome" note for the inherent-cold-read-cost rationale. This plan is retained as the implementation record.
 > Source: design doc `docs/design/checkcontainment-hot-path.md` (commit 652a3813, narrowed by 2d376e5) · NO ADR (DC-4 → all shipping work behaviour-preserving, no git-precedence divergence; DC-8 N/A — reorder rejected).
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.

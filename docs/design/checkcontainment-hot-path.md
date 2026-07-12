@@ -1,5 +1,21 @@
 # Design — checkContainment + object-lookup hot path: gate the settled-promise await, hoist the per-call closure, cache the lstat-mode parent realpath, cheapen the loose existence probe (faithful, loose-first preserved)
 
+> **Shipped outcome (final — read this first).** This PR ships **Lever A** (gate the
+> settled-promise `getCanonicalRoot` await), **Lever B** (hoist the per-call `check`
+> closure to the `isContainedInEitherRoot` predicate), and **Finding 3** (cache the
+> lstat-mode parent realpath — the `status` working-tree-scan win, **−18–22 %** by
+> absolute wall-clock). The object-store loose-probe optimisation — **Finding 5a/5e**
+> (`exists`→`lstat` probe) and **Finding 5f** (the lean `existsContained` port method) —
+> was implemented, then **investigated and REVERTED**: absolute-wall-clock benching plus
+> CPU-profiling showed an **inherent cold-read regression** (+3–5 % on a fresh-repo
+> single-object read) that could not be cleanly recovered — the subsequent `read`'s own
+> leaf-following containment dispatch is the real security gate and cannot be safely
+> collapsed into the probe. Git's object precedence (**loose-first**, empirically pinned
+> below) is preserved throughout; `tryLoose` is back to the original `exists()` probe.
+> Baseline findings (2) TREESAME and (4) tree-walk/parse were never in scope. The
+> sections below on Finding 5a/5e/5f are retained as the **investigation record** behind
+> the revert, not as shipped behaviour.
+
 > Brief: `checkContainment` is the single hottest cross-cutting frame in the
 > committed profile baseline (`docs/perf/baseline.json` / `.md`) — self-share
 > **0.36 diff, 0.26 name-rev, 0.24 blame, 0.18 describe, 0.16 merge, 0.13 show,
