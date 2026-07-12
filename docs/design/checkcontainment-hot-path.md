@@ -21,17 +21,24 @@
 > `lstat`-based probe (5e) that **reuses finding-3's fanout-dir realpath cache** —
 > `dirname(looseObjectPath)` is one of only 256 fanout dirs, so the per-object
 > uncached `realpath` collapses to a cached `realpath(fanout dir)` + a cheap
-> `lstat`. **All of findings (1)/(3)/(5) are now behaviour-preserving** — precedence
-> untouched, no git divergence, no new ADR. The one caveat is a shared-cache size
-> bump (DC-9). Pure internal/primitive refactor — NOT a git-observable change; the
-> faithfulness pin is the existing suite staying green with unchanged assertions
-> (plus new defensive tests for the pathological symlinked-loose corner), a
-> re-profile showing the self-share drop, and the improved
-> `docs/perf/baseline.{json,md}` re-committed.
+> `lstat`. **All of findings (1)/(3)/(5) are behaviour-preserving** — precedence
+> untouched, no git divergence, no new ADR. A wall-clock+CPU-profile investigation
+> then found 5e **recovers big on warm paths** (status −18–21%, log −8%, warm read
+> −9%) but **regresses read-blob-COLD by +0.011 ms** (the general `lstat` port
+> method is heavier per call than the old lean inline `exists` — a `FileStat`
+> `tryLoose` discards + `runFs` + double containment check); **finding (5f)** designs
+> the lean-probe recovery. The only clean recovery that *also* keeps 5e's packed-walk
+> cache win is a new `FileSystem` port method (a public-surface cost for 0.011 ms) —
+> surfaced as **DC-10 ★** with a plain default: *accept the benign cold regression
+> as-is*. Pure internal/primitive refactor otherwise — NOT a git-observable change;
+> the faithfulness pin is the existing suite staying green with unchanged
+> assertions, a re-profile, and the improved `docs/perf/baseline.{json,md}`
+> re-committed.
 > Status: draft → self-reviewed ×3 → decisions ratified (DC-1→B widen, DC-2→B
 > ship, DC-3→A commit baseline, DC-4→no refactor ADR, DC-6→EXPAND exists-share,
 > DC-7→STAY FAITHFUL / reorder rejected, DC-8→N/A) → revised (finding (5) reshaped
-> to the faithful cheaper-probe; DC-9 opened for the cache-size bump)
+> to the faithful cheaper-probe; DC-9 opened for the cache-size bump; finding (5f)
+> lean-probe + DC-10 opened after the cold-regression measurement)
 
 ## Context
 
@@ -643,6 +650,152 @@ provably behaviour-preserving via the following read.
   `exists`), so their escaping-symlink behaviour is byte-identical to today. **No** ADR,
   **no** git-precedence divergence, **no** behaviour change anywhere in the PR.
 
+### Finding (5f) — lean the loose probe to recover the cold regression (SHIPS the mechanism; the *how* is DC-10)
+
+**What the wall-clock + CPU-profile investigation found (measured, 2 runs each).**
+Findings (1)+(3)+(5) are net wins on warm/repeated-call paths — status **−18.6%
+to −21.5%**, log **−7.8%**, warm read-blob **−9.1%** (Finding 3's working-tree
+parent cache amortising across many same-dir lstats). **But** one workload
+regressed: **read-blob-COLD** (`openRepository` fresh **per call** → `readBlob` →
+dispose; a *loose* object, so `tryLoose` hits loose every iteration) is **+3.3%
+(=+0.011 ms/op) slower**.
+
+**Root cause (CPU-profile src-frame diff, main vs branch, per cold-read loop).**
+5e swapped `tryLoose`'s probe from the **old lean inline `exists`** (node
+`exists`, L464–492: **one** `fsOps.realpath(fullpath)` + **one**
+`pathContainsNormalized`, no `runFs`, no dispatcher, boolean return) to the
+**general `ctx.fs.lstat` port method** → full `checkContainment('lstat')` →
+`resolveForMode('lstat')`. Frame counts (before→after) tell the story:
+
+```
+checkContainment      3 → 29      isContainedInEitherRoot  0 → 26   (TWO checks: pre in resolveForMode + post in checkContainment)
+resolveForMode        1 → 20      runFs                    1 → 16
+createLruCache       11 → 17      adapter lstat            0 →  8   lstat-validator 0 → 5
+old exists           14 →  0      old check closure        4 →  0   (both correctly gone)
+```
+
+The general `lstat` path pays, **per call**, a heavier bundle than the old inline
+`exists`: the dispatcher, **two** `isContainedInEitherRoot` checks (fail-fast pre
+in the lstat arm + post in `checkContainment`), the `parentRealpathCache` get/miss/set,
+the dirname/basename split, `runFs`-wrapping, **and** a `mapStat` `FileStat` (bigint
+uid/gid/size/times) that `tryLoose` **immediately discards** (it only needs
+"present?"). On the **cold single-call-per-fresh-instance** path Finding 3's parent
+cache never gets a second hit to amortise any of this, so the extra bundle shows up
+raw as the +0.011 ms.
+
+**The design tension.** The win we must keep is on **real packed repos**, where
+`tryLoose` **misses** loose for every object and 5e's cached `realpath(fanout dir)`
+makes each miss cheap (the loose test fixtures — loose-hit every iteration —
+*understate* this). The cost we must recover is the cold loose-hit dispatcher/
+FileStat waste. So the lean probe must be **both** parent-realpath-cached **and**
+free of the FileStat/runFs/double-check waste. Crucially: `tryLoose` lives in the
+primitive layer and sees only the **`FileSystem` port** — its only boolean-returning
+probe is `exists` (uncacheable full-path realpath-follow), and its only cached probe
+is `lstat` (heavy FileStat dispatcher). **No existing port method is both lean and
+cached** — that gap is the whole problem.
+
+#### Options evaluated
+
+**Option 1 — lean the general lstat-mode dispatcher itself (no new port surface).**
+*Rejected as insufficient.* Walked each candidate:
+- (i) *Drop the `FileStat`/`mapStat`/bigint construction from the lstat path.*
+  **Cannot** be done globally: real lstat callers **need** the FileStat —
+  `compareWorkingTreeDelta`, `find-would-overwrite`'s `isUntrackedPresent`,
+  `workdir-entry`'s `liveStat`, `add`/`stash`/`grep` working-tree scans all consume
+  it. The FileStat is only waste **for the probe**, so removing it must be
+  probe-specific — which is Option 2, not a dispatcher lean.
+- (ii) *Drop the pre-check `isContainedInEitherRoot` in `resolveForMode`'s lstat arm*
+  (keep only the post-check in `checkContainment`). This is a **security-posture
+  change**: the pre-check is a fail-fast that **rejects out-of-tree input BEFORE any
+  realpath I/O**; dropping it means an absolute-escape path (`../../etc`) would issue
+  `realpath(dirname)` on unvalidated input before the post-check rejects. It touches
+  the FS for out-of-tree paths (an I/O-amplification / probe-by-error-timing surface)
+  and weakens the fail-fast the arm's comment explicitly documents. **Rejected** on
+  security grounds — the two checks are load-bearing, not redundant. Saves one cheap
+  string compare anyway, not the FileStat/runFs bulk.
+- (iii) *Drop `runFs`.* `runFs` maps errno→`TsgitError` — removing it changes the
+  error contract for **all** lstat callers (raw errno leaks). **Rejected.**
+  → No safe global dispatcher lean exists; the waste is intrinsic to a
+  FileStat-returning method and can only be avoided by a probe-specific path.
+
+**Option 4 — pure-5a (try-`read`, no separate probe).** `try { return
+inflate(await read(path)) } catch (FILE_NOT_FOUND) { return undefined }`.
+- Cold **loose-hit**: 1 `realpath` (the read's) vs 5e's `realpath(dirname)`+`lstat`
+  — **cheaper**, recovers the cold regression.
+- Real **packed-miss** (the workload that matters): the `read` does an **uncacheable
+  `realpath(fullpath)`-ENOENT per object** — **no fanout-dir cache** — so it **loses
+  5e's packed-walk win**, the exact win the EXPAND scope was for. The loose fixtures
+  favour it precisely because they never exercise the packed-miss path.
+- **Rejected** as the primary: it optimises the understated cold fixture at the
+  expense of real packed-repo walks. (It is the correct *fallback* if DC-10 declines
+  the port method — see below.)
+
+**Option 3 — compose a leaner sequence from existing port methods.** *Ruled out:*
+only `exists` (uncacheable-follow) and `lstat` (heavy FileStat) exist; no composition
+of them is both lean and cached. Confirmed by inspection of the `FileSystem` port.
+
+**Option 2 — a lean cacheable presence probe as a NEW `FileSystem` port method
+(RECOMMENDED, but a surface change → DC-10 ★).** Add e.g.
+`readonly existsContained: (path: string) => Promise<boolean>` — semantically
+"`exists()` but lstat-mode (no leaf-follow) + parent-realpath-cached + one inline
+containment check, returning a boolean, no `FileStat`, no `runFs` wrapper". The node
+implementation is the **old lean `exists` shape** on the **lstat containment path**:
+resolve → (gated await) → `isContainedInEitherRoot(resolved)` fail-fast → cached
+`realpath(dirname)` (the finding-3 `parentRealpathCache`) → `fsOps.lstat(join(parent,
+basename))` as a bare presence check (catch ENOENT→false; escaping-parent can't
+happen — the fanout dir is inside `.git`) → `true`. `tryLoose` calls it; on `true`
+it proceeds to `ctx.fs.read` (the real security gate that follows the leaf — **case
+(c) unchanged**, PERMISSION_DENIED still raised at the read).
+- **Recovers the cold cost:** one containment check, no discarded FileStat, no
+  `runFs`, no `mapStat`.
+- **Keeps the packed-walk win:** the `realpath(dirname)` is the finding-3 cache, so
+  packed misses stay cheap across the 256 fanout dirs.
+- **Behaviour-preserving + faithful:** loose-first precedence untouched; the read is
+  still the security gate; `objectNotFound`/bytes identical.
+- **Cost — the reason it is a ★ decision:** `FileSystem` is a **public exported port
+  type** (`src/ports/index.ts`; ~359 refs in `reports/api.json`). A new method means
+  the interface **plus all three adapters** (node/browser/memory) implement it, a
+  `reports/api.json` regeneration, and the doc's earlier **"no new public surface"**
+  property is **lost**. Browser/memory impls are trivial (memory: map lookup + inline
+  containment; browser OPFS: `lstat`≡`stat`, so a thin presence check) — but they are
+  still three implementations + a public-surface addition, for a **0.011 ms** cold
+  recovery. That disproportion is exactly what the user must weigh (DC-10).
+
+#### Recommendation and the honest disproportion
+
+The **only clean path that satisfies both constraints** (recover cold **and** keep
+the packed-walk cache win) is **Option 2** — but it spends a **public port-surface
+addition + 3 adapter impls + api.json churn** to recover **0.011 ms** on a
+non-representative cold fixture. That is a poor trade **if** the packed-walk win can
+be preserved another way, and there is no evidence the cold regression matters on
+any real workload (it is fresh-instance-per-call, which real callers are not).
+
+So the designer recommendation is **conditional**, surfaced as **DC-10 ★** for the
+user, with a plain-spoken default:
+
+- **If the 0.011 ms cold regression is acceptable** (recommended default): **ship
+  5a+5e as-is**, accept the cold cost, and record it as a known, measured, benign
+  regression in the PR body (net effect across the real workloads is strongly
+  positive: status −20%, log −8%, warm read −9%). **No port change, no new surface.**
+- **If the cold regression must be recovered** without losing the packed win: **add
+  the `existsContained` port method (Option 2)** — accept the surface cost. This is
+  the only option that recovers cold *and* keeps the cache.
+- **Explicitly rejected as the recovery:** Option 4 (pure-5a) — it recovers cold but
+  **sacrifices the real packed-repo win**, inverting the EXPAND goal; only acceptable
+  if the user decides the packed-walk cache win is not worth 5e at all (a scope
+  reversal, not a lean).
+
+**Re-verification plan (whichever DC-10 chooses).** Re-run the exact harness that
+found the regression: (1) the **read-blob-cold** bench (fresh `openRepository` per
+op, loose object) — assert it is **≤ main's baseline** (regression recovered) if
+Option 2 ships, or **document the measured delta** if accepted as-is; (2) the
+**status / log / warm-read** benches — assert the −18–21% / −8% / −9% wins are
+**retained** (Option 2 must not regress them; the cached-realpath path is unchanged
+for the working-tree scan); (3) the **cold-read CPU-profile frame diff** — assert
+the `runFs`/`mapStat`/`FileStat` frames are **gone** from the probe path under
+Option 2 (the direct pin that the lean actually landed). Commit the improved
+`docs/perf/baseline.{json,md}` (DC-3) reflecting whichever surface ships.
+
 ### What does NOT change
 
 - Method signatures of the 18 public FS ops — unchanged.
@@ -668,11 +821,17 @@ provably behaviour-preserving via the following read.
 - `tryLoose` and `looseCompressedBytes` (`object-resolver.ts`) lose their `exists`
   probe: the loose **presence** probe switches to `ctx.fs.lstat` (5e), folded with
   the read via one `FILE_NOT_FOUND`-catch (5a). No signature change; internal only.
-- `hasObject` (`has-object.ts`) and `objectExistsLocally` (`fetch-missing.ts`)
-  switch their loose presence probe `ctx.fs.exists`→`ctx.fs.lstat` (5e). Precedence
-  unchanged in each (pack-first stays pack-first; loose-first stays loose-first).
+  **DC-10 Option B variant:** the probe switches instead to a new lean
+  `ctx.fs.existsContained` port method (finding 5f) — which *does* add public port
+  surface (interface + 3 adapters + api.json). Under DC-10 Option A (default) the
+  probe stays `ctx.fs.lstat`, no new surface.
+- `hasObject` (`has-object.ts`) and `objectExistsLocally` (`fetch-missing.ts`) are
+  **left unchanged** (kept on `ctx.fs.exists`) — switching them buys ~no perf while
+  spending strict behaviour-preservation on a pathological corner (see finding (5)).
 - **Precedence and store order are NOT changed** — the pack-first reorder is
   rejected (DC-7). `object-resolver.ts`'s "loose-first-then-pack" docstring stays.
+- **Public surface:** none under DC-10 Option A (default); one new `FileSystem` port
+  method under DC-10 Option B only.
 
 ## Behaviour preservation — the pin is the existing suite, unchanged
 
@@ -684,14 +843,13 @@ existing behavioural suite staying green with **unchanged assertions**. If any o
 these required editing an existing behavioural assertion it would not be
 behaviour-preserving and would be rejected — none do.
 
-The **only** observable deltas are in the pathological escaping-symlink-loose-object
-corner (git never writes such a file): `resolveObject` throws the same
-`PERMISSION_DENIED` (throw point moves probe→read, error identical), and
-`hasObject`/`objectExistsLocally` move from "throws" to "reports present" — the
-*more* git-faithful `lstat` presence answer. These have no existing golden and are
-pinned by **new defensive unit tests** (mutation plan), not by editing any existing
-assertion. There is **no** git-precedence divergence and **no** ADR (DC-7 kept
-loose-first; DC-8 N/A).
+The **only** observable delta is in the pathological escaping-symlink-loose-object
+corner (git never writes such a file), and it is confined to `resolveObject`/`tryLoose`:
+it throws the same `PERMISSION_DENIED` (throw point moves probe→read, error
+identical) — behaviour-preserving. `hasObject`/`objectExistsLocally` are **kept on
+`exists`** (not switched — session narrowing), so they are byte-identical to today
+with **zero** behaviour delta. There is **no** git-precedence divergence and **no**
+ADR (DC-7 kept loose-first; DC-8 N/A).
 
 ### Exact guarding test files (must stay green, assertions unchanged)
 
@@ -741,17 +899,17 @@ No new git-behaviour to pin (internal refactor). The matrix here is the
 | `objectNotFound` on the same missing oids | yes | yes | finding (5): probe returns undefined on `FILE_NOT_FOUND` → pack → miss still throws `objectNotFound` |
 | Loose read/probe errors (non-ENOENT) propagate unchanged | yes | yes | finding (5) precise `FILE_NOT_FOUND`-only catch; every other error rethrown |
 | Escaping-symlink loose object → `resolveObject` throws `PERMISSION_DENIED` | yes (at probe) | yes (at read) | finding (5e) case (c): same code/path, throw point moves probe→read; existing L71–95 read test |
-| Escaping-symlink loose path → `hasObject`/`objectExistsLocally` presence | throws today | reports present (git-faithful `lstat`) | new defensive unit test; pathological, no golden, more faithful |
+| `hasObject`/`objectExistsLocally` escaping-symlink presence | throws today | **unchanged** (kept on `exists`) | not switched — session narrowing |
 | Corrupt-loose + valid-pack shadow behaviour | divergent today (throws) | **unchanged** (still throws — loose-first kept, no reorder) | 5a's inflate stays outside the try; precedence untouched |
 | Transient-ENOENT rootDir retries | yes | yes | rejection arm clears sentinel (L384–385), guard re-awaits |
 | Concurrent first-call de-dup | yes | yes | shared `canonicalRootPromise` (unchanged) |
 | Error object identity / codes / messages | yes | yes | catch arms untouched; Stryker-disable comments intact |
 
 No new git interop golden is warranted: finding (5) preserves git's loose-first
-precedence and is byte-identical on healthy repos; the only observable deltas are
-in the pathological escaping-symlink corner (no existing golden, and the new
-`hasObject`/`objectExistsLocally` answer is the *more* git-faithful one), pinned by
-new defensive **unit** tests, not interop goldens (see DC-4).
+precedence and is byte-identical on healthy repos; the only observable delta is the
+pathological escaping-symlink corner in `resolveObject`/`tryLoose` (same
+`PERMISSION_DENIED`, throw point moves probe→read — no existing golden needed),
+pinned by the existing L71–95 read test (see DC-4).
 
 ## Perf pinning plan
 
@@ -922,11 +1080,9 @@ tests:
   identity differs — since both surface PERMISSION_DENIED, this test primarily pins
   that the switch did not *change* the surfaced error (the behaviour-preservation
   claim), which is the load-bearing assertion.
-- (c) **`hasObject`/`objectExistsLocally` presence on the escaping-symlink loose
-  path:** must **report present** (`true` / not-missing) under the `lstat` probe —
-  the new git-faithful answer. Kills a mutant reverting to `exists` (which would
-  throw / report absent). This is the one place the switch changes an observable,
-  so it gets a dedicated defensive test.
+- (c) **`hasObject`/`objectExistsLocally` are NOT switched** (kept on `exists`,
+  session narrowing) — their existing tests stand unchanged; no new test needed for
+  them under this finding.
 - (d) **cache reuse (the perf-behavioural pin):** a walk resolving N packed objects
   spread across ≤256 fanout dirs issues `realpath(fanout dir)` **at most once per
   distinct fanout dir** (spy on `fsOps.realpath`), not once per object — proves 5e
@@ -938,13 +1094,28 @@ tests:
 Assert against `TsgitError.data.code` directly (try/catch, not `toThrow(Class)`)
 per the mutation-resistant-patterns rule.
 
+**Finding (5f) — only if DC-10 → Option B (the `existsContained` port method).** The
+new method needs its own kill tests across **all three adapters** (it is a port
+method): (a) present regular file → `true`; (b) absent path → `false` (ENOENT-only
+catch — StringLiteral/`instanceof` mutants killed as in 5a); (c) escaping-symlink
+loose path → `true` at the probe (no leaf follow), and the *caller* (`tryLoose`)
+still throws `PERMISSION_DENIED` at the subsequent `read` — the case-(c)
+behaviour-preservation pin; (d) the parent-realpath cache is hit (spy `fsOps.realpath`
+called once per fanout dir, mirroring 5e (d)); (e) the returned value is a **boolean**,
+not a `FileStat` — a mutant that leaks the FileStat or wraps in `runFs` is killed by
+asserting the frame-shape via the cold-profile harness (behavioural, not a unit
+mutant). If DC-10 → Option A (accept as-is), **no** 5f code and **no** 5f tests —
+5a+5e's tests stand.
+
 ## Non-goals / explicitly deferred
 
 This PR ships baseline findings **(1) checkContainment** (Levers A + B), **(3)
 lstat-mode parent-realpath batching**, and **(5) the packed-repo `exists`-share**
-(5a + 5e, both behaviour-preserving, loose-first preserved). The remaining 26.3
-findings stay out of scope and become follow-up backlog entries — **only these two
-now**:
+(5a + 5e, behaviour-preserving, loose-first preserved) — plus, **conditional on
+DC-10**, finding **(5f)** the lean-probe cold-regression recovery (the
+`existsContained` port method) or, by DC-10 default, accepting the +0.011 ms cold
+regression as-is with no port change. The remaining 26.3 findings stay out of scope
+and become follow-up backlog entries — **only these two now**:
 
 - **(2) TREESAME pruning** — deferred (separate walk-pruning concern).
 - **(4) tree walk / parse** — deferred.
@@ -966,12 +1137,13 @@ Also documented but **not** in this PR:
 
 ## Decision candidates
 
-DC-1, DC-2, DC-3, DC-4, DC-6, DC-7 are **ratified** at the decisions gate (recorded
-for the audit trail); **DC-8 is now N/A** (its reorder was rejected by DC-7).
-**DC-5 (cache shape)** and **DC-9 (cache-size bump)** are the remaining open items —
-recommendations stated. With DC-7 resolved to stay faithful, the entire PR is
-behaviour-preserving and there are **no more ★ user-sign-off items** on the object
-path (DC-9 is a routine tuning call).
+DC-1, DC-2, DC-3, DC-4, DC-6, DC-7 are **ratified** (recorded for the audit trail);
+**DC-8 is N/A** (reorder rejected by DC-7). **DC-5 (cache shape)** and **DC-9
+(cache-size bump)** are open routine-tuning items — recommendations stated. **DC-10
+★** is the one live user-sign-off item on the object path: it opened after the
+cold-regression measurement and asks whether to spend a public port-surface addition
+to recover a benign +0.011 ms cold regression, or accept it as-is (the recommended
+default). Everything shipping is behaviour-preserving regardless of DC-10.
 
 ### DC-1 — Scope — **RATIFIED → Option B (widen)**
 
@@ -1093,6 +1265,45 @@ blunting the win.
 - **Recommendation: Option A** (raise to ≥256). It is the cheap enabler that makes
   finding (5e) actually collapse the share on real walks. Interacts with DC-5
   (Option A single cache) — the bump applies to that one shared `parentRealpathCache`.
+
+### DC-10 ★ — **NEW (open)** — Recover the +0.011 ms cold read-blob regression, or accept it as-is
+
+The wall-clock+CPU-profile investigation (finding 5f) found 5e nets big warm wins
+(status −18–21%, log −8%, warm read −9%) but regresses **read-blob-COLD** by **+3.3%
+= +0.011 ms/op** (fresh `openRepository` per call → loose object → the general
+`lstat` port method is heavier per call than the old lean inline `exists`: a
+`FileStat` `tryLoose` discards + `runFs` + a double containment check, none amortised
+on a single cold call). The lever choice is the user's because the only clean full
+recovery costs public port surface.
+
+- **Option A (recommended default) — accept the cold regression as-is; ship 5a+5e,
+  no port change.** The regression is **0.011 ms**, on a **fresh-instance-per-call**
+  fixture no real caller resembles; the net across real workloads is strongly
+  positive (status −20%, log −8%, warm read −9%). Record it in the PR body as a
+  known, measured, benign regression. **No new public surface**, the "no new port
+  method" property is preserved. Re-verify: document the measured cold delta; assert
+  the warm wins retained.
+- **Option B — add a lean `existsContained` `FileSystem` port method (finding 5f
+  Option 2) to recover cold *and* keep the packed-walk cache win.** The **only**
+  option that recovers cold without sacrificing 5e's real-repo win. Cost: `FileSystem`
+  is a **public exported port** (~359 refs in `reports/api.json`) → the interface +
+  **all three adapters** (node/browser/memory) implement it + `reports/api.json`
+  regenerated + the doc's **"no new public surface"** property is **lost** — for a
+  0.011 ms recovery. Behaviour-preserving + faithful (probe is a pre-filter; the
+  subsequent `read` remains the leaf-following security gate; loose-first untouched).
+  Re-verify: cold bench **≤ main baseline**; warm wins retained; CPU-profile shows
+  `runFs`/`mapStat`/`FileStat` frames **gone** from the probe path.
+- **Option C — pure-5a (try-`read`, drop the separate probe).** Recovers cold (1
+  realpath on a loose hit) but **loses 5e's packed-walk cache win** (uncacheable
+  `realpath(fullpath)`-ENOENT per packed object) — inverts the EXPAND goal.
+  **Rejected** unless the user decides the packed-walk cache win is not worth keeping
+  (a scope reversal, not a lean).
+- **Recommendation: Option A (accept as-is).** Spending a public-surface addition +
+  3 adapter impls + api.json churn to recover 0.011 ms on a non-representative cold
+  fixture is disproportionate; the packed-walk win (the point of the EXPAND scope) is
+  already delivered by 5e+DC-9 and is **not** what regressed. **Blocker-framing for
+  the user:** if 0.011 ms cold genuinely matters, Option B is the only clean recovery
+  — but the honest read is that it does not, and Option A is the right call.
 
 ### Lever 5c note (★ if ever proposed) — trusted-internal-path fast-path
 
