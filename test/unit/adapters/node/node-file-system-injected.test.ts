@@ -418,15 +418,22 @@ describe('NodeFileSystem — guarded canonical-root await, first-call resolution
       });
     });
 
-    describe('When the first FS op is symlink with an absolute in-root target', () => {
+    describe('When the first FS op is symlink with an absolute canonical-root-only target', () => {
       it('Then it resolves the canonical root before validating the target', async () => {
         // Arrange — the absolute-target branch is the only path in `symlink`
-        // that reaches `getCanonicalRoot`.
+        // that reaches `getCanonicalRoot`. The target is contained by the
+        // CANONICAL root only (realpath(rootDir) differs from the raw rootDir),
+        // so it is load-bearing on the canonical disjunct: a never-await mutant
+        // that leaves `normalizedCanonicalRoot` undefined makes the dual-root OR
+        // refuse this legitimate target, so `symlink` never runs — killed.
         const rootDir = '/root';
-        const target = '/root/target.txt';
+        const canonicalRoot = '/canon';
+        const target = '/canon/target.txt';
         const link = '/root/sub/link.txt';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
-          if (input === rootDir) return rootDir;
+          if (input === rootDir) return canonicalRoot;
+          if (input === '/root/sub') return '/root/sub';
+          if (input === target) return target;
           throw enoent();
         });
         const symlinkOp = vi.fn().mockResolvedValue(undefined);
@@ -440,11 +447,9 @@ describe('NodeFileSystem — guarded canonical-root await, first-call resolution
         // Act
         await sut.symlink(target, link);
 
-        // Assert
+        // Assert — succeeds only when the canonical root was resolved: the
+        // target is outside the raw root and inside the canonical root.
         expect(symlinkOp).toHaveBeenCalledWith(target, link);
-        expect(realpathSpy.mock.calls.some(([arg]: readonly unknown[]) => arg === rootDir)).toBe(
-          true,
-        );
       });
     });
   });

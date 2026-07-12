@@ -535,7 +535,7 @@ export class NodeFileSystem implements FileSystem {
     await runFs(() => this.fsOps.rm(real), path);
     // Node's `fs.rm` without `recursive` only removes leaves — a regular
     // file or symlink. The parent directory and its realpath are
-    // unchanged, so the creation-parent cache entry for `dirname(real)`
+    // unchanged, so the parent-realpath cache entry for `dirname(real)`
     // remains valid. No invalidation needed.
   };
 
@@ -733,8 +733,9 @@ export class NodeFileSystem implements FileSystem {
     normCanon: string,
   ): Promise<string> {
     if (mode === 'read') {
-      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon))
+      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon)) {
         throw permissionDenied(path);
+      }
       return this.fsOps.realpath(resolved);
     }
     if (mode === 'lstat') {
@@ -742,8 +743,9 @@ export class NodeFileSystem implements FileSystem {
       // BEFORE issuing the realpath I/O. Without this gate, an absolute
       // escape path (`../../etc`) would still walk through
       // `realpath(dirname)` before the post-check catches it.
-      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon))
+      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon)) {
         throw permissionDenied(path);
+      }
       // The parent realpath is cached (shared with `realpathForCreation`)
       // so a status/walk lstat-ing many entries under the same directory
       // pays the realpath once per parent, not once per entry. The leaf
