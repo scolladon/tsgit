@@ -698,21 +698,32 @@ export class NodeFileSystem implements FileSystem {
     return real;
   }
 
+  // Shared by `realpathForCreation` and the `resolveForMode` lstat arm: a
+  // status/walk touching many entries under the same directory pays the
+  // parent realpath once, not once per entry. The leaf itself is never
+  // cached — only the parent directory realpath. Throws on ENOENT (the
+  // `.set` below only runs after a successful await, so a failed realpath
+  // is never cached) — callers that need a fallback catch it themselves.
+  private async cachedParentRealpath(parent: string): Promise<string> {
+    const cached = this.parentRealpathCache.get(parent);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const realParent = await this.fsOps.realpath(parent);
+    this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+    return realParent;
+  }
+
   private async realpathForCreation(resolved: string): Promise<string> {
     // Fast path: parent already cached. The leaf realpath is meaningless
     // for creation (the leaf often doesn't exist yet), so we cache the
     // parent only and join the basename.
     const parent = this.pathPolicy.dirname(resolved);
     const basename = this.pathPolicy.basename(resolved);
-    const cached = this.parentRealpathCache.get(parent);
-    if (cached !== undefined) {
-      return this.pathPolicy.join(cached, basename);
-    }
-    // Cache miss. Try a direct parent realpath first — when the parent
-    // exists this is a single call instead of the full walk-up.
+    // Cache miss falls through to a direct parent realpath — when the
+    // parent exists this is a single call instead of the full walk-up.
     try {
-      const realParent = await this.fsOps.realpath(parent);
-      this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+      const realParent = await this.cachedParentRealpath(parent);
       return this.pathPolicy.join(realParent, basename);
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') {
@@ -746,18 +757,12 @@ export class NodeFileSystem implements FileSystem {
       if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon)) {
         throw permissionDenied(path);
       }
-      // The parent realpath is cached (shared with `realpathForCreation`)
-      // so a status/walk lstat-ing many entries under the same directory
-      // pays the realpath once per parent, not once per entry. The leaf
-      // itself is never cached — only the parent directory realpath.
+      // The parent realpath is cached (shared with `realpathForCreation`
+      // via `cachedParentRealpath`). ENOENT propagates to the caller here
+      // (no fallback), unlike the creation path.
       const parent = this.pathPolicy.dirname(resolved);
       const basename = this.pathPolicy.basename(resolved);
-      const cached = this.parentRealpathCache.get(parent);
-      if (cached !== undefined) {
-        return this.pathPolicy.join(cached, basename);
-      }
-      const realParent = await this.fsOps.realpath(parent);
-      this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+      const realParent = await this.cachedParentRealpath(parent);
       return this.pathPolicy.join(realParent, basename);
     }
     return this.resolveForCreation(path, resolved);
