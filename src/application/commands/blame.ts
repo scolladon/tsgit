@@ -360,6 +360,10 @@ const resolveInParent = async (
   const date = data.committer.timestamp;
   const entry = await blobTreeEntry(ctx, data.tree, path);
   if (entry !== undefined) {
+    // equivalent-mutant: forcing this condition false (never TREESAME) is output-equivalent —
+    // the 'changed' arm then reads the parent blob, which is byte-identical (equal oid ⇒ equal
+    // content) and diffs to all-common, so passed/kept and the scheduled suspect match the skip
+    // byte-for-byte; only the avoided read differs, timing-only.
     if (entry.id === suspectBlobId) return { kind: 'treesame', sourcePath: path, date };
     const blob = (await readBlob(ctx, entry.id)).content;
     return { kind: 'changed', blob, blobId: entry.id, sourcePath: path, date };
