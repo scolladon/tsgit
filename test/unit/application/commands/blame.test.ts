@@ -175,6 +175,29 @@ describe('Given a path absent from the revision', () => {
   });
 });
 
+describe('Given a path that names a directory', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'dir/a.txt', 'x\n');
+      await commitFile(ctx, 'c2', 'dir/b.txt', 'y\n');
+
+      // Act + Assert
+      try {
+        await blame(ctx, 'dir');
+        expect.unreachable('blame should refuse a directory path');
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'PATH_NOT_IN_TREE',
+          path: 'dir',
+        });
+      }
+    });
+  });
+});
+
 describe('Given an explicit older revision', () => {
   describe('When blaming the file as of that revision', () => {
     it('Then only that revision content is blamed', async () => {

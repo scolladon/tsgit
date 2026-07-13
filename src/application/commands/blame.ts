@@ -19,13 +19,14 @@ import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
+import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
 import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
-import { flattenTree } from '../primitives/flatten-tree.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { findTreeEntry } from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -367,8 +368,8 @@ const blobAtPath = async (
   tree: ObjectId,
   path: FilePath,
 ): Promise<Uint8Array | undefined> => {
-  const flat = await flattenTree(ctx, tree);
-  const entry = flat.entries.get(path);
+  const entry = await findTreeEntry(ctx, tree, path);
   if (entry === undefined) return undefined;
+  if (entry.mode === FILE_MODE.DIRECTORY || entry.mode === FILE_MODE.GITLINK) return undefined;
   return (await readBlob(ctx, entry.id)).content;
 };
