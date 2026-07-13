@@ -1,4 +1,4 @@
-import { bytesToHex, compareBytes, hexToBytes } from '../objects/encoding.js';
+import { bytesToHex, hexToBytes } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
 import { invalidPackIndex } from './error.js';
 
@@ -83,9 +83,13 @@ function readFanout(index: PackIndex, byte: number): number {
 }
 
 function compareShaAtIndex(index: PackIndex, i: number, targetBytes: Uint8Array): number {
-  const offset = IDX_SHA_TABLE_OFFSET + i * IDX_SHA_LENGTH;
-  const sha = index._bytes.subarray(offset, offset + IDX_SHA_LENGTH);
-  return compareBytes(sha, targetBytes);
+  const base = IDX_SHA_TABLE_OFFSET + i * IDX_SHA_LENGTH;
+  const bytes = index._bytes;
+  for (let k = 0; k < IDX_SHA_LENGTH; k += 1) {
+    const diff = bytes[base + k]! - targetBytes[k]!;
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 function readOffset(index: PackIndex, i: number): number {

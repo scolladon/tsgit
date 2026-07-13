@@ -12,8 +12,11 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { mv } from '../../../../src/application/commands/mv.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const ident = (name: string, timestamp: number): AuthorIdentity => ({
@@ -175,6 +178,64 @@ describe('Given a path absent from the revision', () => {
   });
 });
 
+describe('Given a path that names a directory', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'dir/a.txt', 'x\n');
+      await commitFile(ctx, 'c2', 'dir/b.txt', 'y\n');
+
+      // Act + Assert
+      try {
+        await blame(ctx, 'dir');
+        expect.unreachable('blame should refuse a directory path');
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'PATH_NOT_IN_TREE',
+          path: 'dir',
+        });
+      }
+    });
+  });
+});
+
+describe('Given a path that names a gitlink submodule entry', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+      // Arrange
+      const ctx = await seed();
+      const base = await commitFile(ctx, 'c1', 'keep.txt', 'x\n');
+      const treeId = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [{ mode: FILE_MODE.GITLINK, name: 'mysub', id: base }],
+      } as Tree);
+      clock += 60;
+      const rev = await createCommit(ctx, {
+        tree: treeId,
+        parents: [base],
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+        message: 'add submodule',
+      });
+
+      // Act + Assert
+      try {
+        await blame(ctx, 'mysub', { rev });
+        expect.unreachable('blame should refuse a gitlink path');
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'PATH_NOT_IN_TREE',
+          path: 'mysub',
+        });
+      }
+    });
+  });
+});
+
 describe('Given an explicit older revision', () => {
   describe('When blaming the file as of that revision', () => {
     it('Then only that revision content is blamed', async () => {
@@ -288,6 +349,43 @@ describe('Given a commit that rewrites every line of the file', () => {
       // Assert
       expect(committedLines(sut).map((l) => l.commit)).toEqual([c2, c2]);
       expect(committedLines(sut).some((l) => l.commit === c1)).toBe(false);
+    });
+  });
+});
+
+describe('Given a commit whose parent has a differing blob at the same path', () => {
+  describe('When blaming the file', () => {
+    it('Then the differing line is blamed at the child, not passed to the parent', async () => {
+      // Arrange — c2's f.txt differs from c1's at the parent-entry oid, so the
+      // suspect must diff against the parent rather than skip straight through.
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'a\nB\nc\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2, c1]);
+    });
+  });
+});
+
+describe('Given a commit whose parent has the identical blob at the same path', () => {
+  describe('When blaming the file', () => {
+    it('Then every line passes through to the ancestor unchanged', async () => {
+      // Arrange — c2 touches an unrelated file, leaving f.txt's tree entry
+      // identical (same oid) to c1's — every line must pass straight to c1.
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      await commitFile(ctx, 'c2', 'other.txt', 'unrelated\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c1, c1]);
+      expect(committedLines(sut).every((l) => l.boundary)).toBe(true);
     });
   });
 });

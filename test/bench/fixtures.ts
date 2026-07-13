@@ -67,6 +67,58 @@ export const setupSmallRepo = async (opts: { commits?: number } = {}): Promise<B
   };
 };
 
+/**
+ * A repo where `stable.txt` is committed once, then a sibling `churn.txt` is
+ * committed `commits` more times. `stable.txt`'s history is a single commit
+ * at the root of an otherwise-deep ancestry — the O(path-depth) unchanged-file
+ * case blame's TREESAME skip targets.
+ */
+export const setupDeepAncestryRepo = async (
+  opts: { commits?: number } = {},
+): Promise<BenchRepo> => {
+  const commits = opts.commits ?? 200;
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-deep-ancestry-'));
+  const repo = await openRepository({ cwd });
+
+  let firstBlobId = '';
+  let headCommitId = '';
+  try {
+    await repo.init();
+    await writeFile(path.join(cwd, 'stable.txt'), 'stable\n');
+    await repo.add(['stable.txt']);
+    const seeded = await repo.commit({
+      message: 'seed stable.txt',
+      author: AUTHOR,
+    });
+    const tree = await repo.primitives.readTree(seeded.tree);
+    const blobEntry = tree.entries.find((entry) => entry.name === 'stable.txt');
+    if (blobEntry !== undefined) firstBlobId = blobEntry.id;
+
+    for (let i = 0; i < commits; i += 1) {
+      await writeFile(path.join(cwd, 'churn.txt'), `payload ${i}\n`);
+      await repo.add(['churn.txt']);
+      const result = await repo.commit({
+        message: `churn ${i}`,
+        author: { ...AUTHOR, timestamp: AUTHOR.timestamp + i + 1 },
+      });
+      headCommitId = result.id;
+    }
+  } finally {
+    await repo.dispose();
+  }
+
+  if (firstBlobId === '' || headCommitId === '') {
+    throw new Error('benchmark fixture failed to capture seed ids');
+  }
+
+  return {
+    cwd,
+    headCommitId,
+    firstBlobId,
+    cleanup: () => rm(cwd, { recursive: true, force: true }),
+  };
+};
+
 export const setupDirtyWorkingTree = async (
   base: BenchRepo,
   modifiedFiles: number,

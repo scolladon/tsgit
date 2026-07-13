@@ -157,6 +157,8 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
   let merged: { dir: string; ctx: Context };
   let renamed: { dir: string; ctx: Context };
   let worktree: { dir: string; ctx: Context };
+  let deepAncestry: { dir: string; ctx: Context };
+  let oursMerge: { dir: string; ctx: Context };
 
   beforeAll(async () => {
     const linearDir = await makeRepo('linear');
@@ -196,11 +198,37 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     await writeFile(path.join(worktreeDir, 'staged.txt'), 'p\nq\n');
     git(worktreeDir, 'add', 'staged.txt');
     worktree = { dir: worktreeDir, ctx: createNodeContext({ workDir: worktreeDir }) };
+
+    // Deep ancestry: stable.txt committed once, then a sibling file churns for
+    // several commits — stable.txt's tree entry is TREESAME across the whole span,
+    // pinning that the skip still walks to the deep root with correct content.
+    const deepAncestryDir = await makeRepo('deep-ancestry');
+    await commitContent(deepAncestryDir, 'stable.txt', 'stable1\nstable2\n');
+    for (let i = 0; i < 6; i += 1) {
+      await commitContent(deepAncestryDir, 'churn.txt', `churn${i}\n`);
+    }
+    deepAncestry = { dir: deepAncestryDir, ctx: createNodeContext({ workDir: deepAncestryDir }) };
+
+    // `-s ours` merge: side edits f.txt, main also edits f.txt, then main merges side
+    // with `-s ours` — the merge tree equals main's tree, so f.txt is TREESAME to the
+    // first parent and the side edit never surfaces. Pins the first-parent-TREESAME
+    // short-circuit (the side parent is never descended).
+    const oursMergeDir = await makeRepo('ours-merge');
+    await commitContent(oursMergeDir, 'f.txt', 'base1\nbase2\n');
+    git(oursMergeDir, 'checkout', '-q', '-b', 'side');
+    await commitContent(oursMergeDir, 'f.txt', 'side1\nbase2\n');
+    git(oursMergeDir, 'checkout', '-q', 'main');
+    await commitContent(oursMergeDir, 'f.txt', 'base1\nmain2\n');
+    clock += 60;
+    runGit(['-C', oursMergeDir, 'merge', '-s', 'ours', '-q', '--no-edit', 'side'], {
+      env: datedEnv(clock),
+    });
+    oursMerge = { dir: oursMergeDir, ctx: createNodeContext({ workDir: oursMergeDir }) };
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
     await Promise.all(
-      [linear, prepend, merged, renamed, worktree].map((r) =>
+      [linear, prepend, merged, renamed, worktree, deepAncestry, oursMerge].map((r) =>
         rm(r.dir, { recursive: true, force: true }),
       ),
     );
@@ -250,5 +278,17 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       await blame(worktree.ctx, 'f.txt', { worktree: true, range: { start: 1, end: 2 } }),
     );
     expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(worktree.dir, 'f.txt', '-L', '1,2')));
+  });
+
+  it('Then an unchanged file across deep ancestry reconstructs git blame --porcelain', async () => {
+    expect(renderPorcelain(await blame(deepAncestry.ctx, 'stable.txt'))).toBe(
+      gitPorcelain(deepAncestry.dir, 'stable.txt'),
+    );
+  });
+
+  it('Then a -s ours first-parent-TREESAME merge reconstructs git blame --porcelain', async () => {
+    expect(renderPorcelain(await blame(oursMerge.ctx, 'f.txt'))).toBe(
+      gitPorcelain(oursMerge.dir, 'f.txt'),
+    );
   });
 });
