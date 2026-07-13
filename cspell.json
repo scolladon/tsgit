@@ -1077,7 +1077,10 @@
     "realpathed",
     "amortising",
     "fullpath",
-    "uncacheable"
+    "uncacheable",
+    "Amdahl",
+    "scrutinised",
+    "generalising"
   ],
   "ignorePaths": [
     "node_modules",

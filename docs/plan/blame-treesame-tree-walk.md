@@ -477,7 +477,7 @@ goldens + kill-tests are the pins that keep the bytes byte-identical AND prove t
 1. Add the `Suspect.blobId` field and the discriminated `ResolvedParent` union +
    the reworked `resolveInParent`/`processSuspect` skeleton. `npm run check:types`
    goes RED: `blobId` missing at the three `schedule` sites, `resolveInParent`'s new
-   5th param unpassed, the `resolved.kind` switch non-exhaustive. This is the driving
+   5th param not passed, the `resolved.kind` switch non-exhaustive. This is the driving
    RED — the type errors enumerate every site the threading must reach.
 2. Add the two interop goldens (deep-ancestry + `-s ours`) to `blame-interop.test.ts`
    and the changed-file + TREESAME focused unit assertions to `blame.test.ts` (see
@@ -572,7 +572,7 @@ provides `buildTestIndex`, `arbObjectId`, `TestIndexEntry`.
 **RED:** the existing `pack-index.test.ts` lookup + property tests are the pin. To
 get a strict RED, hand-apply a wrong-sign mutant (e.g. `return -diff`) mentally /
 temporarily and confirm the deep-bucket + property tests catch it (a wrong sign
-mislands the search → wrong/`undefined` offset). The honest framing: this is a
+misdirects the search → wrong/`undefined` offset). The honest framing: this is a
 behaviour-preserving shave, so the acceptance is "existing suite stays green with
 unchanged assertions". No NEW test is needed — the property test already asserts the
 exact identical-offset invariant the shave must preserve.

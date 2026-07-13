@@ -617,7 +617,7 @@ regression is caught by the wall-clock bench, not a unit mutant.
   (mirroring the documented `indexOf`/`bytesToHex` `EqualityOperator` equivalents in
   `encoding.ts`); an EqualityOperator mutant on the differ test flips a real
   comparison and is killed by the deep-bucket + property tests (a wrong sign
-  mislands the search ⇒ wrong/`undefined` offset). No new **decision** point is
+  misdirects the search ⇒ wrong/`undefined` offset). No new **decision** point is
   introduced that the current suite does not already cover; if a byte-loop
   equivalent survives, document it (equal-SHA over-read) rather than contriving a
   kill.
