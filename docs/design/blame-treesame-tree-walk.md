@@ -19,9 +19,20 @@
 > descent ALREADY EXISTS** — `descendTreePath` (`primitives/internal/resolve-tree-path.ts`,
 > used by `readFileAt`/`rev-parse`) — so finding (4) is mostly *reuse*, not
 > net-new: the only gap is that it **throws** `PATH_NOT_IN_TREE` where blame needs
-> **`undefined`**. No git-observable change expected → **no ADR** (surfaced as a
-> decision candidate if the gate disagrees on promoting an internal helper).
-> Status: draft → self-reviewed ×3 → decision candidates open for the ADR conversation.
+> **`undefined`**. No git-observable change expected → **no ADR** (the design doc +
+> run record are the decision trail — the just-merged predecessor #225,
+> 26.4 checkcontainment-hot-path, shipped this same behaviour-preserving-perf
+> pattern design-doc-only with no ADR).
+>
+> **Scope (ratified DC-1 → B, DEVIATION from the initial draft's "defer"):** this PR
+> ALSO includes the finding-(4) `show`/`log` constant-factor micro-opts on
+> `parseTreeContent` / `lookupPackIndex` — no longer deferred. On empirical
+> inspection (below) the `parseTreeContent` candidates are all either
+> refusal-narrowing, output-corrupting, or negligible, so the *only* micro-opt
+> shipped is a provably-safe `lookupPackIndex` inner-loop shave; every excluded
+> `parseTreeContent` lever carries a written reason (per DC-1 → B's "exclude only
+> with reason" rule). See "Finding (4) for `show` / `log`" and DC-7 below.
+> Status: draft → self-reviewed ×3 → decisions ratified → revised against DC-1..9.
 
 ## Context
 
@@ -154,6 +165,21 @@ recorded run.
 | **B** | Merge; `f.txt` **TREESAME to the second parent's ancestor line** (MERGE blob = MAIN blob `024e98e…`; SIDE left `f.txt` at BASE blob) | Line 2 → **MAIN** `98865865… (main edits f.txt line2)`, `previous 911c39c… f.txt`; lines 1,3 → **BASE** `911c39c… (base)` `boundary`. **MERGE itself blames nothing.** | When the merge's file blob equals a parent's blob, all lines pass through that parent; the merge is not blamed; `previous` points at that parent's parent. |
 | **C** | `-s ours` merge (MERGE tree = MAIN tree exactly, so `f.txt` TREESAME to the **first** parent; SIDE independently edited `f.txt`) | Line 1 → **MAIN** `(main edits line1)`; lines 2,3 → **BASE** `(base)`. **The SIDE edit is invisible; MERGE blames nothing; the SIDE parent is never descended for `f.txt`.** | The TREESAME-to-a-parent rule means git does **not** walk *other* parents for a file once a parent is TREESAME — the whole file passes to the TREESAME parent. This is the decisive pin for the loop short-circuit. |
 | **D** | `git blame HEAD -- <directory>` | `fatal: no such path sub in HEAD`, non-zero exit | Blame is file-only; a directory / non-blob leaf is a refusal, not a blame. The path-scoped descent returning `undefined` for a non-blob leaf → `pathNotInTree` in `seed` is faithful. |
+
+### Empirical faithfulness pin — tree-parse behaviour (git 2.55.0) for finding (4)
+
+Because DC-1 → B admits `parseTreeContent` into scope, its faithfulness bar was
+pinned against real git in `mktemp -d` throwaways (scrubbed `GIT_*`, isolated
+`HOME`, `GIT_CONFIG_NOSYSTEM=1`). These are the pins behind the "all excluded"
+verdict above:
+
+| # | Probe | git 2.55.0 result | Pins |
+|---|-------|-------------------|------|
+| **P1** | `git mktree` on two identical `same.txt` entries, then `ls-tree` / `cat-file -p` the result | mktree **accepts** it (writes tree `35801a2…`); `ls-tree`/`cat-file -p` **read both duplicate rows back verbatim** | Git's **parser** does not refuse duplicate entry names. tsgit's `duplicate entry name` throw is a tsgit-specific hardening, not git parity — so it must not be narrowed (kills the "adjacent-only dup check" micro-opt). |
+| **P2** | `git fsck` on that duplicate tree | `error … duplicateEntries: contains duplicate file entries` | The duplicate refusal in git lives in **fsck**, not the read path — confirming P1's placement of the refusal. |
+| **P3** | `git mktree` sorts its input entries (non-adjacent duplicate input → adjacent in the object) | mktree emits a canonically-sorted tree | In a *canonically written* tree duplicates are adjacent — but tsgit must still catch a **non-canonical** unsorted tree with non-adjacent duplicates (why the `Set`, not a neighbour compare, is required). |
+| **P4** | raw `git cat-file tree` bytes for a subdirectory entry (`od -c`) | on-disk mode string is `40000` (5 ASCII digits, **no** leading zero); `ls-tree` *displays* `040000` but the object bytes are `40000` | The common mode path is a short ASCII string `validateFileMode` accepts directly (`NORMALIZE_MAP` only rewrites the rare `040000`); the mode region is ASCII on the happy path — but the *error* path is not (P5). |
+| **P5** | `TextDecoder.decode([0xC3])` vs `String.fromCharCode(0xC3)` (Node) | `TextDecoder` → U+FFFD (`�`); `fromCharCode` → `Ã` — **divergent** | A `fromCharCode` decode fast-path would change the `invalidFileMode(mode)` refusal's `.value` bytes for a malformed (non-ASCII) mode — kills the "cheaper mode decode" micro-opt. |
 
 ### What the matrix proves about the current tsgit code
 
@@ -366,30 +392,87 @@ at each ancestor (cheap) but descends `stable.txt`'s subtree path only to compar
 oids (O(path-depth), no blob read, no diff) — the flatten + blob read + diff per
 ancestor is gone.
 
-### Finding (4) for `show` / `log` — assessed, NOT in scope (recommend defer)
+### Finding (4) for `show` / `log` — IN SCOPE (ratified DC-1 → B)
 
 `show`'s `walkInternal 0.24 / parseTreeContent 0.18` come from `diffTrees`'s
 **recursive** tree diff (`blobProjection` → `flattenTree` on both sides,
 `diff-trees.ts` L166), which genuinely needs the **whole** tree on each side to
 compute the change set. There is no single-path shortcut — a diff is inherently a
-whole-tree comparison. The only lever there is a **parse-level constant-factor**
-micro-opt (`parseTreeContent`: per-entry `TextDecoder.decode` of mode+name, a
-`new Set` dup-check, `ObjectIdFactory.fromRaw` per entry) — riskier, lower value,
-and it touches a domain hot-path shared by every tree read. `log`'s
-`lookupPackIndex 0.11` (`domain/storage/pack-index.ts`) is fanout + binary search
-per object — already the intended O(log n) design; shaving it is a separate
-pack-index micro-opt.
+whole-tree comparison, so `walkInternal`/`flattenTree` cannot collapse the way
+blame's do. The only levers for `show`/`log` are **parse-level constant-factor**
+micro-opts on two domain hot-frames — `parseTreeContent` (`domain/objects/tree.ts`,
+on *every* tree read across *every* command) and `lookupPackIndex`
+(`domain/storage/pack-index.ts`, fanout + O(log n) binary search per object). DC-1
+ratified as **B**: assess each candidate here and ship the provably-safe subset.
 
-**DC-1 (scope) recommendation: scope this PR to the high-value blame wins**
-(findings 2 + 4-for-blame), and **defer** the `show`/`log` parse/pack-index
-constant-factor micro-opts as a follow-up. Rationale: blame's findings are
-algorithmic (O(tree-size)→O(path-depth), O(depth) blob-reads→0 on TREESAME) with a
-large, safe, byte-identical win; the `show`/`log` levers are constant-factor, touch
-a broadly-shared domain frame (`parseTreeContent` is on *every* tree read across
-every command), and carry mutation/regression risk disproportionate to the share
-they'd move. Chasing them here would widen the diff into the shared parser for a
-low-value gain. (If the gate wants them in-PR, they are enumerated as DC-7 with the
-specific micro-opts.)
+Because `parseTreeContent` is a domain hot-frame on **every** tree read, the bar is
+absolute: a candidate ships **only** if it produces the **byte-identical** `Tree`
+(entry order, names, ids, modes) for every valid tree **and** the **identical**
+`invalidTreeEntry(offset, reason)` / `invalidFileMode(value)` refusal for every
+invalid tree. This is pinned by `test/unit/domain/objects/tree.test.ts` (13
+example cases + 3 properties) and the object-storage / `tree-interop` goldens.
+
+#### `parseTreeContent` — per-candidate verdict (all EXCLUDED, with reasons)
+
+Current per-entry cost (L36-69): `indexOf`×2 (space, null), `decode` (TextDecoder)
+of mode + name, name-validity check, `ObjectIdFactory.fromRaw(rawHash)`,
+`normalizeFileMode(modeStr)`, and a `names.has`/`names.add` `Set<string>` dup-check.
+Each candidate was scrutinised against the two-part bar; none survives:
+
+| Candidate | Idea | Verdict | Reason (empirically grounded) |
+|-----------|------|---------|-------------------------------|
+| `names` Set dup-check | Git trees are sorted ⇒ duplicates adjacent ⇒ replace the `Set` with a compare-to-previous-name | **EXCLUDE** | The refusal would **narrow**. Pinned against **git 2.55.0**: `git mktree` *accepts* a duplicate-name tree and `ls-tree`/`cat-file -p` read it back verbatim — the duplicate refusal lives only in `git fsck` (`duplicateEntries`), **not** in git's parse path. tsgit's `duplicate entry name` throw is therefore a **tsgit-specific hardening**, pinned by `tree.test.ts` L307-329. An adjacent-only check drops the **non-adjacent**-duplicate refusal (a hand-crafted/foreign unsorted tree with `a … a`). CLAUDE.md forbids silently changing a refusal, so the `Set` (which catches *any* duplicate) must stay. (The `new Set` is allocated **once per call**, not per entry — it is not a per-entry cost anyway.) |
+| mode decode | Replace `decode(mode-bytes)` with `String.fromCharCode` over the ASCII digits | **EXCLUDE** | Not byte-identical on the **error** path. Proven locally: for a mode byte `0xC3`, `TextDecoder.decode` yields U+FFFD (`�`) while `fromCharCode` yields `Ã` — divergent strings. A malformed mode reaches `validateFileMode`, whose `invalidFileMode(mode)` carries the **decoded mode string** as `.value`; `fromCharCode` would change those refusal bytes. Pinned by `tree.test.ts` L346-381 (asserts `.value === ' '` on a NUL-in-mode probe) and every `INVALID_FILE_MODE` golden. |
+| name decode | Same `fromCharCode` fast-path for the name | **EXCLUDE** | Corrupts **valid** output. Names are arbitrary UTF-8 — `tree.test.ts` L100-114 pins `日本語.txt`. `fromCharCode` decodes each byte as a code point, mangling every multi-byte name. Non-negotiable. |
+| `ObjectId.fromRaw` per entry | Skip `fromRaw`'s two `SHA1/SHA256_HEX_RE` regex tests (redundant: `fromRaw` output is always `bytesToHex` of a length-20/32 buffer ⇒ always `[0-9a-f]{40}\|{64}`) | **EXCLUDE** | Changing `ObjectId.fromRaw` mutates a **branded-type constructor** consumed library-wide, for a gain of two regex tests per entry — negligible against the **irreducible** `bytesToHex` hex conversion that stays regardless. Wrong altitude for this PR (a shared-constructor change), disproportionate blast radius vs share moved. The safe hex conversion is the cost; the regex is not shaveable *inside `parseTreeContent`*. |
+| reorder cheap checks first | Move the dup-check / name-validity ahead of `fromRaw` + `normalize` to fail faster | **EXCLUDE** | Changes **which refusal fires first** on a tree that is simultaneously duplicate/invalid-name **and** invalid-mode. The `offset`+`reason` of the *first* throw is observable and pinned; reordering flips it. |
+
+**`parseTreeContent` conclusion: NO micro-opt ships.** Every per-entry candidate
+either narrows a refusal, corrupts valid output, or is a negligible shared-constructor
+change. This is the DC-1 → B "exclude a specific lever with a written reason"
+outcome for the whole frame — the reasons are the table above, each pinned to real
+git (2.55.0) or an existing test. `parseTreeContent` is left **byte-for-byte
+untouched**; its `show`/`blame` share does not move.
+
+#### `lookupPackIndex` — one provably-safe lever (SHIPS)
+
+`lookupPackIndex` (`pack-index.ts` L117-140) does `hexToBytes(id)` once, reads two
+fanout words (`lo`, `hi`), then a binary search whose inner step is
+`compareShaAtIndex(index, mid, targetBytes)` (L85-89): it `subarray`s a 20-byte SHA
+view out of `index._bytes` and hands it to `compareBytes`. That `subarray` **heap-
+allocates a fresh `Uint8Array` view on every binary-search iteration**.
+
+**The micro-opt:** compare the stored SHA against `targetBytes` **in place** — a
+direct byte loop over `index._bytes` at `IDX_SHA_TABLE_OFFSET + mid*IDX_SHA_LENGTH`,
+returning `bytes[base+k] - targetBytes[k]` at the first difference (else 0), the
+same total order `compareBytes` computes — **without** the `subarray` allocation.
+This returns the **identical** comparison sign for every `(mid, id)` pair, so the
+binary search converges on the identical index and `lookupPackIndex` returns the
+**identical offset** (or `undefined`) for every id. Constant-factor: fewer GC-visible
+allocations per lookup, O(log n) shape unchanged.
+
+**Two guard-rails on the change:**
+
+1. **The L120-121 equivalent-mutant comment is NOT touched.** The
+   `Stryker disable next-line ConditionalExpression` on the `lo` fanout-narrowing
+   (`firstByte === 0 ? 0 : readFanout(index, firstByte - 1)`) proves that forcing
+   `lo` to 0 cannot change the looked-up offset because the search over `[0, hi)`
+   still converges on the same index. The inner-loop shave changes **how** two SHAs
+   are compared, not the `lo`/`hi` window or the loop structure — the comment's
+   proof (window-narrowing is offset-neutral) is untouched and stays verbatim on its
+   line. `findByPrefix`'s twin comment at L161-162 is likewise untouched (this PR
+   does not modify `findByPrefix`).
+2. **Scope: only `compareShaAtIndex`'s allocation is removed.** `findLowerBound` /
+   `findUpperBound` (used only by `findByPrefix`) also call `compareShaAtIndex`; the
+   in-place compare is a drop-in with the identical contract, so they inherit it for
+   free with no behaviour change (proven by the same identical-sign argument and the
+   existing `findByPrefix` tests). No new branch, no new refusal.
+
+Pinned by the existing `pack-index.test.ts` (lookup by existing/non-existent id,
+0x00 / 0xFF fanout edges, large-offset table, deep-bucket binary-search branches,
+security guards) staying green with **unchanged assertions**, plus the `lookupPackIndex`
+property test (`build index → look up each entry → identical offset`) — the exact
+identical-offset invariant the shave must preserve — and the pack-read interop goldens.
 
 ## Faithfulness pinning matrix
 
@@ -412,6 +495,10 @@ bytes:
 | Non-blob / directory leaf → refusal | `pathNotInTree` | `pathNotInTree` | descent → `undefined` → `seed`'s existing `pathNotInTree`; scenario D + a unit test |
 | Absent path in parent → rename detection | fires | fires | descent → `undefined` → `renamedSource` (unchanged); existing rename test |
 | `descendTreePath` callers (`readFileAt`, `rev-parse`) unchanged | git-identical | git-identical | Option-A wrapper preserves the throw; existing `resolve-tree-path` + `read-file-at` + `rev-parse` tests unchanged |
+| **`parseTreeContent` produced `Tree`** (finding 4, show/log) | git-identical | **git-identical — frame untouched** | No lever ships (every candidate excluded, see the per-candidate table); `tree.test.ts` example + property tests + `tree-interop` goldens stay green with **unchanged assertions** |
+| **`parseTreeContent` refusals** (missing space/null, invalid name `''`/`.`/`..`/`/`, truncated hash, duplicate name, `INVALID_FILE_MODE`) | as-is | **as-is — frame untouched** | Same `tree.test.ts` refusal cases (L164-381) + pins P1-P5 above; nothing changed to move |
+| **`lookupPackIndex` offset** for every id (finding 4, log) | git-identical | **identical offset / `undefined`** | Inner-loop shave returns the identical comparison sign ⇒ identical converged index; `pack-index.test.ts` (all lookup + fanout-edge + large-offset + security cases) + the lookup property test stay green **unchanged**; pack-read interop goldens unchanged |
+| **`lookupPackIndex` L120-121 equivalent-mutant proof** | valid | **valid — line untouched** | The shave edits `compareShaAtIndex`, not the `lo`/`hi` window; the Stryker-disable comment and its window-narrowing proof stay verbatim on their line |
 
 Each new golden reconstructs `git blame --porcelain` from the structured
 `BlameResult` (per `blame-interop.test.ts`'s `renderPorcelain`) and asserts
@@ -427,13 +514,17 @@ Mechanism: `npm run profile <cmd>` (26.3 / PR #224; `tooling/profile.ts` +
 | Command | Kind | Current blame-relevant self-shares | Expected after (2+4) |
 |---------|------|-----------------------------------|----------------------|
 | blame | read | `parseTreeContent 0.24 / walkInternal 0.22 / flattenTree 0.09 / walkTree 0.08` | **`flattenTree`/`walkTree`/`walkInternal` collapse** (no whole-tree flatten — path descent reads only subtrees on the path); `parseTreeContent` drops sharply (parses O(path-depth) trees, not O(tree-size)); share moves onto `parseRequiredFields`/commit reads (the irreducible O(depth) ancestry) |
-| show | read | `walkInternal 0.24 / parseTreeContent 0.18` | **unchanged** (out of scope — recursive diff needs whole trees; DC-1) |
-| log | read | `lookupPackIndex 0.11` | **unchanged** (out of scope; DC-1) |
+| show | read | `walkInternal 0.24 / parseTreeContent 0.18` | **`walkInternal` unchanged** (recursive diff needs whole trees — no algorithmic lever); **`parseTreeContent` unchanged** (DC-1 → B admitted it, but every per-entry lever was excluded with a written reason — the frame is byte-for-byte untouched, so its share does not move) |
+| log | read | `lookupPackIndex 0.11` | **`lookupPackIndex` share drops** — the inner-loop shave removes the per-binary-search-iteration `subarray` allocation; `hexToBytes` + fanout reads + comparison stay, so `lookupPackIndex` self-time shrinks and its share redistributes toward the surrounding pack-read frames (identical offsets) |
 
 Direction, not magnitude, is the gate (self-relative, host-portable — **ADR-475**).
-The load-bearing shift: blame's tree-walk frames (`flattenTree`/`walkTree`/
+The load-bearing shifts: (1) blame's tree-walk frames (`flattenTree`/`walkTree`/
 `walkInternal`/`parseTreeContent`) drop as the whole-tree flatten is replaced by
-O(path-depth) descent and TREESAME elides the per-ancestor blob read+diff.
+O(path-depth) descent and TREESAME elides the per-ancestor blob read+diff; (2)
+`log`'s `lookupPackIndex` drops as the inner comparison stops allocating. `show`'s
+`parseTreeContent` is deliberately **flat** — the frame ships unchanged (see the
+per-candidate exclusion table), so a moved `show` share would signal an *unintended*
+edit to the shared parser and should be treated as a regression, not a win.
 
 **Baseline handling (DC-8) — recommend regenerate + commit.** Regenerate
 `docs/perf/baseline.{json,md}` reflecting the new blame shares; quote before/after
@@ -512,6 +603,34 @@ test* would regress) or always match (changed file wrongly skips — killed by t
 changed-file test above). The functional kill is the changed-file test; the perf
 regression is caught by the wall-clock bench, not a unit mutant.
 
+**Finding (4) for `show`/`log` — the `lookupPackIndex` inner-loop shave.**
+- The in-place comparison replaces `compareBytes(subarray, targetBytes)` with a
+  direct byte loop. Its decision points — `bytes[base+k] !== targetBytes[k]` (the
+  differ test), the `return diff` sign, and the loop bound `k < IDX_SHA_LENGTH` —
+  are **already fully exercised** by the existing `lookupPackIndex` cases: the
+  deep-bucket binary-search test (`aa00…/aa11…/aa22…/aa33…/aaff…` → look up the last
+  ⇒ many `cmp < 0` iterations), the non-existent-id test (`cmp` never 0 ⇒
+  `undefined`), the 0x00 / 0xFF fanout-edge tests, and the lookup **property**
+  (build index → look up each entry → identical offset). A `< → <=` loop-bound
+  mutant reads `targetBytes[IDX_SHA_LENGTH]` (`undefined`) — but two equal SHAs
+  already returned 0 by then, so it is a **provably-equivalent** over-read
+  (mirroring the documented `indexOf`/`bytesToHex` `EqualityOperator` equivalents in
+  `encoding.ts`); an EqualityOperator mutant on the differ test flips a real
+  comparison and is killed by the deep-bucket + property tests (a wrong sign
+  mislands the search ⇒ wrong/`undefined` offset). No new **decision** point is
+  introduced that the current suite does not already cover; if a byte-loop
+  equivalent survives, document it (equal-SHA over-read) rather than contriving a
+  kill.
+- **The L120-121 (and L161-162) equivalent-mutant comments are carried forward
+  verbatim** — untouched, not renumbered, not reworded. The shave does not touch the
+  `lo`/`hi` fanout window their proofs are about.
+
+**Finding (4) for `parseTreeContent` — no mutation surface added.** No lever ships;
+the frame is byte-for-byte unchanged, so there is no new mutant to kill and every
+existing `tree.test.ts` mutation-resistant case (specific `.data` assertions,
+isolated guard tests, the NUL-in-mode try/catch probe) stays green with unchanged
+assertions.
+
 **Carry-forward equivalent mutants.** blame.ts's existing documented equivalent
 mutants (L157 `count===0` worktree, L230 `count===0` seed, L359 empty-entries
 `schedule`) are **untouched** by this change — do not renumber or reword them.
@@ -528,13 +647,22 @@ mutants (L157 `count===0` worktree, L230 `count===0` seed, L359 empty-entries
   `docs/use/commands/` page, no browser scenario, no README count change either way.
 - **Finding (2):** internal to `blame.ts` + `Suspect` (a local interface, not
   exported) + `split-blame` (unchanged). No public surface.
+- **Finding (4) for `show`/`log`:** the only shipped edit is inside
+  `lookupPackIndex` / `compareShaAtIndex` in `src/domain/storage/pack-index.ts` —
+  a **domain** function whose signature and exported name are unchanged (an internal
+  implementation shave). `parseTreeContent` (also domain) is untouched. **No barrel
+  change, no `reports/api.json` change, no doc-coverage page, no README count, no
+  browser scenario** — no public surface moves. `lookupPackIndex` is already
+  exported from `pack-index.ts` and consumed internally by the pack reader; the
+  export set is identical before and after.
 
 ## Non-goals / explicitly deferred
 
-- **`show`/`log` finding-(4) constant-factor micro-opts** (`parseTreeContent`
-  per-entry decode/Set/fromRaw; `lookupPackIndex` fanout search) — **deferred**
-  (DC-1): low-value constant-factor on a broadly-shared domain frame, riskier than
-  the blame algorithmic win. Enumerated as DC-7 if the gate wants them in-PR.
+- **`parseTreeContent` per-entry micro-opts** (decode/Set/fromRaw) — **in scope but
+  all excluded with reasons** (DC-1 → B; see the per-candidate table): refusal-
+  narrowing (Set), output-corrupting (decode), or negligible shared-constructor
+  changes (fromRaw). The frame ships byte-for-byte unchanged. This is a *decided
+  exclusion within scope*, not a deferral.
 - **Finding (3)** (object-store `exists`-share) — explicitly out of scope; it was
   investigated and **reverted** in 26.4 for an inherent cold-read cost (see
   `checkcontainment-hot-path.md`).
@@ -544,84 +672,112 @@ mutants (L157 `count===0` worktree, L230 `count===0` seed, L359 empty-entries
 
 ## Decision candidates
 
-Every load-bearing choice below is for the ADR conversation — recommendations
-stated, not decided here.
+Every load-bearing choice below went through the decisions conversation. Each is now
+**settled** — the ratified outcome is recorded inline; recommendations that were
+adopted as-is are marked **RATIFIED (as recommended)**.
 
-### DC-1 ★ — Scope: blame-only vs include `show`/`log` micro-opts
-- **Option A (recommended):** ship findings **(2) TREESAME** + **(4) path-scoped
-  descent for blame** only. High-value, algorithmic, byte-identical, contained diff.
-- **Option B:** also chase the `show`/`log` constant-factor parse/pack-index
-  micro-opts this PR.
-- **Recommendation: A.** The `show`/`log` levers are low-value constant-factor on a
-  shared domain hot-path (`parseTreeContent` runs on every tree read) with
-  disproportionate mutation/regression risk. Defer.
+### DC-1 ★ — Scope: blame-only vs include `show`/`log` micro-opts — **RATIFIED → B (DEVIATION)**
+- **Option A (initial recommendation):** ship findings **(2) TREESAME** + **(4)
+  path-scoped descent for blame** only; defer the `show`/`log` micro-opts.
+- **Option B (RATIFIED):** also address the `show`/`log` constant-factor
+  parse/pack-index micro-opts this PR.
+- **Outcome: B.** The `show`/`log` finding-(4) work is **in scope**. On empirical
+  inspection the `parseTreeContent` candidates are all excluded with written reasons
+  (refusal-narrowing / output-corrupting / negligible — see the per-candidate
+  table), and the one provably-safe lever — the `lookupPackIndex` inner-loop
+  allocation shave — ships. The concrete specification lives in "Finding (4) for
+  `show` / `log` — IN SCOPE" above and is resolved in DC-7.
 
-### DC-2 ★ — Path-scoped lookup shape: refactor `descendTreePath` vs new primitive
-- **Option A (recommended):** extract a `find`-returning core
+### DC-2 ★ — Path-scoped lookup shape: refactor `descendTreePath` vs new primitive — **RATIFIED → A**
+- **Option A (RATIFIED):** extract a `find`-returning core
   (`findTreeEntry → TreeEntry | undefined`) from `descendTreePath`; keep
   `descendTreePath` as a throwing wrapper (`undefined → pathNotInTree`). Blame calls
   the core. One algorithm, DRY, `readFileAt`/`rev-parse` byte-preserved.
 - **Option B:** a standalone new primitive duplicating the descent, `descendTreePath`
   untouched.
-- **Recommendation: A.** Throwing vs returning-`undefined` is a caller policy over
-  one descent operation; duplicating the loop is a DRY smell.
+- **Outcome: A.** Throwing vs returning-`undefined` is a caller policy over one
+  descent operation; duplicating the loop is a DRY smell.
 
-### DC-3 — Non-blob leaf handling: core vs blame
-- **Option A (recommended):** the core returns `TreeEntry | undefined` on
-  **presence** (absent / non-tree-intermediate → `undefined`); **blame** maps a
-  non-blob leaf (`DIRECTORY`/`GITLINK`) → `undefined`. Reproduces today's
+### DC-3 — Non-blob leaf handling: core vs blame — **RATIFIED (as recommended) → core returns `TreeEntry | undefined` on presence; blame maps non-blob → `undefined`**
+- **Option A (RATIFIED):** the core returns `TreeEntry | undefined` on **presence**
+  (absent / non-tree-intermediate → `undefined`); **blame** maps a non-blob leaf
+  (`DIRECTORY`/`GITLINK`) → `undefined`. Reproduces today's
   `flattenTree`-skips-directories semantics exactly; keeps the core policy-free.
 - **Option B:** the core itself returns `undefined` for a non-blob leaf.
-- **Recommendation: A.** The core is a generic path→entry resolver (`rev-parse`
-  wants any object type at the leaf); blob-ness is blame's concern.
+- **Outcome: A.** The core is a generic path→entry resolver (`rev-parse` wants any
+  object type at the leaf); blob-ness is blame's concern.
 
-### DC-4 — Siting: keep the descent core internal vs promote to a barrel primitive
-- **Option A (recommended):** keep it in `primitives/internal/`; blame imports it
+### DC-4 — Siting: keep the descent core internal vs promote to a barrel primitive — **RATIFIED (as recommended) → keep internal, no barrel export, no surface gates**
+- **Option A (RATIFIED):** keep it in `primitives/internal/`; blame imports it
   directly (like `read-file-at`/`rev-parse`). **No surface gates.**
 - **Option B:** promote to `primitives/index.ts` (barrel) as a reusable primitive →
   `reports/api.json` regenerate (prepush gate).
-- **Recommendation: A.** Blame is the only new consumer; the win is internal;
-  minimal surface.
+- **Outcome: A.** Blame is the only new consumer; the win is internal; minimal
+  surface.
 
-### DC-5 — Explicit path-depth cap on the descent
-- **Option A (recommended):** none — the descent is bounded by `path.split('/')`
-  length (fixed segment list, no fan-out, no revisiting), matching
-  `descendTreePath`'s existing shipped behaviour (no cap, no cycle guard).
+### DC-5 — Explicit path-depth cap on the descent — **RATIFIED (as recommended) → no cap**
+- **Option A (RATIFIED):** none — the descent is bounded by `path.split('/')` length
+  (fixed segment list, no fan-out, no revisiting), matching `descendTreePath`'s
+  existing shipped behaviour (no cap, no cycle guard).
 - **Option B:** add a `maxDepth` guard mirroring `walkTree`'s 1024.
-- **Recommendation: A.** `walkTree`'s guards defend unbounded recursive fan-out; a
-  fixed path descent has neither fan-out nor cycles. No new guard.
+- **Outcome: A.** `walkTree`'s guards defend unbounded recursive fan-out; a fixed
+  path descent has neither fan-out nor cycles. No new guard.
 
-### DC-6 ★ — Suspect blob oid: thread through `Suspect` vs recompute
-- **Option A (recommended):** add `readonly blobId: ObjectId` to `Suspect`, populated
-  at each `schedule` site (the oid is already the tree-entry id from the descent
-  that scheduled the suspect — free). TREESAME test becomes a string compare, zero
-  extra I/O.
+### DC-6 ★ — Suspect blob oid: thread through `Suspect` vs recompute — **RATIFIED (as recommended) → thread `readonly blobId: ObjectId` through `Suspect`**
+- **Option A (RATIFIED):** add `readonly blobId: ObjectId` to `Suspect`, populated at
+  each `schedule` site (the oid is already the tree-entry id from the descent that
+  scheduled the suspect — free). TREESAME test becomes a string compare, zero extra
+  I/O.
 - **Option B:** recompute via `hashBlob(suspect.blob)` at compare time — O(blob-size)
   re-hash per parent, reintroducing the cost the descent removed.
-- **Recommendation: A.** The oid is already in hand; carrying it is free and clean.
+- **Outcome: A.** The oid is already in hand; carrying it is free and clean.
 
-### DC-7 — (open only if DC-1 → B) which `show`/`log` micro-opts
-- `parseTreeContent`: hoist the `new Set` dup-check, batch-decode, or defer
-  `fromRaw` hex until an entry is used; `lookupPackIndex`: cache the fanout table.
-- **Recommendation: not in this PR** (see DC-1). Listed for completeness.
+### DC-7 — which `show`/`log` micro-opts (resolved by DC-1 → B) — **RATIFIED: `parseTreeContent` none (all excluded with reasons); `lookupPackIndex` inner-loop allocation shave ships**
+Concrete, implementation-ready specification (full detail in "Finding (4) for
+`show` / `log` — IN SCOPE"):
 
-### DC-8 — Baseline: regenerate + commit vs leave
-- **Option A (recommended):** regenerate + commit `docs/perf/baseline.{json,md}`;
-  quote before/after blame shares + a wall-clock deep-ancestry bench in the PR body.
-  Uses ADR-475's moving-baseline policy — **no ADR**.
+- **`parseTreeContent` — SHIP NONE.** Every per-entry candidate is excluded with an
+  empirically-pinned reason:
+  - *Set dup-check → adjacent-only:* **excluded** — narrows a tsgit refusal. git
+    2.55.0's reader accepts duplicate names (pin P1/P2: refusal is in `fsck`, not the
+    parse path); a neighbour compare drops the non-adjacent-duplicate refusal the
+    `Set` and `tree.test.ts` L307-329 pin. (The `Set` is per-call, not per-entry.)
+  - *mode/name `fromCharCode` decode:* **excluded** — not byte-identical.
+    `TextDecoder([0xC3])` → U+FFFD vs `fromCharCode` → `Ã` (pin P5) changes the
+    `invalidFileMode` `.value` bytes and corrupts multi-byte names (`日本語.txt`,
+    `tree.test.ts` L100).
+  - *`ObjectId.fromRaw` regex skip:* **excluded** — a branded-type-constructor change
+    for a two-regex-per-entry gain, negligible against the irreducible `bytesToHex`;
+    wrong altitude / disproportionate blast radius for this PR.
+  - *reordering cheap checks before `fromRaw`/`normalize`:* **excluded** — changes
+    which refusal fires first on a dually-invalid entry (observable `offset`+`reason`).
+- **`lookupPackIndex` — SHIP.** Replace `compareShaAtIndex`'s per-iteration
+  `subarray(...)` + `compareBytes(...)` with an **in-place byte comparison** over
+  `index._bytes` at `IDX_SHA_TABLE_OFFSET + mid*IDX_SHA_LENGTH`, returning the same
+  ordering sign without the heap allocation. Identical converged index ⇒ identical
+  offset (or `undefined`) for every id. **Must not touch L120-121 / L161-162** (the
+  `lo` fanout-narrowing equivalent-mutant comments — the shave is inside the
+  comparison, not the window). Pinned by the existing `pack-index.test.ts` lookup /
+  fanout-edge / large-offset / deep-bucket / security cases + the lookup property,
+  all with **unchanged assertions**.
+
+### DC-8 — Baseline: regenerate + commit vs leave — **RATIFIED (as recommended) → regenerate + commit `docs/perf/baseline.{json,md}`; wall-clock deep-ancestry bench in the PR body**
+- **Option A (RATIFIED):** regenerate + commit `docs/perf/baseline.{json,md}`; quote
+  before/after blame shares + a wall-clock deep-ancestry bench in the PR body. Uses
+  ADR-475's moving-baseline policy — **no ADR**.
 - **Option B:** leave the baseline; note the drop in the PR body only.
-- **Recommendation: A.** 26.4c spends the optimisation license; the artifact must
-  advance for the CI gate to diff against.
+- **Outcome: A.** 26.4c spends the optimisation license; the artifact must advance
+  for the CI gate to diff against.
 
-### DC-9 — ADR need
-- **Recommendation: no ADR anywhere in this PR.** Both findings are
-  behaviour-preserving (the current code is already TREESAME-correct — the change is
-  waste-elimination proven byte-identical against real git in the matrix above); no
-  git-observable change; no public-contract change (DC-4 → internal); the baseline
-  update *uses* ADR-475's existing policy. The one thing that could bear an ADR —
-  promoting an internal helper to public surface (DC-4 → B) — is recommended
-  *against*. If the gate considers "the TREESAME skip" a policy choice, a
-  ≤1-paragraph ADR noting "blame elides the parent blob read+diff when the tree-entry
-  oid matches; behaviour pinned byte-identical against git 2.55.0" would suffice —
-  but the recommendation is that the empirical matrix in this doc carries it and no
-  ADR is warranted.
+### DC-9 — ADR need — **RATIFIED → NO ADR anywhere in this PR**
+- **Outcome: no ADR.** Both blame findings are behaviour-preserving (the current
+  code is already TREESAME-correct — the change is waste-elimination proven
+  byte-identical against real git in the matrix above); the `show`/`log` finding-(4)
+  work ships only an internal allocation shave (byte-identical offsets) and touches
+  no shared parser (`parseTreeContent` untouched); no git-observable change; no
+  public-contract change (DC-4 → internal, DC-7 → `lookupPackIndex` signature
+  unchanged); the baseline update *uses* ADR-475's existing policy, not new policy.
+  The just-merged predecessor **#225** (26.4, checkcontainment-hot-path) shipped this
+  identical behaviour-preserving-perf pattern **design-doc-only, no ADR** — this PR
+  follows that trail. The design doc + the run record are the decision trail. **Do
+  not introduce any ADR reference.**
