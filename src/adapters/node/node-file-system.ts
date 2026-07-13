@@ -21,6 +21,20 @@ import { nativePolicy } from './path-policy.js';
 
 type ContainmentMode = 'read' | 'lstat' | 'creation';
 
+/**
+ * A normalised containment root paired with its precomputed `+sep` prefix.
+ * Bundled together (never as two independent fields) so the prefix can
+ * never be read stale relative to the root it was derived from.
+ */
+interface RootPrefix {
+  readonly normalized: string;
+  readonly withSep: string;
+}
+
+function toRootPrefix(normalized: string, sep: string): RootPrefix {
+  return { normalized, withSep: normalized + sep };
+}
+
 const REMOVE_TREE_CONCURRENCY = 8;
 
 /**
@@ -128,6 +142,21 @@ export function pathContainsNormalized(
   const c = policy.normalizeForCompare(child);
   if (c === normalizedParent) return true;
   return c.startsWith(normalizedParent + policy.sep);
+}
+
+/**
+ * Same two-arm test as `pathContainsNormalized`, but takes an
+ * already-normalised child AND an already-precomputed `normalizedParent +
+ * sep` prefix — used on `NodeFileSystem`'s hot path where both the child
+ * normalisation and the parent `+sep` concatenation are amortised across
+ * the containment check (see `isContainedInEitherRoot`).
+ */
+function containedByPrefix(
+  normalizedChild: string,
+  normalizedParent: string,
+  parentWithSep: string,
+): boolean {
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(parentWithSep);
 }
 
 /** @internal */
@@ -318,28 +347,21 @@ export class NodeFileSystem implements FileSystem {
   private readonly parentRealpathCache = createLruCache<string>(128 * 1024, 512);
 
   /**
-   * Lazy long-name canonicalisation of `rootDir` for containment checks.
-   * Promise so concurrent first calls share one `realpath`; cleared on
-   * rejection so a transient ENOENT can be retried.
+   * Lazy long-name canonicalisation of `rootDir` for containment checks,
+   * resolving to the canonical root's `RootPrefix`. Promise so concurrent
+   * first calls share one `realpath`; cleared on rejection so a transient
+   * ENOENT can be retried.
    */
-  private canonicalRootPromise: Promise<string> | undefined = undefined;
+  private canonicalRootPromise: Promise<RootPrefix> | undefined = undefined;
 
   /**
-   * Memoised result of `pathPolicy.normalizeForCompare(rootDir)`. The
-   * rootDir is `readonly` for the adapter's lifetime, so a single
-   * normalisation is amortised across every containment check.
+   * Memoised `{ normalized, withSep }` pair for `pathPolicy.normalizeForCompare(rootDir)`.
+   * The rootDir is `readonly` for the adapter's lifetime, so a single
+   * normalisation (and its `+sep` prefix) is amortised across every
+   * containment check. Bundled in one field — never two — so the prefix
+   * can never diverge from the root it was derived from.
    */
-  private normalizedRootDir: string | undefined = undefined;
-
-  /**
-   * Memoised result of `pathPolicy.normalizeForCompare(canonicalRoot)`.
-   * Tracked alongside the canonical-root promise: when the promise
-   * resolves we cache the normalised form once. The promise's
-   * rejection-clears-cache rule means a transient ENOENT also clears
-   * this field (so the next call re-normalises against the retried
-   * canonical root).
-   */
-  private normalizedCanonicalRoot: string | undefined = undefined;
+  private normalizedRootDirPrefix: RootPrefix | undefined = undefined;
 
   constructor(
     rootDir: string,
@@ -351,42 +373,40 @@ export class NodeFileSystem implements FileSystem {
     this.fsOps = fsOps;
   }
 
-  private getNormalizedRootDir(): string {
-    if (this.normalizedRootDir === undefined) {
-      this.normalizedRootDir = this.pathPolicy.normalizeForCompare(this.rootDir);
+  /**
+   * Lazily normalises `rootDir` and its `+sep` prefix as one bundled
+   * `RootPrefix`, memoised for the adapter's lifetime.
+   */
+  private getRootDirPrefix(): RootPrefix {
+    if (this.normalizedRootDirPrefix === undefined) {
+      this.normalizedRootDirPrefix = toRootPrefix(
+        this.pathPolicy.normalizeForCompare(this.rootDir),
+        this.pathPolicy.sep,
+      );
     }
-    return this.normalizedRootDir;
+    return this.normalizedRootDirPrefix;
+  }
+
+  private getNormalizedRootDir(): string {
+    return this.getRootDirPrefix().normalized;
   }
 
   /**
-   * Returns the cached normalised canonical root. Caller must have
-   * `await this.getCanonicalRoot()` immediately prior — the cache is
-   * populated by the promise's success arm and cleared on rejection, so
-   * a successful `await` guarantees the field is set.
-   *
-   * Kept synchronous (vs `async` + `await this.getCanonicalRoot()`
-   * inside) so the hot path doesn't pay an extra microtask suspension
-   * per containment check on a settled promise. The `!` is the only
-   * machine-readable form of "trust the post-await invariant"; the
-   * private `await getCanonicalRoot()` discipline at every call site is
-   * what makes it safe.
+   * Resolves and memoises the canonical-root `RootPrefix`. Returns the
+   * bundled `{ normalized, withSep }` value directly from the promise
+   * chain — callers thread the returned value onward, so there is no
+   * synchronous "trust it's been set" field read: the type system proves
+   * the value is defined via the `await`'s return, not a nullable field.
    */
-  private getResolvedNormalizedCanonicalRoot(): string {
-    // biome-ignore lint/style/noNonNullAssertion: trusted invariant — see method JSDoc
-    return this.normalizedCanonicalRoot!;
-  }
-
-  private async getCanonicalRoot(): Promise<string> {
+  private async getCanonicalRoot(): Promise<RootPrefix> {
     if (this.canonicalRootPromise === undefined) {
       this.canonicalRootPromise = this.fsOps
         .realpath(this.rootDir)
-        .then((canonical) => {
-          this.normalizedCanonicalRoot = this.pathPolicy.normalizeForCompare(canonical);
-          return canonical;
-        })
+        .then((canonical) =>
+          toRootPrefix(this.pathPolicy.normalizeForCompare(canonical), this.pathPolicy.sep),
+        )
         .catch((err: unknown) => {
           this.canonicalRootPromise = undefined;
-          this.normalizedCanonicalRoot = undefined;
           throw err;
         });
     }
@@ -463,15 +483,8 @@ export class NodeFileSystem implements FileSystem {
 
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    // equivalent-mutant: forcing this guard true (always-await) is timing-only —
-    // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
-    // reruns no I/O and yields identical results and call counts; the false
-    // (never-await) mutant is killed by the first-call resolution tests.
-    if (this.normalizedCanonicalRoot === undefined) {
-      await this.getCanonicalRoot();
-    }
     const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
+    const normalizedCanonical = (await this.getCanonicalRoot()).normalized;
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing.
@@ -574,15 +587,8 @@ export class NodeFileSystem implements FileSystem {
       // — never the link entry, which doesn't exist yet.
       const lexical = this.pathPolicy.resolve(target);
       const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
-      // equivalent-mutant: forcing this guard true (always-await) is timing-only —
-      // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
-      // reruns no I/O and yields identical results and call counts; the false
-      // (never-await) mutant is killed by the first-call resolution tests.
-      if (this.normalizedCanonicalRoot === undefined) {
-        await this.getCanonicalRoot();
-      }
       const normalizedRoot = this.getNormalizedRootDir();
-      const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
+      const normalizedCanonical = (await this.getCanonicalRoot()).normalized;
       if (
         !pathContainsNormalized(normalizedRoot, resolvedTarget, this.pathPolicy) &&
         !pathContainsNormalized(normalizedCanonical, resolvedTarget, this.pathPolicy)
@@ -748,11 +754,11 @@ export class NodeFileSystem implements FileSystem {
     path: string,
     resolved: string,
     mode: ContainmentMode,
-    normRoot: string,
-    normCanon: string,
+    root: RootPrefix,
+    canonicalRoot: RootPrefix,
   ): Promise<string> {
     if (mode === 'read') {
-      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon)) {
+      if (!this.isContainedInEitherRoot(resolved, root, canonicalRoot)) {
         throw permissionDenied(path);
       }
       return this.fsOps.realpath(resolved);
@@ -762,7 +768,7 @@ export class NodeFileSystem implements FileSystem {
       // BEFORE issuing the realpath I/O. Without this gate, an absolute
       // escape path (`../../etc`) would still walk through
       // `realpath(dirname)` before the post-check catches it.
-      if (!this.isContainedInEitherRoot(resolved, normRoot, normCanon)) {
+      if (!this.isContainedInEitherRoot(resolved, root, canonicalRoot)) {
         throw permissionDenied(path);
       }
       // The parent realpath is cached (shared with `realpathForCreation`
@@ -776,10 +782,23 @@ export class NodeFileSystem implements FileSystem {
     return this.resolveForCreation(path, resolved);
   }
 
-  private isContainedInEitherRoot(abs: string, normRoot: string, normCanon: string): boolean {
+  /**
+   * `abs` is normalised ONCE (not once per root) and compared against
+   * both roots' precomputed `+sep` prefixes. Both the `=== root` equality
+   * arm and the `startsWith(root + sep)` prefix arm are retained per
+   * root — dropping either changes the verdict (a bare `startsWith(root)`
+   * would admit the prefix-only sibling `root-evil`). Both roots are
+   * passed in as already-resolved `RootPrefix` values — no field read-back.
+   */
+  private isContainedInEitherRoot(
+    abs: string,
+    root: RootPrefix,
+    canonicalRoot: RootPrefix,
+  ): boolean {
+    const c = this.pathPolicy.normalizeForCompare(abs);
     return (
-      pathContainsNormalized(normRoot, abs, this.pathPolicy) ||
-      pathContainsNormalized(normCanon, abs, this.pathPolicy)
+      containedByPrefix(c, root.normalized, root.withSep) ||
+      containedByPrefix(c, canonicalRoot.normalized, canonicalRoot.withSep)
     );
   }
 
@@ -800,25 +819,14 @@ export class NodeFileSystem implements FileSystem {
     // Both parents are constant for the call's lifetime; we hold their
     // normalised forms as instance fields so the case-fold allocation on
     // the hot path runs once per parent rather than once per containment
-    // check.
-    // equivalent-mutant: forcing this guard true (always-await) is timing-only —
-    // getCanonicalRoot memoises realpath(rootDir), so awaiting the settled promise
-    // reruns no I/O and yields identical results and call counts; the false
-    // (never-await) mutant is killed by the first-call resolution tests.
-    if (this.normalizedCanonicalRoot === undefined) {
-      await this.getCanonicalRoot();
-    }
-    const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical = this.getResolvedNormalizedCanonicalRoot();
+    // check. `getCanonicalRoot()` returns the resolved `RootPrefix`
+    // directly — the awaited value is threaded onward, never read back
+    // off the instance.
+    const rootPrefix = this.getRootDirPrefix();
+    const canonicalRootPrefix = await this.getCanonicalRoot();
     try {
-      const real = await this.resolveForMode(
-        path,
-        resolved,
-        mode,
-        normalizedRoot,
-        normalizedCanonical,
-      );
-      if (!this.isContainedInEitherRoot(real, normalizedRoot, normalizedCanonical)) {
+      const real = await this.resolveForMode(path, resolved, mode, rootPrefix, canonicalRootPrefix);
+      if (!this.isContainedInEitherRoot(real, rootPrefix, canonicalRootPrefix)) {
         throw permissionDenied(path);
       }
       return real;
