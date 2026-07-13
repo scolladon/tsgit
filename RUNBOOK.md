@@ -171,6 +171,15 @@ macOS + Windows runs nightly via the `mutation-os.yml` workflow (ADR-055).
 5. The GitHub Release event triggers `npm-service.yml`, which runs
    `npm publish --provenance --access public` over OIDC
 
+**Before cutting a release — refresh the published benchmark numbers.** Read the latest
+nightly benchmark artifact (produced by the `bench.yml` workflow on a dedicated GitHub
+Actions runner) and hand-transcribe its `tsgit`-vs-`isomorphic-git` medians into
+`docs/understand/performance.md` (the full table plus the `captured <date>` provenance line)
+and the README's "Why tsgit" slice (the curated three rows), updating the provenance date on
+both so the two published surfaces stay consistent and the citable numbers stay honestly
+dated. This is a manual step, not a gate — the numbers are host-specific artefacts,
+transcribed by a human, never auto-committed.
+
 The published package ships **no source maps** — the compressed-tarball cap in
 `tooling/verify-tarball.sh` is enforced both per-PR (`check:tarball`, wired into
 `validate` — size cap + `*.map` exclusion, attw left to `check:exports`) and at
