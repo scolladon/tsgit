@@ -12,8 +12,11 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { mv } from '../../../../src/application/commands/mv.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const ident = (name: string, timestamp: number): AuthorIdentity => ({
@@ -192,6 +195,41 @@ describe('Given a path that names a directory', () => {
         expect((error as TsgitError).data).toMatchObject({
           code: 'PATH_NOT_IN_TREE',
           path: 'dir',
+        });
+      }
+    });
+  });
+});
+
+describe('Given a path that names a gitlink submodule entry', () => {
+  describe('When blaming it', () => {
+    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+      // Arrange
+      const ctx = await seed();
+      const base = await commitFile(ctx, 'c1', 'keep.txt', 'x\n');
+      const treeId = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [{ mode: FILE_MODE.GITLINK, name: 'mysub', id: base }],
+      } as Tree);
+      clock += 60;
+      const rev = await createCommit(ctx, {
+        tree: treeId,
+        parents: [base],
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+        message: 'add submodule',
+      });
+
+      // Act + Assert
+      try {
+        await blame(ctx, 'mysub', { rev });
+        expect.unreachable('blame should refuse a gitlink path');
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'PATH_NOT_IN_TREE',
+          path: 'mysub',
         });
       }
     });
