@@ -5,7 +5,24 @@
 > document the methodology + caveats so the comparison stays honest. Deferred from 18.2;
 > builds on the existing vs-isomorphic-git benches (11.1 `log`/`readBlob`/`status`,
 > 12.4 `clone:small-repo`) and rides the Phase-26 stable-surface measurements.
-> Status: draft → self-reviewed ×3 → **awaiting ADR conversation** (7 open candidates).
+> Status: draft → self-reviewed ×3 → ADRs 480–484 accepted → **revised in implementation** (see below).
+
+> **Revision (implementation).** Measurement moved from a personal host (Apple M3 Pro, local
+> `npm run bench:summary`) to the **CI nightly benchmark artifact** (`bench.yml`, a dedicated
+> GitHub Actions runner). A personal host under interactive load biases tsgit's `lstat`-heavy
+> paths: isomorphic-git — a pinned dependency whose code cannot change — itself measured
+> 1.2–2.4× slower under load, and tsgit's syscall-heavy ratios shifted against it. The clean
+> reference provenance is now `linux-x64` / AMD EPYC 7763 / Node 22.23.1 / isomorphic-git
+> 1.38.7 (see [ADR-483](../adr/483-committed-hand-transcribed-benchmark-snapshot.md), revised).
+> The clean numbers tell a **balanced 3-win / 3-loss** story — wins: `status:dirty` 1.22×,
+> `readBlob:warm` 1.21×, `clone` 1.09×; losses: `log:walk` 0.78×, `readBlob:cold` 0.70×,
+> `status:clean` 0.67×. `status:clean` flipped from the stale doc's 1.10× (a win) to a loss;
+> this is traced to tsgit's **documented lstat containment-check cost** (a security property
+> iso-git skips — see `../understand/performance.md`), *not* a confirmed new regression. A
+> definitive same-host historical bench + profile is out of this docs-scoped change and is
+> filed as a backlog follow-up. The README "Why tsgit" slice therefore frames the comparison
+> as **competitive, wins on several ops, actively closing the gap on the rest** — never
+> cherry-picking only wins (per [ADR-482](../adr/482-competitor-comparison-publication-surfaces.md)).
 
 ## Context
 
