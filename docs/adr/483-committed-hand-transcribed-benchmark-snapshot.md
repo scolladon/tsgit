@@ -13,6 +13,14 @@ number that changes on every nightly run is not citable. The CI nightly (`bench.
 the `benchmark-snapshot` trend job already produce ephemeral artifacts for trend tracking;
 this decision is about the *published, citable* number, not the trend signal.
 
+A second constraint surfaced while measuring: a **personal host is not a reliable
+reference**. Measuring on an Apple M3 Pro while an interactive session loaded the machine
+biased tsgit's syscall-heavy paths (`status`, cold `readBlob`) — isomorphic-git, a pinned
+dependency whose code cannot change, itself measured 1.2–2.4× slower than a clean run, and
+tsgit's `lstat`-heavy ratios shifted against it. The CI nightly (`bench.yml`) runs on a
+**dedicated GitHub Actions runner** with no such contention, so its numbers are clean and
+reproducible by anyone.
+
 ## Options considered
 
 1. **Committed snapshot, hand-transcribed** (design recommendation) — pros: matches how
@@ -29,19 +37,27 @@ this decision is about the *published, citable* number, not the trend signal.
 ## Decision
 
 The published numbers are a **committed snapshot, hand-transcribed** into
-`performance.md` and the README slice, each carrying explicit provenance (platform, CPU,
-Node version, isomorphic-git version, capture date). They are regenerated on a documented
-reference host via `npm run bench:summary` and transcribed by a human — exactly the flow
-`performance.md` already uses. The CI nightly and trend jobs stay as-is (ephemeral trend
-signal, unchanged). **Per-release maintenance is a manual release-checklist step** ("re-run
-`npm run bench:summary` on the reference host; update the performance.md table, the README
-slice, and the provenance date"), not a scripted gate.
+`performance.md` and the README slice, each carrying explicit provenance (runner OS/arch,
+CPU, Node version, isomorphic-git version, capture date). They are **sourced from a dated
+CI nightly benchmark run** (`bench.yml`, a dedicated GitHub Actions runner) and transcribed
+by a human — **not** measured on a personal machine, whose interactive-load bias makes its
+numbers uncitable. Transcribing a specific dated run into a committed snapshot gives the
+citability option 1 wants while drawing on the clean environment option 3 wants; the live
+artifact (which drifts and expires) is never the citation target. The CI nightly and trend
+jobs stay as-is. **Per-release maintenance is a manual release-checklist step** ("read the
+latest nightly benchmark artifact; update the performance.md table, the README slice, and
+the provenance date"), not a scripted gate.
 
 ## Consequences
 
-- The citable numbers are stable point-in-time measurements dated by their provenance line;
-  a fresh local run drifting within ±20% is expected and covered by the caveat framing.
+- The citable numbers are stable point-in-time measurements dated by their provenance line
+  (runner OS/arch, CPU, Node, iso-git version, run date); the ±20% runner-variance caveat is
+  preserved, and a reader who re-runs sees drift within that band.
+- The reference environment is the dedicated CI nightly runner, reproducible by anyone —
+  more citable than a personal laptop, and it sidesteps the interactive-load measurement
+  bias that would otherwise penalise tsgit's syscall-heavy paths.
 - No new script or committed report artifact ships now; a `bench:publish` formalisation
   remains available as a later hardening adjacent to the 26.5 regression gate.
-- The release checklist gains one manual refresh step; the numbers never silently go stale
-  because the provenance date makes the snapshot's age visible.
+- The release checklist gains one manual refresh step (read the nightly artifact, transcribe,
+  re-date); the numbers never silently go stale because the provenance date makes the
+  snapshot's age visible.
