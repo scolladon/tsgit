@@ -19,6 +19,7 @@ import {
 const sut = pathContainsNormalized;
 
 const ROUND_TRIP_NUM_RUNS = 200;
+const INVARIANT_NUM_RUNS = 100;
 
 function arbSegmentChar(): fc.Arbitrary<string> {
   return fc
@@ -159,6 +160,59 @@ describe('Given an arbitrary root and an arbitrary nested-or-sibling child', () 
           },
         ),
         { numRuns: ROUND_TRIP_NUM_RUNS },
+      );
+    });
+  });
+});
+
+/**
+ * B3 join-algebra: proves `contained(join(realParent, basename)) ===
+ * contained(realParent)` for a single clean `basename` (no separator, no
+ * `.`/`..` — guaranteed by `arbSegment`'s alphanumeric-only charset), the
+ * exact equivalence B3 relies on to memoise the lstat-arm post-check once
+ * per parent instead of once per entry. `contained` is a local dual-root
+ * oracle (`pathContains` against BOTH root and canon), independent of the
+ * SUT's private `isContainedInEitherRoot`.
+ */
+function dualRootContained(
+  policy: PathPolicy,
+  root: string,
+  canonicalRoot: string,
+  candidate: string,
+): boolean {
+  return pathContains(root, candidate, policy) || pathContains(canonicalRoot, candidate, policy);
+}
+
+describe('Given an arbitrary realParent (contained or not) and an arbitrary single clean basename', () => {
+  describe('When comparing containment of the joined leaf against containment of the bare realParent', () => {
+    it('Then both agree (the B3 per-parent memoisation is verdict-identical)', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(
+          arbPolicy(),
+          fc.constantFrom('/root', 'C:\\Root'),
+          fc.constantFrom('/canon', 'C:\\Canon'),
+          fc.array(arbSegment(), { minLength: 0, maxLength: 4 }),
+          fc.boolean(),
+          arbSegment(),
+          arbSegment(),
+          (policy, root, canonicalRoot, segments, useCanonical, siblingSuffix, basename) => {
+            const base = useCanonical ? canonicalRoot : root;
+            const realParent = segments.length === 0 ? base : buildPath(policy, base, segments);
+            // Half the time exercise a realParent that is NOT contained (a
+            // sibling of BOTH roots) — the security-critical branch (parent
+            // symlinks OUT → realParent not contained → cached false).
+            const candidateParent =
+              siblingSuffix.length % 2 === 0 ? realParent : `${root}-${siblingSuffix}-outside`;
+            const joined = `${candidateParent}${policy.sep}${basename}`;
+
+            const parentVerdict = dualRootContained(policy, root, canonicalRoot, candidateParent);
+            const joinedVerdict = dualRootContained(policy, root, canonicalRoot, joined);
+
+            return joinedVerdict === parentVerdict;
+          },
+        ),
+        { numRuns: INVARIANT_NUM_RUNS },
       );
     });
   });

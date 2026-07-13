@@ -1411,6 +1411,379 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
   });
 });
 
+describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI)', () => {
+  const fileStat = {
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o100644),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(0),
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  };
+
+  describe.each([
+    {
+      label: 'posix',
+      policy: posixPolicy,
+      rootDir: '/root',
+      sibling: (n: string) => `/root/sub/${n}`,
+    },
+    {
+      label: 'windows',
+      policy: windowsPolicy,
+      rootDir: 'C:\\Root',
+      sibling: (n: string) => `C:\\Root\\sub\\${n}`,
+    },
+  ])('Given two lstats under the same parent ($label)', ({ policy, rootDir, sibling }) => {
+    describe('When the second fires', () => {
+      it('Then the second lstat post-check normalises the leaf zero times (served from the per-parent verdict)', async () => {
+        // Arrange — spy on normalizeForCompare to count containment-check
+        // work. Pre-B3, EVERY lstat normalises its full leaf path twice
+        // (the PRE-check on `resolved` + the POST-check on `real` — both
+        // equal `resolved` here since realpath is identity). Post-B3, the
+        // POST-check for a same-parent entry is served from the cached
+        // per-parent verdict, so only the PRE-check's one normalise call
+        // remains per subsequent entry.
+        const leafB = sibling('b');
+        const normalizeSpy = vi.fn((p: string) => policy.normalizeForCompare(p));
+        const spyPolicy = { ...policy, normalizeForCompare: normalizeSpy };
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
+
+        // Act
+        await sut.lstat(sibling('a'));
+        normalizeSpy.mockClear();
+        await sut.lstat(leafB);
+
+        // Assert — the second lstat's leaf normalises exactly once (the
+        // PRE-check only); the POST-check is served from the cached verdict
+        // and issues no further normalise call for the leaf.
+        const leafNormaliseCalls = normalizeSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === leafB,
+        );
+        expect(leafNormaliseCalls.length).toBe(1);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'posix',
+      policy: posixPolicy,
+      rootDir: '/root',
+      evilParent: '/root/evil',
+      outside: '/outside',
+    },
+    {
+      label: 'windows',
+      policy: windowsPolicy,
+      rootDir: 'C:\\Root',
+      evilParent: 'C:\\Root\\evil',
+      outside: 'C:\\Outside',
+    },
+  ])('Given a parent whose realpath escapes the root ($label)', ({
+    policy,
+    rootDir,
+    evilParent,
+    outside,
+  }) => {
+    describe('When lstat fires twice under it', () => {
+      it('Then BOTH throw PERMISSION_DENIED (second served from the cached verdict)', async () => {
+        // Arrange
+        const secondLeaf = policy.join(evilParent, 'b');
+        const secondJoined = policy.join(outside, 'b');
+        const normalizeSpy = vi.fn((p: string) => policy.normalizeForCompare(p));
+        const spyPolicy = { ...policy, normalizeForCompare: normalizeSpy };
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => {
+            if (input === rootDir) return rootDir;
+            if (input === evilParent) return outside;
+            return input;
+          }),
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
+
+        // Act
+        let firstCaught: unknown;
+        try {
+          await sut.lstat(policy.join(evilParent, 'a'));
+        } catch (err) {
+          firstCaught = err;
+        }
+        normalizeSpy.mockClear();
+        let secondCaught: unknown;
+        try {
+          await sut.lstat(secondLeaf);
+        } catch (err) {
+          secondCaught = err;
+        }
+
+        // Assert
+        expect(firstCaught).toBeInstanceOf(TsgitError);
+        expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(secondCaught).toBeInstanceOf(TsgitError);
+        expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        // The second throw came from the cached verdict — the post-check
+        // does not re-normalise the joined escaped leaf; only the
+        // per-entry PRE-check (on the lexical `resolved` form, still
+        // inside rootDir) normalises.
+        const joinedLeafNormaliseCalls = normalizeSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === secondJoined,
+        );
+        expect(joinedLeafNormaliseCalls.length).toBe(0);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'posix', policy: posixPolicy, rootDir: '/root', parent: '/root/sub' },
+    { label: 'windows', policy: windowsPolicy, rootDir: 'C:\\Root', parent: 'C:\\Root\\sub' },
+  ])('Given an lstat populated the verdict ($label)', ({ policy, rootDir, parent }) => {
+    describe('When rename then a same-parent lstat fires', () => {
+      it('Then the verdict is recomputed (stale-serve would give the WRONG answer)', async () => {
+        // Arrange — realpath(parent) starts contained, then AFTER rename
+        // resolves to an escaping path. A stale-served verdict would still
+        // say "contained"; the correct, invalidated behaviour throws.
+        const outside = policy.sep === '/' ? '/outside' : 'C:\\Outside';
+        let escaped = false;
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => {
+            if (input === rootDir) return rootDir;
+            if (input === parent) return escaped ? outside : parent;
+            return input;
+          }),
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const a = policy.join(parent, 'a');
+        const renamedDst = policy.join(parent, 'renamed');
+        const b = policy.join(parent, 'b');
+
+        // Act
+        await sut.lstat(a);
+        escaped = true;
+        await sut.rename(a, renamedDst);
+        let caught: unknown;
+        try {
+          await sut.lstat(b);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When rmRecursive then a same-parent lstat fires', () => {
+      it('Then the verdict is recomputed (stale-serve would give the WRONG answer)', async () => {
+        // Arrange — same shape as rename, but invalidation goes through
+        // rmRecursive's `.clear()`.
+        const outside = policy.sep === '/' ? '/outside' : 'C:\\Outside';
+        let escaped = false;
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => {
+            if (input === rootDir) return rootDir;
+            if (input === parent) return escaped ? outside : parent;
+            return input;
+          }),
+          lstat: vi.fn().mockResolvedValue(fileStat),
+          rm: vi.fn().mockResolvedValue(undefined),
+        });
+        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const a = policy.join(parent, 'a');
+        const b = policy.join(parent, 'b');
+
+        // Act
+        await sut.lstat(a);
+        escaped = true;
+        await sut.rmRecursive(a);
+        let caught: unknown;
+        try {
+          await sut.lstat(b);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When rm (leaf) then a same-parent lstat fires', () => {
+      it('Then the verdict is NOT recomputed (rm invalidates neither cache)', async () => {
+        // Arrange — realpath(parent) would escape if re-resolved, but `rm`
+        // must not trigger a re-resolution: the cached (contained) verdict
+        // is still served and the second lstat succeeds.
+        const outside = policy.sep === '/' ? '/outside' : 'C:\\Outside';
+        let afterRm = false;
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => {
+            if (input === rootDir) return rootDir;
+            if (input === parent) return afterRm ? outside : parent;
+            return input;
+          }),
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const a = policy.join(parent, 'a');
+        const b = policy.join(parent, 'b');
+
+        // Act
+        await sut.lstat(a);
+        afterRm = true;
+        await sut.rm(a);
+        let caught: unknown;
+        try {
+          await sut.lstat(b);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — no throw: rm did not invalidate the (still-valid,
+        // cached-contained) verdict, so the second lstat is served from cache
+        // rather than re-resolving to the now-escaping realpath.
+        expect(caught).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'posix',
+      policy: posixPolicy,
+      rootDir: '/root',
+      leaf: '/root/leaf.bin',
+      outside: '/outside/leaf.bin',
+    },
+    {
+      label: 'windows',
+      policy: windowsPolicy,
+      rootDir: 'C:\\Root',
+      leaf: 'C:\\Root\\leaf.bin',
+      outside: 'C:\\Outside\\leaf.bin',
+    },
+  ])('Given a read whose leaf realpath escapes the root ($label)', ({
+    policy,
+    rootDir,
+    leaf,
+    outside,
+  }) => {
+    describe('When read fires twice', () => {
+      it('Then EACH throws PERMISSION_DENIED per entry (no parent-verdict shortcut)', async () => {
+        // Arrange — the read arm does a full-leaf realpath, never
+        // `join(realParent, basename)`, so B3's lstat-only skip must not
+        // leak here: both calls must independently resolve+check.
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return rootDir;
+          if (input === leaf) return outside;
+          return input;
+        });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          readFile: vi.fn().mockResolvedValue(Buffer.from('x')),
+        });
+        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+
+        // Act
+        let firstCaught: unknown;
+        try {
+          await sut.read(leaf);
+        } catch (err) {
+          firstCaught = err;
+        }
+        let secondCaught: unknown;
+        try {
+          await sut.read(leaf);
+        } catch (err) {
+          secondCaught = err;
+        }
+
+        // Assert
+        expect(firstCaught).toBeInstanceOf(TsgitError);
+        expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(secondCaught).toBeInstanceOf(TsgitError);
+        expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        const leafCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === leaf,
+        );
+        expect(leafCalls.length).toBe(2);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'posix',
+      policy: posixPolicy,
+      rootDir: '/root',
+      parent: '/root/newdir',
+      leaf: '/root/newdir/leaf.bin',
+      outside: '/outside',
+    },
+    {
+      label: 'windows',
+      policy: windowsPolicy,
+      rootDir: 'C:\\Root',
+      parent: 'C:\\Root\\newdir',
+      leaf: 'C:\\Root\\newdir\\leaf.bin',
+      outside: 'C:\\Outside',
+    },
+  ])('Given a creation target whose parent realpath escapes the root ($label)', ({
+    policy,
+    rootDir,
+    parent,
+    leaf,
+    outside,
+  }) => {
+    describe('When write fires twice', () => {
+      it('Then EACH throws PERMISSION_DENIED per entry (creation post-check untouched)', async () => {
+        // Arrange
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => {
+            if (input === rootDir) return rootDir;
+            if (input === parent) return outside;
+            return input;
+          }),
+          lstat: vi.fn().mockRejectedValue(enoent()),
+        });
+        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+
+        // Act
+        let firstCaught: unknown;
+        try {
+          await sut.write(leaf, new Uint8Array([1]));
+        } catch (err) {
+          firstCaught = err;
+        }
+        let secondCaught: unknown;
+        try {
+          await sut.write(leaf, new Uint8Array([2]));
+        } catch (err) {
+          secondCaught = err;
+        }
+
+        // Assert
+        expect(firstCaught).toBeInstanceOf(TsgitError);
+        expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(secondCaught).toBeInstanceOf(TsgitError);
+        expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+});
+
 describe('resolveForCreation — non-ENOENT errno on leaf lstat (DI)', () => {
   describe('Given the leaf parent lstat throws ENOTDIR (file used as directory)', () => {
     describe('When write is called', () => {
@@ -2270,13 +2643,16 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
         );
         expect(parentCalls.length).toBe(2);
 
-        // Each entry's PRE-check and POST-check normalise the child once each
-        // (not twice per check) — one isContainedInEitherRoot call now costs
-        // one normalise of `abs`, not one per root compared.
+        // The PRE-check normalises the child once (one isContainedInEitherRoot
+        // call now costs one normalise of `abs`, not one per root compared).
+        // The POST-check is served from the per-parent verdict cache
+        // (`cachedParentRealpath`), which normalises the PARENT realpath,
+        // not the child leaf — so `file-0`'s own string is normalised only
+        // by the PRE-check.
         const childCalls = normalizeSpy.mock.calls.filter(
           ([arg]: readonly unknown[]) => arg === '/root/sub/file-0',
         );
-        expect(childCalls.length).toBe(2);
+        expect(childCalls.length).toBe(1);
       });
     });
 
@@ -2306,10 +2682,13 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
         );
         expect(parentCalls.length).toBe(2);
 
+        // Same rationale as the posix case — the POST-check is served from
+        // the per-parent verdict cache, so only the PRE-check normalises
+        // the child leaf itself.
         const childCalls = normalizeSpy.mock.calls.filter(
           ([arg]: readonly unknown[]) => arg === 'C:\\Root\\sub\\file-0',
         );
-        expect(childCalls.length).toBe(2);
+        expect(childCalls.length).toBe(1);
       });
     });
   });

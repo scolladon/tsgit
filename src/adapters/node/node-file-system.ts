@@ -35,6 +35,17 @@ function toRootPrefix(normalized: string, sep: string): RootPrefix {
   return { normalized, withSep: normalized + sep };
 }
 
+/**
+ * A parent directory's realpath, paired with the containment verdict for
+ * that realpath — computed once, right after the realpath resolves, and
+ * always read together so the two can never diverge. See
+ * `NodeFileSystem.cachedParentRealpath`.
+ */
+interface ParentRealpathEntry {
+  readonly realParent: string;
+  readonly contained: boolean;
+}
+
 const REMOVE_TREE_CONCURRENCY = 8;
 
 /**
@@ -328,23 +339,33 @@ export class NodeFileSystem implements FileSystem {
 
   /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
-   * (pre-realpath) parent path. The cached value is mode-independent, so
+   * (pre-realpath) parent path, paired with that parent's containment
+   * verdict (`isContainedInEitherRoot(realParent, …)`, computed once right
+   * after the realpath resolves). The cached value is mode-independent, so
    * this single cache serves BOTH `resolveForCreation` (creation mode) and
    * `resolveForMode`'s lstat arm (lstat mode): a clone/checkout writing N
    * files into the same tree, or a status walk lstat-ing N entries under
-   * the same directory, pays the realpath walk-up once per parent rather
-   * than once per file/entry.
+   * the same directory, pays the realpath walk-up — and, for the lstat
+   * arm, the containment POST-check — once per parent rather than once per
+   * file/entry. The verdict is a per-clean-leaf equivalence
+   * (`isContainedInEitherRoot(join(realParent, basename))` ≡
+   * `isContainedInEitherRoot(realParent)`, see the design doc's proof) and
+   * is consulted ONLY by the lstat arm; `read`/`creation` realpath the full
+   * leaf and keep their own per-entry post-check.
    *
    * Invariants:
    * - Only EXISTING parents are cached. ENOENT walks fall back to
    *   `realpathNearestExisting` (creation) or propagate (lstat) and are
    *   never recorded.
-   * - `rmRecursive` and `rename` clear the cache, which is correct (the
-   *   parent realpath may have changed) and cheap relative to a re-walk.
+   * - The realpath and the verdict are set together — never divergent.
+   * - `rmRecursive` and `rename` clear the cache (invalidating BOTH the
+   *   realpath and the verdict), which is correct (the parent realpath may
+   *   have changed) and cheap relative to a re-walk. `rm` clears neither —
+   *   a leaf removal does not change the parent's realpath or containment.
    * - Sized to exceed the 256 loose-object fanout directories so a
    *   full-history walk does not thrash the cache.
    */
-  private readonly parentRealpathCache = createLruCache<string>(128 * 1024, 512);
+  private readonly parentRealpathCache = createLruCache<ParentRealpathEntry>(128 * 1024, 512);
 
   /**
    * Lazy long-name canonicalisation of `rootDir` for containment checks,
@@ -696,11 +717,16 @@ export class NodeFileSystem implements FileSystem {
     await runFs(() => this.fsOps.rmdir(real), originalPath);
   }
 
-  private async resolveForCreation(path: string, resolved: string): Promise<string> {
+  private async resolveForCreation(
+    path: string,
+    resolved: string,
+    root: RootPrefix,
+    canonicalRoot: RootPrefix,
+  ): Promise<string> {
     // realpathNearestExisting already resolved the existing prefix and rethrew any non-ENOENT
     // error, so lstat on `real` here can only succeed (leaf exists) or throw ENOENT (leaf is
     // the to-be-created tail). A symlink leaf is rejected to prevent writes through it.
-    const real = await this.realpathForCreation(resolved);
+    const real = await this.realpathForCreation(resolved, root, canonicalRoot);
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
       const leafStat = await this.fsOps.lstat(real);
@@ -714,30 +740,46 @@ export class NodeFileSystem implements FileSystem {
 
   // Shared by `realpathForCreation` and the `resolveForMode` lstat arm: a
   // status/walk touching many entries under the same directory pays the
-  // parent realpath once, not once per entry. The leaf itself is never
-  // cached — only the parent directory realpath. Throws on ENOENT (the
-  // `.set` below only runs after a successful await, so a failed realpath
-  // is never cached) — callers that need a fallback catch it themselves.
-  private async cachedParentRealpath(parent: string): Promise<string> {
+  // parent realpath — and the lstat arm's containment verdict — once, not
+  // once per entry. The leaf itself is never cached — only the parent
+  // directory realpath and its verdict. Throws on ENOENT (the `.set` below
+  // only runs after a successful await, so a failed realpath is never
+  // cached) — callers that need a fallback catch it themselves.
+  private async cachedParentRealpath(
+    parent: string,
+    root: RootPrefix,
+    canonicalRoot: RootPrefix,
+  ): Promise<ParentRealpathEntry> {
     const cached = this.parentRealpathCache.get(parent);
     if (cached !== undefined) {
       return cached;
     }
     const realParent = await this.fsOps.realpath(parent);
-    this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
-    return realParent;
+    const entry: ParentRealpathEntry = {
+      realParent,
+      contained: this.isContainedInEitherRoot(realParent, root, canonicalRoot),
+    };
+    this.parentRealpathCache.set(parent, entry, parent.length + realParent.length);
+    return entry;
   }
 
-  private async realpathForCreation(resolved: string): Promise<string> {
+  private async realpathForCreation(
+    resolved: string,
+    root: RootPrefix,
+    canonicalRoot: RootPrefix,
+  ): Promise<string> {
     // Fast path: parent already cached. The leaf realpath is meaningless
     // for creation (the leaf often doesn't exist yet), so we cache the
-    // parent only and join the basename.
+    // parent only and join the basename. Creation's own post-check (in
+    // `checkContainment`) verifies containment on the joined leaf itself;
+    // the cached `.contained` verdict is populated for a possible later
+    // lstat under the same parent but is not consulted here.
     const parent = this.pathPolicy.dirname(resolved);
     const basename = this.pathPolicy.basename(resolved);
     // Cache miss falls through to a direct parent realpath — when the
     // parent exists this is a single call instead of the full walk-up.
     try {
-      const realParent = await this.cachedParentRealpath(parent);
+      const { realParent } = await this.cachedParentRealpath(parent, root, canonicalRoot);
       return this.pathPolicy.join(realParent, basename);
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') {
@@ -750,36 +792,65 @@ export class NodeFileSystem implements FileSystem {
     }
   }
 
+  /**
+   * Resolves `resolved` to its real, containment-checkable form. `contained`
+   * is `undefined` for `read`/`creation` — those arms realpath a full leaf,
+   * so `checkContainment` still runs its own per-entry POST-check on the
+   * returned `real`. For `lstat`, `contained` carries the per-parent
+   * verdict `cachedParentRealpath` already computed (once per parent,
+   * proven verdict-identical to a per-entry check for a single clean leaf)
+   * — `checkContainment` consults it directly instead of re-normalising.
+   */
   private async resolveForMode(
     path: string,
     resolved: string,
     mode: ContainmentMode,
     root: RootPrefix,
     canonicalRoot: RootPrefix,
-  ): Promise<string> {
+  ): Promise<{ real: string; contained: boolean | undefined }> {
     if (mode === 'read') {
       if (!this.isContainedInEitherRoot(resolved, root, canonicalRoot)) {
         throw permissionDenied(path);
       }
-      return this.fsOps.realpath(resolved);
+      const real = await this.fsOps.realpath(resolved);
+      return { real, contained: undefined };
     }
     if (mode === 'lstat') {
       // Mirror the `read` arm: fail-fast on obviously out-of-tree input
       // BEFORE issuing the realpath I/O. Without this gate, an absolute
       // escape path (`../../etc`) would still walk through
       // `realpath(dirname)` before the post-check catches it.
-      if (!this.isContainedInEitherRoot(resolved, root, canonicalRoot)) {
+      const verdict = this.containmentVerdict(resolved, root, canonicalRoot);
+      if (!verdict.contained) {
         throw permissionDenied(path);
       }
-      // The parent realpath is cached (shared with `realpathForCreation`
-      // via `cachedParentRealpath`). ENOENT propagates to the caller here
-      // (no fallback), unlike the creation path.
+      // The per-parent verdict equivalence (`contained(join(realParent,
+      // basename)) === contained(realParent)`) holds for every leaf
+      // STRICTLY UNDER a root, but not when `resolved` IS a root itself:
+      // `dirname(rootDir)` is the root's own parent, which is never
+      // "contained in rootDir" even though `rootDir` trivially is (the
+      // `===` arm). The PRE-check above already proved `resolved` is
+      // contained via that same `===` arm here, so the leaf is verified —
+      // skip the parent-verdict cache and report it directly rather than
+      // asking an unrelated ancestor directory's containment.
+      if (verdict.isExactRoot) {
+        return { real: resolved, contained: true };
+      }
+      // The parent realpath — and its containment verdict — are cached
+      // (shared with `realpathForCreation` via `cachedParentRealpath`).
+      // ENOENT propagates to the caller here (no fallback), unlike the
+      // creation path.
       const parent = this.pathPolicy.dirname(resolved);
       const basename = this.pathPolicy.basename(resolved);
-      const realParent = await this.cachedParentRealpath(parent);
-      return this.pathPolicy.join(realParent, basename);
+      const { realParent, contained } = await this.cachedParentRealpath(
+        parent,
+        root,
+        canonicalRoot,
+      );
+      return { real: this.pathPolicy.join(realParent, basename), contained };
     }
-    return this.resolveForCreation(path, resolved);
+    const real = await this.resolveForCreation(path, resolved, root, canonicalRoot);
+    return { real, contained: undefined };
   }
 
   /**
@@ -795,11 +866,28 @@ export class NodeFileSystem implements FileSystem {
     root: RootPrefix,
     canonicalRoot: RootPrefix,
   ): boolean {
+    return this.containmentVerdict(abs, root, canonicalRoot).contained;
+  }
+
+  /**
+   * Single source of truth for the two-root, two-arm containment test —
+   * `isContainedInEitherRoot` and the lstat arm's PRE-check both delegate
+   * here so the "is `abs` exactly one of the roots" fact (needed by the
+   * lstat arm's exact-root shortcut) is derived from the SAME normalise
+   * call as the containment verdict, not a second one.
+   */
+  private containmentVerdict(
+    abs: string,
+    root: RootPrefix,
+    canonicalRoot: RootPrefix,
+  ): { contained: boolean; isExactRoot: boolean } {
     const c = this.pathPolicy.normalizeForCompare(abs);
-    return (
+    const isExactRoot = c === root.normalized || c === canonicalRoot.normalized;
+    const contained =
+      isExactRoot ||
       containedByPrefix(c, root.normalized, root.withSep) ||
-      containedByPrefix(c, canonicalRoot.normalized, canonicalRoot.withSep)
-    );
+      containedByPrefix(c, canonicalRoot.normalized, canonicalRoot.withSep);
+    return { contained, isExactRoot };
   }
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
@@ -825,8 +913,22 @@ export class NodeFileSystem implements FileSystem {
     const rootPrefix = this.getRootDirPrefix();
     const canonicalRootPrefix = await this.getCanonicalRoot();
     try {
-      const real = await this.resolveForMode(path, resolved, mode, rootPrefix, canonicalRootPrefix);
-      if (!this.isContainedInEitherRoot(real, rootPrefix, canonicalRootPrefix)) {
+      const { real, contained } = await this.resolveForMode(
+        path,
+        resolved,
+        mode,
+        rootPrefix,
+        canonicalRootPrefix,
+      );
+      // `contained !== undefined` means `resolveForMode` already produced
+      // the lstat arm's per-parent verdict (B3) — trust it and skip the
+      // redundant per-entry recomputation. `read`/`creation` return
+      // `undefined` and fall through to the per-entry POST-check, since
+      // their `real` is a full-leaf realpath (the clean-single-leaf
+      // equivalence B3 relies on does not hold for them).
+      const isContained =
+        contained ?? this.isContainedInEitherRoot(real, rootPrefix, canonicalRootPrefix);
+      if (!isContained) {
         throw permissionDenied(path);
       }
       return real;
