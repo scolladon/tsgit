@@ -50,6 +50,18 @@ await repo.dispose();
 
 → [Commands](docs/use/commands/) · [primitives](docs/use/primitives/) · [snapshots](docs/use/snapshots.md) · [errors](docs/use/errors.md)
 
+## Why tsgit
+
+Competitive with `isomorphic-git`, the mainstream pure-TypeScript git library — faster on some paths, slower on others (notably cold-cache / clean-tree reads, where tsgit pays a security-containment `lstat` cost it is working to amortise):
+
+| Scenario | tsgit vs isomorphic-git |
+|---|---|
+| `status` (dirty tree) | **1.22× faster** |
+| `clone` (small repo) | 1.09× (parity) |
+| `readBlob` (cold cache) | 0.70× (slower) |
+
+_Measured on a GitHub Actions runner; ±20% variance — trust direction, not absolute numbers._ → [Full benchmarks + methodology](docs/understand/performance.md)
+
 ## Documentation
 
 - 📖 [Get started](docs/get-started/) — Node, browser, memory, migration from isomorphic-git
