@@ -376,6 +376,16 @@ export class NodeFileSystem implements FileSystem {
   private canonicalRootPromise: Promise<RootPrefix> | undefined = undefined;
 
   /**
+   * Synchronous cache of the resolved canonical-root `RootPrefix`, set on
+   * `getCanonicalRoot()`'s promise-resolution arm and cleared on its
+   * rejection arm — always in lockstep with `canonicalRootPromise`. Lets
+   * hot-path callers (`checkContainment`, `exists`, `symlink`) read the
+   * settled value directly, without an `await` (and its microtask), once
+   * the root has resolved at least once.
+   */
+  private resolvedCanonicalRootPrefix: RootPrefix | undefined = undefined;
+
+  /**
    * Memoised `{ normalized, withSep }` pair for `pathPolicy.normalizeForCompare(rootDir)`.
    * The rootDir is `readonly` for the adapter's lifetime, so a single
    * normalisation (and its `+sep` prefix) is amortised across every
@@ -423,15 +433,37 @@ export class NodeFileSystem implements FileSystem {
     if (this.canonicalRootPromise === undefined) {
       this.canonicalRootPromise = this.fsOps
         .realpath(this.rootDir)
-        .then((canonical) =>
-          toRootPrefix(this.pathPolicy.normalizeForCompare(canonical), this.pathPolicy.sep),
-        )
+        .then((canonical) => {
+          const prefix = toRootPrefix(
+            this.pathPolicy.normalizeForCompare(canonical),
+            this.pathPolicy.sep,
+          );
+          this.resolvedCanonicalRootPrefix = prefix;
+          return prefix;
+        })
         .catch((err: unknown) => {
           this.canonicalRootPromise = undefined;
+          this.resolvedCanonicalRootPrefix = undefined;
           throw err;
         });
     }
     return this.canonicalRootPromise;
+  }
+
+  /**
+   * Synchronous-first-path accessor for the canonical root: returns the
+   * already-settled `resolvedCanonicalRootPrefix` field when populated (no
+   * `await`, no microtask), falling back to `getCanonicalRoot()` only on
+   * the first call or after a rejection cleared the field. Used by every
+   * hot-path call site (`checkContainment`, `exists`, `symlink`) instead of
+   * an unconditional `await this.getCanonicalRoot()`.
+   */
+  private async resolveCanonicalRoot(): Promise<RootPrefix> {
+    let canonicalRootPrefix = this.resolvedCanonicalRootPrefix;
+    if (canonicalRootPrefix === undefined) {
+      canonicalRootPrefix = await this.getCanonicalRoot();
+    }
+    return canonicalRootPrefix;
   }
 
   read = async (path: string): Promise<Uint8Array> => {
@@ -505,7 +537,7 @@ export class NodeFileSystem implements FileSystem {
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
     const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical = (await this.getCanonicalRoot()).normalized;
+    const normalizedCanonical = (await this.resolveCanonicalRoot()).normalized;
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing.
@@ -609,7 +641,7 @@ export class NodeFileSystem implements FileSystem {
       const lexical = this.pathPolicy.resolve(target);
       const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
       const normalizedRoot = this.getNormalizedRootDir();
-      const normalizedCanonical = (await this.getCanonicalRoot()).normalized;
+      const normalizedCanonical = (await this.resolveCanonicalRoot()).normalized;
       if (
         !pathContainsNormalized(normalizedRoot, resolvedTarget, this.pathPolicy) &&
         !pathContainsNormalized(normalizedCanonical, resolvedTarget, this.pathPolicy)
@@ -912,13 +944,15 @@ export class NodeFileSystem implements FileSystem {
     // check against the canonical long-name root and fail spuriously.
     //
     // Both parents are constant for the call's lifetime; we hold their
-    // normalised forms as instance fields so the case-fold allocation on
-    // the hot path runs once per parent rather than once per containment
-    // check. `getCanonicalRoot()` returns the resolved `RootPrefix`
-    // directly — the awaited value is threaded onward, never read back
-    // off the instance.
+    // normalised forms as instance fields — `normalizedRootDirPrefix` for
+    // the raw root (read synchronously via `getRootDirPrefix()`) and
+    // `resolvedCanonicalRootPrefix` for the canonical root (read via
+    // `resolveCanonicalRoot()`, which skips the `await` entirely once that
+    // field is populated) — so the case-fold allocation AND the
+    // canonical-root microtask on the hot path each run once per adapter
+    // lifetime rather than once per containment check.
     const rootPrefix = this.getRootDirPrefix();
-    const canonicalRootPrefix = await this.getCanonicalRoot();
+    const canonicalRootPrefix = await this.resolveCanonicalRoot();
     try {
       const { real, contained } = await this.resolveForMode(
         path,

@@ -369,6 +369,115 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
       });
     });
   });
+
+  describe('Given two sequential `checkContainment`-driving calls (lstat)', () => {
+    describe('When the second runs', () => {
+      it('Then realpath(rootDir) is invoked exactly once (synchronous cached fast-path)', async () => {
+        // Arrange — the first lstat resolves the canonical root and populates
+        // the synchronous `resolvedCanonicalRootPrefix` field; the second
+        // lstat must be served from that field without re-awaiting
+        // `getCanonicalRoot()`.
+        const rootDir = '/root';
+        const realpath = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({
+          realpath,
+          lstat: vi.fn().mockResolvedValue({
+            ctimeMs: BigInt(0),
+            mtimeMs: BigInt(0),
+            dev: BigInt(0),
+            ino: BigInt(0),
+            mode: BigInt(0o100644),
+            uid: BigInt(0),
+            gid: BigInt(0),
+            size: BigInt(0),
+            isFile: () => true,
+            isDirectory: () => false,
+            isSymbolicLink: () => false,
+          }),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act — leaves under `/root/sub` so the lstat-arm's OWN parent
+        // realpath (`/root/sub`) is a distinct call from the canonical-root
+        // resolution (`/root`), isolating the count this test pins.
+        await sut.lstat('/root/sub/a');
+        await sut.lstat('/root/sub/b');
+
+        // Assert
+        const rootCalls = realpath.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === rootDir,
+        );
+        expect(rootCalls.length).toBe(1);
+      });
+    });
+  });
+
+  describe('Given the first canonical-root resolution rejects', () => {
+    describe('When a later `checkContainment`-driving call runs (lstat)', () => {
+      it('Then the cached field stays undefined and the canonical root is retried', async () => {
+        // Arrange — pins the `.catch` arm of `getCanonicalRoot`: on
+        // rejection, `resolvedCanonicalRootPrefix` must stay `undefined` so
+        // the guard's `if` branch re-awaits `getCanonicalRoot()` on the next
+        // call instead of trusting a stale/never-set field. Leaves live
+        // under `/root/sub` so the lstat-arm's OWN parent-realpath call
+        // (`cachedParentRealpath('/root/sub')`) is a distinct call site from
+        // the canonical-root resolution (`realpath('/root')`) this test pins.
+        const rootDir = '/root';
+        let callCount = 0;
+        const realpath = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) {
+            callCount += 1;
+            if (callCount === 1) throw enoent();
+            return rootDir;
+          }
+          return input;
+        });
+        const fsOps = fakeFsOps({
+          realpath,
+          lstat: vi.fn().mockResolvedValue({
+            ctimeMs: BigInt(0),
+            mtimeMs: BigInt(0),
+            dev: BigInt(0),
+            ino: BigInt(0),
+            mode: BigInt(0o100644),
+            uid: BigInt(0),
+            gid: BigInt(0),
+            size: BigInt(0),
+            isFile: () => true,
+            isDirectory: () => false,
+            isSymbolicLink: () => false,
+          }),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act — `getCanonicalRoot()`'s rejection propagates raw (it is
+        // awaited BEFORE `checkContainment`'s try/catch), so the first call
+        // rejects with the underlying ENOENT; the second succeeds once the
+        // canonical root resolves.
+        let firstCaught: unknown;
+        try {
+          await sut.lstat('/root/sub/a');
+        } catch (err) {
+          firstCaught = err;
+        }
+        let secondCaught: unknown;
+        try {
+          await sut.lstat('/root/sub/b');
+        } catch (err) {
+          secondCaught = err;
+        }
+
+        // Assert
+        expect(firstCaught).toBeInstanceOf(Error);
+        expect((firstCaught as NodeJS.ErrnoException).code).toBe('ENOENT');
+        expect(secondCaught).toBeUndefined();
+        const rootCalls = realpath.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === rootDir,
+        );
+        expect(rootCalls.length).toBe(2);
+      });
+    });
+  });
 });
 
 describe('NodeFileSystem — guarded canonical-root await, first-call resolution (DI)', () => {
