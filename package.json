@@ -190,6 +190,7 @@
     "test:mutation:pr": "wireit",
     "test:bench": "wireit",
     "bench:summary": "wireit",
+    "bench:check": "node --experimental-strip-types tooling/bench-check.ts",
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
     "profile": "npm run build:profile && node --experimental-strip-types tooling/profile.ts",
     "bench:memory": "npm run build && node --expose-gc --experimental-strip-types tooling/bench-memory.ts",
