@@ -5,6 +5,23 @@
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the schema below — the plan phase cannot close without it.
 
+> **Revision (implementation).** Part 1's local `bench:summary` approach is superseded — a
+> personal host under interactive load biases tsgit's `lstat`-heavy paths (proven:
+> `readBlob:cold` read 0.41× locally vs 0.70× on a clean runner). The published numbers are
+> instead **transcribed from a dated CI nightly benchmark artifact** (`bench.yml`, a dedicated
+> GitHub Actions runner — see [ADR-483](../adr/483-committed-hand-transcribed-benchmark-snapshot.md),
+> revised). Four deltas ripple into Parts 2–4: (1) **numbers** = the GHA nightly run (dated
+> 2026-07-13): `clone` 1.09×, `log:walk` 0.78×, `readBlob:cold` 0.70×, `readBlob:warm` 1.21×,
+> `status:clean` 0.67×, `status:dirty` 1.22×; (2) **provenance** = `linux-x64` / AMD EPYC 7763 /
+> Node 22.23.1 / iso-git 1.38.7 / run 2026-07-13 (not darwin/M3); (3) **reference points**
+> (simple-git, wasm-git) are cited **qualitatively** — what each measures and why it is not a
+> pure-JS peer — with **no fabricated head-to-head number** (measuring them locally carries the
+> same load bias; ADR-480's "or not measured on this host"); (4) `status:clean` flipped to a
+> loss (0.67×) — the **documented lstat containment-check cost** (Part 2's "why slower" section
+> gains a `status:clean` bullet), with a same-host historical bench + profile filed as a
+> **backlog follow-up** (documentation phase). The edit sites below are unchanged; only the
+> numbers/provenance/framing they receive change.
+
 ## Scope (what the ratified ADRs collapse this to)
 
 A **documentation + measurement** change. The ADRs remove every production-code fork:
