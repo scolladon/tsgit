@@ -315,6 +315,43 @@ describe('Given a commit that rewrites every line of the file', () => {
   });
 });
 
+describe('Given a commit whose parent has a differing blob at the same path', () => {
+  describe('When blaming the file', () => {
+    it('Then the differing line is blamed at the child, not passed to the parent', async () => {
+      // Arrange — c2's f.txt differs from c1's at the parent-entry oid, so the
+      // suspect must diff against the parent rather than skip straight through.
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'a\nB\nc\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c2, c1]);
+    });
+  });
+});
+
+describe('Given a commit whose parent has the identical blob at the same path', () => {
+  describe('When blaming the file', () => {
+    it('Then every line passes through to the ancestor unchanged', async () => {
+      // Arrange — c2 touches an unrelated file, leaving f.txt's tree entry
+      // identical (same oid) to c1's — every line must pass straight to c1.
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      await commitFile(ctx, 'c2', 'other.txt', 'unrelated\n');
+
+      // Act
+      const sut = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(committedLines(sut).map((l) => l.commit)).toEqual([c1, c1, c1]);
+      expect(committedLines(sut).every((l) => l.boundary)).toBe(true);
+    });
+  });
+});
+
 describe('Given a rename of a file inside a subdirectory', () => {
   describe('When blaming it under the new nested name', () => {
     it('Then the rename is followed across the subtree to the originating commit', async () => {

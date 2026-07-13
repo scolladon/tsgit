@@ -102,6 +102,7 @@ interface Suspect {
   readonly commit: ObjectId;
   readonly path: FilePath;
   readonly blob: Uint8Array;
+  readonly blobId: ObjectId;
   readonly entries: ReadonlyArray<BlameEntry>;
 }
 
@@ -160,10 +161,10 @@ const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> =>
   // same empty result (mirrors the committed-rev seed guard below).
   if (count === 0) return;
   const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
-  const headBlob = await blobAtPath(sb.ctx, data.tree, path);
-  if (headBlob !== undefined) {
-    const { passed, kept } = splitAgainstParent(whole, diffLines(headBlob, workingBlob));
-    schedule(sb, head, path, data.committer.timestamp, headBlob, passed);
+  const headEntry = await blobEntryAtPath(sb.ctx, data.tree, path);
+  if (headEntry !== undefined) {
+    const { passed, kept } = splitAgainstParent(whole, diffLines(headEntry.content, workingBlob));
+    schedule(sb, head, path, data.committer.timestamp, headEntry.content, headEntry.id, passed);
     finalizeUncommitted(sb, path, workingBlob, kept, { commit: head, path });
     return;
   }
@@ -225,13 +226,13 @@ const seed = async (
   rev: string,
 ): Promise<void> => {
   const data = await readCommitData(sb.ctx, commit);
-  const blob = await blobAtPath(sb.ctx, data.tree, path);
-  if (blob === undefined) throw pathNotInTree(rev, path);
-  const count = splitLines(blob).length;
+  const entry = await blobEntryAtPath(sb.ctx, data.tree, path);
+  if (entry === undefined) throw pathNotInTree(rev, path);
+  const count = splitLines(entry.content).length;
   // equivalent-mutant: count===0 only for an empty blob (no lines to blame); without
   // the guard a zero-count entry is scheduled and finalizes nothing — same empty result.
   if (count === 0) return;
-  schedule(sb, commit, path, data.committer.timestamp, blob, [
+  schedule(sb, commit, path, data.committer.timestamp, entry.content, entry.id, [
     { finalStart: 0, count, sourceStart: 0 },
   ]);
 };
@@ -249,14 +250,42 @@ const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> =
   let remaining = suspect.entries;
   let previous: BlameLine['previous'];
   for (const parent of data.parents) {
-    const resolved = await resolveInParent(sb.ctx, parent, data.tree, suspect.path);
+    const resolved = await resolveInParent(sb.ctx, parent, data.tree, suspect.path, suspect.blobId);
     if (resolved === undefined) continue;
     previous ??= { commit: parent, path: resolved.sourcePath };
-    const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
-    schedule(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, passed);
-    remaining = kept;
+    remaining = applyParentResolution(sb, suspect, parent, resolved, remaining);
+    // equivalent-mutant: removing this short-circuit still terminates correctly —
+    // remaining ancestors would be descended, but splitAgainstParent([], anyDiff) and
+    // schedule(…, []) are both no-ops on an empty entry list, so the scoreboard ends
+    // up byte-identical either way. The break only saves the wasted descent, timing-only.
+    if (remaining.length === 0) break;
   }
   finalize(sb, suspect, data, childLines, remaining, previous);
+};
+
+/** Apply one resolved parent to the still-open lines: pass-through on TREESAME, diff otherwise. */
+const applyParentResolution = (
+  sb: Scoreboard,
+  suspect: Suspect,
+  parent: ObjectId,
+  resolved: ResolvedParent,
+  remaining: ReadonlyArray<BlameEntry>,
+): ReadonlyArray<BlameEntry> => {
+  if (resolved.kind === 'treesame') {
+    schedule(
+      sb,
+      parent,
+      resolved.sourcePath,
+      resolved.date,
+      suspect.blob,
+      suspect.blobId,
+      remaining,
+    );
+    return [];
+  }
+  const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
+  schedule(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, resolved.blobId, passed);
+  return kept;
 };
 
 const finalize = (
@@ -303,26 +332,42 @@ const baseLine = (
 const offsets = (count: number): ReadonlyArray<number> =>
   Array.from({ length: count }, (_, index) => index);
 
-interface ResolvedParent {
-  readonly blob: Uint8Array;
-  readonly sourcePath: FilePath;
-  readonly date: number;
-}
+type ResolvedParent =
+  | { readonly kind: 'treesame'; readonly sourcePath: FilePath; readonly date: number }
+  | {
+      readonly kind: 'changed';
+      readonly blob: Uint8Array;
+      readonly blobId: ObjectId;
+      readonly sourcePath: FilePath;
+      readonly date: number;
+    };
 
+/**
+ * Resolve the suspect's path in one parent. The tree-entry oid is compared to the
+ * suspect's blob oid BEFORE any blob is read: an equal oid means the parent's blob
+ * is byte-identical (git's content-addressing), so the diff would be a no-op — that
+ * TREESAME case skips `readBlob` and the diff entirely (`kind: 'treesame'`). A
+ * changed or renamed path reads the parent blob and returns it (`kind: 'changed'`).
+ */
 const resolveInParent = async (
   ctx: Context,
   parent: ObjectId,
   childTree: ObjectId,
   path: FilePath,
+  suspectBlobId: ObjectId,
 ): Promise<ResolvedParent | undefined> => {
   const data = await readCommitData(ctx, parent);
   const date = data.committer.timestamp;
-  const direct = await blobAtPath(ctx, data.tree, path);
-  if (direct !== undefined) return { blob: direct, sourcePath: path, date };
+  const entry = await blobTreeEntry(ctx, data.tree, path);
+  if (entry !== undefined) {
+    if (entry.id === suspectBlobId) return { kind: 'treesame', sourcePath: path, date };
+    const blob = (await readBlob(ctx, entry.id)).content;
+    return { kind: 'changed', blob, blobId: entry.id, sourcePath: path, date };
+  }
   const renamed = await renamedSource(ctx, data.tree, childTree, path);
   if (renamed === undefined) return undefined;
   const blob = (await readBlob(ctx, renamed.blobId)).content;
-  return { blob, sourcePath: renamed.sourcePath, date };
+  return { kind: 'changed', blob, blobId: renamed.blobId, sourcePath: renamed.sourcePath, date };
 };
 
 /**
@@ -355,21 +400,34 @@ const schedule = (
   path: FilePath,
   date: number,
   blob: Uint8Array,
+  blobId: ObjectId,
   entries: ReadonlyArray<BlameEntry>,
 ): void => {
   // equivalent-mutant: an empty entry list would enqueue a suspect that finalizes
   // nothing; the guard only avoids needlessly walking ancestors, so output is identical.
   if (entries.length === 0) return;
-  sb.queue.push({ oid: commit, date, value: { commit, path, blob, entries } });
+  sb.queue.push({ oid: commit, date, value: { commit, path, blob, blobId, entries } });
 };
 
-const blobAtPath = async (
+/** Descend to `path`'s tree entry, rejecting a non-blob leaf (directory/gitlink) as absent. */
+const blobTreeEntry = async (
   ctx: Context,
   tree: ObjectId,
   path: FilePath,
-): Promise<Uint8Array | undefined> => {
+): ReturnType<typeof findTreeEntry> => {
   const entry = await findTreeEntry(ctx, tree, path);
   if (entry === undefined) return undefined;
   if (entry.mode === FILE_MODE.DIRECTORY || entry.mode === FILE_MODE.GITLINK) return undefined;
-  return (await readBlob(ctx, entry.id)).content;
+  return entry;
+};
+
+/** Descend to `path`'s blob, returning its bytes AND oid together (seed sites need both). */
+const blobEntryAtPath = async (
+  ctx: Context,
+  tree: ObjectId,
+  path: FilePath,
+): Promise<{ readonly id: ObjectId; readonly content: Uint8Array } | undefined> => {
+  const entry = await blobTreeEntry(ctx, tree, path);
+  if (entry === undefined) return undefined;
+  return { id: entry.id, content: (await readBlob(ctx, entry.id)).content };
 };
