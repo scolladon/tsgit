@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { descendTreePath } from '../../../../../src/application/primitives/internal/resolve-tree-path.js';
+import {
+  descendTreePath,
+  findTreeEntry,
+} from '../../../../../src/application/primitives/internal/resolve-tree-path.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
@@ -139,6 +142,125 @@ describe('descendTreePath', () => {
         const sut = await descendTreePath(ctx, root, 'run', 'HEAD');
         // Assert
         expect(sut.mode).toBe(FILE_MODE.EXECUTABLE);
+      });
+    });
+  });
+});
+
+describe('findTreeEntry', () => {
+  describe('Given a root tree oid with a top-level file', () => {
+    describe('When findTreeEntry walks the file name', () => {
+      it('Then returns that entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fileId = await writeObject(ctx, blobOf(1));
+        const root: Tree = {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+        };
+        const rootId = await writeObject(ctx, root);
+        // Act
+        const sut = await findTreeEntry(ctx, rootId, 'file');
+        // Assert
+        expect(sut?.id).toBe(fileId);
+        expect(sut?.mode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given an already-resolved root Tree', () => {
+    describe('When findTreeEntry walks it', () => {
+      it('Then returns the entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fileId = await writeObject(ctx, blobOf(2));
+        const root: Tree = {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+        };
+        // Act
+        const sut = await findTreeEntry(ctx, root, 'file');
+        // Assert
+        expect(sut?.id).toBe(fileId);
+      });
+    });
+  });
+
+  describe('Given a nested tree a/b/c oid', () => {
+    describe('When findTreeEntry walks the deep path', () => {
+      it('Then returns the deep entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const cId = await writeObject(ctx, blobOf(3));
+        const bId = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.REGULAR, name: 'c', id: cId }],
+        } as Tree);
+        const aId = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.DIRECTORY, name: 'b', id: bId }],
+        } as Tree);
+        const root: Tree = {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.DIRECTORY, name: 'a', id: aId }],
+        };
+        const rootId = await writeObject(ctx, root);
+        // Act
+        const sut = await findTreeEntry(ctx, rootId, 'a/b/c');
+        // Assert
+        expect(sut?.id).toBe(cId);
+      });
+    });
+  });
+
+  describe('Given a path whose final segment is absent', () => {
+    describe('When findTreeEntry walks it', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const root: Tree = { type: 'tree', id: '' as ObjectId, entries: [] };
+        // Act
+        const sut = await findTreeEntry(ctx, root, 'missing');
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a path whose intermediate segment is absent', () => {
+    describe('When findTreeEntry walks it', () => {
+      it('Then returns undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const root: Tree = { type: 'tree', id: '' as ObjectId, entries: [] };
+        // Act
+        const sut = await findTreeEntry(ctx, root, 'nope/leaf');
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an intermediate segment that is a blob', () => {
+    describe('When findTreeEntry descends into it', () => {
+      it('Then returns undefined', async () => {
+        // Arrange — a file used as a directory
+        const ctx = await buildSeededContext();
+        const fileId = await writeObject(ctx, blobOf(7));
+        const root: Tree = {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+        };
+        // Act
+        const sut = await findTreeEntry(ctx, root, 'file/leaf');
+        // Assert
+        expect(sut).toBeUndefined();
       });
     });
   });
