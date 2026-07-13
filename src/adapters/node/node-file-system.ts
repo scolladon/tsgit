@@ -824,18 +824,6 @@ export class NodeFileSystem implements FileSystem {
       if (!verdict.contained) {
         throw permissionDenied(path);
       }
-      // The per-parent verdict equivalence (`contained(join(realParent,
-      // basename)) === contained(realParent)`) holds for every leaf
-      // STRICTLY UNDER a root, but not when `resolved` IS a root itself:
-      // `dirname(rootDir)` is the root's own parent, which is never
-      // "contained in rootDir" even though `rootDir` trivially is (the
-      // `===` arm). The PRE-check above already proved `resolved` is
-      // contained via that same `===` arm here, so the leaf is verified —
-      // skip the parent-verdict cache and report it directly rather than
-      // asking an unrelated ancestor directory's containment.
-      if (verdict.isExactRoot) {
-        return { real: resolved, contained: true };
-      }
       // The parent realpath — and its containment verdict — are cached
       // (shared with `realpathForCreation` via `cachedParentRealpath`).
       // ENOENT propagates to the caller here (no fallback), unlike the
@@ -847,7 +835,26 @@ export class NodeFileSystem implements FileSystem {
         root,
         canonicalRoot,
       );
-      return { real: this.pathPolicy.join(realParent, basename), contained };
+      // The per-parent verdict equivalence (`contained(join(realParent,
+      // basename)) === contained(realParent)`) holds for every leaf
+      // STRICTLY UNDER a root, but not when `resolved` IS a root itself:
+      // `dirname(rootDir)` is the root's own parent, which is never
+      // "contained in rootDir" even though `rootDir` trivially is (the
+      // `===` arm) — so the cached per-parent verdict here would
+      // false-deny an exact-root leaf. The exact-root leaf is therefore
+      // the ONE exception to the per-parent equivalence: report
+      // `contained: undefined` so `checkContainment`'s
+      // `contained ?? isContainedInEitherRoot(real, …)` runs the FULL
+      // per-entry post-check on the realpath'd `real` instead of trusting
+      // the (inapplicable) per-parent verdict. This reproduces the
+      // pre-per-parent-cache behaviour: a rootDir that is itself a symlink
+      // pointing outside its own tree is DENIED, because `real` — built
+      // from the SAME `realParent`/`basename` join as any other leaf — is
+      // then checked against both roots on its own merits.
+      return {
+        real: this.pathPolicy.join(realParent, basename),
+        contained: verdict.isExactRoot ? undefined : contained,
+      };
     }
     const real = await this.resolveForCreation(path, resolved, root, canonicalRoot);
     return { real, contained: undefined };

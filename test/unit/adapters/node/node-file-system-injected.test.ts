@@ -1784,6 +1784,115 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
   });
 });
 
+describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
+  describe.each([
+    {
+      label: 'posix',
+      policy: posixPolicy,
+      linkRoot: '/link/repo',
+      realParentDir: '/real',
+      outside: '/outside',
+    },
+    {
+      label: 'windows',
+      policy: windowsPolicy,
+      linkRoot: 'C:\\link\\repo',
+      realParentDir: 'C:\\real',
+      outside: 'C:\\outside',
+    },
+  ])('Given rootDir is a symlink whose leaf resolves outside its own tree ($label)', ({
+    policy,
+    linkRoot,
+    realParentDir,
+    outside,
+  }) => {
+    describe('When lstat(rootDir) is called', () => {
+      it('Then PERMISSION_DENIED is thrown (the exact-root leaf is NOT exempt from the post-check)', async () => {
+        // Arrange — rootDir itself is the symlink (`realpath(rootDir)` flips
+        // it to `outside`, so the canonical root IS `outside`). Both the raw
+        // and canonical roots therefore equal `linkRoot`/`outside`
+        // respectively, and lstat(linkRoot) hits the `isExactRoot` shortcut
+        // pre-fix. The dirname of `linkRoot` also resolves through a
+        // symlink (`realParentDir`), so a correctly-deferred post-check
+        // would realpath-join `realParentDir` + basename('repo') and find it
+        // outside BOTH roots — denied.
+        const dirnameOfRoot = policy.dirname(linkRoot);
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+          if (input === linkRoot) return outside;
+          if (input === dirnameOfRoot) return realParentDir;
+          return input;
+        });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          lstat: vi.fn().mockResolvedValue({
+            ctimeMs: BigInt(0),
+            mtimeMs: BigInt(0),
+            dev: BigInt(0),
+            ino: BigInt(0),
+            mode: BigInt(0o040755),
+            uid: BigInt(0),
+            gid: BigInt(0),
+            size: BigInt(0),
+            isFile: () => false,
+            isDirectory: () => true,
+            isSymbolicLink: () => false,
+          }),
+        });
+        const sut = new NodeFileSystem(linkRoot, policy, fsOps);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lstat(linkRoot);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'posix', policy: posixPolicy, rootDir: '/root' },
+    { label: 'windows', policy: windowsPolicy, rootDir: 'C:\\Root' },
+  ])('Given a normal rootDir with no symlinks ($label)', ({ policy, rootDir }) => {
+    describe('When lstat(rootDir) is called', () => {
+      it('Then it is admitted (no false-deny regression on the exact-root leaf)', async () => {
+        // Arrange — realpath is identity for both rootDir and its dirname;
+        // the exact-root leaf must still be admitted once the shortcut is
+        // replaced by a deferred post-check.
+        const fileStat = {
+          ctimeMs: BigInt(0),
+          mtimeMs: BigInt(0),
+          dev: BigInt(0),
+          ino: BigInt(0),
+          mode: BigInt(0o040755),
+          uid: BigInt(0),
+          gid: BigInt(0),
+          size: BigInt(0),
+          isFile: () => false,
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        };
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: vi.fn().mockResolvedValue(fileStat),
+        });
+        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+
+        // Act
+        const result = await sut.lstat(rootDir);
+
+        // Assert
+        expect(result.isDirectory).toBe(true);
+      });
+    });
+  });
+});
+
 describe('resolveForCreation — non-ENOENT errno on leaf lstat (DI)', () => {
   describe('Given the leaf parent lstat throws ENOTDIR (file used as directory)', () => {
     describe('When write is called', () => {
