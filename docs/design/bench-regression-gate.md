@@ -6,25 +6,29 @@
 > 26.7a) has landed and its job is to stop a future change from silently
 > regressing the now-optimised perf surface. This is a **CI/tooling** feature —
 > it adds no library or command surface.
-> Status: draft → self-reviewed ×3 → decision candidates pending ADR conversation
-> (ADRs 487+).
+> Status: draft → self-reviewed ×3 → **decisions ratified (ADRs 487–491)** →
+> revised to match the ratified decisions (scope-fold).
 
-This design confronts one central tension head-on: **the backlog asks for a
-blocking per-scenario ±N% gate, but the entire existing perf apparatus is
-deliberately non-blocking because CI bench noise is ~±20%** (ADR-483; the
-`benchmark-compare` job is `continue-on-error`; `benchmark-snapshot` runs
-`fail-on-alert:false`). A naive blocking gate with N < 20% flakes on every PR;
-with N > 20% it catches only gross regressions. ADR-483 further warns that
-comparing across environments — a baseline captured on runner A versus a PR
-measured on runner B — is exactly the uncitable/noisy case. Every load-bearing
-choice that resolves this tension is deferred to the user as a decision candidate;
-the recommendations below are the designer's reasoned defaults, not decisions.
+This feature confronts one central tension: **the backlog asks for a blocking
+per-scenario ±N% gate, but the entire existing perf apparatus is deliberately
+non-blocking because CI bench noise is ~±20%** (ADR-483; the `benchmark-compare`
+job is `continue-on-error`; `benchmark-snapshot` runs `fail-on-alert:false`). A
+naive blocking gate with N < 20% flakes on every PR. The ADR conversation
+resolved this by making the gate **advisory** (ADR-488) over a **same-runner
+base-vs-PR** comparison (ADR-487), so no cross-environment offset (ADR-483's
+uncitable case) enters the number and no committed baseline can go stale.
+
+The five ratified decisions (ADRs 487–491) are summarised in **§Decisions
+(ratified)** below; the rest of the doc specifies the change **as decided** — it
+poses no open candidates.
 
 ## Context
 
 The bench pipeline already exists end-to-end; this feature adds a **comparison
-step** on top of it, plus a **committed baseline** to compare against. The
-surface, verified against the live tree in this worktree:
+step** on top of it. There is **no committed baseline**: the base branch *is* the
+baseline, and the gate reads **two** `raw.json` files (the base-branch run and the
+PR-head run, both produced on one runner). The surface, verified against the live
+tree in this worktree:
 
 - **`npm run test:bench`** (wireit) → `vitest bench --run --config
   vitest.bench.config.ts` over `test/bench/**/*.bench.ts` → writes
@@ -40,7 +44,8 @@ surface, verified against the live tree in this worktree:
   `toSnapshotEntries(raw: RawReport): SnapshotEntry[]`, flattening **every**
   `(group, bench)` pair generically into `{ name: '<group.fullName> > <bench.name>',
   unit: 'ms', value: median ?? mean }`. No competitor allow-list. **This is the
-  machine-diffable, per-scenario, median-ms artifact the gate should build on.**
+  machine-diffable, per-scenario, median-ms flattener the gate reuses on both
+  sides.**
 - **Bench scenario files** (`test/bench/*.bench.ts`): `blame-deep-ancestry`,
   `clone-small-repo`, `delta-chain-read`, `describe`, `log`, `log-scale`,
   `name-rev`, `pack-read-scale`, `status`, `status-scale` (+ `fixtures.ts`,
@@ -66,17 +71,11 @@ Load-bearing facts pinned by that run:
   status() scans it, Then compare tsgit against isomorphic-git`) — **not** the
   short scenario name. `bench-summarize.ts` derives a short scenario name by
   splitting on ` > ` and taking the last segment; `bench-to-snapshot.ts` keeps the
-  full `fullName`. The gate's per-scenario key must pick one and pin it (see
-  §Design → key format).
+  full `fullName`. The gate keys on the full `snapshot.json` name (see §Design →
+  key format).
 - `bench.name` is exactly `tsgit` / `isomorphic-git`.
 - `median`, `mean`, `min`, `hz`, `rme` are all present. `bench-to-snapshot.ts`
-  uses `median ?? mean` (median-ms, smaller-better).
-
-**gitignore reality** (`.gitignore` lines 14–19): `reports/*` is gitignored
-**except** `!reports/api.json`. So `raw.json` / `snapshot.json` / `summary.md` are
-ephemeral and **not committed**. A committed baseline therefore needs either a new
-gitignore exception (e.g. `!reports/benchmarks/baseline.json`) or a home **outside**
-`reports/` (e.g. `test/bench/baseline.json`). Candidate #4 decides.
+  uses `median ?? mean` (median-ms, smaller-better) — the gate metric (ADR-489).
 
 **Existing CI perf jobs** (`.github/workflows/ci.yml`, Stage 7):
 
@@ -86,286 +85,307 @@ gitignore exception (e.g. `!reports/benchmarks/baseline.json`) or a home **outsi
   `alert-threshold:'150%'`, `fail-on-alert:false`. **Trend tracking only.** The
   `gh-pages` branch is a dedicated benchmark-data store — **must not be
   repurposed/deleted** (deleting it breaks every main CI run at the snapshot step).
+  **This job is untouched by this feature.**
 - **`benchmark-compare`** (PR, `continue-on-error:true`): checks out the base sha,
-  builds+benches it, then builds+benches the PR branch **on the same runner**,
-  compares **ops/s** (`hz`) per `<group.fullName> > <bench.name>` key, threshold
-  **5%**, posts a PR comment. **Explicitly informative-only, never blocks** — its
-  own inline comment reads: *"same-runner benchmarking measures too much noise to
-  block on."* Its inline node script `extractBenchmarks` already keys on
-  `${group.fullName} > ${b.name}` and reads `hz`/`mean`/`p99`.
+  builds+benches it (`cp reports/benchmarks/raw.json /tmp/base-bench.json`), then
+  checks out the PR branch, builds+benches it (`cp … /tmp/pr-bench.json`) **on the
+  same runner**, then an **inline `node <<'SCRIPT'` heredoc** compares **ops/s**
+  (`hz`) per `<group.fullName> > <bench.name>` key at threshold **5%**, writes a PR
+  comment + `$GITHUB_STEP_SUMMARY`, and **never exits non-zero** (its own comment:
+  *"same-runner benchmarking measures too much noise to block on."*). **This is the
+  job this feature edits** (ADR-487, ADR-491): the two-checkout same-runner recipe
+  and the `continue-on-error:true` posture are kept; the inline heredoc is replaced
+  by an invocation of the new extracted, unit-tested tool.
 - **`.github/workflows/bench.yml`** — the **nightly** benchmark (cron `14 3 * * *`
-  UTC + `workflow_dispatch`), dedicated runner, no contention. Pre-warms fixtures,
-  runs `bench:summary` + `bench:memory`, uploads `reports/benchmarks/` as a 30-day
-  artifact. **This is ADR-483's clean reference environment.**
+  UTC + `workflow_dispatch`), dedicated runner, no contention. **Untouched by this
+  feature** — it is not a baseline source here (ADR-487 commits no baseline); it
+  remains ADR-483's clean *publishing* reference for the hand-transcribed
+  competitor numbers, which is a separate concern (§Out of scope).
 
 **Governing prior art (read in full, not summarised from memory):**
 
 - **ADR-483** (committed hand-transcribed benchmark snapshot): benchmarks are
   noisy (repo warns ±20% on GHA runners); a **personal host is not a reliable
   reference** (interactive-load bias — iso-git measured 1.2–2.4× slower under
-  load); the **CI nightly (`bench.yml`) is the clean reference**; published numbers
-  are hand-transcribed committed snapshots with provenance. Crucially it states a
-  *"`bench:publish` formalisation remains available as a later hardening **adjacent
-  to the 26.5 regression gate**"* — **this feature is the anticipated home** for
-  formalizing a committed baseline.
+  load); the **CI nightly (`bench.yml`) is the clean reference** for *published*
+  numbers; **cross-environment comparison is the uncitable case**. ADR-487 reads
+  this directly: a same-runner base-vs-PR ratio is load-independent (the systematic
+  per-runner offset cancels), so it needs no committed baseline and no cross-env
+  threshold widening.
 - **ADR-486** (status:clean validation + baseline policy): a **same-host
   before/after ratio is load-independent** (both sides pay the same contention) —
-  the method that proved "no regression" in the 26.7a investigation. A committed
-  whole-command profile baseline exists (`docs/perf/baseline.json`) but there is
-  **no baseline-drift CI gate today** — the baseline is a documentation artifact.
-  Explicitly notes the per-scenario `bench:summary` diff gate is "out of scope
-  here … until the 26.5 regression gate formalises" it.
+  the method that proved "no regression" in the 26.7a investigation, and the exact
+  method ADR-487 adopts for the gate. A committed whole-command profile baseline
+  exists (`docs/perf/baseline.json`) but is a **documentation artifact with no CI
+  gate** — and this feature does **not** gate it (§Out of scope).
 - **`docs/design/competitor-benchmarks.md`** (house-style template + the
-  `bench-summarize` / `bench-to-snapshot` surface map): the six published
-  small-repo comparison scenarios are `log`, `readBlob:cold`, `readBlob:warm`,
-  `status:clean`, `status:dirty`, `clone`. Bench files and `tooling/**` are
-  **excluded from coverage** (`vitest.config.ts` coverage `include` =
+  `bench-summarize` / `bench-to-snapshot` surface map): bench files and `tooling/**`
+  are **excluded from coverage** (`vitest.config.ts` coverage `include` =
   `src/{domain,ports,adapters/node,adapters/memory,operators}/**` only).
 - **`docs/design/status-clean-perf-investigation.md`**: same-host before/after
-  ratios are the load-bearing evidence; absolute local numbers are not citable;
-  the CI nightly is the citable source. Used `tsgit min` as the least-noise
-  estimator for a same-host ratio.
+  ratios are the load-bearing evidence; absolute local numbers are not citable.
 
 ## Constraints
 
 1. **±20% CI-runner noise is the governing physical reality** (ADR-483). Any gate
-   whose threshold approaches or falls below the per-scenario noise floor will
-   flake. This is the single hardest constraint and it shapes candidates #1, #2,
-   #3.
-2. **Cross-environment comparison is the uncitable case** (ADR-483). A baseline
-   captured on the nightly runner (linux-x64 / AMD EPYC 7763) versus a PR measured
-   on an arbitrary `ubuntu-latest` PR-runner is an apples-to-oranges comparison the
-   ADR explicitly warns against. A **same-runner** base-vs-PR ratio (candidate
-   #1(b)) sidesteps this; a **committed-baseline** approach (candidate #1(a)) must
-   absorb the cross-env variance into a wide threshold.
-3. **gitignore** — a committed baseline needs an explicit home (new
-   `!reports/benchmarks/…` exception, or under `test/bench/`). `reports/*` is
-   otherwise fully ignored (candidate #4).
-4. **`gh-pages` is load-bearing infrastructure** — the `benchmark-snapshot` trend
-   store. Do not delete/repurpose it. Flipping its `fail-on-alert` (candidate
-   #1(c)) is an option but is a *post-merge* gate, not a PR gate.
-5. **Faithfulness (ADR-226) is N/A here.** A benchmark **measures wall-clock
+   whose flag threshold approaches or falls below the per-scenario noise floor
+   cries wolf. This is why the gate is **advisory** (ADR-488) — a flagged scenario
+   is a prompt to look, never a merge blocker — and why the same-runner comparison
+   (ADR-487), whose systematic offset cancels, lets N sit at ≈10% (ADR-489) rather
+   than above the raw-noise floor.
+2. **Cross-environment comparison is the uncitable case** (ADR-483). The gate
+   sidesteps it entirely: **same-runner base-vs-PR** (ADR-487). There is **no
+   committed baseline** captured on a different runner to drift or to compare
+   across environments.
+3. **`gh-pages` is load-bearing infrastructure** — the `benchmark-snapshot` trend
+   store. Do not delete/repurpose it. This feature does not touch it.
+4. **Faithfulness (ADR-226) is N/A here.** A benchmark **measures wall-clock
    time**; it asserts no git-observable behaviour, so this change pins **no
    faithfulness matrix** and adds **no interop test** (same reasoning as
    `competitor-benchmarks.md`). The only empirical matrix pinned is the `raw.json`
    **schema** above — a data-shape pin for the comparison tool, not a behaviour
    pin. Every fixture `git` invocation stays env-isolated exactly as today; this
    change adds no new `git`-spawning surface.
-6. **ADR-249 (structured output, no cosmetics) is N/A to the library.** All
+5. **ADR-249 (structured output, no cosmetics) is N/A to the library.** All
    comparison/threshold logic lives in `tooling/**` + `.github/workflows/**`; no
    `openRepository`/command option gains a gate/formatting job. The gate consumes
-   the already-structured `raw.json` fields (`median`/`hz`), it does not add a
-   rendering surface to any command.
-7. **No coverage/mutation obligation on the tooling.** `tooling/**` and
+   the already-structured `raw.json` fields (`median`), it does not add a rendering
+   surface to any command.
+6. **No coverage/mutation obligation on the tooling.** `tooling/**` and
    `test/bench/**` are excluded from `vitest.config.ts` coverage `include`
    (precedent: `tooling/profile.ts`, `tooling/bench-memory.ts`,
-   `bench-summarize.ts`). The comparison tool's **pure helpers** are nonetheless a
-   good candidate for an optional `tooling/test/unit` test (a `tooling/test/unit`
-   dir already exists) — welcome, not gated (see §Test strategy).
+   `bench-summarize.ts`, `bench-to-snapshot.ts`). The comparison tool's **pure
+   helper** is nonetheless unit-tested (ADR-491) — it runs in the `test:unit` set
+   but carries no coverage/mutation gate (see §Test strategy).
+
+## Decisions (ratified)
+
+Every load-bearing choice is settled by an ADR; this doc specifies the feature as
+decided. (No ADR/phase/backlog number appears in any source/config/test — only
+here and in the PR body.)
+
+| ADR | Decision (one line) |
+|---|---|
+| **487** | **Same-runner base-vs-PR.** The gate benches the PR base branch and the PR head on **one runner** and compares per-scenario runtimes. **No committed baseline** — the base branch *is* the baseline; the gate reads **two `raw.json` files**. |
+| **488** | **Advisory (non-blocking).** The gate computes and surfaces per-scenario deltas, flags any exceeding N, but the CI job keeps **`continue-on-error: true`** and **never blocks the merge**. N is a **reporting/flag threshold**, not a merge blocker. |
+| **489** | **Metric = median-ms, asymmetric, one global N.** `deltaPct = (current_median_ms − base_median_ms) / base_median_ms × 100`; flag iff `deltaPct > N` (improvements never flagged); **one global N ≈ 10 %**, tunable. Reuses `toSnapshotEntries` for the flatten. |
+| **490** | **Scope = `tsgit`-named benches only.** Filter to entries whose bench name is `tsgit` (key suffix `> tsgit`), dropping `isomorphic-git`. New scenario (in current, not base) → `new`, never flagged; missing (in base, not current) → `missing`, warned not flagged. |
+| **491** | **Extracted pure function.** New `tooling/bench-check.ts` exports a pure `compareToBaseline(base, current, policy) → { rows, failed }` (no I/O); a thin `main()` does the I/O; unit-tested in `tooling/test/unit/bench-check.test.ts`. The CI job invokes it in place of the inline heredoc. `SnapshotEntry` gains an `export` so both modules share one type. |
 
 ## Design
 
-### The core reframe — `snapshot.json`, not `summary.md`, is the diff surface
+### The diff surface — `snapshot.json`-shaped entries, not `summary.md`
 
 The backlog says "`bench:summary` diff." Taken literally that means diffing
 `summary.md`, a rendered human table with embedded `hz`/`rme` prose and a
-timestamp line — brittle and semantically opaque. The **machine-diffable** artifact
-is `snapshot.json` (per-scenario, per-bench, median-ms, already produced by
-`tooling/bench-to-snapshot.ts` and consumed by the trend job). **The gate compares
-`snapshot.json`-shaped entries, not `summary.md` text.** `summary.md` remains the
-human-facing render; the gate keys on the structured data underneath it. This is
-the ADR-249 discipline applied to the gate itself: compare data, not the render.
+timestamp line — brittle and semantically opaque. The gate instead compares the
+**machine `{ name, unit:'ms', value }` entries** that `toSnapshotEntries` already
+produces from `raw.json` (per-scenario, per-bench, median-ms). It flattens **both**
+sides' `raw.json` through that one function; `summary.md` remains the human-facing
+render, untouched. This is the ADR-249 discipline applied to the gate itself:
+compare data, not the render.
 
-### Comparison algorithm (concrete, regardless of which candidate lands)
+### Comparison algorithm (ADRs 487–490)
 
-Given a **baseline** set of entries and a **current** set of entries (both the
-`{ name, unit:'ms', value }` shape `toSnapshotEntries` already emits):
+The tool receives **two `raw.json` reports** — the base-branch run and the PR-head
+run, both from the **same runner** (ADR-487). Given base `raw.json` and current
+`raw.json`:
 
-1. **Parse `raw.json` → current entries** via the existing `toSnapshotEntries(raw)`
-   — reuse it, do not re-implement the flattening.
-2. **Filter to the gated bench set.** Keep only entries whose `bench.name` is
-   `tsgit` (candidate #5(a) recommendation) — i.e. drop the `isomorphic-git`
-   entries the project does not control. Concretely: an entry's key ends in
-   ` > tsgit`. (Candidate #5 may widen this.)
-3. **Join current ⋈ baseline on the per-scenario key.** The key is the full
+1. **Flatten each `raw.json` → entries** via the imported `toSnapshotEntries(raw)`
+   — reuse it on **both** sides, do not re-implement the flattening (ADR-491).
+2. **Filter each side to the gated bench set** (ADR-490). Keep only entries whose
+   `bench.name` is `tsgit` — i.e. whose key ends in ` > tsgit`. iso-git entries are
+   dropped before comparison (we do not control iso-git's code; its timing shifts
+   are pure noise to a gate protecting tsgit).
+3. **Join current ⋈ base on the per-scenario key.** The key is the full
    `snapshot.json` `name` (`<group.fullName> > tsgit`) — stable, already the
-   snapshot format, and unambiguous across scenarios.
-4. **Per matched scenario, compute the regression delta.** With median-ms
-   (smaller-better): `delta% = (current.value − baseline.value) / baseline.value ×
-   100`. A **positive** delta is a regression (slower). Apply the threshold policy
-   (candidate #3): fail the scenario iff `delta% > N` (asymmetric — improvements
-   never fail).
-5. **Handle set mismatches** (candidate #5): a scenario **in baseline but missing
-   from current** (a scenario was renamed/removed) → decide fail-or-warn; a scenario
-   **in current but missing from baseline** (a *new* scenario) → **pass** with a
-   note ("not yet in the baseline"), never fail — so adding a bench never breaks
-   the gate.
-6. **Aggregate → exit code.** Non-zero iff any gated scenario regressed beyond N.
-   Emit a per-scenario table (scenario | baseline ms | current ms | delta% |
-   verdict) to stdout + `$GITHUB_STEP_SUMMARY`.
+   snapshot format, unambiguous across scenarios.
+4. **Per matched scenario, compute the regression delta** (ADR-489). With
+   median-ms (smaller-better): `deltaPct = (current.value − base.value) /
+   base.value × 100`. A **positive** delta is a regression (slower). Flag the
+   scenario iff `deltaPct > N` — **asymmetric**: improvements (negative delta) are
+   never flagged.
+5. **Handle set mismatches** (ADR-490): a scenario **in base but missing from
+   current** (renamed/removed, or a `SKIP`ped scenario the runner could not
+   measure) → verdict `missing`, **warned, not flagged**; a scenario **in current
+   but missing from base** (a *new* scenario) → verdict `new`, **passes** with a
+   note — adding a bench never flags the gate.
+6. **Aggregate.** `failed` is `true` iff any gated scenario is flagged `regress`.
+   Emit a per-scenario table (scenario | base ms | current ms | delta% | verdict)
+   to stdout + `$GITHUB_STEP_SUMMARY` + the PR comment.
 
-The whole algorithm is a **pure function** over `(baselineEntries, currentEntries,
-policy)` returning `{ rows, failed }`; I/O (read `raw.json`, read baseline, write
-summary, set exit code) wraps it. That pure core is the unit-testable SUT
-(§Test strategy).
+The whole algorithm is a **pure function** over `(base, current, policy)`
+returning `{ rows, failed }`; I/O (read both `raw.json` files, print the table,
+signal via exit code) wraps it. That pure core is the unit-testable SUT
+(§Test strategy). **`compareToBaseline`'s "baseline" argument is the base-branch
+entries** (flattened from the base run's `raw.json`), **not a committed file** —
+the name is historical; the value is always the same-runner base run.
+
+### How the advisory tool signals (ADR-488 + ADR-491)
+
+The tool is advisory, but it is also a normal CLI usable locally. To serve both:
+
+- `main()` **prints the per-scenario table** and appends it to
+  `$GITHUB_STEP_SUMMARY`; it **writes the PR-comment markdown** to the file the
+  comment-posting step reads (mirroring today's `/tmp/bench-comment.md`).
+- `main()` **exits non-zero iff `failed`** (any scenario flagged `regress`) — so a
+  local `tooling/bench-check.ts base.json head.json` run is honestly red when a
+  regression is flagged, which is useful during development.
+- **The CI job keeps `continue-on-error: true`** (ADR-488), so that non-zero exit
+  **does not block the merge** — GitHub records the step as failed-but-tolerated;
+  the flag is surfaced via the comment + step summary, and acting on it is a human
+  decision on the PR. This is the single, unambiguous contract: *the tool exits
+  non-zero on a flagged regression; the advisory posture is enforced entirely by
+  `continue-on-error: true` on the CI step, not by softening the tool.*
+
+Rationale for exit-non-zero-plus-`continue-on-error` over exit-zero-always: it
+keeps the tool honest for local use and future hardening (flipping
+`continue-on-error` off is then a one-line change, per ADR-488's consequences)
+without the tool needing to know whether it runs in CI.
 
 ### Key format — pin it once
 
 `bench-to-snapshot.ts` keys on `<group.fullName> > <bench.name>`;
-`bench-summarize.ts` shortens to the last ` > ` segment; `benchmark-compare` keys
-on `<group.fullName> > <bench.name>`. **The gate reuses `toSnapshotEntries`'s key
-verbatim** (`<group.fullName> > tsgit`) so the baseline file, the gate, and the
-existing snapshot/trend surface all speak one key format. No new key scheme is
-introduced. Consequence: the baseline file is literally a filtered
-`snapshot.json` (only ` > tsgit` entries) — the same schema, the same generator.
+`bench-summarize.ts` shortens to the last ` > ` segment; the legacy
+`benchmark-compare` heredoc keys on `<group.fullName> > <bench.name>` too. **The
+gate reuses `toSnapshotEntries`'s key verbatim** (`<group.fullName> > tsgit` after
+the `tsgit` filter) so the gate and the existing snapshot/trend surface speak one
+key format. No new key scheme is introduced.
 
-### Where the comparison logic lives (candidate #6)
+### Input interface — two `raw.json` paths as argv
 
-Recommendation: a **new `tooling/bench-check.ts`** (analogous to
-`bench-to-snapshot.ts`), exporting a pure `compareToBaseline(baseline, current,
-policy)` and a thin `main()` that reads `raw.json` + the committed baseline, runs
-the comparison, prints the table, and `process.exit(1)` on regression. It
-**imports and reuses `toSnapshotEntries`** from `bench-to-snapshot.ts` for the
-current-side flatten (no duplication). A `npm run bench:check` wireit script
-(dep `test:bench`, files `tooling/bench-check.ts` + the baseline + `raw.json`)
-wires it in. This keeps `bench-to-snapshot.ts` untouched (generic) and the new
-threshold logic isolated and independently testable.
+Because the two runs come from **two checkouts on one runner** (ADR-487), the two
+`raw.json` files already sit at two distinct paths (today `/tmp/base-bench.json`
+and `/tmp/pr-bench.json`). The tool therefore takes **two file-path arguments**:
 
-### Baseline capture & refresh (candidate #2 + #4)
+```
+node --experimental-strip-types tooling/bench-check.ts <base-raw.json> <head-raw.json>
+```
 
-The baseline is a **committed, provenance-carrying** filtered `snapshot.json`
-(`tsgit`-only entries), sourced — per ADR-483 — from a **dated CI nightly
-(`bench.yml`) artifact**, not a personal host. Its home and refresh procedure are
-candidate #4; the documented refresh flow is: download the latest nightly
-`benchmarks` artifact → run `bench-to-snapshot.ts` on its `raw.json` (or read the
-committed snapshot the nightly could emit) → filter to `tsgit` → write the baseline
-file with an updated provenance line (runner OS/arch, CPU, Node, capture date) →
-commit **in the same PR** that legitimately changes perf. A perf-improving or
-perf-justified-regressing PR updates the baseline as part of the change (exactly
-how ADR-486 handles the profile baseline); the gate then passes against the new
-baseline. **The baseline is never auto-regenerated by the gate itself** (that would
-make the gate a no-op) — it is a deliberate human commit.
+`main()` reads `process.argv[2]` (base) and `process.argv[3]` (head), each a
+`raw.json`, and flattens both via `toSnapshotEntries`. It does **not** read a fixed
+`reports/benchmarks/raw.json` path — that single-input shape belonged to the
+now-moot committed-baseline design. Missing/extra argv → hard error with a usage
+message (no swallowed error; §Error semantics).
 
-### CI wiring (candidate #1 + #2 decide the shape)
+### No wireit `bench:check` script (resolved)
 
-Three mutually-exclusive shapes, one per candidate-#1 option:
-
-- **#1(a) committed-baseline gate** — a new `benchmark-gate` PR job:
-  `test:bench` (fresh PR-runner bench) → `bench-check.ts` against the committed
-  baseline → non-zero exit fails the job. Blocking iff candidate #2 says hard-gate;
-  `continue-on-error:true` if soft. Cross-env, so needs a **wide** N (candidate #3).
-- **#1(b) same-runner base-vs-PR, promoted** — reuse the existing
-  `benchmark-compare` runner recipe (base bench + PR bench on one runner), swap its
-  informative comment for a **non-zero exit** on regression beyond N, drop
-  `continue-on-error` (or keep it for a soft gate). No committed baseline needed;
-  the base branch **is** the baseline. Same-runner ratio sidesteps the cross-env
-  warning (constraint #2) → **tighter N is defensible**.
-- **#1(c) post-merge trend gate** — flip `benchmark-snapshot`'s
-  `fail-on-alert:true` and tighten `alert-threshold`. Gates **after** merge on the
-  `gh-pages` trend series, not on the PR. Cheapest, but catches regressions only
-  after they land on main.
+A wireit `bench:check` script (dep `test:bench`, one fixed `raw.json` input) does
+**not** fit this feature: the two inputs come from **two separate checkouts** in
+CI, so there is no single working-tree `raw.json` for a wireit `files`/`output`
+graph to key on, and no local `npm run` invocation produces both sides at once.
+The CI job invokes the tool **directly** with two argv paths (§Part D). No
+`package.json`/wireit change is required for the gate to run in CI. *(A convenience
+`npm run bench:check -- <base> <head>` passthrough is possible but adds nothing the
+direct `node …` invocation lacks; the plan may include it only as an optional
+local-ergonomics nicety, not as a gate dependency — see Part C.)*
 
 ### Pre-chewed context blocks (every file the plan will touch)
 
 **Part A — `tooling/bench-check.ts` (new).**
-- Import `toSnapshotEntries` + `RawReport` from `./bench-to-snapshot.ts` (both
-  already `export`ed — verified). **`SnapshotEntry` is declared but NOT exported**
-  in `bench-to-snapshot.ts`; the implementer must either add `export` to that
-  interface (one-word diff, generic converter unaffected) or re-declare the
-  `{ name; unit:'ms'; value:number }` shape locally in `bench-check.ts`. Prefer the
-  `export` — single-source the type.
-- Export a pure `compareToBaseline(baseline: readonly SnapshotEntry[], current:
-  readonly SnapshotEntry[], policy: { thresholdPct: number }): { rows: ReadonlyArray<{
-  key; baselineMs; currentMs; deltaPct; verdict: 'pass'|'regress'|'new'|'missing' }>;
-  failed: boolean }`. Pure, deterministic, no I/O — the unit SUT.
-- Filter helper `gatedEntries(entries)` → keep keys ending ` > tsgit`.
-- `main()`: read `reports/benchmarks/raw.json`, `toSnapshotEntries` → filter →
-  read the committed baseline JSON → `compareToBaseline` → print table to stdout +
-  append to `$GITHUB_STEP_SUMMARY` → `process.exit(failed ? 1 : 0)`. Follow the
-  `invokedDirectly()` guard idiom from `bench-to-snapshot.ts`.
+- Import `toSnapshotEntries`, `RawReport`, and `SnapshotEntry` from
+  `./bench-to-snapshot.ts`. `toSnapshotEntries` and `RawReport` are already
+  `export`ed (verified). **`SnapshotEntry` is declared but NOT exported** in
+  `bench-to-snapshot.ts` — add `export` to that interface (a one-word diff; the
+  generic converter is otherwise unaffected) so both modules share one type
+  (ADR-491). Do not re-declare the shape locally.
+- Export a pure `compareToBaseline(base: readonly SnapshotEntry[], current:
+  readonly SnapshotEntry[], policy: { thresholdPct: number }): { rows:
+  ReadonlyArray<{ key: string; baseMs: number | null; currentMs: number | null;
+  deltaPct: number | null; verdict: 'pass' | 'regress' | 'new' | 'missing' }>;
+  failed: boolean }`. Pure, deterministic, no I/O — the unit SUT. `failed` is
+  `true` iff any row's verdict is `regress`.
+- Filter helper `gatedEntries(entries)` → keep keys ending ` > tsgit` (ADR-490).
+- `main()`: read the **two argv paths** (`process.argv[2]` = base `raw.json`,
+  `process.argv[3]` = head `raw.json`), `JSON.parse` each, `toSnapshotEntries` →
+  `gatedEntries` each side → `compareToBaseline` → print table to stdout, append to
+  `$GITHUB_STEP_SUMMARY`, write the PR-comment markdown file → `process.exit(failed
+  ? 1 : 0)`. Follow the `invokedDirectly()` guard idiom from `bench-to-snapshot.ts`.
 - Mirror `bench-to-snapshot.ts`'s error handling: `main().catch` → stderr +
-  `process.exit(1)`. **No swallowed errors** (contract).
+  `process.exit(1)`. Missing argv paths → throw a clear usage error (caught by the
+  same handler). **No swallowed errors** (contract).
+- **Tooling-import gotcha:** `bench-check.ts` imports only from another
+  `tooling/*.ts` (`bench-to-snapshot.ts`), **not** from `src/`, so Node's
+  `--experimental-strip-types` is fine (no parameter-property / `.js`-specifier
+  issue).
 
-**Part B — the committed baseline file (candidate #4 picks the path).**
-- Shape: a `snapshot.json`-schema JSON array of `{ name, unit:'ms', value }`,
-  `tsgit`-only, plus a provenance sidecar (either a `_meta` field or a companion
-  `.md` — candidate #4 decides). Path options: `test/bench/baseline.json` (no
-  gitignore change) **or** `reports/benchmarks/baseline.json` + a
-  `!reports/benchmarks/baseline.json` gitignore exception.
-- First capture: from a dated `bench.yml` nightly artifact (§Rollout).
+**Part B — (removed).** *There is no committed baseline (ADR-487). The base branch
+is the baseline; the gate reads two same-runner `raw.json` files. Any prior
+"committed baseline file / home / format / provenance" content is struck — it no
+longer exists in this design.*
 
-**Part C — `package.json` scripts + wireit.**
-- Add `bench:check` wireit script: `command: node --experimental-strip-types
-  tooling/bench-check.ts`, `dependencies: ['test:bench']`, `files:
-  ['tooling/bench-check.ts', '<baseline path>', 'reports/benchmarks/raw.json']`,
-  no `output` (it is a gate, not a producer). Node's `--experimental-strip-types`
-  is the established tooling invocation (see `bench-to-snapshot.ts` in
-  `benchmark-snapshot`); note the tooling-import gotcha — `bench-check.ts` imports
-  only from another `tooling/*.ts` (`bench-to-snapshot.ts`), **not** from `src/`,
-  so strip-only Node is fine (no parameter-property/`.js`-specifier issue).
+**Part C — `package.json` scripts + wireit (optional, not a gate dependency).**
+- **No wireit `bench:check` is required** — the CI job invokes the tool directly
+  with two argv paths (§Part D), because the two `raw.json` files come from two
+  checkouts, not one working tree (§"No wireit `bench:check` script").
+- *Optional local-ergonomics only:* a plain (non-wireit) passthrough
+  `"bench:check": "node --experimental-strip-types tooling/bench-check.ts"` invoked
+  as `npm run bench:check -- <base> <head>` may be added for local convenience. It
+  is **not** wired into any CI job and has **no** wireit `dependencies`/`files`/
+  `output` (it cannot — there is no single `raw.json` input). The plan may include
+  or skip it; nothing gates on it.
 
-**Part D — `.github/workflows/ci.yml` (shape per candidate #1).**
-- #1(a): new `benchmark-gate` job (PR-triggered, `needs: [changes, unit-tests]`,
-  the fixture-cache restore step like `benchmark-snapshot`) → `test:bench` →
-  `node --experimental-strip-types tooling/bench-check.ts`. `continue-on-error`
-  per candidate #2.
-- #1(b): edit `benchmark-compare` — replace the "informative only, never exit
-  non-zero" tail with a threshold exit; reconsider `continue-on-error`.
-- #1(c): edit `benchmark-snapshot` — `fail-on-alert:true`, tighten
-  `alert-threshold`.
-- `bench.yml` (nightly) is unchanged in all three — it remains the clean baseline
-  source (Rollout).
+**Part D — `.github/workflows/ci.yml` — edit the existing `benchmark-compare` job.**
+- **Keep** the whole same-runner recipe unchanged: `if` condition, `needs`,
+  `runs-on`, `continue-on-error: true`, `permissions`, the "Checkout base branch →
+  setup → build + bench base (`cp reports/benchmarks/raw.json /tmp/base-bench.json`)
+  → checkout PR → `npm ci` → build + bench PR (`cp … /tmp/pr-bench.json`)" steps,
+  and the "Post PR comment" step.
+- **Replace only** the "Compare and comment" step body: delete the inline
+  `node << 'SCRIPT' … SCRIPT` heredoc (the ops/s comparison, the untestable YAML
+  logic, the past quote-collapse pain — ADR-491) and invoke the extracted tool:
+  `node --experimental-strip-types tooling/bench-check.ts /tmp/base-bench.json
+  /tmp/pr-bench.json`. The tool writes the PR-comment markdown file (same path the
+  "Post PR comment" step reads) and appends to `$GITHUB_STEP_SUMMARY`.
+- **Metric/scope/threshold change** (ADRs 489/490): the tool compares **median-ms**
+  (not the heredoc's `hz`), **asymmetric** (improvements never flagged),
+  **`tsgit`-only** (iso-git filtered out), at **N ≈ 10%** (not the heredoc's 5% on
+  `hz`). The threshold is passed to the tool (env var like today's
+  `REGRESSION_THRESHOLD`, or an argv/constant — the plan picks one; a single
+  documented source).
+- **Keep `continue-on-error: true`** (ADR-488): the tool exits non-zero on a
+  flagged regression, but the job tolerates it — advisory, never a merge blocker.
+- **Update the informative comment prose** on the job to reflect the new
+  median-ms / asymmetric / tsgit-scoped / advisory behaviour (the current comment
+  says "ops/s", "5%", "informative only" — keep "advisory / never blocks", correct
+  the metric).
+- `benchmark-snapshot` and `bench.yml` are **untouched**.
 
-**Part E — `tooling/test/unit/bench-check.test.ts` (recommended; runs but
-un-gated).**
-- Unit-test the pure `compareToBaseline` with synthetic fixture entries
+**Part E — `tooling/test/unit/bench-check.test.ts` (unit-tested per ADR-491; runs,
+un-gated for coverage).**
+- Unit-test the pure `compareToBaseline` with synthetic `SnapshotEntry[]` fixtures
   (deterministic, no bench run). `tooling/test/unit/**` **is** in the `test:unit`
   vitest `include`, so this executes alongside the rest; it is excluded only from
-  the coverage `include`, so it carries no coverage/mutation gate. Mirror
-  `tooling/test/unit/bench-to-snapshot.test.ts`. See §Test strategy.
+  the coverage `include`, so it carries no coverage/mutation gate. Mirror the
+  fixture shape of `tooling/test/unit/bench-to-snapshot.test.ts` — but **do not**
+  copy its `sut`-names-the-result mistake (see §Test strategy).
 
-**Part F — docs.**
-- `docs/understand/performance.md` (or a release-checklist doc) gains the baseline
-  **refresh procedure** (download nightly artifact → regenerate → re-provenance →
-  commit in the perf PR), mirroring ADR-486's profile-baseline refresh note.
+**Part F — docs (minimal).**
+- `docs/understand/performance.md` (or the nearest perf-overview doc) gains a
+  **one-line note** that a **same-runner, advisory** per-scenario regression check
+  runs on PRs (median-ms, asymmetric, `tsgit`-scoped, N ≈ 10%, non-blocking), so a
+  reader knows the check exists and that a flag is a prompt-to-look, not a blocker.
+- **No baseline-refresh procedure** is documented — there is no committed baseline
+  to refresh (ADR-487). *(The former "baseline refresh procedure" content is
+  struck.)*
 
 ### Error semantics / edge behaviour
 
-- **New scenario (in current, not in baseline)** → verdict `new`, **passes**, with
-  a stdout note. Adding a bench never breaks the gate; the baseline is topped up on
-  the next legitimate refresh.
-- **Removed/renamed scenario (in baseline, not in current)** → verdict `missing`.
-  Recommendation: **warn, do not fail** (a rename is a legitimate refactor; failing
-  here would block harmless renames) — but this is a candidate-#5 sub-decision.
-- **`git`/`git-http-backend` absent or Stryker sandbox** → the underlying bench
-  scenario already `SKIP`s (e.g. `clone-small-repo.bench.ts`); a skipped scenario
-  simply does not appear in `raw.json` → treated as `missing`/absent, never a
-  fabricated regression. The gate must not fail on a scenario the runner could not
-  measure.
-- **Baseline file absent/empty** → hard error in `main()` (the gate cannot run
-  without a baseline), non-zero exit with a clear message. Not silently passed.
-- **Zero baseline value** (division guard) → treat as an error/skip for that
-  scenario, never `Infinity`% — mirror `formatSpeedup`'s `b === 0 → 'n/a'` guard.
-- **iso-git entries** → filtered out before comparison (candidate #5(a)); they
-  never contribute to a verdict. If candidate #5 widens scope, they are gated with
-  a wider N (we do not control iso-git's code).
-
-## Decision candidates
-
-Every candidate is a **load-bearing choice not pre-decided by an existing ADR**;
-the designer does not decide these — the user does, in the ADR conversation. ≤3
-alternatives each, with a recommendation. (Next ADR numbers land at **487+**;
-highest existing is 486. No ADR/phase/backlog number appears in any source/config/
-test — only here and in the PR body.)
-
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| 1 | **Comparison model / noise strategy** | (a) **Committed baseline** (from a nightly artifact per ADR-483) vs fresh PR-runner bench, **wide** per-scenario threshold. (b) **Same-runner base-vs-PR**, promoting the existing `benchmark-compare` recipe to a gate with a robust threshold (optionally best-of-K). (c) **Flip `benchmark-snapshot` `fail-on-alert:true`** — a *post-merge* trend gate on `gh-pages`. | **(b)** | ADR-483's sharpest warning is against **cross-environment** comparison; (a) is exactly that (nightly runner A vs PR runner B) and must swallow the cross-env variance into a threshold so wide it barely gates. (b)'s **same-runner base-vs-PR ratio is load-independent** — both sides pay the same contention (the exact method ADR-486 / 26.7a used to prove "no regression"), so a *tighter, defensible* N is possible and it needs **no committed baseline to drift**. (c) only catches regressions **after** they land on main. (b) also reuses infra that already exists. If the user prefers a citable committed baseline, (a) is the ADR-483-anticipated shape — pick it with a wide N (candidate #3) and accept it gates only gross regressions. |
-| 2 | **Blocking vs advisory posture** | (a) **Hard gate** — non-zero exit blocks merge. (b) **Soft gate** — runs, prints the table, but `continue-on-error:true` (fails visibly, never blocks) — tighter/committed version of today. (c) **Hard gate scoped to gross regressions only** — blocks only when a scenario exceeds a large N (e.g. >50%), advisory below that. | **(c)** | A truly hard gate at a tight N contradicts the established `continue-on-error` posture and the ±20% noise reality — it *will* flake and erode trust. Pure advisory (b) is honest but adds little over today's `benchmark-compare`. (c) threads the backlog's "must not exceed" language against the physics: **block only what noise cannot explain** (a gross, unambiguous regression), stay advisory in the noisy band. This is the honest reading of "regression gate" given ±20% noise. |
-| 3 | **Threshold N + metric** | (a) **One global N**, median-ms (matches `snapshot.json`, smaller-better), **asymmetric** (regressions blocked, improvements free). (b) **Per-scenario N**, median-ms — syscall-heavy scenarios (`status`, cold `readBlob`) get a wider band than CPU-bound ones. (c) **ops/s (`hz`)** metric (matches `benchmark-compare`), single N. | **(a)** with **N tuned to the model**: for same-runner #1(b), **N ≈ 10–15%** (ratio is load-independent, so tighter than raw noise); for committed-baseline #1(a), **N ≈ 25–30%** (must absorb cross-env variance above the ±20% floor). | Median-ms is the least-noise central estimator and already the `snapshot.json` unit — reusing it keeps one metric across gate + trend + snapshot. **Asymmetric** is essential: an *improvement* must never fail the gate. One global N (a) is simplest and defensible; per-scenario N (b) is more precise but higher-maintenance and invites bikeshedding — defer unless a specific scenario proves chronically noisy. ops/s (c) only to match `benchmark-compare` if #1(b) reuses it verbatim; median-ms is otherwise cleaner. **N must be justified against measured noise, not guessed** — the ADR conversation should cite the nightly artifact's per-scenario `rme`. |
-| 4 | **Baseline artifact: home, format, refresh** | (a) **`test/bench/baseline.json`** — no gitignore change; lives with the benches it describes. (b) **`reports/benchmarks/baseline.json`** + a `!reports/benchmarks/baseline.json` gitignore exception — co-located with the ephemeral snapshot it mirrors. (c) **No committed baseline** (only viable if candidate #1 is (b) same-runner or (c) trend). | **(a)** if a baseline is committed (candidate #1(a)); **(c)** if candidate #1 is (b). | (a) keeps the baseline beside `test/bench/**` (the benches that define it), needs **no** `.gitignore` surgery, and reads naturally as test fixture data. (b) mirrors the `reports/api.json` precedent (a committed exception under an ignored dir) but adds gitignore complexity for no functional gain. **Format**: a filtered `snapshot.json` (`tsgit`-only, `{name,unit,value}[]`) + a provenance line (nightly runner OS/arch, CPU, Node, capture date) — reuse the existing schema, don't invent one. **Refresh**: documented manual step in the perf PR, sourced from a **dated nightly artifact** (ADR-483), never a personal host, never auto-regenerated by the gate. **Note:** candidate #4 is moot under #1(b)/(c) (no committed baseline) — the base branch or the trend series is the baseline. |
-| 5 | **Scenario scope** | (a) **Gate only `tsgit`-named benches** — exclude the `isomorphic-git` competitor entries we don't control. (b) **Gate all benches** including iso-git. (c) **Gate an explicit allow-list** of the stable-surface scenarios only. | **(a)** | The gate protects **tsgit's** perf; iso-git is a pinned dependency whose code cannot change and whose timing shifts are pure noise from our side — gating it adds flake with zero signal. (a) keys on the ` > tsgit` suffix (already the bench name). (c) is more conservative but needs a hand-maintained list that drifts as scenarios are added. **New-scenario handling** (both (a) and (c)): a scenario present in `raw.json` but absent from the baseline **passes** as `new` — onboarding a bench never breaks the gate; it enters the baseline at the next legitimate refresh. |
-| 6 | **Tooling shape** | (a) **New `tooling/bench-check.ts`** exporting a pure `compareToBaseline`, reusing `toSnapshotEntries`; new `bench:check` wireit script. (b) **Extend `bench-to-snapshot.ts`** with a compare mode (flag-driven). (c) **Inline node script in the CI YAML** (like `benchmark-compare` today). | **(a)** | (a) is the SRP-clean shape: `bench-to-snapshot.ts` stays a pure converter (generic, untouched), the threshold logic is isolated, and the pure `compareToBaseline` is independently unit-testable (§Test strategy) — matching the project's small-focused-tooling style. (b) overloads one file with two responsibilities (convert **and** judge). (c) buries logic in YAML where it cannot be unit-tested (the current `benchmark-compare` pain). Reusing `toSnapshotEntries` keeps the flatten logic single-sourced. |
+- **New scenario (in current, not in base)** → verdict `new`, **passes**, with a
+  stdout note. Adding a bench never flags the gate (ADR-490).
+- **Removed/renamed/skipped scenario (in base, not in current)** → verdict
+  `missing`, **warned, not flagged** (ADR-490). A rename is a legitimate refactor;
+  a `SKIP`ped scenario (e.g. `git`-absent `clone-small-repo`, or the Stryker
+  sandbox) simply does not appear in that side's `raw.json` and must **not
+  fabricate a regression**.
+- **Missing argv path / unreadable `raw.json`** → hard error in `main()` with a
+  clear usage/read message, non-zero exit (caught by `main().catch`). Not silently
+  passed. (In CI this is tolerated by `continue-on-error`, but it surfaces loudly.)
+- **Zero base value** (division guard) → verdict for that scenario is treated as an
+  error/skip (`deltaPct: null`), never `Infinity`% — mirror `formatSpeedup`'s
+  `b === 0 → 'n/a'` guard.
+- **iso-git entries** → filtered out on both sides before comparison (ADR-490);
+  they never contribute to a verdict.
 
 ## Test strategy
 
@@ -373,31 +393,33 @@ test — only here and in the PR body.)
   excluded from `vitest.config.ts` coverage `include`
   (`src/{domain,ports,adapters/node,adapters/memory,operators}/**` only) — same
   precedent as `tooling/profile.ts` / `tooling/bench-memory.ts` /
-  `bench-summarize.ts`. So `bench-check.ts` carries **no** coverage or mutation
-  gate. This is stated so review does not raise a false-positive coverage flag.
-- **Recommended unit test** for the pure `compareToBaseline` core in
-  `tooling/test/unit/bench-check.test.ts`. **Strong sibling precedent:**
+  `bench-summarize.ts` / `bench-to-snapshot.ts`. So `bench-check.ts` carries **no**
+  coverage or mutation gate. Stated so review does not raise a false-positive
+  coverage flag.
+- **Unit test** for the pure `compareToBaseline` core in
+  `tooling/test/unit/bench-check.test.ts` (ADR-491). **Sibling precedent:**
   `tooling/test/unit/bench-to-snapshot.test.ts` already unit-tests
   `toSnapshotEntries` with synthetic `RawReport` fixtures, and
   `tooling/test/unit/**/*.test.ts` **is** in the `test:unit` vitest project's
-  `include` (verified) — so the test **runs** (it is coverage-excluded, not
-  execution-excluded). Mirror that file's fixture shape. **One caveat:** that
-  sibling names the *result* `sut` (`const sut = toSnapshotEntries(...)`), which
-  contradicts CLAUDE.md (`sut` = the function/object under test; result → `result`)
-  — do **not** copy that mistake; name the SUT `compareToBaseline` and the returned
-  verdict `result`. `compareToBaseline` is a **pure, deterministic,
-  easily-isolated function** — exactly the kind worth testing even though nothing
-  gates it. Feed synthetic `SnapshotEntry[]` fixtures (no bench run):
-  - Given a current entry N% slower than baseline **above** the threshold → verdict
+  `include` (verified) — so the test **runs** (coverage-excluded, not
+  execution-excluded). **One caveat:** that sibling names the *result* `sut`
+  (`const sut = toSnapshotEntries(...)`), which contradicts CLAUDE.md (`sut` = the
+  function/object under test; result → `result`) — do **not** copy that mistake.
+  Name the SUT `compareToBaseline` and the returned verdict `result`. Feed
+  synthetic `SnapshotEntry[]` fixtures (no bench run):
+  - Given a current entry N% slower than base **above** the threshold → verdict
     `regress`, `failed: true`.
   - Given a current entry N% slower **below** threshold → verdict `pass`,
     `failed: false`.
-  - Given a current entry **faster** than baseline (negative delta) → `pass`
-    (asymmetry proven — this test kills the "improvement fails" mutant).
-  - Given a scenario in current but **not** baseline → verdict `new`, does not fail.
-  - Given a scenario in baseline but **not** current → verdict `missing`, warns per
-    candidate #5.
-  - Given a **zero baseline value** → guarded (`n/a`/skip), never `Infinity`.
+  - Given a current entry **faster** than base (negative delta) → `pass`
+    (asymmetry proven — this test kills the "improvement flags" mutant).
+  - Given a scenario in current but **not** base → verdict `new`, does not flag.
+  - Given a scenario in base but **not** current → verdict `missing`, warns, does
+    not flag.
+  - Given a **zero base value** → guarded (`deltaPct: null`/skip), never `Infinity`.
+  - Given a mixed set with an `isomorphic-git` entry alongside a `tsgit` entry →
+    the iso-git entry is filtered out and never appears in `rows` (proves the
+    `> tsgit` scope filter — ADR-490).
   - **Boundary isolation** (CLAUDE.md mutation-resistance): test **exactly at** the
     threshold and **one step either side** as separate tests — a single test
     straddling the boundary does not prove the `>` vs `>=` comparator. Assert the
@@ -406,90 +428,86 @@ test — only here and in the PR body.)
   - Follow test conventions: `describe('Given …')` > `describe('When …')` >
     `it('Then …')`, AAA body, SUT named `sut` (the `compareToBaseline` function),
     result in `result`.
-- **Property-test lenses (CLAUDE.md) — do they fit?** `compareToBaseline` is a
-  **compositional aggregator** (reduces a set of per-scenario deltas to a verdict —
-  lens 2). A property is defensible: *empty gated set → `failed: false` (identity)*;
-  *appending one regressing scenario flips `failed` to true*; *appending only
-  improving scenarios never flips it*. If the plan adopts the unit test, a
-  `bench-check.properties.test.ts` sibling (numRuns 100, invariant tier) is a
-  reasonable add — but **ungated**, and only if the diff logic is non-trivial
-  enough to warrant it. It is **not** a round-trip pair, so lens 1 does not apply.
+- **Property-test lens (CLAUDE.md) — lens 2 fits.** `compareToBaseline` is a
+  **compositional aggregator** (reduces a set of per-scenario deltas to a `failed`
+  verdict). A property is defensible and appropriate:
+  - *empty gated set → `failed: false`* (identity element);
+  - *appending one scenario whose delta exceeds N flips `failed` to `true`*;
+  - *appending only improving (negative-delta) or below-N scenarios never flips
+    `failed`* (asymmetry + threshold invariant).
+
+  If the plan adopts it, a `bench-check.properties.test.ts` sibling (numRuns 100,
+  invariant tier) next to the example test, generators in a co-located
+  `arbitraries.ts` — **ungated**. It is **not** a round-trip pair, so lens 1 does
+  not apply; the property must be stated as invariants, **not** by re-implementing
+  the production reduction as the oracle (that would be a tautology).
 - **No faithfulness matrix / no interop test.** The change asserts no
   git-observable behaviour (it measures wall-clock time and thresholds it), so per
   ADR-226 there is nothing to pin cross-tool. The only empirical matrix pinned is
   the `raw.json` **schema** (§Context) — a data-shape pin for the parser, recorded
   here, not in `test/integration/*-interop.test.ts`.
-- **The gate itself is exercised by CI**, not by unit tests: the `bench:check` run
-  in the PR/nightly job is the integration proof. A green baseline run (current ≈
-  baseline within N) proves the happy path; a deliberately-lowered N in a scratch
-  run proves the fail path during development (not committed).
-- **Manual verification during rollout:** run `bench:check` against the freshly
-  captured baseline on the same machine → expect all `pass` (deltas near 0);
-  temporarily halve N → expect the noisiest scenario to flip `regress` (proves the
-  gate fires). Neither is committed.
+- **The gate itself is exercised by CI**, not by unit tests: the edited
+  `benchmark-compare` job's same-runner base-vs-head run in the PR is the
+  integration proof. Because this change is self-contained, **the very first PR's
+  own base-vs-head run exercises the gate** — no separate rollout capture is needed.
+  During development, a deliberately-lowered N on a scratch run proves the fail
+  path (not committed).
 
 ## Rollout
 
-Steps 1 and 3 apply **only to the committed-baseline path** (candidate #1(a)).
-Under same-runner (#1(b)) there is no baseline to capture — the base branch is the
-baseline — so only step 2 (soft-first calibration) applies; under the trend gate
-(#1(c)) only the threshold-tuning half of step 2 applies.
+The change is **self-contained** and needs no baseline capture (ADR-487): there is
+no committed artifact to seed. Landing it is the rollout:
 
-1. **Capture the first baseline from a dated nightly** *(committed-baseline path
-   only)***.** Trigger `bench.yml`
-   (`workflow_dispatch`) or take its latest scheduled artifact; download the
-   `benchmarks` artifact's `raw.json`; run `bench-to-snapshot.ts` → filter to
-   `tsgit` → write the baseline file (candidate #4 home) with a provenance line
-   (runner OS/arch, CPU, Node, capture date). Commit it **in this feature's PR**.
-   This is the ADR-483 clean-reference capture — **not** a personal-host run.
-2. **Land the gate soft first** (candidate #2(b) / `continue-on-error:true`) for
-   one or two PRs to observe real per-scenario deltas against the baseline on live
-   PR runners, then tighten to the chosen posture (candidate #2) and N (candidate
-   #3) once the observed noise band is known. This mirrors how `benchmark-compare`
-   was introduced informational-first.
-3. **Document the refresh procedure** (candidate #4 / Part F) so the next perf PR
-   updates the baseline correctly (nightly-sourced, re-dated provenance, same-PR).
+1. **Ship the extracted tool + unit test + the `benchmark-compare` edit** in this
+   feature's PR. The PR's **own base-vs-head same-runner run** exercises the gate
+   end-to-end on a live PR runner — the base branch is the baseline, so the gate
+   runs against real data immediately, no seeding.
+2. **Advisory from day one** (ADR-488): the job keeps `continue-on-error: true`, so
+   even a flagged scenario on the introducing PR never blocks. Observe the real
+   per-scenario deltas the first few PRs surface; **N ≈ 10% is tunable** in one
+   place (ADR-489) if the observed same-runner band warrants it — a one-line change,
+   no artifact to re-capture.
+3. **If enforcement is ever justified** (the same-runner band proves tight enough),
+   flipping `continue-on-error` off is a one-line future change (ADR-488
+   consequence) — out of scope for this feature.
 
 ## Risks
 
-- **Flake erodes trust.** If N is set below the true per-scenario noise, the gate
-  cries wolf and gets ignored/disabled — the exact fate `benchmark-compare` was
-  built to avoid. Mitigation: same-runner model (candidate #1(b)) + gross-only
-  posture (candidate #2(c)) + N justified against measured nightly `rme`, and the
-  soft-first rollout (step 2) to calibrate before blocking.
-- **Baseline staleness.** A committed baseline (candidate #1(a)/#4) drifts as the
-  hardware/Node/runner image changes; a stale baseline gates against a number no
-  longer representative. Mitigation: provenance line dates it visibly (ADR-483
-  pattern); refresh is a documented per-perf-PR step. Same-runner (#1(b)) has no
-  baseline to stale — the base branch always is the baseline.
-- **Maintenance burden.** Every legitimate perf change must remember to refresh the
-  committed baseline (candidate #1(a)), or the gate blocks the improvement.
-  Mitigation: candidate #1(b) removes the committed baseline entirely; if (a) is
-  chosen, the refresh step must be in the release/PR checklist and the failure mode
-  (gate blocks an improvement) is loud and self-explanatory.
-- **Cross-env false positives** (candidate #1(a)). A PR runner slower than the
-  nightly runner flags a phantom regression. Mitigation: this is precisely why the
-  recommendation is same-runner (#1(b)); if (a) is chosen the N must sit above the
-  cross-env band (candidate #3, N ≈ 25–30%), accepting the gate then catches only
-  gross regressions.
-- **`gh-pages` mishandling** (candidate #1(c)). Flipping `fail-on-alert` is
-  low-touch but if the `alert-threshold` is tightened carelessly, every noisy main
-  push fails. Mitigation: keep the trend job's threshold generous; do not delete or
-  repurpose the `gh-pages` data branch.
+- **Flake surfaces noise as a flag.** Same-runner cancels the systematic offset but
+  not all variance; a genuinely noisy scenario can flag ≈10% spuriously. Mitigation:
+  the gate is **advisory** (ADR-488) — a flag is a prompt to look, never a block —
+  and N is tunable in one place (ADR-489). This is the exact failure mode
+  `benchmark-compare` was built to tolerate, and this feature keeps that posture.
+- **CI cost of the double bench.** Same-runner means the code PR builds+benches
+  **both** the base branch and the head (ADR-487 consequence) — roughly double the
+  bench time on code-changing PRs. Accepted: this cost already exists in today's
+  `benchmark-compare` recipe (this feature reuses it verbatim), and same-runner is
+  the only noise-honest comparison. No new cost is introduced by this change; the
+  cost is inherited.
+- **Advisory signal ignored.** An advisory gate can be waved through. Mitigation:
+  the *quality* of the signal is the value (median-ms not `hz`, asymmetric,
+  `tsgit`-scoped, unit-tested logic — ADRs 489/490/491); a consistent, reviewable
+  per-scenario table on every code PR is more actionable than today's `hz` table,
+  and enforcement remains a one-line flip away (ADR-488) if the band proves tight.
+- **`gh-pages` mishandling.** Not a risk of *this* change (it touches neither
+  `benchmark-snapshot` nor `gh-pages`), noted only to record that the trend store
+  stays untouched.
 
 ## Out of scope
 
+- **A committed baseline / baseline-refresh procedure** — ADR-487 commits no
+  baseline; the base branch is the baseline. There is nothing to capture, home, or
+  refresh.
 - **Publishing/refreshing the citable competitor numbers** — that is ADR-483's
-  manual release-checklist step in `performance.md`; the gate protects tsgit's own
-  perf surface, it does not publish comparison numbers.
+  manual release-checklist step in `performance.md`, sourced from `bench.yml`; the
+  gate protects tsgit's own perf surface, it does not publish comparison numbers.
 - **A baseline-drift gate on the profile baseline** (`docs/perf/baseline.json`) —
   ADR-486 explicitly leaves the profile baseline a documentation artifact; this
-  feature gates the **bench** surface (`snapshot.json`), not the profile surface.
-- **Adding/removing bench scenarios** — the gate consumes whatever `raw.json`
-  contains; new scenarios are a separate concern (and are handled gracefully as
-  `new`).
-- **N-competitor rendering / the `benchScenario` DSL shape** — the gate keys on
-  `tsgit` benches only; the competitor-set question is `competitor-benchmarks.md`'s,
-  not this feature's.
+  feature gates the **bench** surface (same-runner base-vs-PR), not the profile
+  surface.
+- **Per-scenario thresholds** — ADR-489 ships one global N; per-scenario N is
+  deferred until a specific scenario proves chronically noisy.
+- **Making the gate blocking** — ADR-488 ships it advisory; flipping
+  `continue-on-error` off is a future one-line change, not this feature.
 - **Any library/command surface change** — the gate is CI/tooling only; no
   `openRepository`/command option is added or changed (ADR-249 untouched).
