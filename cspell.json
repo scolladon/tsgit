@@ -1080,7 +1080,15 @@
     "uncacheable",
     "Amdahl",
     "scrutinised",
-    "generalising"
+    "generalising",
+    "citability",
+    "formalisation",
+    "formalise",
+    "machdep",
+    "penalise",
+    "pkgs",
+    "uncitable",
+    "undercounts"
   ],
   "ignorePaths": [
     "node_modules",
