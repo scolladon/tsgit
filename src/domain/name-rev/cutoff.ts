@@ -13,8 +13,6 @@ export const commitIsBeforeCutoff = (commitDate: number, cutoff: number): boolea
 
 export const nameRevCutoff = (targetDate: number): number => {
   if (targetDate === 0) return 0;
-  // equivalent-mutant: `>` vs `>=` only differs at targetDate === FLOOR + CUTOFF_DATE_SLOP,
-  // where the subtract branch also yields FLOOR (targetDate - CUTOFF_DATE_SLOP === FLOOR) —
-  // both branches agree at the boundary, so the mutant is observably identical.
+  // Stryker disable next-line EqualityOperator: equivalent — `>` vs `>=` only differs at targetDate === FLOOR + CUTOFF_DATE_SLOP, where the subtract branch also yields FLOOR, so both branches agree at the boundary.
   return targetDate > FLOOR + CUTOFF_DATE_SLOP ? targetDate - CUTOFF_DATE_SLOP : FLOOR;
 };
