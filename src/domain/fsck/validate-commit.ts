@@ -118,7 +118,10 @@ function checkIdentityLine(line: string, strict: boolean): ReadonlyArray<CommitF
     return findings;
   }
 
-  const [timestamp = '', timezone = ''] = afterGt.trim().split(/\s+/);
+  const parts = afterGt.trim().split(/\s+/);
+  // Stryker disable next-line StringLiteral: equivalent — split(/\s+/) always returns at least one element, so parts[0] is never undefined; this fallback can never activate.
+  const timestamp = parts[0] ?? '';
+  const timezone = parts[1] ?? '';
 
   const timestampFault = checkTimestamp(timestamp, strict);
   if (timestampFault !== undefined) {
