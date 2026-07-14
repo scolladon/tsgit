@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SnapshotEntry } from '../../bench-to-snapshot.js';
-import { compareToBaseline, gatedEntries } from '../../bench-check.js';
+import {
+  compareToBaseline,
+  DEFAULT_THRESHOLD_PCT,
+  escapeCell,
+  gatedEntries,
+  resolveThresholdPct,
+} from '../../bench-check.js';
 
 const entry = (name: string, value: number): SnapshotEntry => ({ name, unit: 'ms', value });
 
@@ -18,6 +24,8 @@ describe('compareToBaseline', () => {
         const result = sut(base, current, { thresholdPct: 10 });
 
         // Assert
+        expect(result.rows[0]?.baseMs).toBe(100);
+        expect(result.rows[0]?.currentMs).toBe(120);
         expect(result.rows[0]?.deltaPct).toBe(20);
         expect(result.rows[0]?.verdict).toBe('regress');
         expect(result.failed).toBe(true);
@@ -37,6 +45,8 @@ describe('compareToBaseline', () => {
         const result = sut(base, current, { thresholdPct: 10 });
 
         // Assert
+        expect(result.rows[0]?.baseMs).toBe(100);
+        expect(result.rows[0]?.currentMs).toBe(105);
         expect(result.rows[0]?.deltaPct).toBe(5);
         expect(result.rows[0]?.verdict).toBe('pass');
         expect(result.failed).toBe(false);
@@ -195,6 +205,45 @@ describe('compareToBaseline', () => {
     });
   });
 
+  describe('Given a scenario whose current value is not finite', () => {
+    describe('When compareToBaseline runs', () => {
+      it('Then the row is verdict missing, not a silently-passing NaN delta', () => {
+        // Arrange
+        const base = [entry('x > tsgit', 100)];
+        const current = [entry('x > tsgit', Number.NaN)];
+        const sut = compareToBaseline;
+
+        // Act
+        const result = sut(base, current, { thresholdPct: 10 });
+
+        // Assert
+        expect(result.rows[0]?.verdict).toBe('missing');
+        expect(result.rows[0]?.deltaPct).toBeNull();
+        expect(result.failed).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a scenario key duplicated on one side', () => {
+    describe('When compareToBaseline runs', () => {
+      it('Then the last value wins (Map build semantics)', () => {
+        // Arrange
+        const base = [entry('x > tsgit', 100), entry('x > tsgit', 200)];
+        const current = [entry('x > tsgit', 200)];
+        const sut = compareToBaseline;
+
+        // Act
+        const result = sut(base, current, { thresholdPct: 10 });
+
+        // Assert — one row, base resolved to the last duplicate (200), so 0% delta
+        expect(result.rows).toHaveLength(1);
+        expect(result.rows[0]?.baseMs).toBe(200);
+        expect(result.rows[0]?.deltaPct).toBe(0);
+        expect(result.rows[0]?.verdict).toBe('pass');
+      });
+    });
+  });
+
   describe('Given no entries on either side', () => {
     describe('When compareToBaseline runs', () => {
       it('Then rows is empty and failed is false', () => {
@@ -209,6 +258,97 @@ describe('compareToBaseline', () => {
         // Assert
         expect(result.rows).toEqual([]);
         expect(result.failed).toBe(false);
+      });
+    });
+  });
+});
+
+describe('resolveThresholdPct', () => {
+  describe('Given a valid numeric override', () => {
+    describe('When resolveThresholdPct runs', () => {
+      it('Then it parses the override value', () => {
+        // Arrange
+        const sut = resolveThresholdPct;
+
+        // Act
+        const result = sut('15');
+
+        // Assert
+        expect(result).toBe(15);
+      });
+    });
+  });
+
+  describe('Given an empty override', () => {
+    describe('When resolveThresholdPct runs', () => {
+      it('Then it falls back to the default (empty is treated as unset)', () => {
+        // Arrange
+        const sut = resolveThresholdPct;
+
+        // Act
+        const result = sut('');
+
+        // Assert
+        expect(result).toBe(DEFAULT_THRESHOLD_PCT);
+      });
+    });
+  });
+
+  describe('Given a non-numeric override', () => {
+    describe('When resolveThresholdPct runs', () => {
+      it('Then it throws a clear positive-finite error', () => {
+        // Arrange
+        const sut = resolveThresholdPct;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut('abc');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe(
+          'REGRESSION_THRESHOLD must be a positive finite number, got: abc',
+        );
+      });
+    });
+  });
+
+  describe('Given a non-positive override', () => {
+    describe('When resolveThresholdPct runs', () => {
+      it('Then zero is rejected (a zero threshold would flag every non-improvement)', () => {
+        // Arrange
+        const sut = resolveThresholdPct;
+
+        // Act + Assert
+        expect(() => sut('0')).toThrow('must be a positive finite number');
+      });
+
+      it('Then a negative override is rejected', () => {
+        // Arrange
+        const sut = resolveThresholdPct;
+
+        // Act + Assert
+        expect(() => sut('-5')).toThrow('must be a positive finite number');
+      });
+    });
+  });
+});
+
+describe('escapeCell', () => {
+  describe('Given a scenario name containing a pipe and an at-mention', () => {
+    describe('When escapeCell runs', () => {
+      it('Then pipes are escaped and the name is wrapped as an inline-code span', () => {
+        // Arrange
+        const sut = escapeCell;
+
+        // Act
+        const result = sut('evil | @maintainer > tsgit');
+
+        // Assert — backticks neutralise the @autolink; the pipe is escaped so the table holds
+        expect(result).toBe('`evil \\| @maintainer > tsgit`');
       });
     });
   });

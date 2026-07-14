@@ -47,7 +47,7 @@ const classifyRow = (
   if (currentMs === undefined) {
     return { key, baseMs, currentMs: null, deltaPct: null, verdict: 'missing' };
   }
-  if (baseMs === 0) {
+  if (!Number.isFinite(baseMs) || baseMs <= 0 || !Number.isFinite(currentMs)) {
     return { key, baseMs, currentMs, deltaPct: null, verdict: 'missing' };
   }
   const deltaPct = ((currentMs - baseMs) / baseMs) * 100;
@@ -77,11 +77,13 @@ const PR_COMMENT_PATH = '/tmp/bench-comment.md';
 const readReport = async (filePath: string): Promise<readonly SnapshotEntry[]> =>
   gatedEntries(toSnapshotEntries(JSON.parse(await readFile(filePath, 'utf8')) as RawReport));
 
-const resolveThresholdPct = (): number => {
-  const raw = process.env.REGRESSION_THRESHOLD ?? String(DEFAULT_THRESHOLD_PCT);
+export const resolveThresholdPct = (
+  rawEnv: string | undefined = process.env.REGRESSION_THRESHOLD,
+): number => {
+  const raw = rawEnv === undefined || rawEnv.trim() === '' ? String(DEFAULT_THRESHOLD_PCT) : rawEnv;
   const thresholdPct = Number(raw);
-  if (Number.isNaN(thresholdPct)) {
-    throw new Error(`REGRESSION_THRESHOLD must be a number, got: ${raw}`);
+  if (!Number.isFinite(thresholdPct) || thresholdPct <= 0) {
+    throw new Error(`REGRESSION_THRESHOLD must be a positive finite number, got: ${raw}`);
   }
   return thresholdPct;
 };
@@ -91,9 +93,14 @@ const formatMs = (ms: number | null): string => (ms === null ? '—' : ms.toFixe
 const formatDeltaPct = (deltaPct: number | null): string =>
   deltaPct === null ? 'n/a' : `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%`;
 
+// The scenario name comes from developer-authored bench files but is PR-influenceable
+// and renders into a posted PR comment: wrap it as an inline-code span and escape pipes
+// so a crafted name cannot break the markdown table or autolink an @mention / #issue-ref.
+export const escapeCell = (value: string): string => `\`${value.replace(/\|/g, '\\|')}\``;
+
 const renderRow = (row: CompareRow): string => {
   const cells = [
-    row.key,
+    escapeCell(row.key),
     formatMs(row.baseMs),
     formatMs(row.currentMs),
     formatDeltaPct(row.deltaPct),

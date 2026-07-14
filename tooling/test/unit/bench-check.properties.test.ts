@@ -30,9 +30,8 @@ describe('Given an arbitrary gated entry set', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(gatedEntrySetArb(), (entries) => {
-          const baseline = compareToBaseline(entries, entries, { thresholdPct: THRESHOLD_PCT });
-          fc.pre(!baseline.failed);
-
+          // The shared `entries` appear identically on both sides, so they always compare
+          // at 0% delta and never flag — only the appended pair can flip `failed`.
           const regressedValue = 100 * (1 + (THRESHOLD_PCT + EPSILON) / 100);
           const regressingBase = [...entries, entry('zzz-regress > tsgit', 100)];
           const regressingCurrent = [...entries, entry('zzz-regress > tsgit', regressedValue)];
@@ -56,9 +55,8 @@ describe('Given an arbitrary gated entry set', () => {
           gatedEntrySetArb(),
           fc.double({ min: -50, max: THRESHOLD_PCT - EPSILON, noNaN: true }),
           (entries, deltaPct) => {
-            const baseline = compareToBaseline(entries, entries, { thresholdPct: THRESHOLD_PCT });
-            fc.pre(!baseline.failed);
-
+            // Shared `entries` are identical on both sides (0% delta, never flag); the
+            // appended stable pair stays within threshold, so `failed` must remain false.
             const stableValue = 100 * (1 + deltaPct / 100);
             const stableBase = [...entries, entry('zzz-stable > tsgit', 100)];
             const stableCurrent = [...entries, entry('zzz-stable > tsgit', stableValue)];
