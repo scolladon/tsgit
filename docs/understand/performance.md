@@ -73,7 +73,7 @@ The limits are CI gates. Real measured bytes (`npm run reports:bundle-sizes`) an
 
 - **Phase 26.3** — Per-command profile capture (`npm run profile <cmd>`); commit baseline.
 - **Phase 26.4** — Hot-path optimisations from 26.3 findings. Targets: `log:walk` ≥ 1.5× (currently 0.66×), `readBlob:cold` ≥ 1.0× (currently 0.67×).
-- **Phase 26.5** — Regression gate in CI: `bench:summary` diff must not exceed ±N% per scenario.
+- **Phase 26.5** — Regression gate in CI: the PR `benchmark-compare` job benches the base branch and the PR head on the **same runner** and flags any `tsgit` scenario whose median runtime regresses beyond ~10% (improvements never flag). It is **advisory** (`continue-on-error`) — same-runner benchmarking is too noisy to block a merge, so it posts the per-scenario deltas as a PR comment rather than gating. Comparison logic lives in `tooling/bench-check.ts`.
 - **Phase 26.7** — Competitor benchmark comparison: a head-to-head vs `isomorphic-git` (the one mature pure-JS peer, published above and in the README's "Why tsgit" slice), with `simple-git` (native `git`) and `wasm-git` (libgit2-WASM) as labelled reference points and `nodegit` excluded. Refreshed per release from the CI nightly artifact.
 - **Phase 26.8** — Bundle measurements as regenerable artifacts (`reports/bundle/{sizes,treeshake,load-time}.md`).
 
