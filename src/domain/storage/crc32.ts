@@ -1,5 +1,6 @@
 function buildCrc32Table(): Uint32Array {
   const table = new Uint32Array(256);
+  // Stryker disable next-line EqualityOperator: equivalent — `i <= 256` runs one extra iteration at i=256; `table[256] = c` on a `Uint32Array(256)` is a silently-ignored out-of-bounds write per the TypedArray spec, so `table[0..255]` is unaffected — identical to the un-mutated loop.
   for (let i = 0; i < 256; i++) {
     let c = i;
     for (let j = 0; j < 8; j++) {
