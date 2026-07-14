@@ -423,6 +423,58 @@ describe('pack-index', () => {
       });
     });
 
+    describe('Given a hex prefix followed by a non-hex character', () => {
+      describe('When searching', () => {
+        it('Then throws INVALID_PACK_INDEX (the whole prefix must be hex, not just a leading run)', () => {
+          // Arrange — 'aabb' is valid hex but the trailing 'g' is not; the
+          // HEX_RE test must anchor at both ends, or a leading-hex-run match
+          // would wrongly accept this prefix.
+          const idx = parsePackIndex(buildTestIndex(entries));
+
+          // Act & Assert
+          try {
+            findByPrefix(idx, 'aabbg');
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('non-hex'),
+              }),
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a non-hex character followed by a hex prefix', () => {
+      describe('When searching', () => {
+        it('Then throws INVALID_PACK_INDEX (the whole prefix must be hex, not just a trailing run)', () => {
+          // Arrange — 'aabb' is valid hex but the leading 'g' is not; the
+          // HEX_RE test must anchor at both ends, or a trailing-hex-run match
+          // would wrongly accept this prefix.
+          const idx = parsePackIndex(buildTestIndex(entries));
+
+          // Act & Assert
+          try {
+            findByPrefix(idx, 'gaabb');
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('non-hex'),
+              }),
+            );
+          }
+        });
+      });
+    });
+
     describe("Given odd-length prefix 'aabb0'", () => {
       describe('When searching', () => {
         it('Then correctly handles odd length', () => {
