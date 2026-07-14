@@ -84,8 +84,8 @@ function countSrcCopied(srcMap: Map<number, number>, dstMap: Map<number, number>
   let copied = 0;
   for (const [hashval, srcCnt] of srcMap) {
     const dstCnt = dstMap.get(hashval) ?? 0;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — dstCnt comes from `?? 0` so it is always >= 0; forcing this guard to always-true (or relaxing `>` to `>=`) only lets the dstCnt===0 case through Math.min(srcCnt, 0), which adds 0 to copied — same result.
     if (dstCnt > 0) {
-      // equivalent-mutant: dstCnt>=0/true — dstMap.get(??0) is always ≥0; Math.min(src,0)=0 adds nothing
       copied += Math.min(srcCnt, dstCnt);
     }
   }
@@ -123,7 +123,7 @@ export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): Spanhash
   const srcSize = src.length;
   const dstSize = dst.length;
 
-  // equivalent-mutant: guard false/||→&& — empty inputs produce srcCopied=0 via empty maps; guard is a perf short-circuit only
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,BlockStatement: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, || swapped to &&, or the body emptied) still falls through to buildChunkMap on an empty src/dst, which yields an empty map; countSrcCopied over an empty map always returns 0, so srcCopied=0 and literalAdded=dstSize-0=dstSize either way — verified by hand for every documented variant.
   if (srcSize === 0 || dstSize === 0) {
     return { srcCopied: 0, literalAdded: dstSize };
   }
@@ -150,7 +150,7 @@ export function estimateSimilarity(src: Uint8Array, dst: Uint8Array): number {
   const maxSize = Math.max(srcSize, dstSize);
 
   if (maxSize === 0) return MAX_SCORE;
-  // equivalent-mutant: guard false/||→&&/dstSize→false — empty src/dst yields srcCopied=0 via empty maps; guard is a perf short-circuit only
+  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to buildChunkMap on an empty src/dst, which yields an empty map; countSrcCopied over an empty map always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
   if (srcSize === 0 || dstSize === 0) return 0;
 
   const srcMap = buildChunkMap(src);
@@ -176,7 +176,7 @@ export function estimateSimilarityFromMaps(
 ): number {
   const maxSize = Math.max(srcSize, dstSize);
   if (maxSize === 0) return MAX_SCORE;
-  // equivalent-mutant: guard false/||→&&/dstSize→false — empty src/dst yields srcCopied=0 via empty maps; guard is a perf short-circuit only
+  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to countSrcCopied with an empty srcMap or dstMap (well-formed callers pass maps consistent with size), which always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
   if (srcSize === 0 || dstSize === 0) return 0;
   const srcCopied = countSrcCopied(srcMap, dstMap);
   return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
