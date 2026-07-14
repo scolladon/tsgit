@@ -513,6 +513,8 @@ jobs:
     runs-on: ubuntu-latest
     # Informative only — a flagged regression is a prompt to look, never a
     # merge gate. Same-runner benchmarking measures too much noise to block on.
+    # Compares per-scenario median-ms, asymmetric (improvements never flag),
+    # tsgit-scoped (isomorphic-git rows excluded), threshold N ≈ 10%.
     continue-on-error: true
     permissions:
       pull-requests: write
@@ -548,90 +550,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          REGRESSION_THRESHOLD: "5"
+          REGRESSION_THRESHOLD: "10"
         run: |
-          node << 'SCRIPT'
-          const fs = require('fs');
-
-          const base = JSON.parse(fs.readFileSync('/tmp/base-bench.json', 'utf8'));
-          const pr = JSON.parse(fs.readFileSync('/tmp/pr-bench.json', 'utf8'));
-
-          function extractBenchmarks(data) {
-            const results = {};
-            const files = data?.testResults || data?.files || [];
-            for (const file of Array.isArray(files) ? files : []) {
-              const groups = file?.groups || file?.benchmarks || [];
-              for (const group of Array.isArray(groups) ? groups : []) {
-                const benches = group?.benchmarks || [];
-                for (const b of Array.isArray(benches) ? benches : []) {
-                  if (b.name && b.hz != null) {
-                    // Key on `<group> > <bench>` — every scenario registers a
-                    // bench literally named `tsgit` / `isomorphic-git`, so a
-                    // bare-name key collapses all scenarios onto two entries.
-                    const key = group.fullName ? `${group.fullName} > ${b.name}` : b.name;
-                    results[key] = { hz: b.hz, mean: b.mean, p99: b.p99 };
-                  }
-                }
-              }
-            }
-            if (Object.keys(results).length === 0 && typeof data === 'object') {
-              for (const [key, val] of Object.entries(data)) {
-                if (val && typeof val.hz === 'number') {
-                  results[key] = { hz: val.hz, mean: val.mean, p99: val.p99 };
-                }
-              }
-            }
-            return results;
-          }
-
-          const baseBench = extractBenchmarks(base);
-          const prBench = extractBenchmarks(pr);
-          const threshold = Number(process.env.REGRESSION_THRESHOLD);
-          const allNames = [...new Set([...Object.keys(baseBench), ...Object.keys(prBench)])];
-
-          let hasRegression = false;
-          const rows = [];
-
-          for (const name of allNames.sort()) {
-            const b = baseBench[name];
-            const p = prBench[name];
-            if (!b || !p) {
-              rows.push(`| ${name} | ${b ? b.hz.toFixed(0) : 'N/A'} | ${p ? p.hz.toFixed(0) : 'N/A'} | - | - |`);
-              continue;
-            }
-            const delta = ((p.hz - b.hz) / b.hz) * 100;
-            const status = delta < -threshold ? '🔴 regression' : delta > threshold ? '🟢 faster' : '⚪ neutral';
-            if (delta < -threshold) hasRegression = true;
-            rows.push(`| ${name} | ${b.hz.toFixed(0)} | ${p.hz.toFixed(0)} | ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}% | ${status} |`);
-          }
-
-          if (allNames.length === 0) {
-            console.log('No benchmark data to compare.');
-            process.exit(0);
-          }
-
-          const comment = [
-            '## ⚡ Benchmark Comparison (same runner)',
-            '',
-            `> Regression threshold: ${threshold}%`,
-            '',
-            '| Benchmark | Base (ops/s) | PR (ops/s) | Delta | Status |',
-            '|---|---|---|---|---|',
-            ...rows,
-            '',
-            hasRegression ? '**🔴 Performance regression flagged — informational only (same-runner noise is significant); review the deltas above.**' : '**✅ No performance regression detected.**',
-          ].join('\n');
-
-          fs.writeFileSync('/tmp/bench-comment.md', comment);
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY || '/dev/null', '\n' + comment + '\n');
-
-          // Informative only — never exit non-zero. A flagged regression is
-          // surfaced via the PR comment + step summary above; this job must
-          // not fail (same-runner benchmarking is too noisy to gate on).
-          if (hasRegression) {
-            console.log('Performance regression flagged — informational only; see the PR comment.');
-          }
-          SCRIPT
+          node --experimental-strip-types tooling/bench-check.ts /tmp/base-bench.json /tmp/pr-bench.json
 
       - name: Post PR comment
         if: always()

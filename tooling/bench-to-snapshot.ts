@@ -31,7 +31,7 @@ export interface RawReport {
   readonly files: ReadonlyArray<RawFile>;
 }
 
-interface SnapshotEntry {
+export interface SnapshotEntry {
   readonly name: string;
   readonly unit: 'ms';
   readonly value: number;
