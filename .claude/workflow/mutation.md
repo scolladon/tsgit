@@ -42,9 +42,12 @@ The engine preamble already probed the config and the engine invariants still bi
   killed — record it as a false survivor, no test needed. Only a genuinely passing
   run makes the survivor real. For deeper checks, the sandbox honours
   `__STRYKER_ACTIVE_MUTANT__`.
-- Equivalent mutants: inline `// equivalent-mutant: <why>` with one line of proof —
-  no central catalogue. Typical provable cases: loop bounds where out-of-bounds reads
-  return `undefined` with identical outcome; search start offsets in homogeneous data.
+- Equivalent mutants: inline `// Stryker disable next-line <mutators>: equivalent — <why>`
+  with one line of proof — no central catalogue. This suppresses the proven-equivalent
+  mutant (it leaves the score denominator) and is the hook-permitted form (a bare
+  Stryker-disable without an `equivalent` rationale stays blocked). Typical provable cases:
+  loop bounds where out-of-bounds reads return `undefined` with identical outcome; search
+  start offsets in homogeneous data.
 - Kill-test patterns: assert error DATA (code/reason/value) not just the class —
   StringLiteral mutants survive type-only checks; isolated tests per guard condition
   in `if (A || B)`; try/catch + direct `.data` assertions over `toThrow(objectContaining)`.

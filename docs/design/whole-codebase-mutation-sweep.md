@@ -77,15 +77,29 @@ no-coverage Stryker reports:
    mutants survive type-only checks); isolated tests per guard condition in
    `if (A || B)`; try/catch + direct `.data` assertions over
    `toThrow(objectContaining)`. Same `describe`/`it`/AAA/`sut` conventions.
-3. **Provably-equivalent → inline annotation.** `// equivalent-mutant: <why>`
-   with one line of proof, no central catalogue. Typical provable cases: loop
-   bounds where out-of-bounds reads return `undefined` with identical outcome;
-   search start offsets in homogeneous data; observationally-inert guards.
-   Equivalence proofs are **structure-specific** — never carry one forward across
-   a data-structure change without re-proving against the new distinguishing path.
+3. **Provably-equivalent → inline annotation (ADR 494).**
+   `// Stryker disable next-line <mutators>: equivalent — <why>` with one line of
+   proof — the suppressing, hook-permitted codebase convention (84 files), which
+   removes the proven equivalent from the score denominator. Typical provable
+   cases: loop bounds where out-of-bounds reads return `undefined` with identical
+   outcome; search start offsets in homogeneous data; observationally-inert guards;
+   dead destructuring defaults (`split` always returns ≥1 element). Equivalence
+   proofs are **structure-specific** — never carry one forward across a
+   data-structure change without re-proving against the new distinguishing path.
 4. **Property-test lens.** When a survivor sits in a parser/decoder/matcher and
    the four CLAUDE.md lenses fit, a `*.properties.test.ts` sibling may kill a
    *family* of mutants an example test can't enumerate — prefer it there.
+5. **Timeout → triage, not suppress.** The budget scores
+   `killed / (killed + survived + noCoverage + timeout)` — a timeout counts
+   against, like a survivor. Hand-check each: a mutant that empties a loop's
+   advancing body (or breaks its index arithmetic) is a genuine infinite loop —
+   killable only by timeout, and unfixable in a tests-only sweep (the production
+   loop would have to be restructured, which ADR 492 excludes). It is **not**
+   `equivalent` (it changes behaviour — it hangs), so it may not be
+   `Stryker disable`d; it stays counted, absorbed by the conservative threshold
+   (ADR 493), and is recorded in the per-bucket timeout tally. A *false* timeout
+   (a finite-but-slow test hitting the limit under mutation) that terminates with
+   wrong output does get an assertion kill test.
 
 ## Bucket order
 
