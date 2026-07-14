@@ -316,6 +316,18 @@ describe('resolveThresholdPct', () => {
     });
   });
 
+  describe('Given a non-finite override', () => {
+    describe('When resolveThresholdPct runs', () => {
+      it('Then Infinity is rejected (the old NaN-only guard let it through)', () => {
+        // Arrange
+        const sut = resolveThresholdPct;
+
+        // Act + Assert
+        expect(() => sut('Infinity')).toThrow('must be a positive finite number');
+      });
+    });
+  });
+
   describe('Given a non-positive override', () => {
     describe('When resolveThresholdPct runs', () => {
       it('Then zero is rejected (a zero threshold would flag every non-improvement)', () => {
@@ -349,6 +361,21 @@ describe('escapeCell', () => {
 
         // Assert — backticks neutralise the @autolink; the pipe is escaped so the table holds
         expect(result).toBe('`evil \\| @maintainer > tsgit`');
+      });
+    });
+  });
+
+  describe('Given a scenario name containing a backtick', () => {
+    describe('When escapeCell runs', () => {
+      it('Then the code fence widens so the span cannot be broken open', () => {
+        // Arrange
+        const sut = escapeCell;
+
+        // Act
+        const result = sut('a`b');
+
+        // Assert — a two-backtick, space-padded fence keeps the embedded backtick inert
+        expect(result).toBe('`` a`b ``');
       });
     });
   });

@@ -96,7 +96,16 @@ const formatDeltaPct = (deltaPct: number | null): string =>
 // The scenario name comes from developer-authored bench files but is PR-influenceable
 // and renders into a posted PR comment: wrap it as an inline-code span and escape pipes
 // so a crafted name cannot break the markdown table or autolink an @mention / #issue-ref.
-export const escapeCell = (value: string): string => `\`${value.replace(/\|/g, '\\|')}\``;
+// The code fence is one backtick longer than the longest run inside the value (and padded
+// with a space when the value holds a backtick), per the GFM code-span rule, so an embedded
+// backtick cannot close the span early and re-expose the content to markdown.
+export const escapeCell = (value: string): string => {
+  const escaped = value.replace(/\|/g, '\\|');
+  const longestBacktickRun = Math.max(0, ...[...escaped.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = '`'.repeat(longestBacktickRun + 1);
+  const pad = escaped.includes('`') ? ' ' : '';
+  return `${fence}${pad}${escaped}${pad}${fence}`;
+};
 
 const renderRow = (row: CompareRow): string => {
   const cells = [
