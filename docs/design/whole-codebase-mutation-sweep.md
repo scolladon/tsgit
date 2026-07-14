@@ -119,10 +119,13 @@ still count against Stryker's score). Candidate policies:
 - **(C) Defer** — land the kill tests now, open a follow-up to tighten thresholds
   once several post-sweep CI runs have measured the real per-PR distribution.
 
-## Decision candidates
+## Decisions (accepted)
 
 1. **Scope realisation** — "whole tree, one PR" executed as the union of
    tractable per-subdir `--incremental` runs (not one full-tree invocation),
    reconciling the user's scope choice with the override's "never full tree".
-2. **Threshold-tightening policy** — (A) data-driven conservative /
-   (B) low-high only / (C) defer to a follow-up.
+   → ADR 492.
+2. **Threshold-tightening policy** — **(A) data-driven conservative**: raise
+   `high`/`low` to the measured swept floor; raise each `break` only to a value
+   with clear margin above the equivalent-mutant floor + CI noise; never breach
+   what a single equivalent mutant on a small future PR could. → ADR 493.
