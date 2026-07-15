@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   abbreviateOid,
+  DEFAULT_MERGE_LABELS,
   mergeLabels,
   replayLabels,
   revertLabels,
@@ -110,6 +111,17 @@ describe('STASH_LABELS', () => {
           theirs: 'Stashed changes',
           base: 'Stash base',
         });
+      });
+    });
+  });
+});
+
+describe('DEFAULT_MERGE_LABELS', () => {
+  describe('Given the fallback content-merge labels', () => {
+    describe('When read', () => {
+      it('Then ours is `ours`, theirs is `theirs`, and base is empty', () => {
+        // Arrange + Act + Assert
+        expect(DEFAULT_MERGE_LABELS).toEqual({ ours: 'ours', theirs: 'theirs', base: '' });
       });
     });
   });
