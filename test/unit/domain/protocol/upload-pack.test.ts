@@ -403,6 +403,51 @@ describe('parseAdvertisedRefs — service header validation', () => {
       });
     });
   });
+
+  describe('Given a service header line with leading garbage before "# service="', () => {
+    describe('When parsed', () => {
+      it('Then throws MISSING_SERVICE_HEADER', async () => {
+        // Arrange — without SERVICE_LINE_RE's leading `^` anchor, `.exec()`
+        // would find a match starting mid-string and wrongly accept a line
+        // that does not begin with the literal header.
+        const headerStream = encodePktStream([bytesOf('xxx# service=git-upload-pack\n')]);
+
+        // Act & Assert
+        try {
+          await parseAdvertisedRefs(decodePktStream(asyncBytes([headerStream])), 'git-upload-pack');
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          const te = err as TsgitError;
+          expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
+        }
+      });
+    });
+  });
+
+  describe('Given a service header packet with trailing content after an embedded newline', () => {
+    describe('When parsed', () => {
+      it('Then throws MISSING_SERVICE_HEADER', async () => {
+        // Arrange — without SERVICE_LINE_RE's trailing `$` anchor, `.exec()`
+        // would accept the captured service name and ignore anything that
+        // follows it, letting a single pkt-line payload smuggle extra bytes
+        // past an embedded newline.
+        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\nbogus')]);
+
+        // Act & Assert
+        try {
+          await parseAdvertisedRefs(decodePktStream(asyncBytes([headerStream])), 'git-upload-pack');
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          const te = err as TsgitError;
+          expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
+        }
+      });
+    });
+  });
 });
 
 describe('parseAdvertisedRefs — capability extraction', () => {
@@ -497,6 +542,84 @@ describe('parseAdvertisedRefs — ref validation', () => {
           const te = err as TsgitError;
           expect(te.data).toEqual({ code: 'DUPLICATE_REF', name: 'refs/heads/main' });
         }
+      });
+    });
+  });
+});
+
+describe('parseAdvertisedRefs — SHA_ANY_RE anchor boundaries', () => {
+  describe('Given an id with 40 valid hex chars followed by trailing garbage', () => {
+    describe('When parsed', () => {
+      it('Then throws INVALID_REF_LINE (not the ObjectId.from format error)', async () => {
+        // Arrange — without SHA_ANY_RE's trailing `$` anchor, `.test()` would
+        // match on the 40-hex prefix alone and let the malformed id past
+        // validateOidString's own guard, surfacing a later INVALID_OBJECT_ID
+        // from ObjectId.from instead of the intended INVALID_REF_LINE.
+        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
+        const badId = `${'a'.repeat(40)}z`;
+        const refStream = encodePktStream([bytesOf(`${badId} refs/heads/main\0caps\n`)]);
+        const body = concat(headerStream, refStream);
+
+        // Act & Assert
+        try {
+          await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          const te = err as TsgitError;
+          expect(te.data.code).toBe('INVALID_REF_LINE');
+        }
+      });
+    });
+  });
+
+  describe('Given an id with leading garbage followed by 40 valid hex chars', () => {
+    describe('When parsed', () => {
+      it('Then throws INVALID_REF_LINE (not the ObjectId.from format error)', async () => {
+        // Arrange — without SHA_ANY_RE's leading `^` anchor, `.test()` would
+        // match the 40-hex suffix alone and let the malformed id past
+        // validateOidString's own guard, surfacing a later INVALID_OBJECT_ID
+        // from ObjectId.from instead of the intended INVALID_REF_LINE.
+        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
+        const badId = `z${'a'.repeat(40)}`;
+        const refStream = encodePktStream([bytesOf(`${badId} refs/heads/main\0caps\n`)]);
+        const body = concat(headerStream, refStream);
+
+        // Act & Assert
+        try {
+          await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          const te = err as TsgitError;
+          expect(te.data.code).toBe('INVALID_REF_LINE');
+        }
+      });
+    });
+  });
+
+  describe('Given a ref id that is a 64-hex (SHA-256-style) oid', () => {
+    describe('When parsed', () => {
+      it('Then the ref is accepted with the full 64-hex id', async () => {
+        // Arrange — SHA_ANY_RE's optional trailing group matches the extra 24
+        // hex chars a SHA-256 oid carries beyond the 40-hex SHA-1 form. No
+        // other test exercises the 64-hex branch of this regex.
+        const sha256Id = 'd'.repeat(64);
+        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
+        const refStream = encodePktStream([bytesOf(`${sha256Id} refs/heads/main\0caps\n`)]);
+        const body = concat(headerStream, refStream);
+
+        // Act
+        const sut = await parseAdvertisedRefs(
+          decodePktStream(asyncBytes([body])),
+          'git-upload-pack',
+        );
+
+        // Assert
+        expect(sut.refs).toHaveLength(1);
+        expect(sut.refs[0]?.id).toBe(sha256Id);
       });
     });
   });

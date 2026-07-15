@@ -13,6 +13,7 @@ import {
 import { encodePktLine, encodePktLines, encodePktStream, type PktLine } from './pkt-line.js';
 import { parseSideBand } from './side-band.js';
 
+// Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's `fatal` option defaults to `false` per the WHATWG Encoding spec, so `{}` behaves identically to `{ fatal: false }`.
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: false });
 const TEXT_ENCODER = new TextEncoder();
 
