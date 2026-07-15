@@ -207,13 +207,16 @@ function classify(group: RawGroup): Classification {
   if (!hasTheirs) return 'clean-ours';
   const [oc] = group.ours;
   const [tc] = group.theirs;
-  // equivalent-mutant: the two `length === 1` guards are defensive but provably
-  // redundant — a group whose first ours/theirs changes share an exact range
-  // (baseStart+baseEnd) is necessarily 1-ours-1-theirs, since the change that
-  // would link a second change into the group must extend past that shared end.
-  // So weakening them never changes the verdict; they stay as a readability guard.
+  // Both `length === 1` guards are provably redundant: when the range guards
+  // (baseStart/baseEnd equal) hold, the group is necessarily 1-ours-1-theirs,
+  // because a second same-side change starts at or after the first change's end
+  // and so cannot reach back into the shared span to join the group. Forcing
+  // either guard true therefore never flips the verdict; their `=== 1 → false`
+  // halves are the killable direction, covered by the identical-change twin test.
   const isTwin =
+    // Stryker disable next-line ConditionalExpression: equivalent — see above; forcing this true is subsumed by the range guards, and the `=== 1 → false` half is killed by the twin test.
     group.ours.length === 1 &&
+    // Stryker disable next-line ConditionalExpression: equivalent — see above; forcing this true is subsumed by the range guards, and the `=== 1 → false` half is killed by the twin test.
     group.theirs.length === 1 &&
     oc!.baseStart === tc!.baseStart &&
     oc!.baseEnd === tc!.baseEnd &&
