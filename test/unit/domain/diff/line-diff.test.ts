@@ -528,6 +528,30 @@ describe('line-diff — diffLines', () => {
     });
   });
 
+  describe('Given equal-sized identical inputs whose combined length exceeds MAX_DIFF_LINES', () => {
+    describe('When diffLines called', () => {
+      it('Then degraded via the sum cap (not masked by a same-size Myers completion)', () => {
+        // Arrange — M === N === 25001, so M+N=50002 > MAX_DIFF_LINES(50000) but M-N=0.
+        // Identical content means a real Myers run (if the sum cap didn't fire first)
+        // completes instantly at D=0 and reports a single common hunk instead of
+        // degrading — this distinguishes the M+N cap from a wrongly-computed M-N cap.
+        const half = 25_001;
+        const bytes = enc('a\n'.repeat(half));
+
+        // Act
+        const sut = diffLines(bytes, bytes);
+
+        // Assert — the sum cap fires before any Myers computation, so the whole-file
+        // fallback (ours-only + theirs-only) is used even though the content is identical.
+        expect(sut.degraded).toBe(true);
+        expect(sut.hunks).toEqual([
+          { kind: 'ours-only', oursStart: 0, oursEnd: half, theirsStart: 0, theirsEnd: 0 },
+          { kind: 'theirs-only', oursStart: half, oursEnd: half, theirsStart: 0, theirsEnd: half },
+        ]);
+      });
+    });
+  });
+
   describe('Given inputs triggering iteration budget (iterations > maxD * MAX_DIFF_ITERATION_FACTOR)', () => {
     describe('When diffLines called', () => {
       it('Then degraded', () => {
