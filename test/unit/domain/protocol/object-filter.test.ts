@@ -129,6 +129,19 @@ describe('parseObjectFilter', () => {
     });
   });
 
+  describe('Given a multi-digit tree depth', () => {
+    describe('When parsed', () => {
+      it('Then returns the full depth', () => {
+        // Arrange
+        const sut = parseObjectFilter;
+        // Act
+        const result = sut('tree:42');
+        // Assert
+        expect(result).toEqual({ kind: 'tree-depth', depth: 42 });
+      });
+    });
+  });
+
   describe('Given an empty string', () => {
     describe('When parsed', () => {
       it('Then throws INVALID_FILTER_SPEC (empty)', () => {
@@ -260,6 +273,15 @@ describe('parseObjectFilter', () => {
       it('Then throws (bad-tree-depth)', () => {
         // Arrange + Assert
         expectInvalid('tree:1.5', 'bad-tree-depth');
+      });
+    });
+  });
+
+  describe('Given a tree depth with trailing content after the integer', () => {
+    describe('When parsed', () => {
+      it('Then throws (bad-tree-depth)', () => {
+        // Arrange + Assert
+        expectInvalid('tree:5.0', 'bad-tree-depth');
       });
     });
   });
