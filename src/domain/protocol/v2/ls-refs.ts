@@ -10,6 +10,7 @@ const TEXT_DECODER = new TextDecoder();
 const SHA_ANY_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
 const SYMREF_TARGET_PREFIX = 'symref-target:';
 const PEELED_PREFIX = 'peeled:';
+const UNBORN_OID = 'unborn';
 
 export interface LsRefsRequestOptions {
   readonly symrefs?: boolean;
@@ -51,6 +52,7 @@ const parseRefLine = (line: string): ParsedRefLine => {
   // `invalidRefLine(line)`, just from a different call site.
   if (spaceIdx < 0) throw invalidRefLine(line);
   const oidToken = line.slice(0, spaceIdx);
+  if (oidToken !== UNBORN_OID && !SHA_ANY_RE.test(oidToken)) throw invalidRefLine(line);
   const rest = line.slice(spaceIdx + 1);
   const nameEndIdx = rest.indexOf(' ');
   const name = nameEndIdx === -1 ? rest : rest.slice(0, nameEndIdx);

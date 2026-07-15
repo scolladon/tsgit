@@ -131,6 +131,54 @@ describe('parseLsRefsResponse', () => {
     });
   });
 
+  describe('Given a symref-target HEAD line whose first token is an empty oid (leading space)', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE — the symref branch must still validate the oid token', async () => {
+        // Arrange — a leading space makes the first token the empty string. Git
+        // requires an ls-refs line's first token to be a valid oid or `unborn`;
+        // the symref branch previously skipped that check and accepted it.
+        const line = ' HEAD symref-target:refs/heads/main';
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+      });
+    });
+  });
+
+  describe('Given a symref-target HEAD line whose first token is neither an oid nor unborn', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE — a garbage first token is rejected on the symref branch', async () => {
+        // Arrange — `zzzz` is neither a valid oid nor the `unborn` literal, so
+        // git rejects the line; the symref branch previously accepted it and
+        // advertised a bogus symref capability.
+        const line = 'zzzz HEAD symref-target:refs/heads/main';
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+      });
+    });
+  });
+
   describe('Given an ls-refs response with a peeled tag', () => {
     describe('When parsed', () => {
       it('Then the tag ref carries its peeled oid', async () => {
