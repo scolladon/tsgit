@@ -84,6 +84,24 @@ describe('parseSideBand — channel 2 (progress)', () => {
     });
   });
 
+  describe('Given a channel-2 packet whose body is not valid UTF-8', () => {
+    describe('When iterated with onProgress callback', () => {
+      it('Then onProgress receives the replacement character instead of a decode failure', async () => {
+        // Arrange — 0xff is never valid UTF-8; a fatal decoder would throw TypeError
+        const onProgress = vi.fn<(text: string) => void>();
+        const source = asyncOf([dataPkt(2, Uint8Array.from([0xff])), flushPkt()]);
+
+        // Act
+        const sut = await collect(parseSideBand(source, { onProgress }));
+
+        // Assert
+        expect(sut).toHaveLength(0);
+        expect(onProgress).toHaveBeenCalledTimes(1);
+        expect(onProgress).toHaveBeenCalledWith('�');
+      });
+    });
+  });
+
   describe('Given an onProgress that throws', () => {
     describe('When a channel-2 packet is processed', () => {
       it('Then iteration continues normally and downstream packets are still yielded', async () => {
