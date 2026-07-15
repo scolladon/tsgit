@@ -297,3 +297,17 @@ describe('writeConflictMarkers — output-size cap', () => {
     });
   });
 });
+
+describe('MAX_CONFLICT_OUTPUT_BYTES — cap magnitude', () => {
+  describe('Given the conflict output-size cap', () => {
+    describe('When its value is read', () => {
+      it('Then equals 256 MiB (268435456 bytes)', () => {
+        // Arrange
+        const sut = MAX_CONFLICT_OUTPUT_BYTES;
+
+        // Assert
+        expect(sut).toBe(256 * 1024 * 1024);
+      });
+    });
+  });
+});
