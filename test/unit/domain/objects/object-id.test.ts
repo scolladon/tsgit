@@ -107,6 +107,38 @@ describe('object-id', () => {
         });
       });
     });
+
+    describe('Given a 41-char hex string', () => {
+      describe('When calling ObjectId.from', () => {
+        it('Then throws INVALID_OBJECT_ID', () => {
+          // Arrange
+          const hex = 'a'.repeat(41);
+
+          // Act + Assert
+          expect(() => ObjectId.from(hex)).toThrow(
+            expect.objectContaining({
+              data: { code: 'INVALID_OBJECT_ID', value: hex },
+            }),
+          );
+        });
+      });
+    });
+
+    describe('Given a 65-char hex string', () => {
+      describe('When calling ObjectId.from', () => {
+        it('Then throws INVALID_OBJECT_ID', () => {
+          // Arrange
+          const hex = 'a'.repeat(65);
+
+          // Act + Assert
+          expect(() => ObjectId.from(hex)).toThrow(
+            expect.objectContaining({
+              data: { code: 'INVALID_OBJECT_ID', value: hex },
+            }),
+          );
+        });
+      });
+    });
   });
 
   describe('ObjectId.fromRaw', () => {
