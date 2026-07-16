@@ -51,6 +51,36 @@ describe('renderRangePatch', () => {
     });
   });
 
+  describe('Given a commit with an empty message, When rendered', () => {
+    it('Then the commit message section carries no body lines', () => {
+      // Arrange
+      const sut = renderRangePatch;
+      const input = baseInput({ message: '' });
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      expect(result.patch).toBe(' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n');
+    });
+  });
+
+  describe('Given a message without a trailing newline, When rendered', () => {
+    it('Then the whole final line is kept, 4-space indented', () => {
+      // Arrange
+      const sut = renderRangePatch;
+      const input = baseInput({ message: 'summary line' });
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      expect(result.patch).toBe(
+        ' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n    summary line\n',
+      );
+    });
+  });
+
   describe('Given a single-file modification, When rendered', () => {
     it('Then the file header, stripped @@ and prefixed body lines appear in the diff slice', () => {
       // Arrange
@@ -82,6 +112,57 @@ describe('renderRangePatch', () => {
 
       // Assert
       expect(result.diff).toContain('@@ m.c: int main(void)\n');
+    });
+  });
+
+  describe('Given two hunks in one file separated by a later function definition, When rendered', () => {
+    it('Then the second @@ heading names that function, scanned only back to the first hunk', () => {
+      // Arrange — the second hunk's funcname scan is bounded by the first hunk's
+      // start, so it must reach `int g(void)` (sitting between the two hunks) and
+      // must not retain the first hunk's `int f(void)` heading.
+      const sut = renderRangePatch;
+      const oldLines = [
+        'int f(void)',
+        '{',
+        '    f1;',
+        '}',
+        'int g(void)',
+        '    g1;',
+        '    g2;',
+        '    g3;',
+        '    g4;',
+        '    g5;',
+        '    g6;',
+        '    g7;',
+        '    g8;',
+        '    g9;',
+        '    g10;',
+        '    g11;',
+        '    g12;',
+        '    g13;',
+        '    g14;',
+        '    g15;',
+        '}',
+      ];
+      const bump = (line: string): string => {
+        if (line === '    g3;') return '    G3;';
+        if (line === '    g15;') return '    G15;';
+        return line;
+      };
+      const newLines = oldLines.map(bump);
+      const input = baseInput({
+        files: [modify('m.c', `${oldLines.join('\n')}\n`, `${newLines.join('\n')}\n`)],
+      });
+
+      // Act
+      const result = sut(input);
+
+      // Assert
+      expect(result.diff).toBe(
+        ' ## m.c ##\n' +
+          '@@ m.c: int f(void)\n int g(void)\n     g1;\n     g2;\n-    g3;\n+    G3;\n     g4;\n     g5;\n     g6;\n' +
+          '@@ m.c: int g(void)\n     g12;\n     g13;\n     g14;\n-    g15;\n+    G15;\n }\n',
+      );
     });
   });
 
