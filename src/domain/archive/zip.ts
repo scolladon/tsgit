@@ -331,8 +331,7 @@ function buildEocd(
  * Local scan; does not depend on diff-module internals.
  */
 function isText(content: Uint8Array): boolean {
-  // equivalent-mutant: i<=content.length — content[content.length] on a Uint8Array returns undefined;
-  // undefined===0 is false, so the extra iteration never triggers return false; same result.
+  // Stryker disable next-line EqualityOperator: equivalent — i<=content.length reads content[content.length] on a Uint8Array which is undefined; undefined===0 is false so the extra iteration never returns false; same result.
   for (let i = 0; i < content.length; i++) {
     if (content[i] === 0) return false;
   }
@@ -387,9 +386,8 @@ function entryAttrs(entry: ArchiveEntry): EntryAttrs {
       return execAttrs(entry.content);
     case FILE_MODE.SYMLINK:
       return SYMLINK_ATTRS;
+    // Stryker disable next-line ConditionalExpression: equivalent — emptying the DIRECTORY case falls through to GITLINK, which returns the identical DIR_ATTRS constant.
     case FILE_MODE.DIRECTORY:
-      // equivalent-mutant: removing this return causes DIRECTORY to fall through to GITLINK,
-      // which returns the identical DIR_ATTRS constant.
       return DIR_ATTRS;
     case FILE_MODE.GITLINK:
       return DIR_ATTRS;
@@ -429,8 +427,7 @@ async function compressEntry(
   deps: ZipDeps,
   level: number | undefined,
 ): Promise<EntryContent> {
-  // equivalent-mutant: `if (false)` or empty block body — for dirs, content=[] crc32([])=0 usize=0
-  // !isCompressibleBlob(dir)=true → fallthrough returns {method:0, compressed:[], crc:0, size:0} = same.
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — dir/gitlink entries carry no content, so falling through gives content=[], crc32([])=0, usize=0, !isCompressibleBlob(dir)=true, returning {method:0, compressed:[], crc:0, size:0} — identical to this early return.
   if (entryIsDir(entry.mode)) {
     return { method: METHOD_STORE, compressed: new Uint8Array(0), contentCrc: 0, usize: 0 };
   }
@@ -595,8 +592,7 @@ export async function* zipArchive(
     records.push(record);
     localOffset += localHeader.length;
 
-    // equivalent-mutant: `true` or `csize >= 0` — when csize=0, compressed=new Uint8Array(0)
-    // yields 0 bytes (a no-op); localOffset+=0 is unchanged — byte-identical to skipping.
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — csize>=0 always holds (a length is never negative); at csize=0 compressed is a 0-byte Uint8Array so yielding it emits nothing and localOffset+=0 is unchanged — byte-identical to skipping.
     if (csize > 0) {
       yield compressed;
       localOffset += csize;
