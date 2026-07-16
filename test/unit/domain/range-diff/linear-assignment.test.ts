@@ -157,4 +157,94 @@ describe('computeAssignment', () => {
       expect(result.columnToRow.slice(0, 3)).toEqual([0, 2, 1]);
     });
   });
+
+  describe('Given a fully forbidden row forcing findTwoSmallest to reset its second candidate, When assigned', () => {
+    it('Then the reset drives the complete permutation the solver pins', () => {
+      // Arrange — row 2 is entirely COST_MAX, so during augmenting-row reduction
+      // a free row sees every column reduced cost >= COST_MAX; findTwoSmallest
+      // never records a distinct second smallest, and its `j2 < 0` reset
+      // (j2 = j1, u2 = u1) decides where each column lands.
+      const sut = computeAssignment;
+      const cost = [
+        COST_MAX,
+        1,
+        COST_MAX,
+        2, // row 0: C(1,0)=1  C(3,0)=2
+        COST_MAX,
+        COST_MAX,
+        0,
+        0, // row 1: C(2,1)=0  C(3,1)=0
+        COST_MAX,
+        COST_MAX,
+        COST_MAX,
+        COST_MAX, // row 2: fully forbidden
+        2,
+        COST_MAX,
+        2,
+        COST_MAX, // row 3: C(0,3)=2  C(2,3)=2
+      ];
+
+      // Act
+      const result = sut(4, cost);
+
+      // Assert
+      expect(result.columnToRow).toEqual([2, 0, 3, 1]);
+      expect(result.rowToColumn).toEqual([1, 3, 0, 2]);
+    });
+  });
+
+  describe('Given a matrix whose augmenting path needs several scan rounds, When assigned', () => {
+    it('Then the do-while keeps scanning until the active column set is exhausted', () => {
+      // Arrange — a dense 6x6 whose augmenting-path search must loop scanRows
+      // multiple times: the do-while continues while `low !== up` (the set is not
+      // yet exhausted). Inverting that continuation to `low === up` stops after
+      // one round and yields a different permutation.
+      const sut = computeAssignment;
+      const cost = [
+        0,
+        3,
+        2,
+        COST_MAX,
+        0,
+        1, // row 0
+        2,
+        0,
+        0,
+        1,
+        1,
+        2, // row 1
+        1,
+        1,
+        0,
+        2,
+        2,
+        2, // row 2
+        COST_MAX,
+        1,
+        COST_MAX,
+        2,
+        3,
+        1, // row 3
+        1,
+        3,
+        1,
+        3,
+        3,
+        0, // row 4
+        3,
+        3,
+        2,
+        1,
+        COST_MAX,
+        COST_MAX, // row 5
+      ];
+
+      // Act
+      const result = sut(6, cost);
+
+      // Assert
+      expect(result.columnToRow).toEqual([4, 1, 2, 5, 0, 3]);
+      expect(result.rowToColumn).toEqual([4, 1, 2, 5, 0, 3]);
+    });
+  });
 });

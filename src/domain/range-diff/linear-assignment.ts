@@ -52,9 +52,7 @@ const costAt = (s: Lap, column: number, row: number): number =>
 const columnReduction = (s: Lap): void => {
   for (let j = s.columnCount - 1; j >= 0; j--) {
     let i1 = 0;
-    // equivalent-mutant (`i < rowCount` → `i <= rowCount`): the extra `i === rowCount`
-    // reads `costAt` out of bounds (`undefined`), and `costAt(…, i1) > undefined` is
-    // false, so `i1` is never updated — the trailing iteration is a no-op.
+    // Stryker disable next-line EqualityOperator: equivalent — the extra `i === rowCount` iteration reads `costAt(…, rowCount)` out of bounds (`undefined`); `cost > undefined` is false, so `i1` never updates — a no-op.
     for (let i = 1; i < s.rowCount; i++) {
       if (costAt(s, j, i1) > costAt(s, j, i)) i1 = i;
     }
@@ -62,13 +60,9 @@ const columnReduction = (s: Lap): void => {
     if (s.rowToColumn[i1] === -1) {
       s.rowToColumn[i1] = j;
       s.columnToRow[j] = i1;
+      // Stryker disable next-line BlockStatement: equivalent — emptying the else drops the no-op `columnToRow[j] = -1` (already `-1`, set once here) and the double-claim flip, which only toggles whether reduction-transfer runs the `transferRow` dual warm-start; the augmenting phase reaches the same final assignment.
     } else {
-      // equivalent-mutant (emptying this branch / forcing the `>= 0` guard): this is
-      // git's double-claim bookkeeping — `columnToRow[j]` is already `-1` (set once,
-      // here), and the negative-encoding flip only records that row `i1` is contended
-      // so reduction-transfer can skip an early `transferRow`. Either way the shortest-
-      // augmenting-path phase reconciles row `i1` to the same final assignment; no
-      // matrix in the 150-case adversarial/tie-heavy/targeted corpus distinguishes it.
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the flip only marks a double-claim so reduction-transfer skips the `transferRow` dual warm-start; forcing/negating/complementing the guard merely toggles that warm-start for multiply-claimed rows (reconciled by the augmenting phase), and `>0` equals `>=0` because `rowToColumn[i1]` is never `0` here (column 0 is reduced last).
       if (s.rowToColumn[i1]! >= 0) s.rowToColumn[i1] = -2 - s.rowToColumn[i1]!;
       s.columnToRow[j] = -1;
     }
@@ -81,8 +75,7 @@ const transferRow = (s: Lap, i: number, j1: number): void => {
   let min = i32(costAt(s, other, i) - s.v[other]!);
   for (let j = 1; j < s.columnCount; j++) {
     const reduced = i32(costAt(s, j, i) - s.v[j]!);
-    // equivalent-mutant (`min > reduced` → `min >= reduced`): when `min === reduced`
-    // the assignment `min = reduced` stores the same value, so the two forms agree.
+    // Stryker disable next-line EqualityOperator: equivalent — when `min === reduced` the branch assigns `min = reduced`, an identical i32 value, so `>` and `>=` yield the same running min.
     if (j !== j1 && min > reduced) min = reduced;
   }
   s.v[j1] = i32(s.v[j1]! - min);
@@ -90,10 +83,7 @@ const transferRow = (s: Lap, i: number, j1: number): void => {
 
 const reductionTransfer = (s: Lap, freeRow: number[]): number => {
   let freeCount = 0;
-  // equivalent-mutant (`i < rowCount` → `i <= rowCount`): the extra `i === rowCount`
-  // reads `rowToColumn[rowCount]` (`undefined`), which is neither `-1` nor `< -1`, so
-  // it falls to `transferRow(s, rowCount, undefined)` — that only writes the phantom
-  // `v[undefined]` (every real access is `i32(NaN) === 0`), leaving valid state intact.
+  // Stryker disable next-line EqualityOperator: equivalent — the extra `i === rowCount` iteration reads `rowToColumn[rowCount]` (`undefined`), so it falls to `transferRow(s, rowCount, undefined)`, whose only write is the discarded `v[undefined]`; no in-bounds state changes.
   for (let i = 0; i < s.rowCount; i++) {
     const j1 = s.rowToColumn[i]!;
     if (j1 === -1) freeRow[freeCount++] = i;
@@ -132,12 +122,6 @@ const findTwoSmallest = (s: Lap, i: number): TwoSmallest => {
       }
     }
   }
-  // equivalent-mutant (`j2 = -1` → `+1`, and emptying/forcing this reset): `j2` is left
-  // unset only when every column's reduced cost is `>= COST_MAX`, i.e. the row is fully
-  // forbidden. Reaching that state forces every column dual `v[j]` to 0, which (by the
-  // pigeonhole of column-reduction claims) leaves this row's best column `j1` unassigned
-  // — so the `else if (i0 >= 0)` in `reduceFreeRow` that would consume `j2` is never
-  // taken, making the reset's outcome unobservable across the 150-case corpus.
   if (j2 < 0) {
     j2 = j1;
     u2 = u1;
@@ -215,6 +199,7 @@ const expandMinColumns = (
   search: Search,
 ): { readonly min: number; readonly lastJ: number } => {
   let min = d[col[search.up++]!]!;
+  // Stryker disable next-line UnaryOperator: equivalent — the loop overwrites `lastJ` with a real column (`>= 0`) on its first pass, so the initializer survives only when the loop runs zero times; but then `lastJ` is returned as `path.j` and would index `pred[-1]`/`columnToRow[-1]` (`undefined`) in `augmentOne`, hanging the augmenting walk a correct run never triggers — so the init is never observed.
   let lastJ = -1;
   for (let k = search.up; k < s.columnCount; k++) {
     const j = col[k]!;
@@ -256,9 +241,7 @@ const scanRows = (
     const j1 = col[search.low++]!;
     const i = s.columnToRow[j1]!;
     const u1 = i32(costAt(s, j1, i) - s.v[j1]! - min);
-    // equivalent-mutant (`k < columnCount` → `k <= columnCount`): at `k === columnCount`
-    // `col[k]` is `undefined`, so `c` is `i32(NaN) === 0` and `c < d[undefined]` is
-    // `0 < undefined` (false) — the trailing iteration relaxes nothing.
+    // Stryker disable next-line EqualityOperator: equivalent — at `k === columnCount` `col[k]` is `undefined`, so `c` is `i32(NaN) === 0` and the guard `c < d[undefined]` is `0 < undefined` (false); the trailing iteration relaxes nothing.
     for (let k = search.up; k < s.columnCount; k++) {
       const j = col[k]!;
       const c = i32(costAt(s, j, i) - s.v[j]! - u1);
@@ -290,11 +273,11 @@ const findAugmentingPath = (s: Lap, d: number[], pred: number[], col: number[]):
 };
 
 const augmentOne = (s: Lap, i1: number): void => {
-  // equivalent-mutant (`new Array<number>(columnCount)` → `new Array()`): the three
-  // working arrays are fully written by index in the immediately following loop, so the
-  // preallocated length is an optimisation with no observable effect.
+  // Stryker disable next-line ArrayDeclaration: equivalent — `d` is written at every index `0..columnCount-1` by the init loop below and never read at index `columnCount`, so the preallocated length is inert.
   const d = new Array<number>(s.columnCount);
+  // Stryker disable next-line ArrayDeclaration: equivalent — `pred` is written at every index `0..columnCount-1` by the init loop below and never read at index `columnCount`, so the preallocated length is inert.
   const pred = new Array<number>(s.columnCount);
+  // Stryker disable next-line ArrayDeclaration: equivalent — `col` is written at every index `0..columnCount-1` by the init loop below and never read at index `columnCount`, so the preallocated length is inert.
   const col = new Array<number>(s.columnCount);
   // equivalent-mutant (`j < columnCount` → `j <= columnCount`): the extra entry at index
   // `columnCount` is never read — `findAugmentingPath` and the scans all bound `k` by
@@ -332,38 +315,32 @@ export const computeAssignment = (n: number, cost: ReadonlyArray<number>): Assig
   const columnToRow = new Array<number>(n);
   const rowToColumn = new Array<number>(n);
 
-  // equivalent-mutant (removing this `n < 2` fast-path): for `n === 0` the loops below
-  // are empty and for `n === 1` column-reduction assigns the single cell, so the general
-  // path returns the same `[0]`/`[]` result this shortcut produces.
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — the `n < 2` fast-path is pure optimisation: for `n === 0` the general path's loops are empty and for `n === 1` column-reduction assigns the sole cell (freeCount 0, early return), so forcing the guard false or emptying its block both reach the identical `[0]`/`[]` result.
   if (n < 2) {
     columnToRow.fill(0);
     rowToColumn.fill(0);
     return { columnToRow, rowToColumn };
   }
 
-  // equivalent-mutant (`columnToRow.fill(-1)` → `fill(+1)`): every `columnToRow[j]` is
-  // overwritten in column-reduction before it is read, so its initial value is dead.
+  // Stryker disable next-line UnaryOperator: equivalent — column-reduction writes every `columnToRow[j]` before any read, so the `-1` vs `+1` initial fill is dead.
   columnToRow.fill(-1);
   rowToColumn.fill(-1);
   const s: Lap = {
     columnCount: n,
     rowCount: n,
     cost,
-    // equivalent-mutant (`new Array(n).fill(0)` → `new Array().fill(0)`): column-reduction
-    // assigns every `v[j]` before any read.
+    // Stryker disable next-line ArrayDeclaration: equivalent — column-reduction assigns every `v[j]` before any read, so preallocating length n vs growing from empty is inert.
     v: new Array<number>(n).fill(0),
     columnToRow,
     rowToColumn,
   };
 
   columnReduction(s);
-  // equivalent-mutant (`new Array<number>(n)` → `new Array()`): `freeRow` is written by
-  // index (`freeRow[freeCount++]`) and read only below `freeCount`.
+  // Stryker disable next-line ArrayDeclaration: equivalent — `freeRow` is written by counter (`freeRow[freeCount++]`) and read only below the write cursor, so preallocating length n vs growing from empty is inert.
   const freeRow = new Array<number>(n);
   let freeCount = reductionTransfer(s, freeRow);
 
-  // equivalent-mutant (removing this `freeCount === 0` early return): when no rows are
-  // free the augmenting loops below execute zero iterations and return the same result.
+  // Stryker disable next-line ConditionalExpression: equivalent — when `freeCount` is 0 the augmenting loops below run zero iterations and return the same maps, so this early return is redundant (forcing the guard false is a no-op).
   if (freeCount === 0) return { columnToRow, rowToColumn };
 
   freeCount = augmentingRowReduction(s, freeRow, freeCount);
