@@ -811,6 +811,40 @@ describe('Given a uname string of exactly 32 bytes and a writeAscii i <= writeLe
 });
 
 // ---------------------------------------------------------------------------
+// Mutation boundary: writeAscii Math.min clamp — overflow past all rewritten fields
+// ---------------------------------------------------------------------------
+
+describe('Given a uname far longer than the 32-byte field and a prefix-less path', () => {
+  describe('When tarArchive is called', () => {
+    it('Then writeAscii clamps the uname to 32 bytes and does not overflow into the prefix field', async () => {
+      // Arrange — a 100-byte uname. writeAscii's Math.min(str.length, len) clamp keeps the
+      // written span at 32 bytes. Under the Math.max mutant the loop writes all 100 bytes,
+      // spilling past the gname, devmajor and devminor fields (each rewritten afterwards) into
+      // the prefix field (offset 345), which stays empty for a prefix-less path — an observable
+      // overflow that the shorter (33-byte) uname probe cannot reach, since gname's own write
+      // re-zeroes bytes 297-328.
+      const longUname = 'a'.repeat(100);
+      const entry = makeEntry('f.txt', '100644', new Uint8Array([1]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), {
+        mtime: FIXED_MTIME,
+        uname: longUname,
+        gname: 'root',
+      });
+
+      // Act
+      const result = await collectBytes(sut);
+      const header = result.slice(0, HEADER_SIZE);
+
+      // Assert — uname field holds exactly its first 32 bytes; the prefix field is untouched
+      const OFF_PREFIX = 345;
+      const LEN_PREFIX = 155;
+      expect(readField(header, OFF_UNAME, 32)).toBe('a'.repeat(32));
+      expect(readField(header, OFF_PREFIX, LEN_PREFIX)).toBe('');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mutation boundary: writeBytes Math.max
 // ---------------------------------------------------------------------------
 
