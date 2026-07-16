@@ -189,6 +189,28 @@ describe('tag', () => {
       });
     });
 
+    describe('Given a tag pointing to a tree', () => {
+      describe('When parsing', () => {
+        it("Then objectType is 'tree'", () => {
+          // Arrange
+          const content = tagText([
+            `object ${'b'.repeat(40)}`,
+            'type tree',
+            'tag tree-tag',
+            'tagger A <a@a.com> 0 +0000',
+            '',
+            'tree tag',
+          ]);
+
+          // Act
+          const sut = parseTagContent(DUMMY_ID, content);
+
+          // Assert
+          expect(sut.data.objectType).toBe('tree');
+        });
+      });
+    });
+
     describe('Given a tag with no blank line (no message)', () => {
       describe('When parsing', () => {
         it('Then message is empty and headers are parsed', () => {
@@ -878,6 +900,37 @@ describe('tag', () => {
           // Assert
           expect(sut.data.gpgSignature).toBeUndefined();
           expect(sut.data.message).toBe('Release v1.0\n');
+        });
+      });
+    });
+
+    describe('Given a tag whose message embeds an armor block followed by trailing text', () => {
+      describe('When parseTagContent', () => {
+        it('Then the block is not peeled — gpgSignature stays undefined and the message is intact', () => {
+          // Arrange — a signature is peeled only when the armor is the trailing
+          // block; real text follows the END line here, so the end-of-input
+          // anchor must reject it.
+          const message =
+            '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\nnot a signature';
+          const content = tagText([
+            `object ${'b'.repeat(40)}`,
+            'type commit',
+            'tag v1.0',
+            'tagger A <a@a.com> 0 +0000',
+            '',
+            '-----BEGIN PGP SIGNATURE-----',
+            '',
+            'ZmFrZQ==',
+            '-----END PGP SIGNATURE-----',
+            'not a signature',
+          ]);
+
+          // Act
+          const sut = parseTagContent(DUMMY_ID, content);
+
+          // Assert
+          expect(sut.data.gpgSignature).toBeUndefined();
+          expect(sut.data.message).toBe(message);
         });
       });
     });
