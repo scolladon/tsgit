@@ -22,9 +22,6 @@ const bestBisection = (
   all: number,
 ): BestResult => {
   // Seed from candidates[0] — caller guarantees non-empty (findBisection guards).
-  // equivalent-mutant (all + firstWeight): candidates[0] is always the oldest commit in the set
-  // (oldest-first order) → it has no in-set parents → seeded with weight=1; for all≥2
-  // Math.min(1, all-1)=1=Math.min(1, all+1); for all=1 the loop is empty.
   const first = candidates[0]!;
   const firstWeight = weights.get(first.id) as number;
   let bestId = first.id;
