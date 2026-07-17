@@ -381,6 +381,32 @@ describe('parseApproxidate', () => {
         });
       });
     });
+
+    describe('Given an ISO date preceded by non-date text', () => {
+      describe('When parsing', () => {
+        it('Then returns undefined', () => {
+          // Arrange / Act — the pattern is anchored to the start, so an embedded
+          // date behind leading text must not be reached.
+          const result = parseApproxidate('x2026-05-01', NOW);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given an ISO date followed by non-date text', () => {
+      describe('When parsing', () => {
+        it('Then returns undefined', () => {
+          // Arrange / Act — the pattern is anchored to the end, so trailing text
+          // after an otherwise-valid date must not be ignored.
+          const result = parseApproxidate('2026-05-01x', NOW);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
   });
 
   describe('relative dotted forms', () => {
@@ -468,6 +494,19 @@ describe('parseApproxidate', () => {
 
           // Assert
           expect(without).toBe(withSuffix);
+        });
+      });
+    });
+
+    describe('Given a relative form preceded by non-date text', () => {
+      describe('When parsing', () => {
+        it('Then returns undefined', () => {
+          // Arrange / Act — the pattern is anchored to the start, so a relative
+          // form behind leading text must not be reached.
+          const result = parseApproxidate('x2 days ago', NOW);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
