@@ -102,6 +102,25 @@ describe('rebase squash combined-message builder', () => {
       });
     });
 
+    describe('When a message carries multiple trailing newlines', () => {
+      it('Then strips every trailing newline down to the single separator', () => {
+        // Arrange + Act
+        const sut = buildCombinedMessage([keep('a\n\n'), keep('b\n\n\n')]);
+
+        // Assert
+        expect(sut).toBe(
+          '# This is a combination of 2 commits.\n' +
+            '# This is the 1st commit message:\n' +
+            '\n' +
+            'a\n' +
+            '\n' +
+            '# This is the commit message #2:\n' +
+            '\n' +
+            'b\n',
+        );
+      });
+    });
+
     describe('When a skipped message is multi-line', () => {
       it('Then comments every body line', () => {
         // Arrange + Act
