@@ -16,7 +16,7 @@ const HEX_PATTERN = /^[0-9a-f]{40}$/;
 const isHex40 = (s: string): boolean => HEX_PATTERN.test(s);
 
 const findBlankLineOffset = (bytes: Uint8Array): number => {
-  // equivalent-mutant: i<=bytes.length-1 / bytes.length+1 — extra iterations read bytes[length]=undefined; LF check still fails
+  // Stryker disable next-line EqualityOperator,ArithmeticOperator: equivalent — an out-of-bounds Uint8Array read is undefined, so the extra iterations never satisfy the LF+LF check and the same offset is returned
   for (let i = 0; i < bytes.length - 1; i++) {
     if (bytes[i] === LF && bytes[i + 1] === LF) {
       return i + 2;
@@ -87,8 +87,8 @@ const decodeHeaderLines = (
   for (const line of contentLines) {
     if (line.startsWith('-')) {
       prerequisites.push(parsePrerequisiteLine(line, path));
+      // Stryker disable next-line ConditionalExpression: equivalent — an @-prefixed line never holds a 40-hex oid before a space, so the false branch (parseRefLine) also throws malformed-header
     } else if (line.startsWith('@')) {
-      // equivalent-mutant: ConditionalExpression→false — @-prefixed lines have no space and non-hex chars; parseRefLine throws malformed-header either way
       throw bundleBadHeader(path, 'malformed-header');
     } else {
       refs.push(parseRefLine(line, path));
@@ -99,14 +99,13 @@ const decodeHeaderLines = (
 };
 
 const throwMissingBlankLine = (bytes: Uint8Array, path: string): never => {
-  // equivalent-mutant: Math.max — subarray auto-clamps end to bytes.length; Math.max(bytes.length,64)≥bytes.length produces the same slice
+  // Stryker disable next-line MethodExpression: equivalent — the prefix feeds only the exact 15-char MAGIC_V3 compare and the startsWith(MAGIC_V2/V3) checks, all reading ≤15 leading bytes; min vs max differ only in trailing bytes (length>64), which change neither decision
   const prefix = bytes.subarray(0, Math.min(bytes.length, 64));
   const headerText = new TextDecoder().decode(prefix);
   const firstLine = headerText.split('\n')[0] as string;
   if (firstLine === MAGIC_V3) {
     throw bundleUnsupportedVersion(path, 3);
   }
-  // equivalent-mutant: endsWith(MAGIC_V3) — V3 is caught at L103 (firstLine===MAGIC_V3); non-bundle data never ends with the V3 magic string
   if (!headerText.startsWith(MAGIC_V2) && !headerText.startsWith(MAGIC_V3)) {
     throw bundleBadHeader(path, 'not-a-bundle');
   }
