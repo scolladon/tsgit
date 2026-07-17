@@ -41,6 +41,34 @@ describe('Given a relative submodule URL and a base remote URL', () => {
       // Arrange + Act + Assert
       expect(relativeUrl('https://h.x/a/b/super.git/', '../sub')).toBe('https://h.x/a/b/sub');
     });
+
+    it('Then a colon in the popped url tail keeps it a local path', () => {
+      // Arrange + Act + Assert
+      expect(relativeUrl('https://h.x/a/b/super.git', '../a:b')).toBe('https://h.x/a/b/a:b');
+    });
+
+    it('Then over-popping past the scheme colon joins the dot base with a colon', () => {
+      // Arrange + Act + Assert
+      expect(relativeUrl('https://h.x/super.git', '../../../../../sub')).toBe('.:sub');
+    });
+
+    it('Then over-popping until the base is a bare dot refuses', () => {
+      // Arrange
+      const sut = relativeUrl;
+      // Act
+      let thrown: unknown;
+      try {
+        sut('https://h.x/super.git', '../../../../../../sub');
+      } catch (err) {
+        thrown = err;
+      }
+      // Assert
+      expect(thrown).toBeInstanceOf(TsgitError);
+      expect((thrown as TsgitError).data).toMatchObject({
+        code: 'RELATIVE_URL_UNRESOLVABLE',
+        url: '.',
+      });
+    });
   });
 
   describe('When resolving an scp-style base', () => {
@@ -53,12 +81,22 @@ describe('Given a relative submodule URL and a base remote URL', () => {
       // Arrange + Act + Assert
       expect(relativeUrl('git@h.x:super.git', '../sub')).toBe('git@h.x:sub');
     });
+
+    it('Then popping a base whose only colon leads restores that colon', () => {
+      // Arrange + Act + Assert
+      expect(relativeUrl(':foo', '../x')).toBe(':x');
+    });
   });
 
   describe('When resolving an absolute-path base', () => {
     it('Then `../` pops the last path segment', () => {
       // Arrange + Act + Assert
       expect(relativeUrl('/abs/path/super', '../sub')).toBe('/abs/path/sub');
+    });
+
+    it('Then over-popping past the filesystem root collapses to a bare url', () => {
+      // Arrange + Act + Assert
+      expect(relativeUrl('/a', '../../sub')).toBe('sub');
     });
   });
 
@@ -71,6 +109,11 @@ describe('Given a relative submodule URL and a base remote URL', () => {
     it('Then an scp url is returned verbatim', () => {
       // Arrange + Act + Assert
       expect(relativeUrl('https://h.x/super', 'git@other:x.git')).toBe('git@other:x.git');
+    });
+
+    it('Then a url whose only colon leads is returned verbatim', () => {
+      // Arrange + Act + Assert
+      expect(relativeUrl('https://h.x/super', ':foo')).toBe(':foo');
     });
 
     it('Then an absolute-path url is returned verbatim', () => {
@@ -108,6 +151,29 @@ describe('Given a relative submodule URL and a base remote URL', () => {
       // Assert
       expect(thrown).toBeInstanceOf(TsgitError);
       expect((thrown as TsgitError).data).toMatchObject({ code: 'RELATIVE_URL_UNRESOLVABLE' });
+    });
+
+    it('Then a single-component base is normalised so `../` pops to the bare url', () => {
+      // Arrange + Act + Assert
+      expect(relativeUrl('a', '../sub')).toBe('sub');
+    });
+
+    it('Then a base starting with `../` over-popped past its root refuses', () => {
+      // Arrange
+      const sut = relativeUrl;
+      // Act
+      let thrown: unknown;
+      try {
+        sut('../a', '../../sub');
+      } catch (err) {
+        thrown = err;
+      }
+      // Assert
+      expect(thrown).toBeInstanceOf(TsgitError);
+      expect((thrown as TsgitError).data).toMatchObject({
+        code: 'RELATIVE_URL_UNRESOLVABLE',
+        url: '..',
+      });
     });
   });
 });
