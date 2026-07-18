@@ -391,6 +391,26 @@ describe('tag', () => {
     });
   });
 
+  describe('Given a configured user, annotate true, but neither message nor sign', () => {
+    describe('When tag create', () => {
+      it('Then it writes an annotated tag object carrying an empty message', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithConfiguredUser();
+
+        // Act
+        const sut = await tagCreate(ctx, { name: 'v1.0', annotate: true });
+
+        // Assert — annotate alone (no message, no sign) must still peel off a tag
+        // object, and its message must be empty rather than any placeholder text.
+        expect(sut.id).not.toBe(commitId);
+        const obj = await readObject(ctx, sut.id);
+        expect(obj.type).toBe('tag');
+        if (obj.type !== 'tag') throw new Error('expected a tag object');
+        expect(obj.data.message).toBe('');
+      });
+    });
+  });
+
   describe('Given neither annotate nor message', () => {
     describe('When tag create', () => {
       it('Then it stays lightweight — the ref points at the target OID with no tag object written', async () => {
