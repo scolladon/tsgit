@@ -432,6 +432,46 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     });
   });
 
+  describe('Given a promisor reporting attempted=false and a seeded pack dir', () => {
+    describe('When readObject misses', () => {
+      it('Then the store is not re-resolved (pack dir scanned exactly once)', async () => {
+        // Arrange — a promisor that declines to fetch. The attempted=false guard
+        // surfaces the original miss directly; it must NOT fall through to a
+        // pointless re-resolve, which would re-scan the pack directory a 2nd time.
+        const base = await buildSeededContext();
+        const packDir = `${base.layout.gitDir}/objects/pack`;
+        await base.fs.write(`${packDir}/.gitkeep`, new Uint8Array([0]));
+        let packReaddirCount = 0;
+        const originalReaddir = base.fs.readdir.bind(base.fs);
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readdir: async (path: string) => {
+              if (path === packDir) packReaddirCount += 1;
+              return originalReaddir(path);
+            },
+          },
+          promisor: {
+            fetch: async (oids) => ({ attempted: false, requested: oids.length, fetched: 0 }),
+          },
+        };
+
+        // Act
+        try {
+          await readObject(ctx, 'f'.repeat(40) as ObjectId);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        }
+
+        // Assert — the guard short-circuited: one scan, no refresh + re-resolve.
+        expect(packReaddirCount).toBe(1);
+      });
+    });
+  });
+
   describe('Given a promisor that attempts but supplies nothing', () => {
     describe('When readObject misses', () => {
       it('Then OBJECT_NOT_FOUND is thrown', async () => {
