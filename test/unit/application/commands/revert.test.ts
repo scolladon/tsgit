@@ -1274,6 +1274,26 @@ describe('revert mutation-hardening surfaces', () => {
     });
   });
 
+  describe('Given a conflict resolved with a deleted MERGE_MSG', () => {
+    describe('When continue commits the resolution', () => {
+      it('Then the absent draft falls back to an empty message rejected with EMPTY_COMMIT_MESSAGE', async () => {
+        // Arrange — delete MERGE_MSG entirely so the draft read returns
+        // undefined and the empty-string fallback drives the message; resolve
+        // the index to a real change so the finalise reaches the commit path.
+        const { ctx } = await seedConflictStop();
+        await ctx.fs.rm(`${gitDir(ctx)}/MERGE_MSG`);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nRESOLVED\nc\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const code = await codeOf(() => revertContinue(ctx));
+
+        // Assert
+        expect(code).toBe('EMPTY_COMMIT_MESSAGE');
+      });
+    });
+  });
+
   describe('Given a markerless sequencer whose leading revert conflicts', () => {
     describe('When continue runs', () => {
       it('Then it stops on the conflict rather than dropping it', async () => {

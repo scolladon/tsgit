@@ -135,9 +135,7 @@ const buildRevertCommit = async (
   tree: ObjectId,
 ): Promise<{ readonly id: ObjectId; readonly subject: string }> => {
   const identity = await resolveCurrentIdentity(ctx);
-  // equivalent-mutant (`allowEmpty: false` → `true`): `revertMessage` always
-  // yields a non-empty `Revert "<subject>"` body, so the empty-message guard is
-  // never exercised here — `allowEmpty` true vs false is indistinguishable.
+  // Stryker disable next-line BooleanLiteral: equivalent — revertMessage always yields a non-empty `Revert "<subject>"\n\nThis reverts commit <oid>.\n` body, so the empty-message guard never fires; allowEmpty false vs true is indistinguishable.
   const message = sanitizeMessage(revertMessage(cData, source), { allowEmpty: false });
   const id = await createCommit(ctx, {
     tree,
