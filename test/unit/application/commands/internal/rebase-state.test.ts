@@ -4,6 +4,7 @@ import {
   clearRebaseState,
   readRebaseHead,
   readRebaseState,
+  readRewrittenList,
   rebaseInProgress,
   writeRebaseStop,
 } from '../../../../../src/application/commands/internal/rebase-state.js';
@@ -344,6 +345,86 @@ describe('rebase-state', () => {
         const base = `${ctx.layout.gitDir}/rebase-merge`;
         expect(await ctx.fs.exists(`${base}/current-fixups`)).toBe(false);
         expect(await ctx.fs.exists(`${base}/rewritten-pending`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a git-rebase-todo whose oid cannot be resolved', () => {
+    describe('When readRebaseState resolves the remaining picks', () => {
+      it('Then it throws INVALID_SEQUENCER_TODO naming the unresolvable commit', async () => {
+        // Arrange — a valid stop, then a todo pick pointing at a non-existent oid
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, STOP);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/rebase-merge/git-rebase-todo`,
+          'pick deadbee # gone\n',
+        );
+        const sut = readRebaseState;
+
+        // Act
+        let error: unknown;
+        try {
+          await sut(ctx);
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert
+        const data = (error as { data: { code: string; reason: string } }).data;
+        expect(data.code).toBe('INVALID_SEQUENCER_TODO');
+        expect(data.reason).toBe('cannot resolve commit deadbee');
+      });
+    });
+  });
+
+  describe('Given a rewritten-list carried across a continue/skip', () => {
+    const rewrittenPath = (ctx: Context): string =>
+      `${ctx.layout.gitDir}/rebase-merge/rewritten-list`;
+
+    describe('When readRewrittenList reads well-formed old→new lines', () => {
+      it('Then it returns each `<old> <new>` pair in order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(rewrittenPath(ctx), `${T1} ${NEW1}\n${T2} ${T3}\n`);
+        const sut = readRewrittenList;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual([
+          [T1, NEW1],
+          [T2, T3],
+        ]);
+      });
+    });
+
+    describe('When a rewritten-list line has no new-oid column', () => {
+      it('Then the truncated line is dropped, keeping only the complete pair', async () => {
+        // Arrange — a valid pair plus a lone oid (single token, no space)
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(rewrittenPath(ctx), `${T1} ${NEW1}\n${T2}\n`);
+        const sut = readRewrittenList;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert — only the two-column line survives
+        expect(result).toEqual([[T1, NEW1]]);
+      });
+    });
+
+    describe('When no rewritten-list file exists', () => {
+      it('Then it returns an empty list', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = readRewrittenList;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });
