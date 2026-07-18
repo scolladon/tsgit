@@ -5,6 +5,7 @@ import type {
   Changeset,
   ChangesetEntry,
 } from '../../../../src/application/primitives/compute-changeset.js';
+import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -849,6 +850,34 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given an add entry that ticks progress', () => {
+    describe('When applyChangeset reports progress', () => {
+      it("Then the progress operation identifier is 'checkout:materialize'", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('ticked'));
+        const progressUpdate =
+          vi.fn<(op: string, current: number, total?: number, text?: string) => void>();
+        const wrappedCtx: Context = {
+          ...ctx,
+          progress: { ...ctx.progress, update: progressUpdate },
+        };
+        const sut = applyChangeset;
+
+        // Act
+        await sut(wrappedCtx, {
+          changeset: makeChangeset([makeAdd('ticked.txt', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — op is the literal checkout materialize identifier, not an empty string
+        const lastCall = progressUpdate.mock.calls.at(-1);
+        expect(lastCall?.[0]).toBe('checkout:materialize');
+      });
+    });
+  });
+
   describe('Given a regular (100644) add entry', () => {
     describe('When applyChangeset runs', () => {
       it('Then routes through streamBlob + writeWorkingTreeEntryStream and written file bytes match blob content', async () => {
@@ -1176,6 +1205,30 @@ describe('applyChangeset', () => {
 
         streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a regular file add and no ctx.command wired (inert filter fallback)', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the attribute provider is never built', async () => {
+        // Arrange — no filter runner: the per-entry provider must be skipped, not built
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('unfiltered'));
+        const buildProviderSpy = vi.spyOn(readGitattributesMod, 'buildAttributeProvider');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('plain.txt', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert — with no command the guard skips provider construction entirely
+        expect(buildProviderSpy).not.toHaveBeenCalled();
+
+        buildProviderSpy.mockRestore();
       });
     });
   });
