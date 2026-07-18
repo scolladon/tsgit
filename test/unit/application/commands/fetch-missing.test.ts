@@ -77,10 +77,35 @@ const forbiddenTransport = (): HttpTransport => ({
   },
 });
 
+/**
+ * A stub ssh transport whose channel serves a broken advertisement, so the
+ * session throws after the channel is open. `closeSpy` counts channel teardowns.
+ */
+const brokenSshTransport = () => {
+  const closeSpy = { calls: 0 };
+  const open = async () => ({
+    stdin: new WritableStream<Uint8Array>({ write: () => undefined }),
+    stdout: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(ENCODER.encode('not a pkt-line stream'));
+        controller.close();
+      },
+    }),
+    exit: Promise.resolve(0),
+    close: async () => {
+      closeSpy.calls += 1;
+    },
+  });
+  return { ssh: { open }, closeSpy };
+};
+
 const withConfig = (ctx: Context, content: string): Promise<void> =>
   ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
 
 const PARTIAL_CONFIG = `[extensions]\n\tpartialClone = origin\n[remote "origin"]\n\turl = ${URL}\n`;
+
+const SSH_URL = 'ssh://git@example.invalid/repo.git';
+const SSH_PARTIAL_CONFIG = `[extensions]\n\tpartialClone = origin\n[remote "origin"]\n\turl = ${SSH_URL}\n`;
 
 const onePackedBlob = async (
   ctx: Context,
@@ -368,6 +393,31 @@ describe('fetchMissing', () => {
         expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
         const post = requests.find((r) => r.method === 'POST');
         expect(post?.headers?.authorization).toBe('Bearer sekret');
+      });
+    });
+  });
+
+  describe('Given an ssh promisor session that fails mid-fetch', () => {
+    describe('When fetchMissing', () => {
+      it('Then the ssh channel is released by the finally', async () => {
+        // Arrange
+        const { ssh, closeSpy } = brokenSshTransport();
+        const ctx: Context = { ...createMemoryContext(), ssh };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, SSH_PARTIAL_CONFIG);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing(ctx, { oids: [FAKE_TIP] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the mid-session failure propagates AND the finally closed
+        // the channel exactly once.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(closeSpy.calls).toBe(1);
       });
     });
   });
