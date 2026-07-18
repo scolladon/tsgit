@@ -33,7 +33,6 @@ export const hardResetWorktreeToCommit = async (
       currentIndex,
       force: true,
       forceRewriteAll: true,
-      // equivalent-mutant: the sparse-matcher branch is unobservable without a sparse-checkout fixture in the abort/skip tests; the matcher itself is covered by `read-sparse-checkout.test.ts` and the wiring mirrors reset/checkout (which carry their own sparse fixtures, e.g. sparse-reset-merge.test.ts).
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
     await lock.commit(result.newIndexEntries);
