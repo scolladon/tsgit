@@ -661,6 +661,76 @@ describe('primitives/update-config', () => {
       });
     });
 
+    describe('Given a key line before the first section header, matching the target key', () => {
+      describe('When setConfigEntryInText', () => {
+        it('Then the pre-header line is left intact and the key is inserted inside the section', () => {
+          // Arrange — `promisor` appears as an orphan line before any header; it is
+          // not inside [remote "origin"], so it must NOT be treated as the match.
+          const text = 'promisor = orphan\n[remote "origin"]\n\turl = u\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'remote', 'origin', 'promisor', 'new');
+
+          // Assert — orphan preserved; new key inserted at the end of the section block
+          expect(result).toBe(
+            'promisor = orphan\n[remote "origin"]\n\turl = u\n\tpromisor = new\n',
+          );
+        });
+      });
+    });
+
+    describe('Given a key line before the first header and no matching target section', () => {
+      describe('When setConfigEntryInText appends a fresh section', () => {
+        it('Then the new section is appended at EOF, not spliced next to the pre-header line', () => {
+          // Arrange — no [foo] block exists; the orphan pre-header entry must not
+          // become the insertion anchor.
+          const text = 'orphan = x\n[other]\n\ta = 1\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'foo', undefined, 'k', 'v');
+
+          // Assert — appended as a new [foo] section at the end of the file
+          expect(result).toBe('orphan = x\n[other]\n\ta = 1\n[foo]\n\tk = v\n');
+        });
+      });
+    });
+
+    describe('Given the target block is followed by two or more unrelated sections', () => {
+      describe('When setConfigEntryInText inserts a new key', () => {
+        it('Then the key lands inside the first target block, not appended as a duplicate section', () => {
+          // Arrange — [a] then [b] then [c]; the insertion point of [a] must survive
+          // the later, non-target headers.
+          const text = '[a]\n\tx = 1\n[b]\n\ty = 2\n[c]\n\tz = 3\n';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'new', 'val');
+
+          // Assert — inserted after `x = 1`, inside the original [a] block
+          expect(result).toBe('[a]\n\tx = 1\n\tnew = val\n[b]\n\ty = 2\n[c]\n\tz = 3\n');
+        });
+      });
+    });
+
+    describe('Given a config that starts with a blank line and has no trailing newline', () => {
+      describe('When setConfigEntryInText replaces an existing key on the final line', () => {
+        it('Then the last-line entry is tokenized and replaced in place', () => {
+          // Arrange — leading blank + no trailing newline: the trailing-newline flag
+          // must come from `endsWith('\n')`, not `startsWith('\n')`.
+          const text = '\n[a]\n\tk = v';
+
+          // Act
+          const sut = setConfigEntryInText;
+          const result = sut(text, 'a', undefined, 'k', 'new');
+
+          // Assert — the final `k` line is found and rewritten; no duplicate is inserted
+          expect(result).toBe('\n[a]\n\tk = new\n');
+        });
+      });
+    });
+
     describe('Given a subsection differing only in case', () => {
       describe('When setConfigEntryInText', () => {
         it('Then it is NOT matched (case-sensitive)', () => {
@@ -1826,6 +1896,24 @@ describe('primitives/update-config', () => {
 
           // Assert — header + fetch line preserved.
           expect(result).toBe('[remote "origin"]\n\tfetch = +A:B\n');
+        });
+      });
+    });
+
+    describe('Given a config that starts with a blank line and has no trailing newline', () => {
+      describe('When removeConfigEntry drops the key on the final line', () => {
+        it('Then the last-line entry is tokenized and removed', () => {
+          // Arrange — leading blank + no trailing newline: the trailing-newline flag
+          // must come from `endsWith('\n')`, not `startsWith('\n')`, or the final
+          // `k` line is never tokenized and the removal silently no-ops.
+          const text = '\n[a]\n\tx = keep\n\tk = v';
+
+          // Act
+          const sut = removeConfigEntry;
+          const result = sut(text, 'a', undefined, 'k');
+
+          // Assert — `k` removed, protecting `x` line keeps the block
+          expect(result).toBe('\n[a]\n\tx = keep\n');
         });
       });
     });
@@ -3967,6 +4055,59 @@ describe('primitives/update-config', () => {
 
           // Assert — new entry appended after the full span of the continuation
           expect(result).toBe('[remote "o"]\n\tfetch = A\\\n   tail\n\tfetch = B\n');
+        });
+      });
+    });
+
+    describe('Given a config that starts with a blank line and has no trailing newline', () => {
+      describe('When appendConfigEntry adds an entry to the section on the final line', () => {
+        it('Then the entry lands at EOF with a terminating newline, after the existing key', () => {
+          // Arrange — leading blank + no trailing newline. The tokenizer flag and the
+          // splice boundary both key off `endsWith('\n')`; a `startsWith('\n')` (or a
+          // hard-true) flip would drop the final line or clamp the insert one line early.
+          const text = '\n[a]\n\tk = v';
+
+          // Act
+          const sut = appendConfigEntry;
+          const result = sut(text, 'a', undefined, 'k', 'B');
+
+          // Assert — B appended after v, at the very end, newline-terminated
+          expect(result).toBe('\n[a]\n\tk = v\n\tk = B\n');
+        });
+      });
+    });
+
+    describe('Given a section whose last entry continues across the file trailing newline', () => {
+      describe('When appendConfigEntry adds a new key', () => {
+        it('Then the entry is inserted at the writable boundary without a spurious blank line', () => {
+          // Arrange — a backslash-continuation on the final content line consumes the
+          // trailing-newline slot, so the entry span ends at `lines.length`; the splice
+          // boundary must stay `lines.length - 1`, not `+ 1`.
+          const text = '[a]\n\tk = v\\\n';
+
+          // Act
+          const sut = appendConfigEntry;
+          const result = sut(text, 'a', undefined, 'x', '1');
+
+          // Assert — no extra blank line is introduced before the appended entry
+          expect(result).toBe('[a]\n\tk = v\\\n\tx = 1\n');
+        });
+      });
+    });
+
+    describe('Given a non-empty config with no trailing newline and no matching section', () => {
+      describe('When appendConfigEntry creates a new section', () => {
+        it('Then a newline separates the preserved original text from the appended section', () => {
+          // Arrange — the prefix branch must add the missing `\n` AND keep the original
+          // bytes: `endsWith('\n')` decides, and the `${text}\n` template supplies both.
+          const text = '[a]\n\tk = v';
+
+          // Act
+          const sut = appendConfigEntry;
+          const result = sut(text, 'b', undefined, 'x', '1');
+
+          // Assert — original preserved, newline-joined to the new [b] section
+          expect(result).toBe('[a]\n\tk = v\n[b]\n\tx = 1\n');
         });
       });
     });
