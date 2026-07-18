@@ -157,6 +157,26 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given a 40-hex oid that also names a branch ref', () => {
+    describe('When revParse', () => {
+      it('Then returns the literal oid, not the ref target', async () => {
+        // Arrange — git resolves a full 40-hex as the object itself; a colliding
+        // ref is only a warning. The oid fast path must return the literal oid and
+        // never fall through to resolve refs/heads/<oid> to a different commit.
+        const ctx = createMemoryContext();
+        const other = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        const oid = '0123456789abcdef0123456789abcdef01234567';
+        await seedRepo(ctx, { refs: { [`refs/heads/${oid}`]: other } });
+
+        // Act
+        const sut = await revParse(ctx, oid);
+
+        // Assert — the literal oid, not `other`.
+        expect(sut).toBe(oid);
+      });
+    });
+  });
+
   describe('Given an abbreviated oid matching a unique object', () => {
     describe('When revParse', () => {
       it('Then resolves it to the full object id', async () => {
