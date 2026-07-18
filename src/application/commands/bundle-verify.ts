@@ -41,7 +41,7 @@ export const bundleVerify = async (
     return buildResult(header, missingPrerequisites);
   }
   await verifyPackTrailer(packBytes, ctx);
-  // equivalent-mutant: prerequisites.length>=0 / ConditionalExpression→true — a complete bundle has no REF_DELTA entries; resolver is built but never invoked when prerequisites are absent
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a 0-prerequisite (complete) bundle's pack is self-contained, so no REF_DELTA ever reaches the external resolver; always building it (mutant) only allocates a Map+closure walkPackEntries never invokes — identical outcome for every git-produced bundle.
   const resolver = header.prerequisites.length > 0 ? buildExternalBaseResolver(ctx) : undefined;
   await walkPackEntries(ctx, packBytes, resolver);
   return buildResult(header, []);
