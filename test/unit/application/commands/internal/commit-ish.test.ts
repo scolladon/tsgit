@@ -163,4 +163,52 @@ describe('resolveCommitIsh', () => {
       });
     });
   });
+
+  describe('Given a 40-hex string that also names an existing branch', () => {
+    describe('When resolved', () => {
+      it('Then the oid fast-path wins and it returns the 40-hex verbatim, not the branch tip', async () => {
+        // Arrange — a branch literally named as a 40-hex oid, pointing elsewhere
+        const { ctx, head } = await seedCommit();
+        const hexName = 'a'.repeat(40);
+        await updateRef(ctx, `refs/heads/${hexName}` as RefName, head, { reflogMessage: 'seed' });
+
+        // Act
+        const sut = await resolveCommitIsh(ctx, hexName);
+
+        // Assert — resolved as an object id, not DWIM'd to the same-named branch
+        expect(sut).toBe(hexName);
+        expect(sut).not.toBe(head);
+      });
+    });
+  });
+
+  describe('Given a single hex character below the abbreviated-oid floor', () => {
+    describe('When resolved', () => {
+      it('Then the 40-length oid regex rejects it and it falls through to REF_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedCommit();
+
+        // Act
+        const code = await codeOf(() => resolveCommitIsh(ctx, 'a'));
+
+        // Assert
+        expect(code).toBe('REF_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a 40-character string of non-hex characters', () => {
+    describe('When resolved', () => {
+      it('Then the hex-only oid regex rejects it and it falls through to REF_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedCommit();
+
+        // Act
+        const code = await codeOf(() => resolveCommitIsh(ctx, 'z'.repeat(40)));
+
+        // Assert
+        expect(code).toBe('REF_NOT_FOUND');
+      });
+    });
+  });
 });
