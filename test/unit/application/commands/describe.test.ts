@@ -1325,3 +1325,80 @@ describe('Given a merged orphan history whose nearest-so-far tag does not cover 
     });
   });
 });
+
+describe('Given a lightweight tag defers the freeze while an uncovered orphan tail trails the tag', () => {
+  describe('When describing the merge of the annotated leg and the orphan tail', () => {
+    it('Then every uncovered orphan commit counts toward the distance', async () => {
+      // Arrange — `light` lifts the name count to 2 so the single annotated
+      // candidate never freezes; the collection walk therefore runs on past the
+      // annotated `ta` down the uncovered orphan tail o2->o1->o0, whose commits
+      // must each advance the distance. `ta` is newer than the orphan tail so it
+      // registers before the tail is popped.
+      const ctx = await seed();
+      const base = await commitFile(ctx, 'base');
+      const tree = await treeOf(ctx, base);
+      const o0 = await writeCommit(ctx, tree, [], 'o0');
+      const o1 = await writeCommit(ctx, tree, [o0], 'o1');
+      const o2 = await writeCommit(ctx, tree, [o1], 'o2');
+      await tagCreate(ctx, { name: 'light', target: o0 });
+      const a1 = await writeCommit(ctx, tree, [], 'a1');
+      await annotatedTag(ctx, 'ta', a1, clock);
+      const merge = await writeCommit(ctx, tree, [a1, o2], 'merge');
+
+      // Act
+      const result = await describeCmd(ctx, merge);
+
+      // Assert — ta..merge = { merge, o2, o1, o0 } = 4.
+      expect(result.name).toBe('ta');
+      expect(result.distance).toBe(4);
+    });
+  });
+});
+
+describe('Given a covered base is popped while an uncovered leg is still queued', () => {
+  describe('When describing the merge of the tagged leg and the uncovered leg', () => {
+    it('Then the uncovered leg still counts toward the winner distance', async () => {
+      // Arrange — the covered region (baseC, W) is newer than the uncovered leg
+      // u2->u1->u0, so it drains first; when the covered baseC is popped the
+      // uncovered u2 is the sole queued commit. Reaching a covered pop must not
+      // stop the finalisation while an uncovered commit remains reachable.
+      const ctx = await seed();
+      const seedC = await commitFile(ctx, 'seedC');
+      const tree = await treeOf(ctx, seedC);
+      const u0 = await writeCommit(ctx, tree, [], 'u0');
+      const u1 = await writeCommit(ctx, tree, [u0], 'u1');
+      const u2 = await writeCommit(ctx, tree, [u1], 'u2');
+      const baseC = await writeCommit(ctx, tree, [], 'baseC');
+      const w = await writeCommit(ctx, tree, [baseC], 'w');
+      await annotatedTag(ctx, 'w', w, clock);
+      const merge = await writeCommit(ctx, tree, [w, u2], 'merge');
+
+      // Act
+      const result = await describeCmd(ctx, merge);
+
+      // Assert — w..merge = { merge, u2, u1, u0 } = 4.
+      expect(result.name).toBe('w');
+      expect(result.distance).toBe(4);
+    });
+  });
+});
+
+describe('Given no names and a deep history to walk', () => {
+  describe('When describe refuses', () => {
+    it('Then it bails without walking the history', async () => {
+      // Arrange — no tags, so the candidate set freezes empty on the first step.
+      const ctx = await seed();
+      for (let i = 0; i < 8; i += 1) {
+        await commitFile(ctx, `n${i}`);
+      }
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      const error = await catchError(() => describeCmd(counted));
+
+      // Assert — the empty freeze stops immediately; it never descends the chain.
+      expect(error.data).toMatchObject({ code: 'NO_NAMES' });
+      expect(reads()).toBe(2);
+    });
+  });
+});
