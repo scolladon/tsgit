@@ -163,10 +163,7 @@ export const notesList = async (ctx: Context, input?: NotesListInput): Promise<N
     notes.push({ object: ObjectId.from(flatOid), note: entry.id });
   }
 
-  // equivalent-mutant: walkTree already yields notes in ascending annotated-oid order (git tree
-  // order), so this re-sort is a stable no-op — dropping it, weakening the comparator to
-  // always-positive (V8 leaves an already-ascending array in place), or `<`→`<=` (annotated oids
-  // are distinct, so equality never occurs) all return the identical ascending order.
+  // Stryker disable next-line UnaryOperator,MethodExpression,ConditionalExpression,EqualityOperator: equivalent — loadNotesTree rejects any tree with a fanout-dir/leaf prefix collision (the sole structure whose walk order differs from ascending oid order), so every tree reaching here has walkTree order == ascending; dropping the sort, neutralising the comparator to always-positive (V8 stable-leaves the array), or `<`→`<=` (annotated oids are distinct, equality never occurs) all return that identical ascending order.
   return notes.sort((a, b) => (a.object < b.object ? -1 : 1));
 };
 
@@ -185,9 +182,7 @@ export const notesRemove = async (
   const ref = await resolveNotesRef(ctx, input.ref);
   const { trie, read, notesCommitOid } = await loadNotesTree(ctx, ref);
 
-  // equivalent-mutant: the only state with notesCommitOid === undefined is an absent ref, which
-  // loadNotesTree returns as an empty trie; the lookup below then yields undefined and the next
-  // guard throws the identical NOTES_OBJECT_HAS_NONE — removing this early guard changes nothing.
+  // Stryker disable next-line ConditionalExpression: equivalent — the only state with notesCommitOid === undefined is an absent ref, which loadNotesTree returns as an empty trie; the lookup below then yields undefined and the next guard throws the identical NOTES_OBJECT_HAS_NONE — neutralising this early guard changes nothing observable.
   if (notesCommitOid === undefined) throw notesObjectHasNone(objectOid);
 
   const existing = await lookup(trie, objectOid, read);
