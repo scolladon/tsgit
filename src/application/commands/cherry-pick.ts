@@ -267,9 +267,11 @@ const runSequence = async (
 
 /** git's `-x` footer: a blank line then `(cherry picked from commit <full-oid>)`. */
 const appendCherryPickOrigin = (message: string, source: ObjectId): string =>
-  // equivalent-mutant (`/\s$/`): a commit message is always stripspace'd, so it ends
-  // in exactly one trailing LF — greedy `\s+$` and single-char `\s$` strip the same
-  // one character. `/\S+$/` (strip the last word) is killed by the -x message test.
+  // equivalent-mutant (`/\s$/`): sanitizeMessage re-stripspaces this draft, so the greedy
+  // `\s+$` and single-char `\s$` trailing-whitespace strips collapse to identical bytes.
+  // The same-line sibling `/\S+$/` (strip the last word) is NOT equivalent — picking -x a
+  // source message that lacks a trailing newline drops its final word — so the line stays
+  // unsuppressed (a Regex directive would also mask the killable `/\S+$/`).
   `${message.replace(/\s+$/, '')}\n\n(cherry picked from commit ${source})`;
 
 /** The message a pick will commit: the source message, optionally `-x`-stamped. */
@@ -492,6 +494,10 @@ const resolveResumeOpts = async (
     const onDisk = await readSequencerOpts(ctx);
     return { recordOrigin: onDisk.recordOrigin, allowEmpty: onDisk.allowEmpty };
   }
+  // equivalent-mutant (`recordOrigin`): this is the lone-pick resume (no sequencer), where
+  // the remaining-pick runSequence is unreachable (rest is empty) and commitResolvedPick
+  // ignores recordOrigin — its value is never observed. The line stays unsuppressed (a
+  // BooleanLiteral directive would also mask the killable `allowEmpty` default).
   return { recordOrigin: false, allowEmpty: input.allowEmpty ?? false };
 };
 
@@ -547,6 +553,9 @@ export const cherryPickContinue = async (
   }
   // A finalised current pick is `todo[0]` — drop it; a merge-stop leaves it.
   const rest = (todoOnDisk ?? []).slice(source !== undefined ? 1 : 0).map((e) => e.oid);
+  // Stryker disable next-line BlockStatement: equivalent — this early return only
+  // short-circuits the empty-rest case that runSequence([]) already handles identically
+  // (clearSequencer then return picked), so emptying the block changes no observable state.
   if (rest.length === 0) {
     await clearSequencer(ctx);
     return { kind: 'picked', commits: applied };
@@ -590,6 +599,9 @@ export const cherryPickSkip = async (
   // Skip always drops the current instruction (todo[0]) — whether it stopped as a
   // conflict (CHERRY_PICK_HEAD set) or a merge (no head). Resume the rest.
   const rest = (todoOnDisk ?? []).slice(1).map((e) => e.oid);
+  // Stryker disable next-line BlockStatement: equivalent — this early return only
+  // short-circuits the empty-rest case that runSequence([]) already handles identically
+  // (clearSequencer then return picked), so emptying the block changes no observable state.
   if (rest.length === 0) {
     await clearSequencer(ctx);
     return { kind: 'picked', commits: [] };
