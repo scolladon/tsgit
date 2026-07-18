@@ -324,6 +324,31 @@ describe('configUnset', () => {
       });
     });
   });
+
+  describe('Given a multi-valued key, When configUnset runs', () => {
+    it('Then it throws CONFIG_MULTIPLE_VALUES with requested=remove', async () => {
+      // Arrange
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n\tname = Bob\n');
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await configUnset(ctx, { key: 'user.name' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'CONFIG_MULTIPLE_VALUES',
+        key: 'user.name',
+        count: 2,
+        requested: 'remove',
+        scope: 'local',
+      });
+    });
+  });
 });
 
 describe('configUnsetAll', () => {
@@ -343,6 +368,19 @@ describe('configUnsetAll', () => {
       expect(sut.removed).toBe(3);
       const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
       expect(text).not.toContain('fetch =');
+    });
+  });
+
+  describe('Given the key absent, When configUnsetAll runs', () => {
+    it('Then result.removed equals 0', async () => {
+      // Arrange
+      const ctx = repoCtx();
+
+      // Act
+      const sut = await configUnsetAll(ctx, { key: 'user.name' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'user.name', scope: 'local', removed: 0 });
     });
   });
 });
