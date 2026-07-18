@@ -286,18 +286,18 @@ describe('MemoryFileSystem', () => {
     describe('Given a directory rename and a sibling directory outside the subtree', () => {
       describe('When renaming the directory', () => {
         it('Then the sibling directory keeps its exact path', async () => {
-          // Arrange — /repo/keepdir lives outside /repo/wt, so the directories pass must only
+          // Arrange — /repo/sibling-dir lives outside /repo/wt, so the directories pass must only
           // re-key dirs at or under `${src}/`, never every directory in the set.
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           await sut.write('/repo/wt/inner.txt', new Uint8Array([1]));
-          await sut.mkdir('/repo/keepdir');
+          await sut.mkdir('/repo/sibling-dir');
 
           // Act
           await sut.rename('/repo/wt', '/repo/moved');
 
           // Assert — the renamed directory exists at its new path; the sibling directory is untouched
           expect(await sut.exists('/repo/moved')).toBe(true);
-          expect(await sut.exists('/repo/keepdir')).toBe(true);
+          expect(await sut.exists('/repo/sibling-dir')).toBe(true);
         });
       });
     });
