@@ -263,6 +263,45 @@ describe('MemoryFileSystem', () => {
       });
     });
 
+    describe('Given a directory rename and a sibling file outside the subtree', () => {
+      describe('When renaming the directory', () => {
+        it('Then the sibling file keeps its exact path and bytes', async () => {
+          // Arrange — /repo/keep.txt lives outside /repo/wt, so the subtree move must only
+          // re-key entries at or under `${src}/`, never every key in the map.
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/wt/inner.txt', new Uint8Array([1]));
+          await sut.write('/repo/keep.txt', new Uint8Array([9]));
+
+          // Act
+          await sut.rename('/repo/wt', '/repo/moved');
+
+          // Assert — subtree moved, but the unrelated sibling is byte-for-byte untouched
+          expect(await sut.read('/repo/moved/inner.txt')).toEqual(new Uint8Array([1]));
+          expect(await sut.exists('/repo/keep.txt')).toBe(true);
+          expect(await sut.read('/repo/keep.txt')).toEqual(new Uint8Array([9]));
+        });
+      });
+    });
+
+    describe('Given a directory rename and a sibling directory outside the subtree', () => {
+      describe('When renaming the directory', () => {
+        it('Then the sibling directory keeps its exact path', async () => {
+          // Arrange — /repo/keepdir lives outside /repo/wt, so the directories pass must only
+          // re-key dirs at or under `${src}/`, never every directory in the set.
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/wt/inner.txt', new Uint8Array([1]));
+          await sut.mkdir('/repo/keepdir');
+
+          // Act
+          await sut.rename('/repo/wt', '/repo/moved');
+
+          // Assert — the renamed directory exists at its new path; the sibling directory is untouched
+          expect(await sut.exists('/repo/moved')).toBe(true);
+          expect(await sut.exists('/repo/keepdir')).toBe(true);
+        });
+      });
+    });
+
     describe('Given regular file', () => {
       describe('When lstat', () => {
         it('Then returns isFile stat (non-symlink branch)', async () => {
