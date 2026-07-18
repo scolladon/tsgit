@@ -103,6 +103,7 @@ describe('commands/submodule — init', () => {
           expect((err as TsgitError).data).toMatchObject({
             code: 'INVALID_OPTION',
             option: 'submodule.libs/a.update',
+            reason: expect.stringContaining("invalid value '!evil'"),
           });
         }
         expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
@@ -342,6 +343,60 @@ describe('commands/submodule — init', () => {
       });
     });
   });
+
+  describe('Given a .gitmodules exactly at the byte cap', () => {
+    describe('When init runs', () => {
+      it('Then it parses without refusing (the cap is exclusive)', async () => {
+        // Arrange — pad a valid block to exactly MAX_GITMODULES_BYTES bytes
+        const pad = '\n'.repeat(MAX_GITMODULES_BYTES - GITMODULES_ONE.length);
+        const ctx = await seed({ gitmodules: `${GITMODULES_ONE}${pad}`, config: ORIGIN });
+
+        // Act
+        const sut = await submoduleInit(ctx);
+
+        // Assert — the row still registers; `>` did not trip at exactly the cap
+        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+      });
+    });
+  });
+
+  describe('Given an already-registered submodule with a valid update mode', () => {
+    describe('When init runs', () => {
+      it('Then the preserved entry still carries the update mode', async () => {
+        // Arrange — registered url plus a .gitmodules update mode
+        const ctx = await seed({
+          gitmodules: `${GITMODULES_ONE}\tupdate = merge\n`,
+          config: `${ORIGIN}[submodule "libs/a"]\n\turl = custom://keep\n`,
+        });
+
+        // Act
+        const sut = await submoduleInit(ctx);
+
+        // Assert
+        expect(sut.entries[0]).toMatchObject({
+          registered: false,
+          url: 'custom://keep',
+          update: 'merge',
+        });
+      });
+    });
+  });
+
+  describe('Given only a url-less submodule row and no config file', () => {
+    describe('When init runs', () => {
+      it('Then no config file is written (the op batch is empty)', async () => {
+        // Arrange — actionable row (safe path) but no url ⇒ nothing to register
+        const ctx = await seed({ gitmodules: '[submodule "x"]\n\tpath = x\n' });
+
+        // Act
+        const sut = await submoduleInit(ctx);
+
+        // Assert — the guard suppressed the spurious empty-config write
+        expect(sut.entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config`)).toBe(false);
+      });
+    });
+  });
 });
 
 const seedModuleConfig = async (
@@ -409,6 +464,8 @@ describe('commands/submodule — sync', () => {
         expect(sut.entries[0]?.syncedRemote).toBe(true);
         const moduleConfig = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/libs/a/config`);
         expect(moduleConfig).toContain('\turl = https://h.x/g/a\n');
+        // The remote.origin.url was overwritten in place — the stale value is gone.
+        expect(moduleConfig).not.toContain('https://h.x/g/stale');
       });
     });
   });
@@ -427,6 +484,22 @@ describe('commands/submodule — sync', () => {
 
         // Assert
         expect(sut.entries.map((e) => e.path)).toEqual(['libs/a']);
+      });
+    });
+  });
+
+  describe('Given submodules declared but no config file', () => {
+    describe('When sync runs', () => {
+      it('Then no config file is written (nothing is initialised)', async () => {
+        // Arrange — .gitmodules only, no .git/config
+        const ctx = await seed({ gitmodules: GITMODULES_ONE });
+
+        // Act
+        const sut = await submoduleSync(ctx);
+
+        // Assert — the guard suppressed the spurious empty-config write
+        expect(sut.entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config`)).toBe(false);
       });
     });
   });
@@ -484,6 +557,7 @@ describe('commands/submodule — deinit', () => {
           expect((err as TsgitError).data).toMatchObject({
             code: 'INVALID_OPTION',
             option: 'submodule.deinit',
+            reason: expect.stringContaining("use 'all: true'"),
           });
         }
       });
@@ -646,6 +720,77 @@ describe('commands/submodule — deinit', () => {
         const text = await readConfigText(ctx);
         expect(text).not.toContain('[submodule "libs/a"]');
         expect(text).toContain('[submodule "libs/b"]');
+      });
+    });
+  });
+
+  describe('Given all=true with an unsafe-path row alongside a safe row', () => {
+    describe('When deinit runs', () => {
+      it('Then the unsafe row is filtered out', async () => {
+        // Arrange — an escaping path must never be acted on
+        const ctx = await seed({
+          gitmodules: `[submodule "evil"]\n\tpath = ../escape\n\turl = ../x\n${GITMODULES_ONE}`,
+          config: REGISTERED_ONE,
+        });
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { all: true });
+
+        // Assert — only the safe libs/a is selected
+        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+      });
+    });
+  });
+
+  describe('Given a paths deinit while a second submodule is registered', () => {
+    describe('When deinit runs', () => {
+      it('Then only the named submodule is unregistered', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: `${GITMODULES_ONE}[submodule "libs/b"]\n\tpath = libs/b\n\turl = ../b\n`,
+          config: `${REGISTERED_ONE}[submodule "libs/b"]\n\turl = https://h.x/g/b\n`,
+        });
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+
+        // Assert — libs/b is left registered
+        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a']);
+        expect(await readConfigText(ctx)).toContain('[submodule "libs/b"]');
+      });
+    });
+  });
+
+  describe('Given a submodule absent from config and no config file', () => {
+    describe('When deinit runs', () => {
+      it('Then no config file is written (nothing to unregister)', async () => {
+        // Arrange — .gitmodules only, no .git/config
+        const ctx = await seed({ gitmodules: GITMODULES_ONE });
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+
+        // Assert — the has-section guard suppressed the spurious empty-config write
+        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a deinit of a url-less submodule row', () => {
+    describe('When deinit runs', () => {
+      it('Then the entry url falls back to the empty string', async () => {
+        // Arrange — actionable row (safe path) with no url, registered in config
+        const ctx = await seed({
+          gitmodules: '[submodule "libs/a"]\n\tpath = libs/a\n',
+          config: REGISTERED_ONE,
+        });
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+
+        // Assert
+        expect(sut.entries[0]?.url).toBe('');
       });
     });
   });

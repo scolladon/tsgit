@@ -104,6 +104,7 @@ describe('Given a superproject and a submodule remote', () => {
       expect(raw).toContain('[submodule "libs/sub"]');
       const section = raw.slice(raw.indexOf('[submodule "libs/sub"]'));
       expect(section.indexOf('url =')).toBeLessThan(section.indexOf('active ='));
+      expect(section).toContain('active = true');
     });
 
     it('Then it stages the gitlink and the .gitmodules blob in the super index', async () => {
@@ -169,7 +170,10 @@ describe('Given a superproject and a submodule remote', () => {
         'INVALID_OPTION',
       );
       // Assert
-      expect(error.data).toMatchObject({ option: 'submodule.add.name' });
+      expect(error.data).toMatchObject({
+        option: 'submodule.add.name',
+        reason: expect.stringContaining("unsafe name '../escape'"),
+      });
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
     });
   });
@@ -184,7 +188,10 @@ describe('Given a superproject and a submodule remote', () => {
         'INVALID_OPTION',
       );
       // Assert
-      expect(error.data).toMatchObject({ option: 'submodule.add.path' });
+      expect(error.data).toMatchObject({
+        option: 'submodule.add.path',
+        reason: expect.stringContaining("unsafe path '../escape'"),
+      });
     });
   });
 
@@ -192,8 +199,16 @@ describe('Given a superproject and a submodule remote', () => {
     it('Then it refuses with INVALID_OPTION', async () => {
       // Arrange
       const { ctx } = await seedSuper();
-      // Act + Assert
-      await expectRefusal(submoduleAdd(ctx, { url: '', path: 'libs/sub' }), 'INVALID_OPTION');
+      // Act
+      const error = await expectRefusal(
+        submoduleAdd(ctx, { url: '', path: 'libs/sub' }),
+        'INVALID_OPTION',
+      );
+      // Assert
+      expect(error.data).toMatchObject({
+        option: 'submodule.add',
+        reason: expect.stringContaining('url must not be empty'),
+      });
     });
   });
 
@@ -201,8 +216,16 @@ describe('Given a superproject and a submodule remote', () => {
     it('Then it refuses with INVALID_OPTION', async () => {
       // Arrange
       const { ctx } = await seedSuper();
-      // Act + Assert
-      await expectRefusal(submoduleAdd(ctx, { url: SUB_URL, path: '' }), 'INVALID_OPTION');
+      // Act
+      const error = await expectRefusal(
+        submoduleAdd(ctx, { url: SUB_URL, path: '' }),
+        'INVALID_OPTION',
+      );
+      // Assert
+      expect(error.data).toMatchObject({
+        option: 'submodule.add',
+        reason: expect.stringContaining('path must not be empty'),
+      });
     });
   });
 
@@ -278,6 +301,56 @@ describe('Given a superproject and a submodule remote', () => {
       expect(devReflog).toContain('branch: Created from origin/dev');
       const headReflog = await ctx.fs.readUtf8(`${moduleDir}/logs/HEAD`);
       expect(headReflog).toContain('checkout: moving from main to dev');
+    });
+
+    it('Then it records the tracking config (branch.dev.remote=origin, merge=refs/heads/dev)', async () => {
+      // Arrange
+      const { ctx } = await seedSuper();
+      // Act
+      await submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', branch: 'dev' });
+      // Assert — the checkout -b step writes remote then merge under [branch "dev"]
+      const moduleConfig = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/libs/sub/config`);
+      expect(moduleConfig).toContain(
+        '[branch "dev"]\n\tremote = origin\n\tmerge = refs/heads/dev\n',
+      );
+    });
+  });
+
+  describe('When the index holds several entries and the target path is tracked', () => {
+    it('Then it still refuses with SUBMODULE_PATH_EXISTS (any match, not all)', async () => {
+      // Arrange — a >1-entry index whose target is one of several paths
+      const { ctx } = await seedSuper();
+      const oid = 'a'.repeat(40) as ObjectId;
+      const lock = await acquireIndexLock(ctx);
+      await lock.commit([indexEntry('README', oid), indexEntry('docs.txt', oid)]);
+
+      // Act
+      const error = await expectRefusal(
+        submoduleAdd(ctx, { url: SUB_URL, path: 'README' }),
+        'SUBMODULE_PATH_EXISTS',
+      );
+
+      // Assert
+      expect(error.data).toMatchObject({ path: 'README' });
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
+    });
+  });
+
+  describe('When the superproject is bare', () => {
+    it('Then add refuses with BARE_REPOSITORY naming the operation', async () => {
+      // Arrange — a bare repo (core.bare=true) with a HEAD
+      const base = await buildSeededContext();
+      await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+
+      // Act
+      const error = await expectRefusal(
+        submoduleAdd(base, { url: SUB_URL, path: 'libs/sub' }),
+        'BARE_REPOSITORY',
+      );
+
+      // Assert
+      expect(error.data).toMatchObject({ operation: 'submodule add' });
     });
   });
 });

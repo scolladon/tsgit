@@ -209,6 +209,94 @@ describe('Given a superproject pinning a registered submodule', () => {
       expect((caught as TsgitError).data).toMatchObject({ id: BOGUS_OID });
     });
   });
+
+  describe('When a decoy gitlink at a different path precedes the target', () => {
+    it('Then the pin comes from the matching gitlink, not just any gitlink', async () => {
+      // Arrange — an unrelated gitlink (bogus oid) sorts before "lib" in the index
+      const { ctx, pinned } = await seedSuper({ register: true });
+      const lock = await acquireIndexLock(ctx);
+      await lock.commit([
+        entry('README', pinned, FILE_MODE.REGULAR),
+        entry('a-decoy', BOGUS_OID, FILE_MODE.GITLINK),
+        entry('lib', pinned, FILE_MODE.GITLINK),
+      ]);
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert — "lib" reconciled to ITS pin, not the decoy's bogus oid
+      expect(result.entries[0]?.id).toBe(pinned);
+    });
+  });
+
+  describe('When --init runs with a second, unselected submodule declared', () => {
+    it('Then only the selected submodule is registered', async () => {
+      // Arrange — declare a second submodule that the paths filter excludes
+      const { ctx } = await seedSuper({ register: false });
+      await ctx.fs.appendUtf8(
+        `${ctx.layout.workDir}/.gitmodules`,
+        '[submodule "other"]\n\tpath = other\n\turl = ../other\n',
+      );
+
+      // Act
+      await submoduleUpdate(ctx, { paths: ['lib'], init: true });
+
+      // Assert — init was scoped to "lib"; "other" stays absent from config
+      const config = await readConfig(ctx);
+      expect(config.submodule?.get('lib')?.url).toBe(SUB_URL);
+      expect(config.submodule?.get('other')?.url).toBeUndefined();
+    });
+  });
+
+  describe('When --init reaches a pinned row whose .gitmodules has no url', () => {
+    it('Then the empty-string url fallback yields an empty clone url that advertises no refs', async () => {
+      // Arrange — pin present in the index, but .gitmodules declares no url, so
+      // both config and row url are undefined and the `?? ''` fallback is used.
+      const { ctx } = await seedSuper({ register: false });
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.workDir}/.gitmodules`,
+        '[submodule "lib"]\n\tpath = lib\n',
+      );
+
+      // Act — the empty url is passed to clone, whose discovery finds no refs
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'], init: true });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the empty fallback (not a stray non-empty literal) reached clone
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('REMOTE_ADVERTISES_NO_REFS');
+    });
+  });
+});
+
+describe('Given a bare superproject', () => {
+  describe('When update runs', () => {
+    it('Then it refuses with BARE_REPOSITORY naming the operation', async () => {
+      // Arrange — a bare repo (core.bare=true) with a HEAD
+      const base = await buildSeededContext();
+      await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(base, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toMatchObject({
+        code: 'BARE_REPOSITORY',
+        operation: 'submodule update',
+      });
+    });
+  });
 });
 
 /**
