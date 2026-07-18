@@ -4,6 +4,7 @@ import {
   materializeFile,
   readFile,
   removeFile,
+  renameInWorkingTree,
   validatePath,
 } from '../../../../../src/application/commands/internal/working-tree.js';
 import {
@@ -13,7 +14,22 @@ import {
 } from '../../../../../src/domain/index.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import type { FileHandle, FileSystem } from '../../../../../src/ports/file-system.js';
+import type { FileHandle, FileStat, FileSystem } from '../../../../../src/ports/file-system.js';
+
+/** A complete leaf-file `FileStat` (regular file, not a directory, not a symlink). */
+const leafStat = (): FileStat => ({
+  ctimeMs: 0,
+  mtimeMs: 0,
+  dev: 0,
+  ino: 0,
+  mode: 0,
+  uid: 0,
+  gid: 0,
+  size: 0,
+  isFile: true,
+  isDirectory: false,
+  isSymbolicLink: false,
+});
 
 const expectError = async (
   fn: () => unknown | Promise<unknown>,
@@ -705,6 +721,69 @@ describe('internal/working-tree', () => {
 
           // Assert
           await expectError(() => readFile(ctx, '../oops' as FilePath), 'PATHSPEC_OUTSIDE_REPO');
+        });
+      });
+    });
+  });
+
+  describe('renameInWorkingTree', () => {
+    describe('Given a directory containing a leaf file', () => {
+      describe('When renameInWorkingTree moves the directory', () => {
+        it('Then it recurses leaf-by-leaf — readdir, mkdir the leaf parent, rename each leaf, rmRecursive the shell', async () => {
+          // Arrange — the memory adapter's `rename` moves a whole subtree in one call,
+          // so end-state alone cannot tell recursion from a direct directory rename.
+          // Spies pin the portable leaf-by-leaf primitive the directory branch must use.
+          const base = createMemoryContext();
+          const root = base.layout.workDir;
+          await base.fs.mkdir(`${root}/old`);
+          await base.fs.writeUtf8(`${root}/old/f.txt`, 'data');
+          const readdir = vi.fn(base.fs.readdir);
+          const mkdir = vi.fn(base.fs.mkdir);
+          const rmRecursive = vi.fn(base.fs.rmRecursive);
+          const rename = vi.fn(base.fs.rename);
+          const ctx: Context = { ...base, fs: { ...base.fs, readdir, mkdir, rmRecursive, rename } };
+
+          // Act
+          await renameInWorkingTree(ctx, 'old', 'new');
+
+          // Assert — the directory branch ran: entries were listed, the leaf's parent was
+          // created, the leaf was renamed, and the emptied shell was removed. The directory
+          // node itself is never renamed directly (kills the L129 skip-recursion mutants and
+          // the L143 never-mkdir mutants).
+          expect(readdir).toHaveBeenCalledWith(`${root}/old`);
+          expect(mkdir).toHaveBeenCalledWith(`${root}/new`);
+          expect(rename).toHaveBeenCalledWith(`${root}/old/f.txt`, `${root}/new/f.txt`);
+          expect(rmRecursive).toHaveBeenCalledWith(`${root}/old`);
+          expect(rename).not.toHaveBeenCalledWith(`${root}/old`, `${root}/new`);
+          // And the move actually landed.
+          expect(await base.fs.readUtf8(`${root}/new/f.txt`)).toBe('data');
+        });
+      });
+    });
+
+    describe("Given a root-level target whose parent is the work-tree root '/'", () => {
+      describe('When renameInWorkingTree moves a leaf to it', () => {
+        it('Then it skips the empty-parent mkdir and renames straight into the root', async () => {
+          // Arrange — a '/' work dir (browser/OPFS root) makes `dirname(dst)` empty. The
+          // guard must NOT `mkdir('')` (the fs validator rejects an empty path). This is the
+          // only reachable input where the L143 guard differs from always-mkdir.
+          const base = createMemoryContext();
+          const lstat = vi.fn<(p: string) => Promise<FileStat>>(() => Promise.resolve(leafStat()));
+          const mkdir = vi.fn<(p: string) => Promise<void>>(() => Promise.resolve());
+          const rename = vi.fn<(a: string, b: string) => Promise<void>>(() => Promise.resolve());
+          const ctx: Context = {
+            ...base,
+            layout: { ...base.layout, workDir: '/' },
+            fs: { ...base.fs, lstat, mkdir, rename },
+          };
+
+          // Act
+          await renameInWorkingTree(ctx, 'oldname', 'newname');
+
+          // Assert — no mkdir for the empty parent; the leaf renamed straight into the root
+          // (kills the L143 `true` / StringLiteral / `=== ''` mutants, which would mkdir('')).
+          expect(mkdir).not.toHaveBeenCalled();
+          expect(rename).toHaveBeenCalledWith('/oldname', '/newname');
         });
       });
     });
