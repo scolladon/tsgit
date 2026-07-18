@@ -3487,6 +3487,73 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       ]);
     });
   });
+
+  describe('Given a populated scoped cache, When __resetSectionsCacheForTests runs between two reads', () => {
+    it('Then the cache is cleared so fs.readUtf8 is called again', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      await readConfigSections({ ctx, scope: 'local' });
+      __resetSectionsCacheForTests();
+      await readConfigSections({ ctx, scope: 'local' });
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Given fs.readUtf8 rejects with a TsgitError that is neither FILE_NOT_FOUND nor PERMISSION_DENIED, When readConfigSections reads a single scope', () => {
+    it('Then the error propagates (only missing or denied scopes are swallowed as empty)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const boom = new TsgitError({ code: 'NOT_A_DIRECTORY', path: '/repo/.git/config' });
+      vi.spyOn(ctx.fs, 'readUtf8').mockRejectedValue(boom);
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await readConfigSections({ ctx, scope: 'local' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({ code: 'NOT_A_DIRECTORY', path: '/repo/.git/config' });
+    });
+  });
+
+  describe('Given a memory adapter whose system config path is unresolved, When readConfigSections merges every scope', () => {
+    it('Then the system scope is silently skipped and the available scopes still surface', async () => {
+      // Arrange — an empty system path makes resolveScopePath raise CONFIG_SYSTEM_PATH_UNRESOLVED.
+      const ctx = createMemoryContext({ systemConfig: '' });
+      await seed(ctx, '[user]\n\tname = ada\n');
+
+      // Act
+      const sut = await readConfigSections({ ctx });
+
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.scope).toBe('local');
+      expect(sut[0]?.section.section).toBe('user');
+    });
+  });
+
+  describe('Given a key present only in local, When getConfigValue reads an explicit empty scope', () => {
+    it('Then only that scope is consulted (absent), never a merge that would surface the local value', async () => {
+      // Arrange — user.name lives in local; the global scope is empty on the memory adapter.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+
+      // Act
+      const sut = await getConfigValue({ ctx, key: 'user.name', scope: 'global' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'user.name', value: undefined });
+    });
+  });
 });
 
 describe('primitives/config-read valueless keys', () => {
