@@ -299,6 +299,7 @@ class GrowableBuffer {
     // dropping this guard only routes more calls through that slower-but-
     // equivalent general path instead of the copyWithin fast path -- same
     // resulting bytes.
+    // Stryker disable next-line BlockStatement: equivalent — emptying this block drops the copyWithin fast path; execution falls through to copyOverlapping, which produces identical bytes for distance>=length
     if (distance >= length) {
       this.buffer.copyWithin(this.length, readIndex, readIndex + length);
       this.length += length;
@@ -343,11 +344,6 @@ class GrowableBuffer {
     while (capacity < required) {
       capacity *= BUFFER_GROWTH_FACTOR;
     }
-    // equivalent-mutant: Math.max here would let capacity exceed maxBytes,
-    // but ensureCapacity's independent required>maxBytes guard already
-    // bounds every value that reaches this function, and the returned
-    // buffer's physical size is never observable, so an oversized capacity
-    // is inert.
     return Math.min(capacity, this.maxBytes);
   }
 }
@@ -542,8 +538,10 @@ function buildRootTable(counts: Uint16Array, symbols: Uint16Array): RootTable {
   // correct decodeSymbolByWalk whenever a code isn't resolved here, so
   // shrinking, inverting, or emptying either loop just routes more decodes
   // through that slower-but-equivalent walk -- same decoded output.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression,BlockStatement: equivalent — narrowing, inverting or emptying this root-cache loop only leaves entries at ROOT_UNRESOLVED_LENGTH; decodeSymbol then falls back to the always-correct decodeSymbolByWalk, so decoded bytes and bytesConsumed are identical
   for (let length = 1; length <= ROOT_BITS; length += 1) {
     const count = counts[length] as number;
+    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — skipping the inner fill (false guard or empty body) leaves those root entries unresolved, so decodeSymbol falls back to decodeSymbolByWalk — identical decoded output
     for (let offset = 0; offset < count; offset += 1) {
       const symbol = symbols[index + offset] as number;
       fillRootEntries(lengths, rootSymbols, first + offset, length, symbol);
@@ -566,6 +564,7 @@ function fillRootEntries(
   code: number,
   length: number,
   symbol: number,
+  // Stryker disable next-line BlockStatement: equivalent — an empty fillRootEntries leaves every affected root entry at ROOT_UNRESOLVED_LENGTH, so decodeSymbol falls back to decodeSymbolByWalk — identical decoded output
 ): void {
   // equivalent-mutant: an entirely no-op body (or a loop that never fills a
   // slot) leaves those root-table entries at their zero-initialized
@@ -576,6 +575,7 @@ function fillRootEntries(
   // out-of-bounds typed-array write per spec -- no valid slot is affected.
   const naturalPrefix = reverseBits(code, length);
   const step = 1 << length;
+  // Stryker disable next-line EqualityOperator,ConditionalExpression,BlockStatement: equivalent — a false/inverted/empty loop fills no entries (fallback to decodeSymbolByWalk), and entry<=ROOT_TABLE_SIZE only adds a silently-dropped out-of-bounds write at index ROOT_TABLE_SIZE — identical decoded output
   for (let entry = naturalPrefix; entry < ROOT_TABLE_SIZE; entry += step) {
     lengths[entry] = length;
     symbols[entry] = symbol;
@@ -713,6 +713,7 @@ function readCodeLengthCodeLengths(reader: BitReader, hclen: number): number[] {
   // undefined, and undefined>0 is false, same as 0>0) or .forEach (which
   // skips holes entirely, same effect as an explicit-0 early return), so the
   // two representations are indistinguishable to every consumer.
+  // Stryker disable next-line ArrayDeclaration: equivalent — new Array().fill(0) still reaches length 19 (hclen>=4 always assigns index 18 via CL_ORDER[2]), and every consumer reads holes identically to explicit 0 (for-of yields undefined, undefined>0 is false like 0>0; forEach skips holes as an explicit-0 early-return would)
   const lengths = new Array<number>(CL_ALPHABET_SIZE).fill(0);
   for (let i = 0; i < hclen; i += 1) {
     lengths[CL_ORDER[i] as number] = reader.readBits(CL_LENGTH_BITS);

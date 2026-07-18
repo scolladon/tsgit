@@ -1034,6 +1034,31 @@ describe('inflateZlibMember', () => {
     });
   });
 
+  describe('Given a member decoded under a safety cap far larger than the decoded output', () => {
+    // A payload past the decoder's 64-byte initial buffer forces at least one
+    // capacity grow; pairing it with an enormous cap means a correct resize
+    // must stay bounded by the capacity it actually needs, not inflate the
+    // allocation up to the cap (which such an enormous cap could never back).
+    const GROW_TRIGGERING_LENGTH = 128;
+
+    describe('When a buffer grow is triggered under the enormous cap', () => {
+      it('Then the resize stays bounded by the needed capacity and decodes exactly', () => {
+        // Arrange
+        const sut = inflateZlibMember;
+        const payload = new Uint8Array(GROW_TRIGGERING_LENGTH).fill(0x41);
+        const member = deflateSync(payload);
+        const unboundedCap = Number.MAX_SAFE_INTEGER;
+
+        // Act
+        const result = sut(member, 0, unboundedCap);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
   describe('Given a dynamic-Huffman lit/len table that is Kraft-complete down to the 15-bit code depth', () => {
     describe('When decoding a payload whose only literal uses the forced 15-bit code', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
