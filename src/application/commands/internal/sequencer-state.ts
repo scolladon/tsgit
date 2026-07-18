@@ -100,10 +100,12 @@ const hasTrueKey = (sections: ReturnType<typeof parseIniSections>, key: string):
   sections.some(
     (s) =>
       s.section.toLowerCase() === 'options' &&
-      // Sequencer opts files are tsgit-written and never contain valueless
-      // entries, so null is guarded for type safety only.
       s.entries.some(
-        (e) => e.key.toLowerCase() === key && e.value !== null && e.value.toLowerCase() === 'true',
+        (e) =>
+          e.key.toLowerCase() === key &&
+          // Stryker disable next-line ConditionalExpression: equivalent — sequencer opts files are git/tsgit-written as `key = value` and never carry a valueless `[options]` entry, so `e.value` is never null here; this is a type-narrowing guard whose false branch is unreachable for faithful input.
+          e.value !== null &&
+          e.value.toLowerCase() === 'true',
       ),
   );
 
@@ -123,9 +125,7 @@ export const readSequencerOpts = async (ctx: Context): Promise<SequencerOpts> =>
 /** Remove the whole `.git/sequencer/` directory. Idempotent. */
 export const clearSequencer = async (ctx: Context): Promise<void> => {
   const dir = seqDir(ctx);
-  // equivalent-mutant: `rmRecursive` is itself a no-op on an absent path (proven by
-  // the "directory is absent → no-op" test), so the existence guard is a pure
-  // optimisation — removing it leaves the observable result unchanged.
+  // Stryker disable next-line ConditionalExpression: equivalent — `rmRecursive` is itself a no-op on an absent path (proven by the "directory is absent → no-op" test), so the existence guard is a pure optimisation; dropping it (always calling `rmRecursive`) leaves the observable result unchanged.
   if (await ctx.fs.exists(dir)) {
     await ctx.fs.rmRecursive(dir);
   }
