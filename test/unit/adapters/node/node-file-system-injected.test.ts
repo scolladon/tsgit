@@ -1304,6 +1304,75 @@ describe('resolveForMode — lstat mode pre-realpath check (DI)', () => {
   });
 });
 
+describe('resolveForMode — lstat of an exact root when the canonical root differs (DI)', () => {
+  const rootStat = {
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o040755),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(4096),
+    isFile: () => false,
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+  };
+
+  describe('Given lstat of the RAW rootDir while realpath(rootDir) yields a different canonical root', () => {
+    describe('When checkContainment reaches the exact-root shortcut', () => {
+      it('Then it returns the directory stat (raw-root recognition forces the full post-check, not the false-denying parent verdict)', async () => {
+        // Arrange — dirname(rootDir) is the root's own parent, which is NOT
+        // contained, so the cached per-parent verdict is `false`. The
+        // exact-root recognition (`c === root.normalized`) must fire so the
+        // leaf is reported as an exact root and re-checked on its own merits.
+        // realpath(rootDir) → canonicalRoot makes raw ≠ canonical, so the
+        // raw-root disjunct is the ONLY one that can recognise the leaf.
+        const rootDir = '/root';
+        const canonicalRoot = '/canon';
+        const realpath = vi
+          .fn()
+          .mockImplementation(async (input: string) => (input === rootDir ? canonicalRoot : input));
+        const fsOps = fakeFsOps({ realpath, lstat: vi.fn().mockResolvedValue(rootStat) });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const stat = await sut.lstat(rootDir);
+
+        // Assert
+        expect(stat.isDirectory).toBe(true);
+        expect(stat.size).toBe(4096);
+      });
+    });
+  });
+
+  describe('Given lstat of the CANONICAL rootDir while it differs from the raw root', () => {
+    describe('When checkContainment reaches the exact-root shortcut', () => {
+      it('Then it returns the directory stat (canonical-root recognition forces the full post-check, not the false-denying parent verdict)', async () => {
+        // Arrange — mirror image: the requested path is the CANONICAL root
+        // string (realpath(rootDir)), so recognition must fire on the
+        // `c === canonicalRoot.normalized` disjunct. Without it the cached
+        // per-parent verdict (dirname not contained → `false`) would
+        // false-deny this legitimate exact-root lstat.
+        const rootDir = '/root';
+        const canonicalRoot = '/canon';
+        const realpath = vi
+          .fn()
+          .mockImplementation(async (input: string) => (input === rootDir ? canonicalRoot : input));
+        const fsOps = fakeFsOps({ realpath, lstat: vi.fn().mockResolvedValue(rootStat) });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const stat = await sut.lstat(canonicalRoot);
+
+        // Assert
+        expect(stat.isDirectory).toBe(true);
+        expect(stat.size).toBe(4096);
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
   const fileStat = {
     ctimeMs: BigInt(0),
