@@ -99,9 +99,7 @@ async function resolveOverrideAndCommand(
     macros,
   );
 
-  // equivalent-mutant: initial `false` is overwritten for named-driver paths and
-  // ignored by resolveBinaryOverride for non-named paths (false/true/unspecified
-  // all return before reading textconvConfigured), so `= true` is indistinguishable.
+  // Stryker disable next-line BooleanLiteral: equivalent — reassigned to command!==undefined on every named-driver branch (the if below), and resolveBinaryOverride ignores textconvConfigured on the false/true/unspecified branches (identical guard), so the seed is never observed
   let textconvConfigured = false;
   let command: string | undefined;
   if (diffAttr !== false && diffAttr !== true && diffAttr !== 'unspecified') {
@@ -113,8 +111,7 @@ async function resolveOverrideAndCommand(
     textconvConfigured,
     // Evaluate the raw-binary scan only when a configured named driver consumes it;
     // every other attribute state ignores it, so non-textconv paths skip the blob scan.
-    // equivalent-mutant: `: false` fallback taken only when !textconvConfigured; resolveBinaryOverride
-    // reads rawIsBinary only in the named+textconvConfigured=true branch, so the fallback is never consumed.
+    // Stryker disable next-line BooleanLiteral: equivalent — this fallback runs only when textconvConfigured is false, but resolveBinaryOverride reads rawIsBinary only when it is true, so the fallback value is never consumed
     rawIsBinary: textconvConfigured ? await rawIsBinary() : false,
   });
   return { pair, command };
