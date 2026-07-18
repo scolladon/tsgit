@@ -694,3 +694,54 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Haves-side tree walk: seenTrees dedup guard in collectTreeObjects
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — haves-side shared-subtree dedup', () => {
+  describe('Given two distinct haves commits whose trees each embed the same shared subtree id', () => {
+    describe('When enumerateBundleObjects is called with wants=[child of the second haves commit]', () => {
+      it('Then the shared subtree is read from the object store exactly once across the haves walk', async () => {
+        // Arrange — two DIFFERENT haves trees (distinct blob entries) both point
+        // at the same sharedTree id.  collectTreeObjects threads seenTrees across
+        // both haves commits, so the shared subtree must be read once, not once
+        // per commit.  Without the seenTrees guard the second haves commit
+        // re-reads it, doubling the count.
+        const base = await buildSeededContext();
+        const blobX = await makeBlob(base, 'X');
+        const sharedTree = await makeTree(base, [{ mode: BLOB_MODE, name: 'x.txt', id: blobX }]);
+        const blobA = await makeBlob(base, 'A');
+        const blobB = await makeBlob(base, 'B');
+        const blobC = await makeBlob(base, 'C');
+        const haveTreeA = await makeTree(base, [
+          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
+          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+        ]);
+        const haveTreeB = await makeTree(base, [
+          { mode: BLOB_MODE, name: 'b.txt', id: blobB },
+          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+        ]);
+        const wantTree = await makeTree(base, [{ mode: BLOB_MODE, name: 'c.txt', id: blobC }]);
+        const haveCommitA = await makeCommit(base, haveTreeA, [], 'haveA', 1);
+        const haveCommitB = await makeCommit(base, haveTreeB, [haveCommitA], 'haveB', 2);
+        const wantCommit = await makeCommit(base, wantTree, [haveCommitB], 'want', 3);
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommitB] });
+
+        // Assert — the shared subtree (in the uninteresting closure) is excluded,
+        // the new blob is emitted, and the subtree was read from disk once only.
+        expect(result.objects).not.toContain(blobX);
+        expect(result.objects).toContain(blobC);
+        const sharedPath = `${ctx.layout.gitDir}/objects/${sharedTree.slice(0, 2)}/${sharedTree.slice(2)}`;
+        const sharedReadCount = calls().filter(
+          (c) => c.method === 'read' && c.path === sharedPath,
+        ).length;
+        expect(sharedReadCount).toBe(1);
+      });
+    });
+  });
+});
