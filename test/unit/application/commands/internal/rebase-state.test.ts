@@ -357,7 +357,7 @@ describe('rebase-state', () => {
         await writeRebaseStop(ctx, STOP);
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/rebase-merge/git-rebase-todo`,
-          'pick deadbee # gone\n',
+          'pick 1a2b3c4 # gone\n',
         );
         const sut = readRebaseState;
 
@@ -372,7 +372,7 @@ describe('rebase-state', () => {
         // Assert
         const data = (error as { data: { code: string; reason: string } }).data;
         expect(data.code).toBe('INVALID_SEQUENCER_TODO');
-        expect(data.reason).toBe('cannot resolve commit deadbee');
+        expect(data.reason).toBe('cannot resolve commit 1a2b3c4');
       });
     });
   });
