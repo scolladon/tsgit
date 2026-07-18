@@ -6,9 +6,11 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
+import { mv } from '../../../../src/application/commands/mv.js';
 import { rangeDiff } from '../../../../src/application/commands/range-diff.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import type { LineDiff } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -25,6 +27,16 @@ const big = (changed: string): string => {
   const lines: string[] = [];
   for (let n = 1; n <= 20; n++) lines.push(n === 10 ? changed : `line ${n}`);
   return `${lines.join('\n')}\n`;
+};
+
+const decoder = new TextDecoder();
+
+/** True when any rendered patch line on either side of the diff-of-diffs contains `needle`. */
+const patchLinesInclude = (diff: LineDiff | undefined, needle: string): boolean => {
+  if (diff === undefined) return false;
+  return [...diff.oursLines, ...diff.theirsLines].some((line) =>
+    decoder.decode(line).includes(needle),
+  );
 };
 
 const commitFile = async (
@@ -157,6 +169,7 @@ describe('rangeDiff', () => {
         expect((error as TsgitError).data).toMatchObject({
           code: 'INVALID_OPTION',
           option: 'creationFactor',
+          reason: 'must be a non-negative integer; got -1',
         });
       }
     });
@@ -222,6 +235,64 @@ describe('rangeDiff', () => {
       expect(result.map((e) => e.status)).toEqual(['unchanged', 'unchanged']);
       expect(result[0]?.old?.position).toBe(1);
       expect(result[1]?.new?.position).toBe(2);
+    });
+  });
+
+  describe('Given ranges making the same edit to a nested file under different messages, When rangeDiff runs', () => {
+    it('Then recursion surfaces the nested blob path in the diff-of-diffs', async () => {
+      // Arrange — both sides make the identical `dir/f.txt` edit, so the diff slices
+      // match and the pair is kept; only the commit message differs, so it is `changed`.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const clock = makeClock();
+      const base = await commitFile(ctx, clock, 'dir/f.txt', 'a\n', 'seed nested');
+      await branchCreate(ctx, { name: 'v1' });
+      await checkout(ctx, { rev: 'v1' });
+      await commitFile(ctx, clock, 'dir/f.txt', 'b\n', 'old message');
+      await checkout(ctx, { rev: 'main' });
+      await branchCreate(ctx, { name: 'v2' });
+      await checkout(ctx, { rev: 'v2' });
+      await commitFile(ctx, clock, 'dir/f.txt', 'b\n', 'new message');
+      const sut = rangeDiff;
+
+      // Act
+      const result = await sut(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
+
+      // Assert — recursion names the leaf `dir/f.txt`; without it the top-level tree entry
+      // renders as `dir` (an opaque binary diff) and the nested path never appears.
+      expect(result.map((e) => e.status)).toEqual(['changed']);
+      expect(patchLinesInclude(result[0]?.diffOfDiffs, 'dir/f.txt')).toBe(true);
+    });
+  });
+
+  describe('Given ranges making the same rename under different messages, When rangeDiff runs', () => {
+    it('Then similarity detection folds the delete/add into a rename header', async () => {
+      // Arrange — both sides rename `f.txt` to `g.txt` identically, so the diff slices
+      // match and the pair is kept; only the commit message differs, so it is `changed`.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const clock = makeClock();
+      const base = await commitFile(ctx, clock, 'f.txt', big('line 10'), 'seed f');
+      await branchCreate(ctx, { name: 'v1' });
+      await checkout(ctx, { rev: 'v1' });
+      await mv(ctx, ['f.txt'], 'g.txt');
+      const author1 = clock();
+      await commit(ctx, { message: 'old message', author: author1, committer: author1 });
+      await checkout(ctx, { rev: 'main' });
+      await branchCreate(ctx, { name: 'v2' });
+      await checkout(ctx, { rev: 'v2' });
+      await mv(ctx, ['f.txt'], 'g.txt');
+      const author2 = clock();
+      await commit(ctx, { message: 'new message', author: author2, committer: author2 });
+      const sut = rangeDiff;
+
+      // Act
+      const result = await sut(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
+
+      // Assert — rename detection collapses the pair into a `f.txt => g.txt` header;
+      // without it the patch degrades to separate `(deleted)`/`(new)` headers.
+      expect(result.map((e) => e.status)).toEqual(['changed']);
+      expect(patchLinesInclude(result[0]?.diffOfDiffs, 'f.txt => g.txt')).toBe(true);
     });
   });
 });
