@@ -650,3 +650,46 @@ describe('Given a chain whose middle commit is dated exactly one day older than 
     });
   });
 });
+
+describe('Given a diamond whose shared parent is reached by both merge sides', () => {
+  const arrange = async (): Promise<{
+    counted: Context;
+    reads: () => number;
+    shared: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const tree = await treeOf(ctx, await commitFile(ctx, 'seed'));
+    const shared = await writeCommit(ctx, tree, []);
+    const firstSide = await writeCommit(ctx, tree, [shared]);
+    const secondSide = await writeCommit(ctx, tree, [shared]);
+    const merge = await writeCommit(ctx, tree, [firstSide, secondSide]);
+    await pointBranch(ctx, 'main', merge);
+    const { counted, reads } = withCountedObjectReads(ctx);
+    return { counted, reads, shared };
+  };
+
+  describe('When name-rev runs on the shared parent', () => {
+    it('Then the first-parent name wins over the merged side', async () => {
+      // Arrange
+      const { counted, shared } = await arrange();
+
+      // Act
+      const sut = await nameRev(counted, shared);
+
+      // Assert
+      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+      expect(sut.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
+    });
+
+    it('Then the shared parent already named by the first-parent side is not re-read', async () => {
+      // Arrange
+      const { counted, reads, shared } = await arrange();
+
+      // Act
+      await nameRev(counted, shared);
+
+      // Assert
+      expect(reads()).toBe(6);
+    });
+  });
+});

@@ -139,10 +139,6 @@ const expandParents = async (
 /** Record `candidate` for `oid` iff its slot is empty or the candidate is a better name. */
 const accept = (revNames: Map<ObjectId, RevName>, oid: ObjectId, candidate: RevName): boolean => {
   const existing = revNames.get(oid);
-  // equivalent-mutant: flipping this `false` to `true` cannot change the output —
-  // it returns *before* the `set` below, so the worse candidate is never recorded;
-  // it only re-queues a commit whose name did not improve, redundant work that
-  // re-propagates the unchanged name and still terminates on the finite history DAG.
   if (existing !== undefined && !isBetterName(existing, candidate)) return false;
   revNames.set(oid, candidate);
   return true;
