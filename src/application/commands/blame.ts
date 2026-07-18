@@ -156,9 +156,7 @@ const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> =>
   const data = await readCommitData(sb.ctx, head);
   const workingBlob = await readWorkingFile(sb.ctx, path);
   const count = splitLines(workingBlob).length;
-  // equivalent-mutant: count===0 only for an empty working file; without the guard a
-  // zero-count entry flows through splitAgainstParent/finalize and yields no lines — the
-  // same empty result (mirrors the committed-rev seed guard below).
+  // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty working file; without the guard the zero-count entry flows through splitAgainstParent/finalize and yields no lines, the same empty result (mirrors the committed-rev seed guard below)
   if (count === 0) return;
   const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
   const headEntry = await blobEntryAtPath(sb.ctx, data.tree, path);
@@ -229,8 +227,7 @@ const seed = async (
   const entry = await blobEntryAtPath(sb.ctx, data.tree, path);
   if (entry === undefined) throw pathNotInTree(rev, path);
   const count = splitLines(entry.content).length;
-  // equivalent-mutant: count===0 only for an empty blob (no lines to blame); without
-  // the guard a zero-count entry is scheduled and finalizes nothing — same empty result.
+  // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty blob; without the guard the zero-count entry is scheduled and finalizes no lines, the same empty result
   if (count === 0) return;
   schedule(sb, commit, path, data.committer.timestamp, entry.content, entry.id, [
     { finalStart: 0, count, sourceStart: 0 },
@@ -254,10 +251,7 @@ const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> =
     if (resolved === undefined) continue;
     previous ??= { commit: parent, path: resolved.sourcePath };
     remaining = applyParentResolution(sb, suspect, parent, resolved, remaining);
-    // equivalent-mutant: removing this short-circuit still terminates correctly —
-    // remaining ancestors would be descended, but splitAgainstParent([], anyDiff) and
-    // schedule(…, []) are both no-ops on an empty entry list, so the scoreboard ends
-    // up byte-identical either way. The break only saves the wasted descent, timing-only.
+    // Stryker disable next-line ConditionalExpression: equivalent — dropping the break only descends more ancestors with an empty remaining; splitAgainstParent([], anyDiff) and schedule(…, []) are no-ops on an empty entry list, so the scoreboard ends up byte-identical either way, timing-only
     if (remaining.length === 0) break;
   }
   finalize(sb, suspect, data, childLines, remaining, previous);
@@ -360,10 +354,7 @@ const resolveInParent = async (
   const date = data.committer.timestamp;
   const entry = await blobTreeEntry(ctx, data.tree, path);
   if (entry !== undefined) {
-    // equivalent-mutant: forcing this condition false (never TREESAME) is output-equivalent —
-    // the 'changed' arm then reads the parent blob, which is byte-identical (equal oid ⇒ equal
-    // content) and diffs to all-common, so passed/kept and the scheduled suspect match the skip
-    // byte-for-byte; only the avoided read differs, timing-only.
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing this false takes the 'changed' arm on the parent blob, byte-identical (equal oid ⇒ equal content), which diffs all-common so passed/kept and the scheduled suspect match the skip byte-for-byte; only the avoided read differs, timing-only
     if (entry.id === suspectBlobId) return { kind: 'treesame', sourcePath: path, date };
     const blob = (await readBlob(ctx, entry.id)).content;
     return { kind: 'changed', blob, blobId: entry.id, sourcePath: path, date };
@@ -407,8 +398,7 @@ const schedule = (
   blobId: ObjectId,
   entries: ReadonlyArray<BlameEntry>,
 ): void => {
-  // equivalent-mutant: an empty entry list would enqueue a suspect that finalizes
-  // nothing; the guard only avoids needlessly walking ancestors, so output is identical.
+  // Stryker disable next-line ConditionalExpression: equivalent — an empty entry list would enqueue a suspect that finalizes no lines; the guard only avoids needlessly walking ancestors, so output is identical
   if (entries.length === 0) return;
   sb.queue.push({ oid: commit, date, value: { commit, path, blob, blobId, entries } });
 };
