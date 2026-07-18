@@ -202,6 +202,39 @@ describe('assertCleanWorkTree', () => {
     });
   });
 
+  describe('Given a lone unmerged entry whose id and mode match HEAD', () => {
+    describe('When asserted', () => {
+      it('Then throws WORKING_TREE_DIRTY on the unmerged partition alone', async () => {
+        // Arrange — replace a.txt's index entry with a single stage-2
+        // (unmerged) entry carrying HEAD's blob id and mode, marked
+        // skip-worktree so neither the staged nor the unstaged comparison flags
+        // it: only the stage partition can make the tree dirty.
+        const { ctx, headTree } = await seedClean('a.txt', 'hello\n');
+        const index = await readIndex(ctx);
+        const id = index.entries.find((entry) => entry.path === 'a.txt')?.id as ObjectId;
+        const unmerged: IndexEntry = {
+          ...stageEntry('a.txt', id, 2),
+          flags: { ...STAGE0_FLAGS, stage: 2, skipWorktree: true },
+        };
+        await writeFramedIndex(ctx, [unmerged]);
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await assertCleanWorkTree(ctx, headTree);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('WORKING_TREE_DIRTY');
+        if (caught?.data.code === 'WORKING_TREE_DIRTY') {
+          expect(caught.data.localChanges).toContain('a.txt');
+        }
+      });
+    });
+  });
+
   describe('Given multiple non-ASCII staged-dirty paths whose byte order differs from UTF-16 order', () => {
     describe('When asserted', () => {
       it('Then localChanges is sorted by raw path bytes, not the index entry order', async () => {
