@@ -157,8 +157,10 @@ const negotiateAndSend = async (
 ): Promise<PushResult> => {
   const adv = await discoverReceivePackRefs(session);
   const localHeads =
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true also computes localHeads for non-matching plans, but finalizePushRefspecs ignores localHeads unless the plan is 'matching', so the extra value is discarded and the result is unchanged.
     plan.kind === 'matching'
-      ? (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
+      ? // Stryker disable next-line MethodExpression: equivalent — finalizePushRefspecs intersects localHeads with the head-only advertised set, so dropping this refs/heads/ pre-filter cannot change the resolved refspecs.
+        (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
       : [];
   const refspecs = finalizePushRefspecs(plan, adv, localHeads);
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remoteName, opts);

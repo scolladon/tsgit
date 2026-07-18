@@ -1553,6 +1553,59 @@ describe('push — explicit empty refspecs', () => {
   });
 });
 
+describe('push — matching mode', () => {
+  describe('Given push.default=matching, no refspec, and two local branches the remote also carries', () => {
+    describe('When push runs', () => {
+      it('Then it expands to every advertised local head and pushes each', async () => {
+        // Arrange — matching mode enumerates the local `refs/heads/*` set and
+        // intersects it with the advertisement. Only the head-prefixed refs are
+        // eligible, so the localHeads seam must select them (not an empty set).
+        const ctx = createMemoryContext();
+        const mainParent = await seedCommit(ctx, [], 'main-parent');
+        const mainTip = await seedCommit(ctx, [mainParent.id], 'main-tip');
+        const featParent = await seedCommit(ctx, [], 'feature-parent');
+        const featTip = await seedCommit(ctx, [featParent.id], 'feature-tip');
+        await seedRepo(ctx, {
+          refs: {
+            'refs/heads/main': mainTip.id,
+            'refs/heads/feature': featTip.id,
+          },
+        });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n  url = https://example.com/r.git\n' +
+            '[branch "main"]\n  remote = origin\n  merge = refs/heads/main\n' +
+            '[push]\n  default = matching\n',
+        );
+        __resetConfigCacheForTests();
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: mainParent.id },
+            { name: 'refs/heads/feature', id: featParent.id },
+          ],
+          reportStatus: {
+            unpack: 'ok',
+            refs: [
+              { name: 'refs/heads/main', status: 'ok' },
+              { name: 'refs/heads/feature', status: 'ok' },
+            ],
+          },
+        });
+
+        // Act
+        const sut = await push({ ...ctx, transport });
+
+        // Assert — both advertised heads resolved and pushed (order-independent).
+        expect(sut.pushedRefs).toHaveLength(2);
+        const names = sut.pushedRefs.map((r) => r.name).sort();
+        expect(names).toEqual(['refs/heads/feature', 'refs/heads/main']);
+        for (const pushed of sut.pushedRefs) expect(pushed.status).toBe('ok');
+      });
+    });
+  });
+});
+
 describe('push — pack contents', () => {
   describe('Given a non-empty want set', () => {
     describe('When push runs', () => {
@@ -1939,6 +1992,32 @@ describe('push — signed', () => {
 
         // Assert
         expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
+      });
+    });
+
+    describe('When the server advertises push-cert', () => {
+      it('Then it signs — the if-asked config default upgrades to signing', async () => {
+        // Arrange — with a nonce advertised, the config `if-asked` mode must
+        // resolve to a real signature; collapsing it to `no` would push unsigned.
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = createMemoryContext({ command: runner });
+        const { parent } = await seedSignedPush(ctx, {
+          otherExtra: '[push]\n  gpgSign = if-asked\n',
+        });
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: SIGNED_CAPS,
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert — a signed certificate was framed and the signer ran.
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect(body).toContain('push-cert-end');
+        expect(runner.calls).toHaveLength(1);
       });
     });
   });
