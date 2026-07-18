@@ -139,7 +139,7 @@ async function buildPreimage(
 }
 
 async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree | undefined> {
-  // equivalent-mutant: skipping this guard (`if (false)`) is equivalent — undefined input is not a string, so it falls through to `return input`, which is also undefined.
+  // Stryker disable next-line ConditionalExpression: equivalent — undefined input is not a string, so skipping this guard falls through to `return input`, which is also undefined; identical outcome.
   if (input === undefined) return undefined;
   if (typeof input === 'string') {
     return readTree(ctx, input);
