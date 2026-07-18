@@ -97,8 +97,8 @@ export async function readObject(
     // registry so the new pack is visible, then retry the resolve exactly once.
     const attempted = await lazyFetchOnce(ctx, promisor, id);
     // No fetch happened (non-partial repo): the store is unchanged, so a retry
-    // would rescan the packs and throw the identical OBJECT_NOT_FOUND. Surface
-    // the original error directly and skip that pointless re-resolve.
+    // would scan the packs again and throw the identical OBJECT_NOT_FOUND.
+    // Surface the original error directly and skip that pointless re-resolve.
     if (!attempted) throw err;
     registry.refresh();
     return resolveObject(ctx, registry, id, verifyHash, options?.maxBytes);
