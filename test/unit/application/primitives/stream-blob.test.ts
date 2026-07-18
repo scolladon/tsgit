@@ -77,6 +77,27 @@ describe('streamBlob', () => {
     });
   });
 
+  describe('Given an empty (zero-content) loose blob, When drained chunk-by-chunk', () => {
+    it('Then yields zero chunks (empty stripped content is never emitted as a zero-length chunk)', async () => {
+      // Arrange
+      const blob: Blob = {
+        type: 'blob',
+        content: new Uint8Array(0),
+        id: '' as ObjectId,
+      };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const id = await writeObject(ctx, blob);
+
+      // Act
+      const sut = await streamBlob(ctx, id);
+      const chunks = await collectChunks(sut);
+
+      // Assert — the loose tail skips the empty-content yield entirely; a `> 0`→`>= 0`
+      // or `->true` guard mutant would emit one zero-length chunk here instead
+      expect(chunks.length).toBe(0);
+    });
+  });
+
   describe('Given a loose blob whose content is exactly one inflate chunk, When drained', () => {
     it('Then yields bytes byte-equal to readBlob content', async () => {
       // Arrange
