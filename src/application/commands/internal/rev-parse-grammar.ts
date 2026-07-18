@@ -86,9 +86,11 @@ export const parseExpression = (raw: string): RevExpression => {
 /** Index of the first `:` outside any `@{…}` region, or -1. */
 const findTreePathColon = (raw: string): number => {
   let inSelector = false;
+  // Stryker disable next-line EqualityOperator: equivalent — at i === raw.length, raw[i] is undefined and matches none of '@'/'}'/':' , so the extra iteration is a harmless no-op.
   for (let i = 0; i < raw.length; i += 1) {
     if (!inSelector && raw[i] === '@' && raw[i + 1] === '{') {
       inSelector = true;
+      // Stryker disable next-line AssignmentOperator: equivalent — the loop's re-increment cancels this decrement; the revisited '@' and '{' are no-ops while inSelector is true, so every input yields the same colon index (and it cannot loop: re-entry needs !inSelector, now false).
       i += 1;
     } else if (inSelector && raw[i] === '}') {
       inSelector = false;

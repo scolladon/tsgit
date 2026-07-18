@@ -808,6 +808,25 @@ describe('internal/rev-parse-grammar', () => {
           // Assert
           expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD@{0}', path: 'a.txt' });
         });
+
+        it("Then a '{' not preceded by '@' does not open a selector, so the first colon splits", () => {
+          // Arrange / Act — only `@{` opens a reflog selector; a bare `{` must
+          // not, so the scanner still returns the first colon and the base keeps
+          // its brace.
+          const sut: RevExpression = parseExpression('x{:y');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'x{', path: 'y' });
+        });
+
+        it("Then an '@' not followed by '{' does not open a selector, so the first colon splits", () => {
+          // Arrange / Act — an `@` that is not the start of `@{` is an ordinary
+          // ref-name char, so the colon after it still splits the tree-path.
+          const sut: RevExpression = parseExpression('a@b:c');
+
+          // Assert
+          expect(sut).toEqual({ kind: 'tree-path', rev: 'a@b', path: 'c' });
+        });
       });
     });
 
