@@ -10,6 +10,7 @@ import {
   worktreeMove,
   worktreeRemove,
 } from '../../../../src/application/commands/worktree.js';
+import { readTree } from '../../../../src/application/primitives/read-tree.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -43,12 +44,29 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<vo
   expect((caught as TsgitError).data.code).toBe(code);
 };
 
+const expectErrorData = async (
+  fn: () => Promise<unknown>,
+  expected: Record<string, unknown>,
+): Promise<void> => {
+  let caught: unknown;
+  try {
+    await fn();
+  } catch (err) {
+    caught = err;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  expect((caught as TsgitError).data).toMatchObject(expected);
+};
+
 const adminFile = (ctx: Context, id: string, name: string): string =>
   `${ctx.layout.gitDir}/worktrees/${id}/${name}`;
 
 const reflogLineCount = async (ctx: Context, id: string): Promise<number> =>
   (await ctx.fs.readUtf8(adminFile(ctx, id, 'logs/HEAD'))).split('\n').filter((l) => l !== '')
     .length;
+
+const reflogLines = async (ctx: Context, id: string): Promise<ReadonlyArray<string>> =>
+  (await ctx.fs.readUtf8(adminFile(ctx, id, 'logs/HEAD'))).split('\n').filter((l) => l !== '');
 
 describe('worktreeList', () => {
   describe('Given a repository with only the main worktree', () => {
@@ -104,6 +122,7 @@ describe('worktreeAdd', () => {
           'ref: refs/heads/wt\n',
         );
         expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'commondir'))).toBe('../..\n');
+        expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'ORIG_HEAD'))).toBe(`${commitId}\n`);
         expect(await ctx.fs.readUtf8(`/repo/wt/.git`)).toBe(
           `gitdir: ${ctx.layout.gitDir}/worktrees/${result.id}\n`,
         );
@@ -183,12 +202,164 @@ describe('worktreeAdd', () => {
 
   describe('Given a path that resolves to the filesystem root', () => {
     describe('When worktreeAdd runs', () => {
-      it('Then it refuses with INVALID_OPTION', async () => {
+      it('Then it refuses with INVALID_OPTION carrying the command and reason', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
         // Act & Assert
-        await expectError(() => worktreeAdd(ctx, { path: '/' }), 'INVALID_OPTION');
+        await expectErrorData(() => worktreeAdd(ctx, { path: '/' }), {
+          code: 'INVALID_OPTION',
+          option: 'worktree add',
+          reason: "invalid worktree path '/'",
+        });
+      });
+    });
+  });
+
+  describe('Given an empty path', () => {
+    describe('When worktreeAdd runs', () => {
+      it('Then it refuses with WORKTREE_PATH_EXISTS naming the empty path', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act & Assert
+        await expectErrorData(() => worktreeAdd(ctx, { path: '' }), {
+          code: 'WORKTREE_PATH_EXISTS',
+          path: '',
+        });
+      });
+    });
+  });
+
+  describe('Given an existing but empty target directory', () => {
+    describe('When worktreeAdd runs', () => {
+      it('Then it creates the worktree in place', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.mkdir('/repo/empty-dir');
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'empty-dir' });
+
+        // Assert
+        expect(result.path).toBe('/repo/empty-dir');
+        expect(result.branch).toBe('refs/heads/empty-dir');
+      });
+    });
+  });
+
+  describe('Given a commit-ish that is a raw commit id, not a branch', () => {
+    describe('When worktreeAdd runs', () => {
+      it('Then it creates a detached worktree at that commit', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-oid', commitish: commitId });
+
+        // Assert
+        expect(result.detached).toBe(true);
+        expect(result.branch).toBeUndefined();
+        expect(result.head).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a branch already used by another worktree and force', () => {
+    describe('When worktreeAdd checks it out', () => {
+      it('Then it reuses the branch instead of refusing', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        const result = await worktreeAdd(ctx, {
+          path: 'wt-shared-branch',
+          commitish: 'main',
+          force: true,
+        });
+
+        // Assert
+        expect(result.branch).toBe('refs/heads/main');
+        expect(result.detached).toBe(false);
+      });
+    });
+  });
+
+  describe('Given two worktrees whose paths share a basename', () => {
+    describe('When the second is added', () => {
+      it('Then its admin id is disambiguated with a numeric suffix', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const first = await worktreeAdd(ctx, { path: 'left/shared', branch: 'left' });
+
+        // Act
+        const second = await worktreeAdd(ctx, { path: 'right/shared', branch: 'right' });
+
+        // Assert
+        expect(first.id).toBe('shared');
+        expect(second.id).toBe('shared1');
+      });
+    });
+  });
+
+  describe('Given the first worktree of a repository', () => {
+    describe('When worktreeAdd runs', () => {
+      it('Then the admin id equals the path basename with no phantom taken ids', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'Stryker was here', detach: true });
+
+        // Assert
+        expect(result.id).toBe('Stryker was here');
+      });
+    });
+  });
+
+  describe('Given a branch-mode add', () => {
+    describe('When worktreeAdd writes the HEAD reflog', () => {
+      it('Then it records an empty-message set then reset: moving to HEAD', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-reflog' });
+
+        // Assert
+        const lines = await reflogLines(ctx, result.id);
+        const setLine = lines[0] ?? '';
+        const resetLine = lines[1] ?? '';
+        expect(setLine.split('\t')).toHaveLength(1);
+        expect(resetLine.split('\t')[1]).toBe('reset: moving to HEAD');
+      });
+    });
+  });
+
+  describe('Given a start tree whose blob is missing from the object store', () => {
+    describe('When worktreeAdd fails to materialise', () => {
+      it('Then it does not leak the per-worktree index lock', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tree = await readTree(ctx, commitId);
+        const [blob] = tree.entries;
+        if (blob === undefined) throw new Error('expected a tree entry');
+        const blobOid = blob.id;
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${blobOid.slice(0, 2)}/${blobOid.slice(2)}`);
+
+        // Act
+        let threw = false;
+        try {
+          await worktreeAdd(ctx, { path: 'wt-fail' });
+        } catch {
+          threw = true;
+        }
+
+        // Assert
+        expect(threw).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/worktrees/wt-fail/index.lock`)).toBe(
+          false,
+        );
       });
     });
   });
@@ -260,12 +431,16 @@ describe('worktreeMove', () => {
 
   describe('Given the main worktree', () => {
     describe('When worktreeMove runs', () => {
-      it('Then it refuses with INVALID_OPTION', async () => {
+      it('Then it refuses with INVALID_OPTION carrying the command and reason', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
         // Act & Assert
-        await expectError(() => worktreeMove(ctx, ctx.layout.workDir, 'x'), 'INVALID_OPTION');
+        await expectErrorData(() => worktreeMove(ctx, ctx.layout.workDir, 'x'), {
+          code: 'INVALID_OPTION',
+          option: 'worktree move',
+          reason: 'cannot operate on the main working tree',
+        });
       });
     });
   });
@@ -380,12 +555,49 @@ describe('worktreeRemove', () => {
 
   describe('Given the main worktree', () => {
     describe('When worktreeRemove runs', () => {
-      it('Then it refuses with INVALID_OPTION', async () => {
+      it('Then it refuses with INVALID_OPTION carrying the command and reason', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
         // Act & Assert
-        await expectError(() => worktreeRemove(ctx, ctx.layout.workDir), 'INVALID_OPTION');
+        await expectErrorData(() => worktreeRemove(ctx, ctx.layout.workDir), {
+          code: 'INVALID_OPTION',
+          option: 'worktree remove',
+          reason: 'cannot operate on the main working tree',
+        });
+      });
+    });
+  });
+
+  describe('Given a locked linked worktree', () => {
+    describe('When worktreeRemove runs without force', () => {
+      it('Then it refuses with WORKTREE_LOCKED', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const added = await worktreeAdd(ctx, { path: 'wrl' });
+        await ctx.fs.writeUtf8(adminFile(ctx, added.id, 'locked'), '');
+
+        // Act & Assert
+        await expectErrorData(() => worktreeRemove(ctx, 'wrl'), {
+          code: 'WORKTREE_LOCKED',
+          path: '/repo/wrl',
+          reason: '',
+        });
+      });
+    });
+
+    describe('When worktreeRemove runs with force', () => {
+      it('Then it removes the worktree anyway', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const added = await worktreeAdd(ctx, { path: 'wrl2' });
+        await ctx.fs.writeUtf8(adminFile(ctx, added.id, 'locked'), '');
+
+        // Act
+        await worktreeRemove(ctx, 'wrl2', { force: true });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/wrl2')).toBe(false);
       });
     });
   });
