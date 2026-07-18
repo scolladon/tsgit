@@ -238,3 +238,54 @@ describe('createFsWorkdirEnumerator — option forwarding to walkWorkingTree', (
     });
   });
 });
+
+describe('createFsWorkdirEnumerator — live (non-aborted) ctx.signal', () => {
+  describe('Given a ctx.signal that is present but not aborted', () => {
+    describe('When enumerate is iterated', () => {
+      it('Then the file is still yielded (a live signal never triggers an abort)', async () => {
+        // Arrange — a live signal means `ctx.signal.aborted === false`.
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        await seedFile(ctx, 'a.txt');
+        const sut = createFsWorkdirEnumerator();
+
+        // Act
+        const rows = await collect(sut.enumerate(ctx, {}));
+
+        // Assert
+        expect(rows.map((r) => r.path)).toEqual(['a.txt']);
+        expect(rows[0]?.kind).toBe('file');
+      });
+    });
+  });
+});
+
+describe('createFsWorkdirEnumerator — pre-loop abort guard (opts.signal, empty walk)', () => {
+  describe('Given a pre-aborted opts.signal and a walk whose every leaf is excluded', () => {
+    describe('When enumerate is iterated', () => {
+      it('Then the pre-loop guard raises OPERATION_ABORTED even though no row is walked', async () => {
+        // Arrange — excluding every leaf makes the inner walk yield nothing,
+        // so only the pre-loop guard (not the per-row guard) can abort.
+        const ctx = await buildSeededContext();
+        await seedFile(ctx, 'a.txt');
+        const controller = new AbortController();
+        controller.abort();
+        const dropEveryLeaf: WalkIgnorePredicate = (_path, isDir) => !isDir;
+        const sut = createFsWorkdirEnumerator();
+
+        // Act + Assert
+        const iterate = async (): Promise<void> => {
+          for await (const _ of sut.enumerate(ctx, {
+            signal: controller.signal,
+            excludes: dropEveryLeaf,
+          })) {
+            // consume
+          }
+        };
+        await expect(iterate()).rejects.toMatchObject({
+          data: { code: 'OPERATION_ABORTED' },
+        });
+      });
+    });
+  });
+});
