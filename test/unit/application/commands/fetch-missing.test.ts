@@ -79,7 +79,7 @@ const forbiddenTransport = (): HttpTransport => ({
 
 /**
  * A stub ssh transport whose channel serves a broken advertisement, so the
- * session throws after the channel is open. `closeSpy` counts channel teardowns.
+ * session throws after the channel is open. `closeSpy` counts channel teardown calls.
  */
 const brokenSshTransport = () => {
   const closeSpy = { calls: 0 };
