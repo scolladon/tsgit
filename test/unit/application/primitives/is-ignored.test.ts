@@ -56,6 +56,27 @@ describe('isIgnored', () => {
     });
   });
 
+  describe('Given a two-level-deep .gitignore and a matching deep path', () => {
+    describe('When isIgnored is called', () => {
+      it('Then source.basedir is the full two-segment ancestor directory', async () => {
+        // Arrange — a depth-3 path exercises the multi-segment ancestor join:
+        // a mutant joining segments with '' collapses `a/b` to `ab`, loads the
+        // wrong (absent) directory, and misses the rule entirely.
+        const ctx = await seedRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/b/.gitignore`, '*.log\n');
+
+        // Act
+        const [sut] = await isIgnored(ctx, [{ path: path('a/b/foo.log') }]);
+
+        // Assert
+        expect(sut?.ignored).toBe(true);
+        expect(sut?.source?.basedir).toBe('a/b');
+        expect(sut?.source?.line).toBe(1);
+        expect(sut?.source?.pattern).toBe('*.log');
+      });
+    });
+  });
+
   describe('Given no matching rule', () => {
     describe('When isIgnored is called', () => {
       it('Then ignored is false and source is omitted', async () => {
@@ -170,14 +191,58 @@ describe('isIgnored', () => {
   describe('Given an empty queries array', () => {
     describe('When isIgnored is called', () => {
       it('Then it returns an empty result without touching the fs', async () => {
-        // Arrange — kills the `length === 0` short-circuit.
+        // Arrange — the `length === 0` short-circuit must return before
+        // buildIgnoreEvaluator performs any fs read (git check-ignore with no
+        // paths touches nothing). A Proxy flags the first lstat the evaluator
+        // would make, so a mutant that drops the short-circuit is caught.
         const ctx = await seedRepo();
+        const baseLstat = ctx.fs.lstat;
+        let touchedFs = false;
+        const wrappedFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return (p: string) => {
+                touchedFs = true;
+                return baseLstat(p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const wrappedCtx = { ...ctx, fs: wrappedFs };
 
         // Act
-        const sut = await isIgnored(ctx, []);
+        const sut = await isIgnored(wrappedCtx, []);
 
         // Assert
         expect(sut).toEqual([]);
+        expect(touchedFs).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an aborted signal and an empty queries array', () => {
+    describe('When isIgnored is called', () => {
+      it('Then the abort guard throws OPERATION_ABORTED before the empty short-circuit', async () => {
+        // Arrange — the abort check precedes the `length === 0` return, so a
+        // live abort must throw rather than return []. This isolates the abort
+        // guard from the per-query guard, which never runs for empty input.
+        const controller = new AbortController();
+        controller.abort();
+        const ctx = createMemoryContext({ signal: controller.signal });
+
+        // Act
+        let caught: unknown;
+        try {
+          await isIgnored(ctx, []);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
       });
     });
   });
