@@ -115,6 +115,7 @@ async function enumerateCandidates(
   // tree-ish target
   const treeId = await resolveTreeish(ctx, target.treeish);
   const candidates: Candidate[] = [];
+  // Stryker disable next-line ObjectLiteral: equivalent — `walkTree`'s `recursive` option defaults to `true` when omitted (see `walk-tree.ts`), so `{}` and `{ recursive: true }` produce identical traversals.
   for await (const { path, id, mode } of walkTree(ctx, treeId, { recursive: true })) {
     if (!isSearchableMode(mode)) continue;
     const capturedId: ObjectId = id;
