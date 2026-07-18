@@ -267,7 +267,7 @@ const runSequence = async (
 
 /** git's `-x` footer: a blank line then `(cherry picked from commit <full-oid>)`. */
 const appendCherryPickOrigin = (message: string, source: ObjectId): string =>
-  // equivalent-mutant (`/\s$/`): sanitizeMessage re-stripspaces this draft, so the greedy
+  // equivalent-mutant (`/\s$/`): sanitizeMessage re-runs stripspace on this draft, so the greedy
   // `\s+$` and single-char `\s$` trailing-whitespace strips collapse to identical bytes.
   // The same-line sibling `/\S+$/` (strip the last word) is NOT equivalent — picking -x a
   // source message that lacks a trailing newline drops its final word — so the line stays
