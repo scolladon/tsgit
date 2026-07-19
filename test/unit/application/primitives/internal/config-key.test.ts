@@ -101,6 +101,25 @@ describe('collectValues', () => {
       });
     });
   });
+
+  describe('Given a section-name mismatch, both without subsection', () => {
+    describe('When collectValues runs', () => {
+      it('Then returns empty because the section names differ', () => {
+        // Arrange
+        const sections = [section('foo', undefined, [{ key: 'name', value: 'leak' }])];
+
+        // Act
+        const sut = collectValues(sections, {
+          section: 'bar',
+          subsection: undefined,
+          name: 'name',
+        });
+
+        // Assert
+        expect(sut).toEqual([]);
+      });
+    });
+  });
 });
 
 describe('collectScopedValues', () => {
@@ -131,6 +150,57 @@ describe('collectScopedValues', () => {
           { value: 'g', scope: 'global' },
           { value: 'l', scope: 'local' },
         ]);
+      });
+    });
+  });
+
+  describe('Given a scoped section whose header does not match', () => {
+    describe('When collectScopedValues runs', () => {
+      it('Then skips the section and returns empty', () => {
+        // Arrange
+        const input = [
+          {
+            scope: 'local' as const,
+            section: section('other', undefined, [{ key: 'name', value: 'leak' }]),
+          },
+        ];
+
+        // Act
+        const sut = collectScopedValues(input, {
+          section: 'user',
+          subsection: undefined,
+          name: 'name',
+        });
+
+        // Assert
+        expect(sut).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a matching scoped section with an extra non-matching entry', () => {
+    describe('When collectScopedValues runs', () => {
+      it('Then returns only the entry whose key matches', () => {
+        // Arrange
+        const input = [
+          {
+            scope: 'local' as const,
+            section: section('user', undefined, [
+              { key: 'name', value: 'n' },
+              { key: 'email', value: 'e' },
+            ]),
+          },
+        ];
+
+        // Act
+        const sut = collectScopedValues(input, {
+          section: 'user',
+          subsection: undefined,
+          name: 'name',
+        });
+
+        // Assert
+        expect(sut).toEqual([{ value: 'n', scope: 'local' }]);
       });
     });
   });

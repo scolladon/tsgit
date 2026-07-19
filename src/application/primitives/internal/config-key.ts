@@ -21,6 +21,7 @@ export const qualifyKey = (section: IniSection, rawName: string): string => {
 
 const matchesSectionHeader = (section: IniSection, parsed: ParsedConfigKey): boolean => {
   if (section.section.toLowerCase() !== parsed.section) return false;
+  // Stryker disable next-line ConditionalExpression: equivalent — when parsed.subsection===undefined the fallthrough `section.subsection === parsed.subsection` is `section.subsection === undefined`, identical to this guard's return
   if (parsed.subsection === undefined) return section.subsection === undefined;
   return section.subsection === parsed.subsection;
 };
