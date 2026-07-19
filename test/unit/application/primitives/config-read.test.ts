@@ -1511,6 +1511,22 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a `[remote]` section with url and an unrecognized valued key', () => {
+    describe('When readConfig', () => {
+      it('Then the unrecognized key is not treated as partialCloneFilter', async () => {
+        // Arrange — only the literal key `partialclonefilter` may set that field.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "o"]\n  url = u\n  bogus = B\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.remote?.get('o')?.partialCloneFilter).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a `[remote]` section with a url but no fetch lines', () => {
     describe('When readConfig', () => {
       it('Then fetch stays absent (not an empty array)', async () => {
@@ -4701,6 +4717,21 @@ describe('Given a section with valueless/valued entries across subsections', () 
       expect(result?.key).toBe('merge.driver');
       expect(result?.line).toBe(2);
     });
+
+    it('Then it ignores a matching valueless key that precedes any header (orphan)', async () => {
+      // Arrange — a valueless `driver` in the orphan region (before any header) must
+      // not be reported; only the one under the real [merge "custom"] header counts.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, 'driver\n[merge "custom"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert — the orphan key at line 1 is skipped; the [merge "custom"] key at line 3 wins.
+      expect(result?.key).toBe('merge.custom.driver');
+      expect(result?.line).toBe(3);
+    });
   });
 });
 
@@ -5655,6 +5686,19 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
+    describe('Given a `;`-led whole-line comment that also holds a later `#`, When tokenizeConfig', () => {
+      it('Then the earliest marker (the `;`) starts the comment so the line is one comment token', () => {
+        // Arrange — `;` sits at column 0, before the `#`; the earliest marker must win.
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('; a # b\n');
+
+        // Assert — cutting at the later `#` instead would leave `; a`, which the key grammar refuses.
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([{ kind: 'comment', line: 0 }]);
+      });
+    });
+
     describe('Given `\\tk = v # trailing` under a header (value-side comment), When parseIniSections', () => {
       it('Then a.k = v is recorded with the comment dropped', () => {
         // Arrange
@@ -5924,6 +5968,44 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           expect(result?.failure.kind).toBe('zlib');
           if (result?.failure.kind === 'zlib') {
             expect(result.failure.level).toBe(-2);
+          }
+        });
+      });
+    });
+
+    describe('Given core.compression = 9 (zlib maximum, valid)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns undefined (level 9 is accepted)', async () => {
+          // Arrange — 9 is the highest valid zlib level; git accepts it.
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = 9\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.compression = 10 (one past the zlib maximum)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns zlib failure with level 10', async () => {
+          // Arrange — 10 is one above the valid zlib range; git rejects it.
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = 10\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.failure.kind).toBe('zlib');
+          if (result?.failure.kind === 'zlib') {
+            expect(result.failure.level).toBe(10);
           }
         });
       });
@@ -6403,6 +6485,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an unrecognized top-level section holding a gpg-shaped key', () => {
+    describe('When readConfig', () => {
+      it('Then gpg stays undefined (only the [gpg] section feeds gpg)', async () => {
+        // Arrange — `format = ssh` under [unknown] must not populate gpg; only [gpg] does.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[unknown]\n  format = ssh\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.gpg).toBeUndefined();
       });
     });
   });

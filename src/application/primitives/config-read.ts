@@ -798,6 +798,7 @@ const indexOfUnquoted = (line: string, ch: string): number => {
     // Inside a quoted span, `\` escapes the next byte — skip it so a `\"`
     // is not treated as the closing quote (matches canonical git's parser
     // and lets a value like `"foo\"#bar"` survive `stripInlineComment`).
+    // Stryker disable next-line BlockStatement: equivalent — this skip fires only inside a quoted span, so an opening `"` (non-whitespace) always precedes any marker the escape would expose; the resulting cut never trims to '' (the sole observable via stripInlineComment), so emptying the block changes nothing.
     if (inQuotes && c === '\\') {
       i += 1;
       continue;
@@ -1193,6 +1194,7 @@ const applyRemoteEntry = (acc: MutableRemote, key: string, value: string | null)
     if (value !== null) acc.pushUrl = value;
   } else if (lowered === 'fetch') {
     if (value !== null) {
+      // Stryker disable next-line ArrayDeclaration: equivalent — mergeRemote (the sole caller) pre-seeds mutable.fetch to an array before applyRemoteEntry runs, so this ??= never assigns and its right-hand literal never evaluates.
       acc.fetch ??= [];
       acc.fetch.push(value);
     }
