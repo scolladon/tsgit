@@ -85,10 +85,9 @@ const refIfPresent = async (
   refFile: string,
 ): Promise<TreeSnapshot | null> => {
   const path = `${deps.ctx.layout.gitDir}/${refFile}`;
-  // equivalent-mutant: skipping this fast-exit (mutant: `if (false)`) is
-  // observably equivalent because the try/catch below also returns `null`
-  // when `resolveRef` raises `REF_NOT_FOUND`. The early exit is kept as a
-  // fast path so the absent case does not pay for one ref-store lookup.
+  // Fast-exit when the ref file is absent so the common no-compound-state case
+  // does not pay for a ref-store lookup.
+  // Stryker disable next-line ConditionalExpression: equivalent — the guard is true only when the ref file is absent, and resolveRef then resolves it as {kind:'missing'} → REF_NOT_FOUND, which the catch below maps to the same null; git never packs these pseudo-refs, so no other branch is reachable.
   if (!(await deps.ctx.fs.exists(path))) return null;
   try {
     return await treeSnapshotFromRef(deps, refFile as RefName);

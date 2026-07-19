@@ -6,6 +6,7 @@ import { createRawTreeResolver } from '../../../../../src/adapters/snapshot-reso
 import { createSnapshotFactory } from '../../../../../src/application/primitives/snapshot/snapshot-factory.js';
 import { pushStashRef } from '../../../../../src/application/primitives/stash-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import type {
   Commit,
   FileMode,
@@ -226,6 +227,54 @@ describe('createSnapshotFactory', () => {
         // surface as unexpectedObjectType('commit', 'tag', ...) inside the snapshot).
         expect(snapshot).not.toBeNull();
         expect(rows.map((r) => r.path)).toEqual(['t.txt']);
+      });
+    });
+  });
+
+  describe('Given a MERGE_HEAD symbolic-linked to a ref that does not exist', () => {
+    describe('When sut.mergeHead() is awaited', () => {
+      it('Then the REF_NOT_FOUND raised inside the try is swallowed to null', async () => {
+        // Arrange — the file is present (so the fast-exit is skipped), but it points
+        // at a missing ref, so resolveRef raises REF_NOT_FOUND from within the try.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, 'ref: refs/heads/gone\n');
+        const sut = factoryFor(ctx);
+
+        // Act
+        const result = await sut.mergeHead();
+
+        // Assert — the catch maps the ref-disappeared code to null rather than rethrowing.
+        expect(result).toBeNull();
+      });
+    });
+  });
+
+  describe('Given a MERGE_HEAD pointing at a non-commit object (a blob)', () => {
+    describe('When sut.mergeHead() is awaited', () => {
+      it('Then the UNEXPECTED_OBJECT_TYPE error propagates instead of being swallowed', async () => {
+        // Arrange — the ref resolves to a blob oid; peeling it as a commit raises
+        // UNEXPECTED_OBJECT_TYPE, a code outside the ref-disappeared set.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, new Uint8Array([9]));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${blobId}\n`);
+        const sut = factoryFor(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.mergeHead();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the catch rethrows any non-ref-disappeared error unchanged.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'blob',
+          id: blobId,
+        });
       });
     });
   });
