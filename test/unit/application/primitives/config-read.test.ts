@@ -9,6 +9,7 @@ import {
   findInvalidPushDefault,
   type IniSection,
   invalidateConfigCache,
+  parseGitInt,
   parseIniSections,
   readConfig,
   tokenizeConfig,
@@ -356,6 +357,18 @@ describe('primitives/config-read', () => {
         expect(sut.user).toEqual({ signingKey: 'ABCD1234' });
         expect(sut.user?.name).toBeUndefined();
       });
+
+      it('Then user has exactly the signingKey key with no name/email keys', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  signingKey = ABCD1234\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — strict key set: name/email must be absent, not present-and-undefined
+        expect(sut.user).toStrictEqual({ signingKey: 'ABCD1234' });
+      });
     });
   });
 
@@ -372,6 +385,18 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.user).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
         expect(sut.user?.signingKey).toBeUndefined();
+      });
+
+      it('Then user has exactly the name and email keys with no signingKey key', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — strict key set: signingKey must be absent, not present-and-undefined
+        expect(sut.user).toStrictEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
       });
     });
   });
@@ -5877,6 +5902,98 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('parseGitInt', () => {
+    describe('Given a 0x-prefixed hex value', () => {
+      describe('When parseGitInt', () => {
+        it('Then it parses base-16 to the exact magnitude (0xFF is 255)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('0xFF');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 255 });
+        });
+      });
+    });
+
+    describe('Given a leading-zero octal value', () => {
+      describe('When parseGitInt', () => {
+        it('Then it parses base-8 to the exact magnitude (017 is 15)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('017');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 15 });
+        });
+      });
+    });
+
+    describe('Given a decimal value with a k unit suffix', () => {
+      describe('When parseGitInt', () => {
+        it('Then it multiplies the magnitude by 1024 (10k is 10240)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('10k');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 10240 });
+        });
+      });
+    });
+
+    describe('Given a value with leading ASCII whitespace', () => {
+      describe('When parseGitInt', () => {
+        it('Then the leading spaces and tabs are trimmed before parsing (5 is 5)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut(' \t5');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 5 });
+        });
+      });
+    });
+
+    describe('Given a value with trailing non-unit garbage', () => {
+      describe('When parseGitInt', () => {
+        it('Then it fails with reason invalid unit (5x is rejected, not 5)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('5x');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: false, reason: 'invalid unit' });
+        });
+      });
+    });
+
+    describe('Given a magnitude one past the int64 maximum', () => {
+      describe('When parseGitInt', () => {
+        it('Then it fails with reason out of range', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('9223372036854775808');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: false, reason: 'out of range' });
+        });
+      });
+    });
+  });
+
   describe('findFirstInvalidCompression', () => {
     describe('Given no [core] section', () => {
       describe('When findFirstInvalidCompression', () => {
@@ -6674,6 +6791,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.gpg?.program).toBe('/usr/bin/gpg2');
+      });
+    });
+  });
+
+  describe('Given [gpg] with only an unrelated key (neither format nor program)', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (an unrelated key sets neither format nor program)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  minTrustLevel = marginal\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the program branch must not fire for a non-'program' key
+        expect(sut.gpg).toBeUndefined();
       });
     });
   });

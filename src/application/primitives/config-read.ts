@@ -1681,6 +1681,9 @@ const magnitudeOf = (token: string, radix: 8 | 10 | 16): bigint | null => {
 // or not-ok+reason on failure — never throws.
 export const parseGitInt = (value: string | null): GitIntResult => {
   // Trim leading ASCII whitespace (git's behaviour), then strip one optional sign.
+  // equivalent-mutant: the `''` null-fallback only matters when `value` is null (a valueless key);
+  // Stryker's non-numeric "Stryker was here!" replacement is rejected by `matchDigits` exactly as the
+  // empty string is, so both null paths yield `invalid unit` and the verdict is unchanged.
   const trimmed = (value ?? '').replace(/^[ \t]+/, '');
   const signed = trimmed[0] === '+' || trimmed[0] === '-';
   const body = signed ? trimmed.slice(1) : trimmed;
