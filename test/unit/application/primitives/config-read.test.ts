@@ -532,6 +532,26 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given two [submodule "libs/a"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (url and active both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[submodule "libs/a"]\n  url = ../a\n[submodule "libs/a"]\n  active = true\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — url from the first block is not clobbered by the second.
+        expect(sut.submodule?.get('libs/a')?.url).toBe('../a');
+        expect(sut.submodule?.get('libs/a')?.active).toBe(true);
+      });
+    });
+  });
+
   describe('Given a config with no submodule section', () => {
     describe('When readConfig', () => {
       it('Then parsed.submodule is undefined', async () => {
@@ -582,6 +602,26 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.merge?.get('a')?.driver).toBe('tool-a');
         expect(sut.merge?.get('b')?.driver).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given two [merge "custom"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (name and driver both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[merge "custom"]\n  name = my driver\n[merge "custom"]\n  driver = tool\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — name from the first block is not clobbered by the second.
+        expect(sut.merge?.get('custom')?.name).toBe('my driver');
+        expect(sut.merge?.get('custom')?.driver).toBe('tool');
       });
     });
   });
@@ -699,6 +739,26 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.diff?.get('a')?.textconv).toBe('tool-a');
         expect(sut.diff?.get('b')?.textconv).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given two [diff "upper"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (textconv and cachetextconv both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[diff "upper"]\n\ttextconv = up\n[diff "upper"]\n\tcachetextconv = true\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — textconv from the first block is not clobbered by the second.
+        expect(sut.diff?.get('upper')?.textconv).toBe('up');
+        expect(sut.diff?.get('upper')?.cachetextconv).toBe(true);
       });
     });
   });
@@ -822,6 +882,23 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.filter?.get('a')?.clean).toBe('tool-a');
         expect(sut.filter?.get('b')?.smudge).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given two [filter "myf"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (clean and smudge both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "myf"]\n\tclean = cl\n[filter "myf"]\n\tsmudge = sm\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — clean from the first block is not clobbered by the second.
+        expect(sut.filter?.get('myf')?.clean).toBe('cl');
+        expect(sut.filter?.get('myf')?.smudge).toBe('sm');
       });
     });
   });
@@ -6091,6 +6168,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [commit] with only a non-gpgsign key', () => {
+    describe('When readConfig', () => {
+      it('Then commit config stays undefined (only gpgsign populates it)', async () => {
+        // Arrange — `template` is not gpgsign, so the commit sub-map must never be created.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[commit]\n  template = /path/to/tpl\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.commit).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [commit] gpgsign = false', () => {
     describe('When readConfig', () => {
       it('Then commit.gpgSign is false', async () => {
@@ -6119,6 +6212,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.tag?.gpgSign).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [tag] with only a non-gpgsign key', () => {
+    describe('When readConfig', () => {
+      it('Then tag config stays undefined (only gpgsign populates it)', async () => {
+        // Arrange — `sort` is not gpgsign, so the tag sub-map must never be created.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[tag]\n  sort = version:refname\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.tag).toBeUndefined();
       });
     });
   });
