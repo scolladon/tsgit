@@ -82,6 +82,7 @@ export const resolveScopePath = async (ctx: Context, scope: ConfigScope): Promis
     const xdgPath = `${xdg}/git/config`;
     if (await exists(ctx, xdgPath)) return xdgPath;
     const homePath = `${home}/.gitconfig`;
+    // Stryker disable next-line ConditionalExpression: equivalent — the guarded branch and the fall-through both `return homePath`, so the guard's truth value cannot change the result (~/.gitconfig is the canonical write target whether or not it already exists).
     if (await exists(ctx, homePath)) return homePath;
     return homePath;
   }
