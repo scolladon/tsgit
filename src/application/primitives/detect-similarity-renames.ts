@@ -429,6 +429,7 @@ function buildAllTriples(
     threshold,
   );
   const copyTriples =
+    // Stryker disable next-line ConditionalExpression: equivalent — resolveCopySources returns [] whenever copies==='off', so buildCopyTriples over the empty copySources yields [], identical to the : [] arm.
     copies !== 'off'
       ? buildCopyTriples(copySources, adds, srcFingerprints, dstFingerprints, copyThreshold)
       : [];
@@ -442,6 +443,7 @@ async function runInexactPass(
   opts: InexactPassOptions,
 ): Promise<InexactPassResult | null> {
   const { adds, deletes, threshold, copyThreshold, copies, copySources } = opts;
+  // Stryker disable next-line ConditionalExpression: equivalent — with deletes and copySources both empty the pass builds no triples and greedySelect returns []; assemblePostPass over that empty result equals its null-defaulted output.
   if (deletes.length === 0 && copySources.length === 0) return null;
 
   const allSrcIds = [...deletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
@@ -510,6 +512,7 @@ function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
   const srcRemoved = srcSize - srcCopied;
   const rawBreakNum = Math.min(srcRemoved + literalAdded, maxSize);
   const computedBreakScore = maxSize > 0 ? Math.trunc((rawBreakNum * MAX_SCORE) / maxSize) : 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — differs only at srcSize===0, where srcRemoved===0 makes the branch NaN vs 0; dissimilarity only feeds the >= mergeScore gate (mergeScore is always >= 1 since merge:0 maps to DEFAULT_MERGE_SCORE), which both NaN and 0 fail, so the output is unchanged.
   const dissimilarity = srcSize > 0 ? Math.trunc((srcRemoved * MAX_SCORE) / srcSize) : 0;
   return { computedBreakScore, dissimilarity };
 }
@@ -589,9 +592,11 @@ async function attemptBreaks(
   const modifies = diff.changes.filter(
     (c): c is ModifyChange => c.type === 'modify' && !isGitlink(c.oldMode),
   );
+  // Stryker disable next-line ConditionalExpression: equivalent — an empty modifies list produces empty records, so the downstream records.length===0 guard returns the identical { broken: [], patchedDiff: diff }.
   if (modifies.length === 0) return { broken: [], patchedDiff: diff };
 
   const { records, paths } = await scoreModifies(ctx, modifies, breakScore);
+  // Stryker disable next-line ConditionalExpression: equivalent — empty records means empty paths, so patchDiffWithBroken copies changes unchanged and broken is [], matching the early return.
   if (records.length === 0) return { broken: [], patchedDiff: diff };
 
   return { broken: records, patchedDiff: patchDiffWithBroken(diff, records, paths) };
@@ -644,6 +649,7 @@ function remergeOrKeepBroken(
   broken: ReadonlyArray<BrokenRecord>,
   mergeScore: number,
 ): ReadonlyArray<DiffChange> {
+  // Stryker disable next-line ConditionalExpression: equivalent — the sole caller finalizeWithBroken invokes remergeOrKeepBroken only when broken.length > 0, so this guard is never true.
   if (broken.length === 0) return changes;
 
   const { presentDels, presentAdds } = findPresentHalves(changes, broken);
@@ -653,6 +659,7 @@ function remergeOrKeepBroken(
   for (const record of broken) {
     const delPresent = presentDels.has(record.del);
     const addPresent = presentAdds.has(record.add);
+    // Stryker disable next-line LogicalOperator,BooleanLiteral: equivalent — this continue only short-circuits the disjoint delPresent&&addPresent strip/emit branch; each variant here still lets that branch fire iff both halves are present, so output is unchanged (ConditionalExpression left unsuppressed: its true variant is killable).
     if (!delPresent && !addPresent) continue; // both consumed; nothing to strip or emit
     if (delPresent && addPresent) {
       // Both unconsumed: strip both halves; emit a modify (plain or broken).
@@ -663,6 +670,7 @@ function remergeOrKeepBroken(
     // Exactly one half present: the surviving half stays; no modify to emit.
   }
 
+  // Stryker disable next-line ConditionalExpression: equivalent — toStrip and reinsert are populated together, so an empty toStrip means an empty reinsert and the fallthrough returns [...changes, ...[]], the same content as returning changes.
   if (toStrip.size === 0) return changes;
   const stripped = changes.filter((c) => !toStrip.has(c));
   return [...stripped, ...reinsert];

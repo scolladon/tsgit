@@ -2145,6 +2145,78 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  // ── computeBreakScores maxSize denominator: max(src,dst) not min(src,dst) ──
+
+  describe('Given a breakRewrites modify whose old content is fully preserved as the first half of a doubled-length new content', () => {
+    describe('When detectSimilarityRenames is called with a break gate strictly between the max- and min-denominator scores', () => {
+      it('Then max(src,dst) is the denominator so the score stays below the gate and the modify is NOT broken', async () => {
+        // Arrange — src is exactly the first half of dst; dst appends an equal-sized block of new
+        // lines, so srcSize = S, dstSize = 2S, srcRemoved ≈ 0, literalAdded ≈ S.
+        //   break_score = min(srcRemoved + literalAdded, maxSize) * MAX_SCORE / maxSize
+        // With maxSize = max(src,dst) = 2S → ≈ S * MAX_SCORE / 2S = 30000 (below the 45000 gate → NOT broken).
+        // With maxSize = min(src,dst) = S  → ≈ S * MAX_SCORE / S  = 60000 (above the gate → broken).
+        // A break would split file.txt into a delete-half (content == target.txt → exact rename)
+        // plus a surviving add-half, turning the plain modify into a rename. The modify surviving
+        // as a plain modify (no rename) pins max(src,dst) as the denominator.
+        const ctx = await buildSeededContext();
+        const preserved = Array.from(
+          { length: 6 },
+          (_, i) => `shared-line-${i}: alpha beta gamma\n`,
+        ).join('');
+        const appended = Array.from(
+          { length: 6 },
+          (_, i) => `brand-new-line-${i}: delta epsilon\n`,
+        ).join('');
+        const srcContent = preserved;
+        const dstContent = `${preserved}${appended}`;
+        const modOldId = await writeBlob(ctx, srcContent);
+        const modNewId = await writeBlob(ctx, dstContent);
+        // target.txt is byte-identical to the modify's old content — an exact-rename partner for
+        // the delete-half IF (and only if) the break fires.
+        const targetId = await writeBlob(ctx, srcContent);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'target.txt' as FilePath,
+              newId: targetId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — gate at 45000, strictly between the max-denominator (30000) and min-denominator (60000) scores
+        const sut = detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 45000, merge: DEFAULT_MERGE_SCORE },
+        });
+        const result = await sut;
+
+        // Assert — max denominator keeps the score below the gate: no break, so no rename and the modify survives
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        const modifies = result.changes.filter((c) => c.type === 'modify');
+        expect(modifies).toHaveLength(1);
+        if (modifies[0]?.type === 'modify') {
+          expect(modifies[0].path).toBe('file.txt');
+          expect(modifies[0].broken).toBeUndefined();
+        }
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+        if (adds[0]?.type === 'add') {
+          expect(adds[0].newPath).toBe('target.txt');
+        }
+      });
+    });
+  });
+
   // ── attemptBreaks early returns ──
 
   describe('Given a diff with no modify changes (attemptBreaks early return on empty modifies)', () => {
