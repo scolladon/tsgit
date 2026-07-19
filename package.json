@@ -189,6 +189,7 @@
     "test:mutation": "wireit",
     "test:mutation:pr": "wireit",
     "test:bench": "wireit",
+    "test:perf": "wireit",
     "bench:summary": "wireit",
     "bench:check": "node --experimental-strip-types tooling/bench-check.ts",
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
@@ -516,6 +517,18 @@
         "reports/benchmarks/raw.json"
       ]
     },
+    "test:perf": {
+      "command": "vitest run --config vitest.perf.config.ts",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/perf/**/*.ts",
+        "vitest.perf.config.ts"
+      ],
+      "output": []
+    },
     "bench:summary": {
       "command": "node --experimental-strip-types tooling/bench-summarize.ts",
       "dependencies": [
@@ -747,7 +760,8 @@
         "check:write-surfaces",
         "test:coverage",
         "test:integration",
-        "test:parity"
+        "test:parity",
+        "test:perf"
       ]
     },
     "prepush": {
