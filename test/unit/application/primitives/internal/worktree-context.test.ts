@@ -84,4 +84,36 @@ describe('deriveWorktreeContext', () => {
       });
     });
   });
+
+  describe('Given a parent Context whose layout carries a homeDir', () => {
+    describe('When deriveWorktreeContext runs', () => {
+      it('Then the child layout carries the same homeDir value', () => {
+        // Arrange
+        const parent = createMemoryContext({ homeDir: '/home/user' });
+
+        // Act
+        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+
+        // Assert
+        expect(Object.hasOwn(sut.layout, 'homeDir')).toBe(true);
+        expect(sut.layout.homeDir).toBe('/home/user');
+      });
+    });
+  });
+
+  describe('Given a parent Context whose layout omits homeDir', () => {
+    describe('When deriveWorktreeContext runs', () => {
+      it('Then the child layout omits the homeDir key entirely', () => {
+        // Arrange
+        const parent = createMemoryContext();
+
+        // Act
+        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+
+        // Assert
+        expect(Object.hasOwn(sut.layout, 'homeDir')).toBe(false);
+        expect(sut.layout.homeDir).toBeUndefined();
+      });
+    });
+  });
 });
