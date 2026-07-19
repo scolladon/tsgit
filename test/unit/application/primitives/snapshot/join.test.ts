@@ -68,6 +68,21 @@ describe('join', () => {
       });
     });
   });
+
+  describe('Given a single-source join whose source yields paths out of order', () => {
+    describe('When iterated', () => {
+      it('Then the short-circuit path yields them verbatim without imposing the merge order invariant', async () => {
+        // Arrange
+        const sut = join({ tree: stubSnapshot([row('b'), row('a')]) });
+
+        // Act
+        const rows = await collect(sut);
+
+        // Assert
+        expect(rows.map((r) => r.path)).toEqual(['b', 'a']);
+      });
+    });
+  });
 });
 
 describe('innerJoin', () => {

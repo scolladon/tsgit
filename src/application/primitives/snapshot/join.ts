@@ -43,10 +43,8 @@ export const join = <S extends SnapshotMap>(
 ): AsyncIterable<OuterJoinRow<S>> => {
   const keys = Object.keys(sources) as Array<keyof S & string>;
   const [first] = keys;
-  // equivalent-mutant: skipping the short-circuit branch (mutant `{}`)
-  // is observably equivalent to falling through to `pathMerge` with one
-  // source — both yield the same row sequence. The branch exists for the
-  // envelope-only alloc cost (spike §4.4) but does not change the result.
+  // Single-source fast path: emit the lone source's rows verbatim, skipping
+  // the k-way merge bookkeeping (and its order-invariant check).
   if (keys.length === 1 && first !== undefined) {
     return shortCircuit(sources, first, opts.signal);
   }
