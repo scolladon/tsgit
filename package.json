@@ -188,6 +188,7 @@
     "test:coverage": "wireit",
     "test:mutation": "wireit",
     "test:mutation:pr": "wireit",
+    "test:mutation:local": "wireit",
     "test:bench": "wireit",
     "test:perf": "wireit",
     "bench:summary": "wireit",
@@ -496,6 +497,22 @@
         "src/**/*.ts",
         "test/unit/**/*.ts",
         "tooling/run-stryker-pr.ts",
+        "stryker.config.mjs",
+        "vitest.config.ts"
+      ],
+      "output": [
+        "reports/mutation/**"
+      ]
+    },
+    "test:mutation:local": {
+      "command": "node --experimental-strip-types tooling/run-stryker-local.ts",
+      "dependencies": [
+        "test:unit"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/unit/**/*.ts",
+        "tooling/run-stryker-local.ts",
         "stryker.config.mjs",
         "vitest.config.ts"
       ],
