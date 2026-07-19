@@ -12,6 +12,7 @@ export async function boundedMap<T, R>(
   limit: number,
   worker: (item: T) => Promise<R>,
 ): Promise<R[]> {
+  // Stryker disable next-line ArrayDeclaration: equivalent — every index [0,length) is assigned, so the pre-sized array and new Array() reach an identical dense result; length arg is a perf-only allocation hint
   const results = new Array<R>(items.length);
   let cursor = 0;
   const run = async (): Promise<void> => {
