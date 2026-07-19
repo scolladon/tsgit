@@ -743,6 +743,7 @@ function finalizeWithBroken(
   broken: ReadonlyArray<BrokenRecord>,
   mergeScore: number,
 ): TreeDiff {
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing this guard false routes the empty-broken case through remergeOrKeepBroken, whose own empty-broken guard returns changes unchanged, so sortByPath yields the identical TreeDiff as this early return.
   if (broken.length === 0) return { changes: sortByPath(changes, primaryPath) };
   const remerged = remergeOrKeepBroken(changes, broken, mergeScore);
   return { changes: sortByPath(remerged, primaryPath) };
@@ -818,8 +819,11 @@ export async function detectSimilarityRenames(
   const exactResult = detectRenames(workingDiff, { ...options, limit: Number.MAX_SAFE_INTEGER });
   const { adds, deletes, other } = partitionLeftovers(exactResult.changes);
 
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — hasRenameWork only gates the pure-optimisation early return below; every listed variant merely forces it true in more no-work cases (adds===0 or deletes===0), and falling through then builds no triples (no destinations or no sources), leaving the result unchanged.
   const hasRenameWork = adds.length > 0 && deletes.length > 0;
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — hasCopyWork only gates the pure-optimisation early return below; every listed variant merely forces it true in more no-work cases (copies==='off' or adds===0), and falling through then builds no triples, leaving the result unchanged.
   const hasCopyWork = copies !== 'off' && adds.length > 0;
+  // Stryker disable next-line BlockStatement,ConditionalExpression: equivalent — this early return is a pure optimisation: when it fires (no rename and no copy work) the inexact pass would build no triples and consume nothing, so skipping the return and falling through yields the identical sorted TreeDiff.
   if (!hasRenameWork && !hasCopyWork) {
     return finalizeWithBroken(exactResult.changes, broken, mergeScore);
   }

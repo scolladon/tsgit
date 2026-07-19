@@ -711,6 +711,46 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given copies: "harder" with limit=0 (unlimited) and an unchanged file similar to an add', () => {
+    describe('When detectSimilarityRenames is called with preimage', () => {
+      it('Then the harder source set is never limit-capped so the unchanged file folds into a copy', async () => {
+        // Arrange — limit=0 means unlimited: git never falls back to the 'on' source set,
+        // so the unchanged preimage file stays a copy source and the add folds into a copy.
+        const ctx = await buildSeededContext();
+        const unchangedContent = tenLines(0);
+        const dstContent = tenLines(0).replace('X line 0\n', 'COPY DST line 0\n');
+        const unchangedId = await writeBlob(ctx, unchangedContent);
+        const dstId = await writeBlob(ctx, dstContent);
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['unchanged.txt' as FilePath, { id: unchangedId, mode: FILE_MODE.REGULAR }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — limit=0 (unlimited) under copies:'harder'; preimage passed positionally
+        const sut = detectSimilarityRenames(ctx, diff, { copies: 'harder', limit: 0 }, preimage);
+        const result = await sut;
+
+        // Assert — copy detected from the unchanged harder source (no limit fallback to 'on')
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('unchanged.txt');
+          expect(copies[0].newPath).toBe('copied.txt');
+        }
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
   describe('Given copies: "harder" with limit that is exceeded only under harder (many preimage paths)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then limit is exceeded only under harder and falls back to copies:"on" source set', async () => {
