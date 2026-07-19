@@ -28,6 +28,7 @@ export const hashSlot = <R extends SlotKeyedRow>(slot: string, opts: HashSlotOpt
 
     const drainOldest = async (): Promise<R> => {
       const head = inflight.shift();
+      // Stryker disable next-line StringLiteral: equivalent — throw is unreachable (drainOldest only runs with a non-empty queue, so shift() never yields undefined); the message is never evaluated.
       if (head === undefined) throw new Error('drainOldest invariant: queue empty');
       await head.task;
       return head.row;
