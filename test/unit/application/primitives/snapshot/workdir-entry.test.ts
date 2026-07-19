@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createWorkdirEntry } from '../../../../../src/application/primitives/snapshot/workdir-entry.js';
 import type { FileMode, FilePath } from '../../../../../src/domain/objects/index.js';
 import type { WorkdirEntryRow, WorkdirStat } from '../../../../../src/domain/snapshot/index.js';
+import type { Context, FileStat } from '../../../../../src/ports/index.js';
 import { buildSeededContext } from '../fixtures.js';
 
 type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
@@ -170,6 +171,73 @@ describe('createWorkdirEntry', () => {
 
         // Assert
         expect(target).toBe('target-path');
+      });
+    });
+  });
+
+  describe('Given a file whose live stat omits mtimeNs', () => {
+    describe('When verify() detects a race', () => {
+      it('Then the WORKDIR_RACE current stat carries no mtimeNs field', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { absPath, stat } = await seedFile(
+          ctx,
+          'no-ns.txt',
+          new TextEncoder().encode('original'),
+        );
+        const sut = createWorkdirEntry(ctx, makeFileRow('no-ns.txt' as FilePath, stat));
+        await ctx.fs.write(absPath, new TextEncoder().encode('rewritten to a longer string'));
+
+        // Act
+        const error = await sut.verify().then(
+          () => undefined,
+          (reason: unknown) => reason,
+        );
+
+        // Assert
+        expect(error).toBeDefined();
+        const data = (error as { data: { code: string; current: WorkdirStat } }).data;
+        expect(data.code).toBe('WORKDIR_RACE');
+        expect('mtimeNs' in data.current).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a file whose live stat carries mtimeNs', () => {
+    describe('When verify() detects a race', () => {
+      it('Then the WORKDIR_RACE current stat preserves the mtimeNs value', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { absPath, stat } = await seedFile(
+          ctx,
+          'has-ns.txt',
+          new TextEncoder().encode('seed'),
+        );
+        const live = await ctx.fs.lstat(absPath);
+        const nsCapableCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (): Promise<FileStat> => ({
+              ...live,
+              size: live.size + 100,
+              mtimeNs: 777n,
+            }),
+          },
+        };
+        const sut = createWorkdirEntry(nsCapableCtx, makeFileRow('has-ns.txt' as FilePath, stat));
+
+        // Act
+        const error = await sut.verify().then(
+          () => undefined,
+          (reason: unknown) => reason,
+        );
+
+        // Assert
+        expect(error).toBeDefined();
+        const data = (error as { data: { code: string; current: WorkdirStat } }).data;
+        expect(data.code).toBe('WORKDIR_RACE');
+        expect(data.current.mtimeNs).toBe(777n);
       });
     });
   });
