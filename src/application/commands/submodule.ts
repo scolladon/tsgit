@@ -384,7 +384,11 @@ export const submoduleDeinit = async (
   opts: SubmoduleDeinitOptions = {},
 ): Promise<SubmoduleDeinitResult> => {
   await assertOperationalRepository(ctx);
-  if ((opts.paths === undefined || opts.paths.length === 0) && opts.all !== true) {
+  const hasPaths = opts.paths !== undefined && opts.paths.length > 0;
+  if (opts.all === true && hasPaths) {
+    throw invalidOption('submodule.deinit', 'pathspec and --all are incompatible');
+  }
+  if (opts.all !== true && !hasPaths) {
     throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
   }
   const rows = await readWorktreeGitmodules(ctx);

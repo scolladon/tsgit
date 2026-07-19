@@ -564,6 +564,30 @@ describe('commands/submodule — deinit', () => {
     });
   });
 
+  describe('Given all combined with an explicit pathspec', () => {
+    describe('When deinit runs', () => {
+      it('Then it refuses the incompatible combination', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+
+        // Act & Assert
+        try {
+          await submoduleDeinit(ctx, { all: true, paths: ['libs/a'] });
+          expect.fail('deinit did not refuse all combined with a pathspec');
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          expect((err as TsgitError).data).toMatchObject({
+            code: 'INVALID_OPTION',
+            option: 'submodule.deinit',
+            reason: expect.stringContaining('incompatible'),
+          });
+        }
+        // The refusal fires before any config write — the section survives intact.
+        expect(await readConfigText(ctx)).toContain('[submodule "libs/a"]');
+      });
+    });
+  });
+
   describe('Given an un-checked-out submodule with a populated worktree', () => {
     describe('When deinit runs without force', () => {
       it('Then it clears the worktree and removes the config section', async () => {
