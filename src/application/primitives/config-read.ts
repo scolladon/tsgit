@@ -185,12 +185,13 @@ const matchesSection = (
   tokenSection.toLowerCase() === section.toLowerCase() && tokenSubsection === subsection;
 
 /**
- * Cold-path detection: re-tokenize the repo-local config and return the FIRST
+ * Valueless-entry detection: scan the repo-local config and return the FIRST
  * valueless (`value === null`) entry, by config-file line, whose key
  * (case-insensitive) is one of `keys` and which sits under `[<section> "<subsection>"]`
  * (subsection `undefined` ⇒ the section with no subsection). Returns the fully-qualified
  * key, the absolute config path, and the 1-based line, or `undefined` when no such
- * entry exists. Runs ONLY on a command's refusal path.
+ * entry exists. Walks the cached token stream, so an eager caller (the `[user]`
+ * identity pre-flight) pays only an in-memory scan, not a second read.
  */
 export const findFirstValuelessEntry = async (
   ctx: Context,
