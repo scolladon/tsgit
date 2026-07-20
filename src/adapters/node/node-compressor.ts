@@ -27,9 +27,7 @@ export class NodeCompressor implements Compressor {
 
   deflate = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
-      // equivalent-mutant: forcing the `else` arm (mutating the condition to `false`) calls
-      // `deflateSync(data, { level: undefined })`, which Node treats identically to the no-options
-      // `deflateSync(data)` — byte-for-byte identical output across all inputs.
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateSync(data, { level: undefined })`, which Node treats identically to the no-options `deflateSync(data)`, byte-for-byte across all inputs.
       return new Uint8Array(level === undefined ? deflateSync(data) : deflateSync(data, { level }));
     } catch (err) {
       throw compressFailed(describeError(err));
@@ -38,9 +36,7 @@ export class NodeCompressor implements Compressor {
 
   deflateRaw = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
-      // equivalent-mutant: forcing the `else` arm (mutating the condition to `false`) calls
-      // `deflateRawSync(data, { level: undefined })`, which Node treats identically to the no-options
-      // `deflateRawSync(data)` — byte-for-byte identical output across all inputs.
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateRawSync(data, { level: undefined })`, which Node treats identically to the no-options `deflateRawSync(data)`, byte-for-byte across all inputs.
       return new Uint8Array(
         level === undefined ? deflateRawSync(data) : deflateRawSync(data, { level }),
       );
