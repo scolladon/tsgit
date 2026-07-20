@@ -6,8 +6,11 @@
 // when Stryker loads this config (Stryker cannot re-tune concurrency mid-run).
 //
 // Schedule (local time): weekdays 08:00–20:00 → 30% of logical cores; nights and
-// all weekend → 100%. CI runners are never a developer's workstation, so they
-// always run at full power regardless of when the job is triggered.
+// all weekend → 75%. Off-hours stops short of 100% because a full-power run
+// starves the machine: every worker loads the whole unit suite, and saturating
+// the cores exhausted memory badly enough to trip the kernel's userspace
+// watchdog. CI runners are never a developer's workstation, so they always run
+// at full power regardless of when the job is triggered.
 
 /** @returns {`${number}%`} */
 function scheduledConcurrency() {
@@ -18,7 +21,7 @@ function scheduledConcurrency() {
   const isWeekend = weekday === 0 || weekday === 6;
   const isWorkingHours = now.getHours() >= 8 && now.getHours() < 20;
 
-  return !isWeekend && isWorkingHours ? '30%' : '100%';
+  return !isWeekend && isWorkingHours ? '30%' : '75%';
 }
 
 export default {
