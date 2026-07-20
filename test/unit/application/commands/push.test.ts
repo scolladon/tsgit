@@ -216,37 +216,35 @@ const packObjectCount = (body: Uint8Array): number => {
 describe('push — config + refspec guards', () => {
   describe('Given an invalid remote name %j', () => {
     describe('When push runs', () => {
-      it.each([
-        ['../escape'],
-        ['has space'],
-        ['weird/slash'],
-        [''],
-      ])('Then throws INVALID_OPTION naming the remote', async (badName) => {
-        // Arrange — pins the REMOTE_NAME_RE allowlist guarding the composed
-        // `refs/remotes/<remote>/<branch>` path against traversal.
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
+      it.each([['../escape'], ['has space'], ['weird/slash'], ['']])(
+        'Then throws INVALID_OPTION naming the remote',
+        async (badName) => {
+          // Arrange — pins the REMOTE_NAME_RE allowlist guarding the composed
+          // `refs/remotes/<remote>/<branch>` path against traversal.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
 
-        // Act
-        let caught: unknown;
-        try {
-          await push(ctx, { remote: badName });
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await push(ctx, { remote: badName });
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert — option is the literal 'remote' and the message echoes the
-        // offending name (kills the StringLiteral mutants on the throw site).
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          option: string;
-          reason: string;
-        };
-        expect(data.code).toBe('INVALID_OPTION');
-        expect(data.option).toBe('remote');
-        expect(data.reason).toBe(`invalid remote name: ${badName}`);
-      });
+          // Assert — option is the literal 'remote' and the message echoes the
+          // offending name (kills the StringLiteral mutants on the throw site).
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            option: string;
+            reason: string;
+          };
+          expect(data.code).toBe('INVALID_OPTION');
+          expect(data.option).toBe('remote');
+          expect(data.reason).toBe(`invalid remote name: ${badName}`);
+        },
+      );
     });
   });
 

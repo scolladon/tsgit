@@ -1214,23 +1214,23 @@ describe('parseUploadPackResponse', () => {
 
   describe('Given an ACK line with status %s', () => {
     describe('When parsed', () => {
-      it.each([
-        'common',
-        'ready',
-      ] as const)('Then acks contains the matching status entry', async (status) => {
-        // Arrange
-        const source = asyncOf<PktLine>([
-          dataPkt(`ACK ${OID1} ${status}\n`),
-          dataPkt('NAK\n'),
-          { kind: 'flush' },
-        ]);
+      it.each(['common', 'ready'] as const)(
+        'Then acks contains the matching status entry',
+        async (status) => {
+          // Arrange
+          const source = asyncOf<PktLine>([
+            dataPkt(`ACK ${OID1} ${status}\n`),
+            dataPkt('NAK\n'),
+            { kind: 'flush' },
+          ]);
 
-        // Act
-        const result = await parseUploadPackResponse(source, { sideBand: false });
+          // Act
+          const result = await parseUploadPackResponse(source, { sideBand: false });
 
-        // Assert
-        expect(result.acks).toEqual([{ id: OID1, status }]);
-      });
+          // Assert
+          expect(result.acks).toEqual([{ id: OID1, status }]);
+        },
+      );
     });
   });
 

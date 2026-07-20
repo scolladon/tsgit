@@ -34,21 +34,19 @@ const cases: ReadonlyArray<{
 describe('classifyUnmerged', () => {
   describe('Given an unmerged entry group', () => {
     describe('When classifying its stage presence', () => {
-      it.each(cases)('Then stages {1:$s1, 2:$s2, 3:$s3} classify as $expected', ({
-        s1,
-        s2,
-        s3,
-        expected,
-      }) => {
-        // Arrange
-        const sut = group(s1, s2, s3);
+      it.each(cases)(
+        'Then stages {1:$s1, 2:$s2, 3:$s3} classify as $expected',
+        ({ s1, s2, s3, expected }) => {
+          // Arrange
+          const sut = group(s1, s2, s3);
 
-        // Act
-        const result = classifyUnmerged(sut);
+          // Act
+          const result = classifyUnmerged(sut);
 
-        // Assert
-        expect(result).toBe(expected);
-      });
+          // Assert
+          expect(result).toBe(expected);
+        },
+      );
     });
   });
 });

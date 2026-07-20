@@ -315,16 +315,13 @@ describe('CLIENT_CAPABILITIES_FETCH', () => {
 describe('CLIENT_CAPABILITIES_PUSH', () => {
   describe('Given CLIENT_CAPABILITIES_PUSH', () => {
     describe('When inspected', () => {
-      it.each([
-        'report-status',
-        'side-band-64k',
-        'ofs-delta',
-        'atomic',
-        'delete-refs',
-      ])('Then it includes %j', (cap) => {
-        // Arrange + Assert
-        expect(CLIENT_CAPABILITIES_PUSH).toContain(cap);
-      });
+      it.each(['report-status', 'side-band-64k', 'ofs-delta', 'atomic', 'delete-refs'])(
+        'Then it includes %j',
+        (cap) => {
+          // Arrange + Assert
+          expect(CLIENT_CAPABILITIES_PUSH).toContain(cap);
+        },
+      );
       it('Then it includes the AGENT token', () => {
         // Arrange + Assert
         expect(CLIENT_CAPABILITIES_PUSH).toContain(AGENT);

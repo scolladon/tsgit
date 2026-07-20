@@ -248,24 +248,23 @@ describe('withAuth — custom', () => {
 
   describe('Given a callback returning %j', () => {
     describe('When sent', () => {
-      it.each([
-        ['' as string],
-        [undefined as unknown as string],
-        [null as unknown as string],
-      ])('Then rejects with TypeError "withAuth: custom returned empty value" and inner is NOT called', async (value) => {
-        // Arrange
-        const { transport, calls } = fakeTransport([makeResponse()]);
-        const sut = withAuth({ type: 'custom', header: () => value })(transport);
-        try {
-          await sut.request(makeRequest());
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TypeError);
-          expect((err as TypeError).message).toBe('withAuth: custom returned empty value');
-        }
-        expect(calls).toHaveLength(0);
-      });
+      it.each([['' as string], [undefined as unknown as string], [null as unknown as string]])(
+        'Then rejects with TypeError "withAuth: custom returned empty value" and inner is NOT called',
+        async (value) => {
+          // Arrange
+          const { transport, calls } = fakeTransport([makeResponse()]);
+          const sut = withAuth({ type: 'custom', header: () => value })(transport);
+          try {
+            await sut.request(makeRequest());
+            throw new Error('expected throw');
+          } catch (err) {
+            // Assert
+            expect(err).toBeInstanceOf(TypeError);
+            expect((err as TypeError).message).toBe('withAuth: custom returned empty value');
+          }
+          expect(calls).toHaveLength(0);
+        },
+      );
     });
   });
 

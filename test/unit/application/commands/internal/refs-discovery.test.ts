@@ -51,20 +51,20 @@ const fakeSession = (opts: FakeSessionOptions): GitServiceSession => ({
 describe('discoverRefsForService', () => {
   describe('Given service %s', () => {
     describe('When discoverRefsForService runs', () => {
-      it.each([
-        ['git-upload-pack'],
-        ['git-receive-pack'],
-      ] as const)('Then the %s advertisement is parsed', async (service) => {
-        // Arrange
-        const session = fakeSession({ body: advertisementBody(service) });
+      it.each([['git-upload-pack'], ['git-receive-pack']] as const)(
+        'Then the %s advertisement is parsed',
+        async (service) => {
+          // Arrange
+          const session = fakeSession({ body: advertisementBody(service) });
 
-        // Act
-        const sut = await discoverRefsForService(session, service);
+          // Act
+          const sut = await discoverRefsForService(session, service);
 
-        // Assert
-        expect(sut.refs).toHaveLength(1);
-        expect(sut.refs[0]?.name).toBe('refs/heads/main');
-      });
+          // Assert
+          expect(sut.refs).toHaveLength(1);
+          expect(sut.refs[0]?.name).toBe('refs/heads/main');
+        },
+      );
     });
   });
 

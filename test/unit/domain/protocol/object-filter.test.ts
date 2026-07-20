@@ -345,18 +345,15 @@ describe('formatObjectFilter', () => {
     });
   });
 
-  it.each<string>([
-    'blob:none',
-    'blob:limit=1k',
-    'blob:limit=2M',
-    'tree:0',
-    'tree:7',
-  ])('Given %s, When parsed then formatted then re-parsed, Then the filter is stable', (spec: string) => {
-    // Arrange
-    const first: ObjectFilter = parseObjectFilter(spec);
-    // Act
-    const reparsed = parseObjectFilter(formatObjectFilter(first));
-    // Assert
-    expect(reparsed).toEqual(first);
-  });
+  it.each<string>(['blob:none', 'blob:limit=1k', 'blob:limit=2M', 'tree:0', 'tree:7'])(
+    'Given %s, When parsed then formatted then re-parsed, Then the filter is stable',
+    (spec: string) => {
+      // Arrange
+      const first: ObjectFilter = parseObjectFilter(spec);
+      // Act
+      const reparsed = parseObjectFilter(formatObjectFilter(first));
+      // Assert
+      expect(reparsed).toEqual(first);
+    },
+  );
 });

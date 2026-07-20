@@ -56,17 +56,16 @@ describe('resolveMarkerSize', () => {
 
   describe('Given a non-valued attribute state', () => {
     describe('When resolved', () => {
-      it.each<[AttributeValue]>([
-        [true],
-        [false],
-        ['unspecified'],
-      ])('Then it falls back to the default 7', (sut) => {
-        // Act
-        const result = resolveMarkerSize(sut);
+      it.each<[AttributeValue]>([[true], [false], ['unspecified']])(
+        'Then it falls back to the default 7',
+        (sut) => {
+          // Act
+          const result = resolveMarkerSize(sut);
 
-        // Assert
-        expect(result).toBe(DEFAULT_CONFLICT_MARKER_SIZE);
-      });
+          // Assert
+          expect(result).toBe(DEFAULT_CONFLICT_MARKER_SIZE);
+        },
+      );
     });
   });
 

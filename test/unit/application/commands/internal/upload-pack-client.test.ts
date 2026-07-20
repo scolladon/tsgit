@@ -78,17 +78,17 @@ describe('selectFetchCapabilities', () => {
 
   describe('Given the server advertises %s', () => {
     describe('When selectFetchCapabilities runs', () => {
-      it.each([
-        ['thin-pack'],
-        ['no-progress'],
-      ] as const)('Then it is NOT included in the result', async (cap) => {
-        // Arrange & Act — kills each of the `c !== '<cap>'` mutants inside
-        // the filter predicate.
-        const sut = selectFetchCapabilities([cap, 'side-band-64k']);
+      it.each([['thin-pack'], ['no-progress']] as const)(
+        'Then it is NOT included in the result',
+        async (cap) => {
+          // Arrange & Act — kills each of the `c !== '<cap>'` mutants inside
+          // the filter predicate.
+          const sut = selectFetchCapabilities([cap, 'side-band-64k']);
 
-        // Assert
-        expect(sut).not.toContain(cap);
-      });
+          // Assert
+          expect(sut).not.toContain(cap);
+        },
+      );
     });
   });
 

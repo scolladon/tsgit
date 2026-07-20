@@ -144,25 +144,26 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a special-character value from the write_pair matrix', () => {
     describe('When tsgit and canonical git each write test.v into their own repo', () => {
-      it.each(
-        WRITE_PARITY_MATRIX,
-      )('Then the [test] section bytes are identical for value "$label"', async ({ value }) => {
-        // Arrange
-        const ctx = createNodeContext({ workDir: pair.ours });
+      it.each(WRITE_PARITY_MATRIX)(
+        'Then the [test] section bytes are identical for value "$label"',
+        async ({ value }) => {
+          // Arrange
+          const ctx = createNodeContext({ workDir: pair.ours });
 
-        // Act
-        await setConfigEntry({ ctx, key: 'test.v', value });
-        runGit(['-C', pair.peer, 'config', '--local', 'test.v', value]);
+          // Act
+          await setConfigEntry({ ctx, key: 'test.v', value });
+          runGit(['-C', pair.peer, 'config', '--local', 'test.v', value]);
 
-        // Assert — byte-identical [test] section in both repos
-        const oursConfig = await readFile(path.join(pair.ours, '.git', 'config'), 'utf8');
-        const peerConfig = await readFile(path.join(pair.peer, '.git', 'config'), 'utf8');
-        expect(extractTestSection(oursConfig)).toBe(extractTestSection(peerConfig));
+          // Assert — byte-identical [test] section in both repos
+          const oursConfig = await readFile(path.join(pair.ours, '.git', 'config'), 'utf8');
+          const peerConfig = await readFile(path.join(pair.peer, '.git', 'config'), 'utf8');
+          expect(extractTestSection(oursConfig)).toBe(extractTestSection(peerConfig));
 
-        // Assert — git reads tsgit's written file back to the original value
-        const readback = runGit(['-C', pair.ours, 'config', '--local', '--get', 'test.v']);
-        expect(readback).toBe(`${value}\n`);
-      });
+          // Assert — git reads tsgit's written file back to the original value
+          const readback = runGit(['-C', pair.ours, 'config', '--local', '--get', 'test.v']);
+          expect(readback).toBe(`${value}\n`);
+        },
+      );
     });
   });
 
@@ -335,32 +336,31 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a subsection name from the write-parity matrix', () => {
     describe('When tsgit and canonical git each write test.<sub>.v into their own repo', () => {
-      it.each(
-        SUBSECTION_WRITE_MATRIX,
-      )('Then the [test "..."] section bytes are identical for subsection "$label"', async ({
-        subsection,
-      }) => {
-        // Arrange
-        const ctx = createNodeContext({ workDir: pair.ours });
+      it.each(SUBSECTION_WRITE_MATRIX)(
+        'Then the [test "..."] section bytes are identical for subsection "$label"',
+        async ({ subsection }) => {
+          // Arrange
+          const ctx = createNodeContext({ workDir: pair.ours });
 
-        // Act — tsgit writes via updateConfigEntries (section/subsection split
-        // avoids parseConfigKey rejection of dots/special chars in the key string)
-        await updateConfigEntries(ctx, [{ section: 'test', subsection, key: 'v', value: 'v' }]);
+          // Act — tsgit writes via updateConfigEntries (section/subsection split
+          // avoids parseConfigKey rejection of dots/special chars in the key string)
+          await updateConfigEntries(ctx, [{ section: 'test', subsection, key: 'v', value: 'v' }]);
 
-        // Act — canonical git writes to its own repo
-        runGit(['-C', pair.peer, 'config', '--local', `test.${subsection}.v`, 'v']);
+          // Act — canonical git writes to its own repo
+          runGit(['-C', pair.peer, 'config', '--local', `test.${subsection}.v`, 'v']);
 
-        // Assert — byte-identical [test "..."] section in both repos
-        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
-        expect(extractSubsectionedTestSection(oursConfig)).toBe(
-          extractSubsectionedTestSection(peerConfig),
-        );
+          // Assert — byte-identical [test "..."] section in both repos
+          const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+          expect(extractSubsectionedTestSection(oursConfig)).toBe(
+            extractSubsectionedTestSection(peerConfig),
+          );
 
-        // Assert — git reads tsgit's written file back to the expected value
-        const getKey = `test.${subsection}.v`;
-        const readback = runGit(['-C', pair.ours, 'config', '--local', '--get', getKey]);
-        expect(readback).toBe('v\n');
-      });
+          // Assert — git reads tsgit's written file back to the expected value
+          const getKey = `test.${subsection}.v`;
+          const readback = runGit(['-C', pair.ours, 'config', '--local', '--get', getKey]);
+          expect(readback).toBe('v\n');
+        },
+      );
     });
   });
 
@@ -393,31 +393,29 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a hand-written config with an exotic subsection header', () => {
     describe('When both tsgit and git read each key', () => {
-      it.each(
-        SUBSECTION_READ_MATRIX,
-      )('Then getConfigValue matches git config --get for subsection "$label"', async ({
-        headerLine,
-        decodedSubsection,
-      }) => {
-        // Arrange — place the config with the exotic header in ours
-        const configContent = `[core]\n\trepositoryformatversion = 0\n${headerLine}\n\tk = v\n`;
-        await writeFile(path.join(pair.ours, '.git', 'config'), configContent, 'utf8');
-        const getKey = `test.${decodedSubsection}.k`;
+      it.each(SUBSECTION_READ_MATRIX)(
+        'Then getConfigValue matches git config --get for subsection "$label"',
+        async ({ headerLine, decodedSubsection }) => {
+          // Arrange — place the config with the exotic header in ours
+          const configContent = `[core]\n\trepositoryformatversion = 0\n${headerLine}\n\tk = v\n`;
+          await writeFile(path.join(pair.ours, '.git', 'config'), configContent, 'utf8');
+          const getKey = `test.${decodedSubsection}.k`;
 
-        // Act — canonical git
-        const gitResult = tryRunGit(['-C', pair.ours, 'config', '--local', '--get', getKey]);
-        expect(gitResult.ok, `git rejected key ${getKey}: ${gitResult.stderr}`).toBe(true);
-        const gitValue = gitResult.stdout.endsWith('\n')
-          ? gitResult.stdout.slice(0, -1)
-          : gitResult.stdout;
+          // Act — canonical git
+          const gitResult = tryRunGit(['-C', pair.ours, 'config', '--local', '--get', getKey]);
+          expect(gitResult.ok, `git rejected key ${getKey}: ${gitResult.stderr}`).toBe(true);
+          const gitValue = gitResult.stdout.endsWith('\n')
+            ? gitResult.stdout.slice(0, -1)
+            : gitResult.stdout;
 
-        // Act — tsgit (fresh context to bypass cache)
-        const ctx = createNodeContext({ workDir: pair.ours });
-        const sut = await getConfigValue({ ctx, key: getKey, scope: 'local' });
+          // Act — tsgit (fresh context to bypass cache)
+          const ctx = createNodeContext({ workDir: pair.ours });
+          const sut = await getConfigValue({ ctx, key: getKey, scope: 'local' });
 
-        // Assert
-        expect(sut.value, `tsgit value for ${getKey}`).toBe(gitValue);
-      });
+          // Assert
+          expect(sut.value, `tsgit value for ${getKey}`).toBe(gitValue);
+        },
+      );
     });
   });
 
@@ -452,41 +450,40 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a config file with a malformed subsection header', () => {
     describe('When git and tsgit parse the file', () => {
-      it.each(
-        MALFORMED_HEADER_READ_MATRIX,
-      )('Then both refuse with the same physical line number for "$label"', async ({
-        configContent,
-      }) => {
-        // Arrange — place the malformed config in ours
-        await writeFile(path.join(pair.ours, '.git', 'config'), configContent, 'utf8');
+      it.each(MALFORMED_HEADER_READ_MATRIX)(
+        'Then both refuse with the same physical line number for "$label"',
+        async ({ configContent }) => {
+          // Arrange — place the malformed config in ours
+          await writeFile(path.join(pair.ours, '.git', 'config'), configContent, 'utf8');
 
-        // Act — canonical git
-        const gitResult = tryRunGit(['-C', pair.ours, 'config', '--local', '--get', 'test.v']);
+          // Act — canonical git
+          const gitResult = tryRunGit(['-C', pair.ours, 'config', '--local', '--get', 'test.v']);
 
-        // Assert — git exits non-zero with bad config line N
-        expect(gitResult.ok).toBe(false);
-        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
-        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
-        const gitLine = Number((lineMatch as RegExpExecArray)[1]);
+          // Assert — git exits non-zero with bad config line N
+          expect(gitResult.ok).toBe(false);
+          const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+          expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+          const gitLine = Number((lineMatch as RegExpExecArray)[1]);
 
-        // Act — tsgit (fresh context to bypass cache)
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let tsgitError: TsgitError | undefined;
-        try {
-          await readConfig(ctx);
-        } catch (err) {
-          if (err instanceof TsgitError) tsgitError = err;
-          else throw err;
-        }
+          // Act — tsgit (fresh context to bypass cache)
+          const ctx = createNodeContext({ workDir: pair.ours });
+          let tsgitError: TsgitError | undefined;
+          try {
+            await readConfig(ctx);
+          } catch (err) {
+            if (err instanceof TsgitError) tsgitError = err;
+            else throw err;
+          }
 
-        // Assert — tsgit throws CONFIG_PARSE_ERROR with the same line number
-        expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
-        const data = (tsgitError as TsgitError).data;
-        expect(data.code).toBe('CONFIG_PARSE_ERROR');
-        if (data.code === 'CONFIG_PARSE_ERROR') {
-          expect(data.line).toBe(gitLine);
-        }
-      });
+          // Assert — tsgit throws CONFIG_PARSE_ERROR with the same line number
+          expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+          const data = (tsgitError as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code === 'CONFIG_PARSE_ERROR') {
+            expect(data.line).toBe(gitLine);
+          }
+        },
+      );
     });
   });
 
@@ -514,48 +511,46 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a standalone config file with a malformed subsection header', () => {
     describe('When git config --file and tsgit setConfigEntry try to write', () => {
-      it.each(
-        WRITE_REFUSAL_BAD_HEADER_MATRIX,
-      )('Then both refuse with the same partial section name for "$label"', async ({
-        configContent,
-        expectedPartial,
-      }) => {
-        // Arrange — write the malformed config into ours .git/config
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        await writeFile(oursConfigPath, configContent, 'utf8');
+      it.each(WRITE_REFUSAL_BAD_HEADER_MATRIX)(
+        'Then both refuse with the same partial section name for "$label"',
+        async ({ configContent, expectedPartial }) => {
+          // Arrange — write the malformed config into ours .git/config
+          const oursConfigPath = path.join(pair.ours, '.git', 'config');
+          await writeFile(oursConfigPath, configContent, 'utf8');
 
-        // Act — canonical git via --file (avoids --local stack-parse masking)
-        const gitResult = tryRunGit(['config', '--file', oursConfigPath, 'x.y', 'z']);
+          // Act — canonical git via --file (avoids --local stack-parse masking)
+          const gitResult = tryRunGit(['config', '--file', oursConfigPath, 'x.y', 'z']);
 
-        // Assert — git exits non-zero with "invalid section name '<partial>'"
-        expect(gitResult.ok).toBe(false);
-        const partialMatch = /invalid section name '([^']+)'/i.exec(gitResult.stderr);
-        expect(
-          partialMatch,
-          `expected 'invalid section name ...' in: ${gitResult.stderr}`,
-        ).not.toBeNull();
-        const gitPartial = (partialMatch as RegExpExecArray)[1];
-        expect(gitPartial).toBe(expectedPartial);
+          // Assert — git exits non-zero with "invalid section name '<partial>'"
+          expect(gitResult.ok).toBe(false);
+          const partialMatch = /invalid section name '([^']+)'/i.exec(gitResult.stderr);
+          expect(
+            partialMatch,
+            `expected 'invalid section name ...' in: ${gitResult.stderr}`,
+          ).not.toBeNull();
+          const gitPartial = (partialMatch as RegExpExecArray)[1];
+          expect(gitPartial).toBe(expectedPartial);
 
-        // Act — tsgit (fresh context); place same config bytes into ours
-        await writeFile(oursConfigPath, configContent, 'utf8');
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let tsgitError: TsgitError | undefined;
-        try {
-          await setConfigEntry({ ctx, key: 'x.y', value: 'z' });
-        } catch (err) {
-          if (err instanceof TsgitError) tsgitError = err;
-          else throw err;
-        }
+          // Act — tsgit (fresh context); place same config bytes into ours
+          await writeFile(oursConfigPath, configContent, 'utf8');
+          const ctx = createNodeContext({ workDir: pair.ours });
+          let tsgitError: TsgitError | undefined;
+          try {
+            await setConfigEntry({ ctx, key: 'x.y', value: 'z' });
+          } catch (err) {
+            if (err instanceof TsgitError) tsgitError = err;
+            else throw err;
+          }
 
-        // Assert — tsgit throws CONFIG_INVALID_FILE with matching sectionName
-        expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
-        const data = (tsgitError as TsgitError).data;
-        expect(data.code).toBe('CONFIG_INVALID_FILE');
-        if (data.code === 'CONFIG_INVALID_FILE') {
-          expect(data.sectionName).toBe(gitPartial);
-        }
-      });
+          // Assert — tsgit throws CONFIG_INVALID_FILE with matching sectionName
+          expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+          const data = (tsgitError as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_FILE');
+          if (data.code === 'CONFIG_INVALID_FILE') {
+            expect(data.sectionName).toBe(gitPartial);
+          }
+        },
+      );
 
       it('Then both refuse with the same line number when the file has a bad value', async () => {
         // Arrange — bad value line: line 1 = [core], line 2 = \tv = a\xb (unknown escape)
@@ -786,42 +781,44 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a config file with a bad no-`=` line from the refusal matrix', () => {
     describe('When git and tsgit parse the file', () => {
-      it.each(
-        VALUELESS_REFUSAL_MATRIX,
-      )('Then both refuse with data.line === 2 for "$label"', async ({ badLine }) => {
-        // Arrange — [a] on line 1, bad line on line 2
-        const configContent = `[a]\n\t${badLine}\n`;
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        await writeFile(oursConfigPath, configContent, 'utf8');
+      it.each(VALUELESS_REFUSAL_MATRIX)(
+        'Then both refuse with data.line === 2 for "$label"',
+        async ({ badLine }) => {
+          // Arrange — [a] on line 1, bad line on line 2
+          const configContent = `[a]\n\t${badLine}\n`;
+          const oursConfigPath = path.join(pair.ours, '.git', 'config');
+          await writeFile(oursConfigPath, configContent, 'utf8');
 
-        // Act — canonical git
-        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+          // Act — canonical git
+          const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
 
-        // Assert — git exits non-zero with bad config line 2
-        expect(gitResult.ok).toBe(false);
-        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
-        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
-        const gitLine = Number((lineMatch as RegExpExecArray)[1]);
-        expect(gitLine).toBe(2);
+          // Assert — git exits non-zero with bad config line 2
+          expect(gitResult.ok).toBe(false);
+          const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+          expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+          const gitLine = Number((lineMatch as RegExpExecArray)[1]);
+          expect(gitLine).toBe(2);
 
-        // Act — tsgit (fresh context to bypass cache)
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let tsgitError: TsgitError | undefined;
-        try {
-          await readConfig(ctx);
-        } catch (err) {
-          if (err instanceof TsgitError) tsgitError = err;
-          else throw err;
-        }
+          // Act — tsgit (fresh context to bypass cache)
+          const ctx = createNodeContext({ workDir: pair.ours });
+          let tsgitError: TsgitError | undefined;
+          try {
+            await readConfig(ctx);
+          } catch (err) {
+            if (err instanceof TsgitError) tsgitError = err;
+            else throw err;
+          }
 
-        // Assert — tsgit throws CONFIG_PARSE_ERROR with matching line number
-        expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
-        const data = (tsgitError as TsgitError).data;
-        expect(data.code).toBe('CONFIG_PARSE_ERROR');
-        if (data.code === 'CONFIG_PARSE_ERROR') {
-          expect(data.line).toBe(gitLine);
-        }
-      }, 60_000);
+          // Assert — tsgit throws CONFIG_PARSE_ERROR with matching line number
+          expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+          const data = (tsgitError as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code === 'CONFIG_PARSE_ERROR') {
+            expect(data.line).toBe(gitLine);
+          }
+        },
+        60_000,
+      );
     });
   });
 
@@ -995,26 +992,26 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a config file with a header and an entry on the same physical line', () => {
     describe('When tsgit and git read --list', () => {
-      it.each(
-        SAME_LINE_READ_MATRIX,
-      )('Then the reconstructed --list matches git byte-for-byte for "$label"', async ({
-        bytes,
-      }) => {
-        // Arrange
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        await writeFile(oursConfigPath, bytes, 'utf8');
+      it.each(SAME_LINE_READ_MATRIX)(
+        'Then the reconstructed --list matches git byte-for-byte for "$label"',
+        async ({ bytes }) => {
+          // Arrange
+          const oursConfigPath = path.join(pair.ours, '.git', 'config');
+          await writeFile(oursConfigPath, bytes, 'utf8');
 
-        // Act — canonical git
-        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
-        expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
+          // Act — canonical git
+          const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+          expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
 
-        // Act — tsgit configList
-        const ctx = createNodeContext({ workDir: pair.ours });
-        const result = await configList(ctx, { scope: 'local' });
+          // Act — tsgit configList
+          const ctx = createNodeContext({ workDir: pair.ours });
+          const result = await configList(ctx, { scope: 'local' });
 
-        // Assert — byte-identical reconstruction
-        expect(reconstructList(result.entries)).toBe(gitResult.stdout);
-      }, 60_000);
+          // Assert — byte-identical reconstruction
+          expect(reconstructList(result.entries)).toBe(gitResult.stdout);
+        },
+        60_000,
+      );
     });
   });
 
@@ -1023,24 +1020,26 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       it.each([
         { label: 'B2a orphan = v', bytes: 'orphan = v\n' },
         { label: 'B2b orphan (valueless)', bytes: 'orphan\n' },
-      ])('Then git lists the bare key and tsgit reconstructs it identically for "$label"', async ({
-        bytes,
-      }) => {
-        // Arrange
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        await writeFile(oursConfigPath, bytes, 'utf8');
+      ])(
+        'Then git lists the bare key and tsgit reconstructs it identically for "$label"',
+        async ({ bytes }) => {
+          // Arrange
+          const oursConfigPath = path.join(pair.ours, '.git', 'config');
+          await writeFile(oursConfigPath, bytes, 'utf8');
 
-        // Act — canonical git
-        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
-        expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
+          // Act — canonical git
+          const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+          expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
 
-        // Act — tsgit configList
-        const ctx = createNodeContext({ workDir: pair.ours });
-        const result = await configList(ctx, { scope: 'local' });
+          // Act — tsgit configList
+          const ctx = createNodeContext({ workDir: pair.ours });
+          const result = await configList(ctx, { scope: 'local' });
 
-        // Assert — byte-identical (bare key, no dot)
-        expect(reconstructList(result.entries)).toBe(gitResult.stdout);
-      }, 60_000);
+          // Assert — byte-identical (bare key, no dot)
+          expect(reconstructList(result.entries)).toBe(gitResult.stdout);
+        },
+        60_000,
+      );
     });
 
     describe('When git and tsgit try to address the orphan key directly', () => {
@@ -1092,40 +1091,42 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   describe('Given a config file with a bad `=`-path key', () => {
     describe('When git and tsgit parse the file', () => {
-      it.each(
-        SAME_LINE_REFUSAL_MATRIX,
-      )('Then both refuse on the same 1-based line for "$label"', async ({ bytes, line }) => {
-        // Arrange
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        await writeFile(oursConfigPath, bytes, 'utf8');
+      it.each(SAME_LINE_REFUSAL_MATRIX)(
+        'Then both refuse on the same 1-based line for "$label"',
+        async ({ bytes, line }) => {
+          // Arrange
+          const oursConfigPath = path.join(pair.ours, '.git', 'config');
+          await writeFile(oursConfigPath, bytes, 'utf8');
 
-        // Act — canonical git
-        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+          // Act — canonical git
+          const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
 
-        // Assert — git refuses with bad config line N
-        expect(gitResult.ok).toBe(false);
-        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
-        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
-        expect(Number((lineMatch as RegExpExecArray)[1])).toBe(line);
+          // Assert — git refuses with bad config line N
+          expect(gitResult.ok).toBe(false);
+          const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+          expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+          expect(Number((lineMatch as RegExpExecArray)[1])).toBe(line);
 
-        // Act — tsgit
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let tsgitError: TsgitError | undefined;
-        try {
-          await readConfig(ctx);
-        } catch (err) {
-          if (err instanceof TsgitError) tsgitError = err;
-          else throw err;
-        }
+          // Act — tsgit
+          const ctx = createNodeContext({ workDir: pair.ours });
+          let tsgitError: TsgitError | undefined;
+          try {
+            await readConfig(ctx);
+          } catch (err) {
+            if (err instanceof TsgitError) tsgitError = err;
+            else throw err;
+          }
 
-        // Assert — tsgit refuses on the same line
-        expect(tsgitError, 'expected tsgit to throw').not.toBeUndefined();
-        const data = (tsgitError as TsgitError).data;
-        expect(data.code).toBe('CONFIG_PARSE_ERROR');
-        if (data.code === 'CONFIG_PARSE_ERROR') {
-          expect(data.line).toBe(line);
-        }
-      }, 60_000);
+          // Assert — tsgit refuses on the same line
+          expect(tsgitError, 'expected tsgit to throw').not.toBeUndefined();
+          const data = (tsgitError as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code === 'CONFIG_PARSE_ERROR') {
+            expect(data.line).toBe(line);
+          }
+        },
+        60_000,
+      );
     });
   });
 
@@ -1355,28 +1356,27 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
   ];
 
   describe('Given twin repos with a same-line header+entry block', () => {
-    describe.each(SAME_LINE_SET_MATRIX)('When git and tsgit each set "$key" ($label)', ({
-      body,
-      key,
-      value,
-    }) => {
-      it('Then the [a]-onward section bytes are identical', async () => {
-        // Arrange — identical seed bytes in both repos
-        const { peerConfigPath } = await seedTwinConfigs(pair, PREAMBLE + body);
+    describe.each(SAME_LINE_SET_MATRIX)(
+      'When git and tsgit each set "$key" ($label)',
+      ({ body, key, value }) => {
+        it('Then the [a]-onward section bytes are identical', async () => {
+          // Arrange — identical seed bytes in both repos
+          const { peerConfigPath } = await seedTwinConfigs(pair, PREAMBLE + body);
 
-        // Act — canonical git set via --file
-        const gitResult = tryRunGit(['config', '--file', peerConfigPath, key, value]);
-        expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
+          // Act — canonical git set via --file
+          const gitResult = tryRunGit(['config', '--file', peerConfigPath, key, value]);
+          expect(gitResult.ok, `git config set failed: ${gitResult.stderr}`).toBe(true);
 
-        // Act — tsgit configSet on ours
-        const ctx = createNodeContext({ workDir: pair.ours });
-        await configSet(ctx, { key, value, scope: 'local' });
+          // Act — tsgit configSet on ours
+          const ctx = createNodeContext({ workDir: pair.ours });
+          await configSet(ctx, { key, value, scope: 'local' });
 
-        // Assert — byte-identical [a]-onward content
-        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
-        expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
-      }, 60_000);
-    });
+          // Assert — byte-identical [a]-onward content
+          const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+          expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
+        }, 60_000);
+      },
+    );
   });
 
   const SAME_LINE_UNSET_MATRIX: ReadonlyArray<{ label: string; body: string; key: string }> = [
@@ -1415,27 +1415,27 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
   };
 
   describe('Given twin repos with a same-line header+entry block to unset', () => {
-    describe.each(SAME_LINE_UNSET_MATRIX)('When git and tsgit each unset "$key" ($label)', ({
-      body,
-      key,
-    }) => {
-      it('Then the [a]-onward section bytes are identical', async () => {
-        // Arrange
-        const { peerConfigPath } = await seedTwinConfigs(pair, PREAMBLE + body);
+    describe.each(SAME_LINE_UNSET_MATRIX)(
+      'When git and tsgit each unset "$key" ($label)',
+      ({ body, key }) => {
+        it('Then the [a]-onward section bytes are identical', async () => {
+          // Arrange
+          const { peerConfigPath } = await seedTwinConfigs(pair, PREAMBLE + body);
 
-        // Act — canonical git --unset via --file
-        const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', key]);
-        expect(gitResult.ok, `git --unset failed: ${gitResult.stderr}`).toBe(true);
+          // Act — canonical git --unset via --file
+          const gitResult = tryRunGit(['config', '--file', peerConfigPath, '--unset', key]);
+          expect(gitResult.ok, `git --unset failed: ${gitResult.stderr}`).toBe(true);
 
-        // Act — tsgit configUnset on ours
-        const ctx = createNodeContext({ workDir: pair.ours });
-        await configUnset(ctx, { key, scope: 'local' });
+          // Act — tsgit configUnset on ours
+          const ctx = createNodeContext({ workDir: pair.ours });
+          await configUnset(ctx, { key, scope: 'local' });
 
-        // Assert
-        const { oursConfig, peerConfig } = await readTwinConfigs(pair);
-        expect(sliceFromA(oursConfig)).toBe(sliceFromA(peerConfig));
-      }, 60_000);
-    });
+          // Assert
+          const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+          expect(sliceFromA(oursConfig)).toBe(sliceFromA(peerConfig));
+        }, 60_000);
+      },
+    );
   });
 
   describe('Given twin repos with two same-line [a] blocks of the same key (R6)', () => {
@@ -3086,27 +3086,29 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     ];
 
     describe('When git and tsgit read --list', () => {
-      it.each(
-        CHAIN_READ_MATRIX,
-      )('Then the reconstructed --list matches git byte-for-byte for $label', async ({ bytes }) => {
-        // Arrange — write the fixture into ours .git/config
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        await writeFile(oursConfigPath, bytes, 'utf8');
+      it.each(CHAIN_READ_MATRIX)(
+        'Then the reconstructed --list matches git byte-for-byte for $label',
+        async ({ bytes }) => {
+          // Arrange — write the fixture into ours .git/config
+          const oursConfigPath = path.join(pair.ours, '.git', 'config');
+          await writeFile(oursConfigPath, bytes, 'utf8');
 
-        // Act — canonical git --list (scoped to the file, no preamble)
-        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
-        expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
+          // Act — canonical git --list (scoped to the file, no preamble)
+          const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+          expect(gitResult.ok, `git --list failed: ${gitResult.stderr}`).toBe(true);
 
-        // Act — tsgit configList, reconstructing git's --list lines
-        const ctx = createNodeContext({ workDir: pair.ours });
-        const result = await configList(ctx, { scope: 'local' });
-        const reconstructed = result.entries
-          .map((e) => (e.value === null ? `${e.key}\n` : `${e.key}=${e.value}\n`))
-          .join('');
+          // Act — tsgit configList, reconstructing git's --list lines
+          const ctx = createNodeContext({ workDir: pair.ours });
+          const result = await configList(ctx, { scope: 'local' });
+          const reconstructed = result.entries
+            .map((e) => (e.value === null ? `${e.key}\n` : `${e.key}=${e.value}\n`))
+            .join('');
 
-        // Assert — byte-identical reconstruction
-        expect(reconstructed).toBe(gitResult.stdout);
-      }, 60_000);
+          // Assert — byte-identical reconstruction
+          expect(reconstructed).toBe(gitResult.stdout);
+        },
+        60_000,
+      );
     });
 
     // git refuses each of these unquoted headers at line 1 (exit 128).
@@ -3118,36 +3120,40 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     ];
 
     describe('When git and tsgit parse a whitespace-bearing unquoted header', () => {
-      it.each(CHAIN_REFUSE_MATRIX)('Then both refuse at line 1 for $label', async ({ bytes }) => {
-        // Arrange
-        const oursConfigPath = path.join(pair.ours, '.git', 'config');
-        await writeFile(oursConfigPath, bytes, 'utf8');
+      it.each(CHAIN_REFUSE_MATRIX)(
+        'Then both refuse at line 1 for $label',
+        async ({ bytes }) => {
+          // Arrange
+          const oursConfigPath = path.join(pair.ours, '.git', 'config');
+          await writeFile(oursConfigPath, bytes, 'utf8');
 
-        // Act — canonical git refuses with "bad config line 1"
-        const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
-        expect(gitResult.ok).toBe(false);
-        const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
-        expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
-        expect(Number((lineMatch as RegExpExecArray)[1])).toBe(1);
+          // Act — canonical git refuses with "bad config line 1"
+          const gitResult = tryRunGit(['config', '--file', oursConfigPath, '--list']);
+          expect(gitResult.ok).toBe(false);
+          const lineMatch = /bad config line (\d+)/i.exec(gitResult.stderr);
+          expect(lineMatch, `expected 'bad config line N' in: ${gitResult.stderr}`).not.toBeNull();
+          expect(Number((lineMatch as RegExpExecArray)[1])).toBe(1);
 
-        // Act — tsgit
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let tsgitError: TsgitError | undefined;
-        try {
-          await readConfig(ctx);
-        } catch (err) {
-          if (err instanceof TsgitError) tsgitError = err;
-          else throw err;
-        }
+          // Act — tsgit
+          const ctx = createNodeContext({ workDir: pair.ours });
+          let tsgitError: TsgitError | undefined;
+          try {
+            await readConfig(ctx);
+          } catch (err) {
+            if (err instanceof TsgitError) tsgitError = err;
+            else throw err;
+          }
 
-        // Assert — tsgit throws CONFIG_PARSE_ERROR at the same 1-based line
-        expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
-        const data = (tsgitError as TsgitError).data;
-        expect(data.code).toBe('CONFIG_PARSE_ERROR');
-        if (data.code === 'CONFIG_PARSE_ERROR') {
-          expect(data.line).toBe(1);
-        }
-      }, 60_000);
+          // Assert — tsgit throws CONFIG_PARSE_ERROR at the same 1-based line
+          expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+          const data = (tsgitError as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code === 'CONFIG_PARSE_ERROR') {
+            expect(data.line).toBe(1);
+          }
+        },
+        60_000,
+      );
     });
 
     describe('When git and tsgit each rename the first chained section `a` to `c`', () => {

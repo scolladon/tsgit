@@ -12,24 +12,20 @@ import {
 describe('withRetry — validation', () => {
   describe('Given attempts=%j (out of range)', () => {
     describe('When withRetry is created', () => {
-      it.each([
-        0,
-        -1,
-        11,
-        1.5,
-        Number.NaN,
-        Number.POSITIVE_INFINITY,
-      ])('Then throws RangeError with exact message', (attempts) => {
-        // Arrange
-        try {
-          withRetry({ attempts });
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(RangeError);
-          expect((err as RangeError).message).toBe('withRetry: attempts must be 1..10');
-        }
-      });
+      it.each([0, -1, 11, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+        'Then throws RangeError with exact message',
+        (attempts) => {
+          // Arrange
+          try {
+            withRetry({ attempts });
+            throw new Error('expected throw');
+          } catch (err) {
+            // Assert
+            expect(err).toBeInstanceOf(RangeError);
+            expect((err as RangeError).message).toBe('withRetry: attempts must be 1..10');
+          }
+        },
+      );
     });
   });
 
@@ -46,21 +42,20 @@ describe('withRetry — validation', () => {
 
   describe('Given baseMs=%j', () => {
     describe('When withRetry is created', () => {
-      it.each([
-        -1,
-        Number.POSITIVE_INFINITY,
-        Number.NaN,
-      ])('Then throws RangeError with exact message', (baseMs) => {
-        // Arrange
-        try {
-          withRetry({ attempts: 3, baseMs });
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(RangeError);
-          expect((err as RangeError).message).toBe('withRetry: baseMs must be ≥ 0');
-        }
-      });
+      it.each([-1, Number.POSITIVE_INFINITY, Number.NaN])(
+        'Then throws RangeError with exact message',
+        (baseMs) => {
+          // Arrange
+          try {
+            withRetry({ attempts: 3, baseMs });
+            throw new Error('expected throw');
+          } catch (err) {
+            // Assert
+            expect(err).toBeInstanceOf(RangeError);
+            expect((err as RangeError).message).toBe('withRetry: baseMs must be ≥ 0');
+          }
+        },
+      );
     });
   });
 

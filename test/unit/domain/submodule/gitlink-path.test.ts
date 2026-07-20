@@ -36,11 +36,14 @@ describe('Given a submodule name and worktree path', () => {
       ['single-segment name, two-segment path', 'custom', 'vendor/x', '../../../vendor/x'],
       ['single-segment name and path', 'a', 'a', '../../../a'],
       ['three-segment name', 'a/b/c', 'p', '../../../../../p'],
-    ])('Then %s yields the name-depth-relative worktree pointer', (_label, name, path, expected) => {
-      // Arrange + Act
-      const sut = submoduleCoreWorktree(name, path);
-      // Assert
-      expect(sut).toBe(expected);
-    });
+    ])(
+      'Then %s yields the name-depth-relative worktree pointer',
+      (_label, name, path, expected) => {
+        // Arrange + Act
+        const sut = submoduleCoreWorktree(name, path);
+        // Assert
+        expect(sut).toBe(expected);
+      },
+    );
   });
 });
