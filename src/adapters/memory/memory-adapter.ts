@@ -42,6 +42,7 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
   const fsOptions: MemoryFileSystemOptions = {
     rootDir: DEFAULT_WORK_DIR,
     ...(options.files !== undefined ? { files: options.files } : {}),
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ObjectLiteral: equivalent — when `home` is undefined the always-spread mutant yields `{ home: undefined }`, which MemoryFileSystem coalesces (`?? DEFAULT_HOME`) to the same value as omitting the key. The killable always-`{}` half is covered by the home-propagation test.
     ...(options.home !== undefined ? { home: options.home } : {}),
     ...(options.xdg !== undefined ? { xdg: options.xdg } : {}),
     ...(options.systemConfig !== undefined ? { systemConfig: options.systemConfig } : {}),
@@ -75,8 +76,11 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
     runtime: 'memory' as const,
     hashConfig,
     deltaCache,
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ObjectLiteral: equivalent — when `signal` is undefined the always-spread mutant yields `{ signal: undefined }`, which createContext freezes indistinguishably from omitting the key (consumers read `ctx.signal` by value). The killable always-`{}` half is covered by the signal-propagation test.
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ObjectLiteral: equivalent — when `hooks` is undefined the always-spread mutant yields `{ hooks: undefined }`, indistinguishable from omitting the key once createContext freezes it (consumers read `ctx.hooks` by value). The killable always-`{}` half is covered by the hooks-propagation test.
     ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ObjectLiteral: equivalent — when `command` is undefined the always-spread mutant yields `{ command: undefined }`, indistinguishable from omitting the key once createContext freezes it (consumers read `ctx.command` by value). The killable always-`{}` half is covered by the command-propagation test.
     ...(options.command !== undefined ? { command: options.command } : {}),
     ...(options.env !== undefined ? { env: options.env } : {}),
   };

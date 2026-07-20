@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryCommandRunner } from '../../../../src/adapters/memory/memory-command-runner.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 
 describe('createMemoryContext', () => {
   describe('Given a command runner option', () => {
@@ -171,6 +172,78 @@ describe('createMemoryContext', () => {
         expect(() => sut.progress.start('test', 1)).not.toThrow();
         expect(() => sut.progress.update('test', 0, 1)).not.toThrow();
         expect(() => sut.progress.end('test')).not.toThrow();
+      });
+    });
+  });
+
+  describe('Given a home override', () => {
+    describe('When reading fs.homedir', () => {
+      it('Then it equals the supplied home, not the default', () => {
+        // Arrange / Act
+        const sut = createMemoryContext({ home: '/custom/home' });
+
+        // Assert — dropping the `home` spread would fall back to the default home.
+        expect(sut.fs.homedir()).toBe('/custom/home');
+      });
+    });
+  });
+
+  describe('Given a hooks runner option', () => {
+    describe('When reading ctx.hooks', () => {
+      it('Then it equals the supplied runner', () => {
+        // Arrange
+        const hooks = new MemoryHookRunner();
+
+        // Act
+        const sut = createMemoryContext({ hooks });
+
+        // Assert — dropping the `hooks` spread would leave ctx.hooks undefined.
+        expect(sut.hooks).toBe(hooks);
+      });
+    });
+  });
+
+  describe('Given default options', () => {
+    describe('When reading hashConfig', () => {
+      it('Then it is the sha1 config (20-byte digest, 40-char hex)', () => {
+        // Arrange / Act
+        const sut = createMemoryContext();
+
+        // Assert — forcing the sha256 arm would give a 32-byte digest.
+        expect(sut.hashConfig.digestLength).toBe(20);
+        expect(sut.hashConfig.hexLength).toBe(40);
+      });
+    });
+  });
+
+  describe('Given algorithm option sha256', () => {
+    describe('When reading hashConfig', () => {
+      it('Then it is the sha256 config (32-byte digest, 64-char hex)', () => {
+        // Arrange / Act
+        const sut = createMemoryContext({ algorithm: 'sha256' });
+
+        // Assert — forcing the sha1 arm would give a 20-byte digest.
+        expect(sut.hashConfig.digestLength).toBe(32);
+        expect(sut.hashConfig.hexLength).toBe(64);
+      });
+    });
+  });
+
+  describe('Given a deltaCacheMaxEntries cap', () => {
+    describe('When more entries than the cap are inserted', () => {
+      it('Then the cache evicts down to the cap', () => {
+        // Arrange — a cap of 2 with generous byte room isolates the entry-count limit.
+        const sut = createMemoryContext({ deltaCacheMaxEntries: 2, deltaCacheMaxBytes: 1_000_000 });
+
+        // Act
+        sut.deltaCache.set('a', new Uint8Array([1]), 1);
+        sut.deltaCache.set('b', new Uint8Array([2]), 1);
+        sut.deltaCache.set('c', new Uint8Array([3]), 1);
+
+        // Assert — coalescing the cap to the 65_536 default would keep all three.
+        expect(sut.deltaCache.entryCount).toBe(2);
+        expect(sut.deltaCache.get('a')).toBeUndefined();
+        expect(sut.deltaCache.get('c')).toEqual(new Uint8Array([3]));
       });
     });
   });
