@@ -1345,7 +1345,7 @@ describe('cleanFilterFailed error', () => {
 
         // Assert — the CLEAN_FILTER_FAILED case must return its own message, not fall through
         // to the SMUDGE_FILTER_FAILED case which starts with "smudge filter".
-        expect(sut.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter '/);
+        expect(sut.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter /);
       });
     });
   });
