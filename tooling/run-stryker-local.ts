@@ -78,6 +78,17 @@ const parseChunkSize = (argv: readonly string[]): number => {
   return parsed;
 };
 
+// `--concurrency <n>` overrides the Stryker config's scheduled value for this
+// sweep — the config resolves concurrency once at load and cannot be re-tuned
+// per run, so the sweep passes it through to each chunk's `stryker run`.
+const parseConcurrency = (argv: readonly string[]): number | null => {
+  const index = argv.indexOf('--concurrency');
+  if (index === -1) return null;
+  const parsed = Number(argv[index + 1]);
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return parsed;
+};
+
 const chunk = <T>(items: readonly T[], size: number): T[][] => {
   const chunks: T[][] = [];
   for (let i = 0; i < items.length; i += size) {
@@ -86,11 +97,16 @@ const chunk = <T>(items: readonly T[], size: number): T[][] => {
   return chunks;
 };
 
-const spawnChunk = (spawnLike: SpawnLike, mutateList: string): Promise<number> =>
+const spawnChunk = (
+  spawnLike: SpawnLike,
+  mutateList: string,
+  concurrency: number | null,
+): Promise<number> =>
   new Promise<number>((resolve) => {
+    const concurrencyArgs = concurrency === null ? [] : ['--concurrency', String(concurrency)];
     const child = spawnLike(
       'stryker',
-      ['run', '--incremental', '--mutate', mutateList],
+      ['run', '--incremental', ...concurrencyArgs, '--mutate', mutateList],
       { stdio: 'inherit' },
     );
     child.on('exit', (code) => resolve(code ?? 1));
@@ -99,17 +115,21 @@ const spawnChunk = (spawnLike: SpawnLike, mutateList: string): Promise<number> =
 
 export const runStrykerLocalSweep = async (opts: LocalSweepOptions): Promise<SweepResult> => {
   const chunkSize = parseChunkSize(opts.argv);
+  const concurrency = parseConcurrency(opts.argv);
   const chunks = chunk(opts.files, chunkSize);
   const survivorsByFile = new Map<string, readonly MutantEntry[]>();
   let failedChunks = 0;
 
-  opts.stdout(`Sweeping ${opts.files.length} file(s) in ${chunks.length} chunk(s) of ${chunkSize}`);
+  const at = concurrency === null ? '' : ` at concurrency ${concurrency}`;
+  opts.stdout(
+    `Sweeping ${opts.files.length} file(s) in ${chunks.length} chunk(s) of ${chunkSize}${at}`,
+  );
 
   for (let i = 0; i < chunks.length; i++) {
     const files = chunks[i] ?? [];
     opts.stdout(`[chunk ${i + 1}/${chunks.length}] mutating ${files.length} file(s)`);
     opts.resetReport();
-    await spawnChunk(opts.spawn, files.join(','));
+    await spawnChunk(opts.spawn, files.join(','), concurrency);
 
     const report = opts.readReport();
     const covered = files.filter((file) => report?.files[file] !== undefined);
@@ -188,11 +208,48 @@ const parseFilesOverride = (argv: readonly string[]): string[] | null => {
   return value.split(',').filter((file) => file.length > 0);
 };
 
+// `--bucket <name>` sweeps one budget layer at a time (the 26.12 "bucket by
+// bucket" flow). The predicates form a COMPLETE partition of the mutate
+// universe — every file lands in exactly one bucket — so the union of the five
+// buckets equals the whole-tree sweep with no orphaned file.
+export const BUCKET_PREDICATES: Readonly<Record<string, (file: string) => boolean>> = {
+  domain: (file) => file.startsWith('src/domain/'),
+  application: (file) =>
+    file.startsWith('src/application/') ||
+    file === 'src/repository.ts' ||
+    file.startsWith('src/repository/') ||
+    file === 'src/dispose-adapters.ts',
+  adapters: (file) => file.startsWith('src/adapters/') || file === 'src/adapter-detect.ts',
+  infra: (file) =>
+    file.startsWith('src/operators/') ||
+    file.startsWith('src/transport/') ||
+    file.startsWith('src/ports/') ||
+    file === 'src/progress.ts',
+  root: (file) => file.startsWith('src/index.') || file === 'src/public-types.ts',
+};
+
+export const resolveBucketFiles = (name: string, universe: readonly string[]): string[] => {
+  const predicate = BUCKET_PREDICATES[name];
+  if (predicate === undefined) {
+    throw new Error(`Unknown bucket "${name}". Known: ${Object.keys(BUCKET_PREDICATES).join(', ')}`);
+  }
+  return universe.filter(predicate);
+};
+
+const resolveSweepFiles = (argv: readonly string[], universe: readonly string[]): string[] => {
+  const override = parseFilesOverride(argv);
+  if (override !== null) return override;
+  const index = argv.indexOf('--bucket');
+  const bucket = index === -1 ? undefined : argv[index + 1];
+  if (bucket === undefined || bucket.length === 0) return [...universe];
+  return resolveBucketFiles(bucket, universe);
+};
+
 if (isEntryPoint()) {
   const argv = process.argv.slice(2);
   const result = await runStrykerLocalSweep({
     argv,
-    files: parseFilesOverride(argv) ?? discoverMutateUniverse(),
+    files: resolveSweepFiles(argv, discoverMutateUniverse()),
     spawn: nodeSpawn,
     resetReport: resetReportFile,
     readReport: readReportFile,

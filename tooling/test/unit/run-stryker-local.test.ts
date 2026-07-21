@@ -2,7 +2,11 @@ import { EventEmitter } from 'node:events';
 
 import { describe, expect, it } from 'vitest';
 import type { MutationReport, SpawnLike } from '../../run-stryker-local.js';
-import { runStrykerLocalSweep } from '../../run-stryker-local.js';
+import {
+  BUCKET_PREDICATES,
+  resolveBucketFiles,
+  runStrykerLocalSweep,
+} from '../../run-stryker-local.js';
 
 interface SpawnCall {
   readonly command: string;
@@ -69,6 +73,80 @@ describe('runStrykerLocalSweep', () => {
           { command: 'stryker', args: ['run', '--incremental', '--mutate', 'src/c.ts,src/d.ts'] },
           { command: 'stryker', args: ['run', '--incremental', '--mutate', 'src/e.ts'] },
         ]);
+      });
+    });
+  });
+
+  describe('Given a --concurrency flag', () => {
+    describe('When the sweep spawns a chunk', () => {
+      it('Then it passes --concurrency <n> to stryker between --incremental and --mutate', async () => {
+        // Arrange
+        const calls: SpawnCall[] = [];
+        const sut = runStrykerLocalSweep;
+
+        // Act
+        await sut({
+          argv: ['--concurrency', '6'],
+          files: ['src/a.ts'],
+          spawn: fakeSpawn(calls),
+          resetReport: () => {},
+          readReport: () => reportOf({ 'src/a.ts': [] }),
+          stdout: () => {},
+        });
+
+        // Assert
+        expect(calls).toEqual([
+          {
+            command: 'stryker',
+            args: ['run', '--incremental', '--concurrency', '6', '--mutate', 'src/a.ts'],
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a non-integer --concurrency value', () => {
+    describe('When the sweep spawns a chunk', () => {
+      it('Then it omits the flag so Stryker falls back to its configured concurrency', async () => {
+        // Arrange
+        const calls: SpawnCall[] = [];
+        const sut = runStrykerLocalSweep;
+
+        // Act
+        await sut({
+          argv: ['--concurrency', 'nonsense'],
+          files: ['src/a.ts'],
+          spawn: fakeSpawn(calls),
+          resetReport: () => {},
+          readReport: () => reportOf({ 'src/a.ts': [] }),
+          stdout: () => {},
+        });
+
+        // Assert
+        expect(calls[0]?.args).toEqual(['run', '--incremental', '--mutate', 'src/a.ts']);
+      });
+    });
+  });
+
+  describe('Given a --concurrency value below one', () => {
+    describe('When the sweep spawns a chunk', () => {
+      it('Then it omits the flag so Stryker falls back to its configured concurrency', async () => {
+        // Arrange
+        const calls: SpawnCall[] = [];
+        const sut = runStrykerLocalSweep;
+
+        // Act
+        await sut({
+          argv: ['--concurrency', '0'],
+          files: ['src/a.ts'],
+          spawn: fakeSpawn(calls),
+          resetReport: () => {},
+          readReport: () => reportOf({ 'src/a.ts': [] }),
+          stdout: () => {},
+        });
+
+        // Assert
+        expect(calls[0]?.args).toEqual(['run', '--incremental', '--mutate', 'src/a.ts']);
       });
     });
   });
@@ -174,6 +252,95 @@ describe('runStrykerLocalSweep', () => {
         // Assert
         expect(result.chunksRun).toBe(2);
         expect(calls).toHaveLength(2);
+      });
+    });
+  });
+});
+
+describe('resolveBucketFiles', () => {
+  const universe = [
+    'src/adapters/inflate.ts',
+    'src/adapters/node/node-file-system.ts',
+    'src/application/commands/clone.ts',
+    'src/domain/objects/blob.ts',
+    'src/index.node.ts',
+    'src/operators/take.ts',
+    'src/public-types.ts',
+    'src/repository.ts',
+  ];
+
+  describe('Given the domain bucket name', () => {
+    describe('When resolving its files from the universe', () => {
+      it('Then it returns only the src/domain files', () => {
+        // Arrange
+        const sut = resolveBucketFiles;
+
+        // Act
+        const result = sut('domain', universe);
+
+        // Assert
+        expect(result).toEqual(['src/domain/objects/blob.ts']);
+      });
+    });
+  });
+
+  describe('Given the adapters bucket name', () => {
+    describe('When resolving its files', () => {
+      it('Then it includes adapters outside node/memory (inflate) and adapter-detect scope', () => {
+        // Arrange
+        const sut = resolveBucketFiles;
+
+        // Act
+        const result = sut('adapters', universe);
+
+        // Assert — inflate (a root-level adapter) is no longer orphaned
+        expect(result).toEqual(['src/adapters/inflate.ts', 'src/adapters/node/node-file-system.ts']);
+      });
+    });
+  });
+
+  describe('Given the root bucket name', () => {
+    describe('When resolving its files', () => {
+      it('Then it captures the platform index entrypoints and public-types', () => {
+        // Arrange
+        const sut = resolveBucketFiles;
+
+        // Act
+        const result = sut('root', universe);
+
+        // Assert
+        expect(result).toEqual(['src/index.node.ts', 'src/public-types.ts']);
+      });
+    });
+  });
+
+  describe('Given an unknown bucket name', () => {
+    describe('When resolving its files', () => {
+      it('Then it throws naming the unknown bucket and the known buckets', () => {
+        // Arrange
+        const sut = resolveBucketFiles;
+
+        // Act / Assert
+        expect(() => sut('made-up', universe)).toThrow(
+          'Unknown bucket "made-up". Known: domain, application, adapters, infra, root',
+        );
+      });
+    });
+  });
+
+  describe('Given the five bucket predicates', () => {
+    describe('When partitioning the universe', () => {
+      it('Then every file matches exactly one bucket (complete, non-overlapping partition)', () => {
+        // Arrange
+        const predicates = Object.values(BUCKET_PREDICATES);
+
+        // Act
+        const matchCounts = universe.map(
+          (file) => predicates.filter((predicate) => predicate(file)).length,
+        );
+
+        // Assert
+        expect(matchCounts.every((count) => count === 1)).toBe(true);
       });
     });
   });
