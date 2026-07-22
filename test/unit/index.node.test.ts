@@ -6,7 +6,7 @@
  * `bare` flag) must be exercised here — the integration suite does not feed
  * the mutation runner.
  */
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -70,6 +70,50 @@ describe('Node shim — allowInsecureHttp default', () => {
   });
 });
 
+describe('Node shim — allowInsecureHttp enabled', () => {
+  describe('Given allowInsecureHttp is true', () => {
+    describe('When an http:// request is made', () => {
+      it('Then the inner transport allows plaintext and surfaces the connect error', async () => {
+        // Arrange — allowInsecureHttp:true must reach the inner NodeHttpTransport
+        // so its HTTPS guard stands down. Kills the L64 ObjectLiteral mutant that
+        // replaces `{ allowInsecureHttp: opts.allowInsecureHttp ?? false }` with
+        // `{}`: the empty object defaults the transport to insecure=false, which
+        // would reject with `HTTPS required` instead of attempting the socket.
+        const sut = await openRepository({
+          cwd: tmpdir,
+          allowInsecureHttp: true,
+          config: {
+            allowInsecure: true,
+            allowPrivateNetworks: true,
+            dnsResolver: async () => ['127.0.0.1'],
+          },
+        });
+
+        try {
+          // Act
+          let thrown: unknown;
+          try {
+            await sut.ctx.transport.request({
+              url: 'http://127.0.0.1:1/',
+              method: 'GET',
+              headers: {},
+            });
+          } catch (e) {
+            thrown = e;
+          }
+
+          // Assert — the socket was attempted (refused), not blocked by the guard.
+          const data = (thrown as { data: { code: string; reason: string } }).data;
+          expect(data.code).toBe('NETWORK_ERROR');
+          expect(data.reason).toBe('Connection refused');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
 describe('Node shim — deltaCacheMaxEntries option', () => {
   describe('Given an explicit deltaCacheMaxEntries of 3', () => {
     describe('When a 4th tiny entry is set', () => {
@@ -102,8 +146,7 @@ describe('Node shim — discoverLayout bare flag', () => {
     describe('When openRepository runs', () => {
       it('Then the discovered layout has bare:false', async () => {
         // Arrange — a real .git directory so discoverLayout returns its own
-        // object literal (not the synthetic fallback). Kills the L100 BooleanLiteral
-        // `false` → `true` mutant on the discovered layout's `bare` field.
+        // object literal (not the synthetic fallback).
         await mkdir(path.join(tmpdir, '.git'), { recursive: true });
         const sub = path.join(tmpdir, 'nested');
         await mkdir(sub, { recursive: true });
@@ -115,6 +158,57 @@ describe('Node shim — discoverLayout bare flag', () => {
           // Assert — discoverLayout found the parent .git and reported bare:false.
           expect(sut.ctx.layout.bare).toBe(false);
           expect(sut.ctx.layout.gitDir).toContain('.git');
+        } finally {
+          await sut.dispose();
+        }
+      });
+
+      it('Then the walk climbs to the ancestor that owns .git', async () => {
+        // Arrange — .git lives in the parent; the walk must ascend one level.
+        // Every stop-early / fall-back mutant on the loop guards (isDirectory
+        // match, block body, parent===current terminator) would yield the
+        // synthetic fallback rooted at `nested` instead of the discovered
+        // ancestor, so asserting the exact discovered workDir kills them all.
+        await mkdir(path.join(tmpdir, '.git'), { recursive: true });
+        const sub = path.join(tmpdir, 'nested');
+        await mkdir(sub, { recursive: true });
+        const ancestor = await realpath(tmpdir);
+
+        // Act
+        const sut = await openRepository({ cwd: sub });
+
+        try {
+          // Assert — workDir is the .git-owning ancestor, not the cwd itself.
+          expect(sut.ctx.layout.workDir).toBe(ancestor);
+          expect(sut.ctx.layout.gitDir).toBe(path.join(ancestor, '.git'));
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — synthetic fallback layout', () => {
+  describe('Given a cwd with no .git anywhere in its ancestry', () => {
+    describe('When openRepository runs', () => {
+      it('Then the fallback layout is a non-bare gitDir under the resolved cwd', async () => {
+        // Arrange — a fresh tmpdir with no `.git` on the walk forces
+        // discoverLayout to return undefined, exercising the synthetic
+        // fallback object literal. Pins its `gitDir` (`<workDir>/.git`, killing
+        // the StringLiteral `.git` → `""` mutant that would collapse it to
+        // `workDir`) and its `bare: false` field (killing the BooleanLiteral
+        // `false` → `true` mutant).
+        const resolvedWorkDir = await realpath(tmpdir);
+
+        // Act
+        const sut = await openRepository({ cwd: tmpdir });
+
+        try {
+          // Assert
+          expect(sut.ctx.layout.workDir).toBe(resolvedWorkDir);
+          expect(sut.ctx.layout.gitDir).toBe(path.join(resolvedWorkDir, '.git'));
+          expect(sut.ctx.layout.bare).toBe(false);
         } finally {
           await sut.dispose();
         }
@@ -171,6 +265,39 @@ describe('Node shim — ssh/env/runtime context wiring', () => {
           } else {
             process.env.GIT_NOTES_REF = saved;
           }
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — worktreeFs raw adapter root', () => {
+  describe('Given the raw worktree filesystem (unsafeRawAdapters)', () => {
+    describe('When a path inside the repo/worktree common ancestor is probed', () => {
+      it('Then the raw adapter is rooted at the common ancestor and reaches it', async () => {
+        // Arrange — unsafeRawAdapters:true exposes the raw NodeFileSystem the
+        // Node shim builds via makeWorktreeFs, rooted at the common ancestor of
+        // the workDir and the worktree paths (here the resolved cwd). The L87
+        // ArrayDeclaration mutant swaps that argument array for `[]`, so
+        // commonAncestor([]) collapses to '/', whose containment prefix rejects
+        // every real absolute path with PERMISSION_DENIED. A directory inside
+        // the repo must therefore stay reachable — the correct root contains it
+        // (exists resolves), the mutant root '/' refuses it.
+        const resolvedWorkDir = await realpath(tmpdir);
+        await mkdir(path.join(tmpdir, 'inside'), { recursive: true });
+        const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });
+        const worktreeFs = sut.ctx.worktreeFs;
+        expect(worktreeFs).toBeDefined();
+        const rawFs = worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
+
+        try {
+          // Act — probe an existing directory inside the common ancestor.
+          const result = await rawFs?.exists(path.join(resolvedWorkDir, 'inside'));
+
+          // Assert — reachable under the correct root; the mutant root would throw.
+          expect(result).toBe(true);
+        } finally {
+          await sut.dispose();
         }
       });
     });
