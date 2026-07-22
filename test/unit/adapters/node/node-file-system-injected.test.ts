@@ -147,6 +147,39 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
     });
   });
 
+  describe('Given an exists probe on a non-existent path that escapes rootDir', () => {
+    describe('When exists fires and realpath rejects the escaping path with ENOENT', () => {
+      it('Then the ENOENT arm refuses with PERMISSION_DENIED instead of returning false', async () => {
+        // Arrange — realpath resolves the root but rejects the escaping probe
+        // with ENOENT, so exists() enters its ENOENT arm with a `resolved`
+        // that lands outside BOTH the raw and canonical roots. A mutant that
+        // drops either containment arm (or empties the refusal block) would
+        // let the probe fall through to `return false`.
+        const rootDir = '/root';
+        const realpath = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return rootDir;
+          throw enoent();
+        });
+        const fsOps = fakeFsOps({ realpath });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        let returned: boolean | undefined;
+        try {
+          returned = await sut.exists('/root/sub/../../escape/ghost.bin');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the escape is refused, never silently reported absent
+        expect(returned).toBeUndefined();
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
   describe('Given a write whose parent realpath throws a non-ENOENT errno', () => {
     describe('When the call fires', () => {
       it('Then the error propagates and nothing is cached', async () => {
