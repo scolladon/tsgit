@@ -175,6 +175,36 @@ describe('hashBlob', () => {
     });
   });
 
+  describe('Given content sized exactly at MAX_WORKING_TREE_BLOB_BYTES', () => {
+    describe('When hashBlob is called', () => {
+      it('Then the cap is exclusive so it hashes instead of refusing', async () => {
+        // Arrange — the guard rejects only content STRICTLY larger than the cap;
+        // exactly-at-cap must pass through to hashing. Stub hashHex so the
+        // 256 MiB payload is not actually digested (the boundary guard, not the
+        // hash, is under test).
+        const { MAX_WORKING_TREE_BLOB_BYTES } = await import(
+          '../../../../src/application/primitives/types.js'
+        );
+        const base = await buildSeededContext();
+        const stubOid = 'a'.repeat(40) as ObjectId;
+        const ctx = {
+          ...base,
+          hash: {
+            ...base.hash,
+            hashHex: async (): Promise<string> => stubOid,
+          },
+        };
+        const atCap = new Uint8Array(MAX_WORKING_TREE_BLOB_BYTES);
+
+        // Act
+        const sut = await hashBlob(ctx, atCap);
+
+        // Assert
+        expect(sut).toBe(stubOid);
+      });
+    });
+  });
+
   describe('Given a non-aborted then aborted signal between hash and write', () => {
     describe('When write: true is passed', () => {
       it('Then writeObject re-checks the signal and throws OPERATION_ABORTED', async () => {

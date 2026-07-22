@@ -401,6 +401,26 @@ describe('Given a submodule whose branch diverges from the pinned commit', () =>
   });
 });
 
+describe('Given a freshly cloned submodule already sitting at the pinned commit', () => {
+  describe('When update --merge finds nothing to reconcile', () => {
+    it('Then the merge moves nothing and reports changed false', async () => {
+      // Arrange — the clone lands HEAD on the pin, so merging the pin is a
+      // no-op and HEAD does not move.
+      const { ctx } = await seedSuper({ register: true, update: 'merge' });
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert — the reconciliation observed no HEAD movement.
+      expect(result.entries[0]).toMatchObject({
+        mode: 'merge',
+        changed: false,
+        cloned: true,
+      });
+    });
+  });
+});
+
 /**
  * Seed a superproject pinning submodule `lib` (`.gitmodules` on disk, gitlink in
  * the index, HEAD on `main`) whose `.git/config` is the verbatim `configText` —

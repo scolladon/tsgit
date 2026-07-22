@@ -818,4 +818,73 @@ describe('commands/submodule — deinit', () => {
       });
     });
   });
+
+  describe('Given a checked-out submodule with no modifications', () => {
+    describe('When deinit runs without force', () => {
+      it('Then the clean guard passes and the section is unregistered', async () => {
+        // Arrange — HEAD present (checked out) over an empty worktree matching
+        // the empty-tree HEAD: status is clean, so the modifications guard must
+        // let it through rather than refuse it.
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+        await seedCheckedOut(ctx, 'libs/a');
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/libs/a`);
+
+        // Act
+        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+
+        // Assert
+        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+        expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
+      });
+    });
+  });
+
+  describe('Given an empty paths array and no all flag', () => {
+    describe('When deinit runs', () => {
+      it('Then an empty pathspec counts as no pathspec and refuses', async () => {
+        // Arrange
+        const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
+
+        // Act
+        let caught: unknown;
+        try {
+          await submoduleDeinit(ctx, { paths: [] });
+          expect.fail('deinit did not refuse an empty pathspec');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OPTION');
+        if (data.code === 'INVALID_OPTION') {
+          expect(data.option).toBe('submodule.deinit');
+          expect(data.reason).toContain("use 'all: true'");
+        }
+      });
+    });
+  });
+
+  describe('Given all=true alongside an empty paths array and two submodules', () => {
+    describe('When deinit runs', () => {
+      it('Then the empty pathspec is ignored and every submodule is deinit-ed', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: `${GITMODULES_ONE}[submodule "libs/b"]\n\tpath = libs/b\n\turl = ../b\n`,
+          config: `${REGISTERED_ONE}[submodule "libs/b"]\n\turl = https://h.x/g/b\n`,
+        });
+
+        // Act — all=true selects every actionable row; the empty pathspec must
+        // not narrow the selection to nothing.
+        const sut = await submoduleDeinit(ctx, { all: true, paths: [] });
+
+        // Assert
+        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a', 'libs/b']);
+        const text = await readConfigText(ctx);
+        expect(text).not.toContain('[submodule "libs/a"]');
+        expect(text).not.toContain('[submodule "libs/b"]');
+      });
+    });
+  });
 });

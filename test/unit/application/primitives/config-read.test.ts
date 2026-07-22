@@ -669,6 +669,23 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [merge "custom"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then recursive stays undefined (an unrelated key sets neither name, driver nor recursive)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[merge "custom"]\n  name = drv\n  unrelated = binary\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the recursive branch must only fire for a `recursive` key.
+        expect(sut.merge?.get('custom')?.name).toBe('drv');
+        expect(sut.merge?.get('custom')?.recursive).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a subsectionless [merge] section', () => {
     describe('When readConfig', () => {
       it('Then it is ignored', async () => {
@@ -712,6 +729,23 @@ describe('primitives/config-read', () => {
         const sut = await readConfig(ctx);
 
         // Assert
+        expect(sut.diff?.get('upper')?.textconv).toBe('up');
+        expect(sut.diff?.get('upper')?.cachetextconv).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "upper"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then cachetextconv stays undefined (an unrelated key is not read as cachetextconv)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tunrelated = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the cachetextconv branch must only fire for a `cachetextconv` key.
         expect(sut.diff?.get('upper')?.textconv).toBe('up');
         expect(sut.diff?.get('upper')?.cachetextconv).toBeUndefined();
       });
@@ -852,6 +886,23 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.filter?.get('myf')?.clean).toBe('up');
         expect(sut.filter?.get('myf')?.smudge).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [filter "myf"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then process stays undefined (an unrelated key is not read as process)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "myf"]\n\tclean = up\n\tunrelated = pr\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the process branch must only fire for a `process` key.
+        expect(sut.filter?.get('myf')?.clean).toBe('up');
+        expect(sut.filter?.get('myf')?.process).toBeUndefined();
       });
     });
   });
@@ -6823,6 +6874,70 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.gpg?.ssh?.program).toBe('/usr/bin/ssh-keygen');
+      });
+    });
+  });
+
+  describe('Given [gpg] format = <unrecognised value>', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (an unrecognised format value is not stored)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  format = bogus\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — only openpgp/ssh/x509 are accepted formats.
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [foo "ssh"] subsection whose section is not gpg', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (a non-gpg "ssh" subsection is not routed to gpg.ssh)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[foo "ssh"]\n  program = /usr/bin/ssh-keygen\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — only the gpg subsection dispatches to the ssh signer config.
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "notssh"] subsection whose name is not ssh', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (only the "ssh" gpg subsection is recognised)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg "notssh"]\n  program = /usr/bin/ssh-keygen\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — a gpg subsection named other than "ssh" is a silent no-op.
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "ssh"] subsection with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (a non-program key under gpg.ssh is not stored)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg "ssh"]\n  unrelated = /usr/bin/ssh-keygen\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — only the `program` key under gpg.ssh is recognised.
+        expect(sut.gpg).toBeUndefined();
       });
     });
   });

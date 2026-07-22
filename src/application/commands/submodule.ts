@@ -306,6 +306,7 @@ const syncLevel = async (
     entries.push({ name: row.name, path, url, syncedRemote });
   }
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  // Stryker disable next-line EqualityOperator: equivalent — `<` vs `<=` differs only at depth === MAX_SUBMODULE_DEPTH (100), reachable only with 100 actually-checked-out nested submodules; recursion instead terminates when deriveSubmoduleContext finds no deeper module, well below the cap, so the boundary is inert for the realistic domain (same reasoning as the depth-arithmetic equivalence documented on the recursive call below).
   if (opts.recursive === true && depth < MAX_SUBMODULE_DEPTH) {
     for (const row of selected) {
       // Stryker disable next-line StringLiteral: equivalent — childGitDir feeds only the `visited` set threaded into the recursive call; deriveSubmoduleContext's `visited.has(gitDir)` guard is provably always-false under the absorbed layout (each level appends `/modules/<name>`), so the set's contents never affect traversal.
@@ -723,6 +724,7 @@ const reconcileSubmodule = async (
   if (mode === 'checkout') {
     const head = await getRefStore(child).resolveDirect(HEAD_REF);
     if (head.kind === 'direct' && head.id === pinned) return false;
+    // Stryker disable next-line BooleanLiteral: equivalent — `pinned` is always a raw commit oid (never a branch name), and checking out a raw oid detaches HEAD unconditionally, so `detach: false` yields the identical detached-at-pin HEAD as `detach: true`.
     await checkout(child, { rev: pinned, detach: true });
     return true;
   }

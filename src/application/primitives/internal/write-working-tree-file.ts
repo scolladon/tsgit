@@ -24,6 +24,7 @@ export const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> 
   const exists = await ctx.fs
     .lstat(fullPath)
     .then(() => true)
+    // Stryker disable next-line ArrowFunction: equivalent — `exists` feeds only `if (exists)`; a rejected lstat yielding `undefined` instead of `false` is falsy either way, so the rm is skipped identically.
     .catch(() => false);
   if (exists) await ctx.fs.rm(fullPath);
 };

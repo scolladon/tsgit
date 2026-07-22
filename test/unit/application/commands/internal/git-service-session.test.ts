@@ -603,9 +603,14 @@ describe('openGitSession — ssh (inert refusal)', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as { code: string; runtime?: string };
+        const data = (caught as TsgitError).data as {
+          code: string;
+          runtime?: string;
+          reason?: string;
+        };
         expect(data.code).toBe('ADAPTER_UNAVAILABLE');
         expect(data.runtime).toBe('memory');
+        expect(data.reason).toContain('ssh: transport unavailable in this runtime');
       });
     });
   });
