@@ -13,6 +13,7 @@ import type { PathPolicy } from '../adapters/node/path-policy.js';
 
 /** Non-root segments of an already-resolved absolute path. */
 const segmentsOf = (resolved: string, policy: PathPolicy): ReadonlyArray<string> =>
+  // Stryker disable next-line MethodExpression: equivalent — after policy.resolve an empty segment only arises for a bare volume root, and the loop treats [''] and [] identically (the lone '' matches another bare root and joins to '', or breaks — both yield firstRoot).
   resolved.slice(policy.rootOf(resolved).length).split(policy.sep).filter(Boolean);
 
 /**
