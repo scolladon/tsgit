@@ -282,10 +282,14 @@ describe('Node shim — worktreeFs raw adapter root', () => {
         // commonAncestor([]) collapses to '/', whose containment prefix rejects
         // every real absolute path with PERMISSION_DENIED. A directory inside
         // the repo must therefore stay reachable — the correct root contains it
-        // (exists resolves), the mutant root '/' refuses it.
-        const resolvedWorkDir = await realpath(tmpdir);
-        await mkdir(path.join(tmpdir, 'inside'), { recursive: true });
+        // (exists resolves), the mutant root '/' refuses it. Every path is
+        // derived from the repo's own resolved workDir so the created directory,
+        // the worktree root and the probe all share one canonical form — the
+        // containment prefix stays case-exact on every platform (incl. Windows,
+        // where tmpdir's 8.3 short form would otherwise diverge from realpath).
         const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });
+        const resolvedWorkDir = sut.ctx.layout.workDir;
+        await mkdir(path.join(resolvedWorkDir, 'inside'), { recursive: true });
         const worktreeFs = sut.ctx.worktreeFs;
         expect(worktreeFs).toBeDefined();
         const rawFs = worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
