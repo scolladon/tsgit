@@ -92,6 +92,7 @@ const renderBodyLine = (line: BodyLine): ReadonlyArray<string> => {
 
 /** git's hunk old-start (0-based): the first old line of the emitted hunk. */
 const hunkOldStart = (hunk: OutputHunk): number =>
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — oldLen is never negative, so forcing true or widening `> 0` to `>= 0` only diverges at oldLen === 0; a zero-oldLen hunk arises only from an empty old file (any non-empty old file contributes a context/delete edit to the hunk), so oldLines is empty and the funcname scan returns undefined regardless of the ±1 start — heading unchanged.
   hunk.oldLen > 0 ? hunk.oldStart - 1 : hunk.oldStart;
 
 interface FileLines {
