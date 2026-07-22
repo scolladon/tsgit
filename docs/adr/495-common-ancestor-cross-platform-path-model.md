@@ -107,8 +107,8 @@ UNC roots are handled uniformly by the same `rootOf`-based path (c-1), unit-test
 `commonAncestor` and the sibling `NodeFileSystem`. Under `posixPolicy` every step is
 the identity, so the existing POSIX example tests pass byte-unchanged. A
 `common-ancestor.properties.test.ts` sibling is added per the repo's property-testing
-convention (compositional-aggregator lens), its containment invariant oracled by the
-independently-tested `pathContains`.
+convention (compositional-aggregator lens), its containment invariant checked against
+the independently-tested `pathContains` as the oracle.
 
 ## Consequences
 
