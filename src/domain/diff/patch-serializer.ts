@@ -109,8 +109,8 @@ function splitContentLines(bytes: Uint8Array | undefined): SplitContent {
 }
 
 function stripTrailingLf(bytes: Uint8Array): string {
-  // Stryker disable next-line EqualityOperator: equivalent — `bytes.length` is never negative, so `>= 0` is always true; when `bytes.length === 0` the right operand `bytes[-1] === NEWLINE_CODE` is `undefined === 10`, always false, so `end` still resolves to `bytes.length` exactly as the `> 0` guard gives.
   const end =
+    // Stryker disable next-line EqualityOperator: equivalent — `bytes.length` is never negative, so `>= 0` is always true; when `bytes.length === 0` the right operand `bytes[-1] === NEWLINE_CODE` is `undefined === 10`, always false, so `end` still resolves to `bytes.length` exactly as the `> 0` guard gives.
     bytes.length > 0 && bytes[bytes.length - 1] === NEWLINE_CODE ? bytes.length - 1 : bytes.length;
   return decoder.decode(bytes.subarray(0, end));
 }
@@ -326,10 +326,12 @@ interface NoNewlineCtx {
 
 function trailingNoNewline(edit: Edit, ctx: NoNewlineCtx): boolean {
   const isLastOld =
+    // Stryker disable next-line ConditionalExpression: equivalent — isLastOld is only read on the context and delete branches, where edit.kind is never 'insert', so this guard is already true wherever the value is observed; for an insert edit isLastOld is computed but never read.
     edit.kind !== 'insert' &&
     edit.oldIndex === ctx.lastOldIdx &&
     ctx.lastOldIdx === ctx.oldTotal - 1;
   const isLastNew =
+    // Stryker disable next-line ConditionalExpression: equivalent — isLastNew is only read on the context and insert branches, where edit.kind is never 'delete', so this guard is already true wherever the value is observed; for a delete edit isLastNew is computed but never read.
     edit.kind !== 'delete' &&
     edit.newIndex === ctx.lastNewIdx &&
     ctx.lastNewIdx === ctx.newTotal - 1;
