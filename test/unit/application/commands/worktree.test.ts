@@ -429,6 +429,31 @@ describe('worktreeMove', () => {
     });
   });
 
+  describe('Given a worktree-scoped fs adapter', () => {
+    describe('When worktreeMove renames the directory', () => {
+      it('Then it confines the rename fs to exactly the source and destination paths', async () => {
+        // Arrange — an adapter that scopes the fs by path records every scope it
+        // is handed; the rename must be confined to [from, to], not an empty scope.
+        const { ctx } = await seedWithCommit();
+        await worktreeAdd(ctx, { path: 'wm-scope' });
+        const scopeCalls: Array<string | ReadonlyArray<string>> = [];
+        const scopedCtx: Context = {
+          ...ctx,
+          worktreeFs: (worktreePath) => {
+            scopeCalls.push(worktreePath);
+            return ctx.fs;
+          },
+        };
+
+        // Act
+        await worktreeMove(scopedCtx, 'wm-scope', 'wm-scope-moved');
+
+        // Assert
+        expect(scopeCalls).toContainEqual(['/repo/wm-scope', '/repo/wm-scope-moved']);
+      });
+    });
+  });
+
   describe('Given the main worktree', () => {
     describe('When worktreeMove runs', () => {
       it('Then it refuses with INVALID_OPTION carrying the command and reason', async () => {

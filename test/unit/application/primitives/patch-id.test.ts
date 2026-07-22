@@ -234,6 +234,91 @@ describe('computePatchId', () => {
     });
   });
 
+  describe('Given two root commits that add the same path with different binary content, When patch-ids are computed', () => {
+    it('Then the patch-ids differ (the blob oids fold into the binary equivalence key)', async () => {
+      // Arrange — identical path `f`, both binary (a NUL byte); the rendered patch is
+      // just "Binary files … differ" for both, so only the folded oid distinguishes them.
+      const ctx = await buildSeededContext();
+      const cA = await commitFile(ctx, 'BIN\0AAAA', []);
+      const cB = await commitFile(ctx, 'BIN\0BBBB', []);
+
+      // Act
+      const sut = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert
+      expect(sut).not.toBe(other);
+    });
+  });
+
+  describe('Given two root commits that add the same path with identical binary content, When patch-ids are computed', () => {
+    it('Then the patch-ids are equal (identical binary content folds to the same key)', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const cA = await commitFile(ctx, 'BIN\0SAME', []);
+      const cB = await commitFile(ctx, 'BIN\0SAME', []);
+
+      // Act
+      const sut = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert
+      expect(sut).toBe(other);
+    });
+  });
+
+  describe('Given two commits that modify a binary file to different content on the same base, When patch-ids are computed', () => {
+    it('Then the patch-ids differ (the new blob oid folds into the key)', async () => {
+      // Arrange — a shared binary base, then divergent binary content; the rendered
+      // patch is identical ("Binary files … differ"), so only the new oid distinguishes.
+      const ctx = await buildSeededContext();
+      const base = await commitFile(ctx, 'BIN\0BASE', []);
+      const cA = await commitFile(ctx, 'BIN\0AAAA', [base]);
+      const cB = await commitFile(ctx, 'BIN\0BBBB', [base]);
+
+      // Act
+      const sut = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert
+      expect(sut).not.toBe(other);
+    });
+  });
+
+  describe('Given two commits whose diffs differ only by intra-line whitespace, When patch-ids are computed', () => {
+    it('Then the patch-ids are equal (intra-line whitespace is stripped from the key)', async () => {
+      // Arrange — same base, then the changed line differs only in the run of spaces.
+      const ctx = await buildSeededContext();
+      const base = await commitFile(ctx, 'x\n', []);
+      const cA = await commitFile(ctx, 'x y\n', [base]);
+      const cB = await commitFile(ctx, 'x  y\n', [base]);
+
+      // Act
+      const sut = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert
+      expect(sut).toBe(other);
+    });
+  });
+
+  describe('Given two root commits whose added content is identical apart from line boundaries, When patch-ids are computed', () => {
+    it('Then the patch-ids are equal (the canonical key concatenates whitespace-stripped lines)', async () => {
+      // Arrange — one add carries `b+c` on a single line, the other splits it across
+      // two lines; stripping whitespace then concatenating collapses both to one key.
+      const ctx = await buildSeededContext();
+      const cA = await commitFile(ctx, 'b+c\n', []);
+      const cB = await commitFile(ctx, 'b\nc\n', []);
+
+      // Act
+      const sut = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert
+      expect(sut).toBe(other);
+    });
+  });
+
   describe('Given ctx.command is wired and a textconv driver is configured, When patch-id is computed', () => {
     it('Then the patch-id uses raw blob bytes — textconv does not affect the equivalence key', async () => {
       // Arrange — ctx with command runner (simulates real Node.js context);

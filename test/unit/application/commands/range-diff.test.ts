@@ -205,6 +205,28 @@ describe('rangeDiff', () => {
     });
   });
 
+  describe('Given a linear two-commit range, When rangeDiff runs', () => {
+    it('Then the series is ordered oldest-first (position 1 is the older commit)', async () => {
+      // Arrange — two distinct commits; the walk yields them newest-first, so only
+      // the oldest-first reversal puts `older` at position 1 and `newer` at position 2.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const clock = makeClock();
+      const base = await commitFile(ctx, clock, 'seed', 'seed\n', 'seed');
+      const older = await commitFile(ctx, clock, 'a.txt', 'a\n', 'add a');
+      const newer = await commitFile(ctx, clock, 'b.txt', 'b\n', 'add b');
+      const sut = rangeDiff;
+
+      // Act — the same range on both sides; both commits pair as unchanged
+      const result = await sut(ctx, { old: { base, tip: newer }, new: { base, tip: newer } });
+
+      // Assert — oldest-first order: `older` is position 1, `newer` is position 2
+      expect(result.map((e) => e.status)).toEqual(['unchanged', 'unchanged']);
+      expect(result[0]?.old?.id).toBe(older);
+      expect(result[1]?.old?.id).toBe(newer);
+    });
+  });
+
   describe('Given a range whose series begins at a root commit, When rangeDiff runs', () => {
     it('Then the root commit is hydrated against the empty tree (no first parent)', async () => {
       // Arrange — an unrelated orphan base forces the walk to include main's root

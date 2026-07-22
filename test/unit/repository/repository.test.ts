@@ -12,6 +12,7 @@ import { TsgitError } from '../../../src/domain/error.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import type { Blob, ObjectId } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
+import type { FileSystem } from '../../../src/ports/file-system.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
 
 const makeFallback = (): RuntimeFallback => ({
@@ -27,6 +28,37 @@ const makeFallback = (): RuntimeFallback => ({
 
 const open = (opts: Parameters<typeof openRepository>[0] = {}): Promise<Repository> =>
   openRepository({ cwd: '/repo', ...opts }, makeFallback());
+
+// A memory FS whose config-path probes are all unavailable (mirrors the browser
+// adapter, which throws UNSUPPORTED_OPERATION on these). computeConfigScopePaths
+// swallows the throw and skips that scope.
+class UnavailableConfigFs extends MemoryFileSystem {
+  homedir = (): string => {
+    throw new Error('unavailable');
+  };
+  xdgConfigHome = (): string => {
+    throw new Error('unavailable');
+  };
+  systemConfigPath = (): string => {
+    throw new Error('unavailable');
+  };
+}
+
+// Narrow the optional worktreeFs capability the facade always populates.
+const worktreeScopedFs = (repo: Repository, path: string): FileSystem => {
+  const factory = repo.ctx.worktreeFs;
+  if (factory === undefined) throw new Error('worktreeFs capability missing');
+  return factory(path);
+};
+
+const rejectionCode = async (op: () => Promise<unknown>): Promise<string> => {
+  try {
+    await op();
+  } catch (err) {
+    return (err as { data: { code: string } }).data.code;
+  }
+  throw new Error('expected a rejection but the call resolved');
+};
 
 describe('openRepository — construction', () => {
   describe('Given a fallback set and no overrides', () => {
@@ -1030,6 +1062,163 @@ describe('openRepository — dispose macrotask scheduler', () => {
 
         // Assert — fallback path completed cleanly.
         expect(caught).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('openRepository — worktreeFs capability', () => {
+  describe('Given a default-wrapped repo', () => {
+    describe('When operating on a worktree-scoped fs under the worktree path', () => {
+      it('Then the worktree path is a permitted root and write/read round-trips', async () => {
+        // Arrange
+        const sut = await open();
+        const worktreeFs = worktreeScopedFs(sut, '/repo/wt');
+
+        // Act — the worktree path lives outside the gitDir; only a roots array
+        // that includes it admits this write. An empty roots array would reject.
+        await worktreeFs.writeUtf8('/repo/wt/tracked.txt', 'inside');
+        const roundTripped = await worktreeFs.readUtf8('/repo/wt/tracked.txt');
+
+        // Assert
+        expect(roundTripped).toBe('inside');
+      });
+    });
+
+    describe('When accessing a path outside the worktree-scoped fs roots', () => {
+      it('Then the wrapper rejects it with PATHSPEC_OUTSIDE_REPO', async () => {
+        // Arrange
+        const sut = await open();
+        const worktreeFs = worktreeScopedFs(sut, '/repo/wt');
+
+        // Act — an unwrapped raw adapter would surface its own error instead.
+        const code = await rejectionCode(() => worktreeFs.read('/outside/secret'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given unsafeRawAdapters: true and a custom fs', () => {
+    describe('When resolving a worktree-scoped fs', () => {
+      it('Then it returns the raw adapter unwrapped (reference-equal)', async () => {
+        // Arrange
+        const fallback = makeFallback();
+        const innerFs = fallback.fs;
+        const sut = await openRepository(
+          { cwd: '/repo', fs: innerFs, unsafeRawAdapters: true },
+          fallback,
+        );
+
+        // Act
+        const worktreeFs = worktreeScopedFs(sut, '/repo/wt');
+
+        // Assert — no wrapper layer: the returned fs IS the raw adapter.
+        expect(worktreeFs).toBe(innerFs);
+      });
+    });
+  });
+});
+
+describe('openRepository — config-scope allowlist', () => {
+  describe('Given a default-wrapped repo whose adapter exposes home, XDG and system config scopes', () => {
+    describe('When accessing the user home git config through the wrapped fs', () => {
+      it('Then it escapes the workDir guard and reaches the adapter', async () => {
+        // Arrange — MemoryFileSystem defaults home to '/home/user'.
+        const sut = await open();
+
+        // Act — '/home/user/.gitconfig' is outside workDir; only the config-scope
+        // allowlist admits it. Reaching the adapter yields its own out-of-root
+        // PERMISSION_DENIED; a blocked path would raise PATHSPEC_OUTSIDE_REPO.
+        const code = await rejectionCode(() => sut.ctx.fs.read('/home/user/.gitconfig'));
+
+        // Assert
+        expect(code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When accessing the XDG git config through the wrapped fs', () => {
+      it('Then it escapes the workDir guard and reaches the adapter', async () => {
+        // Arrange — MemoryFileSystem defaults XDG to '/home/user/.config'.
+        const sut = await open();
+
+        // Act
+        const code = await rejectionCode(() => sut.ctx.fs.read('/home/user/.config/git/config'));
+
+        // Assert
+        expect(code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When accessing the system git config through the wrapped fs', () => {
+      it('Then it escapes the workDir guard and reaches the adapter', async () => {
+        // Arrange — MemoryFileSystem defaults the system config to '/etc/gitconfig'.
+        const sut = await open();
+
+        // Act
+        const code = await rejectionCode(() => sut.ctx.fs.read('/etc/gitconfig'));
+
+        // Assert
+        expect(code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When accessing a non-config path outside the repo', () => {
+      it('Then it is rejected — the allowlist admits only the computed config scopes', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Act — proves the allowlist base is empty: no phantom entry is admitted.
+        const code = await rejectionCode(() => sut.ctx.fs.read('Stryker was here'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given a default-wrapped repo whose adapter config-path probes all throw', () => {
+    const openUnavailable = (): Promise<Repository> =>
+      openRepository(
+        { cwd: '/repo' },
+        { ...makeFallback(), fs: new UnavailableConfigFs({ rootDir: '/repo' }) },
+      );
+
+    describe('When openRepository runs', () => {
+      it('Then it resolves — unavailable config scopes are skipped, not fatal', async () => {
+        // Act — a system scope pushed unconditionally would inject `undefined`
+        // into the allowlist and crash sanitisation.
+        const sut = await openUnavailable();
+
+        // Assert
+        expect(sut.ctx.fs).toBeDefined();
+      });
+    });
+
+    describe('When accessing the unavailable home config scope through the wrapped fs', () => {
+      it('Then it is not admitted to the allowlist', async () => {
+        // Arrange
+        const sut = await openUnavailable();
+
+        // Act — an unconditional home push would admit this stringified scope.
+        const code = await rejectionCode(() => sut.ctx.fs.read('undefined/.gitconfig'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+
+    describe('When accessing the unavailable XDG config scope through the wrapped fs', () => {
+      it('Then it is not admitted to the allowlist', async () => {
+        // Arrange
+        const sut = await openUnavailable();
+
+        // Act — an unconditional XDG push would admit this stringified scope.
+        const code = await rejectionCode(() => sut.ctx.fs.read('undefined/git/config'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
   });

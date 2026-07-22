@@ -57,10 +57,12 @@ export const computePatchId = async (ctx: Context, commitId: ObjectId): Promise<
   // surface per-file hunks, not a tree-oid change that patch hydration rejects.
   const diff = await diffTrees(ctx, parentTree, cData.tree, { recursive: true });
   const files = await materialisePatchFiles(ctx, diff.changes);
+  // Stryker disable next-line StringLiteral: equivalent — the `a/`/`b/` prefixes are cosmetic: the `diff --git` header renders both `a/<path>` and `b/<path>`, so dropping either prefix leaves the path recoverable from the other, and the patch-id equivalence relation is unchanged.
   const text = renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
   const binaryKey = files
     .filter((f) => isBinary(f.oldContent ?? EMPTY) || isBinary(f.newContent ?? EMPTY))
     .map((f) => oidsOf(f.change))
+    // Stryker disable next-line StringLiteral: equivalent — the separator only sits between per-file oid strings, and the canonical text already fixes each file's change type (hence every oidsOf length), so any separator re-splits the concatenation identically and the equivalence relation is unchanged.
     .join('');
   return ctx.hash.hashHex(ENCODER.encode(canonicalise(text) + binaryKey));
 };
