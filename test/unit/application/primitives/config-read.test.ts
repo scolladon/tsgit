@@ -6910,12 +6910,12 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('Given a [gpg "notssh"] subsection whose name is not ssh', () => {
+  describe('Given a [gpg "not-ssh"] subsection whose name is not ssh', () => {
     describe('When readConfig', () => {
       it('Then gpg is undefined (only the "ssh" gpg subsection is recognised)', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[gpg "notssh"]\n  program = /usr/bin/ssh-keygen\n');
+        await seed(ctx, '[gpg "not-ssh"]\n  program = /usr/bin/ssh-keygen\n');
 
         // Act
         const sut = await readConfig(ctx);

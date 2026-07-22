@@ -1187,12 +1187,15 @@ describe('openRepository — config-scope allowlist', () => {
 
     describe('When openRepository runs', () => {
       it('Then it resolves — unavailable config scopes are skipped, not fatal', async () => {
-        // Act — a system scope pushed unconditionally would inject `undefined`
-        // into the allowlist and crash sanitisation.
+        // Arrange — a repo whose adapter config-path probes all throw
         const sut = await openUnavailable();
 
-        // Assert
-        expect(sut.ctx.fs).toBeDefined();
+        // Act
+        const fs = sut.ctx.fs;
+
+        // Assert — openRepository resolved; a system scope pushed unconditionally
+        // would inject `undefined` into the allowlist and crash sanitisation.
+        expect(fs).toBeDefined();
       });
     });
 
