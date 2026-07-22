@@ -39,12 +39,12 @@ export const commonAncestor = (paths: ReadonlyArray<string>, policy: PathPolicy)
   if (first === undefined) return policy.sep;
 
   const firstRoot = policy.rootOf(first);
-  const restSegments = rest.map((r) => segmentsOf(r, policy));
   const rootsMatch = resolved.every(
     (r) => policy.normalizeForCompare(policy.rootOf(r)) === policy.normalizeForCompare(firstRoot),
   );
   if (!rootsMatch) return first;
 
+  const restSegments = rest.map((r) => segmentsOf(r, policy));
   const shared: string[] = [];
   for (const segment of segmentsOf(first, policy)) {
     if (!restSegments.every((list) => segEq(list[shared.length], segment, policy))) break;

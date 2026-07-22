@@ -40,8 +40,24 @@ production. The returned root roots a fresh **raw** `NodeFileSystem`. Per
 [ADR-298](../adr/298-worktree-fs-containment-escape.md), the facade then wraps
 that raw fs with a **multi-root** validator confined to `[…worktreePaths,
 commonDir]`. So `commonAncestor` only has to be **wide enough** to contain every
-input: "too wide" is not a security hole (the multi-root validator is the real
-gate); "wrong root / too narrow" spuriously denies real paths.
+input: on the default (safe) path "too wide" is not a security hole (the
+multi-root validator is the real gate); "wrong root / too narrow" spuriously
+denies real paths.
+
+The one configuration where the root **width itself** is the boundary is
+`unsafeRawAdapters: true`, where the facade returns the raw adapter with **no**
+validator wrapped. Safety there does not rest on the validator — it rests on
+three properties this fix preserves: (a) every input is `policy.resolve`-d, so a
+`..`/`.`-bearing path is canonicalised before it can influence the root (a
+traversal cannot smuggle a wider root in); (b) the cross-root fallback returns
+the resolved **first input**, which the sole production caller sets to
+`layout.workDir` — the repository the caller explicitly opened, never an
+attacker-chosen directory (and `commonAncestor` is internal, not re-exported);
+(c) for clean inputs the emitted width never exceeds the previous POSIX-only
+behaviour (`resolve`-first only *removes* segments, never fabricates a deeper
+shared prefix). Under `unsafeRawAdapters` the caller has, by definition, opted
+out of containment entirely — these three properties are why this change does
+not weaken that opt-out.
 
 ### The bug (surfaced by the whole-codebase mutation sweep)
 

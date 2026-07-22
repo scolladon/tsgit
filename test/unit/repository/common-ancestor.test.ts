@@ -7,10 +7,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the shared parent', () => {
         // Arrange
-        const sut = ['/tmp/repo', '/tmp/repo-wt'];
+        const sut = commonAncestor;
+        const paths = ['/tmp/repo', '/tmp/repo-wt'];
 
         // Act
-        const result = commonAncestor(sut, posixPolicy);
+        const result = sut(paths, posixPolicy);
 
         // Assert
         expect(result).toBe('/tmp');
@@ -22,10 +23,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the ancestor itself', () => {
         // Arrange
-        const sut = ['/a/b', '/a/b/c/d'];
+        const sut = commonAncestor;
+        const paths = ['/a/b', '/a/b/c/d'];
 
         // Act
-        const result = commonAncestor(sut, posixPolicy);
+        const result = sut(paths, posixPolicy);
 
         // Assert
         expect(result).toBe('/a/b');
@@ -37,10 +39,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the root', () => {
         // Arrange
-        const sut = ['/a/x', '/b/y'];
+        const sut = commonAncestor;
+        const paths = ['/a/x', '/b/y'];
 
         // Act
-        const result = commonAncestor(sut, posixPolicy);
+        const result = sut(paths, posixPolicy);
 
         // Assert
         expect(result).toBe('/');
@@ -52,10 +55,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns that path', () => {
         // Arrange
-        const sut = ['/a/b/c'];
+        const sut = commonAncestor;
+        const paths = ['/a/b/c'];
 
         // Act
-        const result = commonAncestor(sut, posixPolicy);
+        const result = sut(paths, posixPolicy);
 
         // Assert
         expect(result).toBe('/a/b/c');
@@ -67,10 +71,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the root', () => {
         // Arrange
-        const sut: ReadonlyArray<string> = [];
+        const sut = commonAncestor;
+        const paths: ReadonlyArray<string> = [];
 
         // Act
-        const result = commonAncestor(sut, posixPolicy);
+        const result = sut(paths, posixPolicy);
 
         // Assert
         expect(result).toBe('/');
@@ -82,10 +87,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the shared drive parent', () => {
         // Arrange
-        const sut = ['C:\\repo', 'C:\\repo\\wt'];
+        const sut = commonAncestor;
+        const paths = ['C:\\repo', 'C:\\repo\\wt'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\repo');
@@ -97,10 +103,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns that deeper shared directory', () => {
         // Arrange
-        const sut = ['C:\\Users\\me\\repo', 'C:\\Users\\me\\feature'];
+        const sut = commonAncestor;
+        const paths = ['C:\\Users\\me\\repo', 'C:\\Users\\me\\feature'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\Users\\me');
@@ -112,10 +119,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the ancestor itself', () => {
         // Arrange
-        const sut = ['C:\\a\\b', 'C:\\a\\b\\c\\d'];
+        const sut = commonAncestor;
+        const paths = ['C:\\a\\b', 'C:\\a\\b\\c\\d'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\a\\b');
@@ -127,10 +135,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the ancestor without throwing on the shorter path', () => {
         // Arrange
-        const sut = ['C:\\a\\b\\c', 'C:\\a\\b'];
+        const sut = commonAncestor;
+        const paths = ['C:\\a\\b\\c', 'C:\\a\\b'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\a\\b');
@@ -142,10 +151,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it compares case-insensitively and emits the first input’s original casing', () => {
         // Arrange
-        const sut = ['C:\\Repo', 'c:\\repo\\wt'];
+        const sut = commonAncestor;
+        const paths = ['C:\\Repo', 'c:\\repo\\wt'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\Repo');
@@ -157,10 +167,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it resolves both to native separators before comparing', () => {
         // Arrange
-        const sut = ['C:/Users/me/repo', 'C:\\Users\\me\\repo\\wt'];
+        const sut = commonAncestor;
+        const paths = ['C:/Users/me/repo', 'C:\\Users\\me\\repo\\wt'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\Users\\me\\repo');
@@ -172,10 +183,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the resolved first input, not the drive root', () => {
         // Arrange
-        const sut = ['C:\\a', 'D:\\b'];
+        const sut = commonAncestor;
+        const paths = ['C:\\a', 'D:\\b'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\a');
@@ -187,10 +199,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the shared UNC directory', () => {
         // Arrange
-        const sut = ['\\\\srv\\share\\repo', '\\\\srv\\share\\repo\\wt'];
+        const sut = commonAncestor;
+        const paths = ['\\\\srv\\share\\repo', '\\\\srv\\share\\repo\\wt'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('\\\\srv\\share\\repo');
@@ -202,10 +215,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns that path unchanged', () => {
         // Arrange
-        const sut = ['C:\\a\\b\\c'];
+        const sut = commonAncestor;
+        const paths = ['C:\\a\\b\\c'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('C:\\a\\b\\c');
@@ -217,10 +231,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the Windows separator', () => {
         // Arrange
-        const sut: ReadonlyArray<string> = [];
+        const sut = commonAncestor;
+        const paths: ReadonlyArray<string> = [];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('\\');
@@ -232,10 +247,11 @@ describe('commonAncestor', () => {
     describe('When commonAncestor runs', () => {
       it('Then it returns the resolved first input, not the server root', () => {
         // Arrange
-        const sut = ['\\\\srv\\a\\x', '\\\\srv\\b\\y'];
+        const sut = commonAncestor;
+        const paths = ['\\\\srv\\a\\x', '\\\\srv\\b\\y'];
 
         // Act
-        const result = commonAncestor(sut, windowsPolicy);
+        const result = sut(paths, windowsPolicy);
 
         // Assert
         expect(result).toBe('\\\\srv\\a\\x');
