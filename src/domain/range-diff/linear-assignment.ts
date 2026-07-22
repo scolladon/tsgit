@@ -87,8 +87,7 @@ const reductionTransfer = (s: Lap, freeRow: number[]): number => {
   for (let i = 0; i < s.rowCount; i++) {
     const j1 = s.rowToColumn[i]!;
     if (j1 === -1) freeRow[freeCount++] = i;
-    // equivalent-mutant (`j1 < -1` → `j1 <= -1`): `j1 === -1` is already handled by the
-    // branch above, so the `=== -1` case never reaches here — the bounds coincide.
+    // Stryker disable next-line EqualityOperator: equivalent — `j1 === -1` is handled by the branch above, so it never reaches here; with `j1` never `-1`, `< -1` and `<= -1` coincide.
     else if (j1 < -1) s.rowToColumn[i] = -2 - j1;
     else transferRow(s, i, j1);
   }
@@ -279,18 +278,14 @@ const augmentOne = (s: Lap, i1: number): void => {
   const pred = new Array<number>(s.columnCount);
   // Stryker disable next-line ArrayDeclaration: equivalent — `col` is written at every index `0..columnCount-1` by the init loop below and never read at index `columnCount`, so the preallocated length is inert.
   const col = new Array<number>(s.columnCount);
-  // equivalent-mutant (`j < columnCount` → `j <= columnCount`): the extra entry at index
-  // `columnCount` is never read — `findAugmentingPath` and the scans all bound `k` by
-  // `columnCount`.
+  // Stryker disable next-line EqualityOperator: equivalent — the extra entry written at index `columnCount` is never read; `findAugmentingPath` and every scan bound `k` by `columnCount`.
   for (let j = 0; j < s.columnCount; j++) {
     d[j] = i32(costAt(s, j, i1) - s.v[j]!);
     pred[j] = i1;
     col[j] = j;
   }
   const path = findAugmentingPath(s, d, pred, col);
-  // equivalent-mutant (`k < path.last` → `k <= path.last`): `path.last` is the read
-  // cursor when the augmenting column was found; `col[path.last]` is that column, whose
-  // `d` already equals `path.min`, so the extra `v += d - min` adds 0 — no dual changes.
+  // Stryker disable next-line EqualityOperator: equivalent — `col[path.last]` is the found column whose `d` already equals `path.min`, so the extra iteration's `v += d - path.min` adds 0 — no dual changes.
   for (let k = 0; k < path.last; k++) {
     const j1 = col[k]!;
     s.v[j1] = i32(s.v[j1]! + (d[j1]! - path.min));
