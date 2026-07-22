@@ -181,6 +181,28 @@ describe('checkout', () => {
     });
   });
 
+  describe('Given a checkout that detaches HEAD onto an oid', () => {
+    describe('When checkout', () => {
+      it('Then the HEAD reflog records the move to the 7-char abbreviated target oid', async () => {
+        // Arrange — prior HEAD is the symbolic `main`; detaching onto the commit
+        // oid logs `to <oid[:7]>`, never the full 40-hex and never an empty message.
+        const { ctx, commitId } = await seedWithBranches();
+        const { readReflog } = await import(
+          '../../../../src/application/primitives/reflog-store.js'
+        );
+
+        // Act
+        await checkout(ctx, { rev: commitId });
+
+        // Assert
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog[headLog.length - 1]?.message).toBe(
+          `checkout: moving from main to ${commitId.slice(0, 7)}`,
+        );
+      });
+    });
+  });
+
   describe('Given a non-existent branch', () => {
     describe('When checkout', () => {
       it('Then throws BRANCH_NOT_FOUND', async () => {

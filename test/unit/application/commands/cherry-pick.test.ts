@@ -430,6 +430,23 @@ describe('cherryPickRun — ranges and the sequencer', () => {
     });
   });
 
+  describe('Given a default range (no -x, no --allow-empty) that stops on a conflict', () => {
+    describe('When the sequencer dir is persisted', () => {
+      it('Then no `opts` file is written (git omits it when every option is default)', async () => {
+        // Arrange
+        const { ctx, base } = await seedRange();
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+
+        // Assert — git writes sequencer/opts only for non-default options; a plain
+        // committing sequence must not persist a `no-commit` (or any) option line.
+        expect(sut.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer/opts`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a divergent-branch range main..feature', () => {
     describe('When run', () => {
       it('Then excludes the shared merge-base — first pick is c1, not the shared root', async () => {

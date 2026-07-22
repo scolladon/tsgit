@@ -268,6 +268,29 @@ describe('buildAttributeProvider', () => {
     });
   });
 
+  describe('Given the root .gitattributes pre-seeded into the directory cache at build time', () => {
+    describe('When resolving a root-level path after construction', () => {
+      it('Then the lookup touches no `.gitattributes` on disk (fully served from the seeded cache)', async () => {
+        // Arrange — the provider seeds the cache with the root directory (`''`)
+        // at build time, so a later root-level lookup must not re-read or scan
+        // any `.gitattributes`, nor scan any spurious ancestor directory.
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
+        const provider = await buildAttributeProvider(ctx);
+        const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        await provider.sourcesForPath('a.txt' as FilePath);
+
+        // Assert
+        const gitattributesLstats = lstatSpy.mock.calls
+          .map(([p]) => p)
+          .filter((p) => p.endsWith('.gitattributes'));
+        expect(gitattributesLstats).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an attributes file over the size cap', () => {
     describe('When building the provider', () => {
       it('Then it throws GITATTRIBUTES_FILE_TOO_LARGE with the sanitized basename', async () => {

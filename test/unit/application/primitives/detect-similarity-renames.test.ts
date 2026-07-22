@@ -1140,6 +1140,95 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given breakRewrites merge:0 and a broken pair whose dissimilarity is below the 60% default', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then merge:0 maps to DEFAULT_MERGE_SCORE so the pair re-merges to a plain modify', async () => {
+        // Arrange — ~25% of the file changed, so the break dissimilarity sits BELOW
+        // DEFAULT_MERGE_SCORE (60%). A 100% rename threshold keeps the synthetic halves
+        // unpaired, isolating the keep-broken/re-merge gate. merge:0 must resolve to the
+        // 60% default: dissimilarity < 60% → re-merge to a plain modify (no broken datum).
+        // With merge:0 mapping to 0 instead, dissimilarity >= 0 would keep it broken.
+        const ctx = await buildSeededContext();
+        const shared = 'shared line alpha beta gamma delta epsilon\n';
+        const oldId = await writeBlob(ctx, shared.repeat(20));
+        const newId = await writeBlob(
+          ctx,
+          `${shared.repeat(15)}${'different NEW text zeta eta theta iota\n'.repeat(5)}`,
+        );
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — score:1 forces the break; threshold MAX_SCORE keeps the halves unpaired.
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 1, merge: 0 },
+          threshold: MAX_SCORE,
+        });
+
+        // Assert — one plain modify, no broken datum (merge:0 → 60%, dissimilarity below it).
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+  });
+
+  describe('Given a broken pair that re-merges alongside an unrelated surviving change', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then only the broken halves are stripped and the unrelated change is retained', async () => {
+        // Arrange — file1 is a fully-disjoint modify that -B keeps broken; file2 is an
+        // unrelated add. Re-merge must strip ONLY file1's synthetic halves and keep file2.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const file2Id = await writeBlob(ctx, 'brand new unrelated file body\n');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file1.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'file2.txt' as FilePath,
+              newId: file2Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — break file1 (disjoint → kept broken); file2 add is untouched.
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 1, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — both paths survive: stripping the halves must not drop file2.
+        const paths = result.changes
+          .map((c) => ('newPath' in c ? c.newPath : (c as { path: FilePath }).path))
+          .sort();
+        expect(paths).toEqual(['file1.txt', 'file2.txt']);
+        const file2 = result.changes.find((c) => 'newPath' in c && c.newPath === 'file2.txt');
+        expect(file2?.type).toBe('add');
+      });
+    });
+  });
+
   describe('Given the git-faithful B2 fixture (total=20, shared=7, merge_score=39000 → 65%)', () => {
     describe('When detectSimilarityRenames is called with merge gate at 39000 (inclusive)', () => {
       it('Then broken.score equals 39000 and the modify is kept broken', async () => {
