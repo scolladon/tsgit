@@ -1383,6 +1383,39 @@ describe('Given a covered base is popped while an uncovered leg is still queued'
   });
 });
 
+describe('Given two equal-depth tags whose winner leg is popped while the rival leg is still queued', () => {
+  describe('When describing the merge that reaches the winner leg and the rival leg', () => {
+    it('Then the rival-tag commits still count toward the winner distance', async () => {
+      // Arrange — two tags tie at depth 4; the newer `win` (met first in date
+      // order) takes the tie. During finalisation the walk pops `win`'s covered
+      // commits while the rival `lose` leg — reachable from the merge but not
+      // from `win` — is still queued with its own reach marks. The finalisation
+      // break must not fire on a covered pop merely because every queued commit
+      // is a rival-only commit; each rival commit must advance the distance.
+      const ctx = await seed();
+      const root = await commitFile(ctx, 'root');
+      const tree = await treeOf(ctx, root);
+      const b1 = await writeCommit(ctx, tree, [root], 'b1');
+      const b2 = await writeCommit(ctx, tree, [root], 'b2');
+      const loseTip = await writeCommit(ctx, tree, [b1], 'loseTip');
+      const winTip = await writeCommit(ctx, tree, [b2], 'winTip');
+      await annotatedTag(ctx, 'lose', loseTip, clock);
+      await annotatedTag(ctx, 'win', winTip, clock);
+      await writeCommit(ctx, tree, [b1, loseTip], 'dangling');
+      const inner = await writeCommit(ctx, tree, [b1, winTip], 'inner');
+      const head = await writeCommit(ctx, tree, [inner, loseTip], 'head');
+
+      // Act
+      const result = await describeCmd(ctx, head);
+
+      // Assert — win..head = { head, inner, loseTip, b1 } = 4; an early
+      // finalisation break would drop the rival leg and report 3.
+      expect(result.name).toBe('win');
+      expect(result.distance).toBe(4);
+    });
+  });
+});
+
 describe('Given no names and a deep history to walk', () => {
   describe('When describe refuses', () => {
     it('Then it bails without walking the history', async () => {

@@ -292,6 +292,7 @@ const frontierCovered = (
   poppedOid: ObjectId,
 ): boolean => {
   if (reach.get(poppedOid)?.has(winner.foundOrder) !== true) return false;
+  // Stryker disable next-line ArrowFunction,ConditionalExpression: equivalent — an always-falsy callback only delays this finalisation early-break to an empty frontier; by then the winner covers every remaining commit so its finalised depth is unchanged (traversal differs, output identical). Inverting the equality fires the break early and is killed by an example test.
   return step.frontier().every((oid) => reach.get(oid)?.has(winner.foundOrder) === true);
 };
 

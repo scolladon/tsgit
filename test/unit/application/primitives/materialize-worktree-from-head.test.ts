@@ -4,6 +4,7 @@ import { materializeWorktreeFromHead } from '../../../../src/application/primiti
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -88,6 +89,29 @@ describe('Given a freshly-cloned gitdir whose HEAD points at a commit', () => {
       // Assert
       expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/main\n');
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
+    });
+  });
+
+  describe('When the read-modify-write fails inside the locked section', () => {
+    it('Then the index lock is released despite the error', async () => {
+      // Arrange — a valid HEAD, but corrupt index bytes so readIndex throws a
+      // checksum mismatch AFTER the lock is acquired, exercising the finally.
+      const { ctx } = await seedHeadCommit();
+      const lockPath = `${ctx.layout.gitDir}/index.lock`;
+      await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array(32).fill(0xff));
+      let caught: unknown;
+
+      // Act
+      try {
+        await materializeWorktreeFromHead(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — the operation rejected, and the finally freed the lock.
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
+      expect(await ctx.fs.exists(lockPath)).toBe(false);
     });
   });
 

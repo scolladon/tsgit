@@ -247,6 +247,33 @@ describe('fetchMissing', () => {
     });
   });
 
+  describe('Given an oid already present in a local pack rather than loose', () => {
+    describe('When fetchMissing', () => {
+      it('Then the pack-registry lookup skips it with no network call', async () => {
+        // Arrange — the first fetch installs the object in a local promisor
+        // pack (packed, not loose); a second fetch must find it through the
+        // pack index, so the loose probe alone is not enough to skip it.
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'packed local\n');
+        const { transport } = fakeRemote(packBytes);
+        const seeded: Context = { ...base, transport };
+        await fetchMissing(seeded, { oids: [blobId] });
+
+        // Act — the object now lives only in a local pack; touching the
+        // network would throw.
+        const sut = await fetchMissing(
+          { ...seeded, transport: forbiddenTransport() },
+          { oids: [blobId] },
+        );
+
+        // Assert — the pack registry reports it present, so nothing is fetched.
+        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
+      });
+    });
+  });
+
   describe('Given a missing oid', () => {
     describe('When fetchMissing', () => {
       it('Then the object is fetched and a promisor pack is written', async () => {

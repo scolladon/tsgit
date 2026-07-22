@@ -408,6 +408,38 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     });
   });
 
+  describe('Given a missing object supplied by a promisor that records its request', () => {
+    describe('When readObject lazy-fetches', () => {
+      it('Then the promisor is asked for exactly the missing oid', async () => {
+        // Arrange — capture the oid batch handed to the promisor so an empty
+        // request (fetching nothing) is distinguishable from the real one.
+        const base = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const requested: ReadonlyArray<ObjectId>[] = [];
+        const promisor: PromisorRemote = {
+          fetch: async (oids) => {
+            requested.push([...oids]);
+            const bytes = serializeObject(blob, base.hashConfig);
+            const compressed = await base.compressor.deflate(bytes);
+            await base.fs.write(
+              `${base.layout.gitDir}/objects/${await computeLooseObjectPathOf(id)}`,
+              compressed,
+            );
+            return { attempted: true, requested: oids.length, fetched: oids.length };
+          },
+        };
+        const ctx: Context = { ...base, promisor };
+
+        // Act
+        await readObject(ctx, id);
+
+        // Assert — the exact missing oid was requested, not an empty batch.
+        expect(requested).toEqual([[id]]);
+      });
+    });
+  });
+
   describe('Given a promisor reporting attempted=false', () => {
     describe('When readObject misses', () => {
       it('Then OBJECT_NOT_FOUND is thrown', async () => {

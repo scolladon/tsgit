@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   clearRebaseState,
@@ -450,6 +450,18 @@ describe('rebase-state', () => {
 
         // Act + Assert
         await expect(clearRebaseState(ctx)).resolves.toBeUndefined();
+      });
+
+      it('Then it does not touch the absent rebase-merge directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const rmSpy = vi.spyOn(ctx.fs, 'rmRecursive');
+
+        // Act
+        await clearRebaseState(ctx);
+
+        // Assert — the exists() guard must skip the removal when nothing is there.
+        expect(rmSpy).not.toHaveBeenCalled();
       });
     });
   });

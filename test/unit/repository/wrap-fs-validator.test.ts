@@ -246,6 +246,36 @@ describe('wrapFsValidator — outside cwd rejected', () => {
   });
 });
 
+describe('wrapFsValidator — external-path allowlist sanitisation', () => {
+  describe('Given an allowlist containing an empty string', () => {
+    describe('When the empty path is accessed', () => {
+      it('Then the entry is dropped and the empty path is rejected', async () => {
+        // Arrange — a buggy adapter returning '' must not admit the root-relative path.
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', ['']);
+
+        // Act + Assert
+        await expectOutside(() => sut.read(''));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given no allowlist argument', () => {
+    describe('When an external path is accessed', () => {
+      it('Then the default allowlist is empty and admits nothing', async () => {
+        // Arrange — the third parameter defaults to an empty allowlist.
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(() => sut.read('Stryker was here'));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — coverage of every wrapped method', () => {
   describe('Given an in-cwd path', () => {
     describe('When %s is called', () => {

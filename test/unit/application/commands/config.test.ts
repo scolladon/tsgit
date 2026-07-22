@@ -246,6 +246,20 @@ describe('configSet', () => {
     });
   });
 
+  describe('Given a key with exactly one existing value, When configSet overwrites it', () => {
+    it('Then it succeeds and returns the new value (the multiplicity guard does not fire)', async () => {
+      // Arrange — a single existing value: overwrite is allowed, no CONFIG_MULTIPLE_VALUES.
+      const ctx = repoCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n');
+
+      // Act
+      const sut = await configSet(ctx, { key: 'user.name', value: 'Bob' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'user.name', value: 'Bob', scope: 'local' });
+    });
+  });
+
   describe('Given a valueless occurrence mixed with a valued occurrence, When configSet runs', () => {
     it('Then it throws CONFIG_MULTIPLE_VALUES (valueless occurrences are counted)', async () => {
       // Arrange — one valueless + one valued = count 2; multiplicity guard must fire.
