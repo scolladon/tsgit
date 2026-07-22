@@ -10,6 +10,7 @@ const TEXT_DECODER = new TextDecoder();
 const SHA_ANY_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
 const SYMREF_TARGET_PREFIX = 'symref-target:';
 const PEELED_PREFIX = 'peeled:';
+const UNBORN_OID = 'unborn';
 
 export interface LsRefsRequestOptions {
   readonly symrefs?: boolean;
@@ -44,26 +45,15 @@ interface ParsedRefLine {
 
 const parseRefLine = (line: string): ParsedRefLine => {
   const spaceIdx = line.indexOf(' ');
-  // equivalent-mutant: widening this guard to `spaceIdx <= 0` only changes
-  // behaviour when spaceIdx === 0 (a leading space). That always makes
-  // `oidToken` the empty string (`line.slice(0, 0)`), which `validateOidString`
-  // below rejects unconditionally — so both branches throw the identical
-  // `invalidRefLine(line)`, just from a different call site.
+  // Stryker disable next-line EqualityOperator: equivalent — widening to `spaceIdx <= 0` only changes behaviour at spaceIdx === 0 (a leading space), where oidToken is the empty string that the oid/unborn guard immediately below rejects with the same invalidRefLine(line), so `< 0` and `<= 0` are indistinguishable.
   if (spaceIdx < 0) throw invalidRefLine(line);
   const oidToken = line.slice(0, spaceIdx);
+  if (oidToken !== UNBORN_OID && !SHA_ANY_RE.test(oidToken)) throw invalidRefLine(line);
   const rest = line.slice(spaceIdx + 1);
   const nameEndIdx = rest.indexOf(' ');
   const name = nameEndIdx === -1 ? rest : rest.slice(0, nameEndIdx);
   if (name.length === 0) throw invalidRefLine(line);
-  // equivalent-mutants:
-  // - replacing the `[]` (nameEndIdx === -1) arm with any other fixed
-  //   placeholder string still can never start with SYMREF_TARGET_PREFIX or
-  //   PEELED_PREFIX, so findAttribute never matches it — same as [].
-  // - shifting the slice start from `nameEndIdx + 1` to `nameEndIdx - 1`
-  //   (nameEndIdx !== -1 arm) only prepends `rest[nameEndIdx - 1]`, a single
-  //   character (the name's own last char) before the same trailing split —
-  //   too short to ever satisfy `.startsWith()` on either multi-char prefix,
-  //   so it never perturbs the real attrs that follow.
+  // Stryker disable next-line ArrayDeclaration,ArithmeticOperator: equivalent — a non-[] placeholder in the nameEndIdx === -1 arm can never start with SYMREF_TARGET_PREFIX or PEELED_PREFIX so findAttribute ignores it, and shifting the slice from `nameEndIdx + 1` to `nameEndIdx - 1` only prepends the name's single last char (too short to satisfy .startsWith on either multi-char prefix) before the same trailing split, so the real attrs are unperturbed.
   const attrs = nameEndIdx === -1 ? [] : rest.slice(nameEndIdx + 1).split(' ');
 
   const symrefTarget = findAttribute(attrs, SYMREF_TARGET_PREFIX);
@@ -92,10 +82,7 @@ const findLsRefsHead = (
 ): AdvertisedRef | undefined => {
   const directHead = refs.find((ref) => ref.name === 'HEAD');
   if (directHead) return directHead;
-  // equivalent-mutant: `AdvertisedRef.name` is typed `string` (never
-  // `undefined`), so when headSymrefTarget is undefined the `.find()` below
-  // can never match any ref either way — removing this guard yields the
-  // identical `undefined` result, just via one extra no-op array scan.
+  // Stryker disable next-line ConditionalExpression: equivalent — AdvertisedRef.name is typed string (never undefined), so with headSymrefTarget undefined the .find() below can never match; forcing this guard false yields the identical undefined result via one extra no-op array scan.
   if (headSymrefTarget === undefined) return undefined;
   const targetRef = refs.find((ref) => ref.name === headSymrefTarget);
   return targetRef === undefined ? undefined : { name: 'HEAD', id: targetRef.id };

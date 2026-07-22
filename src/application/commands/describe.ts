@@ -250,9 +250,6 @@ const coveredByAllMinDepth = (
   candidates: ReadonlyArray<Candidate>,
   reached: ReadonlySet<number> | undefined,
 ): boolean => {
-  // equivalent-mutant: an empty-frontier last-path pop always lies on a
-  // candidate's reachable frontier, so `reached` is defined here — the guard is
-  // defensive and its return value cannot steer a real walk.
   if (reached === undefined) return false;
   const minDepth = Math.min(...candidates.map((candidate) => candidate.depth));
   // equivalent-mutant: once every min-depth candidate covers the last path the
@@ -282,6 +279,9 @@ const registerName = (
   const index = candidates.length;
   candidates.push({ name: named.name, commitOid: oid, depth, foundOrder: index });
   reachSet(reach, oid).add(index);
+  // Stryker disable next-line BooleanLiteral: equivalent — skippedLowPriority feeds only
+  // tally.sawUnannotated, consulted solely when best === undefined; a registered candidate
+  // makes best defined, so this branch's flag is never observed.
   return { annotated: named.priority === ANNOTATED_PRIORITY ? 1 : 0, skippedLowPriority: false };
 };
 
@@ -292,11 +292,7 @@ const frontierCovered = (
   poppedOid: ObjectId,
 ): boolean => {
   if (reach.get(poppedOid)?.has(winner.foundOrder) !== true) return false;
-  // equivalent-mutant: the collection break (lastPathCovered) already ends the
-  // walk at the first empty-frontier covered pop, so this positive branch is only
-  // reached with an empty frontier — every() is then vacuously true and its
-  // per-oid predicate never changes the outcome. The scan still earns its keep by
-  // returning false when an uncovered commit is queued (that path IS exercised).
+  // Stryker disable next-line ArrowFunction,ConditionalExpression: equivalent — an always-falsy callback only delays this finalisation early-break to an empty frontier; by then the winner covers every remaining commit so its finalised depth is unchanged (traversal differs, output identical). Inverting the equality fires the break early and is killed by an example test.
   return step.frontier().every((oid) => reach.get(oid)?.has(winner.foundOrder) === true);
 };
 
@@ -337,9 +333,9 @@ const collectStep = (input: CollectStepInput): boolean => {
       reach,
     );
     tally.annotatedCount += registration.annotated;
-    // equivalent-mutant: sawUnannotated is only read when no candidate registers
-    // (best === undefined). Forcing it true here cannot be observed once any
-    // candidate exists, and the all-lightweight case already sets it true.
+    // Stryker disable next-line ConditionalExpression: equivalent — sawUnannotated is read
+    // only when best === undefined; reaching this line means a name was seen, and if none
+    // registered it was low-priority (flag already true), so forcing true changes nothing.
     tally.sawUnannotated = tally.sawUnannotated || registration.skippedLowPriority;
   }
   incrementUnreached(candidates, reach.get(oid));
@@ -383,11 +379,12 @@ const selectNearest = async (
   })) {
     if (winner === undefined && frozen(candidates, plan.maxCandidates, totalNames)) {
       winner = pickNearest(candidates);
-      // equivalent-mutant: only reached when totalNames === 0 (freeze on an empty
-      // candidate set); breaking or not both leave winner undefined and yield the
-      // same no-describe error, differing only in unobservable traversal.
       if (winner === undefined) break;
     }
+    // Stryker disable next-line BlockStatement: equivalent — post-freeze the winner is
+    // elected; the fall-through collectStep finalises the winner's depth via the same
+    // incrementUnreached-over-winner + propagateReach as advanceWinner and only registers
+    // unobservable extra candidates, so name, distance and traversal are identical.
     if (winner !== undefined) {
       if (advanceWinner(reach, winner, step, plan.firstParent)) break;
       continue;

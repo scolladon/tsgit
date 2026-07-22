@@ -223,7 +223,6 @@ export const readRewrittenList = async (
   if (!(await ctx.fs.exists(path))) return [];
   const pairs: Array<readonly [ObjectId, ObjectId]> = [];
   for (const line of (await ctx.fs.readUtf8(path)).split('\n')) {
-    if (line === '') continue;
     const [oldId, newId] = line.split(' ');
     if (oldId !== undefined && newId !== undefined) {
       pairs.push([oldId as ObjectId, newId as ObjectId]);

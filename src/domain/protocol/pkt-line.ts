@@ -18,7 +18,9 @@ export type GitExchange = (requestBytes: Uint8Array) => Promise<AsyncIterable<Pk
 export const MAX_PKT_LINE_PAYLOAD = 65516;
 
 const ENCODER = new TextEncoder();
+// Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's fatal option defaults to false, so the empty options object configures an identical decoder
 const DECODER = new TextDecoder('utf-8', { fatal: false });
+// Stryker disable next-line Regex: equivalent — the tested header decodes from exactly 4 bytes, hence at most 4 UTF-16 units, so a match of four hex chars must span the whole string and each anchor is redundant
 const HEX_LENGTH_RE = /^[0-9a-f]{4}$/i;
 const PKT_LENGTH_BYTES = 4;
 const ACC_CAPACITY = MAX_PKT_LINE_PAYLOAD + PKT_LENGTH_BYTES;

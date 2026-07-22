@@ -711,6 +711,46 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given copies: "harder" with limit=0 (unlimited) and an unchanged file similar to an add', () => {
+    describe('When detectSimilarityRenames is called with preimage', () => {
+      it('Then the harder source set is never limit-capped so the unchanged file folds into a copy', async () => {
+        // Arrange — limit=0 means unlimited: git never falls back to the 'on' source set,
+        // so the unchanged preimage file stays a copy source and the add folds into a copy.
+        const ctx = await buildSeededContext();
+        const unchangedContent = tenLines(0);
+        const dstContent = tenLines(0).replace('X line 0\n', 'COPY DST line 0\n');
+        const unchangedId = await writeBlob(ctx, unchangedContent);
+        const dstId = await writeBlob(ctx, dstContent);
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['unchanged.txt' as FilePath, { id: unchangedId, mode: FILE_MODE.REGULAR }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — limit=0 (unlimited) under copies:'harder'; preimage passed positionally
+        const sut = detectSimilarityRenames(ctx, diff, { copies: 'harder', limit: 0 }, preimage);
+        const result = await sut;
+
+        // Assert — copy detected from the unchanged harder source (no limit fallback to 'on')
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('unchanged.txt');
+          expect(copies[0].newPath).toBe('copied.txt');
+        }
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
   describe('Given copies: "harder" with limit that is exceeded only under harder (many preimage paths)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then limit is exceeded only under harder and falls back to copies:"on" source set', async () => {
@@ -1096,6 +1136,95 @@ describe('detectSimilarityRenames', () => {
           expect(change.broken).toBeDefined();
           expect(change.broken?.score).toBe(MAX_SCORE);
         }
+      });
+    });
+  });
+
+  describe('Given breakRewrites merge:0 and a broken pair whose dissimilarity is below the 60% default', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then merge:0 maps to DEFAULT_MERGE_SCORE so the pair re-merges to a plain modify', async () => {
+        // Arrange — ~25% of the file changed, so the break dissimilarity sits BELOW
+        // DEFAULT_MERGE_SCORE (60%). A 100% rename threshold keeps the synthetic halves
+        // unpaired, isolating the keep-broken/re-merge gate. merge:0 must resolve to the
+        // 60% default: dissimilarity < 60% → re-merge to a plain modify (no broken datum).
+        // With merge:0 mapping to 0 instead, dissimilarity >= 0 would keep it broken.
+        const ctx = await buildSeededContext();
+        const shared = 'shared line alpha beta gamma delta epsilon\n';
+        const oldId = await writeBlob(ctx, shared.repeat(20));
+        const newId = await writeBlob(
+          ctx,
+          `${shared.repeat(15)}${'different NEW text zeta eta theta iota\n'.repeat(5)}`,
+        );
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — score:1 forces the break; threshold MAX_SCORE keeps the halves unpaired.
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 1, merge: 0 },
+          threshold: MAX_SCORE,
+        });
+
+        // Assert — one plain modify, no broken datum (merge:0 → 60%, dissimilarity below it).
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+  });
+
+  describe('Given a broken pair that re-merges alongside an unrelated surviving change', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then only the broken halves are stripped and the unrelated change is retained', async () => {
+        // Arrange — file1 is a fully-disjoint modify that -B keeps broken; file2 is an
+        // unrelated add. Re-merge must strip ONLY file1's synthetic halves and keep file2.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const file2Id = await writeBlob(ctx, 'brand new unrelated file body\n');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file1.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'file2.txt' as FilePath,
+              newId: file2Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — break file1 (disjoint → kept broken); file2 add is untouched.
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 1, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — both paths survive: stripping the halves must not drop file2.
+        const paths = result.changes
+          .map((c) => ('newPath' in c ? c.newPath : (c as { path: FilePath }).path))
+          .sort();
+        expect(paths).toEqual(['file1.txt', 'file2.txt']);
+        const file2 = result.changes.find((c) => 'newPath' in c && c.newPath === 'file2.txt');
+        expect(file2?.type).toBe('add');
       });
     });
   });
@@ -1896,6 +2025,98 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given two rename candidates from the same delete tied at equal score (sortTriples same-kind order)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the first destination in build order wins the delete (rename-vs-rename tiebreak is stable)', async () => {
+        // Arrange — one delete D equally similar to two adds A1 and A2 (each differs from D by
+        // one distinct line → identical score, distinct content). Greedy consumes D for the
+        // FIRST candidate in build order (A1, iterated before A2). Reversing the same-kind
+        // (rename/rename) order would hand D to A2 instead.
+        const ctx = await buildSeededContext();
+        const dId = await writeBlob(ctx, tenLines(0));
+        const a1Id = await writeBlob(ctx, tenLines(0).replace('line 5\n', 'CH1 line 5\n'));
+        const a2Id = await writeBlob(ctx, tenLines(0).replace('line 7\n', 'CH2 line 7\n'));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'D.txt' as FilePath,
+              oldId: dId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'A1.txt' as FilePath,
+              newId: a1Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'A2.txt' as FilePath,
+              newId: a2Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff);
+
+        // Assert — D pairs with A1 (first in build order); A2 is left as an unmatched add
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(renames).toHaveLength(1);
+        if (renames[0]?.type === 'rename') {
+          expect(renames[0].oldPath).toBe('D.txt');
+          expect(renames[0].newPath).toBe('A1.txt');
+        }
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+        if (adds[0]?.type === 'add') {
+          expect(adds[0].newPath).toBe('A2.txt');
+        }
+      });
+    });
+  });
+
+  describe('Given two copy sources with identical content tied at equal score for one dst (sortTriples same-kind order)', () => {
+    describe('When detectSimilarityRenames is called with copies:"harder"', () => {
+      it('Then the first copy source in build order wins the dst (copy-vs-copy tiebreak is stable)', async () => {
+        // Arrange — two unchanged files A.txt and B.txt share the SAME blob id (identical
+        // content) and both match the add equally. Greedy takes the FIRST source in build
+        // order (A.txt, iterated before B.txt). Reversing the same-kind (copy/copy) order
+        // would name B.txt as the copy source instead.
+        const ctx = await buildSeededContext();
+        const sharedId = await writeBlob(ctx, tenLines(0));
+        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'CHG line 0\n'));
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['A.txt' as FilePath, { id: sharedId, mode: FILE_MODE.REGULAR }],
+          ['B.txt' as FilePath, { id: sharedId, mode: FILE_MODE.REGULAR }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'dst.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — copies:'harder' so both unchanged files are copy sources
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'harder' }, preimage);
+
+        // Assert — the copy names A.txt (first source in build order) as its origin
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('A.txt');
+          expect(copies[0].newPath).toBe('dst.txt');
+        }
+      });
+    });
+  });
+
   // ── buildAllTriples: copies!=='off' guard ──
 
   describe('Given copies:"off" with a modify and an add (buildAllTriples copies guard)', () => {
@@ -2048,6 +2269,78 @@ describe('detectSimilarityRenames', () => {
         if (change?.type === 'modify') {
           // dissimilarity=0 < mergeScore → emitMergedModify returns original (no broken)
           expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+  });
+
+  // ── computeBreakScores maxSize denominator: max(src,dst) not min(src,dst) ──
+
+  describe('Given a breakRewrites modify whose old content is fully preserved as the first half of a doubled-length new content', () => {
+    describe('When detectSimilarityRenames is called with a break gate strictly between the max- and min-denominator scores', () => {
+      it('Then max(src,dst) is the denominator so the score stays below the gate and the modify is NOT broken', async () => {
+        // Arrange — src is exactly the first half of dst; dst appends an equal-sized block of new
+        // lines, so srcSize = S, dstSize = 2S, srcRemoved ≈ 0, literalAdded ≈ S.
+        //   break_score = min(srcRemoved + literalAdded, maxSize) * MAX_SCORE / maxSize
+        // With maxSize = max(src,dst) = 2S → ≈ S * MAX_SCORE / 2S = 30000 (below the 45000 gate → NOT broken).
+        // With maxSize = min(src,dst) = S  → ≈ S * MAX_SCORE / S  = 60000 (above the gate → broken).
+        // A break would split file.txt into a delete-half (content == target.txt → exact rename)
+        // plus a surviving add-half, turning the plain modify into a rename. The modify surviving
+        // as a plain modify (no rename) pins max(src,dst) as the denominator.
+        const ctx = await buildSeededContext();
+        const preserved = Array.from(
+          { length: 6 },
+          (_, i) => `shared-line-${i}: alpha beta gamma\n`,
+        ).join('');
+        const appended = Array.from(
+          { length: 6 },
+          (_, i) => `brand-new-line-${i}: delta epsilon\n`,
+        ).join('');
+        const srcContent = preserved;
+        const dstContent = `${preserved}${appended}`;
+        const modOldId = await writeBlob(ctx, srcContent);
+        const modNewId = await writeBlob(ctx, dstContent);
+        // target.txt is byte-identical to the modify's old content — an exact-rename partner for
+        // the delete-half IF (and only if) the break fires.
+        const targetId = await writeBlob(ctx, srcContent);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'target.txt' as FilePath,
+              newId: targetId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — gate at 45000, strictly between the max-denominator (30000) and min-denominator (60000) scores
+        const sut = detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: 45000, merge: DEFAULT_MERGE_SCORE },
+        });
+        const result = await sut;
+
+        // Assert — max denominator keeps the score below the gate: no break, so no rename and the modify survives
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        const modifies = result.changes.filter((c) => c.type === 'modify');
+        expect(modifies).toHaveLength(1);
+        if (modifies[0]?.type === 'modify') {
+          expect(modifies[0].path).toBe('file.txt');
+          expect(modifies[0].broken).toBeUndefined();
+        }
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+        if (adds[0]?.type === 'add') {
+          expect(adds[0].newPath).toBe('target.txt');
         }
       });
     });
@@ -2535,6 +2828,116 @@ describe('detectSimilarityRenames', () => {
           expect(copies[0].oldPath).toBe('unchanged1.txt');
           expect(copies[0].newPath).toBe('added.txt');
         }
+      });
+    });
+  });
+
+  // ── buildCopySourcesForOn: unpaired deletes are copy sources ──
+
+  describe('Given copies:"on" and a delete whose content matches two adds (delete is also a copy source)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the delete renames to its best add and copies to the second add', async () => {
+        // Arrange — matrix: an unpaired delete D is BOTH a rename source and a copy source.
+        // D is more similar to A1 (one line changed) than to A2 (three lines changed). Greedy
+        // renames D→A1 (consuming D), then the delete-derived copy source pairs the leftover
+        // A2 as a copy from D. Dropping deletes from the copy-source set leaves A2 as an add.
+        const ctx = await buildSeededContext();
+        const dId = await writeBlob(ctx, tenLines(0));
+        const a1Id = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'Y line 0\n'));
+        const a2Id = await writeBlob(
+          ctx,
+          tenLines(0)
+            .replace('X line 0\n', 'Y0\n')
+            .replace('line 1\n', 'Z1\n')
+            .replace('line 2\n', 'Z2\n'),
+        );
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'D.txt' as FilePath,
+              oldId: dId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'A1.txt' as FilePath,
+              newId: a1Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'A2.txt' as FilePath,
+              newId: a2Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — copies:'on' so the unpaired delete is added to the copy-source set
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+
+        // Assert — rename D→A1 plus copy D→A2; no add or delete survives
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(renames).toHaveLength(1);
+        if (renames[0]?.type === 'rename') {
+          expect(renames[0].oldPath).toBe('D.txt');
+          expect(renames[0].newPath).toBe('A1.txt');
+        }
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('D.txt');
+          expect(copies[0].newPath).toBe('A2.txt');
+        }
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given copies:"on" and a type-change whose preimage matches an add (type-change is a copy source)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the add folds into a copy from the type-change preimage WITHOUT consuming the type-change', async () => {
+        // Arrange — a type-change (regular→symlink) contributes its PREIMAGE blob as a copy
+        // source under plain -C, exactly like a modify. The add matches that preimage and folds
+        // into a copy; the type-change itself survives (source retained). Removing the
+        // type-change arm of the copy-source guard leaves the add unmatched.
+        const ctx = await buildSeededContext();
+        const tcOldId = await writeBlob(ctx, tenLines(0));
+        const tcNewId = await writeBlob(ctx, 'symlink-target-path');
+        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'COPY line 0\n'));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'tc.txt' as FilePath,
+              oldId: tcOldId,
+              newId: tcNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+
+        // Assert — copy from the type-change preimage; type-change survives; no leftover add
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('tc.txt');
+          expect(copies[0].newPath).toBe('copied.txt');
+        }
+        expect(result.changes.filter((c) => c.type === 'type-change')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
       });
     });
   });

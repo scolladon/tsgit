@@ -352,6 +352,47 @@ describe('RegisteredPack.offsetTable — negative trailerStart guard', () => {
   });
 });
 
+describe('RegisteredPack.offsetTable — zero trailerStart boundary', () => {
+  describe('Given a pack file whose size equals the digest length', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then admits trailerStart = 0 without throwing', async () => {
+        // Arrange — stat the .pack as exactly digestLength bytes, so
+        // trailerStart = digestLength - digestLength = 0. The `< 0` guard admits
+        // this boundary; a `<= 0` mutant would reject it and throw.
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([1, 2, 3]);
+        await writeSyntheticPack(ctx, 'zero-trailer-pack', [
+          { kind: 'base', type: 'blob', content: content1 },
+        ]);
+        const digestLength = ctx.hashConfig.digestLength;
+        const wrappedCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              const real = await ctx.fs.stat(path);
+              if (path.endsWith('.pack')) {
+                return { ...real, size: digestLength };
+              }
+              return real;
+            },
+          },
+        };
+        const registry = createPackRegistry(wrappedCtx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+        const sut = pack.offsetTable;
+
+        // Act
+        const result = await sut();
+
+        // Assert — the boundary trailerStart === 0 is accepted, not rejected.
+        expect(result.trailerStart).toBe(0);
+      });
+    });
+  });
+});
+
 describe('RegisteredPack.offsetTable', () => {
   describe('Given a pack with 2 base entries', () => {
     describe('When offsetTable() is called twice', () => {

@@ -99,8 +99,13 @@ const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<
   };
 };
 
-const byPath = (a: WorktreeEntry, b: WorktreeEntry): number =>
-  a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+const byPath = (a: WorktreeEntry, b: WorktreeEntry): number => {
+  // Stryker disable next-line EqualityOperator: equivalent — worktree paths are unique across a repository's worktree set, so `a.path <= b.path` returns -1 on exactly the same distinct pairs as `<`.
+  if (a.path < b.path) return -1;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — for any distinct-path pair V8's sort derives the order from the `<` rule above, so this `>` branch never changes the observable sort result.
+  if (a.path > b.path) return 1;
+  return 0;
+};
 
 export const listWorktrees = async (ctx: Context): Promise<ReadonlyArray<WorktreeEntry>> => {
   const main = await mainEntry(ctx);

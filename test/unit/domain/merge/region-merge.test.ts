@@ -345,6 +345,30 @@ describe('region-merge', () => {
         });
       });
     });
+
+    describe('Given a later-sorted overlapping change ends past the running group end', () => {
+      describe('When buildMergeSegments runs', () => {
+        it('Then the group span grows to cover the wider later change', () => {
+          // Arrange — ours edits [1,3); theirs edits [2,5), which sorts after ours yet
+          // ends wider. The running group end must extend from 3 to 5 to cover theirs,
+          // otherwise d/e leak out of the conflict into a trailing clean run.
+          const sut = buildMergeSegments;
+          const baseLines = lines('a\n', 'b\n', 'c\n', 'd\n', 'e\n', 'f\n');
+          const oursChanges: ChangeRange[] = [
+            { baseStart: 1, baseEnd: 3, replacement: lines('X\n') },
+          ];
+          const theirsChanges: ChangeRange[] = [
+            { baseStart: 2, baseEnd: 5, replacement: lines('Y\n') },
+          ];
+
+          // Act
+          const result = sut(baseLines, oursChanges, theirsChanges);
+
+          // Assert
+          expect(render(result)).toBe('CLEAN[a\n]CONFLICT[ours=X\nd\ne\n|theirs=b\nY\n]CLEAN[f\n]');
+        });
+      });
+    });
   });
 
   describe('applyChangesToSpan', () => {

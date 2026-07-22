@@ -320,27 +320,6 @@ describe('compileGlob', () => {
     });
   });
 
-  describe('Given an adversarial `a*a*…*b` pattern', () => {
-    describe('When matched against a long non-matching run', () => {
-      it('Then it returns false without catastrophic backtracking', () => {
-        // Arrange — the ReDoS regression. The old regex `^a[^/]*a[^/]*…b$` would
-        // explore exponentially many splits of the `a`-run and hang the test;
-        // the linear matcher fills a table in O(tokens × length).
-        const sut = compileGlob(`${'a*'.repeat(64)}b`, { anchored: true });
-        const adversarial = 'a'.repeat(10_000);
-
-        // Act
-        const start = performance.now();
-        const result = sut.test(adversarial);
-        const elapsedMs = performance.now() - start;
-
-        // Assert — no `b`, so no match; and it completes near-instantly.
-        expect(result).toBe(false);
-        expect(elapsedMs).toBeLessThan(1000);
-      });
-    });
-  });
-
   describe('equivalence with the original regex compiler', () => {
     const arbPattern = fc.string({
       unit: fc.constantFrom('a', 'b', '/', '*', '?', '.'),

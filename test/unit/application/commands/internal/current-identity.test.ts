@@ -177,4 +177,224 @@ describe('resolveCurrentIdentity', () => {
       });
     });
   });
+
+  describe('Given a config with valued user.name, valueless user.email, and a signingKey', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key user.email at line 3', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[user]\n\tname = Ada\n\temail\n\tsigningkey = KEY\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
+        // Assert
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.email');
+        expect((caught.data as { line: number }).line).toBe(3);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a config with valueless user.name, valued user.email, and a signingKey', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key user.name at line 2', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[user]\n\tname\n\temail = a@x\n\tsigningkey = KEY\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
+        // Assert
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.name');
+        expect((caught.data as { line: number }).line).toBe(2);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a valueless user.name preceding a valued user.name and a valued user.email', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws CONFIG_MISSING_VALUE for user.name (git dies before the valued override)', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[user]\n\tname\n\tname = Ada\n\temail = a@x\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
+        // Assert
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.name');
+        expect((caught.data as { line: number }).line).toBe(2);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a valued user.name followed by a valueless user.name and a valued user.email', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws CONFIG_MISSING_VALUE for user.name at the valueless line (a valued value does not mask it)', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[user]\n\tname = Ada\n\tname\n\temail = a@x\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
+        // Assert
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.name');
+        expect((caught.data as { line: number }).line).toBe(3);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a valued user.name, a valued user.email, and a trailing valueless user.email', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws CONFIG_MISSING_VALUE for user.email at the valueless line (a valued value does not mask it)', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[user]\n\tname = Ada\n\temail = a@x\n\temail\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
+        // Assert
+        expect(caught.data.code).toBe('CONFIG_MISSING_VALUE');
+        expect((caught.data as { key: string }).key).toBe('user.email');
+        expect((caught.data as { line: number }).line).toBe(4);
+        expect((caught.data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a valued user.name and a signingKey but no user.email', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws AUTHOR_UNCONFIGURED (a name without an email is not a complete identity)', async () => {
+        // Arrange — the signingKey keeps `[user]` present with only a name.
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[user]\n\tname = Ada\n\tsigningkey = KEY\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
+        // Assert
+        expect(caught.data.code).toBe('AUTHOR_UNCONFIGURED');
+        expect(caught.data.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
+
+  describe('Given a valued user.email and a signingKey but no user.name', () => {
+    describe('When resolveCurrentIdentity', () => {
+      it('Then throws AUTHOR_UNCONFIGURED (an email without a name is not a complete identity)', async () => {
+        // Arrange — the signingKey keeps `[user]` present with only an email.
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[user]\n\temail = a@x\n\tsigningkey = KEY\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveCurrentIdentity(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        if (caught === undefined) {
+          throw new Error('expected the operation to throw');
+        }
+
+        // Assert
+        expect(caught.data.code).toBe('AUTHOR_UNCONFIGURED');
+        expect(caught.data.code).not.toBe('CONFIG_MISSING_VALUE');
+      });
+    });
+  });
 });

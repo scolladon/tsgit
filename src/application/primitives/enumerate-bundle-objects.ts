@@ -81,17 +81,16 @@ const collectTreeObjects = async (
   seenTrees: Set<ObjectId>,
   depth = 0,
 ): Promise<void> => {
-  // equivalent-mutant: ConditionalExpression→false — git objects form a DAG with no cycles; seenTrees is a performance guard, not a correctness one
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
   if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
-  // equivalent-mutant: ConditionalExpression→false — resolveObject (inside readObject) checks ctx.signal.aborted before each disk read; abort is caught at the next readObject call
+  // Stryker disable next-line ConditionalExpression: equivalent — resolveObject calls checkAborted at the start of every read, so the unconditional readObject two lines below throws the identical OPERATION_ABORTED
   if (ctx.signal?.aborted) throw operationAborted();
   objects.add(treeId);
   const treeObj = await readObject(ctx, treeId);
   if (treeObj.type !== 'tree') return;
   for (const entry of treeObj.entries) {
-    // equivalent-mutant: ConditionalExpression→false — isDirectory('160000')=false so the gitlink falls to objects.add at the next branch; L121 in emitTreeObjects independently guards gitlinks on the wants side
+    // Stryker disable next-line ConditionalExpression: equivalent — disabling the guard sends a gitlink to the next branch where isDirectory('160000') is false, so its oid joins the uninteresting set but is never emitted (the wants-side isGitlink guard skips it); the object closure is unchanged
     if (isGitlink(entry.mode)) continue;
     // equivalent-mutant: BlockStatement→{} / ConditionalExpression→false — recursive collectTreeObjects calls objects.add(treeId) at the top for any id, including non-tree ones; final uninteresting set is the same
     if (!isDirectory(entry.mode as FileMode)) {
@@ -117,9 +116,9 @@ const emitTreeObjects = async (
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
   if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
-  // equivalent-mutant: ConditionalExpression→false — resolveObject (inside readObject) checks ctx.signal.aborted before each disk read; abort is caught at the next readObject call
+  // Stryker disable next-line ConditionalExpression: equivalent — resolveObject calls checkAborted at the start of every read, so the unconditional readObject two lines below throws the identical OPERATION_ABORTED
   if (ctx.signal?.aborted) throw operationAborted();
-  // equivalent-mutant: ConditionalExpression→true — any uninteresting tree was walked in the haves phase and is already in seenTrees; the seenTrees guard at the top returns before reaching this line for those trees
+  // Stryker disable next-line ConditionalExpression: equivalent — every uninteresting tree was collected into seenTrees during the haves phase, so the seenTrees guard at the top returns first; !uninteresting.has(treeId) is always true when this line is reached
   if (!uninteresting.has(treeId)) tryEmit(state, treeId);
   const treeObj = await readObject(ctx, treeId);
   if (treeObj.type !== 'tree') return;

@@ -63,6 +63,22 @@ describe('signPayload', () => {
     });
   });
 
+  describe('Given format openpgp', () => {
+    describe('When signPayload runs', () => {
+      it('Then the runner request env carries GIT_DIR set to the repo gitDir', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
+        const ctx = createMemoryContext({ command: runner });
+
+        // Act
+        await signPayload(ctx, enc('payload'), { format: 'openpgp', selector: 'ABCD1234' });
+
+        // Assert
+        expect(runner.calls[0]?.env).toEqual({ GIT_DIR: ctx.layout.gitDir });
+      });
+    });
+  });
+
   describe('Given gpg.program is set', () => {
     describe('When signPayload openpgp runs', () => {
       it('Then the command uses that program, not "gpg"', async () => {
@@ -190,6 +206,29 @@ describe('signPayload', () => {
         expect(capturedPayload !== undefined && dec(capturedPayload)).toBe(dec(payload));
         expect(await ctx.fs.exists(tmp)).toBe(false);
         expect(await ctx.fs.exists(`${tmp}.sig`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given format ssh', () => {
+    describe('When signPayload runs', () => {
+      it('Then the runner request env carries GIT_DIR set to the repo gitDir', async () => {
+        // Arrange
+        let ctx!: Context;
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          onRun: async () => {
+            const tmp = sshTempPath(ctx);
+            await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('YWJj')));
+          },
+        });
+        ctx = createMemoryContext({ command: runner });
+
+        // Act
+        await signPayload(ctx, enc('payload'), { format: 'ssh', selector: '/key' });
+
+        // Assert
+        expect(runner.calls[0]?.env).toEqual({ GIT_DIR: ctx.layout.gitDir });
       });
     });
   });
@@ -339,6 +378,33 @@ describe('signPayload', () => {
     });
   });
 
+  describe('Given an ssh runner that exits non-zero but a well-formed .sig is present', () => {
+    describe('When signPayload runs', () => {
+      it('Then result is { ok: false, reason: "signer-failed" } — the non-zero exit is honoured before any .sig is read', async () => {
+        // Arrange — the early non-zero-exit refusal must win even when a stale,
+        // well-formed .sig happens to sit on disk from a prior run.
+        let ctx!: Context;
+        const runner = stubCommandRunner({
+          exitCode: 1,
+          onRun: async () => {
+            const tmp = sshTempPath(ctx);
+            await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('c2ln')));
+          },
+        });
+        ctx = createMemoryContext({ command: runner });
+
+        // Act
+        const result = await signPayload(ctx, enc('payload'), {
+          format: 'ssh',
+          selector: '/key',
+        });
+
+        // Assert
+        expect(result).toEqual({ ok: false, reason: 'signer-failed' });
+      });
+    });
+  });
+
   describe('Given a runner returning exit 0 with no stdout captured', () => {
     describe('When signPayload runs (openpgp format)', () => {
       it('Then result is { ok: false, reason: "signer-failed" }', async () => {
@@ -464,6 +530,47 @@ describe('signPayload', () => {
 
         // Assert
         expect(runner.calls[0]?.signal).toBe(controller.signal);
+      });
+    });
+  });
+
+  describe('Given ctx.signal is not set', () => {
+    describe('When signPayload runs (openpgp format)', () => {
+      it('Then the runner request omits the signal key entirely (never a signal: undefined)', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
+        const ctx = createMemoryContext({ command: runner });
+
+        // Act
+        await signPayload(ctx, enc('payload'), { format: 'openpgp', selector: 'ABCD1234' });
+
+        // Assert
+        const call = runner.calls[0];
+        expect(runner.calls.length).toBe(1);
+        expect(call !== undefined && 'signal' in call).toBe(false);
+      });
+    });
+
+    describe('When signPayload runs (ssh format)', () => {
+      it('Then the runner request omits the signal key entirely (never a signal: undefined)', async () => {
+        // Arrange
+        let ctx!: Context;
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          onRun: async () => {
+            const tmp = sshTempPath(ctx);
+            await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('YWJj')));
+          },
+        });
+        ctx = createMemoryContext({ command: runner });
+
+        // Act
+        await signPayload(ctx, enc('payload'), { format: 'ssh', selector: '/key' });
+
+        // Assert
+        const call = runner.calls[0];
+        expect(runner.calls.length).toBe(1);
+        expect(call !== undefined && 'signal' in call).toBe(false);
       });
     });
   });

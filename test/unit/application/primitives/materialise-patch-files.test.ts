@@ -1237,4 +1237,88 @@ describe('materialiseOne', () => {
       });
     });
   });
+
+  // --- Mutation-kill: sanitizePath truncates the textconv temp-file token to 64 chars (L52) ---
+
+  describe('Given an add change whose path sanitizes to more than 64 characters and textconv configured', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true', () => {
+      it('Then the textconv temp-file token is truncated to the first 64 sanitized characters', async () => {
+        // Arrange — 70 alnum chars + ".txt" sanitizes to 74 chars; must be sliced to 64
+        let capturedCommand = '';
+        const runner: CommandRunner = {
+          run: async (req) => {
+            capturedCommand = req.command;
+            return { exitCode: 0, stdout: utf8.encode('OUT\n') };
+          },
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.txt diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+        );
+        const longName = `${'a'.repeat(70)}.txt`;
+        const newOid = await writeBlob(ctx, 'hello\n');
+        const change: AddChange = {
+          type: 'add',
+          newPath: longName as FilePath,
+          newId: newOid,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — the temp-file token embeds only the first 64 sanitized chars (".txt" dropped)
+        const marker = 'TEXTCONV_INPUT_new_';
+        const tmpPath = capturedCommand.split(' ').pop() ?? '';
+        const sanitized = tmpPath.slice(tmpPath.indexOf(marker) + marker.length);
+        expect(sanitized).toBe('a'.repeat(64));
+        expect(sanitized).toHaveLength(64);
+        expect(sanitized.endsWith('_txt')).toBe(false);
+      });
+    });
+  });
+
+  // --- Mutation-kill: materialiseRenameOrCopy sub-100% rawIsBinary both-sides-clean (L247) ---
+
+  describe('Given a sub-100% rename change with both sides clean text and textconv configured', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true', () => {
+      it('Then numstatBinaryOverride is text (neither side binary; forcing rawIsBinary true would flip it to binary)', async () => {
+        // Arrange — both blobs are clean; rawIsBinary must be false → FORCE_TEXT
+        const converted = utf8.encode('CONVERTED\n');
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 0, stdout: converted }),
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'r.f diff=up\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "up"]\n\ttextconv = to-upper\n',
+        );
+        const oldOid = await writeBlob(ctx, 'clean old\n');
+        const newOid = await writeBlob(ctx, 'clean new\n');
+        const change: RenameChange = {
+          type: 'rename',
+          oldPath: 'r.f' as FilePath,
+          newPath: 'r.f' as FilePath,
+          oldId: oldOid,
+          newId: newOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          similarity: { score: MAX_SCORE - 1, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — both sides clean → rawIsBinary false → FORCE_TEXT (numstat text, not binary)
+        expect(result).toHaveLength(1);
+        expect(result[0]?.numstatBinaryOverride).toBe('text');
+        expect(result[0]?.patchBinaryOverride).toBe('text');
+        expect(result[0]?.oldContent).toEqual(converted);
+        expect(result[0]?.newContent).toEqual(converted);
+      });
+    });
+  });
 });

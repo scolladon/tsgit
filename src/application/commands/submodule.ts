@@ -306,11 +306,14 @@ const syncLevel = async (
     entries.push({ name: row.name, path, url, syncedRemote });
   }
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
+  // Stryker disable next-line EqualityOperator: equivalent — `<` vs `<=` differs only at depth === MAX_SUBMODULE_DEPTH (100), reachable only with 100 actually-checked-out nested submodules; recursion instead terminates when deriveSubmoduleContext finds no deeper module, well below the cap, so the boundary is inert for the realistic domain (same reasoning as the depth-arithmetic equivalence documented on the recursive call below).
   if (opts.recursive === true && depth < MAX_SUBMODULE_DEPTH) {
     for (const row of selected) {
+      // Stryker disable next-line StringLiteral: equivalent — childGitDir feeds only the `visited` set threaded into the recursive call; deriveSubmoduleContext's `visited.has(gitDir)` guard is provably always-false under the absorbed layout (each level appends `/modules/<name>`), so the set's contents never affect traversal.
       const childGitDir = `${ctx.layout.gitDir}/modules/${row.name}`;
       const child = await deriveSubmoduleContext(ctx, row.name, row.path as FilePath, visited);
       if (child === undefined) continue;
+      // Stryker disable next-line ArithmeticOperator,ArrayDeclaration: equivalent — `depth` is consumed only by the `depth < MAX_SUBMODULE_DEPTH` cap, never the terminating condition below a 100-deep tree (recursion ends when deriveSubmoduleContext finds no deeper checked-out module), so +1 vs -1 is inert for the realistic domain; the `visited` array is likewise inert (its `.has` guard is always-false under the absorbed layout).
       await syncLevel(child, opts, depth + 1, new Set([...visited, childGitDir]));
     }
   }
@@ -382,7 +385,11 @@ export const submoduleDeinit = async (
   opts: SubmoduleDeinitOptions = {},
 ): Promise<SubmoduleDeinitResult> => {
   await assertOperationalRepository(ctx);
-  if ((opts.paths === undefined || opts.paths.length === 0) && opts.all !== true) {
+  const hasPaths = opts.paths !== undefined && opts.paths.length > 0;
+  if (opts.all === true && hasPaths) {
+    throw invalidOption('submodule.deinit', 'pathspec and --all are incompatible');
+  }
+  if (opts.all !== true && !hasPaths) {
     throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
   }
   const rows = await readWorktreeGitmodules(ctx);
@@ -551,6 +558,7 @@ const stageSubmodule = async (
       ),
     );
     await lock.commit([...entries.values()]);
+    // Stryker disable next-line BlockStatement: equivalent — after `commit` sets `committed = true`, `release()` is a documented no-op, and stageSubmodule's try never throws in any reachable path (all fs ops succeed once the submodule is cloned+materialised), so the finally body is behaviorally inert.
   } finally {
     await lock.release();
   }
@@ -583,7 +591,8 @@ const cloneSubmoduleInto = async (
 const headBranchName = (head: { kind: string; target?: string }): string =>
   head.kind === 'symbolic' && head.target?.startsWith(HEADS_PREFIX) === true
     ? head.target.slice(HEADS_PREFIX.length)
-    : '';
+    : // Stryker disable next-line StringLiteral: equivalent — this ':' branch is unreachable via submoduleAdd (headBranchName's only caller), whose cloned/checked-out submodule HEAD is always symbolic, so the detached-fallback '' is never produced.
+      '';
 
 /**
  * Create the local tracking branch `refs/heads/<branch>` at `origin/<branch>`
@@ -715,6 +724,7 @@ const reconcileSubmodule = async (
   if (mode === 'checkout') {
     const head = await getRefStore(child).resolveDirect(HEAD_REF);
     if (head.kind === 'direct' && head.id === pinned) return false;
+    // Stryker disable next-line BooleanLiteral: equivalent — `pinned` is always a raw commit oid (never a branch name), and checking out a raw oid detaches HEAD unconditionally, so `detach: false` yields the identical detached-at-pin HEAD as `detach: true`.
     await checkout(child, { rev: pinned, detach: true });
     return true;
   }

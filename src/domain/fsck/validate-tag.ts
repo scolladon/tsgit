@@ -57,7 +57,7 @@ function checkTaggerLine(line: string, strict: boolean): ReadonlyArray<TagFindin
   const afterGt = line.slice(gtIdx + 1);
   if (!afterGt.startsWith(' ')) return [];
 
-  // Stryker disable next-line Regex: equivalent — afterGt.trim() removes boundary whitespace; split(/\s/) and split(/\s+/) produce the same [0] element.
+  // Stryker disable next-line Regex,StringLiteral: equivalent — afterGt.trim() removes boundary whitespace so split(/\s/) and split(/\s+/) produce the same [0] element; split() always returns at least one element, so the '' default can never activate.
   const [timestamp = ''] = afterGt.trim().split(/\s+/);
   if (/^\d+$/.test(timestamp) && isTaggerTimestampOverflow(timestamp)) {
     return [

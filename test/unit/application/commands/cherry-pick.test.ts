@@ -171,6 +171,86 @@ const seedMerge = async (): Promise<{
   return { ctx, mergeId: m.id, base: base.id };
 };
 
+/** feature: c1 adds n.txt (clean on main), c2 changes shared s.txt (conflicts with main). */
+const seedCleanThenConflict = async (): Promise<{
+  ctx: Context;
+  base: ObjectId;
+  c1: ObjectId;
+  feature: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await ctx.fs.writeUtf8(work(ctx, 's.txt'), 'l1\nl2\n');
+  await add(ctx, ['s.txt']);
+  const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
+  await ctx.fs.writeUtf8(work(ctx, 'n.txt'), 'n\n');
+  await add(ctx, ['n.txt']);
+  const c1 = await commit(ctx, { message: 'c1 add n', author: FEAT_AUTHOR });
+  await ctx.fs.writeUtf8(work(ctx, 's.txt'), 'l1\nFEAT\n');
+  await add(ctx, ['s.txt']);
+  const feature = await commit(ctx, { message: 'c2 change s', author: FEAT_AUTHOR });
+  await checkout(ctx, { rev: 'main' });
+  await ctx.fs.writeUtf8(work(ctx, 's.txt'), 'l1\nMAIN\n');
+  await add(ctx, ['s.txt']);
+  await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
+  return { ctx, base: base.id, c1: c1.id, feature: feature.id };
+};
+
+/** main: a.txt/b.txt diverge; feature: c1 changes a.txt then c2 changes b.txt — each conflicts. */
+const seedDoubleConflict = async (): Promise<{
+  ctx: Context;
+  base: ObjectId;
+  c1: ObjectId;
+  feature: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await setUser(ctx);
+  await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'a\n');
+  await ctx.fs.writeUtf8(work(ctx, 'b.txt'), 'b\n');
+  await add(ctx, ['a.txt', 'b.txt']);
+  const base = await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
+  await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'aF\n');
+  await add(ctx, ['a.txt']);
+  const c1 = await commit(ctx, { message: 'c1 change a', author: FEAT_AUTHOR });
+  await ctx.fs.writeUtf8(work(ctx, 'b.txt'), 'bF\n');
+  await add(ctx, ['b.txt']);
+  const feature = await commit(ctx, { message: 'c2 change b', author: FEAT_AUTHOR });
+  await checkout(ctx, { rev: 'main' });
+  await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'aM\n');
+  await ctx.fs.writeUtf8(work(ctx, 'b.txt'), 'bM\n');
+  await add(ctx, ['a.txt', 'b.txt']);
+  await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
+  return { ctx, base: base.id, c1: c1.id, feature: feature.id };
+};
+
+/** A root commit (no parent) that applies cleanly onto any HEAD, carrying `message`. */
+const makeCleanRootPick = async (
+  ctx: Context,
+  fileName: string,
+  message: string,
+): Promise<ObjectId> => {
+  const blob = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode('x\n'),
+  });
+  const tree = await writeTree(ctx, [{ name: fileName, id: blob, mode: FILE_MODE.REGULAR }]);
+  return createCommit(ctx, {
+    tree,
+    parents: [],
+    author: FEAT_AUTHOR,
+    committer: FEAT_AUTHOR,
+    message,
+    extraHeaders: [],
+  });
+};
+
 describe('cherryPickRun — merge commits', () => {
   describe('Given a single merge commit to pick', () => {
     describe('When run without -m', () => {
@@ -346,6 +426,23 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         const todo = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`);
         expect(todo.split('\n').filter(Boolean)).toHaveLength(2); // c1 (current) + c2
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer/abort-safety`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a default range (no -x, no --allow-empty) that stops on a conflict', () => {
+    describe('When the sequencer dir is persisted', () => {
+      it('Then no `opts` file is written (git omits it when every option is default)', async () => {
+        // Arrange
+        const { ctx, base } = await seedRange();
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+
+        // Assert — git writes sequencer/opts only for non-default options; a plain
+        // committing sequence must not persist a `no-commit` (or any) option line.
+        expect(sut.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer/opts`)).toBe(false);
       });
     });
   });
@@ -1394,6 +1491,245 @@ describe('cherryPick — observable surfaces', () => {
         const last = sut.commits.at(-1) as { source: ObjectId; created: ObjectId };
         const resumed = await readCommit(ctx, last.created);
         expect(resumed.message).toContain(`(cherry picked from commit ${last.source})`);
+      });
+    });
+  });
+});
+
+describe('cherryPickRun — resume-state faithfulness', () => {
+  describe('Given a range whose later pick conflicts after an earlier clean pick', () => {
+    describe('When run', () => {
+      it('Then the sequencer todo holds only the remaining pick, not the applied one', async () => {
+        // Arrange
+        const { ctx, base, c1, feature } = await seedCleanThenConflict();
+
+        // Act — c1 applies cleanly at index 0; c2 conflicts at index 1.
+        const sut = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+
+        // Assert — the persisted todo is sliced to the remaining pick alone.
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind === 'conflict') expect(sut.commit).toBe(feature);
+        const todoLines = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`))
+          .split('\n')
+          .filter(Boolean);
+        expect(todoLines).toHaveLength(1);
+        expect(todoLines[0]).toContain(feature);
+        expect(todoLines[0]).not.toContain(c1);
+      });
+    });
+  });
+});
+
+describe('cherryPickRun — the -x provenance footer', () => {
+  describe('Given -x and a source message with no trailing newline', () => {
+    describe('When run', () => {
+      it('Then the whole subject is kept before the blank line and provenance footer', async () => {
+        // Arrange — createCommit stores the message verbatim, so this source's
+        // message ends in a non-whitespace char.
+        const { ctx } = await seedFeature();
+        const source = await makeCleanRootPick(ctx, 'x.txt', 'solo');
+
+        // Act
+        const sut = await cherryPickRun(ctx, { commits: [source], recordOrigin: true });
+
+        // Assert — the trailing-whitespace strip must not eat the final word.
+        expect(sut.kind).toBe('picked');
+        if (sut.kind !== 'picked') return;
+        const data = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        expect(data.message).toBe(`solo\n\n(cherry picked from commit ${source})\n`);
+      });
+    });
+  });
+});
+
+describe('cherryPickRun — HEAD resolution errors', () => {
+  describe('Given the current branch ref forms a symref cycle', () => {
+    describe('When run', () => {
+      it('Then the cycle error propagates rather than masking as NO_INITIAL_COMMIT', async () => {
+        // Arrange — point refs/heads/main at itself so resolveRef throws a
+        // non-REF_NOT_FOUND error; only REF_NOT_FOUND may become NO_INITIAL_COMMIT.
+        const { ctx } = await seedFeature();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, 'ref: refs/heads/main\n');
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
+
+        // Assert
+        expect(code).toBe('REF_CYCLE_DETECTED');
+      });
+    });
+  });
+});
+
+describe('cherryPickRun — empty source message', () => {
+  describe('Given a clean pick whose source commit carries an empty message', () => {
+    describe('When run without --allow-empty', () => {
+      it('Then the commit step refuses with EMPTY_COMMIT_MESSAGE', async () => {
+        // Arrange — createCommit stores the empty message verbatim.
+        const { ctx } = await seedFeature();
+        const source = await makeCleanRootPick(ctx, 'x.txt', '');
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: [source] }));
+
+        // Assert
+        expect(code).toBe('EMPTY_COMMIT_MESSAGE');
+      });
+    });
+  });
+});
+
+describe('cherryPickRun — index lock release', () => {
+  describe('Given a redundant pick that stops empty', () => {
+    describe('When run', () => {
+      it('Then the index lock is released (no stale index.lock remains)', async () => {
+        // Arrange — apply feature once (clean), so the second pick is redundant.
+        const { ctx, feature } = await seedFeature();
+        await cherryPickRun(ctx, { commits: [feature] });
+
+        // Act — the empty path returns without committing, so only the finally
+        // release clears the lock file it acquired.
+        const sut = await cherryPickRun(ctx, { commits: [feature] });
+
+        // Assert
+        expect(sut.kind).toBe('empty');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a --no-commit pick refused for a merge commit', () => {
+    describe('When run', () => {
+      it('Then the index lock is released before the refusal propagates', async () => {
+        // Arrange
+        const { ctx, mergeId } = await seedMerge();
+
+        // Act — the merge is rejected inside the loop, after the lock is acquired
+        // but before any commit renames it away.
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: [mergeId], noCommit: true }));
+
+        // Assert
+        expect(code).toBe('CHERRY_PICK_MERGE_NO_MAINLINE');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('cherryPickContinue — resolved message sourcing', () => {
+  describe('Given a resolved non-empty index but an absent MERGE_MSG', () => {
+    describe('When continue', () => {
+      it('Then the empty fallback message refuses with EMPTY_COMMIT_MESSAGE', async () => {
+        // Arrange — resolve the conflict (changing the tree), then remove MERGE_MSG
+        // so the message source falls back to the empty string.
+        const { ctx } = await seedConflictPick();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/MERGE_MSG`);
+
+        // Act
+        const code = await codeOf(() => cherryPickContinue(ctx));
+
+        // Assert
+        expect(code).toBe('EMPTY_COMMIT_MESSAGE');
+      });
+    });
+  });
+});
+
+describe('cherryPickContinue — merge-stopped sequence', () => {
+  describe('Given a range stopped at a merge commit with no CHERRY_PICK_HEAD', () => {
+    describe('When continue', () => {
+      it('Then it re-drives the merge and refuses with CHERRY_PICK_MERGE_NO_MAINLINE', async () => {
+        // Arrange — base..feature applies c1, then stops at the merge with the
+        // sequencer todo starting at the merge and no CHERRY_PICK_HEAD.
+        const { ctx, base } = await seedMerge();
+        await codeOf(() => cherryPickRun(ctx, { commits: [`${base}..feature`] }));
+
+        // Act
+        const code = await codeOf(() => cherryPickContinue(ctx));
+
+        // Assert
+        expect(code).toBe('CHERRY_PICK_MERGE_NO_MAINLINE');
+      });
+    });
+  });
+});
+
+describe('cherryPickContinue — remaining count on an empty re-stop', () => {
+  describe('Given a two-pick range whose resolved first pick yields no change', () => {
+    describe('When continue without --allow-empty', () => {
+      it('Then it re-stops empty reporting the still-pending pick count', async () => {
+        // Arrange — c1 conflicts (todo = [c1, c2]); resolve it back to HEAD's
+        // content so the finalisation is a no-op.
+        const { ctx, base, c1 } = await seedRange();
+        await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await cherryPickContinue(ctx);
+
+        // Assert — c1 re-stops empty; c2 (one pick) still remains.
+        expect(sut.kind).toBe('empty');
+        if (sut.kind === 'empty') {
+          expect(sut.commit).toBe(c1);
+          expect(sut.remaining).toBe(1);
+        }
+      });
+    });
+  });
+});
+
+describe('cherryPickContinue — resumed conflict persists the sequencer', () => {
+  describe('Given a two-conflict range whose resumed pick also conflicts', () => {
+    describe('When continue', () => {
+      it('Then the sequencer todo is rewritten to the remaining pick alone', async () => {
+        // Arrange — c1 conflicts (todo = [c1, c2]); resolve it, and c2 will also
+        // conflict once resumed.
+        const { ctx, base, c1, feature } = await seedDoubleConflict();
+        await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'aX\n');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const sut = await cherryPickContinue(ctx);
+
+        // Assert — the resumed pick's stop must re-slice the persisted todo.
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind === 'conflict') expect(sut.commit).toBe(feature);
+        const todoLines = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`))
+          .split('\n')
+          .filter(Boolean);
+        expect(todoLines).toHaveLength(1);
+        expect(todoLines[0]).toContain(feature);
+        expect(todoLines[0]).not.toContain(c1);
+      });
+    });
+  });
+});
+
+describe('cherryPickSkip — resumed conflict persists the sequencer', () => {
+  describe('Given a two-conflict range whose resumed pick conflicts after a skip', () => {
+    describe('When skip', () => {
+      it('Then the sequencer todo is rewritten to the remaining pick alone', async () => {
+        // Arrange — c1 conflicts (todo = [c1, c2]); skipping c1 resumes c2, which
+        // also conflicts.
+        const { ctx, base, c1, feature } = await seedDoubleConflict();
+        await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+
+        // Act
+        const sut = await cherryPickSkip(ctx);
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind === 'conflict') expect(sut.commit).toBe(feature);
+        const todoLines = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`))
+          .split('\n')
+          .filter(Boolean);
+        expect(todoLines).toHaveLength(1);
+        expect(todoLines[0]).toContain(feature);
+        expect(todoLines[0]).not.toContain(c1);
       });
     });
   });

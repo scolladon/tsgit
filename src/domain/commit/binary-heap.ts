@@ -51,9 +51,7 @@ export class BinaryHeap<T> {
   }
 
   pop(): T | undefined {
-    // equivalent-mutant (if false): on an empty heap this.values[0] and this.values.pop()
-    // are both already `undefined`, and the `this.values.length > 0` guard below skips
-    // siftDown — dropping this short-circuit is a no-op micro-optimization, not a behavior change.
+    // Stryker disable next-line ConditionalExpression: equivalent — on an empty heap the guarded body is already a no-op: this.values[0] and this.values.pop() are both undefined and the this.values.length > 0 check skips siftDown, so falling through returns undefined identically.
     if (this.values.length === 0) return undefined;
     const root = this.values[0]!;
     const last = this.values.pop()!;

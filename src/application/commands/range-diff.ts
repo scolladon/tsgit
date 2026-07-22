@@ -87,6 +87,7 @@ const hydrateSeries = async (
   ctx: Context,
   commits: ReadonlyArray<Commit>,
 ): Promise<ReadonlyArray<CommitPatchInput>> => {
+  // Stryker disable next-line ArrayDeclaration: equivalent — the length only pre-sizes; workers assign every index 0..length-1 via the shared cursor, so an unsized array grown by those same assignments ends identical in length and contents.
   const results = new Array<CommitPatchInput>(commits.length);
   let cursor = 0;
   const worker = async (): Promise<void> => {
@@ -95,6 +96,7 @@ const hydrateSeries = async (
       results[index] = await hydrate(ctx, commits[index]!);
     }
   };
+  // Stryker disable next-line MethodExpression: equivalent — min vs max only resizes the worker pool; the shared cursor hands each index to exactly one worker and surplus workers exit at once, so `results` is identical for any pool size — the bound only caps in-flight I/O, an unobservable resource property.
   const concurrency = Math.min(MAX_CONCURRENT_COMMITS, commits.length);
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
   return results;

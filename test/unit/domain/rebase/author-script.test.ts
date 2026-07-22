@@ -88,7 +88,10 @@ describe('rebase author-script', () => {
         }
 
         // Assert
-        expect(caught?.data.code).toBe('INVALID_IDENTITY');
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'missing author-script key',
+        });
       });
     });
 
@@ -135,7 +138,10 @@ describe('rebase author-script', () => {
         }
 
         // Assert
-        expect(caught?.data.code).toBe('INVALID_IDENTITY');
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'author-script date lacks the `@` prefix',
+        });
       });
     });
 
@@ -152,7 +158,10 @@ describe('rebase author-script', () => {
         }
 
         // Assert
-        expect(caught?.data.code).toBe('INVALID_IDENTITY');
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'author-script value is not single-quoted',
+        });
       });
     });
 
@@ -190,6 +199,26 @@ describe('rebase author-script', () => {
       });
     });
 
+    describe('When a value ends with a quote but does not open with one', () => {
+      it('Then throws INVALID_IDENTITY (a trailing quote alone is not sq-quoting)', () => {
+        // Arrange + Act
+        let caught: TsgitError | undefined;
+        try {
+          parseAuthorScript(
+            "GIT_AUTHOR_NAME=Ada'\nGIT_AUTHOR_EMAIL='ada@example.com'\nGIT_AUTHOR_DATE='@1700000000 +0000'\n",
+          );
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'author-script value is not single-quoted',
+        });
+      });
+    });
+
     describe('When the timestamp is not a number', () => {
       it('Then throws INVALID_IDENTITY', () => {
         // Arrange + Act
@@ -203,7 +232,10 @@ describe('rebase author-script', () => {
         }
 
         // Assert
-        expect(caught?.data.code).toBe('INVALID_IDENTITY');
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'invalid author-script timestamp',
+        });
       });
     });
 
@@ -237,7 +269,50 @@ describe('rebase author-script', () => {
         }
 
         // Assert
-        expect(caught?.data.code).toBe('INVALID_IDENTITY');
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'invalid author-script timezone offset',
+        });
+      });
+    });
+
+    describe('When the timezone offset carries leading noise before a valid suffix', () => {
+      it('Then throws INVALID_IDENTITY (the offset must start at the sign, not merely end in one)', () => {
+        // Arrange + Act
+        let caught: TsgitError | undefined;
+        try {
+          parseAuthorScript(
+            "GIT_AUTHOR_NAME='Ada'\nGIT_AUTHOR_EMAIL='ada@example.com'\nGIT_AUTHOR_DATE='@1700000000 0+0000'\n",
+          );
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'invalid author-script timezone offset',
+        });
+      });
+    });
+
+    describe('When the timezone offset has an extra digit past the four', () => {
+      it('Then throws INVALID_IDENTITY (the offset must end after exactly four digits)', () => {
+        // Arrange + Act
+        let caught: TsgitError | undefined;
+        try {
+          parseAuthorScript(
+            "GIT_AUTHOR_NAME='Ada'\nGIT_AUTHOR_EMAIL='ada@example.com'\nGIT_AUTHOR_DATE='@1700000000 +00000'\n",
+          );
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toMatchObject({
+          code: 'INVALID_IDENTITY',
+          reason: 'invalid author-script timezone offset',
+        });
       });
     });
   });

@@ -356,6 +356,29 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
+  describe('When header ends with the v3 magic but does not start with a bundle signature and has no blank-line terminator', () => {
+    it('Then throws BUNDLE_BAD_HEADER with reason not-a-bundle', () => {
+      // Arrange — leading bytes precede the v3 magic, so the header does not START with a
+      // bundle signature; classification keys off the leading bytes (not-a-bundle). An
+      // endsWith check would misread the trailing magic and reclassify it as malformed.
+      const sut = parseBundleHeader;
+      const bytes = encode('X# v3 git bundle');
+
+      // Act + Assert
+      try {
+        sut(bytes, 'trailing-v3-magic.bundle');
+        expect.fail('should have thrown');
+      } catch (err: unknown) {
+        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
+          'BUNDLE_BAD_HEADER',
+        );
+        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
+          'not-a-bundle',
+        );
+      }
+    });
+  });
+
   describe('When given a large payload with v2 magic but no blank-line terminator', () => {
     it('Then throws BUNDLE_BAD_HEADER on a large no-terminator input', () => {
       // Arrange

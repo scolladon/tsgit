@@ -204,6 +204,43 @@ describe('resolveOidPrefix', () => {
     });
   });
 
+  describe('Given a non-file entry whose name matches the queried prefix', () => {
+    describe('When resolveOidPrefix scans that fanout', () => {
+      it('Then the directory is not treated as a loose object (returns undefined)', async () => {
+        // Arrange — a directory named like a valid 38-hex suffix that starts with
+        // the queried remainder, and no real object under the prefix. Only the
+        // `isFile` guard keeps the directory from being resolved as an oid.
+        const ctx = await buildSeededContext();
+        const suffix = `cd${'0'.repeat(36)}`;
+        await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/${suffix}/child`, new Uint8Array([0]));
+
+        // Act
+        const sut = await resolveOidPrefix(ctx, 'abcd');
+
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a file whose name matches the prefix but is not 38-hex', () => {
+    describe('When resolveOidPrefix scans that fanout', () => {
+      it('Then the entry is not treated as a loose object (returns undefined)', async () => {
+        // Arrange — a regular file named `cd` (starts with the queried remainder
+        // but is not a 38-hex object name), and no real object under the prefix.
+        // Only the `LOOSE_NAME` guard keeps it from being resolved as an oid.
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cd`, new Uint8Array([0]));
+
+        // Act
+        const sut = await resolveOidPrefix(ctx, 'abcd');
+
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
   describe.each([
     ['too short (3 chars)', 'abc'],
     ['too long (41 chars)', `${'a'.repeat(41)}`],

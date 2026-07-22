@@ -460,6 +460,7 @@ export class NodeFileSystem implements FileSystem {
    */
   private async resolveCanonicalRoot(): Promise<RootPrefix> {
     let canonicalRootPrefix = this.resolvedCanonicalRootPrefix;
+    // Stryker disable next-line ConditionalExpression: equivalent — when `resolvedCanonicalRootPrefix` is already set, `getCanonicalRoot()` returns the memoised promise resolving to that same `RootPrefix` (set in lockstep in its resolve arm, cleared with the promise on rejection), so forcing this guard true reassigns the identical value with no extra `realpath`; only the await fast-path is dropped.
     if (canonicalRootPrefix === undefined) {
       canonicalRootPrefix = await this.getCanonicalRoot();
     }

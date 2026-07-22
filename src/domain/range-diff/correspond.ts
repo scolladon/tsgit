@@ -60,11 +60,10 @@ const cellCost = (
   j: number,
 ): number => {
   if (exactOldI === j) return 0;
-  // equivalent-mutant: loosening this guard (`< 0` → `<= 0`, or forcing it true)
-  // only ever turns a forbidden COST_MAX cell into a finite cost for a row/column
-  // that is already exact-matched elsewhere at cost 0. The cost-0 exact pair
-  // dominates the assignment, so the forbidden cell's value cannot change the
-  // chosen matching.
+  // Cells reaching this guard have `exactOldI !== j`; `<= 0` differs from `< 0` only at an
+  // index-0 exact match, which pins column/row 0 to its exact partner (any other filler
+  // costs COST_MAX), so the newly-finite forbidden re-pair is never chosen by the assignment.
+  // Stryker disable next-line EqualityOperator: equivalent — an index-0 exact match pins its partner to column/row 0, so widening `< 0` to `<= 0` only makes an already-forbidden re-pair finite; using it would force a COST_MAX elsewhere, leaving the min-cost matching unchanged.
   if (exactOldI < 0 && exactNewJ < 0) return diffSize(oldPatch.diff, newPatch.diff);
   return COST_MAX;
 };
@@ -81,14 +80,16 @@ const buildCostMatrix = (
   const total = n + m;
   const cost = new Array<number>(total * total).fill(0); // dummy×dummy stays 0
   for (let i = 0; i < n; i++) {
-    // equivalent-mutant (`j < m` → `j <= m`): the extra `j === m` cell is the first
-    // dummy column, overwritten immediately by the deletion loop below.
+    // The extra `j === m` iteration (widening `<` to `<=`) writes COST_MAX to the first
+    // dummy column, which the deletion loop below immediately overwrites with `del`.
+    // Stryker disable next-line EqualityOperator: equivalent — the `j === m` write to the first dummy column is overwritten by the deletion loop below, which always covers column m because this body only runs when n>0, so the cost matrix is identical.
     for (let j = 0; j < m; j++) {
       cost[i + total * j] = cellCost(oldPatches[i]!, newPatches[j]!, exactOld[i]!, exactNew[j]!, j);
     }
     const del = dummyCost(exactOld[i]!, oldPatches[i]!.diffsize, creationFactor);
-    // equivalent-mutant (`j < total` → `j <= total`): the extra `j === total` write
-    // lands at flat index `i + total*total`, past the matrix; the solver never reads it.
+    // The extra `j === total` iteration (widening `<` to `<=`) writes to flat index
+    // `i + total*total`, past the matrix; `computeAssignment` indexes cells by `total`.
+    // Stryker disable next-line EqualityOperator: equivalent — the extra `j === total` write lands at flat index `i + total*total`, at or beyond the matrix length `total*total`, and computeAssignment only reads cells `column + total*row` for column,row < total, so it is never read.
     for (let j = m; j < total; j++) cost[i + total * j] = del;
   }
   for (let j = 0; j < m; j++) {

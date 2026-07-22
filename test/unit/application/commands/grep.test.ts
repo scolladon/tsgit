@@ -581,6 +581,27 @@ describe('Given a tracked file with "word" embedded in another word, When grep u
   });
 });
 
+// ─── Absent wholeWord does NOT gate the line matcher ─────────────────────────
+
+describe('Given a tracked file with the pattern embedded in a larger word, When grep runs without wholeWord', () => {
+  it('Then the embedded occurrence IS returned (line matcher is not whole-word gated)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'embed.txt', 'keyword\n');
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act — wholeWord unset: substring 'word' inside 'keyword' must match
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'word' }] });
+
+    // Assert
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.path).toBe('embed.txt');
+    expect(result.paths[0]!.hits).toHaveLength(1);
+    expect(result.paths[0]!.hits[0]!.lineNumber).toBe(1);
+  });
+});
+
 // ─── Invert flag passes through to matcher (-v) ──────────────────────────────
 
 describe('Given a tracked file with three lines, When grep uses invert', () => {
@@ -729,6 +750,26 @@ describe('Given a binary blob where the pattern appears only as part of another 
 
     // Assert
     expect(result.paths).toHaveLength(0);
+  });
+});
+
+describe('Given a binary blob with the pattern embedded in a larger token, When grep runs without wholeWord', () => {
+  it('Then binaryMatch IS reported (binary probe is not whole-word gated when wholeWord is absent)', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    // NUL marks the blob binary; "FIND_ME" occurs only embedded between 'x' bytes
+    const content = new Uint8Array([0x00, 0x78, ...new TextEncoder().encode('FIND_ME'), 0x78]);
+    await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, content);
+    await add(ctx, ['data.bin']);
+    await commitAll(ctx);
+    const sut = grep;
+
+    // Act — wholeWord unset: the embedded occurrence must still count as presence
+    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'FIND_ME' }] });
+
+    // Assert
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]!.binaryMatch).toBe(true);
   });
 });
 

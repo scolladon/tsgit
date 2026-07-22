@@ -12,7 +12,9 @@ interface ResolveAuthorInput {
 interface ResolveCommitterInput {
   readonly explicit?: AuthorIdentity;
   readonly author?: AuthorIdentity;
-  readonly configUser?: AuthorIdentity;
+  // Accepts an explicit `undefined` so callers need not pre-narrow an optional
+  // identity; the `!== undefined` check below treats it as absent either way.
+  readonly configUser?: AuthorIdentity | undefined;
 }
 
 /**

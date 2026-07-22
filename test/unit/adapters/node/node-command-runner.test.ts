@@ -192,6 +192,25 @@ describe('NodeCommandRunner', () => {
     });
   });
 
+  describe('Given a signal that aborts after the command has already finished', () => {
+    describe('When the signal aborts post-completion', () => {
+      it('Then the child is not killed (the abort listener was detached on finish)', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const { runner, child } = makeHarness();
+
+        // Act
+        const promise = runner.run(baseRequest({ signal: controller.signal }));
+        child.emit('close', 0);
+        await promise;
+        controller.abort();
+
+        // Assert
+        expect(child.killed).toBe(false);
+      });
+    });
+  });
+
   describe('Given construction with default arguments', () => {
     describe('When instantiated without explicit platform or ops', () => {
       it('Then a runner is produced (defaults bind without spawning)', () => {

@@ -53,6 +53,7 @@ const NEWLINE_CODE = 0x0a;
 const sideIsBinary = (bytes: Uint8Array, override: 'binary' | 'text' | undefined): boolean =>
   override === undefined ? isBinary(bytes) : override === 'binary';
 
+// Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's default `fatal` option is already `false`, so `{}` behaves identically to `{ fatal: false }`.
 const decoder = new TextDecoder('utf-8', { fatal: false });
 
 /**
@@ -63,6 +64,7 @@ const decoder = new TextDecoder('utf-8', { fatal: false });
  * that downstream patch parsers would interpret as forged hunks.
  */
 function rejectUnsafePathChars(label: string, value: string): void {
+  // Stryker disable next-line EqualityOperator: equivalent — `i <= value.length` adds one extra iteration at `i === value.length`, where `value.charCodeAt(value.length)` is NaN, which never equals any control-character code, so the extra pass is a no-op.
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
     if (code === 0x0a || code === 0x0d || code === 0x00) {
@@ -97,6 +99,7 @@ interface SplitContent {
 
 function splitContentLines(bytes: Uint8Array | undefined): SplitContent {
   if (bytes === undefined || bytes.length === 0) {
+    // Stryker disable next-line BooleanLiteral: equivalent — `oldTotal`/`newTotal` is 0 whenever this branch runs, so no edit can ever satisfy `oldIndex === oldTotal - 1` (index -1 is impossible); the flag is only read behind that comparison, so its value here is unobservable.
     return { lines: [], hasTrailingNewline: true };
   }
   const rawLines = splitLines(bytes);
@@ -107,6 +110,7 @@ function splitContentLines(bytes: Uint8Array | undefined): SplitContent {
 
 function stripTrailingLf(bytes: Uint8Array): string {
   const end =
+    // Stryker disable next-line EqualityOperator: equivalent — `bytes.length` is never negative, so `>= 0` is always true; when `bytes.length === 0` the right operand `bytes[-1] === NEWLINE_CODE` is `undefined === 10`, always false, so `end` still resolves to `bytes.length` exactly as the `> 0` guard gives.
     bytes.length > 0 && bytes[bytes.length - 1] === NEWLINE_CODE ? bytes.length - 1 : bytes.length;
   return decoder.decode(bytes.subarray(0, end));
 }
@@ -281,7 +285,9 @@ function computeRange(slice: ReadonlyArray<Edit>): HunkRange {
   let newLen = 0;
   let firstOldSeen = false;
   let firstNewSeen = false;
+  // Stryker disable next-line UnaryOperator: equivalent — this sentinel is only compared via `edit.oldIndex === lastOldIdx`; if no edit in `slice` touches the old side, `isLastOld`'s own `edit.kind !== 'insert'` guard is already false for every edit, so the sentinel's value is never read.
   let lastOldIdx = -1;
+  // Stryker disable next-line UnaryOperator: equivalent — symmetric to lastOldIdx above: unread whenever no edit touches the new side, since `isLastNew`'s `edit.kind !== 'delete'` guard is already false in that case.
   let lastNewIdx = -1;
   for (const edit of slice) {
     const touchesOld = edit.kind !== 'insert';
@@ -320,14 +326,18 @@ interface NoNewlineCtx {
 
 function trailingNoNewline(edit: Edit, ctx: NoNewlineCtx): boolean {
   const isLastOld =
+    // Stryker disable next-line ConditionalExpression: equivalent — isLastOld is only read on the context and delete branches, where edit.kind is never 'insert', so this guard is already true wherever the value is observed; for an insert edit isLastOld is computed but never read.
     edit.kind !== 'insert' &&
     edit.oldIndex === ctx.lastOldIdx &&
     ctx.lastOldIdx === ctx.oldTotal - 1;
   const isLastNew =
+    // Stryker disable next-line ConditionalExpression: equivalent — isLastNew is only read on the context and insert branches, where edit.kind is never 'delete', so this guard is already true wherever the value is observed; for a delete edit isLastNew is computed but never read.
     edit.kind !== 'delete' &&
     edit.newIndex === ctx.lastNewIdx &&
     ctx.lastNewIdx === ctx.newTotal - 1;
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for a context edit, `isLastOld && !oldHasTrailingNewline` can only be true when the matched line is the file's true terminal on both sides (a byte-identical context match forces equal trailing-newline state), which forces `isLastNew && !newHasTrailingNewline` true too — so skipping straight to `return isLastNew && !ctx.newHasTrailingNewline` yields the same result as the OR below.
   if (edit.kind === 'context') {
+    // Stryker disable next-line LogicalOperator,ConditionalExpression: equivalent — per the proof above, the two operands of this OR are always equal for a context edit, so OR, AND-of-both, and either operand alone agree.
     return (isLastOld && !ctx.oldHasTrailingNewline) || (isLastNew && !ctx.newHasTrailingNewline);
   }
   if (edit.kind === 'delete') return isLastOld && !ctx.oldHasTrailingNewline;
@@ -368,9 +378,11 @@ function groupHunks(
   contextLines: number,
   noNewlineCtx: Omit<NoNewlineCtx, 'lastOldIdx' | 'lastNewIdx'>,
 ): ReadonlyArray<OutputHunk> {
+  // Stryker disable next-line ConditionalExpression: equivalent — when `edits` is empty, `groupChangeIndices`'s `forEach` is a no-op and returns an empty `groups` array, so the `groups.length === 0` guard below returns `[]` regardless of this early return.
   if (edits.length === 0) return [];
   const minGap = 2 * contextLines + 1;
   const groups = groupChangeIndices(edits, minGap);
+  // Stryker disable next-line ConditionalExpression: equivalent — `groups.map(...)` on an empty array already evaluates to `[]`, so removing this early return does not change the result.
   if (groups.length === 0) return [];
   return groups.map((group) => buildHunkFromGroup(group, edits, contextLines, noNewlineCtx));
 }
@@ -815,6 +827,7 @@ function buildEmitOptions(opts: PatchOptions | undefined): EmitOptions | undefin
 
 export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions): string {
   const contextLines = resolveContextLines(opts?.contextLines);
+  // Stryker disable next-line ConditionalExpression: equivalent — an empty `files` array leaves `lines` empty after the loop below, and the `lines.length === 0` guard further down returns `''` regardless of this early return.
   if (files.length === 0) return '';
   const prefix = opts?.pathPrefix ?? DEFAULT_PREFIX;
   for (const file of files) assertSafePaths(file.change, prefix);
@@ -826,7 +839,7 @@ export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions
   }
   // When all file blocks are blank-suppressed, lines stays empty and we return ''.
   // Otherwise push the trailing '' separator and join.
-  // equivalent-mutant: `lines.length === 0` -> `false` — when lines is empty the fallthrough pushes one '' and joins, and [''].join('\n') === '' === [].join('\n'), so both branches return ''.
+  // Stryker disable next-line ConditionalExpression: equivalent — when `lines` is empty the fallthrough pushes one '' and joins, and [''].join('\n') === '' === [].join('\n'), so both branches return ''.
   if (lines.length === 0) return '';
   lines.push('');
   return lines.join('\n');

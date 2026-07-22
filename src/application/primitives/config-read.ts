@@ -185,12 +185,13 @@ const matchesSection = (
   tokenSection.toLowerCase() === section.toLowerCase() && tokenSubsection === subsection;
 
 /**
- * Cold-path detection: re-tokenize the repo-local config and return the FIRST
+ * Valueless-entry detection: scan the repo-local config and return the FIRST
  * valueless (`value === null`) entry, by config-file line, whose key
  * (case-insensitive) is one of `keys` and which sits under `[<section> "<subsection>"]`
  * (subsection `undefined` ⇒ the section with no subsection). Returns the fully-qualified
  * key, the absolute config path, and the 1-based line, or `undefined` when no such
- * entry exists. Runs ONLY on a command's refusal path.
+ * entry exists. Walks the cached token stream, so an eager caller (the `[user]`
+ * identity pre-flight) pays only an in-memory scan, not a second read.
  */
 export const findFirstValuelessEntry = async (
   ctx: Context,
@@ -798,6 +799,7 @@ const indexOfUnquoted = (line: string, ch: string): number => {
     // Inside a quoted span, `\` escapes the next byte — skip it so a `\"`
     // is not treated as the closing quote (matches canonical git's parser
     // and lets a value like `"foo\"#bar"` survive `stripInlineComment`).
+    // Stryker disable next-line BlockStatement: equivalent — this skip fires only inside a quoted span, so an opening `"` (non-whitespace) always precedes any marker the escape would expose; the resulting cut never trims to '' (the sole observable via stripInlineComment), so emptying the block changes nothing.
     if (inQuotes && c === '\\') {
       i += 1;
       continue;
@@ -1193,6 +1195,7 @@ const applyRemoteEntry = (acc: MutableRemote, key: string, value: string | null)
     if (value !== null) acc.pushUrl = value;
   } else if (lowered === 'fetch') {
     if (value !== null) {
+      // Stryker disable next-line ArrayDeclaration: equivalent — mergeRemote (the sole caller) pre-seeds mutable.fetch to an array before applyRemoteEntry runs, so this ??= never assigns and its right-hand literal never evaluates.
       acc.fetch ??= [];
       acc.fetch.push(value);
     }
@@ -1679,6 +1682,9 @@ const magnitudeOf = (token: string, radix: 8 | 10 | 16): bigint | null => {
 // or not-ok+reason on failure — never throws.
 export const parseGitInt = (value: string | null): GitIntResult => {
   // Trim leading ASCII whitespace (git's behaviour), then strip one optional sign.
+  // equivalent-mutant: the `''` null-fallback only matters when `value` is null (a valueless key);
+  // Stryker's non-numeric "Stryker was here!" replacement is rejected by `matchDigits` exactly as the
+  // empty string is, so both null paths yield `invalid unit` and the verdict is unchanged.
   const trimmed = (value ?? '').replace(/^[ \t]+/, '');
   const signed = trimmed[0] === '+' || trimmed[0] === '-';
   const body = signed ? trimmed.slice(1) : trimmed;

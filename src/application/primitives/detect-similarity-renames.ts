@@ -128,6 +128,7 @@ export function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): 
   // Find the slot with the minimum score.
   // slots is always full (length === NUM_CANDIDATE_PER_DST) here; each element is defined.
   let minIdx = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — the extra iteration reads slots[NUM_CANDIDATE_PER_DST] === undefined, which the `cur !== undefined` guard below skips, leaving minIdx unchanged.
   for (let i = 1; i < slots.length; i++) {
     const cur = slots[i];
     const min = slots[minIdx];
@@ -157,6 +158,7 @@ function buildFingerprintMap(
 ): Map<ObjectId, BlobFingerprint> {
   const fingerprints = new Map<ObjectId, BlobFingerprint>();
   for (const id of ids) {
+    // Stryker disable next-line ConditionalExpression: equivalent — the skip is a dedup optimisation; without it a repeated id is re-fingerprinted to the identical value (buildChunkMap is deterministic over the same bytes) and Map.set overwrites with an equal entry, so the returned map is unchanged.
     if (fingerprints.has(id)) continue;
     const bytes = bytesById.get(id);
     if (bytes === undefined) continue;
@@ -185,6 +187,7 @@ function scoreAndRecord(
   candidate: ScoredTriple,
   slots: ScoredTriple[],
 ): void {
+  // Stryker disable next-line ConditionalExpression: equivalent — the size prefilter is a conservative necessary condition for `score >= threshold`; every pair it rejects also scores below threshold, so skipping the early return still records nothing at the `score >= threshold` gate below.
   if (isSizeRejected(sf.size, df.size, threshold)) return;
   const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
   if (score >= threshold) recordIfBetter(slots, { ...candidate, score });
@@ -256,7 +259,9 @@ function sortTriples(triples: ScoredTriple[]): void {
   triples.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     // Rename candidate wins over copy at equal score.
+    // Stryker disable next-line UnaryOperator: equivalent — build order concatenates all rename triples before all copy triples, so V8's stable insertion sort (each pivot compared against already-placed elements) never invokes this comparator with a=rename, b=copy; the arm is unreached and its sign is unobservable.
     if (a.kind === 'rename' && b.kind === 'copy') return -1;
+    // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — the only reached call is compare(copy, rename) when a copy is inserted after the renames; returning 1 or 0 both keep the copy after the rename via build order + stable sort, and the same-kind variants only reaffirm the stable a-after-b order, so no pairing changes.
     if (a.kind === 'copy' && b.kind === 'rename') return 1;
     return 0;
   });
@@ -424,6 +429,7 @@ function buildAllTriples(
     threshold,
   );
   const copyTriples =
+    // Stryker disable next-line ConditionalExpression: equivalent — resolveCopySources returns [] whenever copies==='off', so buildCopyTriples over the empty copySources yields [], identical to the : [] arm.
     copies !== 'off'
       ? buildCopyTriples(copySources, adds, srcFingerprints, dstFingerprints, copyThreshold)
       : [];
@@ -437,6 +443,7 @@ async function runInexactPass(
   opts: InexactPassOptions,
 ): Promise<InexactPassResult | null> {
   const { adds, deletes, threshold, copyThreshold, copies, copySources } = opts;
+  // Stryker disable next-line ConditionalExpression: equivalent — with deletes and copySources both empty the pass builds no triples and greedySelect returns []; assemblePostPass over that empty result equals its null-defaulted output.
   if (deletes.length === 0 && copySources.length === 0) return null;
 
   const allSrcIds = [...deletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
@@ -505,6 +512,7 @@ function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
   const srcRemoved = srcSize - srcCopied;
   const rawBreakNum = Math.min(srcRemoved + literalAdded, maxSize);
   const computedBreakScore = maxSize > 0 ? Math.trunc((rawBreakNum * MAX_SCORE) / maxSize) : 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — differs only at srcSize===0, where srcRemoved===0 makes the branch NaN vs 0; dissimilarity only feeds the >= mergeScore gate (mergeScore is always >= 1 since merge:0 maps to DEFAULT_MERGE_SCORE), which both NaN and 0 fail, so the output is unchanged.
   const dissimilarity = srcSize > 0 ? Math.trunc((srcRemoved * MAX_SCORE) / srcSize) : 0;
   return { computedBreakScore, dissimilarity };
 }
@@ -584,9 +592,11 @@ async function attemptBreaks(
   const modifies = diff.changes.filter(
     (c): c is ModifyChange => c.type === 'modify' && !isGitlink(c.oldMode),
   );
+  // Stryker disable next-line ConditionalExpression: equivalent — an empty modifies list produces empty records, so the downstream records.length===0 guard returns the identical { broken: [], patchedDiff: diff }.
   if (modifies.length === 0) return { broken: [], patchedDiff: diff };
 
   const { records, paths } = await scoreModifies(ctx, modifies, breakScore);
+  // Stryker disable next-line ConditionalExpression: equivalent — empty records means empty paths, so patchDiffWithBroken copies changes unchanged and broken is [], matching the early return.
   if (records.length === 0) return { broken: [], patchedDiff: diff };
 
   return { broken: records, patchedDiff: patchDiffWithBroken(diff, records, paths) };
@@ -639,6 +649,7 @@ function remergeOrKeepBroken(
   broken: ReadonlyArray<BrokenRecord>,
   mergeScore: number,
 ): ReadonlyArray<DiffChange> {
+  // Stryker disable next-line ConditionalExpression: equivalent — the sole caller finalizeWithBroken invokes remergeOrKeepBroken only when broken.length > 0, so this guard is never true.
   if (broken.length === 0) return changes;
 
   const { presentDels, presentAdds } = findPresentHalves(changes, broken);
@@ -648,6 +659,7 @@ function remergeOrKeepBroken(
   for (const record of broken) {
     const delPresent = presentDels.has(record.del);
     const addPresent = presentAdds.has(record.add);
+    // Stryker disable next-line LogicalOperator,BooleanLiteral: equivalent — this continue only short-circuits the disjoint delPresent&&addPresent strip/emit branch; each variant here still lets that branch fire iff both halves are present, so output is unchanged (ConditionalExpression left unsuppressed: its true variant is killable).
     if (!delPresent && !addPresent) continue; // both consumed; nothing to strip or emit
     if (delPresent && addPresent) {
       // Both unconsumed: strip both halves; emit a modify (plain or broken).
@@ -658,6 +670,7 @@ function remergeOrKeepBroken(
     // Exactly one half present: the surviving half stays; no modify to emit.
   }
 
+  // Stryker disable next-line ConditionalExpression: equivalent — toStrip and reinsert are populated together, so an empty toStrip means an empty reinsert and the fallthrough returns [...changes, ...[]], the same content as returning changes.
   if (toStrip.size === 0) return changes;
   const stripped = changes.filter((c) => !toStrip.has(c));
   return [...stripped, ...reinsert];
@@ -730,6 +743,7 @@ function finalizeWithBroken(
   broken: ReadonlyArray<BrokenRecord>,
   mergeScore: number,
 ): TreeDiff {
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing this guard false routes the empty-broken case through remergeOrKeepBroken, whose own empty-broken guard returns changes unchanged, so sortByPath yields the identical TreeDiff as this early return.
   if (broken.length === 0) return { changes: sortByPath(changes, primaryPath) };
   const remerged = remergeOrKeepBroken(changes, broken, mergeScore);
   return { changes: sortByPath(remerged, primaryPath) };
@@ -805,8 +819,11 @@ export async function detectSimilarityRenames(
   const exactResult = detectRenames(workingDiff, { ...options, limit: Number.MAX_SAFE_INTEGER });
   const { adds, deletes, other } = partitionLeftovers(exactResult.changes);
 
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — hasRenameWork only gates the pure-optimisation early return below; every listed variant merely forces it true in more no-work cases (adds===0 or deletes===0), and falling through then builds no triples (no destinations or no sources), leaving the result unchanged.
   const hasRenameWork = adds.length > 0 && deletes.length > 0;
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — hasCopyWork only gates the pure-optimisation early return below; every listed variant merely forces it true in more no-work cases (copies==='off' or adds===0), and falling through then builds no triples, leaving the result unchanged.
   const hasCopyWork = copies !== 'off' && adds.length > 0;
+  // Stryker disable next-line BlockStatement,ConditionalExpression: equivalent — this early return is a pure optimisation: when it fires (no rename and no copy work) the inexact pass would build no triples and consume nothing, so skipping the return and falling through yields the identical sorted TreeDiff.
   if (!hasRenameWork && !hasCopyWork) {
     return finalizeWithBroken(exactResult.changes, broken, mergeScore);
   }

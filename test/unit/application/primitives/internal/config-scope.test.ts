@@ -8,14 +8,20 @@ import {
   resolveScopePath,
   SCOPE_ORDER,
 } from '../../../../../src/application/primitives/internal/config-scope.js';
-import type { TsgitError } from '../../../../../src/domain/error.js';
+import { permissionDenied, type TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import type { FileSystem } from '../../../../../src/ports/file-system.js';
 
 const u8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 const withBrowserFs = (ctx: Context): Context => ({
   ...ctx,
   fs: new BrowserFileSystem({} as unknown as FileSystemDirectoryHandle),
+});
+
+const withFsOverride = (ctx: Context, overrides: Partial<FileSystem>): Context => ({
+  ...ctx,
+  fs: { ...ctx.fs, ...overrides } as FileSystem,
 });
 
 const section = (
@@ -210,6 +216,93 @@ describe('resolveScopePath', () => {
       });
     });
   });
+
+  describe('Given scope "global" where the adapter path getter throws a non-adapter TsgitError', () => {
+    describe('When resolveScopePath runs', () => {
+      it('Then the original error propagates unchanged (not converted to browser-adapter)', async () => {
+        // Arrange
+        const original = permissionDenied('/denied');
+        const ctx = withFsOverride(createMemoryContext(), {
+          xdgConfigHome: () => {
+            throw original;
+          },
+        });
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await resolveScopePath(ctx, 'global');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({ code: 'PERMISSION_DENIED', path: '/denied' });
+      });
+    });
+  });
+
+  describe('Given scope "global" where the adapter path getter throws a non-TsgitError', () => {
+    describe('When resolveScopePath runs', () => {
+      it('Then the thrown error propagates unchanged', async () => {
+        // Arrange
+        const original = new Error('adapter exploded');
+        const ctx = withFsOverride(createMemoryContext(), {
+          xdgConfigHome: () => {
+            throw original;
+          },
+        });
+        let caught: unknown;
+
+        // Act
+        try {
+          await resolveScopePath(ctx, 'global');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(original);
+      });
+    });
+  });
+
+  describe('Given scope "global" where fs.exists rejects for every probe', () => {
+    describe('When resolveScopePath runs', () => {
+      it('Then it falls through to "${home}/.gitconfig" (a failed probe reads as absent)', async () => {
+        // Arrange
+        const ctx = withFsOverride(createMemoryContext({ home: '/repo/u/ada', xdg: '/repo/cfg' }), {
+          exists: () => Promise.reject(new Error('stat failed')),
+        });
+
+        // Act
+        const sut = await resolveScopePath(ctx, 'global');
+
+        // Assert
+        expect(sut).toBe('/repo/u/ada/.gitconfig');
+      });
+    });
+  });
+
+  describe('Given scope "system" where systemConfigPath resolves to the empty string', () => {
+    describe('When resolveScopePath runs', () => {
+      it('Then throws CONFIG_SYSTEM_PATH_UNRESOLVED', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ systemConfig: '' });
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await resolveScopePath(ctx, 'system');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({ code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' });
+      });
+    });
+  });
 });
 
 describe('isWorktreeScopeActive', () => {
@@ -256,6 +349,120 @@ describe('isWorktreeScopeActive', () => {
       it('Then returns false (missing file is not an error)', async () => {
         // Arrange
         const ctx = createMemoryContext();
+
+        // Act
+        const sut = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the local config read rejects with a non-FILE_NOT_FOUND TsgitError', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then the error propagates (only FILE_NOT_FOUND is swallowed)', async () => {
+        // Arrange
+        const original = permissionDenied('/repo/.git/config');
+        const ctx = withFsOverride(createMemoryContext(), {
+          readUtf8: () => Promise.reject(original),
+        });
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await isWorktreeScopeActive(ctx);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({ code: 'PERMISSION_DENIED', path: '/repo/.git/config' });
+      });
+    });
+  });
+
+  describe('Given the local config read rejects with a non-TsgitError', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then the error propagates unchanged', async () => {
+        // Arrange
+        const original = new Error('disk on fire');
+        const ctx = withFsOverride(createMemoryContext(), {
+          readUtf8: () => Promise.reject(original),
+        });
+        let caught: unknown;
+
+        // Act
+        try {
+          await isWorktreeScopeActive(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(original);
+      });
+    });
+  });
+
+  describe('Given worktreeConfig = true under a non-[extensions] section', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then returns false (only the [extensions] section is consulted)', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: { '/repo/.git/config': u8('[user]\n\tworktreeConfig = true\n') },
+        });
+
+        // Act
+        const sut = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given worktreeConfig = true under a subsectioned [extensions "x"]', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then returns false (only the subsectionless [extensions] counts)', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: { '/repo/.git/config': u8('[extensions "x"]\n\tworktreeConfig = true\n') },
+        });
+
+        // Act
+        const sut = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given [extensions] with a non-worktreeConfig key set to true', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then returns false (a different key never gates the worktree scope)', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: { '/repo/.git/config': u8('[extensions]\n\totherKey = true\n') },
+        });
+
+        // Act
+        const sut = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(sut).toBe(false);
+      });
+    });
+  });
+
+  describe('Given [extensions] worktreeConfig = false', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then returns false (the value must be exactly "true")', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = false\n') },
+        });
 
         // Act
         const sut = await isWorktreeScopeActive(ctx);

@@ -65,7 +65,7 @@ function fixedSpans(line: Uint8Array, needle: Uint8Array): ReadonlyArray<MatchSp
   if (needle.length === 0) return [];
   const spans: MatchSpan[] = [];
   let from = 0;
-  // equivalent-mutant(id=200): `line.length + needle.length` — extra iterations access line[from+j]=undefined ≠ needle[j], inner loop always fails, identical result
+  // Stryker disable next-line ArithmeticOperator: equivalent — `+` widens the scan past line end where line[from+j] reads undefined ≠ needle[j], so the inner loop always fails and no extra span is pushed
   outer: while (from <= line.length - needle.length) {
     for (let j = 0; j < needle.length; j++) {
       if (line[from + j] !== needle[j]) {

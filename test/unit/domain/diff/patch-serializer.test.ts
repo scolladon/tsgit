@@ -2738,4 +2738,361 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // rejectUnsafePathChars — per-label-site message pins (mutation-resistant:
+  // each site's label is asserted byte-exact so an emptied label is caught).
+  // ---------------------------------------------------------------------------
+
+  describe('Given a pathPrefix.old containing a control character', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason names the pathPrefix.old label, code, and index', () => {
+        // Arrange
+        const file = addFile('ok.txt', 'hi\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file], { pathPrefix: { old: 'a/\n', new: 'b/' } });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'pathPrefix.old contains control character (code 10) at index 2',
+        );
+      });
+    });
+  });
+
+  describe('Given a pathPrefix.new containing a control character', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason names the pathPrefix.new label, code, and index', () => {
+        // Arrange
+        const file = addFile('ok.txt', 'hi\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file], { pathPrefix: { old: 'a/', new: 'b/\r' } });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'pathPrefix.new contains control character (code 13) at index 2',
+        );
+      });
+    });
+  });
+
+  describe('Given a rename oldPath containing a control character', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason names the oldPath label, code, and index', () => {
+        // Arrange
+        const file = renameFile('orig\x00', 'dest.txt');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'oldPath contains control character (code 0) at index 4',
+        );
+      });
+    });
+  });
+
+  describe('Given a rename newPath containing a control character', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason names the newPath label, code, and index', () => {
+        // Arrange
+        const file = renameFile('orig.txt', 'de\rst');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'newPath contains control character (code 13) at index 2',
+        );
+      });
+    });
+  });
+
+  describe('Given an add newPath containing a control character', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason names the newPath label, code, and index', () => {
+        // Arrange
+        const file = addFile('ne\nw.txt', 'hi\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'newPath contains control character (code 10) at index 2',
+        );
+      });
+    });
+  });
+
+  describe('Given a delete oldPath containing a control character', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason names the oldPath label, code, and index', () => {
+        // Arrange
+        const file = deleteFile('ol\x00d.txt', 'x\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'oldPath contains control character (code 0) at index 2',
+        );
+      });
+    });
+  });
+
+  describe('Given a modify path containing a control character', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason names the path label, code, and index', () => {
+        // Arrange
+        const file = modifyFile('fo\no.txt', 'a\n', 'b\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'path contains control character (code 10) at index 2',
+        );
+      });
+    });
+  });
+
+  describe('Given a negative contextLines option (reason pin)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the error reason states the exact non-negative-integer requirement and the offending value', () => {
+        // Arrange
+        const file = modifyFile('foo.txt', 'a\n', 'b\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          renderPatch([file], { contextLines: -1 });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
+          'contextLines must be a non-negative integer; got -1',
+        );
+      });
+    });
+  });
+
+  describe('Given content containing an invalid UTF-8 byte sequence', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the invalid byte decodes to the U+FFFD replacement character rather than throwing', () => {
+        // Arrange — 0xa0 is a lone continuation byte, invalid as a UTF-8 lead byte;
+        // the default (fatal:false) TextDecoder mode replaces it instead of throwing.
+        const invalidUtf8 = new Uint8Array([0x68, 0x69, 0xa0, 0x0a]); // "hi" + invalid byte + LF
+        const file: PatchFile = {
+          change: {
+            type: 'add',
+            newPath: 'invalid.txt' as FilePath,
+            newId: OID_A,
+            newMode: FILE_MODE.REGULAR,
+          },
+          newContent: invalidUtf8,
+        };
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert
+        expect(sut).toBe(
+          [
+            'diff --git a/invalid.txt b/invalid.txt',
+            'new file mode 100644',
+            'index 0000000..aaaaaaa',
+            '--- /dev/null',
+            '+++ b/invalid.txt',
+            '@@ -0,0 +1 @@',
+            '+hi�',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // trailingNoNewline EOF-boundary pins (mutation-resistant: each hunk carries
+  // an early context line that must NOT get the no-newline marker, isolating
+  // the per-edit oldTotal-1/newTotal-1 check from a hunk-wide constant).
+  // ---------------------------------------------------------------------------
+
+  describe('Given a changed last line at the true old-side EOF within a multi-line hunk', () => {
+    describe('When renderPatch is called with default contextLines', () => {
+      it('Then only the last old/new line carries the no-newline marker, not the leading context', () => {
+        // Arrange — old/new both lack a trailing LF on their shared last line;
+        // only that last line's content differs (e -> E), so the context lines
+        // b, c, d must NOT carry the marker even though the hunk's span reaches
+        // the file's true end.
+        const file = modifyFile('foo.txt', 'a\nb\nc\nd\ne', 'a\nb\nc\nd\nE');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert
+        expect(sut).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -2,4 +2,4 @@',
+            ' b',
+            ' c',
+            ' d',
+            '-e',
+            '\\ No newline at end of file',
+            '+E',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a hunk whose old-side span does not reach the true EOF', () => {
+    describe('When renderPatch is called on a change near the start of a longer file', () => {
+      it('Then no no-newline marker appears on the trailing context line', () => {
+        // Arrange — old/new share 8 lines and the true last line lacks a
+        // trailing LF, but the sole change is at line 1: with default
+        // contextLines the shown hunk never reaches the true last line, so no
+        // marker should appear anywhere in the hunk.
+        const file = modifyFile('foo.txt', 'a\nb\nc\nd\ne\nf\ng\nh', 'A\nb\nc\nd\ne\nf\ng\nh');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert
+        expect(sut).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -1,4 +1,4 @@',
+            '-a',
+            '+A',
+            ' b',
+            ' c',
+            ' d',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a pure insertion of the true new-side last line', () => {
+    describe('When renderPatch is called', () => {
+      it('Then only the inserted last line carries the no-newline marker, not the leading context', () => {
+        // Arrange — old ends with a trailing LF; new appends one more line
+        // "NEW" with no trailing LF. Context lines c, d, e must NOT carry the
+        // marker even though the hunk's span reaches the file's true end.
+        const file = modifyFile('foo.txt', 'a\nb\nc\nd\ne\n', 'a\nb\nc\nd\ne\nNEW');
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert
+        expect(sut).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -3,3 +3,4 @@',
+            ' c',
+            ' d',
+            ' e',
+            '+NEW',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a hunk whose new-side span does not reach the true EOF', () => {
+    describe('When renderPatch is called on a change near the start of a longer file', () => {
+      it('Then no no-newline marker appears on the trailing context line', () => {
+        // Arrange — old/new share 12 lines; the true last line "l" lacks a
+        // trailing LF on both sides (it matches as context, far outside the
+        // shown hunk). The sole change is at line 2, so with default
+        // contextLines the shown hunk never reaches the true last line.
+        const file = modifyFile(
+          'foo.txt',
+          'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl',
+          'a\nB\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl',
+        );
+
+        // Act
+        const sut = renderPatch([file]);
+
+        // Assert
+        expect(sut).toBe(
+          [
+            'diff --git a/foo.txt b/foo.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/foo.txt',
+            '+++ b/foo.txt',
+            '@@ -1,5 +1,5 @@',
+            ' a',
+            '-b',
+            '+B',
+            ' c',
+            ' d',
+            ' e',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
 });

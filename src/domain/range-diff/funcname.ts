@@ -27,14 +27,10 @@ const isSpace = (byte: number): boolean => byte === 0x20 || (byte >= 0x09 && byt
  * the first ≤80 bytes, trailing whitespace stripped — else `undefined`.
  */
 export const matchFuncRec = (line: Uint8Array): string | undefined => {
-  // equivalent-mutant (`line.length === 0` → false): on an empty line `line[0]` is
-  // `undefined`, and `isIdentifierStart(undefined)` is already false, so the second
-  // clause returns `undefined` on its own — the length check is a fast-path.
+  // Stryker disable next-line ConditionalExpression: equivalent — an empty line makes line[0] undefined and isIdentifierStart(undefined) false, so the second clause already returns undefined; the length check is only a fast-path.
   if (line.length === 0 || !isIdentifierStart(line[0]!)) return undefined;
   let len = Math.min(line.length, FUNCNAME_MAX_BYTES);
-  // equivalent-mutant (`len > 0` → `len >= 0`/true): `line[0]` is an identifier byte
-  // (non-space), so the scan always stops on it at `len === 1`; the `len > 0` bound is
-  // never the exit condition.
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — line[0] is a non-space identifier byte, so the scan always stops at len === 1; the len > 0 bound is never the exit condition.
   while (len > 0 && isSpace(line[len - 1]!)) len--;
   return decoder.decode(line.subarray(0, len));
 };
@@ -54,6 +50,7 @@ export const findFuncLine = (
   start: number,
   limit: number,
 ): FuncLine | undefined => {
+  // Stryker disable next-line EqualityOperator: equivalent — when start === limit the loop's l !== limit is false immediately, so the loop never runs and the step direction is unobservable.
   const step = start > limit ? -1 : 1;
   for (let l = start; l !== limit && l >= 0 && l < lines.length; l += step) {
     const heading = matchFuncRec(lines[l]!);

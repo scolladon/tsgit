@@ -66,6 +66,7 @@ function resolveDiffOptions(
   const ignoreBlankLines = opts.ignoreBlankLines ?? config?.ignoreBlankLines;
   return {
     ...(detectRenames === true ? { detectRenames: true } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — spreading `renameOptions: undefined` (the `true` branch) instead of omitting the key is unobservable; diffTrees reads options.renameOptions by value (undefined either way), never by key presence.
     ...(opts.renameOptions !== undefined ? { renameOptions: opts.renameOptions } : {}),
     ...(opts.recursive === true ? { recursive: true } : {}),
     ...(opts.withStat === true ? { withStat: true } : {}),

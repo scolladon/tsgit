@@ -9,6 +9,7 @@ import {
   findInvalidPushDefault,
   type IniSection,
   invalidateConfigCache,
+  parseGitInt,
   parseIniSections,
   readConfig,
   tokenizeConfig,
@@ -356,6 +357,18 @@ describe('primitives/config-read', () => {
         expect(sut.user).toEqual({ signingKey: 'ABCD1234' });
         expect(sut.user?.name).toBeUndefined();
       });
+
+      it('Then user has exactly the signingKey key with no name/email keys', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  signingKey = ABCD1234\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — strict key set: name/email must be absent, not present-and-undefined
+        expect(sut.user).toStrictEqual({ signingKey: 'ABCD1234' });
+      });
     });
   });
 
@@ -372,6 +385,18 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.user).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
         expect(sut.user?.signingKey).toBeUndefined();
+      });
+
+      it('Then user has exactly the name and email keys with no signingKey key', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — strict key set: signingKey must be absent, not present-and-undefined
+        expect(sut.user).toStrictEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
       });
     });
   });
@@ -532,6 +557,26 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given two [submodule "libs/a"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (url and active both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[submodule "libs/a"]\n  url = ../a\n[submodule "libs/a"]\n  active = true\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — url from the first block is not clobbered by the second.
+        expect(sut.submodule?.get('libs/a')?.url).toBe('../a');
+        expect(sut.submodule?.get('libs/a')?.active).toBe(true);
+      });
+    });
+  });
+
   describe('Given a config with no submodule section', () => {
     describe('When readConfig', () => {
       it('Then parsed.submodule is undefined', async () => {
@@ -586,6 +631,26 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given two [merge "custom"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (name and driver both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[merge "custom"]\n  name = my driver\n[merge "custom"]\n  driver = tool\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — name from the first block is not clobbered by the second.
+        expect(sut.merge?.get('custom')?.name).toBe('my driver');
+        expect(sut.merge?.get('custom')?.driver).toBe('tool');
+      });
+    });
+  });
+
   describe('Given a [merge "custom"] section with only a driver', () => {
     describe('When readConfig', () => {
       it('Then name and recursive are undefined', async () => {
@@ -599,6 +664,23 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.merge?.get('custom')?.driver).toBe('tool');
         expect(sut.merge?.get('custom')?.name).toBeUndefined();
+        expect(sut.merge?.get('custom')?.recursive).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [merge "custom"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then recursive stays undefined (an unrelated key sets neither name, driver nor recursive)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[merge "custom"]\n  name = drv\n  unrelated = binary\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the recursive branch must only fire for a `recursive` key.
+        expect(sut.merge?.get('custom')?.name).toBe('drv');
         expect(sut.merge?.get('custom')?.recursive).toBeUndefined();
       });
     });
@@ -653,6 +735,23 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [diff "upper"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then cachetextconv stays undefined (an unrelated key is not read as cachetextconv)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tunrelated = true\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the cachetextconv branch must only fire for a `cachetextconv` key.
+        expect(sut.diff?.get('upper')?.textconv).toBe('up');
+        expect(sut.diff?.get('upper')?.cachetextconv).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a [diff "upper"] section with textconv and cachetextconv=true', () => {
     describe('When readConfig', () => {
       it('Then parsed.diff.get("upper") has both textconv and cachetextconv true', async () => {
@@ -699,6 +798,26 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.diff?.get('a')?.textconv).toBe('tool-a');
         expect(sut.diff?.get('b')?.textconv).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given two [diff "upper"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (textconv and cachetextconv both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[diff "upper"]\n\ttextconv = up\n[diff "upper"]\n\tcachetextconv = true\n',
+        );
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — textconv from the first block is not clobbered by the second.
+        expect(sut.diff?.get('upper')?.textconv).toBe('up');
+        expect(sut.diff?.get('upper')?.cachetextconv).toBe(true);
       });
     });
   });
@@ -771,6 +890,23 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [filter "myf"] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then process stays undefined (an unrelated key is not read as process)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "myf"]\n\tclean = up\n\tunrelated = pr\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the process branch must only fire for a `process` key.
+        expect(sut.filter?.get('myf')?.clean).toBe('up');
+        expect(sut.filter?.get('myf')?.process).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a [filter "f"] section with valueless required (git NULL)', () => {
     describe('When readConfig', () => {
       it('Then required is true (git NULL boolean-true semantics)', async () => {
@@ -822,6 +958,23 @@ describe('primitives/config-read', () => {
         // Assert
         expect(sut.filter?.get('a')?.clean).toBe('tool-a');
         expect(sut.filter?.get('b')?.smudge).toBe('tool-b');
+      });
+    });
+  });
+
+  describe('Given two [filter "myf"] sections carrying different keys', () => {
+    describe('When readConfig', () => {
+      it('Then the later block accumulates onto the earlier one (clean and smudge both survive)', async () => {
+        // Arrange — git merges repeated same-name blocks; keys accumulate.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[filter "myf"]\n\tclean = cl\n[filter "myf"]\n\tsmudge = sm\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — clean from the first block is not clobbered by the second.
+        expect(sut.filter?.get('myf')?.clean).toBe('cl');
+        expect(sut.filter?.get('myf')?.smudge).toBe('sm');
       });
     });
   });
@@ -1507,6 +1660,22 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(sut.remote?.get('o')?.fetch).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a `[remote]` section with url and an unrecognized valued key', () => {
+    describe('When readConfig', () => {
+      it('Then the unrecognized key is not treated as partialCloneFilter', async () => {
+        // Arrange — only the literal key `partialclonefilter` may set that field.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "o"]\n  url = u\n  bogus = B\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.remote?.get('o')?.partialCloneFilter).toBeUndefined();
       });
     });
   });
@@ -3487,6 +3656,73 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       ]);
     });
   });
+
+  describe('Given a populated scoped cache, When __resetSectionsCacheForTests runs between two reads', () => {
+    it('Then the cache is cleared so fs.readUtf8 is called again', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      await readConfigSections({ ctx, scope: 'local' });
+      __resetSectionsCacheForTests();
+      await readConfigSections({ ctx, scope: 'local' });
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Given fs.readUtf8 rejects with a TsgitError that is neither FILE_NOT_FOUND nor PERMISSION_DENIED, When readConfigSections reads a single scope', () => {
+    it('Then the error propagates (only missing or denied scopes are swallowed as empty)', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const boom = new TsgitError({ code: 'NOT_A_DIRECTORY', path: '/repo/.git/config' });
+      vi.spyOn(ctx.fs, 'readUtf8').mockRejectedValue(boom);
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await readConfigSections({ ctx, scope: 'local' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({ code: 'NOT_A_DIRECTORY', path: '/repo/.git/config' });
+    });
+  });
+
+  describe('Given a memory adapter whose system config path is unresolved, When readConfigSections merges every scope', () => {
+    it('Then the system scope is silently skipped and the available scopes still surface', async () => {
+      // Arrange — an empty system path makes resolveScopePath raise CONFIG_SYSTEM_PATH_UNRESOLVED.
+      const ctx = createMemoryContext({ systemConfig: '' });
+      await seed(ctx, '[user]\n\tname = ada\n');
+
+      // Act
+      const sut = await readConfigSections({ ctx });
+
+      // Assert
+      expect(sut).toHaveLength(1);
+      expect(sut[0]?.scope).toBe('local');
+      expect(sut[0]?.section.section).toBe('user');
+    });
+  });
+
+  describe('Given a key present only in local, When getConfigValue reads an explicit empty scope', () => {
+    it('Then only that scope is consulted (absent), never a merge that would surface the local value', async () => {
+      // Arrange — user.name lives in local; the global scope is empty on the memory adapter.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+
+      // Act
+      const sut = await getConfigValue({ ctx, key: 'user.name', scope: 'global' });
+
+      // Assert
+      expect(sut).toEqual({ key: 'user.name', value: undefined });
+    });
+  });
 });
 
 describe('primitives/config-read valueless keys', () => {
@@ -4634,6 +4870,21 @@ describe('Given a section with valueless/valued entries across subsections', () 
       expect(result?.key).toBe('merge.driver');
       expect(result?.line).toBe(2);
     });
+
+    it('Then it ignores a matching valueless key that precedes any header (orphan)', async () => {
+      // Arrange — a valueless `driver` in the orphan region (before any header) must
+      // not be reported; only the one under the real [merge "custom"] header counts.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, 'driver\n[merge "custom"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name']);
+
+      // Assert — the orphan key at line 1 is skipped; the [merge "custom"] key at line 3 wins.
+      expect(result?.key).toBe('merge.custom.driver');
+      expect(result?.line).toBe(3);
+    });
   });
 });
 
@@ -5588,6 +5839,19 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
+    describe('Given a `;`-led whole-line comment that also holds a later `#`, When tokenizeConfig', () => {
+      it('Then the earliest marker (the `;`) starts the comment so the line is one comment token', () => {
+        // Arrange — `;` sits at column 0, before the `#`; the earliest marker must win.
+        const sut = tokenizeConfig;
+
+        // Act
+        const tokens = sut('; a # b\n');
+
+        // Assert — cutting at the later `#` instead would leave `; a`, which the key grammar refuses.
+        expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([{ kind: 'comment', line: 0 }]);
+      });
+    });
+
     describe('Given `\\tk = v # trailing` under a header (value-side comment), When parseIniSections', () => {
       it('Then a.k = v is recorded with the comment dropped', () => {
         // Arrange
@@ -5685,6 +5949,98 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       it('Then any other char after the key refuses', () => {
         // Arrange + Act + Assert — isolates the catch-all parse-error branch
         assertParseConfigRefuses('[a]\n\tk: v\n', 2);
+      });
+    });
+  });
+
+  describe('parseGitInt', () => {
+    describe('Given a 0x-prefixed hex value', () => {
+      describe('When parseGitInt', () => {
+        it('Then it parses base-16 to the exact magnitude (0xFF is 255)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('0xFF');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 255 });
+        });
+      });
+    });
+
+    describe('Given a leading-zero octal value', () => {
+      describe('When parseGitInt', () => {
+        it('Then it parses base-8 to the exact magnitude (017 is 15)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('017');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 15 });
+        });
+      });
+    });
+
+    describe('Given a decimal value with a k unit suffix', () => {
+      describe('When parseGitInt', () => {
+        it('Then it multiplies the magnitude by 1024 (10k is 10240)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('10k');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 10240 });
+        });
+      });
+    });
+
+    describe('Given a value with leading ASCII whitespace', () => {
+      describe('When parseGitInt', () => {
+        it('Then the leading spaces and tabs are trimmed before parsing (5 is 5)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut(' \t5');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: 5 });
+        });
+      });
+    });
+
+    describe('Given a value with trailing non-unit garbage', () => {
+      describe('When parseGitInt', () => {
+        it('Then it fails with reason invalid unit (5x is rejected, not 5)', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('5x');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: false, reason: 'invalid unit' });
+        });
+      });
+    });
+
+    describe('Given a magnitude one past the int64 maximum', () => {
+      describe('When parseGitInt', () => {
+        it('Then it fails with reason out of range', () => {
+          // Arrange
+          const sut = parseGitInt;
+
+          // Act
+          const result = sut('9223372036854775808');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: false, reason: 'out of range' });
+        });
       });
     });
   });
@@ -5862,6 +6218,44 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
+    describe('Given core.compression = 9 (zlib maximum, valid)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns undefined (level 9 is accepted)', async () => {
+          // Arrange — 9 is the highest valid zlib level; git accepts it.
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = 9\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.compression = 10 (one past the zlib maximum)', () => {
+      describe('When findFirstInvalidCompression', () => {
+        it('Then returns zlib failure with level 10', async () => {
+          // Arrange — 10 is one above the valid zlib range; git rejects it.
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = 10\n');
+          const sut = findFirstInvalidCompression;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.failure.kind).toBe('zlib');
+          if (result?.failure.kind === 'zlib') {
+            expect(result.failure.level).toBe(10);
+          }
+        });
+      });
+    });
+
     describe('Given core.compression = abc (invalid unit)', () => {
       describe('When findFirstInvalidCompression', () => {
         it('Then returns numeric failure with key core.compression', async () => {
@@ -5942,6 +6336,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [commit] with only a non-gpgsign key', () => {
+    describe('When readConfig', () => {
+      it('Then commit config stays undefined (only gpgsign populates it)', async () => {
+        // Arrange — `template` is not gpgsign, so the commit sub-map must never be created.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[commit]\n  template = /path/to/tpl\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.commit).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [commit] gpgsign = false', () => {
     describe('When readConfig', () => {
       it('Then commit.gpgSign is false', async () => {
@@ -5970,6 +6380,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.tag?.gpgSign).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [tag] with only a non-gpgsign key', () => {
+    describe('When readConfig', () => {
+      it('Then tag config stays undefined (only gpgsign populates it)', async () => {
+        // Arrange — `sort` is not gpgsign, so the tag sub-map must never be created.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[tag]\n  sort = version:refname\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.tag).toBeUndefined();
       });
     });
   });
@@ -6340,6 +6766,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given an unrecognized top-level section holding a gpg-shaped key', () => {
+    describe('When readConfig', () => {
+      it('Then gpg stays undefined (only the [gpg] section feeds gpg)', async () => {
+        // Arrange — `format = ssh` under [unknown] must not populate gpg; only [gpg] does.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[unknown]\n  format = ssh\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [gpg] format = openpgp', () => {
     describe('When readConfig', () => {
       it("Then gpg.format is 'openpgp'", async () => {
@@ -6404,6 +6846,22 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [gpg] with only an unrelated key (neither format nor program)', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (an unrelated key sets neither format nor program)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  minTrustLevel = marginal\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — the program branch must not fire for a non-'program' key
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [gpg "ssh"] program = /usr/bin/ssh-keygen', () => {
     describe('When readConfig', () => {
       it("Then gpg.ssh.program is '/usr/bin/ssh-keygen'", async () => {
@@ -6416,6 +6874,70 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.gpg?.ssh?.program).toBe('/usr/bin/ssh-keygen');
+      });
+    });
+  });
+
+  describe('Given [gpg] format = <unrecognised value>', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (an unrecognised format value is not stored)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg]\n  format = bogus\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — only openpgp/ssh/x509 are accepted formats.
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [foo "ssh"] subsection whose section is not gpg', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (a non-gpg "ssh" subsection is not routed to gpg.ssh)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[foo "ssh"]\n  program = /usr/bin/ssh-keygen\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — only the gpg subsection dispatches to the ssh signer config.
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "not-ssh"] subsection whose name is not ssh', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (only the "ssh" gpg subsection is recognised)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg "not-ssh"]\n  program = /usr/bin/ssh-keygen\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — a gpg subsection named other than "ssh" is a silent no-op.
+        expect(sut.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "ssh"] subsection with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then gpg is undefined (a non-program key under gpg.ssh is not stored)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg "ssh"]\n  unrelated = /usr/bin/ssh-keygen\n');
+
+        // Act
+        const sut = await readConfig(ctx);
+
+        // Assert — only the `program` key under gpg.ssh is recognised.
+        expect(sut.gpg).toBeUndefined();
       });
     });
   });

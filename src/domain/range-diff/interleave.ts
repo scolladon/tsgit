@@ -76,15 +76,12 @@ export const interleave = (
   next: ReadonlyArray<MatchedPatch>,
 ): ReadonlyArray<RangeDiffEntry> => {
   const entries: RangeDiffEntry[] = [];
-  // equivalent-mutant: `.fill(false)` vs an empty array — an unset `shown[i]`
-  // reads as `undefined` (falsy ≡ false), and only indices < old.length are ever
-  // assigned, so the two initialisations are observationally identical.
+  // Stryker disable next-line ArrayDeclaration: equivalent — dropping the length leaves shown empty after .fill; every unset shown[i] reads undefined (falsy ≡ false) and reads are boolean-context only, so outcomes are identical.
   const shown = new Array<boolean>(old.length).fill(false);
   let i = 0;
   let j = 0;
   while (i < old.length || j < next.length) {
-    // equivalent-mutant: the `i < old.length` bound here is redundant — `shown[i]`
-    // is never truthy at or past old.length, so `<`/`<=`/`true` all stop together.
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — shown[i] is only ever set true for i < old.length, so shown[old.length] is undefined (falsy); relaxing the bound to true or <= stops the scan at the same index.
     while (i < old.length && shown[i]) i++;
     if (i < old.length && old[i]!.matching < 0) {
       entries.push(deletion(old[i]!, i));

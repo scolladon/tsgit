@@ -36,10 +36,7 @@ const buildCursors = async <S extends SnapshotMap>(
     const cursor: CursorState<SnapshotEntry> = {
       slot: key,
       iter,
-      // equivalent-mutant: `done: true` here is observably equivalent
-      // because `advanceCursor` immediately overwrites `cursor.current`
-      // via `cursor.current = await cursor.iter.next()` on the next line,
-      // so the initial value is unused.
+      // Stryker disable next-line BooleanLiteral: equivalent — advanceCursor overwrites cursor.current via `await cursor.iter.next()` before any read, so this initial `done` value is never observed
       current: { value: undefined as never, done: false },
     };
     await advanceCursor(cursor, null);

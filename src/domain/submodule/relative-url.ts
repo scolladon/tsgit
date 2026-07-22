@@ -21,6 +21,7 @@ const isAbsolutePath = (value: string): boolean => value.startsWith('/');
 const urlIsLocalNotSsh = (url: string): boolean => {
   const colon = url.indexOf(':');
   const slash = url.indexOf('/');
+  // Stryker disable next-line EqualityOperator: equivalent — slash>=0→slash>0 differs only at slash===0 (a '/'-prefixed absolute path, where both callers short-circuit on isAbsolutePath before this value is read); slash<colon→slash<=colon can't differ since '/' and ':' never share an index, so slash===colon only when both -1, already returned by colon<0.
   return colon < 0 || (slash >= 0 && slash < colon);
 };
 
@@ -49,6 +50,7 @@ export const relativeUrl = (remoteUrl: string, url: string): string => {
   if (isRelative) base = normaliseRelativeBase(base);
   let rest = url;
   let colonSep = false;
+  // Stryker disable next-line EqualityOperator: equivalent — rest.length is never negative; when rest is '' the body breaks immediately (no './' or '../' prefix), so >0 and >=0 exit in the same state.
   while (rest.length > 0) {
     if (rest.startsWith(DOT_DOT_SLASH)) {
       rest = rest.slice(DOT_DOT_SLASH.length);

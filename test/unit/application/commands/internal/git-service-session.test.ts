@@ -233,34 +233,35 @@ describe('GitServiceSession.advertisement (http)', () => {
 
   describe('Given a non-200 discovery response', () => {
     describe('When advertisement() runs', () => {
-      it.each([
-        401, 403, 404, 500, 502, 503,
-      ] as const)('Then throws HTTP_ERROR (status %i) with a discovery-tagged reason', async (statusCode) => {
-        // Arrange
-        const { transport } = fakeTransport(statusCode, new Uint8Array(0));
-        const ctx = contextWith(transport);
-        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+      it.each([401, 403, 404, 500, 502, 503] as const)(
+        'Then throws HTTP_ERROR (status %i) with a discovery-tagged reason',
+        async (statusCode) => {
+          // Arrange
+          const { transport } = fakeTransport(statusCode, new Uint8Array(0));
+          const ctx = contextWith(transport);
+          const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
-        // Act
-        let caught: unknown;
-        try {
-          await sut.advertisement();
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.advertisement();
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          statusCode?: number;
-          reason?: string;
-        };
-        expect(data.code).toBe('HTTP_ERROR');
-        expect(data.statusCode).toBe(statusCode);
-        expect(data.reason).toContain('discovery');
-        expect(data.reason).toContain(String(statusCode));
-      });
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            statusCode?: number;
+            reason?: string;
+          };
+          expect(data.code).toBe('HTTP_ERROR');
+          expect(data.statusCode).toBe(statusCode);
+          expect(data.reason).toContain('discovery');
+          expect(data.reason).toContain(String(statusCode));
+        },
+      );
     });
   });
 
@@ -477,35 +478,36 @@ describe('GitServiceSession.exchange (http)', () => {
 
   describe('Given a non-200 exchange response', () => {
     describe('When exchange() runs', () => {
-      it.each([
-        401, 403, 404, 500, 502, 503,
-      ] as const)('Then throws HTTP_ERROR (status %i) with a service-tagged, non-discovery reason', async (statusCode) => {
-        // Arrange
-        const { transport } = fakeTransport(statusCode, new Uint8Array(0));
-        const ctx = contextWith(transport);
-        const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
+      it.each([401, 403, 404, 500, 502, 503] as const)(
+        'Then throws HTTP_ERROR (status %i) with a service-tagged, non-discovery reason',
+        async (statusCode) => {
+          // Arrange
+          const { transport } = fakeTransport(statusCode, new Uint8Array(0));
+          const ctx = contextWith(transport);
+          const sut = openGitSession(ctx, 'https://example.com/r.git', 'git-upload-pack');
 
-        // Act
-        let caught: unknown;
-        try {
-          await sut.exchange(new Uint8Array(0));
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.exchange(new Uint8Array(0));
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          statusCode?: number;
-          reason?: string;
-        };
-        expect(data.code).toBe('HTTP_ERROR');
-        expect(data.statusCode).toBe(statusCode);
-        expect(data.reason).not.toContain('discovery');
-        expect(data.reason).toContain('git-upload-pack');
-        expect(data.reason).toContain(String(statusCode));
-      });
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            statusCode?: number;
+            reason?: string;
+          };
+          expect(data.code).toBe('HTTP_ERROR');
+          expect(data.statusCode).toBe(statusCode);
+          expect(data.reason).not.toContain('discovery');
+          expect(data.reason).toContain('git-upload-pack');
+          expect(data.reason).toContain(String(statusCode));
+        },
+      );
     });
   });
 
@@ -601,9 +603,14 @@ describe('openGitSession — ssh (inert refusal)', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as { code: string; runtime?: string };
+        const data = (caught as TsgitError).data as {
+          code: string;
+          runtime?: string;
+          reason?: string;
+        };
         expect(data.code).toBe('ADAPTER_UNAVAILABLE');
         expect(data.runtime).toBe('memory');
+        expect(data.reason).toContain('ssh: transport unavailable in this runtime');
       });
     });
   });

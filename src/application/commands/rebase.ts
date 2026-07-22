@@ -312,8 +312,7 @@ const renderCommitPatch = async (ctx: Context, cData: CommitData): Promise<strin
   // choke on a sub-tree the patch hydration would read as a blob.
   const diff = await diffTrees(ctx, parentTree, cData.tree, { recursive: true });
   const files = await materialisePatchFiles(ctx, diff.changes);
-  // equivalent-mutant (`{}`): `renderPatch`'s defaults are exactly `contextLines:
-  // 3` + `{ old: 'a/', new: 'b/' }`, so passing `{}` produces byte-identical output.
+  // Stryker disable next-line ObjectLiteral: equivalent — `renderPatch`'s defaults are exactly `contextLines: 3` + `{ old: 'a/', new: 'b/' }`, so passing `{}` produces byte-identical output.
   return renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
 };
 
@@ -357,11 +356,7 @@ const persistStop = async (
     message: conflictMergeMsg(cData.message, sortedRecordedPaths(conflicts)),
     rewritten,
     patch: await renderCommitPatch(ctx, cData),
-    // equivalent-mutant (`!== undefined` → `true`): on a continue/skip re-stop
-    // `rc.backupHeader` is `undefined`, so the `true` branch spreads
-    // `{ backupHeader: undefined }`, which `writeRebaseStop` skips exactly like
-    // the `{}` branch — indistinguishable. The `false`/object-literal mutants
-    // (which drop the fresh-run backup) are killed by the conflict-stop bytes.
+    // Stryker disable next-line ConditionalExpression: equivalent — on a continue/skip re-stop `rc.backupHeader` is `undefined`, so forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(rc.backupHeader !== undefined ? { backupHeader: rc.backupHeader } : {}),
   };
   await writeRebaseStop(ctx, stop);
@@ -536,9 +531,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   const currentHead = await resolveRef(ctx, HEAD);
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
   const committer = await resolveCurrentIdentity(ctx);
-  // equivalent-mutant (`allowEmpty: false` → `true`): the rebase `message` file
-  // carries the replayed commit's subject, so the stripped/sanitised message is
-  // always non-empty here — the empty-message guard is never exercised.
+  // Stryker disable next-line BooleanLiteral: equivalent — the rebase `message` file carries the replayed commit's subject, so the stripped/sanitised message is always non-empty here and the empty-message guard never fires.
   const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
   const resolutionId = await createCommit(ctx, {
     tree,
@@ -685,10 +678,7 @@ const planInteractive = async (
       action: inst.action,
       oid,
       subject,
-      // equivalent-mutant (`!== undefined` → `true`): the `true` branch spreads
-      // `{ message: undefined }`, and every downstream reader (`inst.message ??
-      // …`, `inst.message !== undefined`) treats an explicit `undefined` exactly
-      // like an absent key — indistinguishable from the `{}` branch.
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing this to `true` spreads `{ message: undefined }`, and every downstream reader (`inst.message ?? …`, `inst.message !== undefined`) treats an explicit `undefined` exactly like an absent key.
       ...(inst.message !== undefined ? { message: inst.message } : {}),
     });
   }
@@ -847,10 +837,7 @@ const stepReword = async (
   cData: CommitData,
   head: ObjectId,
 ): Promise<Step> => {
-  // equivalent-mutant (`allowEmpty: false` → `true`): `planInteractive` rejects an
-  // empty reword message upfront, and a reword reached on a resume carries no
-  // message (not persisted across a stop), falling back to the commit's own
-  // non-empty message — so the cleaned message is never empty here.
+  // Stryker disable next-line BooleanLiteral: equivalent — `planInteractive` rejects an empty reword message upfront, and a reword reached on a resume falls back to the commit's own non-empty message, so the cleaned message is never empty here.
   const message = sanitizeMessage(inst.message ?? cData.message, { allowEmpty: false });
   const produced = await produceOnto(
     ctx,
@@ -929,16 +916,15 @@ const persistInteractiveStop = async (
     message: fields.message,
     rewritten: fields.rewritten,
     patch: fields.patch,
-    // equivalent-mutant (each `!== undefined` → `true`): when a field is
-    // `undefined` the `true` branch spreads `{ field: undefined }`, which
-    // `writeRebaseStop`'s `if (field !== undefined)` skips exactly like the `{}`
-    // branch — byte-identical on-disk state. The drop-the-field mutants
-    // (`→ false` / object-literal `→ {}`) ARE killed by the conflict-stop bytes
-    // (backup file, current-fixups, rewritten-pending, message-squash assertions).
+    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop`'s `if (field !== undefined)` skips exactly like the `{}` branch (byte-identical on-disk state).
     ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ amend: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ currentFixups: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(fields.currentFixups !== undefined ? { currentFixups: fields.currentFixups } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ rewrittenPending: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(fields.rewrittenPending !== undefined ? { rewrittenPending: fields.rewrittenPending } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ messageSquash: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(fields.messageSquash !== undefined ? { messageSquash: fields.messageSquash } : {}),
   });
 };
@@ -1003,17 +989,12 @@ const meldGroupMember = async (
   group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
   group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
   group.pending.push(inst.oid);
-  // equivalent-mutant (`inst.message !== undefined` → `true`): for a squash with
-  // no message this assigns `group.inline = undefined`, leaving the already-
-  // `undefined` field unchanged. (The `&&` → `||` and outer `→ true` mutants are
-  // killed by the fixup-carrying-an-inline-message test.)
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the `inst.message !== undefined` guard true makes a squash with no message assign `group.inline = undefined`, leaving the already-`undefined` field unchanged. (The whole-condition `→ true` and `&&` → `||` mutants are killed by the fixup-carrying-an-inline-message test.)
   if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
   const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
-  // equivalent-mutant (`allowEmpty: false` → `true`): an empty squash inline
-  // message is rejected upfront by `planInteractive`; otherwise the template
-  // fallback retains the base commit's non-empty message — never empty here.
   const message = isLast
-    ? sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
+    ? // Stryker disable next-line BooleanLiteral: equivalent — an empty squash inline message is rejected upfront by `planInteractive`; otherwise the template fallback retains the base commit's non-empty message, so it is never empty here.
+      sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
     : template;
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
@@ -1169,9 +1150,7 @@ const rebaseContinueInteractive = async (
     // A squash/fixup meld conflicted: commit the resolution as the group commit
     // (replacing the base — its parent), with the cleaned combined message.
     const baseData = await readCommitData(ctx, currentHead);
-    // equivalent-mutant (`allowEmpty: false` → `true`): `state.message` is the
-    // stopped commit's (non-empty) message persisted at the stop, so the cleaned
-    // result is never empty here — the empty-message guard never fires.
+    // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
     const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
     resumeHead = await commitAndAdvance(ctx, {
       tree,
@@ -1198,9 +1177,7 @@ const rebaseContinueInteractive = async (
       rewritten.push([stoppedOid, resumeHead]);
     }
   } else {
-    // equivalent-mutant (`allowEmpty: false` → `true`): `state.message` is the
-    // stopped commit's (non-empty) message persisted at the stop, so the cleaned
-    // result is never empty here — the empty-message guard never fires.
+    // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
     const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
     resumeHead = await commitAndAdvance(ctx, {
       tree,

@@ -205,6 +205,50 @@ describe('bisectMidpoint', () => {
     });
   });
 
+  describe('Given two equal-date leaves whose FIFO pop order breaks a weight tie', () => {
+    describe('When bisectMidpoint runs with good=root, bad=merge([p1,p2])', () => {
+      it('Then the second-enqueued equal-date parent wins (git-faithful FIFO tie-break)', async () => {
+        // Arrange: root (good, ts=100); p1 and p2 both ts=200 with distinct messages so
+        // they are separate objects sharing a committer date; bad (ts=300) merges [p1,p2].
+        // Candidates = {p1,p2,bad}=3; p1,p2 both weight 1 (dist=1), bad weight 3 (dist=0),
+        // so the winner is decided purely by which weight-1 leaf lands first in the
+        // oldest-first candidate list — which the heap's equal-date FIFO tie-break fixes.
+        // Real git (rev-list --bisect) selects the SECOND parent here, so p2 must win.
+        const sut = bisectMidpoint;
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const root = await commitAt(ctx, treeId, 100, []);
+        const p1 = await createCommit(ctx, {
+          tree: treeId,
+          parents: [root],
+          author: { ...AUTHOR, timestamp: 200 },
+          committer: { ...AUTHOR, timestamp: 200 },
+          message: 'first-parent',
+        });
+        const p2 = await createCommit(ctx, {
+          tree: treeId,
+          parents: [root],
+          author: { ...AUTHOR, timestamp: 200 },
+          committer: { ...AUTHOR, timestamp: 200 },
+          message: 'second-parent',
+        });
+        const bad = await commitAt(ctx, treeId, 300, [p1, p2]);
+
+        // Act — candidates = {p1,p2,bad}; tie between p1 and p2 resolved by list order
+        const result = await sut(ctx, [root], bad);
+
+        // Assert — p2 (second enqueued, popped last among the equal-date pair, first in
+        // the reversed oldest-first list) wins; under FIFO→LIFO flip p1 would win instead
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(p2);
+        expect(result?.candidateCount).toBe(3);
+        expect(result?.remainingIfGood).toBe(1); // 3 - 1 - 1
+        expect(result?.remainingIfBad).toBe(0); // 1 - 1
+        expect(result?.remainingSteps).toBe(1); // estimateSteps(3)
+      });
+    });
+  });
+
   describe('Given multiple good commits (two branches)', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then excludes all good-reachable commits from candidates', async () => {

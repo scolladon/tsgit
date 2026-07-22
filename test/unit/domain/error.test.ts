@@ -1014,6 +1014,192 @@ describe('domain error — AdapterError', () => {
     });
   });
 
+  describe('extractDetail message formatting — size caps, config and submodule', () => {
+    describe('Given GITATTRIBUTES_FILE_TOO_LARGE', () => {
+      describe('When reading message', () => {
+        it('Then equals the documented format with basename, size and limit', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({
+            code: 'GITATTRIBUTES_FILE_TOO_LARGE',
+            path: 'sub/.gitattributes' as FilePath,
+            size: 5000,
+            limit: 1024,
+          });
+
+          // Assert — its own message, never the sparse-checkout case it precedes.
+          expect(sut.message).toBe(
+            'GITATTRIBUTES_FILE_TOO_LARGE: .gitattributes too large: .gitattributes size=5000 limit=1024',
+          );
+        });
+      });
+    });
+
+    describe('Given CONFIG_PARSE_ERROR without a source file', () => {
+      describe('When reading message', () => {
+        it('Then equals the bare "bad config line N" format', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({ code: 'CONFIG_PARSE_ERROR', line: 5 });
+
+          // Assert
+          expect(sut.message).toBe('CONFIG_PARSE_ERROR: bad config line 5');
+        });
+      });
+    });
+
+    describe('Given CONFIG_PARSE_ERROR with a source file', () => {
+      describe('When reading message', () => {
+        it('Then equals the "bad config line N in file F" format', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({
+            code: 'CONFIG_PARSE_ERROR',
+            line: 7,
+            source: '/repo/.git/config',
+          });
+
+          // Assert
+          expect(sut.message).toBe(
+            'CONFIG_PARSE_ERROR: bad config line 7 in file /repo/.git/config',
+          );
+        });
+      });
+    });
+
+    describe('Given CONFIG_INVALID_FILE', () => {
+      describe('When reading message', () => {
+        it('Then names the invalid section and the config file', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({
+            code: 'CONFIG_INVALID_FILE',
+            sectionName: 'foo.bar',
+            source: '/repo/.git/config',
+          });
+
+          // Assert
+          expect(sut.message).toBe(
+            "CONFIG_INVALID_FILE: invalid section name 'foo.bar' in config file /repo/.git/config",
+          );
+        });
+      });
+    });
+
+    describe('Given RELATIVE_URL_UNRESOLVABLE', () => {
+      describe('When reading message', () => {
+        it('Then quotes the base url that cannot be reduced further', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({ code: 'RELATIVE_URL_UNRESOLVABLE', url: '../base' });
+
+          // Assert
+          expect(sut.message).toBe(
+            "RELATIVE_URL_UNRESOLVABLE: cannot strip one component off url '../base'",
+          );
+        });
+      });
+    });
+
+    describe('Given SUBMODULE_HAS_MODIFICATIONS', () => {
+      describe('When reading message', () => {
+        it('Then names the submodule work tree with local modifications', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({
+            code: 'SUBMODULE_HAS_MODIFICATIONS',
+            path: 'libs/sub',
+          });
+
+          // Assert — its own message, never the SUBMODULE_PATH_EXISTS case it precedes.
+          expect(sut.message).toBe(
+            "SUBMODULE_HAS_MODIFICATIONS: submodule work tree 'libs/sub' contains local modifications",
+          );
+        });
+      });
+    });
+
+    describe('Given SUBMODULE_PATH_EXISTS', () => {
+      describe('When reading message', () => {
+        it('Then states the path already exists in the index', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({ code: 'SUBMODULE_PATH_EXISTS', path: 'libs/sub' });
+
+          // Assert — the " in the index" suffix distinguishes it from WORKTREE_PATH_EXISTS.
+          expect(sut.message).toBe("SUBMODULE_PATH_EXISTS: 'libs/sub' already exists in the index");
+        });
+      });
+    });
+  });
+
+  describe('extractDetail message formatting — worktree refusals', () => {
+    describe('Given WORKTREE_PATH_EXISTS', () => {
+      describe('When reading message', () => {
+        it('Then states the path already exists', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({ code: 'WORKTREE_PATH_EXISTS', path: 'wt/feature' });
+
+          // Assert — bare "already exists", without SUBMODULE_PATH_EXISTS's " in the index" suffix.
+          expect(sut.message).toBe("WORKTREE_PATH_EXISTS: 'wt/feature' already exists");
+        });
+      });
+    });
+
+    describe('Given BRANCH_CHECKED_OUT', () => {
+      describe('When reading message', () => {
+        it('Then names the branch and the worktree already using it', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({
+            code: 'BRANCH_CHECKED_OUT',
+            branch: 'refs/heads/feature',
+            path: 'wt/feature',
+          });
+
+          // Assert — its own message, never the WORKTREE_LOCKED case it precedes.
+          expect(sut.message).toBe(
+            "BRANCH_CHECKED_OUT: 'refs/heads/feature' is already used by worktree at 'wt/feature'",
+          );
+        });
+      });
+    });
+
+    describe('Given WORKTREE_LOCKED', () => {
+      describe('When reading message', () => {
+        it('Then states the working tree is locked', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({
+            code: 'WORKTREE_LOCKED',
+            path: 'wt/feature',
+            reason: 'in use',
+          });
+
+          // Assert — its own message, never the WORKTREE_DIRTY case it precedes.
+          expect(sut.message).toBe("WORKTREE_LOCKED: working tree 'wt/feature' is locked");
+        });
+      });
+    });
+
+    describe('Given WORKTREE_DIRTY', () => {
+      describe('When reading message', () => {
+        it('Then states the working tree has modified or untracked files', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({ code: 'WORKTREE_DIRTY', path: 'wt/feature' });
+
+          // Assert — its own message, never the NOT_A_WORKTREE case it precedes.
+          expect(sut.message).toBe(
+            "WORKTREE_DIRTY: 'wt/feature' contains modified or untracked files, use --force to delete it",
+          );
+        });
+      });
+    });
+
+    describe('Given NOT_A_WORKTREE', () => {
+      describe('When reading message', () => {
+        it('Then states the path is not a working tree', () => {
+          // Arrange & Act
+          const sut = new TsgitErrorClass({ code: 'NOT_A_WORKTREE', path: 'wt/feature' });
+
+          // Assert
+          expect(sut.message).toBe("NOT_A_WORKTREE: 'wt/feature' is not a working tree");
+        });
+      });
+    });
+  });
+
   describe('Given central-switch error codes, When reading their message', () => {
     it('Then PATH_NOT_IN_TREE names the path and the rev', () => {
       // Arrange & Act
@@ -1159,7 +1345,7 @@ describe('cleanFilterFailed error', () => {
 
         // Assert — the CLEAN_FILTER_FAILED case must return its own message, not fall through
         // to the SMUDGE_FILTER_FAILED case which starts with "smudge filter".
-        expect(sut.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter '/);
+        expect(sut.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter /);
       });
     });
   });
@@ -1232,6 +1418,18 @@ describe('signingFailed error', () => {
         // Assert
         expect(sut.message).toContain('off-node');
         expect(sut.message).not.toContain('format=');
+      });
+    });
+  });
+
+  describe('Given signingFailed factory with no format argument', () => {
+    describe('When reading the verbatim .message', () => {
+      it('Then nothing is injected between the reason and the closing paren', () => {
+        // Arrange & Act
+        const sut = signingFailed('off-node');
+
+        // Assert — the ternary's empty else-branch contributes no characters.
+        expect(sut.message).toBe('SIGNING_FAILED: gpg failed to sign the data (off-node)');
       });
     });
   });

@@ -87,22 +87,16 @@ describe('isUnsafeWorktreeId', () => {
     describe('When isUnsafeWorktreeId runs', () => {
       // `` (0x1f) is the highest control character — the inclusive
       // boundary of the `<= CONTROL_CHAR_MAX` guard.
-      it.each([
-        '',
-        '.',
-        '..',
-        'a/b',
-        'a\\b',
-        'a\tb',
-        'a\nb',
-        `a${String.fromCharCode(0x1f)}b`,
-      ])('Then %j is unsafe', (name) => {
-        // Arrange + Act
-        const result = isUnsafeWorktreeId(name);
+      it.each(['', '.', '..', 'a/b', 'a\\b', 'a\tb', 'a\nb', `a${String.fromCharCode(0x1f)}b`])(
+        'Then %j is unsafe',
+        (name) => {
+          // Arrange + Act
+          const result = isUnsafeWorktreeId(name);
 
-        // Assert
-        expect(result).toBe(true);
-      });
+          // Assert
+          expect(result).toBe(true);
+        },
+      );
     });
   });
 

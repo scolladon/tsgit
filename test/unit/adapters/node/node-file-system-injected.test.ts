@@ -147,6 +147,39 @@ describe('NodeFileSystem — resolveForCreation parent-realpath LRU (DI)', () =>
     });
   });
 
+  describe('Given an exists probe on a non-existent path that escapes rootDir', () => {
+    describe('When exists fires and realpath rejects the escaping path with ENOENT', () => {
+      it('Then the ENOENT arm refuses with PERMISSION_DENIED instead of returning false', async () => {
+        // Arrange — realpath resolves the root but rejects the escaping probe
+        // with ENOENT, so exists() enters its ENOENT arm with a `resolved`
+        // that lands outside BOTH the raw and canonical roots. A mutant that
+        // drops either containment arm (or empties the refusal block) would
+        // let the probe fall through to `return false`.
+        const rootDir = '/root';
+        const realpath = vi.fn().mockImplementation(async (input: string) => {
+          if (input === rootDir) return rootDir;
+          throw enoent();
+        });
+        const fsOps = fakeFsOps({ realpath });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        let returned: boolean | undefined;
+        try {
+          returned = await sut.exists('/root/sub/../../escape/ghost.bin');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the escape is refused, never silently reported absent
+        expect(returned).toBeUndefined();
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
   describe('Given a write whose parent realpath throws a non-ENOENT errno', () => {
     describe('When the call fires', () => {
       it('Then the error propagates and nothing is cached', async () => {
@@ -1304,6 +1337,75 @@ describe('resolveForMode — lstat mode pre-realpath check (DI)', () => {
   });
 });
 
+describe('resolveForMode — lstat of an exact root when the canonical root differs (DI)', () => {
+  const rootStat = {
+    ctimeMs: BigInt(0),
+    mtimeMs: BigInt(0),
+    dev: BigInt(0),
+    ino: BigInt(0),
+    mode: BigInt(0o040755),
+    uid: BigInt(0),
+    gid: BigInt(0),
+    size: BigInt(4096),
+    isFile: () => false,
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+  };
+
+  describe('Given lstat of the RAW rootDir while realpath(rootDir) yields a different canonical root', () => {
+    describe('When checkContainment reaches the exact-root shortcut', () => {
+      it('Then it returns the directory stat (raw-root recognition forces the full post-check, not the false-denying parent verdict)', async () => {
+        // Arrange — dirname(rootDir) is the root's own parent, which is NOT
+        // contained, so the cached per-parent verdict is `false`. The
+        // exact-root recognition (`c === root.normalized`) must fire so the
+        // leaf is reported as an exact root and re-checked on its own merits.
+        // realpath(rootDir) → canonicalRoot makes raw ≠ canonical, so the
+        // raw-root disjunct is the ONLY one that can recognise the leaf.
+        const rootDir = '/root';
+        const canonicalRoot = '/canon';
+        const realpath = vi
+          .fn()
+          .mockImplementation(async (input: string) => (input === rootDir ? canonicalRoot : input));
+        const fsOps = fakeFsOps({ realpath, lstat: vi.fn().mockResolvedValue(rootStat) });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const stat = await sut.lstat(rootDir);
+
+        // Assert
+        expect(stat.isDirectory).toBe(true);
+        expect(stat.size).toBe(4096);
+      });
+    });
+  });
+
+  describe('Given lstat of the CANONICAL rootDir while it differs from the raw root', () => {
+    describe('When checkContainment reaches the exact-root shortcut', () => {
+      it('Then it returns the directory stat (canonical-root recognition forces the full post-check, not the false-denying parent verdict)', async () => {
+        // Arrange — mirror image: the requested path is the CANONICAL root
+        // string (realpath(rootDir)), so recognition must fire on the
+        // `c === canonicalRoot.normalized` disjunct. Without it the cached
+        // per-parent verdict (dirname not contained → `false`) would
+        // false-deny this legitimate exact-root lstat.
+        const rootDir = '/root';
+        const canonicalRoot = '/canon';
+        const realpath = vi
+          .fn()
+          .mockImplementation(async (input: string) => (input === rootDir ? canonicalRoot : input));
+        const fsOps = fakeFsOps({ realpath, lstat: vi.fn().mockResolvedValue(rootStat) });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const stat = await sut.lstat(canonicalRoot);
+
+        // Assert
+        expect(stat.isDirectory).toBe(true);
+        expect(stat.size).toBe(4096);
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
   const fileStat = {
     ctimeMs: BigInt(0),
@@ -1598,60 +1700,58 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
       evilParent: 'C:\\Root\\evil',
       outside: 'C:\\Outside',
     },
-  ])('Given a parent whose realpath escapes the root ($label)', ({
-    policy,
-    rootDir,
-    evilParent,
-    outside,
-  }) => {
-    describe('When lstat fires twice under it', () => {
-      it('Then BOTH throw PERMISSION_DENIED (second served from the cached verdict)', async () => {
-        // Arrange
-        const secondLeaf = policy.join(evilParent, 'b');
-        const secondJoined = policy.join(outside, 'b');
-        const normalizeSpy = vi.fn((p: string) => policy.normalizeForCompare(p));
-        const spyPolicy = { ...policy, normalizeForCompare: normalizeSpy };
-        const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => {
-            if (input === rootDir) return rootDir;
-            if (input === evilParent) return outside;
-            return input;
-          }),
-          lstat: vi.fn().mockResolvedValue(fileStat),
+  ])(
+    'Given a parent whose realpath escapes the root ($label)',
+    ({ policy, rootDir, evilParent, outside }) => {
+      describe('When lstat fires twice under it', () => {
+        it('Then BOTH throw PERMISSION_DENIED (second served from the cached verdict)', async () => {
+          // Arrange
+          const secondLeaf = policy.join(evilParent, 'b');
+          const secondJoined = policy.join(outside, 'b');
+          const normalizeSpy = vi.fn((p: string) => policy.normalizeForCompare(p));
+          const spyPolicy = { ...policy, normalizeForCompare: normalizeSpy };
+          const fsOps = fakeFsOps({
+            realpath: vi.fn().mockImplementation(async (input: string) => {
+              if (input === rootDir) return rootDir;
+              if (input === evilParent) return outside;
+              return input;
+            }),
+            lstat: vi.fn().mockResolvedValue(fileStat),
+          });
+          const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
+
+          // Act
+          let firstCaught: unknown;
+          try {
+            await sut.lstat(policy.join(evilParent, 'a'));
+          } catch (err) {
+            firstCaught = err;
+          }
+          normalizeSpy.mockClear();
+          let secondCaught: unknown;
+          try {
+            await sut.lstat(secondLeaf);
+          } catch (err) {
+            secondCaught = err;
+          }
+
+          // Assert
+          expect(firstCaught).toBeInstanceOf(TsgitError);
+          expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(secondCaught).toBeInstanceOf(TsgitError);
+          expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          // The second throw came from the cached verdict — the post-check
+          // does not re-normalise the joined escaped leaf; only the
+          // per-entry PRE-check (on the lexical `resolved` form, still
+          // inside rootDir) normalises.
+          const joinedLeafNormaliseCalls = normalizeSpy.mock.calls.filter(
+            ([arg]: readonly unknown[]) => arg === secondJoined,
+          );
+          expect(joinedLeafNormaliseCalls.length).toBe(0);
         });
-        const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
-
-        // Act
-        let firstCaught: unknown;
-        try {
-          await sut.lstat(policy.join(evilParent, 'a'));
-        } catch (err) {
-          firstCaught = err;
-        }
-        normalizeSpy.mockClear();
-        let secondCaught: unknown;
-        try {
-          await sut.lstat(secondLeaf);
-        } catch (err) {
-          secondCaught = err;
-        }
-
-        // Assert
-        expect(firstCaught).toBeInstanceOf(TsgitError);
-        expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-        expect(secondCaught).toBeInstanceOf(TsgitError);
-        expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-        // The second throw came from the cached verdict — the post-check
-        // does not re-normalise the joined escaped leaf; only the
-        // per-entry PRE-check (on the lexical `resolved` form, still
-        // inside rootDir) normalises.
-        const joinedLeafNormaliseCalls = normalizeSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === secondJoined,
-        );
-        expect(joinedLeafNormaliseCalls.length).toBe(0);
       });
-    });
-  });
+    },
+  );
 
   describe.each([
     { label: 'posix', policy: posixPolicy, rootDir: '/root', parent: '/root/sub' },
@@ -1783,54 +1883,52 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
       leaf: 'C:\\Root\\leaf.bin',
       outside: 'C:\\Outside\\leaf.bin',
     },
-  ])('Given a read whose leaf realpath escapes the root ($label)', ({
-    policy,
-    rootDir,
-    leaf,
-    outside,
-  }) => {
-    describe('When read fires twice', () => {
-      it('Then EACH throws PERMISSION_DENIED per entry (no parent-verdict shortcut)', async () => {
-        // Arrange — the read arm does a full-leaf realpath, never
-        // `join(realParent, basename)`, so B3's lstat-only skip must not
-        // leak here: both calls must independently resolve+check.
-        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
-          if (input === rootDir) return rootDir;
-          if (input === leaf) return outside;
-          return input;
-        });
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          readFile: vi.fn().mockResolvedValue(Buffer.from('x')),
-        });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+  ])(
+    'Given a read whose leaf realpath escapes the root ($label)',
+    ({ policy, rootDir, leaf, outside }) => {
+      describe('When read fires twice', () => {
+        it('Then EACH throws PERMISSION_DENIED per entry (no parent-verdict shortcut)', async () => {
+          // Arrange — the read arm does a full-leaf realpath, never
+          // `join(realParent, basename)`, so B3's lstat-only skip must not
+          // leak here: both calls must independently resolve+check.
+          const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+            if (input === rootDir) return rootDir;
+            if (input === leaf) return outside;
+            return input;
+          });
+          const fsOps = fakeFsOps({
+            realpath: realpathSpy,
+            readFile: vi.fn().mockResolvedValue(Buffer.from('x')),
+          });
+          const sut = new NodeFileSystem(rootDir, policy, fsOps);
 
-        // Act
-        let firstCaught: unknown;
-        try {
-          await sut.read(leaf);
-        } catch (err) {
-          firstCaught = err;
-        }
-        let secondCaught: unknown;
-        try {
-          await sut.read(leaf);
-        } catch (err) {
-          secondCaught = err;
-        }
+          // Act
+          let firstCaught: unknown;
+          try {
+            await sut.read(leaf);
+          } catch (err) {
+            firstCaught = err;
+          }
+          let secondCaught: unknown;
+          try {
+            await sut.read(leaf);
+          } catch (err) {
+            secondCaught = err;
+          }
 
-        // Assert
-        expect(firstCaught).toBeInstanceOf(TsgitError);
-        expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-        expect(secondCaught).toBeInstanceOf(TsgitError);
-        expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-        const leafCalls = realpathSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === leaf,
-        );
-        expect(leafCalls.length).toBe(2);
+          // Assert
+          expect(firstCaught).toBeInstanceOf(TsgitError);
+          expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(secondCaught).toBeInstanceOf(TsgitError);
+          expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          const leafCalls = realpathSpy.mock.calls.filter(
+            ([arg]: readonly unknown[]) => arg === leaf,
+          );
+          expect(leafCalls.length).toBe(2);
+        });
       });
-    });
-  });
+    },
+  );
 
   describe.each([
     {
@@ -1849,48 +1947,45 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
       leaf: 'C:\\Root\\newdir\\leaf.bin',
       outside: 'C:\\Outside',
     },
-  ])('Given a creation target whose parent realpath escapes the root ($label)', ({
-    policy,
-    rootDir,
-    parent,
-    leaf,
-    outside,
-  }) => {
-    describe('When write fires twice', () => {
-      it('Then EACH throws PERMISSION_DENIED per entry (creation post-check untouched)', async () => {
-        // Arrange
-        const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => {
-            if (input === rootDir) return rootDir;
-            if (input === parent) return outside;
-            return input;
-          }),
-          lstat: vi.fn().mockRejectedValue(enoent()),
+  ])(
+    'Given a creation target whose parent realpath escapes the root ($label)',
+    ({ policy, rootDir, parent, leaf, outside }) => {
+      describe('When write fires twice', () => {
+        it('Then EACH throws PERMISSION_DENIED per entry (creation post-check untouched)', async () => {
+          // Arrange
+          const fsOps = fakeFsOps({
+            realpath: vi.fn().mockImplementation(async (input: string) => {
+              if (input === rootDir) return rootDir;
+              if (input === parent) return outside;
+              return input;
+            }),
+            lstat: vi.fn().mockRejectedValue(enoent()),
+          });
+          const sut = new NodeFileSystem(rootDir, policy, fsOps);
+
+          // Act
+          let firstCaught: unknown;
+          try {
+            await sut.write(leaf, new Uint8Array([1]));
+          } catch (err) {
+            firstCaught = err;
+          }
+          let secondCaught: unknown;
+          try {
+            await sut.write(leaf, new Uint8Array([2]));
+          } catch (err) {
+            secondCaught = err;
+          }
+
+          // Assert
+          expect(firstCaught).toBeInstanceOf(TsgitError);
+          expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(secondCaught).toBeInstanceOf(TsgitError);
+          expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
         });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
-
-        // Act
-        let firstCaught: unknown;
-        try {
-          await sut.write(leaf, new Uint8Array([1]));
-        } catch (err) {
-          firstCaught = err;
-        }
-        let secondCaught: unknown;
-        try {
-          await sut.write(leaf, new Uint8Array([2]));
-        } catch (err) {
-          secondCaught = err;
-        }
-
-        // Assert
-        expect(firstCaught).toBeInstanceOf(TsgitError);
-        expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-        expect(secondCaught).toBeInstanceOf(TsgitError);
-        expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
       });
-    });
-  });
+    },
+  );
 });
 
 describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
@@ -1909,60 +2004,58 @@ describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
       realParentDir: 'C:\\real',
       outside: 'C:\\outside',
     },
-  ])('Given rootDir is a symlink whose leaf resolves outside its own tree ($label)', ({
-    policy,
-    linkRoot,
-    realParentDir,
-    outside,
-  }) => {
-    describe('When lstat(rootDir) is called', () => {
-      it('Then PERMISSION_DENIED is thrown (the exact-root leaf is NOT exempt from the post-check)', async () => {
-        // Arrange — rootDir itself is the symlink (`realpath(rootDir)` flips
-        // it to `outside`, so the canonical root IS `outside`). Both the raw
-        // and canonical roots therefore equal `linkRoot`/`outside`
-        // respectively, and lstat(linkRoot) hits the `isExactRoot` shortcut
-        // pre-fix. The dirname of `linkRoot` also resolves through a
-        // symlink (`realParentDir`), so a correctly-deferred post-check
-        // would realpath-join `realParentDir` + basename('repo') and find it
-        // outside BOTH roots — denied.
-        const dirnameOfRoot = policy.dirname(linkRoot);
-        const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
-          if (input === linkRoot) return outside;
-          if (input === dirnameOfRoot) return realParentDir;
-          return input;
-        });
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue({
-            ctimeMs: BigInt(0),
-            mtimeMs: BigInt(0),
-            dev: BigInt(0),
-            ino: BigInt(0),
-            mode: BigInt(0o040755),
-            uid: BigInt(0),
-            gid: BigInt(0),
-            size: BigInt(0),
-            isFile: () => false,
-            isDirectory: () => true,
-            isSymbolicLink: () => false,
-          }),
-        });
-        const sut = new NodeFileSystem(linkRoot, policy, fsOps);
+  ])(
+    'Given rootDir is a symlink whose leaf resolves outside its own tree ($label)',
+    ({ policy, linkRoot, realParentDir, outside }) => {
+      describe('When lstat(rootDir) is called', () => {
+        it('Then PERMISSION_DENIED is thrown (the exact-root leaf is NOT exempt from the post-check)', async () => {
+          // Arrange — rootDir itself is the symlink (`realpath(rootDir)` flips
+          // it to `outside`, so the canonical root IS `outside`). Both the raw
+          // and canonical roots therefore equal `linkRoot`/`outside`
+          // respectively, and lstat(linkRoot) hits the `isExactRoot` shortcut
+          // pre-fix. The dirname of `linkRoot` also resolves through a
+          // symlink (`realParentDir`), so a correctly-deferred post-check
+          // would realpath-join `realParentDir` + basename('repo') and find it
+          // outside BOTH roots — denied.
+          const dirnameOfRoot = policy.dirname(linkRoot);
+          const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
+            if (input === linkRoot) return outside;
+            if (input === dirnameOfRoot) return realParentDir;
+            return input;
+          });
+          const fsOps = fakeFsOps({
+            realpath: realpathSpy,
+            lstat: vi.fn().mockResolvedValue({
+              ctimeMs: BigInt(0),
+              mtimeMs: BigInt(0),
+              dev: BigInt(0),
+              ino: BigInt(0),
+              mode: BigInt(0o040755),
+              uid: BigInt(0),
+              gid: BigInt(0),
+              size: BigInt(0),
+              isFile: () => false,
+              isDirectory: () => true,
+              isSymbolicLink: () => false,
+            }),
+          });
+          const sut = new NodeFileSystem(linkRoot, policy, fsOps);
 
-        // Act
-        let caught: unknown;
-        try {
-          await sut.lstat(linkRoot);
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.lstat(linkRoot);
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        });
       });
-    });
-  });
+    },
+  );
 
   describe.each([
     { label: 'posix', policy: posixPolicy, rootDir: '/root' },

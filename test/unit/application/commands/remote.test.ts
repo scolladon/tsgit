@@ -175,6 +175,32 @@ describe('application/commands/remote', () => {
       });
     });
 
+    describe('Given a new name and url', () => {
+      describe('When the resulting config is read back', () => {
+        it('Then remoteList binds both url and fetch to that remote section', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+
+          // Act
+          await remoteAdd(ctx, { name: 'upstream', url: 'https://e.com/up.git' });
+          __resetConfigCacheForTests();
+          const result = await remoteList(ctx);
+
+          // Assert — url and fetch must live UNDER `[remote "upstream"]`, not a
+          // stray empty-section header. A loose substring match cannot prove this.
+          expect(result.remotes).toEqual([
+            {
+              name: 'upstream',
+              url: 'https://e.com/up.git',
+              pushUrl: undefined,
+              fetchRefspecs: ['+refs/heads/*:refs/remotes/upstream/*'],
+            },
+          ]);
+        });
+      });
+    });
+
     describe('Given a custom fetch refspec', () => {
       describe('When remoteAdd runs with a fetch refspec', () => {
         it('Then the custom refspec is written verbatim', async () => {
@@ -634,6 +660,35 @@ describe('application/commands/remote', () => {
           expect(written).toContain('[remote "upstream"]');
           expect(written).toContain('fetch = +refs/heads/*:refs/remotes/upstream/*');
           expect(written).not.toContain('refs/remotes/origin/');
+        });
+      });
+    });
+
+    describe('Given the canonical default refspec', () => {
+      describe('When the renamed config is read back', () => {
+        it('Then remoteList binds the rewritten fetch to the new remote section', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n',
+          );
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+          __resetConfigCacheForTests();
+          const result = await remoteList(ctx);
+
+          // Assert — the re-emitted fetch spec must attach to `[remote "upstream"]`,
+          // not a stray empty-section header.
+          expect(result.remotes).toEqual([
+            {
+              name: 'upstream',
+              url: 'u',
+              pushUrl: undefined,
+              fetchRefspecs: ['+refs/heads/*:refs/remotes/upstream/*'],
+            },
+          ]);
         });
       });
     });

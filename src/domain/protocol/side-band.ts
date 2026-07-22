@@ -1,6 +1,7 @@
 import { invalidSidebandChannel, sidebandFatal } from './error.js';
 import type { PktLine } from './pkt-line.js';
 
+// Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's fatal option defaults to false, so the empty options object configures an identical decoder
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: false });
 
 const CHANNEL_PACK = 1;

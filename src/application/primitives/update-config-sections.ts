@@ -76,6 +76,7 @@ const withTrailingNewlineRestored = (
 ): ReadonlyArray<string> => {
   if (
     originalLines[originalLines.length - 1] === '' &&
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the array is always .join('\n')-ed at the sole call site; dropping this guard only turns an empty out into [''], and [''].join('\n') === [].join('\n') === '', so output is byte-identical.
     out.length > 0 &&
     out[out.length - 1] !== ''
   ) {

@@ -10,8 +10,15 @@ export interface JoinOptions {
   readonly signal?: AbortSignal;
 }
 
+// A call boundary, not an inline check: a preceding inline `aborted === true`
+// throw narrows the signal so a later inline check reads as impossible, whereas
+// routing every check through this helper keeps each one live.
+const throwIfAborted = (signal: AbortSignal | undefined): void => {
+  if (signal?.aborted === true) throw operationAborted();
+};
+
 /**
- * Single-source short-circuit (design §11): bypass the k-way merge when
+ * Single-source short-circuit: bypass the k-way merge when
  * only one source is involved. Allocates exactly one row envelope per
  * yielded entry; the merge machinery's bookkeeping is skipped entirely.
  */
@@ -20,10 +27,15 @@ async function* shortCircuit<S extends SnapshotMap, K extends keyof S & string>(
   slot: K,
   signal: AbortSignal | undefined,
 ): AsyncIterable<OuterJoinRow<S>> {
+  // Reject an already-aborted signal before touching the source so the abort
+  // contract stays independent of source count: an empty single source must
+  // abort promptly rather than resolve cleanly, exactly as the k-way merge does.
+  throwIfAborted(signal);
   const source = sources[slot];
+  // Stryker disable next-line ConditionalExpression: equivalent — slot is a key drawn from Object.keys(sources) in join, so sources[slot] is always a defined Snapshot; this guard only narrows the noUncheckedIndexedAccess union and never fires at runtime
   if (source === undefined) return;
   for await (const entry of source.entries()) {
-    if (signal?.aborted === true) throw operationAborted();
+    throwIfAborted(signal);
     const row = { path: entry.path, [slot]: entry } as unknown as OuterJoinRow<S>;
     yield row;
   }
@@ -43,10 +55,8 @@ export const join = <S extends SnapshotMap>(
 ): AsyncIterable<OuterJoinRow<S>> => {
   const keys = Object.keys(sources) as Array<keyof S & string>;
   const [first] = keys;
-  // equivalent-mutant: skipping the short-circuit branch (mutant `{}`)
-  // is observably equivalent to falling through to `pathMerge` with one
-  // source — both yield the same row sequence. The branch exists for the
-  // envelope-only alloc cost (spike §4.4) but does not change the result.
+  // Single-source fast path: emit the lone source's rows verbatim, skipping
+  // the k-way merge bookkeeping (and its order-invariant check).
   if (keys.length === 1 && first !== undefined) {
     return shortCircuit(sources, first, opts.signal);
   }

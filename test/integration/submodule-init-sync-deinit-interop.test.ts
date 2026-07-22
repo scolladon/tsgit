@@ -164,6 +164,42 @@ describe.skipIf(!GIT_AVAILABLE)('integration/submodule write-side interop', () =
     });
   });
 
+  describe('Given all combined with an explicit pathspec', () => {
+    describe('When deinit runs', () => {
+      it('Then it refuses, as git does', async () => {
+        // Arrange
+        const gitClone = freshClone();
+        const tsgitClone = freshClone();
+
+        // Act & Assert — git refuses (non-zero exit)
+        let gitRefused = false;
+        try {
+          git(gitClone, 'submodule', 'deinit', '--all', 'libs/sub');
+        } catch {
+          gitRefused = true;
+        }
+        expect(gitRefused).toBe(true);
+
+        // tsgit refuses with INVALID_OPTION before touching the working tree
+        let thrown: unknown;
+        try {
+          await submoduleDeinit(createNodeContext({ workDir: tsgitClone }), {
+            all: true,
+            paths: ['libs/sub'],
+          });
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data).toMatchObject({
+          code: 'INVALID_OPTION',
+          option: 'submodule.deinit',
+          reason: expect.stringContaining('incompatible'),
+        });
+      });
+    });
+  });
+
   describe('Given a submodule with local modifications', () => {
     describe('When deinit runs without force', () => {
       it('Then it refuses, as git does', async () => {

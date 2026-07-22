@@ -68,6 +68,21 @@ describe('join', () => {
       });
     });
   });
+
+  describe('Given a single-source join whose source yields paths out of order', () => {
+    describe('When iterated', () => {
+      it('Then the short-circuit path yields them verbatim without imposing the merge order invariant', async () => {
+        // Arrange
+        const sut = join({ tree: stubSnapshot([row('b'), row('a')]) });
+
+        // Act
+        const rows = await collect(sut);
+
+        // Assert
+        expect(rows.map((r) => r.path)).toEqual(['b', 'a']);
+      });
+    });
+  });
 });
 
 describe('innerJoin', () => {
@@ -135,6 +150,95 @@ describe('join with a pre-aborted signal', () => {
         await expect(iterate()).rejects.toMatchObject({
           data: { code: 'OPERATION_ABORTED' },
         });
+      });
+    });
+  });
+
+  describe('Given a single-source join over an empty source and an already-aborted signal', () => {
+    describe('When iterated', () => {
+      it('Then it throws OPERATION_ABORTED before entering the empty loop', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const sut = join({ tree: stubSnapshot([]) }, { signal: controller.signal });
+
+        // Act
+        let caught: unknown;
+        try {
+          for await (const _ of sut) {
+            // consume
+          }
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data?: { code?: string } }).data?.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+
+  describe('Given a single-source join whose signal aborts after the first row', () => {
+    describe('When the consumer pulls the next row', () => {
+      it('Then the per-entry check throws OPERATION_ABORTED mid-iteration', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const sut = join(
+          { tree: stubSnapshot([row('a'), row('b')]) },
+          { signal: controller.signal },
+        );
+        const iterator = sut[Symbol.asyncIterator]();
+
+        // Act
+        const first = await iterator.next();
+        controller.abort();
+        let caught: unknown;
+        try {
+          await iterator.next();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(first.value?.path).toBe('a');
+        expect((caught as { data?: { code?: string } }).data?.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+
+  describe('Given the abort contract must not depend on source count', () => {
+    describe('When an already-aborted signal meets an empty single source and empty multi sources', () => {
+      it('Then the short-circuit and the k-way merge both throw OPERATION_ABORTED identically', async () => {
+        // Arrange
+        const abortedSignal = (): AbortSignal => {
+          const controller = new AbortController();
+          controller.abort();
+          return controller.signal;
+        };
+        const single = join({ tree: stubSnapshot([]) }, { signal: abortedSignal() });
+        const multi = join(
+          { head: stubSnapshot([]), index: stubSnapshot([]) },
+          { signal: abortedSignal() },
+        );
+
+        // Act
+        const drain = async (source: AsyncIterable<unknown>): Promise<string | undefined> => {
+          try {
+            for await (const _ of source) {
+              // consume
+            }
+          } catch (error) {
+            return (error as { data?: { code?: string } }).data?.code;
+          }
+          return undefined;
+        };
+        const singleCode = await drain(single);
+        const multiCode = await drain(multi);
+
+        // Assert
+        expect(singleCode).toBe('OPERATION_ABORTED');
+        expect(multiCode).toBe('OPERATION_ABORTED');
+        expect(singleCode).toBe(multiCode);
       });
     });
   });

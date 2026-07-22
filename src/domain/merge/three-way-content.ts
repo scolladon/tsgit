@@ -21,6 +21,7 @@ function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
 }
 
 function endsWithLf(line: Uint8Array): boolean {
+  // Stryker disable next-line EqualityOperator: equivalent — length >= 0 always holds; at length 0 line[-1] is undefined !== LF, so both forms short-circuit to false
   return line.length > 0 && line[line.length - 1] === LF;
 }
 
@@ -37,6 +38,7 @@ function joinLinesEnsuringInteriorLf(lines: ReadonlyArray<Uint8Array>): Uint8Arr
     const line = lines[i]!;
     out.set(line, offset);
     offset += line.length;
+    // Stryker disable next-line EqualityOperator,ArithmeticOperator: equivalent — the index test is vacuously true for every i, so both mutants differ only on the last line, whose extra LF write lands at out[total] (index === buffer length, out of bounds → silent no-op), yielding byte-identical output
     if (i < lines.length - 1 && !endsWithLf(line)) {
       out[offset] = LF;
       offset += 1;

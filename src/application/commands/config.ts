@@ -184,6 +184,7 @@ export const configUnset = async (
   if (existing.values.length === 0) {
     return { key: brandKey(input.key), scope: targetScope, removed: false };
   }
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — dropping this guard (or forcing it false) only skips throwing here; the next call `unsetConfigEntry({ ctx, key, scope })` re-reads the same scope and re-counts via the same `collectValues`, then throws the identical `CONFIG_MULTIPLE_VALUES` (same key, count, requested='remove', scope) before any write, so the observable outcome is unchanged.
   if (existing.values.length > 1) {
     throw configMultipleValues(input.key, existing.values.length, 'remove', targetScope);
   }
@@ -215,6 +216,7 @@ export const configUnsetAll = async (
   await assertRepository(ctx);
   const targetScope: ConfigScope = input.scope ?? 'local';
   const existing = await getAllConfigValues({ ctx, key: input.key, scope: targetScope });
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — dropping this early return (or forcing the guard false) falls through to `unsetAllConfigEntries`, which is itself a no-op when the key has no matches (it returns before any write or cache invalidation), and `removed: existing.values.length` is 0 either way, so the returned envelope and on-disk state are identical.
   if (existing.values.length === 0) {
     return { key: brandKey(input.key), scope: targetScope, removed: 0 };
   }

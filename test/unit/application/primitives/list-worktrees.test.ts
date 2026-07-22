@@ -56,6 +56,29 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given a bare repository', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then it returns a single bare main entry with no head or branch', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = { ...base, layout: { ...base.layout, bare: true } };
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: base.layout.workDir,
+            detached: false,
+            bare: true,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a linked branch worktree', () => {
     describe('When listWorktrees runs', () => {
       it('Then it reports the branch and resolved head', async () => {
@@ -155,6 +178,26 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given a stray non-directory entry under the worktrees admin root', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the stray file is skipped and only the real worktree is listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        await seedAdmin(ctx, { id: 'wt', path: '/repo/wts/wt', head: OID_WT });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/stray`, 'not a worktree dir\n');
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result.map((e) => e.id)).toEqual([undefined, 'wt']);
+      });
+    });
+  });
+
   describe('Given two linked worktrees out of path order', () => {
     describe('When listWorktrees runs', () => {
       it('Then linked entries are sorted by path after the main', async () => {
@@ -165,6 +208,30 @@ describe('listWorktrees', () => {
         await seedMainHead(ctx);
         await seedAdmin(ctx, { id: 'zebra', path: '/repo/wts/zebra', head: OID_WT });
         await seedAdmin(ctx, { id: 'alpha', path: '/repo/wts/alpha', head: OID_WT });
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result.map((e) => e.path)).toEqual([
+          ctx.layout.workDir,
+          '/repo/wts/alpha',
+          '/repo/wts/zebra',
+        ]);
+      });
+    });
+  });
+
+  describe('Given two linked worktrees already in ascending path order', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the sort preserves ascending order after the main', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        await seedAdmin(ctx, { id: 'alpha', path: '/repo/wts/alpha', head: OID_WT });
+        await seedAdmin(ctx, { id: 'zebra', path: '/repo/wts/zebra', head: OID_WT });
 
         // Act
         const result = await listWorktrees(ctx);

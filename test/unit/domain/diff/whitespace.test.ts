@@ -659,6 +659,20 @@ describe('lineKeyIsActive', () => {
   });
 });
 
+describe('NONE_KEY', () => {
+  describe('Given the constant, When normalizeLine is called on a line with a trailing CR', () => {
+    it('Then the CR is preserved (ignoreCrAtEol is false)', () => {
+      // Arrange
+      const sut = normalizeLine;
+      const input = line('a\r\n');
+      // Act
+      const result = sut(input, NONE_KEY);
+      // Assert
+      expect(result).toEqual(enc('a\r\n'));
+    });
+  });
+});
+
 describe('isBlankLine', () => {
   describe("Given mode 'all'", () => {
     const key: LineKey = { mode: 'all', ignoreCrAtEol: false };

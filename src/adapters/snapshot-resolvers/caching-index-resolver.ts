@@ -35,11 +35,6 @@ const needsRacyCheck = (current: FileStat, observed: FileStat): boolean =>
   current.mtimeNs === undefined || observed.mtimeNs === undefined;
 
 const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
-  // equivalent-mutant: the length-mismatch shortcut is observably equivalent
-  // to the elementwise comparison in this codebase — trailerSha is always
-  // 20 bytes (SHA-1) or 32 (SHA-256) and the size guard in
-  // `trailerStillMatches` ensures the live read has the same length. The
-  // guard is kept for defence-in-depth on unknown callers.
   if (a.length !== b.length) return false;
   // equivalent-mutant: `i <= a.length` is observably equivalent because
   // `a[a.length]` is `undefined` and `undefined !== undefined` is `false`,
@@ -100,15 +95,6 @@ export const createCachingIndexResolver = (
     stat: FileStat,
   ): Promise<boolean> => {
     const trailerSize = cached.parsed.trailerSha.length;
-    // equivalent-mutant: this entire size guard is defence-in-depth. A
-    // cached entry only exists after a successful parseIndex, which
-    // requires the file to be at least 32 bytes (12-byte header + 20-byte
-    // trailer + 0 entries). Combined with `statMatches=true` (the only
-    // gate to reach here), stat.size === observed.size >= 32 > trailerSize.
-    // So neither `trailerSize === 0` nor `stat.size < trailerSize` is
-    // reachable in normal flow. The guard hardens against adapter
-    // misbehaviour on truncated inputs and Stryker correctly flags the
-    // mutants as observably-equivalent under the established invariants.
     if (trailerSize === 0 || stat.size < trailerSize) return false;
     const trailer = await readTrailer(fs, path, trailerSize, stat.size);
     return bytesEqual(trailer, cached.parsed.trailerSha);

@@ -276,6 +276,7 @@ export class MemoryFileSystem implements FileSystem {
    */
   private renameDirectory(src: string, dst: string): void {
     this.ensureParentDirs(dst);
+    // Stryker disable next-line ConditionalExpression: equivalent — remap only runs (via the guard below) when key===src or key startsWith `${src}/`; at key===src the else-arm slices to '' and yields dst, identical to the then-arm, so forcing the condition false is observationally identical for every key remap receives.
     const remap = (key: string): string => (key === src ? dst : `${dst}${key.slice(src.length)}`);
     const moves = <V>(map: Map<string, V>): void => {
       for (const [key, value] of [...map]) {

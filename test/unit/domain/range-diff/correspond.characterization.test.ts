@@ -85,18 +85,19 @@ const CASES: ReadonlyArray<CorrCase> = [
 ];
 
 describe('correspond characterization', () => {
-  describe.each(
-    CASES.map((c, index) => ({ ...c, index })),
-  )('Given series case #$index (cf=$cf), When corresponded', ({ o, n, cf, oldM, newM }) => {
-    it('Then the matching equals the pinned engine output', () => {
-      // Arrange
-      const oldPatches = o.map((p, i) => patch(p, i));
-      const newPatches = n.map((p, i) => patch(p, i + 100));
-      // Act
-      const result = correspond(oldPatches, newPatches, cf);
-      // Assert
-      expect(result.old.map((m) => m.matching)).toEqual(oldM);
-      expect(result.new.map((m) => m.matching)).toEqual(newM);
-    });
-  });
+  describe.each(CASES.map((c, index) => ({ ...c, index })))(
+    'Given series case #$index (cf=$cf), When corresponded',
+    ({ o, n, cf, oldM, newM }) => {
+      it('Then the matching equals the pinned engine output', () => {
+        // Arrange
+        const oldPatches = o.map((p, i) => patch(p, i));
+        const newPatches = n.map((p, i) => patch(p, i + 100));
+        // Act
+        const result = correspond(oldPatches, newPatches, cf);
+        // Assert
+        expect(result.old.map((m) => m.matching)).toEqual(oldM);
+        expect(result.new.map((m) => m.matching)).toEqual(newM);
+      });
+    },
+  );
 });

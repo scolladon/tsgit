@@ -188,7 +188,9 @@
     "test:coverage": "wireit",
     "test:mutation": "wireit",
     "test:mutation:pr": "wireit",
+    "test:mutation:local": "wireit",
     "test:bench": "wireit",
+    "test:perf": "wireit",
     "bench:summary": "wireit",
     "bench:check": "node --experimental-strip-types tooling/bench-check.ts",
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
@@ -307,7 +309,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -502,6 +504,22 @@
         "reports/mutation/**"
       ]
     },
+    "test:mutation:local": {
+      "command": "node --experimental-strip-types tooling/run-stryker-local.ts",
+      "dependencies": [
+        "test:unit"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/unit/**/*.ts",
+        "tooling/run-stryker-local.ts",
+        "stryker.config.mjs",
+        "vitest.config.ts"
+      ],
+      "output": [
+        "reports/mutation/**"
+      ]
+    },
     "test:bench": {
       "command": "vitest bench --run --config vitest.bench.config.ts",
       "dependencies": [
@@ -515,6 +533,18 @@
       "output": [
         "reports/benchmarks/raw.json"
       ]
+    },
+    "test:perf": {
+      "command": "vitest run --config vitest.perf.config.ts",
+      "dependencies": [
+        "check:types"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "test/perf/**/*.ts",
+        "vitest.perf.config.ts"
+      ],
+      "output": []
     },
     "bench:summary": {
       "command": "node --experimental-strip-types tooling/bench-summarize.ts",
@@ -747,7 +777,8 @@
         "check:write-surfaces",
         "test:coverage",
         "test:integration",
-        "test:parity"
+        "test:parity",
+        "test:perf"
       ]
     },
     "prepush": {
@@ -765,9 +796,9 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
-    "@biomejs/biome": "2.5.3",
-    "@cloudflare/vitest-pool-workers": "0.18.4",
-    "@cloudflare/workers-types": "5.20260714.1",
+    "@biomejs/biome": "2.5.5",
+    "@cloudflare/vitest-pool-workers": "0.18.7",
+    "@cloudflare/workers-types": "5.20260722.1",
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
     "@ls-lint/ls-lint": "2.3.1",
@@ -785,10 +816,10 @@
     "dependency-cruiser": "18.1.0",
     "fast-check": "4.9.0",
     "husky": "9.1.7",
-    "isomorphic-git": "1.38.7",
+    "isomorphic-git": "1.38.10",
     "jscpd": "5.0.12",
-    "knip": "6.26.0",
-    "lint-staged": "17.0.8",
+    "knip": "6.27.0",
+    "lint-staged": "17.1.1",
     "minimatch": "10.2.5",
     "rollup": "4.62.2",
     "rollup-plugin-dts": "6.4.1",
@@ -798,6 +829,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.10",
     "wireit": "0.14.13",
-    "wrangler": "4.110.0"
+    "wrangler": "4.113.0"
   }
 }

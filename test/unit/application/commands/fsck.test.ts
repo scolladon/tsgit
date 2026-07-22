@@ -428,6 +428,42 @@ describe('Given a commit pointing to a missing tree', () => {
 });
 
 // ---------------------------------------------------------------------------
+// MISSING SUBTREE on tree (directory entry)
+// ---------------------------------------------------------------------------
+
+describe('Given a tree with a directory entry pointing to a missing subtree', () => {
+  describe('When fsck runs', () => {
+    it('Then the broken link to the missing subtree is typed as a tree, exit code 2', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ghostSubtree = '0000000000000000000000000000000000000007' as ObjectId;
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: ghostSubtree }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — a missing directory entry is expected to be a tree, not a blob.
+      const brokenLinks = result.findings.filter((f) => f.type === 'broken-link');
+      const link = brokenLinks.find(
+        (f) => (f as { fromId: ObjectId; toId: ObjectId }).toId === ghostSubtree,
+      );
+      expect(link).toBeDefined();
+      expect(link).toMatchObject({ type: 'broken-link', fromType: 'tree', toType: 'tree' });
+
+      const missing = result.findings.filter((f) => f.type === 'missing');
+      const missingSubtree = missing.find((f) => (f as { id: ObjectId }).id === ghostSubtree);
+      expect(missingSubtree).toMatchObject({ type: 'missing', objectType: 'tree' });
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ROOT COMMITS — reachable commits with no parents
 // ---------------------------------------------------------------------------
 
@@ -481,6 +517,43 @@ describe('Given a ref pointing to an annotated tag (tag target reachable)', () =
         tag: tagId,
       });
       expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TAGGED — annotated tag pointing to a missing target
+// ---------------------------------------------------------------------------
+
+describe('Given a ref pointing to an annotated tag whose target is missing', () => {
+  describe('When fsck runs', () => {
+    it('Then emits missing and broken-link for the missing target, exit code 2', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ghostTarget = '0000000000000000000000000000000000000009' as ObjectId;
+      const tagId = await writeObject(ctx, makeTag(ghostTarget, 'commit', 'v1.0'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert — the missing target surfaces both as a broken tag link and a missing object.
+      const brokenLinks = result.findings.filter((f) => f.type === 'broken-link');
+      const link = brokenLinks.find(
+        (f) => (f as { fromId: ObjectId; toId: ObjectId }).toId === ghostTarget,
+      );
+      expect(link).toBeDefined();
+      expect(link).toMatchObject({
+        type: 'broken-link',
+        fromId: tagId,
+        fromType: 'tag',
+        toType: 'commit',
+      });
+
+      const missing = result.findings.filter((f) => f.type === 'missing');
+      const missingTarget = missing.find((f) => (f as { id: ObjectId }).id === ghostTarget);
+      expect(missingTarget).toMatchObject({ type: 'missing', objectType: 'commit' });
+      expect(result.exitCode & 2).toBe(2);
     });
   });
 });

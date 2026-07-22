@@ -175,8 +175,11 @@ describe('runMergeDriver', () => {
         // Act
         await runMergeDriver(ctx, runner, baseInput);
 
-        // Assert
-        expect(runner.calls[0]?.signal).toBeUndefined();
+        // Assert — the request omits the `signal` key entirely (conditional
+        // spread), not a present `signal: undefined`.
+        const request = runner.calls[0];
+        expect(request).toBeDefined();
+        expect(request !== undefined && 'signal' in request).toBe(false);
       });
     });
   });

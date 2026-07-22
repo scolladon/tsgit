@@ -690,6 +690,29 @@ describe('decodePktStream — invalid length', () => {
   });
 });
 
+describe('decodePktStream — non-UTF-8 length header', () => {
+  describe('Given a 4-byte header that is not valid UTF-8', () => {
+    describe('When decoded', () => {
+      it('Then throws INVALID_PKT_LENGTH carrying four replacement characters', async () => {
+        // Arrange — 0xff is never valid UTF-8; a fatal decoder would throw
+        // TypeError instead of surfacing the protocol error
+        const chunks = [Uint8Array.from([0xff, 0xff, 0xff, 0xff])];
+
+        // Act & Assert
+        try {
+          await collect(decodePktStream(asyncOf(chunks)));
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          const te = err as TsgitError;
+          expect(te.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: '�'.repeat(4) });
+        }
+      });
+    });
+  });
+});
+
 describe('decodePktStream — DoS resistance', () => {
   describe('Given a giant chunk whose first 4 bytes are "gggg"', () => {
     describe('When decoded', () => {

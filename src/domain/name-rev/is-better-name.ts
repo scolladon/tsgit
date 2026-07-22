@@ -10,8 +10,7 @@ import type { RevName } from './types.js';
 
 export const isBetterName = (existing: RevName, incoming: RevName): boolean => {
   if (existing.fromTag !== incoming.fromTag) return incoming.fromTag;
-  // equivalent-mutant: this line runs only when the distances differ, so `>` and
-  // `>=` are identical here — the `>=` mutant is provably equivalent (unkillable).
+  // Stryker disable next-line EqualityOperator: equivalent — this line runs only when the distances differ, so `>` and `>=` are identical here.
   if (existing.distance !== incoming.distance) return existing.distance > incoming.distance;
   return existing.taggerDate > incoming.taggerDate;
 };

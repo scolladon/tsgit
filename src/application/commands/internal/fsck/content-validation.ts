@@ -57,7 +57,8 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
         // Stryker disable next-line ConditionalExpression: equivalent — parseHeader only throws TsgitError with code INVALID_OBJECT_HEADER; the condition is always true when reached.
         err instanceof TsgitError && err.data.code === 'INVALID_OBJECT_HEADER'
           ? (err.data as { reason: string }).reason
-          : '';
+          : // Stryker disable next-line StringLiteral: equivalent — reason is read only by reason.startsWith('unknown object type'); neither '' nor 'Stryker was here!' starts with that prefix, so msgId stays 'unterminatedHeader'.
+            '';
       const msgId = reason.startsWith('unknown object type') ? 'unknownType' : 'unterminatedHeader';
       return { ok: false, msgId };
     }

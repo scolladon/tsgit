@@ -427,4 +427,64 @@ describe('findBisection', () => {
       },
     );
   });
+
+  // ─── best_bisection seed: skew-ordered head is a high-weight commit ───────────
+
+  describe('Given a skew-ordered list whose head reaches most of the set (weight 5 of 6), When finding bisection', () => {
+    it('Then best_bisection selects the true halving commit, seeding the head distance as min(w, all-w)', () => {
+      // Arrange — committer-date skew places `head` (weight 5, NOT a root) first; its
+      // in-set parents appear later in the oldest-first list. all=6.
+      //   roots r1,r0 (w1); w2 (parent r1, w2); w4 (parents r0,w2 → w4);
+      //   head (parents r1,w2,w4 → w5); bad (parents r1,w2,w4,head → w6).
+      // No commit hits approx_halfway, so the result comes from best_bisection.
+      //   distance min(w,6-w): head=1, r1=1, r0=1, w4=2, w2=2, bad=0 → w4 (first max) wins.
+      // Seeding the head distance as min(5, 6+5)=5 would suppress w4 and wrongly keep head.
+      const sut = findBisection;
+      const r1 = c('r1', []);
+      const r0 = c('r0', []);
+      const w2 = c('w2', ['r1']);
+      const w4 = c('w4', ['r0', 'w2']);
+      const head = c('head', ['r1', 'w2', 'w4']);
+      const bad = c('bad', ['r1', 'w2', 'w4', 'head']);
+      const candidates = [head, r1, r0, w4, w2, bad];
+
+      // Act
+      const result = sut(candidates);
+
+      // Assert — w4 is the true midpoint (weight 4, distance 2), not the high-weight head
+      expect(result?.nextCommit).toBe(w4.id);
+      expect(result?.reaches).toBe(4);
+      expect(result?.candidateCount).toBe(6);
+    });
+  });
+
+  // ─── Fill fixpoint: deferred midpoint completes on a LATER pass ───────────────
+
+  describe('Given a skew-ordered list where a single-strand midpoint is deferred past its parent, When finding bisection', () => {
+    it('Then the fixpoint fill assigns the deferred weight on a later pass and returns the exact midpoint', () => {
+      // Arrange — committer-date skew places `mid` (single-strand, parent `lo`) at the head,
+      // before `lo`. all=6. root (seed, w1); lo (parent root, w2); mid (parent lo, w3);
+      // m1,m2 (merges, w4); bad (w6). No merge lands on approx_halfway.
+      //   fill pass 1: `mid` deferred (lo still unweighted); `lo` filled from root → w2
+      //                (diff=2*2-6=-2, not halfway).
+      //   fill pass 2: `mid` filled → w3; diff=2*3-6=0 → approx_halfway fires → mid returned.
+      // Collapsing the loop to a single pass leaves `mid` unweighted and loses its weight.
+      const sut = findBisection;
+      const root = c('root', []);
+      const lo = c('lo', ['root']);
+      const mid = c('mid', ['lo']);
+      const m1 = c('m1', ['lo', 'mid']);
+      const m2 = c('m2', ['root', 'lo', 'mid']);
+      const bad = c('bad', ['root', 'mid', 'm2', 'm1']);
+      const candidates = [mid, lo, root, m1, m2, bad];
+
+      // Act
+      const result = sut(candidates);
+
+      // Assert — mid resolves on the second pass with its real weight of 3
+      expect(result?.nextCommit).toBe(mid.id);
+      expect(result?.reaches).toBe(3);
+      expect(result?.candidateCount).toBe(6);
+    });
+  });
 });

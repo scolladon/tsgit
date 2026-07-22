@@ -508,6 +508,35 @@ describe('rebaseRun', () => {
       });
     });
 
+    describe('When a replayed pick would overwrite an untracked working-tree file', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY and releases the index lock', async () => {
+        // Arrange — topic adds then removes `collide.txt`, so topic HEAD does not
+        // track it; an untracked `collide.txt` left in the worktree survives the
+        // detach reset, and replaying the add would clobber it (would-overwrite).
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        await writeAddCommit(ctx, 'collide.txt', 'from-topic\n', 't1 adds collide');
+        await ctx.fs.rm(work(ctx, 'collide.txt'));
+        await add(ctx, [], { all: true });
+        await commit(ctx, { message: 't2 removes collide', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        await writeAddCommit(ctx, 'm1.txt', 'm1\n', 'm1');
+        await checkout(ctx, { rev: 'topic' });
+        await ctx.fs.writeUtf8(work(ctx, 'collide.txt'), 'untracked collide\n');
+
+        // Act
+        const data = await dataOf(() => rebaseRun(ctx, { upstream: 'main' }));
+
+        // Assert — the pick refused, and the finally-block released the index lock.
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+
     describe('When another operation is already in progress', () => {
       it('Then it refuses with OPERATION_IN_PROGRESS', async () => {
         // Arrange
@@ -2216,6 +2245,53 @@ describe('rebase — hooks', () => {
         expect(sut.kind).toBe('rebased');
         expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
         expect(runner.calls.some((call) => call.name === 'post-rewrite')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an interactive rebase that rewrites, stops, then continues past the stop', () => {
+    describe('When a reword remains after the resolved conflict', () => {
+      it('Then post-rewrite carries the pre-stop rewrite pair, not only the resumed commits', async () => {
+        // Arrange — main advances `f.txt` so picking `t1` genuinely rewrites it;
+        // `t2` then conflicts, stranding `t1 → t1'` in `rewritten-list` across the
+        // stop. The trailing `reword` keeps the resume on the interactive engine,
+        // so the carried-forward rewrite seed must survive into the final
+        // post-rewrite stdin.
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1 subject');
+        const t2 = await writeAddCommit(ctx, 'f.txt', 'TOPIC\n', 't2 subject');
+        const t3 = await writeAddCommit(ctx, 'c.txt', 'c\n', 't3 subject');
+        await checkout(ctx, { rev: 'main' });
+        await writeAddCommit(ctx, 'f.txt', 'MAIN\n', 'm1');
+        await checkout(ctx, { rev: 'topic' });
+        const stop = await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'pick', oid: t2 },
+            { action: 'reword', oid: t3, message: 'reworded t3' },
+          ],
+        });
+        expect(stop.kind).toBe('conflict'); // t1 rewritten, t2 conflicts, reword t3 remains
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const sut = await rebaseContinue(ctx);
+
+        // Assert — the finishing post-rewrite leads with the pre-stop `t1` pair.
+        expect(sut.kind).toBe('rebased');
+        const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
+        expect(postRewrite).toHaveLength(1);
+        const stdin = postRewrite[0]?.stdin ?? '';
+        expect(stdin.startsWith(`${t1} `)).toBe(true);
+        expect(stdin.split('\n').filter(Boolean)).toHaveLength(3); // t1 + resolved-t2 + reworded-t3
       });
     });
   });

@@ -784,6 +784,34 @@ describe('Given two entries', () => {
 });
 
 // ---------------------------------------------------------------------------
+// EOCD: central-directory size
+// ---------------------------------------------------------------------------
+
+describe('Given two entries whose central directory has a known byte span', () => {
+  describe('When the EOCD central-directory size is emitted', () => {
+    it('Then cdSize spans exactly from cdOffset to the EOCD record', async () => {
+      // Arrange — the file is [local headers + data][central dir][EOCD]; with an
+      // empty comment the trailing EOCD is exactly 22 bytes, so the central
+      // directory occupies bytes.length - cdOffset - 22.
+      const EOCD_RECORD_FIXED = 22;
+      const result = makeResult([
+        regularEntry('a.txt', new TextEncoder().encode('alpha')),
+        regularEntry('bb.txt', new TextEncoder().encode('bravo')),
+      ]);
+      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
+
+      // Act
+      const bytes = await collectBytes(sut);
+      const eocd = parseZip(bytes).eocd;
+      const commentLen = new TextEncoder().encode(eocd.comment).length;
+
+      // Assert — cdSize is the positive accumulated span of both central entries.
+      expect(eocd.cdSize).toBe(bytes.length - eocd.cdOffset - EOCD_RECORD_FIXED - commentLen);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // DOS time: tzOffsetMinutes variants
 // ---------------------------------------------------------------------------
 

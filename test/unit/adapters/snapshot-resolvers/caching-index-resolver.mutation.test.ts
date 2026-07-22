@@ -606,3 +606,274 @@ describe('caching-index-resolver — generation fast-path skips fs.stat', () => 
     });
   });
 });
+
+describe('caching-index-resolver — needsRacyCheck asymmetric ns with a mismatching trailer', () => {
+  const stripNs = (stat: FileStat): FileStat => {
+    const { mtimeNs: _drop, ...rest } = stat;
+    return rest as FileStat;
+  };
+  const buildAsymmetricSetup = async (
+    warmNs: bigint | undefined,
+    currentNs: bigint | undefined,
+  ): Promise<{
+    ctx: Context;
+    view: ReturnType<typeof createCounterGenerationView>;
+    inner: CountingResolver;
+    sut: IndexResolver;
+  }> => {
+    const ctx = await buildSeededContext({ index: sampleIndex([sampleEntry('a.txt')]) });
+    const indexPath = `${ctx.layout.gitDir}/index`;
+    const real = stripNs(await ctx.fs.stat(indexPath));
+    const withNs = (ns: bigint | undefined): FileStat =>
+      ns === undefined ? real : { ...real, mtimeNs: ns };
+    let statCalls = 0;
+    const fs = {
+      ...ctx.fs,
+      stat: async (p: string) => {
+        if (p !== indexPath) return ctx.fs.stat(p);
+        statCalls += 1;
+        return statCalls === 1 ? withNs(warmNs) : withNs(currentNs);
+      },
+    };
+    const ctxWithFs: Context = { ...ctx, fs };
+    const view = createCounterGenerationView();
+    const { stream } = createInMemoryWriteEventBus(view);
+    const wrongTrailer = new Uint8Array(20).fill(0xff);
+    let innerCalls = 0;
+    const inner: CountingResolver = {
+      calls: () => innerCalls,
+      resolve: async () => {
+        innerCalls += 1;
+        return {
+          version: 2,
+          entries: [sampleEntry('a.txt')],
+          extensions: [],
+          trailerSha: wrongTrailer,
+        } satisfies GitIndex;
+      },
+    };
+    const sut = createCachingIndexResolver(inner, fs, stream, view);
+    return { ctx: ctxWithFs, view, inner, sut };
+  };
+
+  describe('Given the live stat carries ns but the cached observation lacks it', () => {
+    describe('When resolve runs the stat-validated path against a wrong cached trailer', () => {
+      it('Then needsRacyCheck stays true (|| keeps racy), the trailer check fires and re-parse happens', async () => {
+        // Arrange
+        const { ctx, view, inner, sut } = await buildAsymmetricSetup(undefined, 999n);
+        await sut.resolve(ctx);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctx);
+
+        // Assert — one operand undefined → racy → trailer mismatch → re-parse (mutating || to &&,
+        // or the cached-side operand to false, would skip the trailer and reuse the stale cache).
+        expect(inner.calls()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given the cached observation carries ns but the live stat lacks it', () => {
+    describe('When resolve runs the stat-validated path against a wrong cached trailer', () => {
+      it('Then needsRacyCheck stays true (|| keeps racy), the trailer check fires and re-parse happens', async () => {
+        // Arrange
+        const { ctx, view, inner, sut } = await buildAsymmetricSetup(999n, undefined);
+        await sut.resolve(ctx);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctx);
+
+        // Assert — the live-side operand undefined → racy → re-parse (mutating the live-side
+        // operand to false would skip the trailer and reuse the stale cache).
+        expect(inner.calls()).toBe(2);
+      });
+    });
+  });
+});
+
+describe('caching-index-resolver — bytesEqual length guard on a truncated trailer read', () => {
+  const stripNs = (stat: FileStat): FileStat => {
+    const { mtimeNs: _drop, ...rest } = stat;
+    return rest as FileStat;
+  };
+
+  describe('Given a warm cache with a 20-byte stored trailer and a live read returning only its 19-byte prefix', () => {
+    describe('When resolve runs the trailer-fallback comparison', () => {
+      it('Then bytesEqual rejects on the length mismatch and the resolver re-parses', async () => {
+        // Arrange — stub inner pins a known 20-byte trailer; readSlice returns a strict
+        // 19-byte prefix, simulating a trailer truncated under a racing writer.
+        const ctx = await buildSeededContext({ index: sampleIndex([sampleEntry('a.txt')]) });
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const frozenStat = stripNs(await ctx.fs.stat(indexPath));
+        const storedTrailer = new Uint8Array(20).map((_v, i) => i + 1);
+        const shortRead = storedTrailer.slice(0, 19);
+        const fs = {
+          ...ctx.fs,
+          stat: async (p: string) => (p === indexPath ? frozenStat : ctx.fs.stat(p)),
+          readSlice: async (p: string, o: number, l: number) =>
+            p === indexPath ? shortRead : ctx.fs.readSlice(p, o, l),
+        };
+        const ctxWithFs: Context = { ...ctx, fs };
+        const view = createCounterGenerationView();
+        const { stream } = createInMemoryWriteEventBus(view);
+        let innerCalls = 0;
+        const inner: CountingResolver = {
+          calls: () => innerCalls,
+          resolve: async () => {
+            innerCalls += 1;
+            return {
+              version: 2,
+              entries: [sampleEntry('a.txt')],
+              extensions: [],
+              trailerSha: storedTrailer,
+            } satisfies GitIndex;
+          },
+        };
+        const sut = createCachingIndexResolver(inner, fs, stream, view);
+        await sut.resolve(ctxWithFs);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctxWithFs);
+
+        // Assert — 19 bytes vs 20 stored → cannot match → re-parse. Skipping the length guard
+        // (return true, or dropping the `a.length !== b.length` branch) would let the prefix
+        // pass as a match and reuse the stale cache.
+        expect(inner.calls()).toBe(2);
+      });
+    });
+  });
+});
+
+describe('caching-index-resolver — trailerStillMatches truncation guards', () => {
+  const stripNs = (stat: FileStat): FileStat => {
+    const { mtimeNs: _drop, ...rest } = stat;
+    return rest as FileStat;
+  };
+
+  describe('Given a warm cache whose stored trailer is empty (zero-length)', () => {
+    describe('When resolve runs the trailer-fallback comparison on a racy stat', () => {
+      it('Then the zero-length guard refuses the shortcut and the resolver re-parses', async () => {
+        // Arrange — stub inner pins an empty trailer (trailerSize === 0).
+        const ctx = await buildSeededContext({ index: sampleIndex([sampleEntry('a.txt')]) });
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const frozenStat = stripNs(await ctx.fs.stat(indexPath));
+        const fs = {
+          ...ctx.fs,
+          stat: async (p: string) => (p === indexPath ? frozenStat : ctx.fs.stat(p)),
+        };
+        const ctxWithFs: Context = { ...ctx, fs };
+        const view = createCounterGenerationView();
+        const { stream } = createInMemoryWriteEventBus(view);
+        let innerCalls = 0;
+        const inner: CountingResolver = {
+          calls: () => innerCalls,
+          resolve: async () => {
+            innerCalls += 1;
+            return {
+              version: 2,
+              entries: [sampleEntry('a.txt')],
+              extensions: [],
+              trailerSha: new Uint8Array(0),
+            } satisfies GitIndex;
+          },
+        };
+        const sut = createCachingIndexResolver(inner, fs, stream, view);
+        await sut.resolve(ctxWithFs);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctxWithFs);
+
+        // Assert — trailerSize === 0 → guard true → re-parse; an empty trailer is never trusted.
+        expect(inner.calls()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a warm cache with a 20-byte stored trailer and a stat reporting size below it', () => {
+    describe('When resolve runs the trailer-fallback comparison with bytes that would otherwise match', () => {
+      it('Then the size guard refuses the shortcut and the resolver re-parses', async () => {
+        // Arrange — stub inner pins a 20-byte trailer; stat reports size 10 (< trailerSize).
+        // readSlice returns matching bytes, so ONLY the `stat.size < trailerSize` guard forces
+        // the re-parse — proving that operand carries the decision.
+        const ctx = await buildSeededContext({ index: sampleIndex([sampleEntry('a.txt')]) });
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const smallStat: FileStat = { ...stripNs(await ctx.fs.stat(indexPath)), size: 10 };
+        const storedTrailer = new Uint8Array(20).map((_v, i) => i + 1);
+        const fs = {
+          ...ctx.fs,
+          stat: async (p: string) => (p === indexPath ? smallStat : ctx.fs.stat(p)),
+          readSlice: async (p: string, o: number, l: number) =>
+            p === indexPath ? storedTrailer.slice() : ctx.fs.readSlice(p, o, l),
+        };
+        const ctxWithFs: Context = { ...ctx, fs };
+        const view = createCounterGenerationView();
+        const { stream } = createInMemoryWriteEventBus(view);
+        let innerCalls = 0;
+        const inner: CountingResolver = {
+          calls: () => innerCalls,
+          resolve: async () => {
+            innerCalls += 1;
+            return {
+              version: 2,
+              entries: [sampleEntry('a.txt')],
+              extensions: [],
+              trailerSha: storedTrailer,
+            } satisfies GitIndex;
+          },
+        };
+        const sut = createCachingIndexResolver(inner, fs, stream, view);
+        await sut.resolve(ctxWithFs);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctxWithFs);
+
+        // Assert — size (10) < trailerSize (20) → guard true → re-parse, despite matching bytes.
+        // Forcing that operand to false would read+match the trailer and reuse a too-small file.
+        expect(inner.calls()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a warm cache whose stored trailer equals the whole file (size === trailerSize)', () => {
+    describe('When resolve runs the trailer-fallback comparison at the size boundary', () => {
+      it('Then the trailer reads exactly and matches, so the cache is reused (boundary is inclusive)', async () => {
+        // Arrange — a 20-byte file that IS the trailer; stub inner pins that same trailer.
+        // stat.size === trailerSize: `<` reads-and-matches (reuse); `<=` would reject (re-parse).
+        const ctx = await buildSeededContext();
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const storedTrailer = new Uint8Array(20).map((_v, i) => i + 1);
+        await ctx.fs.write(indexPath, storedTrailer);
+        const view = createCounterGenerationView();
+        const { stream } = createInMemoryWriteEventBus(view);
+        let innerCalls = 0;
+        const inner: CountingResolver = {
+          calls: () => innerCalls,
+          resolve: async () => {
+            innerCalls += 1;
+            return {
+              version: 2,
+              entries: [sampleEntry('a.txt')],
+              extensions: [],
+              trailerSha: storedTrailer,
+            } satisfies GitIndex;
+          },
+        };
+        const sut = createCachingIndexResolver(inner, ctx.fs, stream, view);
+        await sut.resolve(ctx);
+
+        // Act
+        view.bump('index');
+        await sut.resolve(ctx);
+
+        // Assert — exactly trailerSize bytes are readable and match → reuse. Tightening `<` to
+        // `<=` would reject a file whose trailer fits exactly and force a needless re-parse.
+        expect(inner.calls()).toBe(1);
+      });
+    });
+  });
+});

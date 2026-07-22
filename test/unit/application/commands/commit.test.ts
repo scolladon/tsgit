@@ -861,6 +861,25 @@ describe('commit — signing', () => {
     });
   });
 
+  describe('Given the signer returns armor with no trailing newline', () => {
+    describe('When commit stores the signature', () => {
+      it('Then the armor is stored verbatim — the strip only fires on a real trailing newline', async () => {
+        // Arrange — signedArmor() already ends at `-----` with no trailing newline.
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(signedArmor()) });
+        const ctx = await seedSigning(runner);
+
+        // Act
+        const result = await commit(ctx, { message: 'm', author, sign: true });
+
+        // Assert — the false branch keeps the armor's last byte; the endsWith('\n')
+        // literal must not degrade to endsWith('') (always true → drops a real byte).
+        const stored = await readObject(ctx, result.id);
+        if (stored.type !== 'commit') throw new Error('expected a commit object');
+        expect(stored.data.gpgSignature).toBe(signedArmor());
+      });
+    });
+  });
+
   describe('Given opts.sign is true', () => {
     describe('When commit signs', () => {
       it('Then the signer receives the unsigned payload on stdin with no gpgsig header', async () => {

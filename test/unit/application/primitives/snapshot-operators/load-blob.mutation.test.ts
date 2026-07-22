@@ -344,6 +344,37 @@ describe('loadBlob — bytes saturation only (count cap not in play)', () => {
   });
 });
 
+describe('loadBlob — degenerate zero byte budget keeps the empty-queue guard', () => {
+  describe('Given maxInflightBytes=0 so the byte disjunct stays saturated even at an empty queue', () => {
+    describe('When loadBlob runs', () => {
+      it('Then every row is yielded once and the main drain loop stops at length 0', async () => {
+        // Arrange — bytes >= 0 is always true, so isQueueSaturated() never
+        // relaxes; only the `length > 0` guard stops the main drain loop
+        // from shifting an already-empty queue. Relaxing that guard to
+        // `>= 0` (or `true`) makes drainOldest shift an empty queue and
+        // throw the invariant error.
+        const probe = makeProbe();
+        const rows: Row[] = [
+          { path: 'a' as FilePath, workdir: makeEntry(10, probe) },
+          { path: 'b' as FilePath, workdir: makeEntry(10, probe) },
+          { path: 'c' as FilePath, workdir: makeEntry(10, probe) },
+        ];
+        const sut = loadBlob<Row>('workdir', {
+          concurrency: 4,
+          maxInflightBytes: 0,
+        })(stream(rows));
+
+        // Act
+        const out = await collect(sut);
+
+        // Assert — guard holds: all rows yielded in order, one read each.
+        expect(out.map((r) => r.path)).toEqual(['a', 'b', 'c']);
+        expect(probe.reads).toBe(3);
+      });
+    });
+  });
+});
+
 describe('loadBlob — post-source drain yields every queued row', () => {
   describe('Given far more rows than the byte budget allows in-flight', () => {
     describe('When loadBlob runs', () => {

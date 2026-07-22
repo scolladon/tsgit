@@ -118,7 +118,10 @@ function checkIdentityLine(line: string, strict: boolean): ReadonlyArray<CommitF
     return findings;
   }
 
-  const [timestamp = '', timezone = ''] = afterGt.trim().split(/\s+/);
+  // `split` always yields at least one element, so the first is a string, not
+  // `string | undefined` — stating that as a type keeps the timestamp free of a
+  // fallback that could never run.
+  const [timestamp, timezone = ''] = afterGt.trim().split(/\s+/) as [string, ...string[]];
 
   const timestampFault = checkTimestamp(timestamp, strict);
   if (timestampFault !== undefined) {

@@ -131,6 +131,54 @@ describe('parseLsRefsResponse', () => {
     });
   });
 
+  describe('Given a symref-target HEAD line whose first token is an empty oid (leading space)', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE — the symref branch must still validate the oid token', async () => {
+        // Arrange — a leading space makes the first token the empty string. Git
+        // requires an ls-refs line's first token to be a valid oid or `unborn`;
+        // the symref branch previously skipped that check and accepted it.
+        const line = ' HEAD symref-target:refs/heads/main';
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+      });
+    });
+  });
+
+  describe('Given a symref-target HEAD line whose first token is neither an oid nor unborn', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE — a garbage first token is rejected on the symref branch', async () => {
+        // Arrange — `zzzz` is neither a valid oid nor the `unborn` literal, so
+        // git rejects the line; the symref branch previously accepted it and
+        // advertised a bogus symref capability.
+        const line = 'zzzz HEAD symref-target:refs/heads/main';
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+      });
+    });
+  });
+
   describe('Given an ls-refs response with a peeled tag', () => {
     describe('When parsed', () => {
       it('Then the tag ref carries its peeled oid', async () => {
@@ -142,6 +190,53 @@ describe('parseLsRefsResponse', () => {
 
         // Assert
         expect(sut.refs.find((r) => r.name === 'refs/tags/v1')?.peeled).toBe(OID2);
+      });
+    });
+  });
+
+  describe('Given an ls-refs response whose peeled attribute is not an oid', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE carrying the line', async () => {
+        // Arrange — only the line's first token is checked while the ref line is
+        // split; the peeled oid is validated when the ref is appended.
+        const line = `${OID1} refs/tags/v1 peeled:nonsense`;
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+      });
+    });
+  });
+
+  describe('Given an unborn ref line that carries no symref-target', () => {
+    describe('When parsed', () => {
+      it('Then it throws INVALID_REF_LINE — unborn is only meaningful on a symref line', async () => {
+        // Arrange — `unborn` is tolerated as a first token so the symref branch
+        // can read it, but a line that never reaches that branch still has to
+        // produce a real oid.
+        const line = 'unborn refs/heads/main';
+        const stream = responseBody([`${line}\n`]);
+
+        // Act
+        let sut: unknown;
+        try {
+          await parseLsRefsResponse(stream);
+        } catch (e) {
+          sut = e;
+        }
+
+        // Assert
+        expect(sut).toBeInstanceOf(TsgitError);
+        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
       });
     });
   });

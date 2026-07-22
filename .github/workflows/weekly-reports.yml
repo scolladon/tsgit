@@ -40,8 +40,9 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup
-      - run: stryker run
+      - run: npm run test:mutation
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: weekly-mutation-report
           path: reports/mutation/

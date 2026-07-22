@@ -465,6 +465,40 @@ describe('bundleCreate', () => {
     });
   });
 
+  // ── SymmetricRange with multiple merge bases (criss-cross) ────────────────
+
+  describe('Given a criss-cross history where main and feature share two merge bases', () => {
+    describe('When bundleCreate is called with symmetricRange [refs/heads/main, refs/heads/feature]', () => {
+      it('Then prerequisites list both merge bases in oid-sorted order', async () => {
+        // Arrange — b1 and b2 are independent roots; main and feature each merge
+        // both, so merge-base(main, feature) = { b1, b2 }. Both merges list the
+        // higher-oid base first, so the boundary is discovered in DESCENDING oid
+        // order — the header must still emit both, re-sorted ascending.
+        const ctx = await initRepo();
+        const tree = await writeTree(ctx, []);
+        const b1 = await makeCommitObj(ctx, tree, [], 'base one', 1);
+        const b2 = await makeCommitObj(ctx, tree, [], 'base two', 2);
+        const bases = [
+          { oid: b1, comment: 'base one' },
+          { oid: b2, comment: 'base two' },
+        ].sort((x, y) => (x.oid < y.oid ? -1 : 1));
+        const [lo, hi] = bases as [(typeof bases)[number], (typeof bases)[number]];
+        const mainCommit = await makeCommitObj(ctx, tree, [hi.oid, lo.oid], 'main merge', 3);
+        const featureCommit = await makeCommitObj(ctx, tree, [hi.oid, lo.oid], 'feature merge', 4);
+        await setRef(ctx, 'refs/heads/main', mainCommit);
+        await setRef(ctx, 'refs/heads/feature', featureCommit);
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ symmetricRange: ['refs/heads/main', 'refs/heads/feature'] }],
+        });
+
+        // Assert — both bases present (all merge bases), oid-sorted ascending.
+        expect(result.prerequisites).toEqual([lo, hi]);
+      });
+    });
+  });
+
   // ── --all ordering ────────────────────────────────────────────────────────
 
   describe('Given a repository with main, feature branches and a tag', () => {

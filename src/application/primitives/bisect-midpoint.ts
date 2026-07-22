@@ -31,14 +31,12 @@ const paintReachable = async (
   let head = 0;
   while (head < queue.length) {
     const id = queue[head++]!;
-    // equivalent-mutant (if false): Map.set is idempotent; re-processing id writes the
-    // same entry; finite DAG + head++ guarantee termination; final Map is identical.
+    // Stryker disable next-line ConditionalExpression: equivalent — Map.set is idempotent, so re-popping an already-visited id rewrites the identical entry; the finite acyclic DAG bounds total pops, leaving termination and the final Map unchanged.
     if (visited.has(id)) continue;
     const entry = await readCommitEntry(ctx, id);
     visited.set(id, entry);
     for (const parent of entry.parents) {
-      // equivalent-mutant (if true): extra pushes of already-visited parents create
-      // no-op iterations (line above still skips on re-pop); same final Map.
+      // Stryker disable next-line ConditionalExpression: equivalent — pushing an already-visited parent only adds a pop the has-check above skips, so no node is re-expanded and the final Map is identical.
       if (!visited.has(parent)) queue.push(parent);
     }
   }
@@ -74,11 +72,11 @@ type HeapEntry = { readonly id: ObjectId; readonly date: number; readonly ins: n
 // FIFO-stable tie-break: smaller `ins` (earlier insertion) = higher priority. This
 // replicates git's `prio_queue` insertion-counter tie-break, the only ordering
 // faithful to `do_find_bisection`'s list-order tie-break.
-// equivalent-mutant (a.ins<=b.ins): `ins` is assigned via a per-walk `ins++` counter, so
-// every heap entry gets a UNIQUE value; two entries with a.ins===b.ins never coexist, so
-// `<` and `<=` never differ.
 const less = (a: HeapEntry, b: HeapEntry): boolean =>
-  a.date > b.date || (a.date === b.date && a.ins < b.ins);
+  a.date > b.date ||
+  (a.date === b.date &&
+    // Stryker disable next-line EqualityOperator: equivalent — `ins` is assigned by a per-walk `ins++` counter, so every heap entry holds a unique value and no two coexisting entries share an `ins`; `<=` therefore returns true on exactly the same distinct pairs as `<`.
+    a.ins < b.ins);
 
 const walkCandidatesNewestFirst = async (
   getEntry: (id: ObjectId) => Promise<CommitEntry>,
@@ -90,8 +88,7 @@ const walkCandidatesNewestFirst = async (
   const visited = new Set<ObjectId>();
   const newestFirst: WalkNode[] = [];
   const heap = new BinaryHeap<HeapEntry>(less);
-  // equivalent-mutant (ins--): both post-fix operators return 0 for bad's entry (ins starts at 0);
-  // subsequent parents use ins++ from the modified value, preserving relative ordering.
+  // Stryker disable next-line UpdateOperator: equivalent — post-fix `ins--` still assigns 0 to bad, and bad is popped before any parent is pushed so its `ins` never enters a `less` comparison; the shift it leaves on the counter is uniform across every later `ins++`, preserving all relative tie-breaks.
   heap.push({ id: bad, date: badDate, ins: ins++ });
 
   while (heap.size() > 0) {

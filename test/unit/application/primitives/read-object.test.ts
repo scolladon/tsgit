@@ -408,6 +408,38 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     });
   });
 
+  describe('Given a missing object supplied by a promisor that records its request', () => {
+    describe('When readObject lazy-fetches', () => {
+      it('Then the promisor is asked for exactly the missing oid', async () => {
+        // Arrange — capture the oid batch handed to the promisor so an empty
+        // request (fetching nothing) is distinguishable from the real one.
+        const base = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const requested: ReadonlyArray<ObjectId>[] = [];
+        const promisor: PromisorRemote = {
+          fetch: async (oids) => {
+            requested.push([...oids]);
+            const bytes = serializeObject(blob, base.hashConfig);
+            const compressed = await base.compressor.deflate(bytes);
+            await base.fs.write(
+              `${base.layout.gitDir}/objects/${await computeLooseObjectPathOf(id)}`,
+              compressed,
+            );
+            return { attempted: true, requested: oids.length, fetched: oids.length };
+          },
+        };
+        const ctx: Context = { ...base, promisor };
+
+        // Act
+        await readObject(ctx, id);
+
+        // Assert — the exact missing oid was requested, not an empty batch.
+        expect(requested).toEqual([[id]]);
+      });
+    });
+  });
+
   describe('Given a promisor reporting attempted=false', () => {
     describe('When readObject misses', () => {
       it('Then OBJECT_NOT_FOUND is thrown', async () => {
@@ -428,6 +460,46 @@ describe('readObject — lazy-fetch (partial clone)', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
         }
+      });
+    });
+  });
+
+  describe('Given a promisor reporting attempted=false and a seeded pack dir', () => {
+    describe('When readObject misses', () => {
+      it('Then the store is not re-resolved (pack dir scanned exactly once)', async () => {
+        // Arrange — a promisor that declines to fetch. The attempted=false guard
+        // surfaces the original miss directly; it must NOT fall through to a
+        // pointless re-resolve, which would re-scan the pack directory a 2nd time.
+        const base = await buildSeededContext();
+        const packDir = `${base.layout.gitDir}/objects/pack`;
+        await base.fs.write(`${packDir}/.gitkeep`, new Uint8Array([0]));
+        let packReaddirCount = 0;
+        const originalReaddir = base.fs.readdir.bind(base.fs);
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readdir: async (path: string) => {
+              if (path === packDir) packReaddirCount += 1;
+              return originalReaddir(path);
+            },
+          },
+          promisor: {
+            fetch: async (oids) => ({ attempted: false, requested: oids.length, fetched: 0 }),
+          },
+        };
+
+        // Act
+        try {
+          await readObject(ctx, 'f'.repeat(40) as ObjectId);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        }
+
+        // Assert — the guard short-circuited: one scan, no refresh + re-resolve.
+        expect(packReaddirCount).toBe(1);
       });
     });
   });

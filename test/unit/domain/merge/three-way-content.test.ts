@@ -820,6 +820,29 @@ describe('mergeContent', () => {
     });
   });
 
+  describe('Given an undefined base with identical cap-exceeding ours and theirs', () => {
+    describe('When mergeContent called', () => {
+      it('Then the add-add identical fast path returns clean ours (not the degraded conflict)', () => {
+        // Arrange — base undefined (add-add); ours === theirs, both 50_001 lines so the empty-base
+        // diff inside mergeFromDiffs degrades (M+N > 50_000). The undefined-base `bytesEqual(ours, theirs)`
+        // fast path must short-circuit to clean; forcing it false falls through to the degraded slow
+        // path → whole-file content conflict.
+        const sideText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
+        const ours = enc(sideText);
+        const theirs = enc(sideText);
+
+        // Act
+        const sut = mergeContent(undefined, ours, theirs);
+
+        // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+        expect(sut.status).toBe('clean');
+        if (sut.status === 'clean') {
+          expect(decoder.decode(sut.bytes)).toBe(sideText);
+        }
+      });
+    });
+  });
+
   describe('Given the property "mergeContent(base, base, base) always clean for non-binary text"', () => {
     describe('When sampled', () => {
       it('Then it holds', () => {
@@ -904,6 +927,27 @@ describe('mergeContent', () => {
 
         // Assert
         assertClean(sut, 'a\nXX\nYY');
+      });
+    });
+  });
+
+  describe('Given a union whose only newline-free line is the last, all interior lines LF-terminated', () => {
+    describe('When mergeContent called', () => {
+      it('Then the buffer is sized to interior lines only, with no trailing padding byte', () => {
+        // Arrange — conflict on line 0 (LF-terminated on both sides); shared suffix ends
+        // at 'c' with no trailing newline. Every interior union line already ends in LF, so
+        // the measuring loop must add no phantom byte for the final newline-free line.
+        // The interior guard `i < lines.length - 1` scopes the +1 to non-last lines; forcing
+        // it to `i >= lines.length - 1` over-allocates one byte for 'c' → a trailing NUL.
+        const base = enc('a\nb\nc');
+        const ours = enc('X\nb\nc');
+        const theirs = enc('Y\nb\nc');
+
+        // Act
+        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+
+        // Assert
+        assertClean(sut, 'X\nY\nb\nc');
       });
     });
   });

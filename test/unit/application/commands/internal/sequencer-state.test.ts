@@ -332,6 +332,22 @@ describe('sequencer-state', () => {
     });
   });
 
+  describe('Given an opts file whose option key carries an explicit false value', () => {
+    describe('When read', () => {
+      it('Then the key reads false rather than matching on key presence alone', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(seqPath(ctx, 'opts'), '[options]\n\tno-commit = false\n');
+
+        // Act
+        const sut = await readSequencerOpts(ctx);
+
+        // Assert
+        expect(sut).toEqual({ noCommit: false, recordOrigin: false, allowEmpty: false });
+      });
+    });
+  });
+
   describe('Given a todo referencing an unresolvable oid', () => {
     describe('When read', () => {
       it('Then the INVALID_SEQUENCER_TODO reason echoes the unresolved oid', async () => {

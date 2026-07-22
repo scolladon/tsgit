@@ -129,6 +129,19 @@ describe('parseObjectFilter', () => {
     });
   });
 
+  describe('Given a multi-digit tree depth', () => {
+    describe('When parsed', () => {
+      it('Then returns the full depth', () => {
+        // Arrange
+        const sut = parseObjectFilter;
+        // Act
+        const result = sut('tree:42');
+        // Assert
+        expect(result).toEqual({ kind: 'tree-depth', depth: 42 });
+      });
+    });
+  });
+
   describe('Given an empty string', () => {
     describe('When parsed', () => {
       it('Then throws INVALID_FILTER_SPEC (empty)', () => {
@@ -264,6 +277,15 @@ describe('parseObjectFilter', () => {
     });
   });
 
+  describe('Given a tree depth with trailing content after the integer', () => {
+    describe('When parsed', () => {
+      it('Then throws (bad-tree-depth)', () => {
+        // Arrange + Assert
+        expectInvalid('tree:5.0', 'bad-tree-depth');
+      });
+    });
+  });
+
   describe('Given a non-numeric tree depth', () => {
     describe('When parsed', () => {
       it('Then throws (bad-tree-depth)', () => {
@@ -323,18 +345,15 @@ describe('formatObjectFilter', () => {
     });
   });
 
-  it.each<string>([
-    'blob:none',
-    'blob:limit=1k',
-    'blob:limit=2M',
-    'tree:0',
-    'tree:7',
-  ])('Given %s, When parsed then formatted then re-parsed, Then the filter is stable', (spec: string) => {
-    // Arrange
-    const first: ObjectFilter = parseObjectFilter(spec);
-    // Act
-    const reparsed = parseObjectFilter(formatObjectFilter(first));
-    // Assert
-    expect(reparsed).toEqual(first);
-  });
+  it.each<string>(['blob:none', 'blob:limit=1k', 'blob:limit=2M', 'tree:0', 'tree:7'])(
+    'Given %s, When parsed then formatted then re-parsed, Then the filter is stable',
+    (spec: string) => {
+      // Arrange
+      const first: ObjectFilter = parseObjectFilter(spec);
+      // Act
+      const reparsed = parseObjectFilter(formatObjectFilter(first));
+      // Assert
+      expect(reparsed).toEqual(first);
+    },
+  );
 });

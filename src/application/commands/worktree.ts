@@ -261,6 +261,7 @@ const resolveLinked = async (
 ): Promise<LinkedWorktree> => {
   const entry = (await listWorktrees(ctx)).find((candidate) => candidate.path === worktreePath);
   if (entry === undefined) throw notAWorktree(worktreePath);
+  // Stryker disable next-line LogicalOperator: equivalent — every listWorktrees entry has entry.main === (entry.id === undefined) (the main entry never carries an id, a linked entry always does), so && and || select the identical rows
   if (entry.main || entry.id === undefined) {
     throw invalidOption(`worktree ${verb}`, 'cannot operate on the main working tree');
   }

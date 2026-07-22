@@ -205,10 +205,7 @@ const validateMove = async (
   if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
   // `dirname` of a validated path is a prefix of it — still a valid repo path.
   const parent = dirname(target) as FilePath;
-  // equivalent-mutant: an empty parent is the work-tree root, which
-  // `isDirectoryOnDisk('')` always reports as a directory, so the `parent !== ''`
-  // short-circuit only spares a redundant lstat — mutating the operand (or the `''`
-  // literal) yields the same no-throw result.
+  // Stryker disable next-line StringLiteral: equivalent — parent is never this literal, and when parent === '' the work-tree root makes isDirectoryOnDisk('') true, so any comparison literal takes the same no-throw path (the `!== ''` short-circuit only spares a redundant lstat)
   if (parent !== '' && !(await isDirectoryOnDisk(ctx, parent))) {
     throw mvDestinationDirectoryMissing(source, target);
   }

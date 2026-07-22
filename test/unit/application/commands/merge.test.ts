@@ -1192,35 +1192,36 @@ describe('merge.4b conflict persistence', () => {
   describe('rejectUnsupportedConflicts (direct)', () => {
     describe('Given a %s MergeConflict', () => {
       describe('When rejectUnsupportedConflicts is called', () => {
-        it.each([
-          'rename-rename',
-          'gitlink',
-        ] as const)('Then throws UNSUPPORTED_OPERATION with operation=merge', async (conflictType) => {
-          // Arrange
-          const { rejectUnsupportedConflicts } = await import(
-            '../../../../src/application/commands/merge.js'
-          );
-          const conflict = {
-            type: conflictType,
-            path: 'sub/path.txt' as never,
-          } as never;
+        it.each(['rename-rename', 'gitlink'] as const)(
+          'Then throws UNSUPPORTED_OPERATION with operation=merge',
+          async (conflictType) => {
+            // Arrange
+            const { rejectUnsupportedConflicts } = await import(
+              '../../../../src/application/commands/merge.js'
+            );
+            const conflict = {
+              type: conflictType,
+              path: 'sub/path.txt' as never,
+            } as never;
 
-          // Act
-          let caught: unknown;
-          try {
-            rejectUnsupportedConflicts([conflict]);
-          } catch (err) {
-            caught = err;
-          }
+            // Act
+            let caught: unknown;
+            try {
+              rejectUnsupportedConflicts([conflict]);
+            } catch (err) {
+              caught = err;
+            }
 
-          // Assert
-          const data = (caught as { data?: { code?: string; operation?: string; reason?: string } })
-            ?.data;
-          expect(data?.code).toBe('UNSUPPORTED_OPERATION');
-          expect(data?.operation).toBe('merge');
-          expect(data?.reason).toContain(conflictType);
-          expect(data?.reason).toContain('sub/path.txt');
-        });
+            // Assert
+            const data = (
+              caught as { data?: { code?: string; operation?: string; reason?: string } }
+            )?.data;
+            expect(data?.code).toBe('UNSUPPORTED_OPERATION');
+            expect(data?.operation).toBe('merge');
+            expect(data?.reason).toContain(conflictType);
+            expect(data?.reason).toContain('sub/path.txt');
+          },
+        );
         it.each([
           'content',
           'add-add',

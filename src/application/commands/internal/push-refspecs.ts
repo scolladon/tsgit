@@ -16,7 +16,7 @@ import {
   pushUpstreamNameMismatch,
 } from '../../../domain/commands/error.js';
 import { RefName } from '../../../domain/objects/object-id.js';
-import type { Advertisement } from '../../../domain/protocol/index.js';
+import type { AdvertisedRef, Advertisement } from '../../../domain/protocol/index.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
@@ -186,12 +186,9 @@ export const finalizePushRefspecs = (
   if (plan.kind !== 'matching') {
     return plan.refspecs;
   }
-  // equivalent-mutant: dropping this filter would let advertisedHeads include non-heads
-  // refs too, but every localHeads entry already starts with HEADS_PREFIX, so membership
-  // in the filtered vs. unfiltered set is identical for every value actually queried below.
-  const advertisedHeads = new Set(
-    adv.refs.filter((ref) => ref.name.startsWith(HEADS_PREFIX)).map((ref) => ref.name),
-  );
+  const isHeadRef = (ref: AdvertisedRef): boolean => ref.name.startsWith(HEADS_PREFIX);
+  // Stryker disable next-line MethodExpression: equivalent — the filter only removes non-head advertised refs (tags, HEAD); membership is queried solely for localHeads, all refs/heads/-prefixed, so filtered and unfiltered sets agree on every queried value.
+  const advertisedHeads = new Set(adv.refs.filter(isHeadRef).map((ref) => ref.name));
   return localHeads
     .filter((branch) => advertisedHeads.has(branch))
     .map((branch) => parseRefspec(`${branch}:${branch}`));

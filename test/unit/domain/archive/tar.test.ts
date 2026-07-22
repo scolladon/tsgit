@@ -417,6 +417,48 @@ describe('Given prefix option "pre/"', () => {
   });
 });
 
+describe('Given prefix option "pre/" (synthetic directory mode)', () => {
+  describe('When tarArchive is called with the default umask', () => {
+    it('Then the synthetic directory header mode is 0000775 (0777 masked by ~umask, not umask)', async () => {
+      // Arrange
+      const entry = makeEntry('a.txt', '100644', new Uint8Array([1, 2]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), {
+        prefix: 'pre/',
+        mtime: FIXED_MTIME,
+      });
+
+      // Act
+      const result = await collectBytes(sut);
+      const dirHeader = result.slice(0, HEADER_SIZE);
+
+      // Assert — 0o777 & ~0o0002 = 0o775; the `& umask` mutant would encode 0000002 instead
+      expect(readField(dirHeader, OFF_MODE, 8)).toBe('0000775');
+    });
+  });
+});
+
+describe('Given prefix option "pre/" (the prefix block is counted in the record total)', () => {
+  describe('When tarArchive is called', () => {
+    it('Then the total output is exactly one 10240-byte record', async () => {
+      // Arrange — prefix dir (512) + entry header (512) + 2-byte data padded (512) + 2 EOF blocks
+      // (1024) = 2560, padded up to one RECORD_SIZE. The `byteCount -= BLOCK_SIZE` mutant miscounts
+      // the prefix block, shifting the final record padding so the total is no longer a multiple.
+      const entry = makeEntry('a.txt', '100644', new Uint8Array([1, 2]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), {
+        prefix: 'pre/',
+        mtime: FIXED_MTIME,
+      });
+
+      // Act
+      const result = await collectBytes(sut);
+
+      // Assert — the `-=` mutant produces 11264 bytes (11264 % 10240 = 1024)
+      expect(result.length).toBe(RECORD_SIZE);
+      expect(result.length % RECORD_SIZE).toBe(0);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 10240 EOF padding
 // ---------------------------------------------------------------------------
@@ -811,6 +853,40 @@ describe('Given a uname string of exactly 32 bytes and a writeAscii i <= writeLe
 });
 
 // ---------------------------------------------------------------------------
+// Mutation boundary: writeAscii Math.min clamp — overflow past all rewritten fields
+// ---------------------------------------------------------------------------
+
+describe('Given a uname far longer than the 32-byte field and a prefix-less path', () => {
+  describe('When tarArchive is called', () => {
+    it('Then writeAscii clamps the uname to 32 bytes and does not overflow into the prefix field', async () => {
+      // Arrange — a 100-byte uname. writeAscii's Math.min(str.length, len) clamp keeps the
+      // written span at 32 bytes. Under the Math.max mutant the loop writes all 100 bytes,
+      // spilling past the gname, devmajor and devminor fields (each rewritten afterwards) into
+      // the prefix field (offset 345), which stays empty for a prefix-less path — an observable
+      // overflow that the shorter (33-byte) uname probe cannot reach, since gname's own write
+      // re-zeroes bytes 297-328.
+      const longUname = 'a'.repeat(100);
+      const entry = makeEntry('f.txt', '100644', new Uint8Array([1]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), {
+        mtime: FIXED_MTIME,
+        uname: longUname,
+        gname: 'root',
+      });
+
+      // Act
+      const result = await collectBytes(sut);
+      const header = result.slice(0, HEADER_SIZE);
+
+      // Assert — uname field holds exactly its first 32 bytes; the prefix field is untouched
+      const OFF_PREFIX = 345;
+      const LEN_PREFIX = 155;
+      expect(readField(header, OFF_UNAME, 32)).toBe('a'.repeat(32));
+      expect(readField(header, OFF_PREFIX, LEN_PREFIX)).toBe('');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mutation boundary: writeBytes Math.max
 // ---------------------------------------------------------------------------
 
@@ -917,6 +993,34 @@ describe('Given any entry header, the checksum field byte 7 must be 0x00', () =>
       expect(header[OFF_CHKSUM + 7]).toBe(0x00);
       // And the checksum verifies correctly (the full checksum test covers this too)
       expect(storedChecksum(header)).toBe(verifyChecksum(header));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Checksum encoding: git's "%07o" — the 7 digits are left-padded with '0'
+// ---------------------------------------------------------------------------
+
+describe("Given any entry header, the checksum field is git's zero-padded 7-octal-digit %07o form", () => {
+  describe('When tarArchive is called', () => {
+    it('Then the 7 checksum bytes are the octal sum left-padded with "0", not right-trailed with NUL', async () => {
+      // Arrange — the header byte-sum never exceeds 512*255 = 130560 < 8**6, so its octal form is
+      // at most 6 digits; git's "%07o" left-pads to a full 7 digits, making the leading byte '0'.
+      // The `padStart(7, '')` mutant omits the pad, leaving the digits left-aligned with trailing NUL.
+      const entry = makeEntry('chk.txt', '100644', new Uint8Array([1, 2, 3]));
+      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
+
+      // Act
+      const result = await collectBytes(sut);
+      const header = result.slice(0, HEADER_SIZE);
+
+      // Assert — reconstruct git's field from the independently-summed checksum
+      const sum = verifyChecksum(header);
+      const expectedField = sum.toString(8).padStart(7, '0');
+      const actualField = String.fromCharCode(...header.slice(OFF_CHKSUM, OFF_CHKSUM + 7));
+      expect(actualField).toBe(expectedField);
+      // The leading byte is the '0' fill (sum < 7 octal digits) — the mutant leaves a non-zero digit here
+      expect(header[OFF_CHKSUM]).toBe('0'.charCodeAt(0));
     });
   });
 });
