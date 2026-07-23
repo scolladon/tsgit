@@ -85,35 +85,25 @@ describe('lru-cache', () => {
   });
 
   describe('eviction', () => {
-    describe('Given cache(100) with entries totaling 100', () => {
-      describe('When adding entry that pushes over 100', () => {
-        it('Then LRU entry evicted', () => {
+    describe('Given a cache(100) with two entries then a third that overflows it', () => {
+      describe('When the third entry is set', () => {
+        it.each([
+          {
+            sizes: [60, 40, 20] as const,
+            outcome: 'the LRU entry (a) is evicted once the exact-100 cap is exceeded',
+          },
+          {
+            sizes: [40, 40, 40] as const,
+            outcome: 'the LRU entry (a) is evicted, b and c remain',
+          },
+        ])('Then $outcome', ({ sizes: [aSize, bSize, cSize] }) => {
           // Arrange
           const sut = createLruCache<string>(100);
-          sut.set('a', 'val-a', 60);
-          sut.set('b', 'val-b', 40);
+          sut.set('a', 'val-a', aSize);
+          sut.set('b', 'val-b', bSize);
 
           // Act
-          sut.set('c', 'val-c', 20);
-
-          // Assert
-          expect(sut.get('a')).toBeUndefined();
-          expect(sut.get('b')).toBe('val-b');
-          expect(sut.get('c')).toBe('val-c');
-        });
-      });
-    });
-
-    describe('Given cache(100) with A(40) then B(40) then C(40)', () => {
-      describe('When checking', () => {
-        it('Then A evicted, B and C remain', () => {
-          // Arrange
-          const sut = createLruCache<string>(100);
-          sut.set('a', 'val-a', 40);
-          sut.set('b', 'val-b', 40);
-
-          // Act
-          sut.set('c', 'val-c', 40);
+          sut.set('c', 'val-c', cSize);
 
           // Assert
           expect(sut.get('a')).toBeUndefined();

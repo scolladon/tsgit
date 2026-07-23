@@ -3,92 +3,29 @@ import { describe, expect, it } from 'vitest';
 import { crc32 } from '../../../../src/domain/storage/crc32.js';
 
 describe('crc32', () => {
-  describe('Given empty data', () => {
+  describe('Given data with a known CRC-32 value', () => {
     describe('When computing CRC-32', () => {
-      it('Then returns 0x00000000', () => {
-        // Arrange
-        const sut = new Uint8Array(0);
-
-        // Act
-        const result = crc32(sut);
+      it.each([
+        { data: new Uint8Array(0), expected: 0x00000000, label: 'empty data' },
+        {
+          data: new TextEncoder().encode('123456789'),
+          expected: 0xcbf43926,
+          label: "ASCII '123456789'",
+        },
+        {
+          data: new TextEncoder().encode('PACK'),
+          expected: 0xa14bb397,
+          label: "ASCII 'PACK'",
+        },
+        { data: new Uint8Array([0x00]), expected: 0xd202ef8d, label: 'a single byte [0x00]' },
+        { data: new Uint8Array([0xff]), expected: 0xff000000, label: 'a single byte [0xFF]' },
+        { data: new Uint8Array(1000), expected: 0x060b1780, label: '1000 zero bytes' },
+      ])('Then returns the known value for $label', ({ data, expected }) => {
+        // Arrange & Act
+        const result = crc32(data);
 
         // Assert
-        expect(result).toBe(0x00000000);
-      });
-    });
-  });
-
-  describe("Given ASCII '123456789'", () => {
-    describe('When computing CRC-32', () => {
-      it('Then returns 0xCBF43926', () => {
-        // Arrange
-        const sut = new TextEncoder().encode('123456789');
-
-        // Act
-        const result = crc32(sut);
-
-        // Assert
-        expect(result).toBe(0xcbf43926);
-      });
-    });
-  });
-
-  describe("Given ASCII 'PACK'", () => {
-    describe('When computing CRC-32', () => {
-      it('Then returns known value', () => {
-        // Arrange
-        const sut = new TextEncoder().encode('PACK');
-
-        // Act
-        const result = crc32(sut);
-
-        // Assert — pre-computed with reference implementation
-        expect(result).toBe(0xa14bb397);
-      });
-    });
-  });
-
-  describe('Given a single byte [0x00]', () => {
-    describe('When computing CRC-32', () => {
-      it('Then returns known value', () => {
-        // Arrange
-        const sut = new Uint8Array([0x00]);
-
-        // Act
-        const result = crc32(sut);
-
-        // Assert
-        expect(result).toBe(0xd202ef8d);
-      });
-    });
-  });
-
-  describe('Given a single byte [0xFF]', () => {
-    describe('When computing CRC-32', () => {
-      it('Then returns known value', () => {
-        // Arrange
-        const sut = new Uint8Array([0xff]);
-
-        // Act
-        const result = crc32(sut);
-
-        // Assert
-        expect(result).toBe(0xff000000);
-      });
-    });
-  });
-
-  describe('Given 1000 zero bytes', () => {
-    describe('When computing CRC-32', () => {
-      it('Then returns known value', () => {
-        // Arrange
-        const sut = new Uint8Array(1000);
-
-        // Act
-        const result = crc32(sut);
-
-        // Assert
-        expect(result).toBe(0x060b1780);
+        expect(result).toBe(expected);
       });
     });
   });
