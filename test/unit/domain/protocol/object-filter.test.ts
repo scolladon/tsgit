@@ -25,322 +25,136 @@ const expectInvalid = (spec: string, reason: string): void => {
 };
 
 describe('parseObjectFilter', () => {
-  describe('Given "blob:none"', () => {
+  describe('Given a valid filter spec', () => {
     describe('When parsed', () => {
-      it('Then returns the blob-none filter', () => {
+      it.each([
+        {
+          spec: 'blob:none',
+          expected: { kind: 'blob-none' },
+          label: 'returns the blob-none filter',
+        },
+        {
+          spec: 'blob:limit=0',
+          expected: { kind: 'blob-limit', bytes: 0 },
+          label: 'returns a zero-byte limit',
+        },
+        {
+          spec: 'blob:limit=100',
+          expected: { kind: 'blob-limit', bytes: 100 },
+          label: 'returns the literal byte count',
+        },
+        {
+          spec: 'blob:limit=1k',
+          expected: { kind: 'blob-limit', bytes: 1024 },
+          label: 'multiplies a "k" suffix by 1024',
+        },
+        {
+          spec: 'blob:limit=2M',
+          expected: { kind: 'blob-limit', bytes: 2 * 1024 * 1024 },
+          label: 'multiplies an uppercase "M" suffix by 1024^2',
+        },
+        {
+          spec: 'blob:limit=3g',
+          expected: { kind: 'blob-limit', bytes: 3 * 1024 * 1024 * 1024 },
+          label: 'multiplies a "g" suffix by 1024^3',
+        },
+        {
+          spec: 'tree:0',
+          expected: { kind: 'tree-depth', depth: 0 },
+          label: 'returns a zero-depth tree filter',
+        },
+        {
+          spec: 'tree:5',
+          expected: { kind: 'tree-depth', depth: 5 },
+          label: 'returns the requested depth',
+        },
+        {
+          spec: 'tree:42',
+          expected: { kind: 'tree-depth', depth: 42 },
+          label: 'returns the full depth for a multi-digit tree depth',
+        },
+      ])('Then $label', ({ spec, expected }) => {
         // Arrange
         const sut = parseObjectFilter;
         // Act
-        const result = sut('blob:none');
+        const result = sut(spec);
         // Assert
-        expect(result).toEqual({ kind: 'blob-none' });
+        expect(result).toEqual(expected);
       });
     });
   });
 
-  describe('Given "blob:limit=0"', () => {
+  describe('Given an invalid filter spec', () => {
     describe('When parsed', () => {
-      it('Then returns a zero-byte limit', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('blob:limit=0');
-        // Assert
-        expect(result).toEqual({ kind: 'blob-limit', bytes: 0 });
-      });
-    });
-  });
-
-  describe('Given "blob:limit=100"', () => {
-    describe('When parsed', () => {
-      it('Then returns the literal byte count', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('blob:limit=100');
-        // Assert
-        expect(result).toEqual({ kind: 'blob-limit', bytes: 100 });
-      });
-    });
-  });
-
-  describe('Given a "k" suffix', () => {
-    describe('When parsed', () => {
-      it('Then multiplies by 1024', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('blob:limit=1k');
-        // Assert
-        expect(result).toEqual({ kind: 'blob-limit', bytes: 1024 });
-      });
-    });
-  });
-
-  describe('Given an uppercase "M" suffix', () => {
-    describe('When parsed', () => {
-      it('Then multiplies by 1024^2', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('blob:limit=2M');
-        // Assert
-        expect(result).toEqual({ kind: 'blob-limit', bytes: 2 * 1024 * 1024 });
-      });
-    });
-  });
-
-  describe('Given a "g" suffix', () => {
-    describe('When parsed', () => {
-      it('Then multiplies by 1024^3', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('blob:limit=3g');
-        // Assert
-        expect(result).toEqual({ kind: 'blob-limit', bytes: 3 * 1024 * 1024 * 1024 });
-      });
-    });
-  });
-
-  describe('Given "tree:0"', () => {
-    describe('When parsed', () => {
-      it('Then returns a zero-depth tree filter', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('tree:0');
-        // Assert
-        expect(result).toEqual({ kind: 'tree-depth', depth: 0 });
-      });
-    });
-  });
-
-  describe('Given "tree:5"', () => {
-    describe('When parsed', () => {
-      it('Then returns the requested depth', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('tree:5');
-        // Assert
-        expect(result).toEqual({ kind: 'tree-depth', depth: 5 });
-      });
-    });
-  });
-
-  describe('Given a multi-digit tree depth', () => {
-    describe('When parsed', () => {
-      it('Then returns the full depth', () => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut('tree:42');
-        // Assert
-        expect(result).toEqual({ kind: 'tree-depth', depth: 42 });
-      });
-    });
-  });
-
-  describe('Given an empty string', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_FILTER_SPEC (empty)', () => {
+      it.each([
+        { spec: '', reason: 'empty', label: 'an empty string' },
+        { spec: 'unknown:x', reason: 'unknown-kind', label: 'an unknown kind' },
+        { spec: 'sparse:oid=HEAD', reason: 'unknown-kind', label: '"sparse:oid"' },
+        { spec: 'combine:blob:none', reason: 'unknown-kind', label: '"combine:"' },
+        { spec: 'blob:all', reason: 'unknown-kind', label: '"blob:all"' },
+        { spec: 'blob:limit=', reason: 'bad-blob-limit', label: '"blob:limit=" with no number' },
+        { spec: 'blob:limit=-1', reason: 'bad-blob-limit', label: 'a negative blob limit' },
+        { spec: 'blob:limit=1.5', reason: 'bad-blob-limit', label: 'a fractional blob limit' },
+        { spec: 'blob:limit=abc', reason: 'bad-blob-limit', label: 'a non-numeric blob limit' },
+        { spec: 'blob:limit=1x', reason: 'bad-blob-limit', label: 'a bad suffix on a blob limit' },
+        {
+          spec: 'blob:limit=99999999999999999999',
+          reason: 'bad-blob-limit',
+          label: 'a blob limit beyond MAX_SAFE_INTEGER',
+        },
+        {
+          spec: 'blob:limit=9999999999999g',
+          reason: 'bad-blob-limit',
+          label: 'a "g"-scaled limit that overflows safe range',
+        },
+        { spec: 'tree:', reason: 'bad-tree-depth', label: '"tree:" with no depth' },
+        { spec: 'tree:-1', reason: 'bad-tree-depth', label: 'a negative tree depth' },
+        { spec: 'tree:1.5', reason: 'bad-tree-depth', label: 'a fractional tree depth' },
+        {
+          spec: 'tree:5.0',
+          reason: 'bad-tree-depth',
+          label: 'a tree depth with trailing content after the integer',
+        },
+        { spec: 'tree:abc', reason: 'bad-tree-depth', label: 'a non-numeric tree depth' },
+        {
+          spec: 'tree:99999999999999999999',
+          reason: 'bad-tree-depth',
+          label: 'a tree depth beyond MAX_SAFE_INTEGER',
+        },
+      ])('Then throws INVALID_FILTER_SPEC ($reason) for $label', ({ spec, reason }) => {
         // Arrange + Assert
-        expectInvalid('', 'empty');
-      });
-    });
-  });
-
-  describe('Given an unknown kind', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-        // Arrange + Assert
-        expectInvalid('unknown:x', 'unknown-kind');
-      });
-    });
-  });
-
-  describe('Given "sparse:oid"', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-        // Arrange + Assert
-        expectInvalid('sparse:oid=HEAD', 'unknown-kind');
-      });
-    });
-  });
-
-  describe('Given "combine:"', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-        // Arrange + Assert
-        expectInvalid('combine:blob:none', 'unknown-kind');
-      });
-    });
-  });
-
-  describe('Given "blob:all"', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_FILTER_SPEC (unknown-kind)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:all', 'unknown-kind');
-      });
-    });
-  });
-
-  describe('Given "blob:limit=" with no number', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-blob-limit)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:limit=', 'bad-blob-limit');
-      });
-    });
-  });
-
-  describe('Given a negative blob limit', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-blob-limit)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:limit=-1', 'bad-blob-limit');
-      });
-    });
-  });
-
-  describe('Given a fractional blob limit', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-blob-limit)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:limit=1.5', 'bad-blob-limit');
-      });
-    });
-  });
-
-  describe('Given a non-numeric blob limit', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-blob-limit)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:limit=abc', 'bad-blob-limit');
-      });
-    });
-  });
-
-  describe('Given a bad suffix on a blob limit', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-blob-limit)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:limit=1x', 'bad-blob-limit');
-      });
-    });
-  });
-
-  describe('Given a blob limit beyond MAX_SAFE_INTEGER', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-blob-limit)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:limit=99999999999999999999', 'bad-blob-limit');
-      });
-    });
-  });
-
-  describe('Given a "g"-scaled limit that overflows safe range', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-blob-limit)', () => {
-        // Arrange + Assert
-        expectInvalid('blob:limit=9999999999999g', 'bad-blob-limit');
-      });
-    });
-  });
-
-  describe('Given "tree:" with no depth', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-tree-depth)', () => {
-        // Arrange + Assert
-        expectInvalid('tree:', 'bad-tree-depth');
-      });
-    });
-  });
-
-  describe('Given a negative tree depth', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-tree-depth)', () => {
-        // Arrange + Assert
-        expectInvalid('tree:-1', 'bad-tree-depth');
-      });
-    });
-  });
-
-  describe('Given a fractional tree depth', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-tree-depth)', () => {
-        // Arrange + Assert
-        expectInvalid('tree:1.5', 'bad-tree-depth');
-      });
-    });
-  });
-
-  describe('Given a tree depth with trailing content after the integer', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-tree-depth)', () => {
-        // Arrange + Assert
-        expectInvalid('tree:5.0', 'bad-tree-depth');
-      });
-    });
-  });
-
-  describe('Given a non-numeric tree depth', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-tree-depth)', () => {
-        // Arrange + Assert
-        expectInvalid('tree:abc', 'bad-tree-depth');
-      });
-    });
-  });
-
-  describe('Given a tree depth beyond MAX_SAFE_INTEGER', () => {
-    describe('When parsed', () => {
-      it('Then throws (bad-tree-depth)', () => {
-        // Arrange + Assert
-        expectInvalid('tree:99999999999999999999', 'bad-tree-depth');
+        expectInvalid(spec, reason);
       });
     });
   });
 });
 
 describe('formatObjectFilter', () => {
-  describe('Given the blob-none filter', () => {
+  describe('Given a filter', () => {
     describe('When formatted', () => {
-      it('Then renders "blob:none"', () => {
+      it.each([
+        {
+          filter: { kind: 'blob-none' as const },
+          expected: 'blob:none',
+          label: 'renders "blob:none"',
+        },
+        {
+          filter: { kind: 'blob-limit' as const, bytes: 4096 },
+          expected: 'blob:limit=4096',
+          label: 'renders the byte count',
+        },
+        {
+          filter: { kind: 'tree-depth' as const, depth: 3 },
+          expected: 'tree:3',
+          label: 'renders the depth',
+        },
+      ])('Then $label', ({ filter, expected }) => {
         // Arrange
         const sut = formatObjectFilter;
         // Act
-        const result = sut({ kind: 'blob-none' });
+        const result = sut(filter);
         // Assert
-        expect(result).toBe('blob:none');
-      });
-    });
-  });
-
-  describe('Given a blob-limit filter', () => {
-    describe('When formatted', () => {
-      it('Then renders the byte count', () => {
-        // Arrange
-        const sut = formatObjectFilter;
-        // Act
-        const result = sut({ kind: 'blob-limit', bytes: 4096 });
-        // Assert
-        expect(result).toBe('blob:limit=4096');
-      });
-    });
-  });
-
-  describe('Given a tree-depth filter', () => {
-    describe('When formatted', () => {
-      it('Then renders the depth', () => {
-        // Arrange
-        const sut = formatObjectFilter;
-        // Act
-        const result = sut({ kind: 'tree-depth', depth: 3 });
-        // Assert
-        expect(result).toBe('tree:3');
+        expect(result).toBe(expected);
       });
     });
   });

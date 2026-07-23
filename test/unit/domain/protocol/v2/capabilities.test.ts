@@ -161,13 +161,34 @@ describe('parseV2Capabilities', () => {
     });
   });
 
-  describe('Given a first line that is not "version 2"', () => {
+  describe('Given an advertisement stream that parseV2Capabilities rejects', () => {
     describe('When parsed', () => {
-      it('Then it throws V2_COMMAND_UNSUPPORTED carrying the offending line', async () => {
-        // Arrange
-        const advertisement = ['0000000000000000000000000000000000000000 HEAD\n'];
-
-        // Act
+      it.each([
+        {
+          advertisement: ['0000000000000000000000000000000000000000 HEAD\n'],
+          data: {
+            code: 'V2_COMMAND_UNSUPPORTED',
+            command: '0000000000000000000000000000000000000000 HEAD',
+          },
+          label: 'it throws V2_COMMAND_UNSUPPORTED carrying the offending line',
+        },
+        {
+          advertisement: [] as ReadonlyArray<string>,
+          data: { code: 'V2_COMMAND_UNSUPPORTED', command: '' },
+          label: 'it throws V2_COMMAND_UNSUPPORTED for an empty stream',
+        },
+        {
+          advertisement: ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha256\n'],
+          data: { code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' },
+          label: 'it throws UNSUPPORTED_OBJECT_FORMAT carrying the offending format',
+        },
+        {
+          advertisement: ['version 2\n', 'object-format\n'],
+          data: { code: 'UNSUPPORTED_OBJECT_FORMAT', format: '' },
+          label: 'it throws UNSUPPORTED_OBJECT_FORMAT carrying an empty format',
+        },
+      ])('Then $label', async ({ advertisement, data }) => {
+        // Arrange & Act
         let sut: unknown;
         try {
           await parseV2Capabilities(streamOf(advertisement));
@@ -177,57 +198,7 @@ describe('parseV2Capabilities', () => {
 
         // Assert
         expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({
-          code: 'V2_COMMAND_UNSUPPORTED',
-          command: '0000000000000000000000000000000000000000 HEAD',
-        });
-      });
-    });
-  });
-
-  describe('Given an empty advertisement stream', () => {
-    describe('When parsed', () => {
-      it('Then it throws V2_COMMAND_UNSUPPORTED', async () => {
-        // Arrange
-        async function* empty(): AsyncIterable<PktLine> {
-          yield { kind: 'flush' };
-        }
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseV2Capabilities(empty());
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'V2_COMMAND_UNSUPPORTED', command: '' });
-      });
-    });
-  });
-
-  describe('Given a version-2 advertisement whose object-format is sha256', () => {
-    describe('When parsed', () => {
-      it('Then it throws UNSUPPORTED_OBJECT_FORMAT carrying the offending format', async () => {
-        // Arrange
-        const advertisement = ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha256\n'];
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseV2Capabilities(streamOf(advertisement));
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({
-          code: 'UNSUPPORTED_OBJECT_FORMAT',
-          format: 'sha256',
-        });
+        expect((sut as TsgitError).data).toEqual(data);
       });
     });
   });
@@ -263,30 +234,6 @@ describe('parseV2Capabilities', () => {
 
         // Assert
         expect(caps.version).toBe(2);
-      });
-    });
-  });
-
-  describe('Given a bare "object-format" capability with no value', () => {
-    describe('When parsed', () => {
-      it('Then it throws UNSUPPORTED_OBJECT_FORMAT carrying an empty format', async () => {
-        // Arrange
-        const advertisement = ['version 2\n', 'object-format\n'];
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseV2Capabilities(streamOf(advertisement));
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({
-          code: 'UNSUPPORTED_OBJECT_FORMAT',
-          format: '',
-        });
       });
     });
   });

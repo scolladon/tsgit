@@ -191,13 +191,28 @@ describe('parseSideBand — channel 3 (fatal)', () => {
   });
 });
 
-describe('parseSideBand — empty data packet', () => {
-  describe('Given a 0-byte data packet (no channel byte)', () => {
+describe('parseSideBand — invalid channel', () => {
+  describe('Given a packet with an invalid channel byte', () => {
     describe('When iterated', () => {
-      it('Then throws INVALID_SIDEBAND_CHANNEL with channel=-1', async () => {
+      it.each([
+        {
+          channel: -1,
+          buildSource: () => asyncOf([{ kind: 'data', payload: new Uint8Array(0) } as PktLine]),
+          label: 'a 0-byte data packet (no channel byte) throws with channel=-1',
+        },
+        {
+          channel: 4,
+          buildSource: () => asyncOf([dataPkt(4, enc.encode('???'))]),
+          label: 'a channel-4 packet throws with channel=4',
+        },
+        {
+          channel: 0,
+          buildSource: () => asyncOf([dataPkt(0, enc.encode('???'))]),
+          label: 'a channel-0 packet throws with channel=0',
+        },
+      ])('Then $label', async ({ channel, buildSource }) => {
         // Arrange
-        const empty: PktLine = { kind: 'data', payload: new Uint8Array(0) };
-        const source = asyncOf([empty]);
+        const source = buildSource();
 
         // Act & Assert
         try {
@@ -207,49 +222,7 @@ describe('parseSideBand — empty data packet', () => {
           // Assert
           expect(err).toBeInstanceOf(TsgitError);
           const te = err as TsgitError;
-          expect(te.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: -1 });
-        }
-      });
-    });
-  });
-});
-
-describe('parseSideBand — invalid channels', () => {
-  describe('Given a channel-4 packet', () => {
-    describe('When iterated', () => {
-      it('Then throws INVALID_SIDEBAND_CHANNEL with channel=4', async () => {
-        // Arrange
-        const source = asyncOf([dataPkt(4, enc.encode('???'))]);
-
-        // Act & Assert
-        try {
-          await collect(parseSideBand(source, {}));
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 4 });
-        }
-      });
-    });
-  });
-
-  describe('Given a channel-0 packet', () => {
-    describe('When iterated', () => {
-      it('Then throws INVALID_SIDEBAND_CHANNEL with channel=0', async () => {
-        // Arrange
-        const source = asyncOf([dataPkt(0, enc.encode('???'))]);
-
-        // Act & Assert
-        try {
-          await collect(parseSideBand(source, {}));
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 0 });
+          expect(te.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel });
         }
       });
     });

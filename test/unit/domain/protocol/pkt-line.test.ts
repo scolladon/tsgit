@@ -136,51 +136,35 @@ describe('encodePktLine', () => {
 });
 
 describe('encodePktStream', () => {
-  describe('Given an empty array', () => {
+  describe('Given a list of payloads', () => {
     describe('When encodePktStream', () => {
-      it('Then result equals just the trailing flush "0000"', () => {
-        // Arrange
-        const payloads: ReadonlyArray<Uint8Array> = [];
-
-        // Act
+      it.each([
+        {
+          payloads: [] as ReadonlyArray<Uint8Array>,
+          expected: bytesOf('0000'),
+          label: 'result equals just the trailing flush "0000" for an empty array',
+        },
+        {
+          payloads: [bytesOf('foo')],
+          expected: bytesOf('0007foo0000'),
+          label: 'result equals "0007foo0000" for a single "foo" payload',
+        },
+        {
+          payloads: [bytesOf('alpha'), bytesOf('beta'), bytesOf('gamma')],
+          expected: concat(
+            encodePktLine(bytesOf('alpha')),
+            encodePktLine(bytesOf('beta')),
+            encodePktLine(bytesOf('gamma')),
+            bytesOf('0000'),
+          ),
+          label: 'result equals concat(encodePktLine each, FLUSH) for three payloads',
+        },
+      ])('Then $label', ({ payloads, expected }) => {
+        // Arrange & Act
         const sut = encodePktStream(payloads);
 
         // Assert
-        expect(sut).toEqual(bytesOf('0000'));
-      });
-    });
-  });
-
-  describe('Given a single "foo" payload', () => {
-    describe('When encodePktStream', () => {
-      it('Then result equals "0007foo0000"', () => {
-        // Arrange
-        const payloads = [bytesOf('foo')];
-
-        // Act
-        const sut = encodePktStream(payloads);
-
-        // Assert
-        expect(sut).toEqual(bytesOf('0007foo0000'));
-      });
-    });
-  });
-
-  describe('Given three payloads', () => {
-    describe('When encodePktStream', () => {
-      it('Then result equals concat(encodePktLine each, FLUSH)', () => {
-        // Arrange
-        const a = bytesOf('alpha');
-        const b = bytesOf('beta');
-        const c = bytesOf('gamma');
-
-        // Act
-        const sut = encodePktStream([a, b, c]);
-
-        // Assert
-        expect(sut).toEqual(
-          concat(encodePktLine(a), encodePktLine(b), encodePktLine(c), bytesOf('0000')),
-        );
+        expect(sut).toEqual(expected);
       });
     });
   });
@@ -239,49 +223,34 @@ describe('encodePktStream', () => {
 });
 
 describe('encodePktLines', () => {
-  describe('Given an empty array', () => {
+  describe('Given a list of payloads', () => {
     describe('When encodePktLines', () => {
-      it('Then result is empty (no trailing flush)', () => {
-        // Arrange
-        const payloads: ReadonlyArray<Uint8Array> = [];
-
-        // Act
+      it.each([
+        {
+          payloads: [] as ReadonlyArray<Uint8Array>,
+          expected: new Uint8Array(0),
+          label: 'result is empty (no trailing flush) for an empty array',
+        },
+        {
+          payloads: [bytesOf('foo')],
+          expected: bytesOf('0007foo'),
+          label: 'result equals "0007foo" with no trailing flush for a single "foo" payload',
+        },
+        {
+          payloads: [bytesOf('alpha'), bytesOf('beta'), bytesOf('gamma')],
+          expected: concat(
+            encodePktLine(bytesOf('alpha')),
+            encodePktLine(bytesOf('beta')),
+            encodePktLine(bytesOf('gamma')),
+          ),
+          label: 'result equals concat(encodePktLine each) with no flush for three payloads',
+        },
+      ])('Then $label', ({ payloads, expected }) => {
+        // Arrange & Act
         const sut = encodePktLines(payloads);
 
         // Assert
-        expect(sut).toEqual(new Uint8Array(0));
-      });
-    });
-  });
-
-  describe('Given a single "foo" payload', () => {
-    describe('When encodePktLines', () => {
-      it('Then result equals "0007foo" with no trailing flush', () => {
-        // Arrange
-        const payloads = [bytesOf('foo')];
-
-        // Act
-        const sut = encodePktLines(payloads);
-
-        // Assert
-        expect(sut).toEqual(bytesOf('0007foo'));
-      });
-    });
-  });
-
-  describe('Given three payloads', () => {
-    describe('When encodePktLines', () => {
-      it('Then result equals concat(encodePktLine each) with no flush', () => {
-        // Arrange
-        const a = bytesOf('alpha');
-        const b = bytesOf('beta');
-        const c = bytesOf('gamma');
-
-        // Act
-        const sut = encodePktLines([a, b, c]);
-
-        // Assert
-        expect(sut).toEqual(concat(encodePktLine(a), encodePktLine(b), encodePktLine(c)));
+        expect(sut).toEqual(expected);
       });
     });
   });
