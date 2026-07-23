@@ -229,11 +229,17 @@ export const findFirstValuelessEntry = async (
  * lower-cased), or `${section}.${key}` for the subsectionless form. Consumes the
  * cached token stream — one walk, no extra read. Used by the content-merge
  * chokepoint to reproduce git's whole-`[merge *]`-table valueless death.
+ *
+ * `requireSubsection` skips subsectionless entries (`[merge] key` with no
+ * `[merge "<name>"]` header): git's merge-driver keys are only meaningful under a
+ * subsection, so a subsectionless valueless `merge.<key>` is inert to git — not a
+ * death — and must not be reported.
  */
 export const findFirstValuelessInSection = async (
   ctx: Context,
   section: string,
   keys: ReadonlyArray<string>,
+  { requireSubsection = false }: { readonly requireSubsection?: boolean } = {},
 ): Promise<ValuelessEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
@@ -247,6 +253,7 @@ export const findFirstValuelessInSection = async (
       continue;
     }
     if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+    if (requireSubsection && subsection === undefined) continue;
     const loweredKey = token.key.toLowerCase();
     if (!keySet.has(loweredKey)) continue;
     const qualifiedKey =

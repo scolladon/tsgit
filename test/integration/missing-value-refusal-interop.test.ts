@@ -943,6 +943,23 @@ const VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE =
   '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\tdriver = cat %A\n\tname\n';
 const VALUELESS_MERGE_NAME_LINE = 5;
 
+/**
+ * Valueless `recursive` at line 4 — git reads `merge.<name>.recursive`
+ * independently of `driver`, so it dies on `merge.mydriver.recursive` when the
+ * driver is engaged (verified: exit 128, same missing-value shape as driver).
+ */
+const VALUELESS_MERGE_RECURSIVE_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\trecursive\n';
+const VALUELESS_MERGE_RECURSIVE_LINE = 4;
+
+/**
+ * Subsectionless valueless `[merge] recursive` (no `[merge "<name>"]` header) —
+ * inert to git: merge-driver keys are only meaningful under a subsection, so git
+ * ignores it and the merge proceeds (built-in text conflict, mydriver unconfigured).
+ */
+const SUBSECTIONLESS_VALUELESS_MERGE_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge]\n\trecursive\n';
+
 describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver', () => {
   let peer: string;
   let ours: string;
@@ -1132,6 +1149,74 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
 
         // Act + Assert — no throw
         await expect(configList(ctx, {})).resolves.toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a config with a valueless merge.mydriver.recursive at line 4', () => {
+    describe('When git merge engages the driver', () => {
+      it('Then git refuses with exit 128 and the missing-value message for recursive', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_RECURSIVE_FIXTURE);
+
+        // Act
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+
+        // Assert
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("missing value for 'merge.mydriver.recursive'");
+        expect(g.stderr).toContain(`at line ${VALUELESS_MERGE_RECURSIVE_LINE}`);
+      });
+    });
+
+    describe('When tsgit merge engages the driver', () => {
+      it('Then throws CONFIG_MISSING_VALUE with key merge.mydriver.recursive and line 4', async () => {
+        // Arrange
+        await writeBothConfig(VALUELESS_MERGE_RECURSIVE_FIXTURE);
+        const repo = await openRepository({ cwd: ours });
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          line: number;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_MISSING_VALUE');
+        expect(data.key).toBe('merge.mydriver.recursive');
+        expect(data.line).toBe(VALUELESS_MERGE_RECURSIVE_LINE);
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a subsectionless valueless [merge] recursive (no subsection)', () => {
+    describe('When git merge and tsgit merge engage mydriver', () => {
+      it('Then neither refuses — git ignores the subsectionless key and both reach the conflict', async () => {
+        // Arrange
+        await writeBothConfig(SUBSECTIONLESS_VALUELESS_MERGE_FIXTURE);
+
+        // Act — a missing-value throw here (regression) would fail the test
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        const result = await repo.merge.run({ rev: 'theirs', message: 'm' });
+
+        // Assert — no missing-value death on git; tsgit reaches the built-in text conflict
+        expect(g.stderr).not.toContain('missing value');
+        expect(result.kind).toBe('conflict');
       });
     });
   });

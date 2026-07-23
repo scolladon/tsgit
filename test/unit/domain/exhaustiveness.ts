@@ -139,6 +139,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_VALUE_INVALID':
     case 'CONFIG_PARSE_ERROR':
     case 'CONFIG_MISSING_VALUE':
+    case 'MERGE_DRIVER_MISSING_COMMAND':
     case 'CONFIG_BAD_NUMERIC_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':
     case 'CONFIG_INVALID_FILE':

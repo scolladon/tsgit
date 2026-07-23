@@ -146,6 +146,7 @@ export type CommandError =
       readonly source: string;
       readonly line: number;
     }
+  | { readonly code: 'MERGE_DRIVER_MISSING_COMMAND'; readonly name: string }
   | {
       readonly code: 'CONFIG_BAD_NUMERIC_VALUE';
       readonly key: string;
@@ -529,6 +530,15 @@ export const configParseError = (
  */
 export const configMissingValue = (key: string, source: string, line: number): TsgitError =>
   new TsgitError({ code: 'CONFIG_MISSING_VALUE', key, source, line });
+
+/**
+ * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but
+ * configures no `driver` command, and `name` was selected for a content merge.
+ * Mirrors git's lazy dispatch-time refusal — thrown only when the driver is
+ * actually used, never for an unused driverless section.
+ */
+export const mergeDriverMissingCommand = (name: string): TsgitError =>
+  new TsgitError({ code: 'MERGE_DRIVER_MISSING_COMMAND', name });
 
 /**
  * An int-typed config key is present but its value cannot be parsed as a valid

@@ -10,31 +10,42 @@ import type { AttributeProvider } from './internal/read-gitattributes.js';
 
 /**
  * How a path's content merge should be performed:
- * - `text`     — the built-in 3-way line merge (git's default).
- * - `union`    — the built-in line merge resolving overlaps by concatenating both sides.
- * - `binary`   — take `ours` and declare a conflict (git's `-merge`).
- * - `external` — run the configured `[merge "<driver>"].driver` command.
+ * - `text`            — the built-in 3-way line merge (git's default).
+ * - `union`           — the built-in line merge resolving overlaps by concatenating both sides.
+ * - `binary`          — take `ours` and declare a conflict (git's `-merge`).
+ * - `external`        — run the configured `[merge "<driver>"].driver` command.
+ * - `missing-command` — a driver is registered (`name`/`recursive` set) but has no `driver`
+ *   command; git refuses this lazily, only when the driver is actually selected for a path.
  */
 export type MergeDriverChoice =
   | { readonly kind: 'text' }
   | { readonly kind: 'union' }
   | { readonly kind: 'binary' }
-  | { readonly kind: 'external'; readonly command: string; readonly name?: string };
+  | { readonly kind: 'external'; readonly command: string; readonly name?: string }
+  | { readonly kind: 'missing-command'; readonly name: string };
 
 const TEXT: MergeDriverChoice = { kind: 'text' };
 const UNION: MergeDriverChoice = { kind: 'union' };
 const BINARY: MergeDriverChoice = { kind: 'binary' };
 
-/** Map a `merge=<name>` value to a driver choice, consulting `[merge "<name>"]`. */
+/** Map a `merge=<name>` value to a driver choice, consulting `[merge "<name>"]` first. */
 const namedChoice = async (ctx: Context, name: string): Promise<MergeDriverChoice> => {
-  if (name === 'text') return TEXT;
+  const driver = (await readConfig(ctx)).merge?.get(name);
+  if (driver?.driver !== undefined) {
+    return driver.name === undefined
+      ? { kind: 'external', command: driver.driver }
+      : { kind: 'external', command: driver.driver, name: driver.name };
+  }
+  // Registered but driverless: a non-empty record (name/recursive set) with no driver command
+  // → git's lazy "lacks command line" refusal, thrown per-path at the content-merge
+  // chokepoint so an unused section stays inert. Must precede the name fallback.
+  if (driver !== undefined && (driver.name !== undefined || driver.recursive !== undefined)) {
+    return { kind: 'missing-command', name };
+  }
+  // No registered driver record (no section / empty {} / unknown-key-only) → built-in by name.
   if (name === 'binary') return BINARY;
   if (name === 'union') return UNION;
-  const driver = (await readConfig(ctx)).merge?.get(name);
-  if (driver?.driver === undefined) return TEXT; // unconfigured / driverless → built-in text
-  return driver.name === undefined
-    ? { kind: 'external', command: driver.driver }
-    : { kind: 'external', command: driver.driver, name: driver.name };
+  return TEXT; // 'text' or any unknown name defaults to built-in text
 };
 
 /** Map a resolved `merge` attribute value to a driver choice. */

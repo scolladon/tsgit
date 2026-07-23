@@ -592,16 +592,23 @@ in `.gitattributes`, exactly as canonical git does. Operator-visible behaviour:
   precedence is `$GIT_DIR/info/attributes` → the path's directory `.gitattributes`
   up to the worktree root → global `core.attributesFile`, last-match-wins within a
   file. The built-in `binary` macro (and user `[attr]` macros) are honoured.
-- **Built-ins.** `merge` / `merge=text` / unspecified → the built-in 3-way line
-  merge. `merge=union` → the built-in merge resolving each overlapping region by
-  concatenating *both* sides with no markers (git's union favor). `-merge` /
-  `merge=binary` → take *ours* and mark the path conflicted (stage 1/2/3).
+- **Built-ins.** `merge` / unspecified → the built-in 3-way line merge,
+  consulting no config. `merge=text`, `merge=union`, and `merge=binary` each
+  consult a same-named `[merge "<name>"] driver` first (see **External
+  drivers**) and fall back to the built-in — 3-way line merge / union-favor
+  merge / take-ours-and-conflict, respectively — only when none is configured.
+  `-merge`, including via the `binary` macro, takes *ours* and marks the path
+  conflicted (stage 1/2/3); this boolean/macro form consults **no** config,
+  even when a `[merge "binary"] driver` is configured.
 - **External drivers.** `merge=<name>` with `[merge "<name>"] driver = <command>`
-  in the config runs that command via the shell, with `%O`/`%A`/`%B` (ancestor /
-  ours / theirs temp files), `%P` (pathname), `%L` (the resolved
-  `conflict-marker-size`, default 7), and `%S`/`%X`/`%Y` (the base / ours / theirs
-  conflict labels) substituted. The driver overwrites `%A`; exit 0 ⇒ clean,
-  non-zero ⇒ conflict.
+  in the config runs that command via the shell — for `name` in
+  `text`/`binary`/`union` this **overrides** the same-named built-in (git's
+  precedence: a configured driver before the built-in of the same name); for
+  any other name it is the only way the path resolves to an external command —
+  with `%O`/`%A`/`%B` (ancestor / ours / theirs temp files), `%P` (pathname),
+  `%L` (the resolved `conflict-marker-size`, default 7), and `%S`/`%X`/`%Y`
+  (the base / ours / theirs conflict labels) substituted. The driver overwrites
+  `%A`; exit 0 ⇒ clean, non-zero ⇒ conflict.
 - **Marker size & labels.** A path's `conflict-marker-size` gitattributes value sets the
   built-in marker run length (and `%L`); the `<<<<<<<` / `>>>>>>>` labels are git's
   per-operation strings (`HEAD` / the merged rev for `merge`, `<abbrev> (<subject>)`
@@ -615,8 +622,23 @@ in `.gitattributes`, exactly as canonical git does. Operator-visible behaviour:
   driver then falls back to the built-in merge. Use it on a repository whose
   config you do not trust: the driver is an arbitrary shell command that inherits
   the process environment (`process.env`, including any secrets).
-- **`recursive`** (`[merge "<d>"] recursive = …`) is parsed but inert — tsgit
-  merges against a single base, so there is no recursive inner merge to redirect.
+- **Driverless section refuses lazily.** A `[merge "<name>"]` section that sets
+  a `name` and/or `recursive` key but configures no `driver` command refuses
+  only when a path's `merge=<name>` actually selects it, with
+  `MERGE_DRIVER_MISSING_COMMAND` (`custom merge driver <name> lacks command
+  line.`). An unused driverless section stays inert. A section that is absent,
+  empty (header only), or carries only unrecognised keys keeps the built-in
+  fallback selected by name.
+- **`recursive`** (`[merge "<d>"] recursive = …`) alongside a configured
+  `driver` is parsed but inert — tsgit merges against a single base, so there
+  is no recursive inner merge to redirect. On a driverless section (no
+  `driver` key at all), a set `recursive` instead registers the section and
+  triggers the driverless refusal above once selected. A **valueless**
+  `recursive` (no `=`) — like a valueless `driver` or `name` — refuses eagerly
+  the moment any real content merge runs, ahead of path selection, with
+  `CONFIG_MISSING_VALUE`; this eager scan only fires for a **subsectioned** key
+  (`[merge "<name>"] recursive`), not a subsectionless `[merge] recursive`,
+  which is inert.
 
 ## Operating sparse checkout (Phase 17.3)
 

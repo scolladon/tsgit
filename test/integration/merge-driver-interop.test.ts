@@ -5,7 +5,10 @@
  * tools, and asserts the resulting commit / index (`git ls-files --stage`) /
  * working tree agree byte-for-byte for: an external driver that resolves cleanly
  * (exit 0), an external driver that conflicts (exit ≠ 0), `-merge` binary
- * take-ours, and a `merge=text` no-op.
+ * take-ours, a `merge=text` no-op, a user driver configured under a built-in name
+ * (`text`/`binary`/`union`) overriding the built-in, a selected but driverless
+ * section refusing lazily ("lacks command line"), and an absent registration
+ * falling back to the built-in text conflict.
  *
  * @proves
  *   surface:        repo.merge.run
@@ -220,6 +223,96 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
     });
   });
 
+  describe('Given a configured driver on the built-in "text" name', () => {
+    describe('When merging on both tools', () => {
+      it('Then the configured driver overrides the built-in text merge, matching git', async () => {
+        // Arrange — driver takes theirs (`cp %B %A`); the built-in text merge
+        // would conflict on this whole-file divergence.
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'config', 'merge.text.driver', 'cp %B %A']);
+        }
+        await setupDiverged('data.txt merge=text\n');
+
+        // Act
+        runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        const result = await repo.merge.run({
+          rev: 'theirs',
+          message: 'm',
+          author: AUTHOR,
+          committer: AUTHOR,
+        });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(headOf(pair.ours)).toBe(headOf(pair.peer));
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(await read(pair.ours, 'data.txt')).toBe('theirs\n');
+      });
+    });
+  });
+
+  describe('Given a configured driver on the built-in "binary" name', () => {
+    describe('When merging on both tools', () => {
+      it('Then the configured driver overrides the built-in binary take-ours, matching git', async () => {
+        // Arrange — driver takes theirs (`cp %B %A`); the built-in binary
+        // driver would take ours and record a conflict instead.
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'config', 'merge.binary.driver', 'cp %B %A']);
+        }
+        await setupDiverged('data.txt merge=binary\n');
+
+        // Act
+        runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        const result = await repo.merge.run({
+          rev: 'theirs',
+          message: 'm',
+          author: AUTHOR,
+          committer: AUTHOR,
+        });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(headOf(pair.ours)).toBe(headOf(pair.peer));
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(await read(pair.ours, 'data.txt')).toBe('theirs\n');
+      });
+    });
+  });
+
+  describe('Given a configured driver on the built-in "union" name', () => {
+    describe('When merging on both tools', () => {
+      it('Then the configured driver overrides the built-in union merge, matching git', async () => {
+        // Arrange — driver takes theirs (`cp %B %A`); the built-in union
+        // driver would concatenate both sides instead.
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'config', 'merge.union.driver', 'cp %B %A']);
+        }
+        await setupDiverged('data.txt merge=union\n');
+
+        // Act
+        runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        const result = await repo.merge.run({
+          rev: 'theirs',
+          message: 'm',
+          author: AUTHOR,
+          committer: AUTHOR,
+        });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(headOf(pair.ours)).toBe(headOf(pair.peer));
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(await read(pair.ours, 'data.txt')).toBe('theirs\n');
+      });
+    });
+  });
+
   describe('Given a `merge=text` attribute on non-overlapping edits', () => {
     describe('When the clean built-in merge runs on both tools', () => {
       it('Then it merges like a plain text merge and matches git', async () => {
@@ -250,6 +343,60 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
         expect(headOf(pair.ours)).toBe(headOf(pair.peer));
         expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
         expect(await read(pair.ours, 'file.txt')).toBe('OURS\nline2\nTHEIRS\n');
+      });
+    });
+  });
+
+  describe('Given a selected merge driver that is registered but has no `driver` command', () => {
+    describe('When both sides change the file differently', () => {
+      it('Then both refuse lazily with "lacks command line", leaving ours and a clean index', async () => {
+        // Arrange — `merge.x.name` is set (registers the section) but no `merge.x.driver`.
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'config', 'merge.x.name', 'x']);
+        }
+        await setupDiverged('data.txt merge=x\n');
+
+        // Act
+        const peerMerge = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        let tsgitError: { data?: { code?: string; name?: string } } | undefined;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR, committer: AUTHOR });
+        } catch (err) {
+          tsgitError = err as { data?: { code?: string; name?: string } };
+        }
+
+        // Assert
+        expect(peerMerge.ok).toBe(false);
+        expect(peerMerge.stderr).toContain('custom merge driver x lacks command line.');
+        expect(tsgitError?.data?.code).toBe('MERGE_DRIVER_MISSING_COMMAND');
+        expect(tsgitError?.data?.name).toBe('x');
+        expect(await read(pair.ours, 'data.txt')).toBe('ours\n');
+        expect(await read(pair.peer, 'data.txt')).toBe('ours\n');
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(stageOf(pair.ours)).not.toMatch(/ [1-3]\t/);
+      });
+    });
+  });
+
+  describe('Given an empty/absent driver registration for a `merge=<name>` attribute', () => {
+    describe('When both sides change the file differently', () => {
+      it('Then both fall back to the built-in text conflict identically', async () => {
+        // Arrange — `merge=x` with no `merge.x.*` key configured on either tool.
+        await setupDiverged('data.txt merge=x\n');
+
+        // Act
+        const peerMerge = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        const result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+
+        // Assert
+        expect(peerMerge.ok).toBe(false);
+        expect(result.kind).toBe('conflict');
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(await read(pair.ours, 'data.txt')).toBe(await read(pair.peer, 'data.txt'));
       });
     });
   });

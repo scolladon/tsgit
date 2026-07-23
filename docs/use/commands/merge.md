@@ -118,25 +118,43 @@ The same behaviour applies wherever the shared 3-way merge runs: `stash apply`,
 The per-path content merge honours `.gitattributes` `merge=<driver>` selection,
 shared with `stash apply` / `cherry-pick` / `revert` / `rebase`:
 
-- `merge` / `merge=text` (or unspecified) → the built-in 3-way line merge.
-- `merge=union` → the built-in line merge, resolving each overlapping region by
-  keeping **both** sides concatenated (no conflict markers) — git's
-  `XDL_MERGE_FAVOR_UNION`.
-- `-merge` / `merge=binary` (incl. via the `binary` macro) → take *ours* and
-  declare a conflict.
-- `merge=<name>` with `[merge "<name>"] driver = <cmd>` in the config → run the
-  command (`%O %A %B %L %P %S %X %Y` substituted; exit 0 ⇒ clean, non-zero ⇒
-  conflict). `%L` is the resolved `conflict-marker-size` (default 7); `%S` / `%X`
-  / `%Y` are the base / ours / theirs conflict labels.
+- `merge` (or unspecified) → the built-in 3-way line merge. This boolean/
+  unspecified form consults no config.
+- `merge=text` → a configured `[merge "text"] driver` runs instead; only when
+  none is configured does it fall back to the built-in 3-way line merge.
+- `merge=union` → a configured `[merge "union"] driver` runs instead; only when
+  none is configured does it fall back to the built-in line merge, resolving
+  each overlapping region by keeping **both** sides concatenated (no conflict
+  markers) — git's `XDL_MERGE_FAVOR_UNION`.
+- `merge=binary` → a configured `[merge "binary"] driver` runs instead; only
+  when none is configured does it fall back to taking *ours* and declaring a
+  conflict.
+- `-merge` (incl. via the `binary` macro) → take *ours* and declare a conflict.
+  This boolean/macro form consults **no** config, even when a
+  `[merge "binary"] driver` is configured.
+- `merge=<name>` (any other name) with `[merge "<name>"] driver = <cmd>` in the
+  config → run the command (`%O %A %B %L %P %S %X %Y` substituted; exit 0 ⇒
+  clean, non-zero ⇒ conflict). `%L` is the resolved `conflict-marker-size`
+  (default 7); `%S` / `%X` / `%Y` are the base / ours / theirs conflict labels.
 
-Any real 3-way content merge loads the whole `[merge "*"]` table: if any
-`merge.<name>.driver` or `merge.<name>.name` is present but valueless (git NULL),
-the content merge refuses `CONFIG_MISSING_VALUE` (`{ key, source, line }` — the
-first valueless key by config-file line) rather than falling back to the built-in
-driver. This fires regardless of whether any path's `.gitattributes` `merge=<name>`
-attribute selects that driver — a configured-but-unused valueless driver refuses
-too. It stays lazy: a fast-forward (no content merge) and read commands never load
-the table. An absent `[merge "<name>"]` section keeps the built-in fallback.
+Any real 3-way content merge eagerly loads the whole `[merge "*"]` table before
+resolving any path: if a **subsectioned** `merge.<name>.driver`,
+`merge.<name>.name`, or `merge.<name>.recursive` is present but valueless (git
+NULL), the content merge refuses `CONFIG_MISSING_VALUE` (`{ key, source, line }`
+— the first valueless key by config-file line). This fires regardless of
+whether any path's `.gitattributes` `merge=<name>` attribute selects that
+driver — a configured-but-unused valueless driver refuses too. A subsectionless
+`[merge] <key>` (no `"<name>"` header) is inert and never triggers it, matching
+git. The scan itself only runs for a real content merge: a fast-forward and
+read commands never load the table.
+
+A `[merge "<name>"]` section that registers a `name` and/or `recursive` key
+but no `driver` command instead refuses **lazily** — only when a path's
+`merge=<name>` actually selects it — with `MERGE_DRIVER_MISSING_COMMAND`
+(`{ name }`, rendered as `custom merge driver <name> lacks command line.`). An
+unused driverless section stays inert. A section that is absent, empty (header
+only), or carries only unrecognised keys keeps the built-in fallback selected
+by name (`binary`/`union`/`text`, any other name → text).
 
 In Node the driver runs by default; pass `openRepository({ command: false })` to
 disable external drivers (they fall back to the built-in merge). The browser /
