@@ -28,87 +28,68 @@ describe('validateIndexPath', () => {
     });
   });
 
-  describe('Given an absolute path with a leading slash', () => {
+  describe('Given a path that trips a validation guard', () => {
     describe('When validated', () => {
-      it('Then throws INVALID_INDEX_ENTRY with the absolute-path reason', () => {
-        // Arrange
-        const path = '/etc/passwd';
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, 12));
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
+      it.each([
+        {
+          label: 'throws INVALID_INDEX_ENTRY with the absolute-path reason',
+          path: '/etc/passwd',
           offset: 12,
           reason: 'absolute path rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given a path containing a backslash', () => {
-    describe('When validated', () => {
-      it('Then throws INVALID_INDEX_ENTRY with the backslash reason', () => {
-        // Arrange
-        const path = 'src\\evil';
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, 4));
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
+        },
+        {
+          label: 'throws INVALID_INDEX_ENTRY with the backslash reason',
+          path: 'src\\evil',
           offset: 4,
           reason: 'backslash rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given a path containing a C0 control character (0x1F)', () => {
-    describe('When validated', () => {
-      it('Then throws INVALID_INDEX_ENTRY with the control reason', () => {
-        // Arrange — 0x1F is the top of the C0 range (code < 0x20).
-        const path = `a${String.fromCharCode(0x1f)}b`;
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, 0));
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
+        },
+        {
+          // 0x1F is the top of the C0 range (code < 0x20).
+          label: 'throws INVALID_INDEX_ENTRY with the control reason',
+          path: `a${String.fromCharCode(0x1f)}b`,
           offset: 0,
           reason: 'control character rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given a path containing U+009F (the upper bound of the C1 range)', () => {
-    describe('When validated', () => {
-      it('Then throws INVALID_INDEX_ENTRY with the control reason', () => {
-        // Arrange — 0x9F is the inclusive upper bound: the guard is `code <= 0x9f`.
-        // A `code < 0x9f` mutant would let U+009F through and fail to throw.
-        const path = `a${String.fromCharCode(0x9f)}b`;
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, 7));
+        },
+        {
+          // 0x9F is the inclusive upper bound: the guard is `code <= 0x9f`.
+          // A `code < 0x9f` mutant would let U+009F through and fail to throw.
+          label: 'throws INVALID_INDEX_ENTRY with the control reason',
+          path: `a${String.fromCharCode(0x9f)}b`,
+          offset: 7,
+          reason: 'control character rejected',
+        },
+        {
+          label: 'throws INVALID_INDEX_ENTRY with the bidi reason',
+          path: `a${String.fromCharCode(0x202e)}b`,
+          offset: 0,
+          reason: 'bidi control character rejected',
+        },
+        {
+          label: "throws INVALID_INDEX_ENTRY with the '..' reason",
+          path: 'src/../etc',
+          offset: 0,
+          reason: "'..' segment rejected",
+        },
+        {
+          label: "throws INVALID_INDEX_ENTRY with the '.' reason",
+          path: 'src/./file',
+          offset: 0,
+          reason: "'.' segment rejected",
+        },
+        {
+          label: 'throws INVALID_INDEX_ENTRY with the empty-segment reason',
+          path: 'src//file',
+          offset: NO_PARSER_OFFSET,
+          reason: 'empty segment rejected',
+        },
+      ])('Then $label', ({ path, offset, reason }) => {
+        // Arrange & Act
+        const caught = catchError(() => validateIndexPath(path, offset));
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 7,
-          reason: 'control character rejected',
-        });
+        expect(data).toEqual({ code: 'INVALID_INDEX_ENTRY', offset, reason });
       });
     });
   });
@@ -122,90 +103,6 @@ describe('validateIndexPath', () => {
 
         // Act + Assert
         expect(() => validateIndexPath(path, 0)).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given a path containing a BIDI override (U+202E)', () => {
-    describe('When validated', () => {
-      it('Then throws INVALID_INDEX_ENTRY with the bidi reason', () => {
-        // Arrange
-        const path = `a${String.fromCharCode(0x202e)}b`;
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, 0));
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 0,
-          reason: 'bidi control character rejected',
-        });
-      });
-    });
-  });
-
-  describe("Given a path with a '..' segment", () => {
-    describe('When validated', () => {
-      it("Then throws INVALID_INDEX_ENTRY with the '..' reason", () => {
-        // Arrange
-        const path = 'src/../etc';
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, 0));
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 0,
-          reason: "'..' segment rejected",
-        });
-      });
-    });
-  });
-
-  describe("Given a path with a '.' segment", () => {
-    describe('When validated', () => {
-      it("Then throws INVALID_INDEX_ENTRY with the '.' reason", () => {
-        // Arrange
-        const path = 'src/./file';
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, 0));
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 0,
-          reason: "'.' segment rejected",
-        });
-      });
-    });
-  });
-
-  describe('Given a path with an empty segment (double slash)', () => {
-    describe('When validated', () => {
-      it('Then throws INVALID_INDEX_ENTRY with the empty-segment reason', () => {
-        // Arrange
-        const path = 'src//file';
-
-        // Act
-        const caught = catchError(() => validateIndexPath(path, NO_PARSER_OFFSET));
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: NO_PARSER_OFFSET,
-          reason: 'empty segment rejected',
-        });
       });
     });
   });
