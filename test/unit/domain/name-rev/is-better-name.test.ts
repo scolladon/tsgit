@@ -13,131 +13,111 @@ const rev = (fromTag: boolean, distance: number, taggerDate: number): RevName =>
 });
 
 describe('isBetterName', () => {
-  describe('Given an existing non-tag and an incoming tag', () => {
+  describe('Given an existing and incoming name of varying tag-ness, distance and tagger date', () => {
     describe('When deciding replacement', () => {
-      it('Then the tag wins', () => {
-        // Arrange
-        const existing = rev(false, 1, 0);
-        const incoming = rev(true, 5, 0);
+      it.each([
+        {
+          existingFromTag: false,
+          existingDistance: 1,
+          existingDate: 0,
+          incomingFromTag: true,
+          incomingDistance: 5,
+          incomingDate: 0,
+          expected: true,
+          label: 'an incoming tag wins over an existing non-tag',
+        },
+        {
+          existingFromTag: true,
+          existingDistance: 5,
+          existingDate: 0,
+          incomingFromTag: false,
+          incomingDistance: 1,
+          incomingDate: 0,
+          expected: false,
+          label: 'the existing tag is kept over an incoming non-tag',
+        },
+        {
+          existingFromTag: true,
+          existingDistance: 4,
+          existingDate: 0,
+          incomingFromTag: true,
+          incomingDistance: 2,
+          incomingDate: 0,
+          expected: true,
+          label: 'with equal tag-ness, the nearer incoming name wins',
+        },
+        {
+          existingFromTag: true,
+          existingDistance: 2,
+          existingDate: 0,
+          incomingFromTag: true,
+          incomingDistance: 4,
+          incomingDate: 0,
+          expected: false,
+          label: 'with equal tag-ness, the existing nearer name is kept',
+        },
+        {
+          existingFromTag: true,
+          existingDistance: 3,
+          existingDate: 2_000,
+          incomingFromTag: true,
+          incomingDistance: 3,
+          incomingDate: 1_000,
+          expected: true,
+          label: 'with equal tag-ness and distance, the older-tagged incoming wins',
+        },
+        {
+          existingFromTag: true,
+          existingDistance: 3,
+          existingDate: 1_000,
+          incomingFromTag: true,
+          incomingDistance: 3,
+          incomingDate: 2_000,
+          expected: false,
+          label: 'with equal tag-ness and distance, the existing older-tagged name is kept',
+        },
+        {
+          existingFromTag: true,
+          existingDistance: 3,
+          existingDate: 1_000,
+          incomingFromTag: true,
+          incomingDistance: 3,
+          incomingDate: 1_000,
+          expected: false,
+          label: 'a full tie (tag-ness, distance and tagger date) keeps the existing name',
+        },
+        {
+          existingFromTag: false,
+          existingDistance: 1,
+          existingDate: 0,
+          incomingFromTag: true,
+          incomingDistance: 9,
+          incomingDate: 0,
+          expected: true,
+          label: 'a tag wins despite a larger distance',
+        },
+      ])(
+        'Then $label',
+        ({
+          existingFromTag,
+          existingDistance,
+          existingDate,
+          incomingFromTag,
+          incomingDistance,
+          incomingDate,
+          expected,
+        }) => {
+          // Arrange
+          const existing = rev(existingFromTag, existingDistance, existingDate);
+          const incoming = rev(incomingFromTag, incomingDistance, incomingDate);
 
-        // Act
-        const sut = isBetterName(existing, incoming);
+          // Act
+          const sut = isBetterName(existing, incoming);
 
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given an existing tag and an incoming non-tag', () => {
-    describe('When deciding replacement', () => {
-      it('Then the existing tag is kept', () => {
-        // Arrange
-        const existing = rev(true, 5, 0);
-        const incoming = rev(false, 1, 0);
-
-        // Act
-        const sut = isBetterName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given equal tag-ness and an incoming nearer name', () => {
-    describe('When deciding replacement', () => {
-      it('Then the nearer name wins', () => {
-        // Arrange
-        const existing = rev(true, 4, 0);
-        const incoming = rev(true, 2, 0);
-
-        // Act
-        const sut = isBetterName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given equal tag-ness and an incoming farther name', () => {
-    describe('When deciding replacement', () => {
-      it('Then the existing nearer name is kept', () => {
-        // Arrange
-        const existing = rev(true, 2, 0);
-        const incoming = rev(true, 4, 0);
-
-        // Act
-        const sut = isBetterName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given equal tag-ness and distance, the incoming tagged older', () => {
-    describe('When deciding replacement', () => {
-      it('Then the older-tagged name wins', () => {
-        // Arrange
-        const existing = rev(true, 3, 2_000);
-        const incoming = rev(true, 3, 1_000);
-
-        // Act
-        const sut = isBetterName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given equal tag-ness and distance, the incoming tagged newer', () => {
-    describe('When deciding replacement', () => {
-      it('Then the existing older-tagged name is kept', () => {
-        // Arrange
-        const existing = rev(true, 3, 1_000);
-        const incoming = rev(true, 3, 2_000);
-
-        // Act
-        const sut = isBetterName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given two names equal in tag-ness, distance and tagger date', () => {
-    describe('When deciding replacement', () => {
-      it('Then the existing name is kept', () => {
-        // Arrange
-        const existing = rev(true, 3, 1_000);
-        const incoming = rev(true, 3, 1_000);
-
-        // Act
-        const sut = isBetterName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given an existing nearer non-tag and an incoming farther tag', () => {
-    describe('When deciding replacement', () => {
-      it('Then the tag wins despite the larger distance', () => {
-        // Arrange
-        const existing = rev(false, 1, 0);
-        const incoming = rev(true, 9, 0);
-
-        // Act
-        const sut = isBetterName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
+          // Assert
+          expect(sut).toBe(expected);
+        },
+      );
     });
   });
 });

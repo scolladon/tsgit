@@ -12,131 +12,94 @@ const name = (
   taggerDate,
 });
 
+type ReplaceNameRow = {
+  existingP: DescribeName['priority'];
+  existingD: number;
+  incomingP: DescribeName['priority'];
+  incomingD: number;
+  expected: boolean;
+  label: string;
+};
+
 describe('shouldReplaceName', () => {
-  describe('Given an incoming ref of higher priority', () => {
+  describe('Given an existing and incoming ref of varying priority and tagger date', () => {
     describe('When deciding replacement', () => {
-      it('Then it replaces the existing name', () => {
+      it.each<ReplaceNameRow>([
+        {
+          existingP: 1,
+          existingD: 0,
+          incomingP: 2,
+          incomingD: 0,
+          expected: true,
+          label: 'a higher-priority incoming replaces the existing name',
+        },
+        {
+          existingP: 2,
+          existingD: 100,
+          incomingP: 0,
+          incomingD: 0,
+          expected: false,
+          label: 'a lower-priority incoming keeps the existing name',
+        },
+        {
+          existingP: 2,
+          existingD: 1_000,
+          incomingP: 2,
+          incomingD: 2_000,
+          expected: true,
+          label: 'between two annotated tags, the newer tagger date replaces',
+        },
+        {
+          existingP: 2,
+          existingD: 2_000,
+          incomingP: 2,
+          incomingD: 1_000,
+          expected: false,
+          label: 'between two annotated tags, the existing (newer) name is kept',
+        },
+        {
+          existingP: 2,
+          existingD: 1_500,
+          incomingP: 2,
+          incomingD: 1_500,
+          expected: false,
+          label:
+            'between two annotated tags with equal tagger dates, the first encountered is kept',
+        },
+        {
+          existingP: 1,
+          existingD: 0,
+          incomingP: 1,
+          incomingD: 0,
+          expected: false,
+          label: 'between two lightweight tags, the first encountered is kept',
+        },
+        {
+          existingP: 1,
+          existingD: 100,
+          incomingP: 1,
+          incomingD: 999,
+          expected: false,
+          label: 'the tagger date does not decide for non-annotated (lightweight) tags',
+        },
+        {
+          existingP: 2,
+          existingD: 100,
+          incomingP: 1,
+          incomingD: 999,
+          expected: false,
+          label: 'a newer date never lets a lower priority replace',
+        },
+      ])('Then $label', ({ existingP, existingD, incomingP, incomingD, expected }) => {
         // Arrange
-        const existing = name(1, 0);
-        const incoming = name(2, 0);
+        const existing = name(existingP, existingD);
+        const incoming = name(incomingP, incomingD);
 
         // Act
         const sut = shouldReplaceName(existing, incoming);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given an incoming ref of lower priority', () => {
-    describe('When deciding replacement', () => {
-      it('Then the existing name is kept', () => {
-        // Arrange
-        const existing = name(2, 100);
-        const incoming = name(0, 0);
-
-        // Act
-        const sut = shouldReplaceName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given two annotated tags on one commit, the incoming newer', () => {
-    describe('When deciding replacement', () => {
-      it('Then the newer tagger date replaces', () => {
-        // Arrange
-        const existing = name(2, 1_000);
-        const incoming = name(2, 2_000);
-
-        // Act
-        const sut = shouldReplaceName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given two annotated tags on one commit, the incoming older', () => {
-    describe('When deciding replacement', () => {
-      it('Then the existing (newer) name is kept', () => {
-        // Arrange
-        const existing = name(2, 2_000);
-        const incoming = name(2, 1_000);
-
-        // Act
-        const sut = shouldReplaceName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given two annotated tags on one commit with equal tagger dates', () => {
-    describe('When deciding replacement', () => {
-      it('Then the first encountered is kept', () => {
-        // Arrange
-        const existing = name(2, 1_500);
-        const incoming = name(2, 1_500);
-
-        // Act
-        const sut = shouldReplaceName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given two lightweight tags on one commit', () => {
-    describe('When deciding replacement', () => {
-      it('Then the first encountered is kept', () => {
-        // Arrange
-        const existing = name(1, 0);
-        const incoming = name(1, 0);
-
-        // Act
-        const sut = shouldReplaceName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given two lightweight tags whose dates differ', () => {
-    describe('When deciding replacement', () => {
-      it('Then the tagger date does not decide for non-annotated tags', () => {
-        // Arrange — date is meaningful only for annotated tags.
-        const existing = name(1, 100);
-        const incoming = name(1, 999);
-
-        // Act
-        const sut = shouldReplaceName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a lower-priority incoming with a newer date than an annotated existing', () => {
-    describe('When deciding replacement', () => {
-      it('Then a newer date never lets a lower priority replace', () => {
-        // Arrange
-        const existing = name(2, 100);
-        const incoming = name(1, 999);
-
-        // Act
-        const sut = shouldReplaceName(existing, incoming);
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
