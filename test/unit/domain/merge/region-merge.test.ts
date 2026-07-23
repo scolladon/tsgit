@@ -393,57 +393,53 @@ describe('region-merge', () => {
   });
 
   describe('trimCommonEdges', () => {
-    describe('Given sides sharing a prefix and a suffix', () => {
+    describe('Given sides sharing a prefix and/or suffix', () => {
       describe('When trimCommonEdges runs', () => {
-        it('Then prefix and suffix are split out and the middles differ', () => {
+        it.each([
+          {
+            ours: lines('p\n', 'A\n', 'B\n', 's\n'),
+            theirs: lines('p\n', 'C\n', 'D\n', 's\n'),
+            prefix: 'p\n',
+            oursMid: 'A\nB\n',
+            theirsMid: 'C\nD\n',
+            suffix: 's\n',
+            label: 'the prefix and suffix are split out and the middles differ',
+          },
+          {
+            // ours [A,B,A], theirs [A,A]; A is a common prefix AND suffix.
+            ours: lines('A\n', 'B\n', 'A\n'),
+            theirs: lines('A\n', 'A\n'),
+            prefix: 'A\n',
+            oursMid: 'B\n',
+            theirsMid: '',
+            suffix: 'A\n',
+            label:
+              'the shorter side is not double-counted when prefix and suffix would otherwise overlap',
+          },
+          {
+            // ours [A,A,A], theirs [A,A]; the common prefix consumes all of theirs, so the
+            // suffix scan must stop (cap at min-length minus prefix), not wrap around.
+            ours: lines('A\n', 'A\n', 'A\n'),
+            theirs: lines('A\n', 'A\n'),
+            prefix: 'A\nA\n',
+            oursMid: 'A\n',
+            theirsMid: '',
+            suffix: '',
+            label:
+              'the suffix is capped so the prefix is not re-counted when one side is entirely a repeat of the other',
+          },
+        ])('Then $label', ({ ours, theirs, prefix, oursMid, theirsMid, suffix }) => {
           // Arrange
           const sut = trimCommonEdges;
 
           // Act
-          const result = sut(lines('p\n', 'A\n', 'B\n', 's\n'), lines('p\n', 'C\n', 'D\n', 's\n'));
+          const result = sut(ours, theirs);
 
           // Assert
-          expect(text(result.prefix)).toBe('p\n');
-          expect(text(result.oursMid)).toBe('A\nB\n');
-          expect(text(result.theirsMid)).toBe('C\nD\n');
-          expect(text(result.suffix)).toBe('s\n');
-        });
-      });
-    });
-
-    describe('Given prefix and suffix would otherwise overlap', () => {
-      describe('When trimCommonEdges runs', () => {
-        it('Then the shorter side is not double-counted', () => {
-          // Arrange — ours [A,B,A], theirs [A,A]; A is a common prefix AND suffix.
-          const sut = trimCommonEdges;
-
-          // Act
-          const result = sut(lines('A\n', 'B\n', 'A\n'), lines('A\n', 'A\n'));
-
-          // Assert — one A as prefix, one A as suffix, middles carry the rest
-          expect(text(result.prefix)).toBe('A\n');
-          expect(text(result.oursMid)).toBe('B\n');
-          expect(text(result.theirsMid)).toBe('');
-          expect(text(result.suffix)).toBe('A\n');
-        });
-      });
-    });
-
-    describe('Given one side is entirely a repeat of the other side', () => {
-      describe('When trimCommonEdges runs', () => {
-        it('Then the suffix is capped so the prefix is not re-counted', () => {
-          // Arrange — ours [A,A,A], theirs [A,A]; the common prefix consumes all of theirs,
-          // so the suffix scan must stop (cap at min-length minus prefix), not wrap around.
-          const sut = trimCommonEdges;
-
-          // Act
-          const result = sut(lines('A\n', 'A\n', 'A\n'), lines('A\n', 'A\n'));
-
-          // Assert
-          expect(text(result.prefix)).toBe('A\nA\n');
-          expect(text(result.oursMid)).toBe('A\n');
-          expect(text(result.theirsMid)).toBe('');
-          expect(text(result.suffix)).toBe('');
+          expect(text(result.prefix)).toBe(prefix);
+          expect(text(result.oursMid)).toBe(oursMid);
+          expect(text(result.theirsMid)).toBe(theirsMid);
+          expect(text(result.suffix)).toBe(suffix);
         });
       });
     });
@@ -456,137 +452,77 @@ describe('region-merge', () => {
       replacement: [],
     });
 
-    describe('Given two zero-length inserts at the same position', () => {
+    describe('Given two ranges, each possibly zero-length', () => {
       describe('When rangesOverlap runs', () => {
-        it('Then they overlap', () => {
+        it.each<{
+          a: readonly [number, number];
+          b: readonly [number, number];
+          expected: boolean;
+          label: string;
+        }>([
+          {
+            a: [3, 3],
+            b: [3, 3],
+            expected: true,
+            label: 'two zero-length inserts at the same position overlap',
+          },
+          {
+            a: [3, 3],
+            b: [5, 5],
+            expected: false,
+            label: 'two zero-length inserts at different positions do not overlap',
+          },
+          {
+            a: [3, 3],
+            b: [2, 5],
+            expected: true,
+            label: 'a zero-length insert inside a range overlaps',
+          },
+          {
+            a: [5, 5],
+            b: [2, 5],
+            expected: false,
+            label: 'a zero-length insert at the exclusive end of a range does not overlap',
+          },
+          {
+            a: [1, 1],
+            b: [2, 5],
+            expected: false,
+            label: 'a zero-length insert before the start of a range does not overlap',
+          },
+          {
+            a: [2, 5],
+            b: [3, 3],
+            expected: true,
+            label: 'a non-zero range and a zero-length insert inside it overlap',
+          },
+          {
+            a: [2, 5],
+            b: [5, 5],
+            expected: false,
+            label: 'a non-zero range and a zero-length insert at its exclusive end do not overlap',
+          },
+          {
+            a: [1, 3],
+            b: [2, 4],
+            expected: true,
+            label: 'two non-zero ranges that overlap, overlap',
+          },
+          {
+            a: [1, 3],
+            b: [3, 5],
+            expected: false,
+            label: 'two non-zero ranges that only touch at a boundary do not overlap',
+          },
+        ])('Then $label', ({ a, b, expected }) => {
           // Arrange
           const sut = rangesOverlap;
 
           // Act
-          const result = sut(range(3, 3), range(3, 3));
+          const result = sut(range(a[0], a[1]), range(b[0], b[1]));
 
           // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given two zero-length inserts at different positions', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then they do not overlap', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(3, 3), range(5, 5));
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given a zero-length insert inside a range', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then it overlaps', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(3, 3), range(2, 5));
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given a zero-length insert at the exclusive end of a range', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then it does not overlap (end is exclusive)', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(5, 5), range(2, 5));
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given a zero-length insert before the start of a range', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then it does not overlap', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(1, 1), range(2, 5));
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given a non-zero range and a zero-length insert inside it', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then they overlap', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(2, 5), range(3, 3));
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given a non-zero range and a zero-length insert at its exclusive end', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then they do not overlap', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(2, 5), range(5, 5));
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given two non-zero ranges that overlap', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then they overlap', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(1, 3), range(2, 4));
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given two non-zero ranges that only touch at a boundary', () => {
-      describe('When rangesOverlap runs', () => {
-        it('Then they do not overlap', () => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(1, 3), range(3, 5));
-
-          // Assert
-          expect(result).toBe(false);
+          expect(result).toBe(expected);
         });
       });
     });

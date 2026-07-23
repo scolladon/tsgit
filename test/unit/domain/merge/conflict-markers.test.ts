@@ -25,54 +25,6 @@ function expectMergeError(fn: () => unknown, reasonSubstr: string): void {
 }
 
 describe('writeConflictMarkers — positive', () => {
-  describe("Given printable ASCII label 'HEAD'", () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then label appears in markers', () => {
-        // Arrange & Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
-          labels: { ours: 'HEAD', theirs: 'HEAD' },
-        });
-
-        // Assert
-        const text = new TextDecoder().decode(sut);
-        expect(text).toContain('<<<<<<< HEAD\n');
-        expect(text).toContain('>>>>>>> HEAD\n');
-      });
-    });
-  });
-
-  describe("Given multi-byte UTF-8 label 'feature/Ⓐ'", () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then label round-trips verbatim', () => {
-        // Arrange & Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
-          labels: { ours: 'feature/Ⓐ', theirs: 'feature/Ⓐ' },
-        });
-
-        // Assert
-        const text = new TextDecoder().decode(sut);
-        expect(text).toContain('<<<<<<< feature/Ⓐ\n');
-        expect(text).toContain('>>>>>>> feature/Ⓐ\n');
-      });
-    });
-  });
-
-  describe('Given label with surrounding spaces', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then it is written verbatim', () => {
-        // Arrange — leading/trailing spaces preserved verbatim in output
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
-          labels: { ours: ' HEAD ', theirs: ' HEAD ' },
-        });
-
-        // Assert
-        const text = new TextDecoder().decode(sut);
-        expect(text).toContain('<<<<<<<  HEAD \n');
-        expect(text).toContain('>>>>>>>  HEAD \n');
-      });
-    });
-  });
-
   describe("Given ours ['a\\\\n','b\\\\n'] and theirs ['a\\\\n','c\\\\n'] with labels HEAD/feature", () => {
     describe('When writeConflictMarkers called', () => {
       it('Then output equals golden byte-exact fixture', () => {
@@ -164,75 +116,65 @@ describe('writeConflictMarkers — positive', () => {
 });
 
 describe('writeConflictMarkers — marker size', () => {
-  describe('Given markerSize 1', () => {
+  describe('Given a markerSize option', () => {
     describe('When writeConflictMarkers called', () => {
-      it('Then all three markers are a single character', () => {
+      it.each([
+        { markerSize: 1, repeat: 1, label: 'every marker run is a single character' },
+        { markerSize: 15, repeat: 15, label: 'every marker run is 15 characters long' },
+        { markerSize: undefined, repeat: 7, label: "it defaults to git's 7-character markers" },
+      ])('Then $label', ({ markerSize, repeat }) => {
         // Arrange + Act
         const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
           labels: { ours: 'HEAD', theirs: 'feature' },
-          markerSize: 1,
+          ...(markerSize === undefined ? {} : { markerSize }),
         });
 
         // Assert
         const text = new TextDecoder().decode(sut);
-        expect(text).toBe('< HEAD\na\n=\nb\n> feature\n');
-      });
-    });
-  });
-
-  describe('Given markerSize 15', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then every marker run is 15 characters long', () => {
-        // Arrange + Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
-          labels: { ours: 'HEAD', theirs: 'feature' },
-          markerSize: 15,
-        });
-
-        // Assert
-        const text = new TextDecoder().decode(sut);
-        expect(text).toContain(`${'<'.repeat(15)} HEAD\n`);
-        expect(text).toContain(`${'='.repeat(15)}\n`);
-        expect(text).toContain(`${'>'.repeat(15)} feature\n`);
-      });
-    });
-  });
-
-  describe('Given markerSize omitted', () => {
-    describe('When writeConflictMarkers called', () => {
-      it('Then it defaults to git`s 7-character markers', () => {
-        // Arrange + Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
-          labels: { ours: 'HEAD', theirs: 'feature' },
-        });
-
-        // Assert
-        const text = new TextDecoder().decode(sut);
-        expect(text).toBe('<<<<<<< HEAD\na\n=======\nb\n>>>>>>> feature\n');
+        expect(text).toBe(
+          `${'<'.repeat(repeat)} HEAD\na\n${'='.repeat(repeat)}\nb\n${'>'.repeat(repeat)} feature\n`,
+        );
       });
     });
   });
 });
 
 describe('writeConflictMarkers — verbatim labels', () => {
-  describe('Given a long label carrying a marker substring and a control character', () => {
+  describe('Given a label value', () => {
     describe('When writeConflictMarkers called', () => {
-      it('Then the label bytes are written verbatim (git-faithful, no validation)', () => {
-        // Arrange — git writes any label bytes into the marker, including long
-        // subjects and control / marker characters; the library is faithful and
-        // leaves display-time sanitisation to the consumer.
-        const long = 'x'.repeat(300);
-        const noisy = 'has ======= and \x1b[31m';
-
-        // Act
+      it.each([
+        {
+          oursLabel: 'HEAD',
+          theirsLabel: 'HEAD',
+          label: 'a printable ASCII label appears in both markers',
+        },
+        {
+          oursLabel: 'feature/Ⓐ',
+          theirsLabel: 'feature/Ⓐ',
+          label: 'a multi-byte UTF-8 label round-trips verbatim',
+        },
+        {
+          oursLabel: ' HEAD ',
+          theirsLabel: ' HEAD ',
+          label: 'a label with surrounding spaces is written verbatim',
+        },
+        {
+          oursLabel: 'x'.repeat(300),
+          theirsLabel: 'has ======= and \x1b[31m',
+          label:
+            'a long label and one carrying a marker substring / control character are written ' +
+            'verbatim (git-faithful, no validation)',
+        },
+      ])('Then $label', ({ oursLabel, theirsLabel }) => {
+        // Arrange & Act
         const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
-          labels: { ours: long, theirs: noisy },
+          labels: { ours: oursLabel, theirs: theirsLabel },
         });
 
         // Assert
         const text = new TextDecoder().decode(sut);
-        expect(text).toContain(`<<<<<<< ${long}\n`);
-        expect(text).toContain(`>>>>>>> ${noisy}\n`);
+        expect(text).toContain(`<<<<<<< ${oursLabel}\n`);
+        expect(text).toContain(`>>>>>>> ${theirsLabel}\n`);
       });
     });
   });
