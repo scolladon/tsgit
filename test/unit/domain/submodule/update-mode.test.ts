@@ -4,24 +4,9 @@ import { parseUpdateMode } from '../../../../src/domain/submodule/update-mode.js
 
 describe('Given a raw submodule.<name>.update value', () => {
   describe('When the value is a recognised mode', () => {
-    it('Then `checkout` parses', () => {
+    it.each(['checkout', 'rebase', 'merge', 'none'])('Then `%s` parses', (mode) => {
       // Arrange + Act + Assert
-      expect(parseUpdateMode('checkout')).toBe('checkout');
-    });
-
-    it('Then `rebase` parses', () => {
-      // Arrange + Act + Assert
-      expect(parseUpdateMode('rebase')).toBe('rebase');
-    });
-
-    it('Then `merge` parses', () => {
-      // Arrange + Act + Assert
-      expect(parseUpdateMode('merge')).toBe('merge');
-    });
-
-    it('Then `none` parses', () => {
-      // Arrange + Act + Assert
-      expect(parseUpdateMode('none')).toBe('none');
+      expect(parseUpdateMode(mode)).toBe(mode);
     });
   });
 

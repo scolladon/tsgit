@@ -5,139 +5,45 @@ import {
 } from '../../../../src/domain/worktree/resolve-path.js';
 
 describe('worktreePathBasename', () => {
-  describe('Given an absolute path', () => {
+  describe('Given a path', () => {
     describe('When worktreePathBasename runs', () => {
-      it('Then it returns the last component', () => {
+      it.each([
+        { path: '/a/b/feature', expected: 'feature', label: 'it returns the last component' },
+        { path: '/a/b/', expected: 'b', label: 'trailing empties are ignored' },
+        { path: '/', expected: '', label: 'it returns the empty string' },
+      ])('Then $label', ({ path, expected }) => {
         // Arrange
-        const sut = '/a/b/feature';
+        const sut = path;
 
         // Act
         const result = worktreePathBasename(sut);
 
         // Assert
-        expect(result).toBe('feature');
-      });
-    });
-  });
-
-  describe('Given a path with a trailing slash', () => {
-    describe('When worktreePathBasename runs', () => {
-      it('Then trailing empties are ignored', () => {
-        // Arrange
-        const sut = '/a/b/';
-
-        // Act
-        const result = worktreePathBasename(sut);
-
-        // Assert
-        expect(result).toBe('b');
-      });
-    });
-  });
-
-  describe('Given the root path', () => {
-    describe('When worktreePathBasename runs', () => {
-      it('Then it returns the empty string', () => {
-        // Arrange
-        const sut = '/';
-
-        // Act
-        const result = worktreePathBasename(sut);
-
-        // Assert
-        expect(result).toBe('');
+        expect(result).toBe(expected);
       });
     });
   });
 });
 
 describe('resolveWorktreePath', () => {
-  describe('Given an absolute input', () => {
+  describe('Given a cwd and an input path', () => {
     describe('When resolveWorktreePath runs', () => {
-      it('Then it ignores cwd', () => {
+      it.each([
+        { cwd: '/cwd', input: '/abs/wt', expected: '/abs/wt', label: 'it ignores cwd' },
+        { cwd: '/cwd', input: 'wt', expected: '/cwd/wt', label: 'it joins onto cwd' },
+        { cwd: '/a/b', input: '../wt', expected: '/a/wt', label: '`..` pops the previous segment' },
+        { cwd: '/a/b', input: './wt', expected: '/a/b/wt', label: '`.` is dropped' },
+        { cwd: '/a', input: '../../wt', expected: '/wt', label: 'it never pops below the root' },
+        { cwd: '/a//b', input: 'c', expected: '/a/b/c', label: 'empty segments are collapsed' },
+      ])('Then $label', ({ cwd, input, expected }) => {
         // Arrange
-        const sut = '/abs/wt';
+        const sut = input;
 
         // Act
-        const result = resolveWorktreePath('/cwd', sut);
+        const result = resolveWorktreePath(cwd, sut);
 
         // Assert
-        expect(result).toBe('/abs/wt');
-      });
-    });
-  });
-
-  describe('Given a relative input', () => {
-    describe('When resolveWorktreePath runs', () => {
-      it('Then it joins onto cwd', () => {
-        // Arrange
-        const sut = 'wt';
-
-        // Act
-        const result = resolveWorktreePath('/cwd', sut);
-
-        // Assert
-        expect(result).toBe('/cwd/wt');
-      });
-    });
-  });
-
-  describe('Given a parent-relative input', () => {
-    describe('When resolveWorktreePath runs', () => {
-      it('Then `..` pops the previous segment', () => {
-        // Arrange
-        const sut = '../wt';
-
-        // Act
-        const result = resolveWorktreePath('/a/b', sut);
-
-        // Assert
-        expect(result).toBe('/a/wt');
-      });
-    });
-  });
-
-  describe('Given a current-dir segment', () => {
-    describe('When resolveWorktreePath runs', () => {
-      it('Then `.` is dropped', () => {
-        // Arrange
-        const sut = './wt';
-
-        // Act
-        const result = resolveWorktreePath('/a/b', sut);
-
-        // Assert
-        expect(result).toBe('/a/b/wt');
-      });
-    });
-  });
-
-  describe('Given more `..` than depth', () => {
-    describe('When resolveWorktreePath runs', () => {
-      it('Then it never pops below the root', () => {
-        // Arrange
-        const sut = '../../wt';
-
-        // Act
-        const result = resolveWorktreePath('/a', sut);
-
-        // Assert
-        expect(result).toBe('/wt');
-      });
-    });
-  });
-
-  describe('Given doubled separators', () => {
-    describe('When resolveWorktreePath runs', () => {
-      it('Then empty segments are collapsed', () => {
-        // Arrange
-        const sut = 'c';
-
-        // Act
-        const result = resolveWorktreePath('/a//b', sut);
-
-        // Assert
-        expect(result).toBe('/a/b/c');
+        expect(result).toBe(expected);
       });
     });
   });

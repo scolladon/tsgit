@@ -395,62 +395,38 @@ describe('parseConfigKey', () => {
     });
   });
 
-  describe('Given a double-dot key ..k', () => {
+  describe('Given a key with a leading or double dot', () => {
     describe('When parsed', () => {
-      it('Then returns section "", subsection "" and the name', () => {
+      it.each([
+        {
+          key: '..k',
+          expected: { section: '', subsection: '', name: 'k' },
+          label: 'returns section "", subsection "" and the name',
+        },
+        {
+          key: '.x.k',
+          expected: { section: '', subsection: 'x', name: 'k' },
+          label: 'returns section "", subsection "x" and the name',
+        },
+        {
+          key: '.X.k',
+          expected: { section: '', subsection: 'X', name: 'k' },
+          label: 'the subsection case is preserved',
+        },
+        {
+          key: '..K',
+          expected: { section: '', subsection: '', name: 'k' },
+          label: 'the name is lower-cased',
+        },
+      ])('Then $label', ({ key, expected }) => {
         // Arrange
         const sut = parseConfigKey;
 
         // Act
-        const result = sut('..k');
+        const result = sut(key);
 
         // Assert
-        expect(result).toEqual({ section: '', subsection: '', name: 'k' });
-      });
-    });
-  });
-
-  describe('Given a leading-dot key .x.k', () => {
-    describe('When parsed', () => {
-      it('Then returns section "", subsection "x" and the name', () => {
-        // Arrange
-        const sut = parseConfigKey;
-
-        // Act
-        const result = sut('.x.k');
-
-        // Assert
-        expect(result).toEqual({ section: '', subsection: 'x', name: 'k' });
-      });
-    });
-  });
-
-  describe('Given a leading-dot key with an upper-case subsection .X.k', () => {
-    describe('When parsed', () => {
-      it('Then the subsection case is preserved', () => {
-        // Arrange
-        const sut = parseConfigKey;
-
-        // Act
-        const result = sut('.X.k');
-
-        // Assert
-        expect(result).toEqual({ section: '', subsection: 'X', name: 'k' });
-      });
-    });
-  });
-
-  describe('Given a double-dot key with an upper-case name ..K', () => {
-    describe('When parsed', () => {
-      it('Then the name is lower-cased', () => {
-        // Arrange
-        const sut = parseConfigKey;
-
-        // Act
-        const result = sut('..K');
-
-        // Assert
-        expect(result).toEqual({ section: '', subsection: '', name: 'k' });
+        expect(result).toEqual(expected);
       });
     });
   });
