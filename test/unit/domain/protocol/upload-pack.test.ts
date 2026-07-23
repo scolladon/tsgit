@@ -79,34 +79,38 @@ const buildDiscoveryBody = (d: BuildDiscoveryInput): Uint8Array => {
 describe('buildDiscoveryUrl', () => {
   describe('Given a base URL and service', () => {
     describe('When buildDiscoveryUrl', () => {
-      it('Then appends /info/refs?service=...', () => {
+      it.each([
+        {
+          url: 'https://example.com/repo.git',
+          expected: 'https://example.com/repo.git/info/refs?service=git-upload-pack',
+          label: 'appends /info/refs?service=...',
+        },
+        {
+          url: 'https://example.com/repo.git/',
+          expected: 'https://example.com/repo.git/info/refs?service=git-upload-pack',
+          label: 'no double slash',
+        },
+        {
+          url: 'https://example.com/repo.git?token=xyz',
+          expected: 'https://example.com/repo.git/info/refs?token=xyz&service=git-upload-pack',
+          label: 'appends with &',
+        },
+        {
+          url: 'ftp://example.com/repo',
+          expected: 'ftp://example.com/repo/info/refs?service=git-upload-pack',
+          label: 'returns the URL (scheme validated at adapter layer)',
+        },
+        {
+          url: 'https://example.com/repo',
+          expected: 'https://example.com/repo/info/refs?service=git-upload-pack',
+          label: 'no auto-append',
+        },
+      ])('Then $label', ({ url, expected }) => {
         // Arrange & Act
-        const sut = buildDiscoveryUrl('https://example.com/repo.git', 'git-upload-pack');
+        const sut = buildDiscoveryUrl(url, 'git-upload-pack');
 
         // Assert
-        expect(sut).toBe('https://example.com/repo.git/info/refs?service=git-upload-pack');
-      });
-    });
-  });
-
-  describe('Given a trailing slash', () => {
-    describe('When buildDiscoveryUrl', () => {
-      it('Then no double slash', () => {
-        // Arrange + Assert
-        expect(buildDiscoveryUrl('https://example.com/repo.git/', 'git-upload-pack')).toBe(
-          'https://example.com/repo.git/info/refs?service=git-upload-pack',
-        );
-      });
-    });
-  });
-
-  describe('Given a pre-existing query string', () => {
-    describe('When buildDiscoveryUrl', () => {
-      it('Then appends with &', () => {
-        // Arrange + Assert
-        expect(buildDiscoveryUrl('https://example.com/repo.git?token=xyz', 'git-upload-pack')).toBe(
-          'https://example.com/repo.git/info/refs?token=xyz&service=git-upload-pack',
-        );
+        expect(sut).toBe(expected);
       });
     });
   });
@@ -144,86 +148,38 @@ describe('buildDiscoveryUrl', () => {
       });
     });
   });
-
-  describe('Given an ftp:// scheme', () => {
-    describe('When buildDiscoveryUrl', () => {
-      it('Then returns the URL (scheme validated at adapter layer)', () => {
-        // Arrange + Assert
-        expect(buildDiscoveryUrl('ftp://example.com/repo', 'git-upload-pack')).toBe(
-          'ftp://example.com/repo/info/refs?service=git-upload-pack',
-        );
-      });
-    });
-  });
-
-  describe('Given a URL with no .git suffix', () => {
-    describe('When buildDiscoveryUrl', () => {
-      it('Then no auto-append', () => {
-        // Arrange + Assert
-        expect(buildDiscoveryUrl('https://example.com/repo', 'git-upload-pack')).toBe(
-          'https://example.com/repo/info/refs?service=git-upload-pack',
-        );
-      });
-    });
-  });
 });
 
 describe('parseAdvertisedRefs — edge cases', () => {
-  describe('Given an empty stream', () => {
+  describe('Given a malformed or absent service header', () => {
     describe('When parsed', () => {
-      it('Then throws MISSING_SERVICE_HEADER', async () => {
-        // Arrange — empty source ends before any data packet.
-        const empty: AsyncIterable<Uint8Array> = (async function* () {
-          // yield nothing
-        })();
+      it.each([
+        {
+          label: 'an empty stream',
+          buildChunks: (): Uint8Array[] => [],
+        },
+        {
+          label: 'a service header followed by a non-flush data packet (no separator)',
+          buildChunks: (): Uint8Array[] => [
+            encodePktStream([
+              bytesOf('# service=git-upload-pack\n'),
+              bytesOf(`${OID1} refs/heads/main\0caps\n`),
+            ]),
+          ],
+        },
+        {
+          label: 'a service header without a trailing flush',
+          buildChunks: (): Uint8Array[] => [
+            encodePktStream([bytesOf('# service=git-upload-pack\n')]).subarray(0, -4),
+          ],
+        },
+      ])('Then throws MISSING_SERVICE_HEADER ($label)', async ({ buildChunks }) => {
+        // Arrange
+        const chunks = buildChunks();
 
         // Act & Assert
         try {
-          await parseAdvertisedRefs(decodePktStream(empty), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
-        }
-      });
-    });
-  });
-
-  describe('Given a service header followed by a non-flush data packet (no separator)', () => {
-    describe('When parsed', () => {
-      it('Then throws MISSING_SERVICE_HEADER', async () => {
-        // Arrange — service header pkt + another data pkt instead of flush
-        const headerStream = encodePktStream([
-          bytesOf('# service=git-upload-pack\n'),
-          bytesOf(`${OID1} refs/heads/main\0caps\n`),
-        ]);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([headerStream])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
-        }
-      });
-    });
-  });
-
-  describe('Given a service header without a trailing flush', () => {
-    describe('When parsed', () => {
-      it('Then throws MISSING_SERVICE_HEADER', async () => {
-        // Arrange — only the service line, no flush after
-        const body = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
-        const trimmed = body.subarray(0, body.byteLength - 4);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([trimmed])), 'git-upload-pack');
+          await parseAdvertisedRefs(decodePktStream(asyncBytes(chunks)), 'git-upload-pack');
           throw new Error('expected throw');
         } catch (err) {
           // Assert
@@ -384,60 +340,34 @@ describe('parseAdvertisedRefs — service header validation', () => {
     });
   });
 
-  describe('Given a stream WITHOUT a "# service=" header', () => {
+  // SERVICE_LINE_RE is anchored `^# service=(...)\n?$`. Each row below kills a
+  // distinct anchor/prefix mutant: no header at all, leading garbage before the
+  // literal (a missing `^`), and trailing content after an embedded newline (a
+  // missing `$`).
+  describe('Given a stream whose leading pkt-line does not carry a valid "# service=" header', () => {
     describe('When parsed', () => {
-      it('Then throws MISSING_SERVICE_HEADER', async () => {
-        // Arrange — first packet is a ref line, not "# service="
-        const body = encodePktStream([bytesOf(`${OID1} refs/heads/main\0multi_ack\n`)]);
+      it.each([
+        {
+          label: 'no service header at all — the first packet is a ref line',
+          buildBody: (): Uint8Array =>
+            encodePktStream([bytesOf(`${OID1} refs/heads/main\0multi_ack\n`)]),
+        },
+        {
+          label: 'leading garbage before "# service="',
+          buildBody: (): Uint8Array => encodePktStream([bytesOf('xxx# service=git-upload-pack\n')]),
+        },
+        {
+          label: 'trailing content after an embedded newline',
+          buildBody: (): Uint8Array =>
+            encodePktStream([bytesOf('# service=git-upload-pack\nbogus')]),
+        },
+      ])('Then throws MISSING_SERVICE_HEADER ($label)', async ({ buildBody }) => {
+        // Arrange
+        const body = buildBody();
 
         // Act & Assert
         try {
           await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
-        }
-      });
-    });
-  });
-
-  describe('Given a service header line with leading garbage before "# service="', () => {
-    describe('When parsed', () => {
-      it('Then throws MISSING_SERVICE_HEADER', async () => {
-        // Arrange — without SERVICE_LINE_RE's leading `^` anchor, `.exec()`
-        // would find a match starting mid-string and wrongly accept a line
-        // that does not begin with the literal header.
-        const headerStream = encodePktStream([bytesOf('xxx# service=git-upload-pack\n')]);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([headerStream])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data.code).toBe('MISSING_SERVICE_HEADER');
-        }
-      });
-    });
-  });
-
-  describe('Given a service header packet with trailing content after an embedded newline', () => {
-    describe('When parsed', () => {
-      it('Then throws MISSING_SERVICE_HEADER', async () => {
-        // Arrange — without SERVICE_LINE_RE's trailing `$` anchor, `.exec()`
-        // would accept the captured service name and ignore anything that
-        // follows it, letting a single pkt-line payload smuggle extra bytes
-        // past an embedded newline.
-        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\nbogus')]);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([headerStream])), 'git-upload-pack');
           throw new Error('expected throw');
         } catch (err) {
           // Assert
@@ -697,91 +627,43 @@ describe('parseAdvertisedRefs — empty advertisement', () => {
 });
 
 describe('parseAdvertisedRefs — additional ref validation', () => {
-  describe('Given a first ref line with a trailing space before NUL (empty name)', () => {
+  describe('Given a malformed ref line or peeled-tag reference', () => {
     describe('When parsed', () => {
-      it('Then throws INVALID_REF_LINE', async () => {
-        // Arrange — "<sha> \0caps\n" → name segment is empty
-        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
-        const refStream = encodePktStream([bytesOf(`${OID1} \0caps\n`)]);
-        const body = concat(headerStream, refStream);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data.code).toBe('INVALID_REF_LINE');
-        }
-      });
-    });
-  });
-
-  describe('Given a subsequent ref line with no space', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_REF_LINE', async () => {
+      it.each([
+        {
+          label: 'a first ref line with a trailing space before NUL (empty name)',
+          buildBody: (): Uint8Array =>
+            concat(
+              encodePktStream([bytesOf('# service=git-upload-pack\n')]),
+              encodePktStream([bytesOf(`${OID1} \0caps\n`)]),
+            ),
+        },
+        {
+          label: 'a subsequent ref line with trailing space and empty name',
+          buildBody: (): Uint8Array => {
+            const body = buildDiscoveryBody({
+              service: 'git-upload-pack',
+              capabilities: ['caps'],
+              refs: [{ name: 'refs/heads/main', id: OID1 }],
+            });
+            const extraStream = encodePktStream([bytesOf(`${OID2} \n`)]);
+            return concat(body.subarray(0, -4), extraStream);
+          },
+        },
+        {
+          label: 'a peeled tag whose base ref is missing',
+          buildBody: (): Uint8Array => {
+            const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
+            const refStream = encodePktStream([
+              bytesOf(`${OID1} refs/heads/main\0caps\n`),
+              bytesOf(`${OID2} refs/tags/missing^{}\n`),
+            ]);
+            return concat(headerStream, refStream);
+          },
+        },
+      ])('Then throws INVALID_REF_LINE ($label)', async ({ buildBody }) => {
         // Arrange
-        const body = buildDiscoveryBody({
-          service: 'git-upload-pack',
-          capabilities: ['caps'],
-          refs: [{ name: 'refs/heads/main', id: OID1 }],
-        });
-        // Append a malformed ref line via raw pkt-line.
-        const extraStream = encodePktStream([bytesOf(`${OID2}\n`)]);
-        const fullBody = concat(body.subarray(0, body.byteLength - 4), extraStream);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data.code).toBe('INVALID_REF_LINE');
-        }
-      });
-    });
-  });
-
-  describe('Given a subsequent ref line with trailing space and empty name', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_REF_LINE', async () => {
-        // Arrange
-        const body = buildDiscoveryBody({
-          service: 'git-upload-pack',
-          capabilities: ['caps'],
-          refs: [{ name: 'refs/heads/main', id: OID1 }],
-        });
-        const extraStream = encodePktStream([bytesOf(`${OID2} \n`)]);
-        const fullBody = concat(body.subarray(0, body.byteLength - 4), extraStream);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([fullBody])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const te = err as TsgitError;
-          expect(te.data.code).toBe('INVALID_REF_LINE');
-        }
-      });
-    });
-  });
-
-  describe('Given a peeled tag whose base ref is missing', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_REF_LINE', async () => {
-        // Arrange
-        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
-        const refStream = encodePktStream([
-          bytesOf(`${OID1} refs/heads/main\0caps\n`),
-          bytesOf(`${OID2} refs/tags/missing^{}\n`),
-        ]);
-        const body = concat(headerStream, refStream);
+        const body = buildBody();
 
         // Act & Assert
         try {
@@ -1625,15 +1507,30 @@ describe('parseShallowResponse', () => {
 });
 
 describe('parseAdvertisedRefs — first-ref splitting boundaries', () => {
-  describe('Given a first ref line whose payload starts with a NUL byte', () => {
+  describe('Given a malformed first-ref line', () => {
     describe('When parsed', () => {
-      it('Then throws INVALID_REF_LINE (not MISSING_CAPABILITIES)', async () => {
-        // Arrange — payload `\0caps` has the NUL at index 0. The genuine guard
-        // `nul < 0` is false (nul===0), so parsing continues and the empty head
-        // fails the space check → INVALID_REF_LINE. The `nul <= 0` mutant would
-        // instead treat index-0 as "no NUL" → MISSING_CAPABILITIES.
+      it.each([
+        {
+          label:
+            'a payload starting with a NUL byte (empty head; kills the `nul <= 0` boundary mutant — not MISSING_CAPABILITIES)',
+          refLinePayload: '\0caps\n',
+          expectedLine: '\0caps',
+        },
+        {
+          label:
+            'a head with no space, NUL-terminated (kills the ConditionalExpression-false mutant on `space < 0`)',
+          refLinePayload: 'notasha\0caps\n',
+          expectedLine: 'notasha\0caps',
+        },
+        {
+          label: 'a head starting with a space, empty id (kills the `space <= 0` boundary mutant)',
+          refLinePayload: ' refs/heads/main\0caps\n',
+          expectedLine: '',
+        },
+      ])('Then throws INVALID_REF_LINE ($label)', async ({ refLinePayload, expectedLine }) => {
+        // Arrange
         const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
-        const refStream = encodePktStream([bytesOf('\0caps\n')]);
+        const refStream = encodePktStream([bytesOf(refLinePayload)]);
         const body = concat(headerStream, refStream);
 
         // Act & Assert
@@ -1645,59 +1542,7 @@ describe('parseAdvertisedRefs — first-ref splitting boundaries', () => {
           expect(err).toBeInstanceOf(TsgitError);
           const data = (err as TsgitError).data as { code: string; line?: string };
           expect(data.code).toBe('INVALID_REF_LINE');
-          expect(data.line).toBe('\0caps');
-        }
-      });
-    });
-  });
-
-  describe('Given a first ref whose head has no space', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_REF_LINE carrying the whole ref line', async () => {
-        // Arrange — head `notasha` (NUL-terminated, no space). The genuine guard
-        // `space < 0` throws `invalidRefLine(line)` with the FULL line. The
-        // ConditionalExpression-false mutant skips the throw, slices a bogus id,
-        // and surfaces a later `invalidRefLine` carrying only `'notash'`.
-        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
-        const refStream = encodePktStream([bytesOf('notasha\0caps\n')]);
-        const body = concat(headerStream, refStream);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const data = (err as TsgitError).data as { code: string; line?: string };
-          expect(data.code).toBe('INVALID_REF_LINE');
-          expect(data.line).toBe('notasha\0caps');
-        }
-      });
-    });
-  });
-
-  describe('Given a first ref head starting with a space (empty id)', () => {
-    describe('When parsed', () => {
-      it('Then throws INVALID_REF_LINE with an empty line field', async () => {
-        // Arrange — head ` refs/heads/main` has the space at index 0. The genuine
-        // guard `space < 0` is false (space===0), so parsing continues with an
-        // empty id, and `validateOidString('')` throws `invalidRefLine('')`. The
-        // `space <= 0` mutant would throw early with the FULL line instead.
-        const headerStream = encodePktStream([bytesOf('# service=git-upload-pack\n')]);
-        const refStream = encodePktStream([bytesOf(' refs/heads/main\0caps\n')]);
-        const body = concat(headerStream, refStream);
-
-        // Act & Assert
-        try {
-          await parseAdvertisedRefs(decodePktStream(asyncBytes([body])), 'git-upload-pack');
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          const data = (err as TsgitError).data as { code: string; line?: string };
-          expect(data.code).toBe('INVALID_REF_LINE');
-          expect(data.line).toBe('');
+          expect(data.line).toBe(expectedLine);
         }
       });
     });
