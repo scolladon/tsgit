@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PatchFile } from '../../../../src/domain/diff/patch-serializer.js';
+import type { PatchFile, PatchOptions } from '../../../../src/domain/diff/patch-serializer.js';
 import { computeHunks, renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -530,50 +530,6 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a negative contextLines option', () => {
-    describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
-        // Arrange
-        const file = modifyFile('foo.txt', 'a\n', 'b\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file], { contextLines: -1 });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
-          'INVALID_DIFF_INPUT',
-        );
-      });
-    });
-  });
-
-  describe('Given a non-integer contextLines option', () => {
-    describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
-        // Arrange
-        const file = modifyFile('foo.txt', 'a\n', 'b\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file], { contextLines: 1.5 });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
-          'INVALID_DIFF_INPUT',
-        );
-      });
-    });
-  });
-
   describe('Given a modify with content change AND mode flip', () => {
     describe('When renderPatch is called', () => {
       it('Then emits old mode + new mode + index (no trailing mode) + hunks', () => {
@@ -887,109 +843,75 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a path containing an embedded newline', () => {
+  // defence-in-depth: tree-object parsers accept arbitrary non-`/` bytes in
+  // entry names, so a hostile remote could ship a path/prefix/contextLines
+  // combination that would smuggle forged hunks past a downstream parser, or
+  // a nonsensical hunk-width option. Each row below is its own guard site;
+  // the `||` in resolveContextLines gets one row per disjunct.
+  describe('Given an input that fails patch-serializer validation', () => {
     describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
-        // Arrange — defence-in-depth: tree-object parsers accept arbitrary
-        // non-`/` bytes in entry names, so a hostile remote could ship a
-        // path containing `\n`. The serializer must refuse to render it
-        // because the resulting headers would smuggle forged hunks past
-        // any downstream parser.
-        const file = addFile('evil\nindex 0000000..deadbeef', 'hi\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
-          'INVALID_DIFF_INPUT',
-        );
-      });
-    });
-  });
-
-  describe('Given a path containing a NUL byte', () => {
-    describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
+      it.each([
+        {
+          label: 'a negative contextLines option',
+          build: (): PatchFile => modifyFile('foo.txt', 'a\n', 'b\n'),
+          options: { contextLines: -1 } satisfies PatchOptions,
+        },
+        {
+          label: 'a non-integer contextLines option',
+          build: (): PatchFile => modifyFile('foo.txt', 'a\n', 'b\n'),
+          options: { contextLines: 1.5 } satisfies PatchOptions,
+        },
+        {
+          label: 'a path containing an embedded newline',
+          build: (): PatchFile => addFile('evil\nindex 0000000..deadbeef', 'hi\n'),
+          options: undefined,
+        },
+        {
+          label: 'a path containing a NUL byte',
+          build: (): PatchFile => addFile('evil\x00path', 'hi\n'),
+          options: undefined,
+        },
+        {
+          label: 'a pathPrefix containing a newline',
+          build: (): PatchFile => addFile('ok.txt', 'hi\n'),
+          options: {
+            pathPrefix: { old: 'a/', new: 'b/\nrename from /etc/passwd' },
+          } satisfies PatchOptions,
+        },
+        {
+          label: 'a delete change with an unsafe path',
+          build: (): PatchFile => deleteFile('bad\nindex deadbeef', 'x\n'),
+          options: undefined,
+        },
+        {
+          label: 'a rename change with an unsafe newPath',
+          build: (): PatchFile => renameFile('old.txt', 'new\nindex forged'),
+          options: undefined,
+        },
+        {
+          label: 'a copy change with an unsafe oldPath',
+          build: (): PatchFile => ({
+            change: {
+              type: 'copy',
+              oldPath: 'evil\nindex forged' as FilePath,
+              newPath: 'dest.txt' as FilePath,
+              oldId: OID_A,
+              newId: OID_B,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+              similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+            },
+          }),
+          options: undefined,
+        },
+      ])('Then throws INVALID_DIFF_INPUT for $label', ({ build, options }) => {
         // Arrange
-        const file = addFile('evil\x00path', 'hi\n');
+        const file = build();
 
         // Act
         let caught: unknown;
         try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
-          'INVALID_DIFF_INPUT',
-        );
-      });
-    });
-  });
-
-  describe('Given a pathPrefix containing a newline', () => {
-    describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
-        // Arrange — covers the prefix-injection vector independently of the
-        // change-path one.
-        const file = addFile('ok.txt', 'hi\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file], { pathPrefix: { old: 'a/', new: 'b/\nrename from /etc/passwd' } });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
-          'INVALID_DIFF_INPUT',
-        );
-      });
-    });
-  });
-
-  describe('Given a delete change with an unsafe path', () => {
-    describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
-        // Arrange — covers the `delete` branch of assertSafePaths.
-        const file = deleteFile('bad\nindex deadbeef', 'x\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
-          'INVALID_DIFF_INPUT',
-        );
-      });
-    });
-  });
-
-  describe('Given a rename change with an unsafe newPath', () => {
-    describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
-        // Arrange — covers the `rename` branch of assertSafePaths.
-        const file = renameFile('old.txt', 'new\nindex forged');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
+          renderPatch([file], options);
         } catch (err) {
           caught = err;
         }
@@ -1676,39 +1598,6 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a copy change with unsafe oldPath', () => {
-    describe('When renderPatch is called', () => {
-      it('Then throws INVALID_DIFF_INPUT', () => {
-        // Arrange — covers the copy branch of assertSafePaths
-        const file: PatchFile = {
-          change: {
-            type: 'copy',
-            oldPath: 'evil\nindex forged' as FilePath,
-            newPath: 'dest.txt' as FilePath,
-            oldId: OID_A,
-            newId: OID_B,
-            oldMode: FILE_MODE.REGULAR,
-            newMode: FILE_MODE.REGULAR,
-            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
-          },
-        };
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { code?: string } } | undefined)?.data?.code).toBe(
-          'INVALID_DIFF_INPUT',
-        );
-      });
-    });
-  });
-
   describe('Given a broken modify with fully-disjoint content (dissimilarity index 100%)', () => {
     describe('When renderPatch is called', () => {
       it('Then emits dissimilarity index 100% + index line + full D/A hunk (matrix B1)', () => {
@@ -2034,15 +1923,45 @@ describe('patch-serializer', () => {
   });
 
   describe('Given ignoreBlankLines', () => {
-    describe('When renderPatch is called on a blank-only modify (#BL1)', () => {
-      it('Then returns an empty document (no header, no hunk)', () => {
-        // Arrange — the only change is inserting a blank line (empty after any key)
-        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
+    describe('When renderPatch fully suppresses the diff body', () => {
+      it.each([
+        {
+          path: 'blank.txt',
+          oldContent: 'a\n',
+          newContent: 'a\n\n',
+          options: { ignoreBlankLines: true } satisfies PatchOptions,
+          scenario: '#BL1 — a blank-only modify returns an empty document (no header, no hunk)',
+        },
+        {
+          path: 'both.txt',
+          oldContent: 'x y\n',
+          newContent: 'x  y\n\n',
+          options: {
+            lineKey: { mode: 'all', ignoreCrAtEol: false },
+            ignoreBlankLines: true,
+          } satisfies PatchOptions,
+          scenario:
+            'a lineKey and ignoreBlankLines combined both apply, and a ws-only + blank-only change yields an empty document',
+        },
+        {
+          path: 'eof.txt',
+          oldContent: 'a\n',
+          newContent: 'a\n   ',
+          options: {
+            lineKey: { mode: 'all', ignoreCrAtEol: false },
+            ignoreBlankLines: true,
+          } satisfies PatchOptions,
+          scenario:
+            'a spaces-only unterminated last line is treated as blank and the body is suppressed',
+        },
+      ])('Then $scenario', ({ path, oldContent, newContent, options }) => {
+        // Arrange
+        const file = modifyFile(path, oldContent, newContent);
 
         // Act
-        const sut = renderPatch([file], { ignoreBlankLines: true });
+        const sut = renderPatch([file], options);
 
-        // Assert — #BL1: no diff --git header, empty document
+        // Assert
         expect(sut).toBe('');
       });
     });
@@ -2062,40 +1981,6 @@ describe('patch-serializer', () => {
       });
     });
 
-    describe('When renderPatch is called with both a lineKey and ignoreBlankLines', () => {
-      it('Then both filters apply and a ws-only + blank-only change yields an empty document', () => {
-        // Arrange — "x y" → "x  y" (internal ws, equal under mode:all) plus a blank
-        // line insert (suppressed by ignoreBlankLines): every hunk is filtered out.
-        const file = modifyFile('both.txt', 'x y\n', 'x  y\n\n');
-
-        // Act
-        const sut = renderPatch([file], {
-          lineKey: { mode: 'all', ignoreCrAtEol: false },
-          ignoreBlankLines: true,
-        });
-
-        // Assert — both options active: no header, empty document
-        expect(sut).toBe('');
-      });
-    });
-
-    describe('When renderPatch suppresses a spaces-only unterminated last line', () => {
-      it('Then the no-LF line is treated as blank and the body is suppressed', () => {
-        // Arrange — the inserted last line "   " has no trailing newline; under
-        // mode:all it normalizes to empty, so ignoreBlankLines suppresses it.
-        const file = modifyFile('eof.txt', 'a\n', 'a\n   ');
-
-        // Act
-        const sut = renderPatch([file], {
-          lineKey: { mode: 'all', ignoreCrAtEol: false },
-          ignoreBlankLines: true,
-        });
-
-        // Assert — the unterminated spaces-only line is blank, body fully suppressed
-        expect(sut).toBe('');
-      });
-    });
-
     describe('When renderPatch is called on a blank-only modify with no options', () => {
       it('Then emits the full diff with the blank hunk (default unchanged)', () => {
         // Arrange — default (no ignoreBlankLines) must emit the blank-line hunk
@@ -2110,27 +1995,22 @@ describe('patch-serializer', () => {
       });
     });
 
-    describe('When a lineKey is set but ignoreBlankLines is not, on a blank-only modify', () => {
-      it('Then the blank hunk is emitted (lineKey alone never suppresses blanks)', () => {
-        // Arrange — lineKey present, ignoreBlankLines absent; the blank insert
-        // must NOT be suppressed (suppression requires an explicit ignoreBlankLines).
+    describe('When renderPatch is called on a blank-only modify without ignoreBlankLines active', () => {
+      it.each([
+        {
+          options: { lineKey: { mode: 'all', ignoreCrAtEol: false } } satisfies PatchOptions,
+          scenario: 'the blank hunk is emitted (lineKey alone never suppresses blanks)',
+        },
+        {
+          options: {} satisfies PatchOptions,
+          scenario: 'the blank hunk is emitted ({} carries no suppression)',
+        },
+      ])('Then $scenario', ({ options }) => {
+        // Arrange — opts is defined but ignoreBlankLines is never set
         const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
 
         // Act
-        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
-
-        // Assert
-        expect(sut).toContain('@@');
-      });
-    });
-
-    describe('When an empty options object is passed on a blank-only modify', () => {
-      it('Then the blank hunk is emitted ({} carries no suppression)', () => {
-        // Arrange — opts is defined but neither lineKey nor ignoreBlankLines is set
-        const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
-
-        // Act
-        const sut = renderPatch([file], {});
+        const sut = renderPatch([file], options);
 
         // Assert
         expect(sut).toContain('@@');
@@ -2476,20 +2356,85 @@ describe('patch-serializer', () => {
   // patchBinaryOverride — per-site isolated tests (mutation-resistant)
   // ---------------------------------------------------------------------------
 
-  describe('Given a modify change with purely-textual content and patchBinaryOverride "binary"', () => {
+  describe('Given textual content with patchBinaryOverride forced to "binary"', () => {
     describe('When renderPatch is called', () => {
-      it('Then renders Binary files line with no @@ hunk header (site 514 + 527 forced)', () => {
+      it.each([
+        {
+          build: (): PatchFile => ({
+            ...modifyFile('text.txt', 'hello\n', 'world\n'),
+            patchBinaryOverride: 'binary',
+          }),
+          expected: 'Binary files a/text.txt and b/text.txt differ',
+          scenario:
+            'a modify change renders the Binary files line with no @@ hunk header (site 514 + 527 forced)',
+        },
+        {
+          build: (): PatchFile => ({
+            ...addFile('new.txt', 'hello\n'),
+            patchBinaryOverride: 'binary',
+          }),
+          expected: 'Binary files /dev/null and b/new.txt differ',
+          scenario:
+            'an add change renders Binary files /dev/null and b/<p> differ (site 741 forced)',
+        },
+        {
+          build: (): PatchFile => ({
+            ...deleteFile('old.txt', 'hello\n'),
+            patchBinaryOverride: 'binary',
+          }),
+          expected: 'Binary files a/old.txt and /dev/null differ',
+          scenario:
+            'a delete change renders Binary files a/<p> and /dev/null differ (site 746 forced)',
+        },
+        {
+          build: (): PatchFile => ({
+            change: {
+              type: 'rename',
+              oldPath: 'old.txt' as FilePath,
+              newPath: 'new.txt' as FilePath,
+              oldId: OID_A,
+              newId: OID_B,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+              similarity: { score: Math.floor(MAX_SCORE / 2), maxScore: MAX_SCORE },
+            },
+            oldContent: utf8.encode('hello\n'),
+            newContent: utf8.encode('world\n'),
+            patchBinaryOverride: 'binary',
+          }),
+          expected: 'Binary files a/old.txt and b/new.txt differ',
+          scenario:
+            'a rename with similarity < 100% renders the binary two-path body (site 643 forced)',
+        },
+        {
+          build: (): PatchFile => ({
+            change: {
+              type: 'copy',
+              oldPath: 'src.txt' as FilePath,
+              newPath: 'dst.txt' as FilePath,
+              oldId: OID_A,
+              newId: OID_B,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+              similarity: { score: Math.floor(MAX_SCORE / 2), maxScore: MAX_SCORE },
+            },
+            oldContent: utf8.encode('hello\n'),
+            newContent: utf8.encode('world\n'),
+            patchBinaryOverride: 'binary',
+          }),
+          expected: 'Binary files a/src.txt and b/dst.txt differ',
+          scenario:
+            'a copy with similarity < 100% renders the binary two-path body (site 643 forced via copy path)',
+        },
+      ])('Then $scenario', ({ build, expected }) => {
         // Arrange
-        const file: PatchFile = {
-          ...modifyFile('text.txt', 'hello\n', 'world\n'),
-          patchBinaryOverride: 'binary',
-        };
+        const file = build();
 
         // Act
         const result = renderPatch([file]);
 
         // Assert
-        expect(result).toContain('Binary files a/text.txt and b/text.txt differ');
+        expect(result).toContain(expected);
         expect(result).not.toContain('@@');
       });
     });
@@ -2588,44 +2533,6 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given an add change with textual content and patchBinaryOverride "binary"', () => {
-    describe('When renderPatch is called', () => {
-      it('Then renders Binary files /dev/null and b/<p> differ (site 741 forced)', () => {
-        // Arrange
-        const file: PatchFile = {
-          ...addFile('new.txt', 'hello\n'),
-          patchBinaryOverride: 'binary',
-        };
-
-        // Act
-        const result = renderPatch([file]);
-
-        // Assert
-        expect(result).toContain('Binary files /dev/null and b/new.txt differ');
-        expect(result).not.toContain('@@');
-      });
-    });
-  });
-
-  describe('Given a delete change with textual content and patchBinaryOverride "binary"', () => {
-    describe('When renderPatch is called', () => {
-      it('Then renders Binary files a/<p> and /dev/null differ (site 746 forced)', () => {
-        // Arrange
-        const file: PatchFile = {
-          ...deleteFile('old.txt', 'hello\n'),
-          patchBinaryOverride: 'binary',
-        };
-
-        // Act
-        const result = renderPatch([file]);
-
-        // Assert
-        expect(result).toContain('Binary files a/old.txt and /dev/null differ');
-        expect(result).not.toContain('@@');
-      });
-    });
-  });
-
   describe('Given a type-change with textual content and patchBinaryOverride "binary"', () => {
     describe('When renderPatch is called', () => {
       it('Then both the delete and add blocks render as binary (sites 608 + 611 forced)', () => {
@@ -2641,37 +2548,6 @@ describe('patch-serializer', () => {
         // Assert — two binary-files lines (one for the delete block, one for the add block)
         const matches = result.match(/Binary files .* differ/g);
         expect(matches).toHaveLength(2);
-        expect(result).not.toContain('@@');
-      });
-    });
-  });
-
-  describe('Given a rename with similarity < 100% and textual content and patchBinaryOverride "binary"', () => {
-    describe('When renderPatch is called', () => {
-      it('Then renders binary two-path body (site 643 forced)', () => {
-        // Arrange
-        const HALF_SCORE = Math.floor(MAX_SCORE / 2);
-        const file: PatchFile = {
-          change: {
-            type: 'rename',
-            oldPath: 'old.txt' as FilePath,
-            newPath: 'new.txt' as FilePath,
-            oldId: OID_A,
-            newId: OID_B,
-            oldMode: FILE_MODE.REGULAR,
-            newMode: FILE_MODE.REGULAR,
-            similarity: { score: HALF_SCORE, maxScore: MAX_SCORE },
-          },
-          oldContent: utf8.encode('hello\n'),
-          newContent: utf8.encode('world\n'),
-          patchBinaryOverride: 'binary',
-        };
-
-        // Act
-        const result = renderPatch([file]);
-
-        // Assert
-        expect(result).toContain('Binary files a/old.txt and b/new.txt differ');
         expect(result).not.toContain('@@');
       });
     });
@@ -2708,213 +2584,78 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a copy change with similarity < 100% and textual content and patchBinaryOverride "binary"', () => {
-    describe('When renderPatch is called', () => {
-      it('Then renders binary two-path body (site 643 forced via copy path)', () => {
-        // Arrange
-        const HALF_SCORE = Math.floor(MAX_SCORE / 2);
-        const file: PatchFile = {
-          change: {
-            type: 'copy',
-            oldPath: 'src.txt' as FilePath,
-            newPath: 'dst.txt' as FilePath,
-            oldId: OID_A,
-            newId: OID_B,
-            oldMode: FILE_MODE.REGULAR,
-            newMode: FILE_MODE.REGULAR,
-            similarity: { score: HALF_SCORE, maxScore: MAX_SCORE },
-          },
-          oldContent: utf8.encode('hello\n'),
-          newContent: utf8.encode('world\n'),
-          patchBinaryOverride: 'binary',
-        };
-
-        // Act
-        const result = renderPatch([file]);
-
-        // Assert
-        expect(result).toContain('Binary files a/src.txt and b/dst.txt differ');
-        expect(result).not.toContain('@@');
-      });
-    });
-  });
-
   // ---------------------------------------------------------------------------
   // rejectUnsafePathChars — per-label-site message pins (mutation-resistant:
   // each site's label is asserted byte-exact so an emptied label is caught).
   // ---------------------------------------------------------------------------
 
-  describe('Given a pathPrefix.old containing a control character', () => {
+  describe('Given an input whose rejection carries a specific error reason', () => {
     describe('When renderPatch is called', () => {
-      it('Then the error reason names the pathPrefix.old label, code, and index', () => {
+      it.each([
+        {
+          build: (): PatchFile => addFile('ok.txt', 'hi\n'),
+          options: { pathPrefix: { old: 'a/\n', new: 'b/' } } satisfies PatchOptions,
+          expectedReason: 'pathPrefix.old contains control character (code 10) at index 2',
+          scenario: 'the error reason names the pathPrefix.old label, code, and index',
+        },
+        {
+          build: (): PatchFile => addFile('ok.txt', 'hi\n'),
+          options: { pathPrefix: { old: 'a/', new: 'b/\r' } } satisfies PatchOptions,
+          expectedReason: 'pathPrefix.new contains control character (code 13) at index 2',
+          scenario: 'the error reason names the pathPrefix.new label, code, and index',
+        },
+        {
+          build: (): PatchFile => renameFile('orig\x00', 'dest.txt'),
+          options: undefined,
+          expectedReason: 'oldPath contains control character (code 0) at index 4',
+          scenario: 'the error reason names the rename oldPath label, code, and index',
+        },
+        {
+          build: (): PatchFile => renameFile('orig.txt', 'de\rst'),
+          options: undefined,
+          expectedReason: 'newPath contains control character (code 13) at index 2',
+          scenario: 'the error reason names the rename newPath label, code, and index',
+        },
+        {
+          build: (): PatchFile => addFile('ne\nw.txt', 'hi\n'),
+          options: undefined,
+          expectedReason: 'newPath contains control character (code 10) at index 2',
+          scenario: 'the error reason names the add newPath label, code, and index',
+        },
+        {
+          build: (): PatchFile => deleteFile('ol\x00d.txt', 'x\n'),
+          options: undefined,
+          expectedReason: 'oldPath contains control character (code 0) at index 2',
+          scenario: 'the error reason names the delete oldPath label, code, and index',
+        },
+        {
+          build: (): PatchFile => modifyFile('fo\no.txt', 'a\n', 'b\n'),
+          options: undefined,
+          expectedReason: 'path contains control character (code 10) at index 2',
+          scenario: 'the error reason names the modify path label, code, and index',
+        },
+        {
+          build: (): PatchFile => modifyFile('foo.txt', 'a\n', 'b\n'),
+          options: { contextLines: -1 } satisfies PatchOptions,
+          expectedReason: 'contextLines must be a non-negative integer; got -1',
+          scenario:
+            'the error reason states the exact non-negative-integer requirement and the offending value',
+        },
+      ])('Then $scenario', ({ build, options, expectedReason }) => {
         // Arrange
-        const file = addFile('ok.txt', 'hi\n');
+        const file = build();
 
         // Act
         let caught: unknown;
         try {
-          renderPatch([file], { pathPrefix: { old: 'a/\n', new: 'b/' } });
+          renderPatch([file], options);
         } catch (err) {
           caught = err;
         }
 
         // Assert
         expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'pathPrefix.old contains control character (code 10) at index 2',
-        );
-      });
-    });
-  });
-
-  describe('Given a pathPrefix.new containing a control character', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the error reason names the pathPrefix.new label, code, and index', () => {
-        // Arrange
-        const file = addFile('ok.txt', 'hi\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file], { pathPrefix: { old: 'a/', new: 'b/\r' } });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'pathPrefix.new contains control character (code 13) at index 2',
-        );
-      });
-    });
-  });
-
-  describe('Given a rename oldPath containing a control character', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the error reason names the oldPath label, code, and index', () => {
-        // Arrange
-        const file = renameFile('orig\x00', 'dest.txt');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'oldPath contains control character (code 0) at index 4',
-        );
-      });
-    });
-  });
-
-  describe('Given a rename newPath containing a control character', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the error reason names the newPath label, code, and index', () => {
-        // Arrange
-        const file = renameFile('orig.txt', 'de\rst');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'newPath contains control character (code 13) at index 2',
-        );
-      });
-    });
-  });
-
-  describe('Given an add newPath containing a control character', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the error reason names the newPath label, code, and index', () => {
-        // Arrange
-        const file = addFile('ne\nw.txt', 'hi\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'newPath contains control character (code 10) at index 2',
-        );
-      });
-    });
-  });
-
-  describe('Given a delete oldPath containing a control character', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the error reason names the oldPath label, code, and index', () => {
-        // Arrange
-        const file = deleteFile('ol\x00d.txt', 'x\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'oldPath contains control character (code 0) at index 2',
-        );
-      });
-    });
-  });
-
-  describe('Given a modify path containing a control character', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the error reason names the path label, code, and index', () => {
-        // Arrange
-        const file = modifyFile('fo\no.txt', 'a\n', 'b\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file]);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'path contains control character (code 10) at index 2',
-        );
-      });
-    });
-  });
-
-  describe('Given a negative contextLines option (reason pin)', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the error reason states the exact non-negative-integer requirement and the offending value', () => {
-        // Arrange
-        const file = modifyFile('foo.txt', 'a\n', 'b\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          renderPatch([file], { contextLines: -1 });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as { data?: { reason?: string } } | undefined)?.data?.reason).toBe(
-          'contextLines must be a non-negative integer; got -1',
+          expectedReason,
         );
       });
     });
