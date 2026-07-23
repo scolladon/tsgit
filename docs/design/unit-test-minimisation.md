@@ -164,10 +164,10 @@ describe('Given a config with [core] bare=true', () => {
 describe('Given a config with a [core] bare value', () => {
   describe('When readConfig', () => {
     it.each([
-      { value: 'true',    expected: true,  then: 'parsed.core.bare is true' },
-      { value: 'false',   expected: false, then: 'parsed.core.bare is false' },
-      { value: 'invalid', expected: false, then: 'an unparseable boolean defaults to false' },
-    ])('Then $then', async ({ value, expected }) => {
+      { value: 'true',    expected: true,  label: 'parsed.core.bare is true' },
+      { value: 'false',   expected: false, label: 'parsed.core.bare is false' },
+      { value: 'invalid', expected: false, label: 'an unparseable boolean defaults to false' },
+    ])('Then $label', async ({ value, expected }) => {
       // Arrange
       const sut = await writeConfig(`[core]\n\tbare = ${value}\n`);
       // Act
@@ -215,17 +215,22 @@ default (`7`). That is the KEEP-vs-COLLAPSE line drawn correctly.
 Five `parseCapabilities` tests share oracle `parse(x) toEqual y` but each
 documents a *named* property (ordering / key=value retention / empty / whitespace
 / dedup). A printf `%j` title would dump the input and lose the label; use an
-object-row `then` field so the `Then` stays intention-revealing:
+object-row `label` field so the `Then` stays intention-revealing:
 
 ```
 it.each([
-  { tail: 'multi_ack_detailed side-band-64k ofs-delta', expected: ['multi_ack_detailed','side-band-64k','ofs-delta'], then: 'returns the tokens in order' },
-  { tail: 'agent=git/2.43 thin-pack',                    expected: ['agent=git/2.43','thin-pack'],                     then: 'keeps key=value entries as full tokens' },
-  { tail: '',                                            expected: [],                                                 then: 'returns [] for an empty tail' },
-  { tail: '  side-band-64k  ofs-delta  ',                expected: ['side-band-64k','ofs-delta'],                      then: 'drops extra-whitespace empties' },
-  { tail: 'side-band-64k side-band-64k',                 expected: ['side-band-64k'],                                  then: 'de-duplicates a repeated boolean cap' },
-])('Then it $then', ({ tail, expected }) => { /* AAA, sut, toEqual */ });
+  { tail: 'multi_ack_detailed side-band-64k ofs-delta', expected: ['multi_ack_detailed','side-band-64k','ofs-delta'], label: 'returns the tokens in order' },
+  { tail: 'agent=git/2.43 thin-pack',                    expected: ['agent=git/2.43','thin-pack'],                     label: 'keeps key=value entries as full tokens' },
+  { tail: '',                                            expected: [],                                                 label: 'returns [] for an empty tail' },
+  { tail: '  side-band-64k  ofs-delta  ',                expected: ['side-band-64k','ofs-delta'],                      label: 'drops extra-whitespace empties' },
+  { tail: 'side-band-64k side-band-64k',                 expected: ['side-band-64k'],                                  label: 'de-duplicates a repeated boolean cap' },
+])('Then it $label', ({ tail, expected }) => { /* AAA, sut, toEqual */ });
 ```
+
+> **Row-field name is `label`, never `then`.** Biome's `noThenProperty`
+> (recommended preset) rejects an object literal with a `then` key (thenable
+> collision), and `label` is already this repo's established it.each row-field
+> convention. Title interpolates as `'Then $label'`.
 
 ### Worked example — DELETE (strict subset)
 
@@ -244,7 +249,7 @@ of them, which is exactly what "preserve intention-revealing titles" means here:
 
 | Heuristic | Rule the collapsed form must keep |
 |---|---|
-| `gwtTitle` | `describe` titles match `^Given `/`^When `; the `it.each` title matches `^Then .+` — `'Then \`%s\` …'` and `'Then $then'` both pass |
+| `gwtTitle` | `describe` titles match `^Given `/`^When `; the `it.each` title matches `^Then .+` — `'Then \`%s\` …'` and `'Then $label'` both pass |
 | `aaaBody` | `// Arrange` and `// Assert` section comments present in the callback |
 | `sutNaming` | binds `sut` (bans `subject`/`objectUnderTest`/`systemUnderTest`/`cut`) |
 | `underAssertedUnit` | ≥1 `expect` per case (each expanded row is a real `it`) |
@@ -256,7 +261,7 @@ Canonical collapsed shape (the invariant all examples share):
 describe('Given <shared context>', () => {          // Given: unchanged
   describe('When <the shared act>', () => {          // When: unchanged, one act
     it.each([ /* one row per distinguishing input, UNION of merged tests */ ])(
-      'Then $then',                                  // or 'Then `%s` …' printf form
+      'Then $label',                                 // or 'Then `%s` …' printf form
       (row) => {
         // Arrange   — build the SUT input from the row
         const sut = …;
