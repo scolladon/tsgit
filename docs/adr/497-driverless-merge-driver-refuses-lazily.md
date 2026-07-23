@@ -59,3 +59,8 @@ tsgit does not model.
   its eager valueless refusal.
 - Adds a bounded refusal surface (one new choice variant, one new error) and one documented residual
   (M16) tied to tsgit's config-map model.
+- Extends ADR-352's eager valueless-key guard to also scan `recursive` (previously `driver`/`name`
+  only): a valueless `[merge "<name>"] recursive` now refuses eagerly with the same
+  `CONFIG_MISSING_VALUE` shape git emits (verified exit 128, `missing value for
+  'merge.<name>.recursive'`), closing the last valueless merge-key gap. The `driver`/`name`
+  behaviour is byte-identical.
