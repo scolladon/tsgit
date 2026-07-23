@@ -76,47 +76,36 @@ describe('toArray', () => {
     });
   });
 
-  describe('Given a source of 3 items and limit = 3 (>= boundary)', () => {
+  describe('Given a limit that does not throw', () => {
     describe('When sut is awaited', () => {
-      it('Then [0,1,2] is returned', async () => {
+      it.each([
+        {
+          sourceFactory: () => range(3),
+          limit: 3,
+          expected: [0, 1, 2],
+          label: 'a source of 3 items and limit = 3 (>= boundary) returns [0,1,2]',
+        },
+        {
+          sourceFactory: () => range(3),
+          limit: 4,
+          expected: [0, 1, 2],
+          label: 'a source of 3 items and limit = 4 returns [0,1,2] (no error)',
+        },
+        {
+          sourceFactory: () => empty(),
+          limit: 0,
+          expected: [],
+          label: 'an empty source and limit = 0 returns []',
+        },
+      ])('Then $label', async ({ sourceFactory, limit, expected }) => {
         // Arrange
-        const source = range(3);
+        const source = sourceFactory();
 
         // Act
-        const sut = await toArray(source, 3);
+        const sut = await toArray(source, limit);
 
         // Assert
-        expect(sut).toEqual([0, 1, 2]);
-      });
-    });
-  });
-
-  describe('Given a source of 3 items and limit = 4', () => {
-    describe('When sut is awaited', () => {
-      it('Then [0,1,2] is returned (no error)', async () => {
-        // Arrange
-        const source = range(3);
-
-        // Act
-        const sut = await toArray(source, 4);
-
-        // Assert
-        expect(sut).toEqual([0, 1, 2]);
-      });
-    });
-  });
-
-  describe('Given an empty source and limit = 0', () => {
-    describe('When sut is awaited', () => {
-      it('Then [] is returned', async () => {
-        // Arrange
-        const source = empty();
-
-        // Act
-        const sut = await toArray(source, 0);
-
-        // Assert
-        expect(sut).toEqual([]);
+        expect(sut).toEqual(expected);
       });
     });
   });

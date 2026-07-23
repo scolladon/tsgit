@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
-import { createContext, type RepositoryLayout } from '../../../src/ports/context.js';
+import { type Context, createContext, type RepositoryLayout } from '../../../src/ports/context.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import type { HashService } from '../../../src/ports/hash-service.js';
 import type { HttpTransport } from '../../../src/ports/http-transport.js';
@@ -22,7 +22,29 @@ const sentinelDeltaCache = createLruCache<Uint8Array>(1024);
 describe('Context', () => {
   describe('Given distinct sentinel ports', () => {
     describe('When creating context', () => {
-      it('Then ctx.fs === sentinelFs', () => {
+      it.each([
+        { select: (ctx: Context) => ctx.fs, expected: sentinelFs, label: 'ctx.fs === sentinelFs' },
+        {
+          select: (ctx: Context) => ctx.hash,
+          expected: sentinelHash,
+          label: 'ctx.hash === sentinelHash',
+        },
+        {
+          select: (ctx: Context) => ctx.compressor,
+          expected: sentinelCompressor,
+          label: 'ctx.compressor === sentinelCompressor',
+        },
+        {
+          select: (ctx: Context) => ctx.transport,
+          expected: sentinelTransport,
+          label: 'ctx.transport === sentinelTransport',
+        },
+        {
+          select: (ctx: Context) => ctx.progress,
+          expected: sentinelProgress,
+          label: 'ctx.progress === sentinelProgress',
+        },
+      ])('Then $label', ({ select, expected }) => {
         // Arrange
         const sut = createContext({
           fs: sentinelFs,
@@ -36,71 +58,7 @@ describe('Context', () => {
           deltaCache: sentinelDeltaCache,
         });
         // Assert
-        expect(sut.fs).toBe(sentinelFs);
-      });
-      it('Then ctx.hash === sentinelHash', () => {
-        // Arrange
-        const sut = createContext({
-          fs: sentinelFs,
-          hash: sentinelHash,
-          compressor: sentinelCompressor,
-          transport: sentinelTransport,
-          progress: sentinelProgress,
-          layout: sentinelLayout,
-          runtime: sentinelRuntime,
-          hashConfig: sentinelHashConfig,
-          deltaCache: sentinelDeltaCache,
-        });
-        // Assert
-        expect(sut.hash).toBe(sentinelHash);
-      });
-      it('Then ctx.compressor === sentinelCompressor', () => {
-        // Arrange
-        const sut = createContext({
-          fs: sentinelFs,
-          hash: sentinelHash,
-          compressor: sentinelCompressor,
-          transport: sentinelTransport,
-          progress: sentinelProgress,
-          layout: sentinelLayout,
-          runtime: sentinelRuntime,
-          hashConfig: sentinelHashConfig,
-          deltaCache: sentinelDeltaCache,
-        });
-        // Assert
-        expect(sut.compressor).toBe(sentinelCompressor);
-      });
-      it('Then ctx.transport === sentinelTransport', () => {
-        // Arrange
-        const sut = createContext({
-          fs: sentinelFs,
-          hash: sentinelHash,
-          compressor: sentinelCompressor,
-          transport: sentinelTransport,
-          progress: sentinelProgress,
-          layout: sentinelLayout,
-          runtime: sentinelRuntime,
-          hashConfig: sentinelHashConfig,
-          deltaCache: sentinelDeltaCache,
-        });
-        // Assert
-        expect(sut.transport).toBe(sentinelTransport);
-      });
-      it('Then ctx.progress === sentinelProgress', () => {
-        // Arrange
-        const sut = createContext({
-          fs: sentinelFs,
-          hash: sentinelHash,
-          compressor: sentinelCompressor,
-          transport: sentinelTransport,
-          progress: sentinelProgress,
-          layout: sentinelLayout,
-          runtime: sentinelRuntime,
-          hashConfig: sentinelHashConfig,
-          deltaCache: sentinelDeltaCache,
-        });
-        // Assert
-        expect(sut.progress).toBe(sentinelProgress);
+        expect(select(sut)).toBe(expected);
       });
     });
   });

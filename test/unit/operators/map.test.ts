@@ -2,20 +2,47 @@ import { expectTypeOf } from 'expect-type';
 import { describe, expect, it } from 'vitest';
 import { map } from '../../../src/operators/map.js';
 import { toArray } from '../../../src/operators/to-array.js';
+import type { Awaitable } from '../../../src/operators/types.js';
 import { abortableRange, awaitable, fromArray, pullCounter, trackedRange } from './fixtures.js';
 
+interface MapRow {
+  readonly input: readonly number[];
+  readonly mapper: (n: number) => Awaitable<unknown>;
+  readonly expected: readonly unknown[];
+  readonly label: string;
+}
+
 describe('map', () => {
-  describe('Given a source [1,2,3] and mapper x => x * 2', () => {
+  describe('Given a source array and a mapper', () => {
     describe('When sut is iterated', () => {
-      it('Then [2,4,6] is yielded', async () => {
+      it.each<MapRow>([
+        {
+          input: [1, 2, 3],
+          mapper: (n: number) => n * 2,
+          expected: [2, 4, 6],
+          label: '[2,4,6] is yielded for mapper x => x * 2',
+        },
+        {
+          input: [1, 2],
+          mapper: async (n: number) => `v=${n}`,
+          expected: ['v=1', 'v=2'],
+          label: 'an async mapper resolves before yielding',
+        },
+        {
+          input: [1, 2, 3],
+          mapper: (n: number) => awaitable(() => n + 1),
+          expected: [2, 3, 4],
+          label: 'an awaitable-wrapped mapper resolves before yielding',
+        },
+      ])('Then $label', async ({ input, mapper, expected }) => {
         // Arrange
-        const sut = map((n: number) => n * 2);
+        const sut = map(mapper);
 
         // Act
-        const result = await toArray(sut(fromArray([1, 2, 3])));
+        const result = await toArray(sut(fromArray(input)));
 
         // Assert
-        expect(result).toEqual([2, 4, 6]);
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -48,36 +75,6 @@ describe('map', () => {
 
         // Assert
         expect(mapped).toEqual(passthrough);
-      });
-    });
-  });
-
-  describe('Given an async mapper returning Promise<U>', () => {
-    describe('When sut yields', () => {
-      it('Then the resolved U is yielded', async () => {
-        // Arrange
-        const sut = map(async (n: number) => `v=${n}`);
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2])));
-
-        // Assert
-        expect(result).toEqual(['v=1', 'v=2']);
-      });
-    });
-  });
-
-  describe('Given a mapper wrapped via awaitable<U>(fn)', () => {
-    describe('When sut is iterated', () => {
-      it('Then items are transformed correctly', async () => {
-        // Arrange
-        const sut = map((n: number) => awaitable(() => n + 1));
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2, 3])));
-
-        // Assert
-        expect(result).toEqual([2, 3, 4]);
       });
     });
   });

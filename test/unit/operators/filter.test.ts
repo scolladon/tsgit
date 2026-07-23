@@ -11,17 +11,60 @@ import {
 } from './fixtures.js';
 
 describe('filter', () => {
-  describe('Given a source [1,2,3,4] and predicate x % 2 === 0', () => {
+  describe('Given a source array and a boolean-yielding predicate', () => {
     describe('When sut is iterated', () => {
-      it('Then [2,4] is yielded in order', async () => {
+      it.each([
+        {
+          input: [1, 2, 3, 4],
+          predicate: (n: number) => n % 2 === 0,
+          expected: [2, 4],
+          label: '[2,4] is yielded in order for an even predicate',
+        },
+        {
+          input: [1, 2, 3],
+          predicate: () => false,
+          expected: [],
+          label: '[] is yielded when the predicate is always false',
+        },
+        {
+          input: [-1, 1, -2, 2],
+          predicate: async (n: number) => n > 0,
+          expected: [1, 2],
+          label: 'an async predicate keeps only items where n > 0',
+        },
+        {
+          input: [0, 1, 2, 3],
+          predicate: (n: number) => awaitable(() => n > 1),
+          expected: [2, 3],
+          label: 'an awaitable-wrapped predicate filters correctly',
+        },
+        {
+          input: [1],
+          predicate: () => true,
+          expected: [1],
+          label: '[1] is yielded when the predicate is always true',
+        },
+        {
+          input: [1],
+          predicate: () => false,
+          expected: [],
+          label: '[] is yielded for source [1] when the predicate is always false',
+        },
+        {
+          input: [1, 2, 3, 4, 5],
+          predicate: async (n: number) => n > 0,
+          expected: [1, 2, 3, 4, 5],
+          label: 'an async predicate resolving on the next microtask preserves source order',
+        },
+      ])('Then $label', async ({ input, predicate, expected }) => {
         // Arrange
-        const sut = filter((n: number) => n % 2 === 0);
+        const sut = filter(predicate);
 
         // Act
-        const result = await toArray(sut(fromArray([1, 2, 3, 4])));
+        const result = await toArray(sut(fromArray(input)));
 
         // Assert
-        expect(result).toEqual([2, 4]);
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -39,51 +82,6 @@ describe('filter', () => {
 
         // Assert
         expect(filtered).toEqual(passthrough);
-      });
-    });
-  });
-
-  describe('Given a predicate returning false for all items', () => {
-    describe('When invoked', () => {
-      it('Then toArray output is []', async () => {
-        // Arrange
-        const sut = filter(() => false);
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2, 3])));
-
-        // Assert
-        expect(result).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given an async predicate returning Promise<true>', () => {
-    describe('When sut yields', () => {
-      it('Then item is included', async () => {
-        // Arrange
-        const sut = filter(async (n: number) => n > 0);
-
-        // Act
-        const result = await toArray(sut(fromArray([-1, 1, -2, 2])));
-
-        // Assert
-        expect(result).toEqual([1, 2]);
-      });
-    });
-  });
-
-  describe('Given a predicate wrapped via awaitable<boolean>(fn)', () => {
-    describe('When sut is iterated', () => {
-      it('Then items pass through correctly', async () => {
-        // Arrange
-        const sut = filter((n: number) => awaitable(() => n > 1));
-
-        // Act
-        const result = await toArray(sut(fromArray([0, 1, 2, 3])));
-
-        // Assert
-        expect(result).toEqual([2, 3]);
       });
     });
   });
@@ -139,51 +137,6 @@ describe('filter', () => {
 
         // Assert
         expect(source.pullCount()).toBe(5);
-      });
-    });
-  });
-
-  describe('Given a predicate () => true on source [1]', () => {
-    describe('When sut is iterated', () => {
-      it('Then [1] is yielded', async () => {
-        // Arrange
-        const sut = filter(() => true);
-
-        // Act
-        const result = await toArray(sut(fromArray([1])));
-
-        // Assert
-        expect(result).toEqual([1]);
-      });
-    });
-  });
-
-  describe('Given the same source [1] but predicate () => false', () => {
-    describe('When sut is iterated', () => {
-      it('Then [] is yielded', async () => {
-        // Arrange
-        const sut = filter(() => false);
-
-        // Act
-        const result = await toArray(sut(fromArray([1])));
-
-        // Assert
-        expect(result).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a predicate returning Promise<boolean> resolving on next microtask', () => {
-    describe('When sut is iterated', () => {
-      it('Then items arrive in source order', async () => {
-        // Arrange
-        const sut = filter(async (n: number) => n > 0);
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2, 3, 4, 5])));
-
-        // Assert
-        expect(result).toEqual([1, 2, 3, 4, 5]);
       });
     });
   });
