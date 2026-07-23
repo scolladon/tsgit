@@ -37,193 +37,119 @@ function makeR087Fixture(): { readonly src: Uint8Array; readonly dst: Uint8Array
   return { src: concatParts(srcParts), dst: concatParts(dstParts) };
 }
 
+// XOR complement guarantees no shared 4-grams.
+function makeDisjoint256Pair(): { readonly src: Uint8Array; readonly dst: Uint8Array } {
+  const base = new Uint8Array(Array.from({ length: 256 }, (_, i) => i));
+  const flipped = new Uint8Array(base.map((b) => b ^ 0xff));
+  return {
+    src: new Uint8Array([...base, ...base, ...base, ...base]), // 1024 bytes
+    dst: new Uint8Array([...flipped, ...flipped, ...flipped, ...flipped]),
+  };
+}
+
+// XOR complement guarantees no shared chunk hashes.
+function makeDisjoint64Pair(): { readonly src: Uint8Array; readonly dst: Uint8Array } {
+  const base = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
+  const flipped = new Uint8Array(base.map((b) => b ^ 0xff));
+  return {
+    src: new Uint8Array([...base, ...base, ...base, 0x0a]),
+    dst: new Uint8Array([...flipped, ...flipped, ...flipped, 0x0a]),
+  };
+}
+
 describe('similarity', () => {
-  describe('MAX_SCORE', () => {
-    describe('Given the constant, When read', () => {
-      it('Then equals 60000', () => {
-        // Arrange
-        const sut = MAX_SCORE;
-
-        // Act / Assert
-        expect(sut).toBe(60000);
-      });
-    });
-  });
-
-  describe('DEFAULT_RENAME_THRESHOLD', () => {
-    describe('Given the constant, When read', () => {
-      it('Then equals 30000 (50% of MAX_SCORE)', () => {
-        // Arrange
-        const sut = DEFAULT_RENAME_THRESHOLD;
-
-        // Act / Assert
-        expect(sut).toBe(30000);
-      });
-    });
-  });
-
-  describe('DEFAULT_BREAK_SCORE', () => {
-    describe('Given the constant, When read', () => {
-      it('Then equals 30000 (50% of MAX_SCORE)', () => {
-        // Arrange
-        const sut = DEFAULT_BREAK_SCORE;
-
-        // Act / Assert
-        expect(sut).toBe(30000);
-      });
-    });
-  });
-
-  describe('DEFAULT_MERGE_SCORE', () => {
-    describe('Given the constant, When read', () => {
-      it('Then equals 36000 (60% of MAX_SCORE)', () => {
-        // Arrange
-        const sut = DEFAULT_MERGE_SCORE;
-
-        // Act / Assert
-        expect(sut).toBe(36000);
-      });
+  describe('Given an exported score constant, When read', () => {
+    it.each([
+      { sut: MAX_SCORE, expected: 60000, label: 'MAX_SCORE equals 60000' },
+      {
+        sut: DEFAULT_RENAME_THRESHOLD,
+        expected: 30000,
+        label: 'DEFAULT_RENAME_THRESHOLD equals 30000 (50% of MAX_SCORE)',
+      },
+      {
+        sut: DEFAULT_BREAK_SCORE,
+        expected: 30000,
+        label: 'DEFAULT_BREAK_SCORE equals 30000 (50% of MAX_SCORE)',
+      },
+      {
+        sut: DEFAULT_MERGE_SCORE,
+        expected: 36000,
+        label: 'DEFAULT_MERGE_SCORE equals 36000 (60% of MAX_SCORE)',
+      },
+    ])('Then $label', ({ sut, expected }) => {
+      // Act / Assert
+      expect(sut).toBe(expected);
     });
   });
 
   describe('toSimilarityPercent', () => {
-    describe('Given score MAX_SCORE, When toSimilarityPercent is called', () => {
-      it('Then returns 100', () => {
-        // Arrange
-        const score = MAX_SCORE;
-
+    describe('Given a similarity score, When toSimilarityPercent is called', () => {
+      it.each([
+        { score: MAX_SCORE, expected: 100, label: 'MAX_SCORE returns 100' },
+        { score: 0, expected: 0, label: '0 returns 0' },
+        {
+          score: 59999,
+          expected: 99,
+          label: '59999 (one below MAX_SCORE) returns 99 (truncated, not rounded)',
+        },
+        {
+          score: 52200,
+          expected: 87,
+          label: '52200 (the lower bound of 87%) returns 87 (truncated)',
+        },
+        {
+          score: 52799,
+          expected: 87,
+          label: '52799 (the upper bound of 87%) returns 87 (truncated, not 88)',
+        },
+      ])('Then $label', ({ score, expected }) => {
         // Act
         const result = toSimilarityPercent(score);
 
         // Assert
-        expect(result).toBe(100);
-      });
-    });
-
-    describe('Given score 0, When toSimilarityPercent is called', () => {
-      it('Then returns 0', () => {
-        // Arrange
-        const score = 0;
-
-        // Act
-        const result = toSimilarityPercent(score);
-
-        // Assert
-        expect(result).toBe(0);
-      });
-    });
-
-    describe('Given score 59999 (one below MAX_SCORE), When toSimilarityPercent is called', () => {
-      it('Then returns 99 (truncated, not rounded)', () => {
-        // Arrange
-        const score = 59999;
-
-        // Act
-        const result = toSimilarityPercent(score);
-
-        // Assert
-        expect(result).toBe(99);
-      });
-    });
-
-    describe('Given score 52200 (the lower bound of 87%), When toSimilarityPercent is called', () => {
-      it('Then returns 87 (truncated)', () => {
-        // Arrange
-        const score = 52200;
-
-        // Act
-        const result = toSimilarityPercent(score);
-
-        // Assert
-        expect(result).toBe(87);
-      });
-    });
-
-    describe('Given score 52799 (the upper bound of 87%), When toSimilarityPercent is called', () => {
-      it('Then returns 87 (truncated, not 88)', () => {
-        // Arrange
-        const score = 52799;
-
-        // Act
-        const result = toSimilarityPercent(score);
-
-        // Assert
-        expect(result).toBe(87);
+        expect(result).toBe(expected);
       });
     });
   });
 
   describe('estimateSimilarity', () => {
-    describe('Given both src and dst are empty, When estimateSimilarity is called', () => {
-      it('Then returns MAX_SCORE (both-empty guard)', () => {
-        // Arrange
-        const src = new Uint8Array(0);
-        const dst = new Uint8Array(0);
-
+    describe('Given src and dst byte content, When estimateSimilarity is called', () => {
+      it.each([
+        {
+          src: new Uint8Array(0),
+          dst: new Uint8Array(0),
+          expected: MAX_SCORE,
+          label: 'both empty returns MAX_SCORE (both-empty guard)',
+        },
+        {
+          src: new Uint8Array(0),
+          dst: enc.encode('hello world'),
+          expected: 0,
+          label: 'empty src and non-empty dst returns 0 (empty src contributes nothing)',
+        },
+        {
+          src: enc.encode('hello world'),
+          dst: new Uint8Array(0),
+          expected: 0,
+          label: 'non-empty src and empty dst returns 0 (empty dst has no spans to match)',
+        },
+        {
+          src: enc.encode('hello world this is a test file\n'.repeat(5)),
+          dst: enc.encode('hello world this is a test file\n'.repeat(5)),
+          expected: MAX_SCORE,
+          label: 'identical content returns MAX_SCORE',
+        },
+        {
+          ...makeDisjoint256Pair(),
+          expected: 0,
+          label: 'provably disjoint content (no shared 4-byte windows) returns 0',
+        },
+      ])('Then $label', ({ src, dst, expected }) => {
         // Act
         const result = estimateSimilarity(src, dst);
 
         // Assert
-        expect(result).toBe(MAX_SCORE);
-      });
-    });
-
-    describe('Given src is empty and dst is non-empty, When estimateSimilarity is called', () => {
-      it('Then returns 0 (empty src contributes nothing)', () => {
-        // Arrange
-        const src = new Uint8Array(0);
-        const dst = enc.encode('hello world');
-
-        // Act
-        const result = estimateSimilarity(src, dst);
-
-        // Assert
-        expect(result).toBe(0);
-      });
-    });
-
-    describe('Given src is non-empty and dst is empty, When estimateSimilarity is called', () => {
-      it('Then returns 0 (empty dst has no spans to match)', () => {
-        // Arrange
-        const src = enc.encode('hello world');
-        const dst = new Uint8Array(0);
-
-        // Act
-        const result = estimateSimilarity(src, dst);
-
-        // Assert
-        expect(result).toBe(0);
-      });
-    });
-
-    describe('Given src and dst are identical, When estimateSimilarity is called', () => {
-      it('Then returns MAX_SCORE', () => {
-        // Arrange
-        const content = enc.encode('hello world this is a test file\n'.repeat(5));
-        const src = content;
-        const dst = content;
-
-        // Act
-        const result = estimateSimilarity(src, dst);
-
-        // Assert
-        expect(result).toBe(MAX_SCORE);
-      });
-    });
-
-    describe('Given src and dst are provably disjoint (no shared 4-byte windows), When estimateSimilarity is called', () => {
-      it('Then returns 0', () => {
-        // Arrange — XOR complement guarantees no shared 4-grams
-        const base = new Uint8Array(Array.from({ length: 256 }, (_, i) => i));
-        const flipped = new Uint8Array(base.map((b) => b ^ 0xff));
-        const src = new Uint8Array([...base, ...base, ...base, ...base]); // 1024 bytes
-        const dst = new Uint8Array([...flipped, ...flipped, ...flipped, ...flipped]);
-
-        // Act
-        const result = estimateSimilarity(src, dst);
-
-        // Assert
-        expect(result).toBe(0);
+        expect(result).toBe(expected);
       });
     });
 
@@ -290,81 +216,49 @@ describe('similarity', () => {
   });
 
   describe('countSpanhashChanges', () => {
-    describe('Given both src and dst are empty, When countSpanhashChanges is called', () => {
-      it('Then srcCopied is 0 and literalAdded is 0', () => {
-        // Arrange
-        const src = new Uint8Array(0);
-        const dst = new Uint8Array(0);
-
+    describe('Given src and dst byte content, When countSpanhashChanges is called', () => {
+      it.each([
+        {
+          src: new Uint8Array(0),
+          dst: new Uint8Array(0),
+          srcCopied: 0,
+          literalAdded: 0,
+          label: 'both empty: srcCopied is 0 and literalAdded is 0',
+        },
+        {
+          src: new Uint8Array(0),
+          dst: enc.encode('hello world\n'),
+          srcCopied: 0,
+          literalAdded: 12, // 'hello world\n'.length
+          label: 'src empty and dst non-empty: srcCopied is 0 and literalAdded equals dstSize',
+        },
+        {
+          src: enc.encode('hello world\n'),
+          dst: new Uint8Array(0),
+          srcCopied: 0,
+          literalAdded: 0,
+          label: 'src non-empty and dst empty: srcCopied is 0 and literalAdded is 0',
+        },
+        {
+          src: enc.encode('shared content alpha beta gamma\n'.repeat(5)),
+          dst: enc.encode('shared content alpha beta gamma\n'.repeat(5)),
+          srcCopied: 160, // 'shared content alpha beta gamma\n'.repeat(5).length
+          literalAdded: 0,
+          label: 'identical src and dst: srcCopied equals srcSize and literalAdded is 0',
+        },
+        {
+          ...makeDisjoint64Pair(),
+          srcCopied: 0,
+          literalAdded: 193, // 64*3 + 1 trailing LF byte
+          label: 'fully disjoint src and dst: srcCopied is 0 and literalAdded equals dstSize',
+        },
+      ])('Then $label', ({ src, dst, srcCopied, literalAdded }) => {
         // Act
         const result = countSpanhashChanges(src, dst);
 
         // Assert
-        expect(result.srcCopied).toBe(0);
-        expect(result.literalAdded).toBe(0);
-      });
-    });
-
-    describe('Given src is empty and dst is non-empty, When countSpanhashChanges is called', () => {
-      it('Then srcCopied is 0 and literalAdded equals dstSize', () => {
-        // Arrange
-        const src = new Uint8Array(0);
-        const dst = enc.encode('hello world\n');
-
-        // Act
-        const result = countSpanhashChanges(src, dst);
-
-        // Assert
-        expect(result.srcCopied).toBe(0);
-        expect(result.literalAdded).toBe(dst.length);
-      });
-    });
-
-    describe('Given src is non-empty and dst is empty, When countSpanhashChanges is called', () => {
-      it('Then srcCopied is 0 and literalAdded is 0', () => {
-        // Arrange
-        const src = enc.encode('hello world\n');
-        const dst = new Uint8Array(0);
-
-        // Act
-        const result = countSpanhashChanges(src, dst);
-
-        // Assert
-        expect(result.srcCopied).toBe(0);
-        expect(result.literalAdded).toBe(0);
-      });
-    });
-
-    describe('Given src and dst are identical, When countSpanhashChanges is called', () => {
-      it('Then srcCopied equals srcSize and literalAdded is 0', () => {
-        // Arrange
-        const content = enc.encode('shared content alpha beta gamma\n'.repeat(5));
-        const src = content;
-        const dst = content;
-
-        // Act
-        const result = countSpanhashChanges(src, dst);
-
-        // Assert
-        expect(result.srcCopied).toBe(src.length);
-        expect(result.literalAdded).toBe(0);
-      });
-    });
-
-    describe('Given src and dst are fully disjoint, When countSpanhashChanges is called', () => {
-      it('Then srcCopied is 0 and literalAdded equals dstSize', () => {
-        // Arrange — XOR complement guarantees no shared chunk hashes
-        const base = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
-        const flipped = new Uint8Array(base.map((b) => b ^ 0xff));
-        const src = new Uint8Array([...base, ...base, ...base, 0x0a]);
-        const dst = new Uint8Array([...flipped, ...flipped, ...flipped, 0x0a]);
-
-        // Act
-        const result = countSpanhashChanges(src, dst);
-
-        // Assert
-        expect(result.srcCopied).toBe(0);
-        expect(result.literalAdded).toBe(dst.length);
+        expect(result.srcCopied).toBe(srcCopied);
+        expect(result.literalAdded).toBe(literalAdded);
       });
     });
 
@@ -501,57 +395,66 @@ describe('similarity', () => {
     // Hash accumulator arithmetic (mutants 1, 4, 5, 8, 9)
     // and flush mechanics (mutants 2, 3, 6, 7)
 
-    describe('Given a single LF byte, When buildChunkMap is called', () => {
-      it('Then the map contains exactly one entry with hash 10 and byte count 1', () => {
-        // Arrange
-        // Single LF: accum1 = (((0<<7)^(0>>>25)) + 0x0a)>>>0 = 10, accum2 = 0
-        // hashval = (10 + imul(0, 0x61)) % 107927 = 10
-        const sut = buildChunkMap;
-        const data = new Uint8Array([0x0a]);
-
+    describe('Given byte content that flushes to a single chunk, When buildChunkMap is called', () => {
+      it.each([
+        {
+          data: new Uint8Array([0x0a]),
+          hash: 10,
+          count: 1,
+          // Single LF: accum1 = (((0<<7)^(0>>>25)) + 0x0a)>>>0 = 10, accum2 = 0
+          // hashval = (10 + imul(0, 0x61)) % 107927 = 10
+          label:
+            'a single LF byte has hash 10 and byte count 1 (kills mutant 1 +c→-c and mutant 4 %→*)',
+        },
+        {
+          data: new Uint8Array([0x61]),
+          hash: 97,
+          count: 1,
+          // Single 'a' (0x61=97): no in-loop flush (n=1 < 64, not LF)
+          // Partial flush: accum1=97, accum2=0 -> hashval = (97 + 0) % 107927 = 97
+          label: 'a single non-LF byte has hash 97 and byte count 1 via the partial-chunk path',
+        },
+        {
+          data: new Uint8Array([0x61, 0x0a]),
+          hash: 12426,
+          count: 2,
+          // 'a\n' (0x61, 0x0a): LF triggers in-loop flush with n=2
+          // After 'a': accum1=97, accum2=0
+          // After '\n': accum1=(((97<<7)^0)+10)>>>0=12426, accum2=((0^(97>>>25))>>>0)=0
+          label: 'two bytes ending with LF have hash 12426 and byte count 2 (kills mutant 1 +c→-c)',
+        },
+        {
+          data: new Uint8Array(64).fill(0x61),
+          hash: 12233,
+          count: 64,
+          // 64 'a' bytes: n reaches 64 (n >= 64), in-loop flush with hash 12233; no
+          // partial-chunk entry after. Mutant 3 (>= → >) would not flush at n=64.
+          label:
+            'exactly MAX_CHUNK_LEN (64) non-LF bytes flush in the loop with hash 12233 and byte count 64',
+        },
+        {
+          data: new Uint8Array(30).fill(0x61),
+          hash: 23995,
+          count: 30,
+          // 30 'a' bytes: accum2 becomes non-zero by byte 4; hashval = 23995
+          label:
+            '30 non-LF bytes (partial chunk, non-zero accum2) have hash 23995 and byte count 30 (kills mutants 8 %→* and 9 +→-)',
+        },
+        {
+          data: new Uint8Array([...new Uint8Array(30).fill(0x61), 0x0a]),
+          hash: 89031,
+          count: 31,
+          // 30 'a' bytes + LF: accum2 is non-zero when LF triggers in-loop flush; hashval = 89031
+          label:
+            '31 non-LF bytes followed by LF (in-loop flush, non-zero accum2) have hash 89031 and byte count 31 (kills mutants 4 %→* and 5 +→-)',
+        },
+      ])('Then $label', ({ data, hash, count }) => {
         // Act
-        const result = sut(data);
+        const result = buildChunkMap(data);
 
-        // Assert — kills mutant 1 (+c→-c: hashval would be 12321, not 10)
-        //         and mutant 4 (in-loop % → *: key would be 1079270, not 10)
+        // Assert
         expect(result.size).toBe(1);
-        expect(result.get(10)).toBe(1);
-      });
-    });
-
-    describe('Given a single non-LF byte, When buildChunkMap is called', () => {
-      it('Then the map contains one entry via the partial-chunk path with hash 97 and byte count 1', () => {
-        // Arrange
-        // Single 'a' (0x61=97): no in-loop flush (n=1 < 64, not LF)
-        // Partial flush: accum1=97, accum2=0 -> hashval = (97 + 0) % 107927 = 97
-        const sut = buildChunkMap;
-        const data = new Uint8Array([0x61]);
-
-        // Act
-        const result = sut(data);
-
-        // Assert — proves partial-chunk path is exercised
-        expect(result.size).toBe(1);
-        expect(result.get(97)).toBe(1);
-      });
-    });
-
-    describe('Given two bytes ending with LF, When buildChunkMap is called', () => {
-      it('Then the map contains exactly one entry with hash 12426 and byte count 2', () => {
-        // Arrange
-        // 'a\n' (0x61, 0x0a): LF triggers in-loop flush with n=2
-        // After 'a': accum1=97, accum2=0
-        // After '\n': accum1=(((97<<7)^0)+10)>>>0=12426, accum2=((0^(97>>>25))>>>0)=0
-        // hashval = (12426 + imul(0, 0x61)) % 107927 = 12426
-        const sut = buildChunkMap;
-        const data = new Uint8Array([0x61, 0x0a]);
-
-        // Act
-        const result = sut(data);
-
-        // Assert — kills mutant 1 (+c→-c in accumulation: would produce 12224 not 12426)
-        expect(result.size).toBe(1);
-        expect(result.get(12426)).toBe(2);
+        expect(result.get(hash)).toBe(count);
       });
     });
 
@@ -571,27 +474,6 @@ describe('similarity', () => {
         expect(result.size).toBe(2);
         expect(result.get(12426)).toBe(2);
         expect(result.get(98)).toBe(1);
-      });
-    });
-
-    describe('Given exactly MAX_CHUNK_LEN (64) non-LF bytes, When buildChunkMap is called', () => {
-      it('Then the map has exactly one entry of 64 bytes flushed in the loop and no partial-chunk entry', () => {
-        // Arrange
-        // 64 'a' bytes: n reaches 64 (n >= 64), in-loop flush with hash 12233
-        // After flush: n=0, no partial-chunk flush at end
-        // Mutant 3 (>= → >): n=64 does not satisfy 64>64, no in-loop flush;
-        //   after loop n=64>0, partial flush — same hash/size but proves ≥ not >
-        const sut = buildChunkMap;
-        const data = new Uint8Array(64).fill(0x61);
-
-        // Act
-        const result = sut(data);
-
-        // Assert — kills mutant 3 (> instead of >=): with >, all 64 bytes flush via partial path
-        //   giving same hash 12233 and count 64 — BUT size is still 1, so we pin the exact path
-        //   via the 65-byte test below which produces structurally different results
-        expect(result.size).toBe(1);
-        expect(result.get(12233)).toBe(64);
       });
     });
 
@@ -630,44 +512,6 @@ describe('similarity', () => {
         // Assert — kills mutants 6 and 7 (spurious zero-byte entry makes size 2)
         expect(result.size).toBe(1);
         expect(result.has(0)).toBe(false);
-      });
-    });
-
-    describe('Given 30 non-LF bytes (partial chunk with non-zero accum2), When buildChunkMap is called', () => {
-      it('Then the map contains one entry with hash 23995 and byte count 30', () => {
-        // Arrange
-        // 30 'a' bytes: accum2 becomes non-zero by byte 4; full result: accum1=2976240550,
-        // accum2=2333486168, raw=accum1+imul(accum2,0x61)=1691132158, hashval=1691132158%107927=23995
-        // Mutant 8 (% → * in partial flush): hashval = raw * 107927 (huge, not 23995)
-        // Mutant 9 (+ → - in partial flush): raw = accum1 - imul(accum2, 0x61) → hashval=67201
-        const sut = buildChunkMap;
-        const data = new Uint8Array(30).fill(0x61);
-
-        // Act
-        const result = sut(data);
-
-        // Assert — kills mutants 8 (% → *) and 9 (+ → -): both produce wrong hash key
-        expect(result.size).toBe(1);
-        expect(result.get(23995)).toBe(30);
-      });
-    });
-
-    describe('Given 31 non-LF bytes followed by LF (in-loop flush with non-zero accum2), When buildChunkMap is called', () => {
-      it('Then the map contains one entry with hash 89031 and byte count 31', () => {
-        // Arrange
-        // 30 'a' bytes + LF: accum2 is non-zero when LF triggers in-loop flush
-        // accum1=3001668431, accum2=2333486168 → raw=1716560039 → hashval=1716560039%107927=89031
-        // Mutant 4 (% → * in LF flush): hashval = raw * 107927 (185263175329153, not 89031)
-        // Mutant 5 (+ → - in LF flush): different raw → different hashval
-        const sut = buildChunkMap;
-        const data = new Uint8Array([...new Uint8Array(30).fill(0x61), 0x0a]);
-
-        // Act
-        const result = sut(data);
-
-        // Assert — kills mutants 4 (% → *) and 5 (+ → -) in the in-loop flush path
-        expect(result.size).toBe(1);
-        expect(result.get(89031)).toBe(31);
       });
     });
 

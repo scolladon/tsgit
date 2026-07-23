@@ -64,11 +64,34 @@ function flatTree(pairs: ReadonlyArray<readonly [string, ObjectId, FileMode]>): 
 }
 
 describe('diffIndexAgainstTree', () => {
-  describe('Given empty index + empty tree', () => {
+  describe('Given an index/tree pair producing no changes', () => {
     describe('When diffIndexAgainstTree called', () => {
-      it('Then empty TreeDiff', () => {
-        // Arrange & Act
-        const sut = diffIndexAgainstTree(index([]), undefined);
+      it.each([
+        {
+          idx: index([]),
+          tree: undefined,
+          label: 'empty index + empty tree yields empty TreeDiff',
+        },
+        {
+          idx: index([entry('foo', ID_A, FILE_MODE.REGULAR, 0)]),
+          tree: flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
+          label: 'stage-0 entries matching the tree exactly yield empty TreeDiff',
+        },
+        {
+          idx: index([]),
+          // simulates a FlatTree at exactly the cap; the cap check uses >, so size === cap must pass
+          tree: {
+            entries: {
+              get: () => undefined,
+              keys: () => [][Symbol.iterator](),
+              size: MAX_FLAT_TREE_ENTRIES,
+            } as unknown as ReadonlyMap<FilePath, FlatTreeEntry>,
+          },
+          label: 'a FlatTree with exactly MAX_FLAT_TREE_ENTRIES entries succeeds without throwing',
+        },
+      ])('Then $label', ({ idx, tree }) => {
+        // Act
+        const sut = diffIndexAgainstTree(idx, tree);
 
         // Assert
         expect(sut.changes).toEqual([]);
@@ -76,90 +99,43 @@ describe('diffIndexAgainstTree', () => {
     });
   });
 
-  describe('Given only stage-0 entries matching tree exactly', () => {
+  describe('Given an index/tree pair producing exactly one change', () => {
     describe('When diffIndexAgainstTree called', () => {
-      it('Then empty TreeDiff', () => {
-        // Arrange & Act
-        const sut = diffIndexAgainstTree(
-          index([entry('foo', ID_A, FILE_MODE.REGULAR, 0)]),
-          flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
-        );
-
-        // Assert
-        expect(sut.changes).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given index with stage 1/2/3 unmerged entries', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then those entries skipped', () => {
-        // Arrange & Act — index has stages 1, 2, 3 for 'conflict'; nothing at stage 0 matches 'conflict' path
-        const sut = diffIndexAgainstTree(
-          index([
+      it.each([
+        {
+          // index has stages 1, 2, 3 for 'conflict'; nothing at stage 0 matches 'conflict' path,
+          // so the tree entry (no stage-0 match) yields a delete.
+          label: 'stage 1/2/3 unmerged entries are skipped',
+          idx: index([
             entry('conflict', ID_A, FILE_MODE.REGULAR, 1),
             entry('conflict', ID_B, FILE_MODE.REGULAR, 2),
             entry('conflict', ID_C, FILE_MODE.REGULAR, 3),
           ]),
-          flatTree([['conflict', ID_A, FILE_MODE.REGULAR]]),
-        );
-
-        // Assert — since no stage-0 entry for 'conflict', tree entry yields a delete
-        expect(sut.changes).toEqual([
-          {
+          tree: flatTree([['conflict', ID_A, FILE_MODE.REGULAR]]),
+          expected: {
             type: 'delete',
             oldPath: 'conflict',
             oldId: ID_A,
             oldMode: FILE_MODE.REGULAR,
           },
-        ]);
-      });
-    });
-  });
-
-  describe('Given path in tree but not index', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then DeleteChange emitted', () => {
-        // Arrange & Act
-        const sut = diffIndexAgainstTree(index([]), flatTree([['gone', ID_A, FILE_MODE.REGULAR]]));
-
-        // Assert
-        expect(sut.changes).toEqual([
-          { type: 'delete', oldPath: 'gone', oldId: ID_A, oldMode: FILE_MODE.REGULAR },
-        ]);
-      });
-    });
-  });
-
-  describe('Given path in index but not tree', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then AddChange emitted', () => {
-        // Arrange & Act
-        const sut = diffIndexAgainstTree(
-          index([entry('new', ID_A, FILE_MODE.REGULAR, 0)]),
-          undefined,
-        );
-
-        // Assert
-        expect(sut.changes).toEqual([
-          { type: 'add', newPath: 'new', newId: ID_A, newMode: FILE_MODE.REGULAR },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path with different id (same kind)', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then ModifyChange', () => {
-        // Arrange & Act
-        const sut = diffIndexAgainstTree(
-          index([entry('foo', ID_B, FILE_MODE.REGULAR, 0)]),
-          flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
-        );
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
+        },
+        {
+          label: 'a path in the tree but not the index emits a DeleteChange',
+          idx: index([]),
+          tree: flatTree([['gone', ID_A, FILE_MODE.REGULAR]]),
+          expected: { type: 'delete', oldPath: 'gone', oldId: ID_A, oldMode: FILE_MODE.REGULAR },
+        },
+        {
+          label: 'a path in the index but not the tree emits an AddChange',
+          idx: index([entry('new', ID_A, FILE_MODE.REGULAR, 0)]),
+          tree: undefined,
+          expected: { type: 'add', newPath: 'new', newId: ID_A, newMode: FILE_MODE.REGULAR },
+        },
+        {
+          label: 'the same path with a different id (same kind) emits a ModifyChange',
+          idx: index([entry('foo', ID_B, FILE_MODE.REGULAR, 0)]),
+          tree: flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
+          expected: {
             type: 'modify',
             path: 'foo',
             oldId: ID_A,
@@ -167,23 +143,12 @@ describe('diffIndexAgainstTree', () => {
             oldMode: FILE_MODE.REGULAR,
             newMode: FILE_MODE.REGULAR,
           },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path with different kind', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then TypeChangeChange', () => {
-        // Arrange & Act — file -> symlink
-        const sut = diffIndexAgainstTree(
-          index([entry('foo', ID_B, FILE_MODE.SYMLINK, 0)]),
-          flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
-        );
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
+        },
+        {
+          label: 'the same path with a different kind (file → symlink) emits a TypeChangeChange',
+          idx: index([entry('foo', ID_B, FILE_MODE.SYMLINK, 0)]),
+          tree: flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
+          expected: {
             type: 'type-change',
             path: 'foo',
             oldId: ID_A,
@@ -191,23 +156,13 @@ describe('diffIndexAgainstTree', () => {
             oldMode: FILE_MODE.REGULAR,
             newMode: FILE_MODE.SYMLINK,
           },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path file (tree) → gitlink (index) (different kind)', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then TypeChangeChange with oldMode REGULAR and newMode GITLINK', () => {
-        // Arrange — tree (old) has REGULAR, index (new) has GITLINK
-        const sut = diffIndexAgainstTree(
-          index([entry('sub', ID_B, FILE_MODE.GITLINK, 0)]),
-          flatTree([['sub', ID_A, FILE_MODE.REGULAR]]),
-        );
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
+        },
+        {
+          label:
+            'the same path file (tree) → gitlink (index) emits a TypeChangeChange with oldMode REGULAR and newMode GITLINK',
+          idx: index([entry('sub', ID_B, FILE_MODE.GITLINK, 0)]),
+          tree: flatTree([['sub', ID_A, FILE_MODE.REGULAR]]),
+          expected: {
             type: 'type-change',
             path: 'sub',
             oldId: ID_A,
@@ -215,23 +170,13 @@ describe('diffIndexAgainstTree', () => {
             oldMode: FILE_MODE.REGULAR,
             newMode: FILE_MODE.GITLINK,
           },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path symlink (tree) → gitlink (index) (different kind)', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then TypeChangeChange with oldMode SYMLINK and newMode GITLINK', () => {
-        // Arrange — tree (old) has SYMLINK, index (new) has GITLINK
-        const sut = diffIndexAgainstTree(
-          index([entry('sub', ID_B, FILE_MODE.GITLINK, 0)]),
-          flatTree([['sub', ID_A, FILE_MODE.SYMLINK]]),
-        );
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
+        },
+        {
+          label:
+            'the same path symlink (tree) → gitlink (index) emits a TypeChangeChange with oldMode SYMLINK and newMode GITLINK',
+          idx: index([entry('sub', ID_B, FILE_MODE.GITLINK, 0)]),
+          tree: flatTree([['sub', ID_A, FILE_MODE.SYMLINK]]),
+          expected: {
             type: 'type-change',
             path: 'sub',
             oldId: ID_A,
@@ -239,24 +184,15 @@ describe('diffIndexAgainstTree', () => {
             oldMode: FILE_MODE.SYMLINK,
             newMode: FILE_MODE.GITLINK,
           },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same id but a DIFFERENT mode (same kind)', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then ModifyChange (the mode-equality guard is not skipped)', () => {
-        // Arrange & Act — identical id, REGULAR -> EXECUTABLE: ids match so a
-        // `true`-mutated mode guard would treat it as unchanged and emit nothing.
-        const sut = diffIndexAgainstTree(
-          index([entry('foo', ID_A, FILE_MODE.EXECUTABLE, 0)]),
-          flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
-        );
-
-        // Assert — a change MUST be emitted because the mode differs.
-        expect(sut.changes).toEqual([
-          {
+        },
+        {
+          // identical id, REGULAR -> EXECUTABLE: ids match so a `true`-mutated mode guard
+          // would treat it as unchanged and emit nothing.
+          label:
+            'the same id but a different mode (same kind) still emits a ModifyChange (the mode-equality guard is not skipped)',
+          idx: index([entry('foo', ID_A, FILE_MODE.EXECUTABLE, 0)]),
+          tree: flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
+          expected: {
             type: 'modify',
             path: 'foo',
             oldId: ID_A,
@@ -264,23 +200,13 @@ describe('diffIndexAgainstTree', () => {
             oldMode: FILE_MODE.REGULAR,
             newMode: FILE_MODE.EXECUTABLE,
           },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same id but a DIFFERENT kind of mode', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then TypeChangeChange (mode guard still evaluated when ids match)', () => {
-        // Arrange & Act — identical id, REGULAR -> SYMLINK.
-        const sut = diffIndexAgainstTree(
-          index([entry('foo', ID_A, FILE_MODE.SYMLINK, 0)]),
-          flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
-        );
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
+        },
+        {
+          label:
+            'the same id but a different kind of mode emits a TypeChangeChange (mode guard still evaluated when ids match)',
+          idx: index([entry('foo', ID_A, FILE_MODE.SYMLINK, 0)]),
+          tree: flatTree([['foo', ID_A, FILE_MODE.REGULAR]]),
+          expected: {
             type: 'type-change',
             path: 'foo',
             oldId: ID_A,
@@ -288,7 +214,13 @@ describe('diffIndexAgainstTree', () => {
             oldMode: FILE_MODE.REGULAR,
             newMode: FILE_MODE.SYMLINK,
           },
-        ]);
+        },
+      ])('Then $label', ({ idx, tree, expected }) => {
+        // Act
+        const sut = diffIndexAgainstTree(idx, tree);
+
+        // Assert
+        expect(sut.changes).toEqual([expected]);
       });
     });
   });
@@ -319,26 +251,6 @@ describe('diffIndexAgainstTree', () => {
         expect((thrown as { data: { reason: string } }).data.reason).toContain(
           'MAX_FLAT_TREE_ENTRIES',
         );
-      });
-    });
-  });
-
-  describe('Given FlatTree with exactly MAX_FLAT_TREE_ENTRIES entries', () => {
-    describe('When diffIndexAgainstTree called', () => {
-      it('Then succeeds without throwing', () => {
-        // Arrange — simulate a FlatTree at exactly the cap; cap check uses >, so size === cap should pass
-        const atCapEntries = {
-          get: () => undefined,
-          keys: () => [][Symbol.iterator](),
-          size: MAX_FLAT_TREE_ENTRIES,
-        } as unknown as ReadonlyMap<FilePath, FlatTreeEntry>;
-        const atCap: FlatTree = { entries: atCapEntries };
-
-        // Act
-        const sut = diffIndexAgainstTree(index([]), atCap);
-
-        // Assert
-        expect(sut.changes).toEqual([]);
       });
     });
   });
@@ -404,49 +316,42 @@ describe('groupUnmergedEntries', () => {
     });
   });
 
-  describe('Given index with only stage 2 for a path', () => {
+  describe('Given an index with a partial stage grouping for one path', () => {
     describe('When groupUnmergedEntries called', () => {
-      it('Then unmerged entry has stage2 only; no throw (forgiving)', () => {
-        // Arrange & Act
-        const sut = groupUnmergedEntries(index([entry('c', ID_B, FILE_MODE.REGULAR, 2)]));
+      it.each([
+        {
+          entries: [entry('c', ID_B, FILE_MODE.REGULAR, 2)],
+          path: 'c',
+          stage1: undefined,
+          stage2: ID_B,
+          stage3: undefined,
+          label: 'only stage 2 present: unmerged entry has stage2 only; no throw (forgiving)',
+        },
+        {
+          entries: [entry('c', ID_A, FILE_MODE.REGULAR, 1)],
+          path: 'c',
+          stage1: ID_A,
+          stage2: undefined,
+          stage3: undefined,
+          label: 'only stage 1 present: unmerged entry has stage1 only; no throw',
+        },
+        {
+          entries: [entry('c', ID_A, FILE_MODE.REGULAR, 1), entry('c', ID_C, FILE_MODE.REGULAR, 3)],
+          path: 'c',
+          stage1: ID_A,
+          stage2: undefined,
+          stage3: ID_C,
+          label: 'stages 1 + 3 only (no stage 2): stage2 absent',
+        },
+      ])('Then $label', ({ entries, path, stage1, stage2, stage3 }) => {
+        // Act
+        const sut = groupUnmergedEntries(index(entries));
 
         // Assert
-        const group = sut.unmerged.get('c' as FilePath);
-        expect(group?.stage1).toBeUndefined();
-        expect(group?.stage2?.id).toBe(ID_B);
-        expect(group?.stage3).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given index with only stage 1 for a path', () => {
-    describe('When groupUnmergedEntries called', () => {
-      it('Then unmerged entry has stage1 only; no throw', () => {
-        // Arrange & Act
-        const sut = groupUnmergedEntries(index([entry('c', ID_A, FILE_MODE.REGULAR, 1)]));
-
-        // Assert
-        const group = sut.unmerged.get('c' as FilePath);
-        expect(group?.stage1?.id).toBe(ID_A);
-        expect(group?.stage2).toBeUndefined();
-        expect(group?.stage3).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given index with stages 1 + 3 only (no stage 2)', () => {
-    describe('When groupUnmergedEntries called', () => {
-      it('Then stage2 absent', () => {
-        // Arrange & Act
-        const sut = groupUnmergedEntries(
-          index([entry('c', ID_A, FILE_MODE.REGULAR, 1), entry('c', ID_C, FILE_MODE.REGULAR, 3)]),
-        );
-
-        // Assert
-        const group = sut.unmerged.get('c' as FilePath);
-        expect(group?.stage1?.id).toBe(ID_A);
-        expect(group?.stage2).toBeUndefined();
-        expect(group?.stage3?.id).toBe(ID_C);
+        const group = sut.unmerged.get(path as FilePath);
+        expect(group?.stage1?.id).toBe(stage1);
+        expect(group?.stage2?.id).toBe(stage2);
+        expect(group?.stage3?.id).toBe(stage3);
       });
     });
   });
@@ -1038,64 +943,44 @@ describe('sortedRecordedPaths', () => {
     });
   });
 
-  describe('Given a regular conflict', () => {
+  describe('Given a single conflict', () => {
     describe('When sortedRecordedPaths called', () => {
-      it('Then it returns the single conflict path', () => {
-        // Arrange
-        const conflicts: ReadonlyArray<MergeConflict> = [
-          conflict({ path: 'file.txt' as FilePath }),
-        ];
-
+      it.each([
+        {
+          conflicts: [conflict({ path: 'file.txt' as FilePath })],
+          expected: ['file.txt'],
+          label: 'a regular conflict returns the single conflict path',
+        },
+        {
+          conflicts: [
+            conflict({
+              type: 'distinct-types',
+              path: 'q' as FilePath,
+              ourPath: 'q~HEAD' as FilePath,
+            }),
+          ],
+          expected: ['q~HEAD'],
+          label:
+            'a distinct-types conflict with only ourPath set returns only the present recorded path',
+        },
+        {
+          conflicts: [
+            conflict({
+              type: 'distinct-types',
+              path: 'r' as FilePath,
+              theirPath: 'r' as FilePath,
+            }),
+          ],
+          expected: ['r'],
+          label:
+            'a distinct-types conflict with only theirPath set returns only the present recorded path',
+        },
+      ])('Then $label', ({ conflicts, expected }) => {
         // Act
-        const sut = sortedRecordedPaths;
-        const result = sut(conflicts);
+        const result = sortedRecordedPaths(conflicts);
 
         // Assert
-        expect(result).toEqual(['file.txt']);
-      });
-    });
-  });
-
-  describe('Given a distinct-types conflict with only ourPath set', () => {
-    describe('When sortedRecordedPaths called', () => {
-      it('Then it returns only the present recorded path', () => {
-        // Arrange
-        const conflicts: ReadonlyArray<MergeConflict> = [
-          conflict({
-            type: 'distinct-types',
-            path: 'q' as FilePath,
-            ourPath: 'q~HEAD' as FilePath,
-          }),
-        ];
-
-        // Act
-        const sut = sortedRecordedPaths;
-        const result = sut(conflicts);
-
-        // Assert
-        expect(result).toEqual(['q~HEAD']);
-      });
-    });
-  });
-
-  describe('Given a distinct-types conflict with only theirPath set', () => {
-    describe('When sortedRecordedPaths called', () => {
-      it('Then it returns only the present recorded path', () => {
-        // Arrange
-        const conflicts: ReadonlyArray<MergeConflict> = [
-          conflict({
-            type: 'distinct-types',
-            path: 'r' as FilePath,
-            theirPath: 'r' as FilePath,
-          }),
-        ];
-
-        // Act
-        const sut = sortedRecordedPaths;
-        const result = sut(conflicts);
-
-        // Assert
-        expect(result).toEqual(['r']);
+        expect(result).toEqual(expected);
       });
     });
   });

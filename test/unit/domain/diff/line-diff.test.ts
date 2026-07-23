@@ -48,53 +48,32 @@ describe('line-diff — splitLines', () => {
     });
   });
 
-  describe("Given 'a\\\\nb\\\\n' bytes", () => {
+  describe('Given non-empty bytes to split', () => {
     describe('When splitLines called', () => {
-      it("Then returns [bytes('a\\n'), bytes('b\\n')]", () => {
-        // Arrange
-        const bytes = enc('a\nb\n');
-
+      it.each([
+        {
+          bytes: enc('a\nb\n'),
+          lines: [enc('a\n'), enc('b\n')],
+          label: "'a\\nb\\n' returns [bytes('a\\n'), bytes('b\\n')]",
+        },
+        {
+          bytes: enc('a\nb'),
+          lines: [enc('a\n'), enc('b')],
+          label: "'a\\nb' (no trailing LF) returns [bytes('a\\n'), bytes('b')]",
+        },
+        {
+          bytes: enc('\n\n'),
+          lines: [enc('\n'), enc('\n')],
+          label: "'\\n\\n' (two empty lines) returns [bytes('\\n'), bytes('\\n')]",
+        },
+      ])('Then $label', ({ bytes, lines }) => {
         // Act
         const sut = splitLines(bytes);
 
         // Assert
         expect(sut).toHaveLength(2);
-        expect(bytesEqual(sut[0]!, enc('a\n'))).toBe(true);
-        expect(bytesEqual(sut[1]!, enc('b\n'))).toBe(true);
-      });
-    });
-  });
-
-  describe("Given 'a\\\\nb' bytes (no trailing LF)", () => {
-    describe('When splitLines called', () => {
-      it("Then returns [bytes('a\\n'), bytes('b')]", () => {
-        // Arrange
-        const bytes = enc('a\nb');
-
-        // Act
-        const sut = splitLines(bytes);
-
-        // Assert
-        expect(sut).toHaveLength(2);
-        expect(bytesEqual(sut[0]!, enc('a\n'))).toBe(true);
-        expect(bytesEqual(sut[1]!, enc('b'))).toBe(true);
-      });
-    });
-  });
-
-  describe("Given '\\\\n\\\\n' bytes (two empty lines)", () => {
-    describe('When splitLines called', () => {
-      it("Then returns [bytes('\\n'), bytes('\\n')]", () => {
-        // Arrange
-        const bytes = enc('\n\n');
-
-        // Act
-        const sut = splitLines(bytes);
-
-        // Assert
-        expect(sut).toHaveLength(2);
-        expect(bytesEqual(sut[0]!, enc('\n'))).toBe(true);
-        expect(bytesEqual(sut[1]!, enc('\n'))).toBe(true);
+        expect(bytesEqual(sut[0]!, lines[0]!)).toBe(true);
+        expect(bytesEqual(sut[1]!, lines[1]!)).toBe(true);
       });
     });
   });
@@ -116,167 +95,90 @@ describe('line-diff — splitLines', () => {
   });
 });
 
+function bytesWithNulAt(length: number, nulIndex: number): Uint8Array {
+  const bytes = new Uint8Array(length).fill(0x61);
+  bytes[nulIndex] = 0x00;
+  return bytes;
+}
+
+function linesOf(count: number): Uint8Array {
+  const singleLine = enc('a\n');
+  const bytes = new Uint8Array(count * singleLine.length);
+  for (let i = 0; i < count; i++) {
+    bytes.set(singleLine, i * singleLine.length);
+  }
+  return bytes;
+}
+
+function linesWithTrailingIncomplete(fullLineCount: number): Uint8Array {
+  const fullLine = enc('a\n');
+  const bytes = new Uint8Array(fullLineCount * fullLine.length + 1);
+  for (let i = 0; i < fullLineCount; i++) {
+    bytes.set(fullLine, i * fullLine.length);
+  }
+  bytes[bytes.length - 1] = 0x61; // 'a'
+  return bytes;
+}
+
 describe('line-diff — isBinary', () => {
-  describe('Given empty Uint8Array', () => {
-    describe('When isBinary called', () => {
-      it('Then returns false', () => {
-        // Arrange & Act
-        const sut = isBinary(new Uint8Array(0));
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given bytes with no NUL and reasonable size', () => {
-    describe('When isBinary called', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const bytes = enc('hello\nworld\n');
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given bytes with NUL at offset 0', () => {
-    describe('When isBinary called', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const bytes = new Uint8Array([0x00, 0x61, 0x62]);
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given BINARY_DETECTION_BYTES - 1 offset NUL (within window)', () => {
-    describe('When isBinary called', () => {
-      it('Then returns true', () => {
-        // Arrange — NUL at the last index inside the detection window
-        const bytes = new Uint8Array(BINARY_DETECTION_BYTES).fill(0x61);
-        bytes[BINARY_DETECTION_BYTES - 1] = 0x00;
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given BINARY_DETECTION_BYTES offset NUL (boundary — outside window)', () => {
-    describe('When isBinary called', () => {
-      it('Then returns false', () => {
-        // Arrange — NUL at the first index outside the detection window
-        const bytes = new Uint8Array(BINARY_DETECTION_BYTES + 1).fill(0x61);
-        bytes[BINARY_DETECTION_BYTES] = 0x00;
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given MAX_LINE_BYTES - 1 bytes on one line', () => {
-    describe('When isBinary called', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const bytes = new Uint8Array(MAX_LINE_BYTES - 1).fill(0x61);
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given MAX_LINE_BYTES bytes on one line', () => {
-    describe('When isBinary called', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const bytes = new Uint8Array(MAX_LINE_BYTES).fill(0x61);
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given MAX_LINES - 1 lines (all short, all non-NUL)', () => {
-    describe('When isBinary called', () => {
-      it('Then returns false', () => {
-        // Arrange — (MAX_LINES - 1) lines, each 'a\n'
-        const line = enc('a\n');
-        const bytes = new Uint8Array((MAX_LINES - 1) * line.length);
-        for (let i = 0; i < MAX_LINES - 1; i++) {
-          bytes.set(line, i * line.length);
-        }
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given MAX_LINES lines (all short, all non-NUL)', () => {
-    describe('When isBinary called', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const line = enc('a\n');
-        const bytes = new Uint8Array(MAX_LINES * line.length);
-        for (let i = 0; i < MAX_LINES; i++) {
-          bytes.set(line, i * line.length);
-        }
-
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given MAX_LINES reached via trailing incomplete line (no final LF)', () => {
-    describe('When isBinary called', () => {
-      it('Then returns true', () => {
-        // Arrange — (MAX_LINES - 1) lines 'a\n' followed by a trailing 'a' (no LF).
+  describe('Given byte content, When isBinary called', () => {
+    it.each([
+      { bytes: new Uint8Array(0), expected: false, label: 'empty Uint8Array returns false' },
+      {
+        bytes: enc('hello\nworld\n'),
+        expected: false,
+        label: 'bytes with no NUL and reasonable size returns false',
+      },
+      {
+        bytes: new Uint8Array([0x00, 0x61, 0x62]),
+        expected: true,
+        label: 'bytes with NUL at offset 0 returns true',
+      },
+      {
+        // NUL at the last index inside the detection window
+        bytes: bytesWithNulAt(BINARY_DETECTION_BYTES, BINARY_DETECTION_BYTES - 1),
+        expected: true,
+        label: 'BINARY_DETECTION_BYTES - 1 offset NUL (within window) returns true',
+      },
+      {
+        // NUL at the first index outside the detection window
+        bytes: bytesWithNulAt(BINARY_DETECTION_BYTES + 1, BINARY_DETECTION_BYTES),
+        expected: false,
+        label: 'BINARY_DETECTION_BYTES offset NUL (boundary — outside window) returns false',
+      },
+      {
+        bytes: new Uint8Array(MAX_LINE_BYTES - 1).fill(0x61),
+        expected: false,
+        label: 'MAX_LINE_BYTES - 1 bytes on one line returns false',
+      },
+      {
+        bytes: new Uint8Array(MAX_LINE_BYTES).fill(0x61),
+        expected: true,
+        label: 'MAX_LINE_BYTES bytes on one line returns true',
+      },
+      {
+        bytes: linesOf(MAX_LINES - 1),
+        expected: false,
+        label: 'MAX_LINES - 1 lines (all short, all non-NUL) returns false',
+      },
+      {
+        bytes: linesOf(MAX_LINES),
+        expected: true,
+        label: 'MAX_LINES lines (all short, all non-NUL) returns true',
+      },
+      {
+        // (MAX_LINES - 1) lines 'a\n' followed by a trailing 'a' (no LF).
         // Exercises the tail branch that counts the trailing incomplete line.
-        const fullLine = enc('a\n');
-        const bytes = new Uint8Array((MAX_LINES - 1) * fullLine.length + 1);
-        for (let i = 0; i < MAX_LINES - 1; i++) {
-          bytes.set(fullLine, i * fullLine.length);
-        }
-        bytes[bytes.length - 1] = 0x61; // 'a'
+        bytes: linesWithTrailingIncomplete(MAX_LINES - 1),
+        expected: true,
+        label: 'MAX_LINES reached via trailing incomplete line (no final LF) returns true',
+      },
+    ])('Then $label', ({ bytes, expected }) => {
+      // Act
+      const sut = isBinary(bytes);
 
-        // Act
-        const sut = isBinary(bytes);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
+      // Assert
+      expect(sut).toBe(expected);
     });
   });
 });
@@ -315,98 +217,78 @@ describe('line-diff — diffLines', () => {
     });
   });
 
-  describe('Given empty + empty', () => {
+  describe('Given ours/theirs where at least one side is empty', () => {
     describe('When diffLines called', () => {
-      it('Then single zero-length common hunk, degraded false', () => {
-        // Arrange
-        const empty = new Uint8Array(0);
-
-        // Act
-        const sut = diffLines(empty, empty);
-
-        // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual([
-          { kind: 'common', oursStart: 0, oursEnd: 0, theirsStart: 0, theirsEnd: 0 },
-        ]);
-      });
-    });
-  });
-
-  describe('Given pure prepend (theirs has extra leading line)', () => {
-    describe('When diffLines called', () => {
-      it('Then theirs-only hunk then common', () => {
-        // Arrange
-        const ours = enc('a\nb\n');
-        const theirs = enc('x\na\nb\n');
-
+      it.each([
+        {
+          ours: new Uint8Array(0),
+          theirs: new Uint8Array(0),
+          hunks: [{ kind: 'common', oursStart: 0, oursEnd: 0, theirsStart: 0, theirsEnd: 0 }],
+          label: 'empty + empty yields a single zero-length common hunk',
+        },
+        {
+          ours: new Uint8Array(0),
+          theirs: enc('a\nb\n'),
+          hunks: [{ kind: 'theirs-only', oursStart: 0, oursEnd: 0, theirsStart: 0, theirsEnd: 2 }],
+          label: 'ours empty and theirs non-empty yields a single theirs-only hunk',
+        },
+        {
+          ours: enc('a\nb\n'),
+          theirs: new Uint8Array(0),
+          hunks: [{ kind: 'ours-only', oursStart: 0, oursEnd: 2, theirsStart: 0, theirsEnd: 0 }],
+          label: 'ours non-empty and theirs empty yields a single ours-only hunk',
+        },
+      ])('Then $label, degraded false', ({ ours, theirs, hunks }) => {
         // Act
         const sut = diffLines(ours, theirs);
 
         // Assert
         expect(sut.degraded).toBe(false);
-        expect(sut.hunks.map(hunkSummary)).toEqual([
-          'theirs-only o[0,0) t[0,1)',
-          'common o[0,2) t[1,3)',
-        ]);
+        expect(sut.hunks).toEqual(hunks);
       });
     });
   });
 
-  describe('Given pure append', () => {
+  describe('Given inputs producing multiple hunks by simple concatenation', () => {
     describe('When diffLines called', () => {
-      it('Then common then theirs-only', () => {
-        // Arrange
-        const ours = enc('a\nb\n');
-        const theirs = enc('a\nb\nz\n');
-
+      it.each([
+        {
+          ours: enc('a\nb\n'),
+          theirs: enc('x\na\nb\n'),
+          summary: ['theirs-only o[0,0) t[0,1)', 'common o[0,2) t[1,3)'],
+          label: 'a pure prepend (theirs has extra leading line) yields theirs-only then common',
+        },
+        {
+          ours: enc('a\nb\n'),
+          theirs: enc('a\nb\nz\n'),
+          summary: ['common o[0,2) t[0,2)', 'theirs-only o[2,2) t[2,3)'],
+          label: 'a pure append yields common then theirs-only',
+        },
+        {
+          // 'a c e' lines are common; 'b' and 'd' are replaced by 'X' and 'Y'. A correct
+          // LCS keeps 'c' common; a down-biased snake choice would collapse lines 1..3
+          // into one large replace and lose the shared 'c'.
+          ours: enc('a\nb\nc\nd\ne\n'),
+          theirs: enc('a\nX\nc\nY\ne\n'),
+          summary: [
+            'common o[0,1) t[0,1)',
+            'ours-only o[1,2) t[1,1)',
+            'theirs-only o[2,2) t[1,2)',
+            'common o[2,3) t[2,3)',
+            'ours-only o[3,4) t[3,3)',
+            'theirs-only o[4,4) t[3,4)',
+            'common o[4,5) t[4,5)',
+          ],
+          label:
+            'interleaved edits sharing a middle common line preserve it as its own common hunk',
+        },
+      ])('Then $label', ({ ours, theirs, summary }) => {
         // Act
         const sut = diffLines(ours, theirs);
 
         // Assert
         expect(sut.degraded).toBe(false);
-        expect(sut.hunks.map(hunkSummary)).toEqual([
-          'common o[0,2) t[0,2)',
-          'theirs-only o[2,2) t[2,3)',
-        ]);
-      });
-    });
-  });
-
-  describe('Given ours empty and theirs non-empty', () => {
-    describe('When diffLines called', () => {
-      it('Then single theirs-only hunk', () => {
-        // Arrange
-        const ours = new Uint8Array(0);
-        const theirs = enc('a\nb\n');
-
-        // Act
-        const sut = diffLines(ours, theirs);
-
-        // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual([
-          { kind: 'theirs-only', oursStart: 0, oursEnd: 0, theirsStart: 0, theirsEnd: 2 },
-        ]);
-      });
-    });
-  });
-
-  describe('Given ours non-empty and theirs empty', () => {
-    describe('When diffLines called', () => {
-      it('Then single ours-only hunk', () => {
-        // Arrange
-        const ours = enc('a\nb\n');
-        const theirs = new Uint8Array(0);
-
-        // Act
-        const sut = diffLines(ours, theirs);
-
-        // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual([
-          { kind: 'ours-only', oursStart: 0, oursEnd: 2, theirsStart: 0, theirsEnd: 0 },
-        ]);
+        expect(sut.hunks.map(hunkSummary)).toEqual(summary);
       });
     });
   });
@@ -659,37 +541,6 @@ describe('line-diff — diffLines', () => {
         expect(sut.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
-        ]);
-      });
-    });
-  });
-
-  describe('Given interleaved edits sharing a middle common line', () => {
-    describe('When diffLines called', () => {
-      it('Then the shared line is preserved as its own common hunk', () => {
-        // Arrange — 'a c e' lines are common; 'b' and 'd' are replaced by 'X' and 'Y'.
-        // A correct LCS keeps 'c' common; a down-biased snake choice would collapse
-        // lines 1..3 into one large replace and lose the shared 'c'.
-        const ours = enc('a\nb\nc\nd\ne\n');
-        const theirs = enc('a\nX\nc\nY\ne\n');
-
-        // Act
-        const sut = diffLines(ours, theirs);
-
-        // Assert — the middle 'c' survives as a standalone common hunk
-        expect(sut.degraded).toBe(false);
-        expect(
-          sut.hunks.map(
-            (h) => `${h.kind} o[${h.oursStart},${h.oursEnd}) t[${h.theirsStart},${h.theirsEnd})`,
-          ),
-        ).toEqual([
-          'common o[0,1) t[0,1)',
-          'ours-only o[1,2) t[1,1)',
-          'theirs-only o[2,2) t[1,2)',
-          'common o[2,3) t[2,3)',
-          'ours-only o[3,4) t[3,3)',
-          'theirs-only o[4,4) t[3,4)',
-          'common o[4,5) t[4,5)',
         ]);
       });
     });

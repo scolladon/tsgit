@@ -5,151 +5,41 @@ import type { FileMode } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
 describe('kindOf', () => {
-  describe('Given FILE_MODE.REGULAR', () => {
+  describe('Given a file mode', () => {
     describe('When kindOf called', () => {
-      it('Then returns file', () => {
-        // Arrange
-        const mode = FILE_MODE.REGULAR;
-
+      it.each([
+        [FILE_MODE.REGULAR, 'file'],
+        [FILE_MODE.EXECUTABLE, 'file'],
+        [FILE_MODE.SYMLINK, 'symlink'],
+        [FILE_MODE.DIRECTORY, 'directory'],
+        [FILE_MODE.GITLINK, 'gitlink'],
+      ])('Then mode %s returns kind %s', (mode, expected) => {
         // Act
         const sut = kindOf(mode);
 
         // Assert
-        expect(sut).toBe('file');
-      });
-    });
-  });
-
-  describe('Given FILE_MODE.EXECUTABLE', () => {
-    describe('When kindOf called', () => {
-      it('Then returns file', () => {
-        // Arrange
-        const mode = FILE_MODE.EXECUTABLE;
-
-        // Act
-        const sut = kindOf(mode);
-
-        // Assert
-        expect(sut).toBe('file');
-      });
-    });
-  });
-
-  describe('Given FILE_MODE.SYMLINK', () => {
-    describe('When kindOf called', () => {
-      it('Then returns symlink', () => {
-        // Arrange
-        const mode = FILE_MODE.SYMLINK;
-
-        // Act
-        const sut = kindOf(mode);
-
-        // Assert
-        expect(sut).toBe('symlink');
-      });
-    });
-  });
-
-  describe('Given FILE_MODE.DIRECTORY', () => {
-    describe('When kindOf called', () => {
-      it('Then returns directory', () => {
-        // Arrange
-        const mode = FILE_MODE.DIRECTORY;
-
-        // Act
-        const sut = kindOf(mode);
-
-        // Assert
-        expect(sut).toBe('directory');
-      });
-    });
-  });
-
-  describe('Given FILE_MODE.GITLINK', () => {
-    describe('When kindOf called', () => {
-      it('Then returns gitlink', () => {
-        // Arrange
-        const mode = FILE_MODE.GITLINK;
-
-        // Act
-        const sut = kindOf(mode);
-
-        // Assert
-        expect(sut).toBe('gitlink');
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('isSameKind', () => {
-  describe('Given REGULAR and EXECUTABLE', () => {
+  describe('Given a pair of file modes', () => {
     describe('When isSameKind called', () => {
-      it('Then returns true (both file)', () => {
-        // Arrange & Act
-        const sut = isSameKind(FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE);
+      it.each([
+        [FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE, true],
+        [FILE_MODE.REGULAR, FILE_MODE.SYMLINK, false],
+        [FILE_MODE.DIRECTORY, FILE_MODE.DIRECTORY, true],
+        [FILE_MODE.DIRECTORY, FILE_MODE.REGULAR, false],
+        [FILE_MODE.GITLINK, FILE_MODE.GITLINK, true],
+        [FILE_MODE.GITLINK, FILE_MODE.DIRECTORY, false],
+      ])('Then isSameKind(%s, %s) is %s', (a, b, expected) => {
+        // Act
+        const sut = isSameKind(a, b);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given REGULAR and SYMLINK', () => {
-    describe('When isSameKind called', () => {
-      it('Then returns false (file vs symlink)', () => {
-        // Arrange & Act
-        const sut = isSameKind(FILE_MODE.REGULAR, FILE_MODE.SYMLINK);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given DIRECTORY and DIRECTORY', () => {
-    describe('When isSameKind called', () => {
-      it('Then returns true', () => {
-        // Arrange & Act
-        const sut = isSameKind(FILE_MODE.DIRECTORY, FILE_MODE.DIRECTORY);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given DIRECTORY and REGULAR', () => {
-    describe('When isSameKind called', () => {
-      it('Then returns false', () => {
-        // Arrange & Act
-        const sut = isSameKind(FILE_MODE.DIRECTORY, FILE_MODE.REGULAR);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given GITLINK and GITLINK', () => {
-    describe('When isSameKind called', () => {
-      it('Then returns true', () => {
-        // Arrange & Act
-        const sut = isSameKind(FILE_MODE.GITLINK, FILE_MODE.GITLINK);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given GITLINK and DIRECTORY', () => {
-    describe('When isSameKind called', () => {
-      it('Then returns false', () => {
-        // Arrange & Act
-        const sut = isSameKind(FILE_MODE.GITLINK, FILE_MODE.DIRECTORY);
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
