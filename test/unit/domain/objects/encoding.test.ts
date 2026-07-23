@@ -16,64 +16,38 @@ import {
 
 describe('encoding', () => {
   describe('bytesToHex', () => {
-    describe('Given a byte array [0xde, 0xad]', () => {
+    describe('Given a byte array', () => {
       describe('When converting to hex', () => {
-        it('Then returns "dead"', () => {
+        it.each([
+          { bytes: [0xde, 0xad], expected: 'dead' },
+          { bytes: [], expected: '' },
+        ])('Then returns "$expected"', ({ bytes, expected }) => {
           // Arrange
-          const bytes = new Uint8Array([0xde, 0xad]);
+          const array = new Uint8Array(bytes);
 
           // Act
-          const sut = bytesToHex(bytes);
+          const sut = bytesToHex(array);
 
           // Assert
-          expect(sut).toBe('dead');
-        });
-      });
-    });
-
-    describe('Given an empty byte array', () => {
-      describe('When converting to hex', () => {
-        it('Then returns empty string', () => {
-          // Arrange
-          const bytes = new Uint8Array([]);
-
-          // Act
-          const sut = bytesToHex(bytes);
-
-          // Assert
-          expect(sut).toBe('');
+          expect(sut).toBe(expected);
         });
       });
     });
   });
 
   describe('hexToBytes', () => {
-    describe('Given a hex string "dead"', () => {
+    describe('Given a valid hex string', () => {
       describe('When converting to bytes', () => {
-        it('Then returns Uint8Array [0xde, 0xad]', () => {
-          // Arrange
-          const hex = 'dead';
-
-          // Act
+        it.each([
+          { hex: 'dead', expected: [0xde, 0xad], label: 'a hex string' },
+          { hex: '', expected: [], label: 'an empty hex string' },
+          { hex: '09af', expected: [0x09, 0xaf], label: 'digits and letters a-f' },
+        ])('Then $label returns the correct bytes', ({ hex, expected }) => {
+          // Arrange & Act
           const sut = hexToBytes(hex);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array([0xde, 0xad]));
-        });
-      });
-    });
-
-    describe('Given an empty hex string', () => {
-      describe('When converting to bytes', () => {
-        it('Then returns empty Uint8Array', () => {
-          // Arrange
-          const hex = '';
-
-          // Act
-          const sut = hexToBytes(hex);
-
-          // Assert
-          expect(sut).toEqual(new Uint8Array([]));
+          expect(sut).toEqual(new Uint8Array(expected));
         });
       });
     });
@@ -90,78 +64,28 @@ describe('encoding', () => {
       });
     });
 
-    describe('Given a hex string with non-hex chars', () => {
+    // Each row isolates one boundary of `parseHexDigit`'s digit/letter ranges,
+    // at a mix of high/low nibble and byte-pair position, so a StringLiteral or
+    // off-by-one mutant on the position, or a range-boundary mutant, cannot survive.
+    describe('Given a hex string with an invalid character', () => {
       describe('When converting to bytes', () => {
-        it('Then throws with invalid hex character message', () => {
-          // Arrange
-          const hex = 'zzzz';
-
-          // Act + Assert
-          expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
-        });
-      });
-    });
-
-    describe('Given a hex string with uppercase letters', () => {
-      describe('When converting to bytes', () => {
-        it('Then throws with invalid hex character message', () => {
-          // Arrange
-          const hex = 'ABCD';
-
-          // Act + Assert
-          expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
-        });
-      });
-    });
-
-    describe('Given a hex string with invalid char in second byte pair', () => {
-      describe('When converting to bytes', () => {
-        it('Then throws with position 2', () => {
-          // Arrange
-          const hex = 'aagb';
-
-          // Act + Assert
-          expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 2');
-        });
-      });
-    });
-
-    describe('Given a hex string with valid high nibble but invalid low nibble', () => {
-      describe('When converting to bytes', () => {
-        it('Then throws', () => {
-          // Arrange — 'az': high='a' (valid), low='z' (invalid)
-          const hex = 'az';
-
-          // Act + Assert
-          expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
-        });
-      });
-    });
-
-    describe('Given valid hex digits', () => {
-      describe('When converting', () => {
-        it('Then returns correct byte values for digit and letter ranges', () => {
-          // Arrange — covers digits 0-9 and letters a-f
-          const hex = '09af';
-
-          // Act
-          const sut = hexToBytes(hex);
-
-          // Assert
-          expect(sut).toEqual(new Uint8Array([0x09, 0xaf]));
-        });
-      });
-    });
-
-    describe('Given hex string with char just below digit range (dot ".")', () => {
-      describe('When converting', () => {
-        it('Then throws', () => {
-          // Arrange — '.' is charCode 46, below '0' (48), and charCode-48 = -2 (not -1)
-          const hex = '.0';
-
-          // Act + Assert
-          expect(() => hexToBytes(hex)).toThrow('Invalid hex character at position 0');
-        });
+        it.each([
+          { hex: 'zzzz', position: 0, label: 'chars above the letter range (both nibbles)' },
+          { hex: 'ABCD', position: 0, label: 'uppercase letters (the gap between digits and a-f)' },
+          {
+            hex: 'aagb',
+            position: 2,
+            label: 'a valid high nibble but an above-range low nibble, in the second byte pair',
+          },
+          { hex: 'az', position: 0, label: 'a valid high nibble but an invalid low nibble' },
+          { hex: '.0', position: 0, label: 'a char just below the digit range' },
+        ])(
+          'Then throws with invalid hex character at position $position for $label',
+          ({ hex, position }) => {
+            // Arrange & Act + Assert
+            expect(() => hexToBytes(hex)).toThrow(`Invalid hex character at position ${position}`);
+          },
+        );
       });
     });
   });
@@ -233,142 +157,95 @@ describe('encoding', () => {
   });
 
   describe('bytesEqual', () => {
-    describe('Given two byte arrays with identical content', () => {
+    // Each row isolates one branch: length-mismatch short-circuit, per-byte
+    // early-return, and the fallthrough true — b in the length-mismatch row is
+    // a strict prefix of a, so the per-byte loop alone would not catch it.
+    describe('Given two byte arrays', () => {
       describe('When comparing for equality', () => {
-        it('Then returns true', () => {
+        it.each([
+          {
+            a: [0x01, 0x02, 0x03],
+            b: [0x01, 0x02, 0x03],
+            expected: true,
+            label: 'identical content',
+          },
+          { a: [0x01, 0x02], b: [0x01], expected: false, label: 'different length' },
+          {
+            a: [0x01, 0x02, 0x03],
+            b: [0x01, 0x09, 0x03],
+            expected: false,
+            label: 'equal length differing in one byte',
+          },
+        ])('Then $label returns $expected', ({ a, b, expected }) => {
           // Arrange
-          const a = new Uint8Array([0x01, 0x02, 0x03]);
-          const b = new Uint8Array([0x01, 0x02, 0x03]);
+          const arrayA = new Uint8Array(a);
+          const arrayB = new Uint8Array(b);
 
           // Act
-          const sut = bytesEqual(a, b);
+          const sut = bytesEqual(arrayA, arrayB);
 
           // Assert
-          expect(sut).toBe(true);
-        });
-      });
-    });
-
-    describe('Given two byte arrays of different length', () => {
-      describe('When comparing for equality', () => {
-        it('Then returns false without comparing content', () => {
-          // Arrange — b is a strict prefix of a, so the per-byte loop alone would not catch it.
-          const a = new Uint8Array([0x01, 0x02]);
-          const b = new Uint8Array([0x01]);
-
-          // Act
-          const sut = bytesEqual(a, b);
-
-          // Assert
-          expect(sut).toBe(false);
-        });
-      });
-    });
-
-    describe('Given two equal-length arrays differing in one byte', () => {
-      describe('When comparing for equality', () => {
-        it('Then returns false', () => {
-          // Arrange
-          const a = new Uint8Array([0x01, 0x02, 0x03]);
-          const b = new Uint8Array([0x01, 0x09, 0x03]);
-
-          // Act
-          const sut = bytesEqual(a, b);
-
-          // Assert
-          expect(sut).toBe(false);
+          expect(sut).toBe(expected);
         });
       });
     });
   });
 
   describe('indexOf', () => {
-    describe('Given a byte array with target byte', () => {
+    describe('Given a byte array and a search start position', () => {
       describe('When searching with indexOf', () => {
-        it('Then returns correct position', () => {
+        it.each([
+          {
+            bytes: [10, 20, 30, 40],
+            target: 30,
+            fromIndex: 0,
+            expected: 2,
+            label: 'the target is found',
+          },
+          {
+            bytes: [10, 20, 30],
+            target: 99,
+            fromIndex: 0,
+            expected: -1,
+            label: 'the target is absent',
+          },
+          {
+            bytes: [10, 20, 30],
+            target: 10,
+            fromIndex: 100,
+            expected: -1,
+            label: 'fromIndex is beyond the array length',
+          },
+          {
+            bytes: [10, 20, 30, 40],
+            target: 20,
+            fromIndex: 1,
+            expected: 1,
+            label: 'the target sits exactly at fromIndex',
+          },
+          {
+            bytes: [10, 20, 30],
+            target: 10,
+            fromIndex: 1,
+            expected: -1,
+            label: 'the target occurs only before fromIndex',
+          },
+          {
+            bytes: [10, 20, 30],
+            target: 30,
+            fromIndex: 0,
+            expected: 2,
+            label: 'the target is the last element',
+          },
+        ])('Then $label, returns $expected', ({ bytes, target, fromIndex, expected }) => {
           // Arrange
-          const bytes = new Uint8Array([10, 20, 30, 40]);
+          const array = new Uint8Array(bytes);
 
           // Act
-          const sut = indexOf(bytes, 30, 0);
+          const sut = indexOf(array, target, fromIndex);
 
           // Assert
-          expect(sut).toBe(2);
-        });
-      });
-    });
-
-    describe('Given a byte array without target byte', () => {
-      describe('When searching with indexOf', () => {
-        it('Then returns -1', () => {
-          // Arrange
-          const bytes = new Uint8Array([10, 20, 30]);
-
-          // Act
-          const sut = indexOf(bytes, 99, 0);
-
-          // Assert
-          expect(sut).toBe(-1);
-        });
-      });
-    });
-
-    describe('Given fromIndex beyond array length', () => {
-      describe('When searching with indexOf', () => {
-        it('Then returns -1', () => {
-          // Arrange
-          const bytes = new Uint8Array([10, 20, 30]);
-
-          // Act
-          const sut = indexOf(bytes, 10, 100);
-
-          // Assert
-          expect(sut).toBe(-1);
-        });
-      });
-    });
-
-    describe('Given target byte at fromIndex position', () => {
-      describe('When searching with indexOf', () => {
-        it('Then returns fromIndex', () => {
-          // Arrange
-          const bytes = new Uint8Array([10, 20, 30, 40]);
-
-          // Act
-          const sut = indexOf(bytes, 20, 1);
-
-          // Assert
-          expect(sut).toBe(1);
-        });
-      });
-    });
-
-    describe('Given target byte only before fromIndex', () => {
-      describe('When searching with indexOf', () => {
-        it('Then returns -1', () => {
-          // Arrange
-          const bytes = new Uint8Array([10, 20, 30]);
-
-          // Act
-          const sut = indexOf(bytes, 10, 1);
-
-          // Assert
-          expect(sut).toBe(-1);
-        });
-      });
-    });
-
-    describe('Given target byte at last position', () => {
-      describe('When searching from start', () => {
-        it('Then returns last index', () => {
-          // Arrange
-          const bytes = new Uint8Array([10, 20, 30]);
-
-          // Act
-          const sut = indexOf(bytes, 30, 0);
-
-          // Assert
-          expect(sut).toBe(2);
+          expect(sut).toBe(expected);
         });
       });
     });
@@ -377,15 +254,15 @@ describe('encoding', () => {
   describe('encode / decode', () => {
     describe('Given a string', () => {
       describe('When encoding to bytes', () => {
-        it('Then returns UTF-8 Uint8Array', () => {
-          // Arrange
-          const str = 'hello';
-
-          // Act
+        it.each([
+          { str: 'hello', expected: [104, 101, 108, 108, 111] },
+          { str: '', expected: [] },
+        ])('Then returns the UTF-8 Uint8Array for "$str"', ({ str, expected }) => {
+          // Arrange & Act
           const sut = encode(str);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array([104, 101, 108, 108, 111]));
+          expect(sut).toEqual(new Uint8Array(expected));
         });
       });
     });
@@ -401,21 +278,6 @@ describe('encoding', () => {
 
           // Assert
           expect(sut).toBe('hello');
-        });
-      });
-    });
-
-    describe('Given an empty string', () => {
-      describe('When encoding to bytes', () => {
-        it('Then returns empty Uint8Array', () => {
-          // Arrange
-          const str = '';
-
-          // Act
-          const sut = encode(str);
-
-          // Assert
-          expect(sut).toEqual(new Uint8Array([]));
         });
       });
     });
@@ -437,32 +299,25 @@ describe('encoding', () => {
   });
 
   describe('splitHeaderAndMessage', () => {
-    describe('Given text with blank line', () => {
+    describe('Given text', () => {
       describe('When splitting', () => {
-        it('Then headerPart and message are separated', () => {
-          // Arrange
-          const text = 'header1\nheader2\n\nmessage body';
-
-          // Act
+        it.each([
+          {
+            text: 'header1\nheader2\n\nmessage body',
+            expected: { headerPart: 'header1\nheader2', message: 'message body' },
+            label: 'a blank line separates headerPart and message',
+          },
+          {
+            text: 'header only',
+            expected: { headerPart: 'header only', message: '' },
+            label: 'no blank line leaves message empty',
+          },
+        ])('Then $label', ({ text, expected }) => {
+          // Arrange & Act
           const sut = splitHeaderAndMessage(text);
 
           // Assert
-          expect(sut).toEqual({ headerPart: 'header1\nheader2', message: 'message body' });
-        });
-      });
-    });
-
-    describe('Given text without blank line', () => {
-      describe('When splitting', () => {
-        it('Then message is empty', () => {
-          // Arrange
-          const text = 'header only';
-
-          // Act
-          const sut = splitHeaderAndMessage(text);
-
-          // Assert
-          expect(sut).toEqual({ headerPart: 'header only', message: '' });
+          expect(sut).toEqual(expected);
         });
       });
     });
@@ -493,55 +348,42 @@ describe('encoding', () => {
       });
     });
 
-    describe('Given key containing newline', () => {
+    // Each row isolates one condition of the `key.includes('\n') ||
+    // key.includes(' ') || key === ''` guard.
+    describe('Given an invalid key', () => {
       describe('When formatting', () => {
-        it('Then throws', () => {
+        it.each([
+          { key: 'bad\nkey', label: 'containing a newline' },
+          { key: 'bad key', label: 'containing a space' },
+          { key: '', label: 'empty' },
+        ])('Then throws for a key $label', ({ key }) => {
           // Arrange & Act & Assert
-          expect(() => formatContinuationHeader('bad\nkey', 'value')).toThrow('invalid header key');
-        });
-      });
-    });
-
-    describe('Given key containing space', () => {
-      describe('When formatting', () => {
-        it('Then throws', () => {
-          // Arrange & Act & Assert
-          expect(() => formatContinuationHeader('bad key', 'value')).toThrow('invalid header key');
-        });
-      });
-    });
-
-    describe('Given empty key', () => {
-      describe('When formatting', () => {
-        it('Then throws', () => {
-          // Arrange & Act & Assert
-          expect(() => formatContinuationHeader('', 'value')).toThrow('invalid header key');
+          expect(() => formatContinuationHeader(key, 'value')).toThrow('invalid header key');
         });
       });
     });
   });
 
   describe('parseHeaderLine', () => {
-    describe('Given line with space', () => {
+    describe('Given a line', () => {
       describe('When parsing', () => {
-        it('Then key and value are split', () => {
+        it.each([
+          {
+            line: 'key value here',
+            expected: { key: 'key', value: 'value here' },
+            label: 'with a space, the key and value are split',
+          },
+          {
+            line: 'keyonly',
+            expected: { key: 'keyonly', value: '' },
+            label: 'without a space, the value is the empty string',
+          },
+        ])('Then $label', ({ line, expected }) => {
           // Arrange & Act
-          const sut = parseHeaderLine('key value here');
+          const sut = parseHeaderLine(line);
 
           // Assert
-          expect(sut).toEqual({ key: 'key', value: 'value here' });
-        });
-      });
-    });
-
-    describe('Given line without space', () => {
-      describe('When parsing', () => {
-        it('Then value is empty string', () => {
-          // Arrange & Act
-          const sut = parseHeaderLine('keyonly');
-
-          // Assert
-          expect(sut).toEqual({ key: 'keyonly', value: '' });
+          expect(sut).toEqual(expected);
         });
       });
     });

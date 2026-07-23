@@ -14,28 +14,13 @@ import { arbObjectId } from './arbitraries.js';
 
 describe('object-id', () => {
   describe('ObjectId.from', () => {
-    describe('Given a valid 40-char hex string', () => {
+    describe('Given a valid 40-char or 64-char hex string', () => {
       describe('When calling ObjectId.from', () => {
-        it('Then returns branded ObjectId', () => {
-          // Arrange
-          const hex = 'a'.repeat(40);
-
-          // Act
-          const sut = ObjectId.from(hex);
-
-          // Assert
-          expect(sut).toBe(hex);
-        });
-      });
-    });
-
-    describe('Given a valid 64-char hex string', () => {
-      describe('When calling ObjectId.from', () => {
-        it('Then returns branded ObjectId', () => {
-          // Arrange
-          const hex = 'b'.repeat(64);
-
-          // Act
+        it.each([
+          { hex: 'a'.repeat(40), label: '40-char' },
+          { hex: 'b'.repeat(64), label: '64-char' },
+        ])('Then returns branded ObjectId for the $label hex string', ({ hex }) => {
+          // Arrange & Act
           const sut = ObjectId.from(hex);
 
           // Assert
@@ -46,91 +31,15 @@ describe('object-id', () => {
 
     describe('Given an invalid hex string', () => {
       describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const hex = 'xyz';
-
-          // Act + Assert
-          expect(() => ObjectId.from(hex)).toThrow(
-            expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: hex },
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given an empty string', () => {
-      describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const hex = '';
-
-          // Act + Assert
-          expect(() => ObjectId.from(hex)).toThrow(
-            expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: hex },
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given uppercase hex', () => {
-      describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const hex = 'A'.repeat(40);
-
-          // Act + Assert
-          expect(() => ObjectId.from(hex)).toThrow(
-            expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: hex },
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given a 39-char hex string', () => {
-      describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const hex = 'a'.repeat(39);
-
-          // Act + Assert
-          expect(() => ObjectId.from(hex)).toThrow(
-            expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: hex },
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given a 41-char hex string', () => {
-      describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const hex = 'a'.repeat(41);
-
-          // Act + Assert
-          expect(() => ObjectId.from(hex)).toThrow(
-            expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: hex },
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given a 65-char hex string', () => {
-      describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const hex = 'a'.repeat(65);
-
-          // Act + Assert
+        it.each([
+          { hex: 'xyz', label: 'invalid hex characters' },
+          { hex: '', label: 'an empty string' },
+          { hex: 'A'.repeat(40), label: 'uppercase hex' },
+          { hex: 'a'.repeat(39), label: 'a 39-char (one under SHA-1 width) string' },
+          { hex: 'a'.repeat(41), label: 'a 41-char (one over SHA-1 width) string' },
+          { hex: 'a'.repeat(65), label: 'a 65-char (one over SHA-256 width) string' },
+        ])('Then throws INVALID_OBJECT_ID for $label', ({ hex }) => {
+          // Arrange & Act + Assert
           expect(() => ObjectId.from(hex)).toThrow(
             expect.objectContaining({
               data: { code: 'INVALID_OBJECT_ID', value: hex },
@@ -142,64 +51,39 @@ describe('object-id', () => {
   });
 
   describe('ObjectId.fromRaw', () => {
-    describe('Given a 20-byte Uint8Array', () => {
+    describe('Given a 20-byte or 32-byte Uint8Array', () => {
       describe('When calling ObjectId.fromRaw', () => {
-        it('Then returns 40-char hex ObjectId', () => {
+        it.each([
+          { size: 20, fill: 0xab, hexLength: 40 },
+          { size: 32, fill: 0xcd, hexLength: 64 },
+        ])('Then returns a $hexLength-char hex ObjectId', ({ size, fill, hexLength }) => {
           // Arrange
-          const bytes = new Uint8Array(20).fill(0xab);
+          const bytes = new Uint8Array(size).fill(fill);
+          const expected = fill.toString(16).repeat(size);
 
           // Act
           const sut = ObjectId.fromRaw(bytes);
 
           // Assert
-          expect(sut).toBe('ab'.repeat(20));
-          expect(sut.length).toBe(40);
+          expect(sut).toBe(expected);
+          expect(sut.length).toBe(hexLength);
         });
       });
     });
 
-    describe('Given a 32-byte Uint8Array', () => {
+    describe('Given a Uint8Array whose length is neither 20 nor 32 bytes', () => {
       describe('When calling ObjectId.fromRaw', () => {
-        it('Then returns 64-char hex ObjectId', () => {
+        it.each([19, 0])('Then throws INVALID_OBJECT_ID for a %i-byte array', (size) => {
           // Arrange
-          const bytes = new Uint8Array(32).fill(0xcd);
-
-          // Act
-          const sut = ObjectId.fromRaw(bytes);
-
-          // Assert
-          expect(sut).toBe('cd'.repeat(32));
-          expect(sut.length).toBe(64);
-        });
-      });
-    });
-
-    describe('Given a 19-byte Uint8Array', () => {
-      describe('When calling ObjectId.fromRaw', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const bytes = new Uint8Array(19);
+          const bytes = new Uint8Array(size);
 
           // Act + Assert
           expect(() => ObjectId.fromRaw(bytes)).toThrow(
             expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 19 is not 20 or 32' },
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given a 0-byte Uint8Array', () => {
-      describe('When calling ObjectId.fromRaw', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
-          // Arrange
-          const bytes = new Uint8Array(0);
-
-          // Act + Assert
-          expect(() => ObjectId.fromRaw(bytes)).toThrow(
-            expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: 'raw bytes length 0 is not 20 or 32' },
+              data: {
+                code: 'INVALID_OBJECT_ID',
+                value: `raw bytes length ${size} is not 20 or 32`,
+              },
             }),
           );
         });
@@ -374,26 +258,12 @@ describe('object-id', () => {
   });
 
   describe('property-based tests', () => {
-    describe('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 40-char ids"', () => {
+    describe('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id"', () => {
       describe('When sampled', () => {
-        it('Then it holds', () => {
+        it.each([40, 64] as const)('Then it holds for valid %i-char ids', (width) => {
           // Arrange + Assert
           fc.assert(
-            fc.property(arbObjectId(40), (id) => {
-              const sut = ObjectId.fromRaw(hexToBytes(id));
-              expect(sut).toBe(id);
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given the roundtrip property "ObjectId.fromRaw(hexToBytes(id)) equals the original id for valid 64-char ids"', () => {
-      describe('When sampled', () => {
-        it('Then it holds', () => {
-          // Arrange + Assert
-          fc.assert(
-            fc.property(arbObjectId(64), (id) => {
+            fc.property(arbObjectId(width), (id) => {
               const sut = ObjectId.fromRaw(hexToBytes(id));
               expect(sut).toBe(id);
             }),

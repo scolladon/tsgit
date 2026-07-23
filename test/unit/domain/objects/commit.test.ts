@@ -47,72 +47,31 @@ describe('commit', () => {
       });
     });
 
-    describe('Given a commit with 0 parents (root commit)', () => {
+    describe('Given a commit with 0, 1, or 3 parents', () => {
       describe('When parsing', () => {
-        it('Then parents is empty array', () => {
+        it.each([
+          { parents: [], label: '0 parents (root commit) yields an empty array' },
+          { parents: ['c'.repeat(40)], label: '1 parent yields a single entry' },
+          {
+            parents: ['1'.repeat(40), '2'.repeat(40), '3'.repeat(40)],
+            label: '3 parents (octopus merge) yields three entries',
+          },
+        ])('Then $label', ({ parents }) => {
           // Arrange
           const content = commitText([
             `tree ${'b'.repeat(40)}`,
+            ...parents.map((p) => `parent ${p}`),
             'author A <a@a.com> 0 +0000',
             'committer A <a@a.com> 0 +0000',
             '',
-            'root',
+            'msg',
           ]);
 
           // Act
           const sut = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.parents).toEqual([]);
-        });
-      });
-    });
-
-    describe('Given a commit with 1 parent', () => {
-      describe('When parsing', () => {
-        it('Then parents has one entry', () => {
-          // Arrange
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            `parent ${'c'.repeat(40)}`,
-            'author A <a@a.com> 0 +0000',
-            'committer A <a@a.com> 0 +0000',
-            '',
-            'child',
-          ]);
-
-          // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
-
-          // Assert
-          expect(sut.data.parents).toEqual(['c'.repeat(40)]);
-        });
-      });
-    });
-
-    describe('Given a commit with 3 parents (octopus merge)', () => {
-      describe('When parsing', () => {
-        it('Then parents has three entries', () => {
-          // Arrange
-          const p1 = '1'.repeat(40);
-          const p2 = '2'.repeat(40);
-          const p3 = '3'.repeat(40);
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            `parent ${p1}`,
-            `parent ${p2}`,
-            `parent ${p3}`,
-            'author A <a@a.com> 0 +0000',
-            'committer A <a@a.com> 0 +0000',
-            '',
-            'octopus',
-          ]);
-
-          // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
-
-          // Assert
-          expect(sut.data.parents).toEqual([p1, p2, p3]);
+          expect(sut.data.parents).toEqual(parents);
         });
       });
     });
@@ -336,23 +295,85 @@ describe('commit', () => {
       });
     });
 
-    describe('Given content with missing tree field', () => {
+    // Each row isolates one distinct parseCommitContent validation guard (the
+    // three 'first line must be tree' rows differ in *how* line 0 fails to
+    // start with 'tree ' — absent, misplaced, or blank — but all trip the same
+    // single guard, so none is a merge of two conditions).
+    describe('Given content that fails a parseCommitContent validation guard', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with first line must be tree reason', () => {
+        it.each([
+          {
+            label: 'a missing tree field',
+            reason: 'first line must be tree',
+            lines: ['author A <a@a.com> 0 +0000', 'committer A <a@a.com> 0 +0000', '', 'msg'],
+          },
+          {
+            label: 'tree present but not as the first line',
+            reason: 'first line must be tree',
+            lines: [
+              'author A <a@a.com> 0 +0000',
+              `tree ${'b'.repeat(40)}`,
+              'committer A <a@a.com> 0 +0000',
+              '',
+              'msg',
+            ],
+          },
+          {
+            label: 'no headers at all (first line blank)',
+            reason: 'first line must be tree',
+            lines: ['', 'msg'],
+          },
+          {
+            label: 'a missing author',
+            reason: 'missing author',
+            lines: [`tree ${'b'.repeat(40)}`, 'committer A <a@a.com> 0 +0000', '', 'msg'],
+          },
+          {
+            label: 'tree and parents but a blank author line',
+            reason: 'missing author',
+            lines: [`tree ${'b'.repeat(40)}`, `parent ${'c'.repeat(40)}`, '', 'msg'],
+          },
+          {
+            label: 'only tree and author, no committer line at all',
+            reason: 'missing committer',
+            // no blank line, so the entire text is treated as headerPart
+            lines: [`tree ${'b'.repeat(40)}`, 'author A <a@a.com> 0 +0000'],
+          },
+          {
+            label: 'a duplicate gpgsig header',
+            reason: 'duplicate gpgsig header',
+            lines: [
+              `tree ${'b'.repeat(40)}`,
+              'author A <a@a.com> 0 +0000',
+              'committer A <a@a.com> 0 +0000',
+              'gpgsig first-sig',
+              'gpgsig second-sig',
+              '',
+              'msg',
+            ],
+          },
+          {
+            label: 'an orphan continuation line (no preceding header)',
+            reason: 'unexpected continuation line without preceding header',
+            lines: [
+              `tree ${'b'.repeat(40)}`,
+              'author A <a@a.com> 0 +0000',
+              'committer A <a@a.com> 0 +0000',
+              ' orphan continuation',
+              '',
+              'msg',
+            ],
+          },
+        ])('Then throws INVALID_COMMIT for $label', ({ lines, reason }) => {
           // Arrange
-          const content = commitText([
-            'author A <a@a.com> 0 +0000',
-            'committer A <a@a.com> 0 +0000',
-            '',
-            'msg',
-          ]);
+          const content = commitText(lines);
 
           // Act + Assert
           expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
             expect.objectContaining({
               data: expect.objectContaining({
                 code: 'INVALID_COMMIT',
-                reason: 'first line must be tree',
+                reason,
               }),
             }),
           );
@@ -360,66 +381,34 @@ describe('commit', () => {
       });
     });
 
-    describe('Given content with tree not as first line', () => {
+    // 'the committer line is wrong' trips `!lines[i].startsWith('committer ')`
+    // with i in bounds. 'the committer line is blank' looks like the same
+    // sub-condition from the array literal, but splitHeaderAndMessage's blank
+    // line is the header/message separator itself — it never becomes a line —
+    // so headerPart ends after 'author A …' and this row actually re-exercises
+    // the `i >= lines.length` OOB branch, same as 'only tree and author, no
+    // committer line at all' above (hand-verified: both fail identically when
+    // the OOB check is removed).
+    describe('Given content missing a valid committer line, with more lines still to read', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with first line must be tree reason', () => {
+        it.each([
+          {
+            label: 'the committer line is wrong',
+            lines: [
+              `tree ${'b'.repeat(40)}`,
+              'author A <a@a.com> 0 +0000',
+              'notcommitter B <b@b.com> 0 +0000',
+              '',
+              'msg',
+            ],
+          },
+          {
+            label: 'the committer line is blank',
+            lines: [`tree ${'b'.repeat(40)}`, 'author A <a@a.com> 0 +0000', '', 'msg'],
+          },
+        ])('Then throws INVALID_COMMIT with missing committer reason when $label', ({ lines }) => {
           // Arrange
-          const content = commitText([
-            'author A <a@a.com> 0 +0000',
-            `tree ${'b'.repeat(40)}`,
-            'committer A <a@a.com> 0 +0000',
-            '',
-            'msg',
-          ]);
-
-          // Act + Assert
-          expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_COMMIT',
-                reason: 'first line must be tree',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given content with missing author', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with missing author reason', () => {
-          // Arrange
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            'committer A <a@a.com> 0 +0000',
-            '',
-            'msg',
-          ]);
-
-          // Act + Assert
-          expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_COMMIT',
-                reason: 'missing author',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given content with wrong line where committer expected', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with missing committer reason', () => {
-          // Arrange — enough lines, but the committer line is wrong
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            'author A <a@a.com> 0 +0000',
-            'notcommitter B <b@b.com> 0 +0000',
-            '',
-            'msg',
-          ]);
+          const content = commitText(lines);
 
           // Act
           let sut: unknown;
@@ -435,150 +424,6 @@ describe('commit', () => {
             code: 'INVALID_COMMIT',
             reason: 'missing committer',
           });
-        });
-      });
-    });
-
-    describe('Given content with missing committer (end of headers)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with missing committer reason', () => {
-          // Arrange
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            'author A <a@a.com> 0 +0000',
-            '',
-            'msg',
-          ]);
-
-          // Act
-          let sut: unknown;
-          try {
-            parseCommitContent(DUMMY_ID, content);
-          } catch (e) {
-            sut = e;
-          }
-
-          // Assert
-          expect(sut).toBeInstanceOf(TsgitError);
-          expect((sut as TsgitError).data).toEqual({
-            code: 'INVALID_COMMIT',
-            reason: 'missing committer',
-          });
-        });
-      });
-    });
-
-    describe('Given content with empty lines (no headers at all)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with first line must be tree reason', () => {
-          // Arrange
-          const content = commitText(['', 'msg']);
-
-          // Act + Assert
-          expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_COMMIT',
-                reason: 'first line must be tree',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given content with tree and parents but author line is blank', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with missing author reason', () => {
-          // Arrange
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            `parent ${'c'.repeat(40)}`,
-            '',
-            'msg',
-          ]);
-
-          // Act + Assert
-          expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_COMMIT',
-                reason: 'missing author',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given content with only tree and author but no committer line at all', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with missing committer reason', () => {
-          // Arrange -- no blank line so entire text is treated as headerPart
-          const content = commitText([`tree ${'b'.repeat(40)}`, 'author A <a@a.com> 0 +0000']);
-
-          // Act + Assert
-          expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_COMMIT',
-                reason: 'missing committer',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given commit with duplicate gpgsig header', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with duplicate gpgsig header reason', () => {
-          // Arrange
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            'author A <a@a.com> 0 +0000',
-            'committer A <a@a.com> 0 +0000',
-            'gpgsig first-sig',
-            'gpgsig second-sig',
-            '',
-            'msg',
-          ]);
-
-          // Act + Assert
-          expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_COMMIT',
-                reason: 'duplicate gpgsig header',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given commit with orphan continuation line (no preceding header)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT with unexpected continuation line reason', () => {
-          // Arrange
-          const content = commitText([
-            `tree ${'b'.repeat(40)}`,
-            'author A <a@a.com> 0 +0000',
-            'committer A <a@a.com> 0 +0000',
-            ' orphan continuation',
-            '',
-            'msg',
-          ]);
-
-          // Act + Assert
-          expect(() => parseCommitContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_COMMIT',
-                reason: 'unexpected continuation line without preceding header',
-              }),
-            }),
-          );
         });
       });
     });

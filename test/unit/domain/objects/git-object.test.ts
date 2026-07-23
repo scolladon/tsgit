@@ -139,42 +139,38 @@ describe('git-object', () => {
       });
     });
 
-    describe('Given raw bytes with invalid header type', () => {
+    describe('Given raw bytes that fail a parseObject validation guard', () => {
       describe('When calling parseObject', () => {
-        it('Then throws INVALID_OBJECT_HEADER with the unknown-type reason', () => {
-          // Arrange
-          const raw = encode('invalid 5\0hello');
+        it.each([
+          {
+            raw: 'invalid 5\0hello',
+            reason: 'unknown object type: invalid',
+            label: 'an invalid header type',
+          },
+          {
+            raw: 'blob 999\0short',
+            reason: 'size mismatch: header says 999, actual content is 5',
+            label: 'a header size that does not match the actual content length',
+          },
+        ])(
+          // Pin the exact reason string per guard so a StringLiteral mutant on
+          // either template literal cannot survive.
+          'Then throws INVALID_OBJECT_HEADER with $label',
+          ({ raw, reason }) => {
+            // Arrange
+            const bytes = encode(raw);
 
-          // Act & Assert — pin the exact reason string so a StringLiteral
-          // mutant on the template literal at header.ts:27 cannot survive.
-          expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_OBJECT_HEADER',
-                reason: 'unknown object type: invalid',
+            // Act + Assert
+            expect(() => parseObject(DUMMY_ID, bytes, SHA1_CONFIG)).toThrow(
+              expect.objectContaining({
+                data: expect.objectContaining({
+                  code: 'INVALID_OBJECT_HEADER',
+                  reason,
+                }),
               }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given header size != actual content length', () => {
-      describe('When calling parseObject', () => {
-        it('Then throws INVALID_OBJECT_HEADER with size mismatch reason', () => {
-          // Arrange
-          const raw = encode('blob 999\0short');
-
-          // Act + Assert
-          expect(() => parseObject(DUMMY_ID, raw, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_OBJECT_HEADER',
-                reason: 'size mismatch: header says 999, actual content is 5',
-              }),
-            }),
-          );
-        });
+            );
+          },
+        );
       });
     });
   });
@@ -200,64 +196,51 @@ describe('git-object', () => {
       });
     });
 
-    describe('Given a Tree', () => {
+    describe('Given a Tree, Commit, or Tag parsed from raw bytes', () => {
       describe('When calling serializeObject', () => {
-        it('Then produces header + content bytes', () => {
+        it.each([
+          {
+            label: 'a Tree',
+            buildRaw: () => {
+              const sha = new Uint8Array(20).fill(0xab);
+              const entry = rawTreeEntry('100644', 'file.txt', sha);
+              return rawTree(entry);
+            },
+          },
+          {
+            label: 'a Commit',
+            buildRaw: () =>
+              rawCommit(
+                [
+                  `tree ${'b'.repeat(40)}`,
+                  'author A <a@a.com> 0 +0000',
+                  'committer A <a@a.com> 0 +0000',
+                  '',
+                  'msg',
+                ].join('\n'),
+              ),
+          },
+          {
+            label: 'a Tag',
+            buildRaw: () =>
+              rawTag(
+                [
+                  `object ${'b'.repeat(40)}`,
+                  'type commit',
+                  'tag v1.0',
+                  'tagger A <a@a.com> 0 +0000',
+                  '',
+                  'tag msg',
+                ].join('\n'),
+              ),
+          },
+        ])('Then $label produces header + content bytes', ({ buildRaw }) => {
           // Arrange
-          const sha = new Uint8Array(20).fill(0xab);
-          const entry = rawTreeEntry('100644', 'file.txt', sha);
-          const rawInput = rawTree(entry);
-          const tree = parseObject(DUMMY_ID, rawInput, SHA1_CONFIG) as Tree;
+          const raw = buildRaw();
+          const object = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
 
           // Act
-          const sut = serializeObject(tree, SHA1_CONFIG);
-
-          // Assert
-          expect(sut).toEqual(rawInput);
-        });
-      });
-    });
-
-    describe('Given a Commit', () => {
-      describe('When calling serializeObject', () => {
-        it('Then produces header + content bytes', () => {
-          // Arrange
-          const commitText = [
-            `tree ${'b'.repeat(40)}`,
-            'author A <a@a.com> 0 +0000',
-            'committer A <a@a.com> 0 +0000',
-            '',
-            'msg',
-          ].join('\n');
-          const raw = rawCommit(commitText);
-          const commit = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
-
-          // Act
-          const sut = serializeObject(commit, SHA1_CONFIG);
-
-          // Assert
-          expect(sut).toEqual(raw);
-        });
-      });
-    });
-
-    describe('Given a Tag', () => {
-      describe('When calling serializeObject', () => {
-        it('Then produces header + content bytes', () => {
-          // Arrange
-          const tagText = [
-            `object ${'b'.repeat(40)}`,
-            'type commit',
-            'tag v1.0',
-            'tagger A <a@a.com> 0 +0000',
-            '',
-            'tag msg',
-          ].join('\n');
-          const raw = rawTag(tagText);
-          const tag = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
-
-          // Act
-          const sut = serializeObject(tag, SHA1_CONFIG);
+          const sut = serializeObject(object, SHA1_CONFIG);
 
           // Assert
           expect(sut).toEqual(raw);
