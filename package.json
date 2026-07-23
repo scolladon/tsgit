@@ -819,7 +819,7 @@
     "isomorphic-git": "1.38.10",
     "jscpd": "5.0.12",
     "knip": "6.27.0",
-    "lint-staged": "17.1.1",
+    "lint-staged": "17.2.0",
     "minimatch": "10.2.5",
     "rollup": "4.62.2",
     "rollup-plugin-dts": "6.4.1",
