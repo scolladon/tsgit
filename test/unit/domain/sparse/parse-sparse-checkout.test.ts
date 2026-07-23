@@ -13,50 +13,39 @@ import {
 const path = (p: string): FilePath => FilePath.from(p);
 
 describe('parseSparseCheckout', () => {
-  describe('Given a cone-shaped file and coneRequested', () => {
+  describe('Given file text and a coneRequested flag', () => {
     describe('When parsed', () => {
-      it('Then it yields a cone spec and degraded false', () => {
-        // Arrange
-        const text = serializeCone(buildConeSpec(['src/app']));
-
+      it.each([
+        {
+          text: serializeCone(buildConeSpec(['src/app'])),
+          coneRequested: true,
+          mode: 'cone',
+          degraded: false,
+          label: 'a cone-shaped file with coneRequested yields a cone spec and degraded false',
+        },
+        {
+          // `*.ts` is not a cone-shaped line.
+          text: '/*\n!/*/\n*.ts\n',
+          coneRequested: true,
+          mode: 'no-cone',
+          degraded: true,
+          label: 'a non-cone-shaped file with coneRequested falls back with degraded true',
+        },
+        {
+          text: '/src/\n*.ts\n',
+          coneRequested: false,
+          mode: 'no-cone',
+          degraded: false,
+          label:
+            'a non-cone file with coneRequested false yields a no-cone spec and degraded false',
+        },
+      ])('Then $label', ({ text, coneRequested, mode, degraded }) => {
         // Act
-        const sut = parseSparseCheckout(text, true);
+        const sut = parseSparseCheckout(text, coneRequested);
 
         // Assert
-        expect(sut.spec.mode).toBe('cone');
-        expect(sut.degraded).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a non-cone-shaped file and coneRequested', () => {
-    describe('When parsed', () => {
-      it('Then it falls back with degraded true', () => {
-        // Arrange — `*.ts` is not a cone-shaped line.
-        const text = '/*\n!/*/\n*.ts\n';
-
-        // Act
-        const sut = parseSparseCheckout(text, true);
-
-        // Assert
-        expect(sut.spec.mode).toBe('no-cone');
-        expect(sut.degraded).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a non-cone file and coneRequested false', () => {
-    describe('When parsed', () => {
-      it('Then it yields a no-cone spec and degraded false', () => {
-        // Arrange
-        const text = '/src/\n*.ts\n';
-
-        // Act
-        const sut = parseSparseCheckout(text, false);
-
-        // Assert
-        expect(sut.spec.mode).toBe('no-cone');
-        expect(sut.degraded).toBe(false);
+        expect(sut.spec.mode).toBe(mode);
+        expect(sut.degraded).toBe(degraded);
       });
     });
   });

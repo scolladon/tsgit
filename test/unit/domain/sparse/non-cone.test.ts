@@ -136,96 +136,54 @@ describe('compileSparseRule', () => {
 });
 
 describe('nonConeMatcher', () => {
-  describe('Given no rules', () => {
+  describe('Given a set of non-cone rules and a path', () => {
     describe('When matched', () => {
-      it('Then nothing is in the sparse set', () => {
+      it.each([
+        {
+          rules: [],
+          filePath: 'any/file.ts',
+          expected: false,
+          label: 'no rules leaves nothing in the sparse set',
+        },
+        {
+          rules: [rule('/src/')],
+          filePath: 'src/main.ts',
+          expected: true,
+          label: 'a single covering rule includes the path',
+        },
+        {
+          rules: [rule('/src/')],
+          filePath: 'docs/guide.md',
+          expected: false,
+          label: 'a covering rule excludes a non-covered path',
+        },
+        {
+          rules: [rule('/src/'), rule('!/src/secret/')],
+          filePath: 'src/secret/key.ts',
+          expected: false,
+          label: 'an include then a negation: the negation wins (last-match)',
+        },
+        {
+          rules: [rule('/src/'), rule('!/src/secret/'), rule('/src/secret/pub.ts')],
+          filePath: 'src/secret/pub.ts',
+          expected: true,
+          label: 'a negation then a re-include: the re-include wins (last-match)',
+        },
+        {
+          rules: [rule('/src/'), rule('!/src/secret/')],
+          filePath: 'lib/util.ts',
+          expected: false,
+          label: 'a path matched by no rule defaults to excluded',
+        },
+      ])('Then $label', ({ rules, filePath, expected }) => {
         // Arrange
-        const sut = nonConeMatcher([]);
+        const sut = nonConeMatcher(rules);
 
         // Act
-        const result = sut(path('any/file.ts'));
+        const result = sut(path(filePath));
 
         // Assert
-        expect(result).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a single covering rule', () => {
-    describe('When matched', () => {
-      it('Then the path is included', () => {
-        // Arrange
-        const sut = nonConeMatcher([rule('/src/')]);
-
-        // Act
-        const result = sut(path('src/main.ts'));
-
-        // Assert
-        expect(result).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a covering rule', () => {
-    describe('When a non-covered path is matched', () => {
-      it('Then it is excluded', () => {
-        // Arrange
-        const sut = nonConeMatcher([rule('/src/')]);
-
-        // Act
-        const result = sut(path('docs/guide.md'));
-
-        // Assert
-        expect(result).toBe(false);
-      });
-    });
-  });
-
-  describe('Given an include then a negation', () => {
-    describe('When matched', () => {
-      it('Then the negation wins (last-match)', () => {
-        // Arrange
-        const sut = nonConeMatcher([rule('/src/'), rule('!/src/secret/')]);
-
-        // Act
-        const result = sut(path('src/secret/key.ts'));
-
-        // Assert
-        expect(result).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a negation then a re-include', () => {
-    describe('When matched', () => {
-      it('Then the re-include wins (last-match)', () => {
-        // Arrange
-        const sut = nonConeMatcher([
-          rule('/src/'),
-          rule('!/src/secret/'),
-          rule('/src/secret/pub.ts'),
-        ]);
-
-        // Act
-        const result = sut(path('src/secret/pub.ts'));
-
-        // Assert
-        expect(result).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a path matched by no rule', () => {
-    describe('When matched', () => {
-      it('Then it defaults to excluded', () => {
-        // Arrange
-        const sut = nonConeMatcher([rule('/src/'), rule('!/src/secret/')]);
-
-        // Act
-        const result = sut(path('lib/util.ts'));
-
-        // Assert
-        expect(result).toBe(false);
+        expect(result).toBe(expected);
       });
     });
   });
