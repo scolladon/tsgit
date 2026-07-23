@@ -94,7 +94,10 @@ What must be true when this ships (verified against the pinned matrix, git 2.55.
   chokepoint, M11/M12/M15, selected or not) AND extended to also scan `recursive`: a valueless
   `[merge "<name>"] recursive` now refuses eagerly with the same `CONFIG_MISSING_VALUE` shape git
   emits (verified exit 128, `missing value for 'merge.<name>.recursive'`), closing the last
-  valueless merge-key gap (folded in per review; see ADR-497 Consequences).
+  valueless merge-key gap. The guard is also made **subsection-aware**: a subsectionless
+  `[merge] <key>` (no `[merge "<name>"]` header) is inert, matching git (which ignores merge-driver
+  keys without a subsection) — fixing a pre-existing subsectionless over-refusal for `driver`/`name`
+  (folded in per review; see ADR-497 Consequences).
 - **R7** — No public API change; `resolvePathMergeSpec` signature and the memory/browser
   off-node fallback (ADR-304/408) are preserved. Off-node, a configured override resolves to
   `{ kind: 'external' }` and — with no `CommandRunner` — falls back to the built-in text merge,

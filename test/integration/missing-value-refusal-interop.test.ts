@@ -952,6 +952,14 @@ const VALUELESS_MERGE_RECURSIVE_FIXTURE =
   '[core]\n\trepositoryformatversion = 0\n[merge "mydriver"]\n\trecursive\n';
 const VALUELESS_MERGE_RECURSIVE_LINE = 4;
 
+/**
+ * Subsectionless valueless `[merge] recursive` (no `[merge "<name>"]` header) —
+ * inert to git: merge-driver keys are only meaningful under a subsection, so git
+ * ignores it and the merge proceeds (built-in text conflict, mydriver unconfigured).
+ */
+const SUBSECTIONLESS_VALUELESS_MERGE_FIXTURE =
+  '[core]\n\trepositoryformatversion = 0\n[merge]\n\trecursive\n';
+
 describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver', () => {
   let peer: string;
   let ours: string;
@@ -1189,6 +1197,26 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
         expect(data.key).toBe('merge.mydriver.recursive');
         expect(data.line).toBe(VALUELESS_MERGE_RECURSIVE_LINE);
         expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given a subsectionless valueless [merge] recursive (no subsection)', () => {
+    describe('When git merge and tsgit merge engage mydriver', () => {
+      it('Then neither refuses — git ignores the subsectionless key and both reach the conflict', async () => {
+        // Arrange
+        await writeBothConfig(SUBSECTIONLESS_VALUELESS_MERGE_FIXTURE);
+
+        // Act — a missing-value throw here (regression) would fail the test
+        const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: MERGE_AUTHOR_ENV,
+        });
+        const repo = await openRepository({ cwd: ours });
+        const result = await repo.merge.run({ rev: 'theirs', message: 'm' });
+
+        // Assert — no missing-value death on git; tsgit reaches the built-in text conflict
+        expect(g.stderr).not.toContain('missing value');
+        expect(result.kind).toBe('conflict');
       });
     });
   });

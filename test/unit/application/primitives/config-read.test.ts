@@ -4871,6 +4871,33 @@ describe('Given a section with valueless/valued entries across subsections', () 
       expect(result?.line).toBe(2);
     });
 
+    it('Then requireSubsection skips a subsectionless valueless key (inert to git)', async () => {
+      // Arrange — git's merge-driver keys are only meaningful under a subsection, so a
+      // subsectionless `[merge] driver` is inert; requireSubsection must not report it.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name'], { requireSubsection: true });
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('Then requireSubsection still reports a subsectioned valueless key', async () => {
+      // Arrange — a subsectioned valueless driver IS git's death; requireSubsection keeps it.
+      const ctx = createMemoryContext();
+      const sut = findFirstValuelessInSection;
+      await seed(ctx, '[merge "custom"]\n\tdriver\n');
+
+      // Act
+      const result = await sut(ctx, 'merge', ['driver', 'name'], { requireSubsection: true });
+
+      // Assert
+      expect(result?.key).toBe('merge.custom.driver');
+    });
+
     it('Then it ignores a matching valueless key that precedes any header (orphan)', async () => {
       // Arrange — a valueless `driver` in the orphan region (before any header) must
       // not be reported; only the one under the real [merge "custom"] header counts.

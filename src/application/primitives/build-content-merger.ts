@@ -48,11 +48,9 @@ export const buildContentMerger = (
     (providerPromise ??= buildAttributeProvider(ctx));
   let driverGuard: Promise<void> | undefined;
   const ensureNoValuelessMergeDriver = (): Promise<void> =>
-    (driverGuard ??= findFirstValuelessInSection(ctx, 'merge', [
-      'driver',
-      'name',
-      'recursive',
-    ]).then((found) => {
+    (driverGuard ??= findFirstValuelessInSection(ctx, 'merge', ['driver', 'name', 'recursive'], {
+      requireSubsection: true,
+    }).then((found) => {
       if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
     }));
   return async (mergeCtx): Promise<ContentMergeResult> => {

@@ -60,7 +60,10 @@ tsgit does not model.
 - Adds a bounded refusal surface (one new choice variant, one new error) and one documented residual
   (M16) tied to tsgit's config-map model.
 - Extends ADR-352's eager valueless-key guard to also scan `recursive` (previously `driver`/`name`
-  only): a valueless `[merge "<name>"] recursive` now refuses eagerly with the same
-  `CONFIG_MISSING_VALUE` shape git emits (verified exit 128, `missing value for
-  'merge.<name>.recursive'`), closing the last valueless merge-key gap. The `driver`/`name`
-  behaviour is byte-identical.
+  only) AND makes the whole guard **subsection-aware**: a valueless *subsectioned*
+  `[merge "<name>"] driver`/`name`/`recursive` refuses eagerly with the same `CONFIG_MISSING_VALUE`
+  shape git emits (verified exit 128, `missing value for 'merge.<name>.<key>'`), while a
+  *subsectionless* `[merge] <key>` (no `[merge "<name>"]` header) is now **inert** — git ignores
+  merge-driver keys without a subsection (verified: an ordinary conflict, not a death). This closes
+  the recursive gap AND a pre-existing subsectionless over-refusal for `driver`/`name` (the shared
+  scan reported subsectionless keys too). The subsectioned `driver`/`name` refusal is byte-identical.

@@ -318,6 +318,27 @@ describe('buildContentMerger', () => {
       });
     });
 
+    describe('When a path enters content merge with a subsectionless valueless [merge] recursive', () => {
+      it('Then the guard skips it (git ignores subsectionless merge keys) and does not throw', async () => {
+        // Arrange — `[merge] recursive` with no subsection is inert to git; the guard
+        // requires a subsection, so it must not refuse here.
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge]\n\trecursive\n');
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'L1\n',
+          ours: 'L1\nOURS\n',
+          theirs: 'THEIRS\nL1\n',
+        });
+
+        // Act
+        const result = await mergeData(sut, mergeCtx);
+
+        // Assert — no CONFIG_MISSING_VALUE; the merge proceeds
+        expect(result.code).toBeUndefined();
+      });
+    });
+
     describe('When a path enters content merge with a valued driver but a valueless name', () => {
       it('Then it throws CONFIG_MISSING_VALUE for merge.custom.name at its line', async () => {
         // Arrange — driver valued at line 2, name valueless at line 3.
