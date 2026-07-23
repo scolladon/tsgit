@@ -85,40 +85,27 @@ const runWithChild = async (
 };
 
 describe('adapters/node NodeHookRunner — isRunnable', () => {
-  describe('Given stat rejects (no such file)', () => {
+  describe('Given a hook that is not runnable', () => {
     describe('When run', () => {
-      it('Then it resolves skipped', async () => {
-        // Arrange
-        const { runner } = makeHarness({ stat: () => Promise.reject(new Error('ENOENT')) });
-
-        // Act & Assert
-        expect(await runner.run(baseRequest('pre-commit'))).toEqual({ kind: 'skipped' });
-      });
-    });
-  });
-
-  describe('Given the path is not a regular file', () => {
-    describe('When run', () => {
-      it('Then it resolves skipped', async () => {
-        // Arrange
-        const { runner } = makeHarness({
+      it.each([
+        {
+          platform: 'linux' as const,
+          stat: () => Promise.reject(new Error('ENOENT')),
+          label: 'stat rejects (no such file) resolves skipped',
+        },
+        {
+          platform: 'linux' as const,
           stat: () => Promise.resolve({ mode: 0o755, isFile: () => false }),
-        });
-
-        // Act & Assert
-        expect(await runner.run(baseRequest('pre-commit'))).toEqual({ kind: 'skipped' });
-      });
-    });
-  });
-
-  describe('Given a regular file with no executable bit on POSIX', () => {
-    describe('When run', () => {
-      it('Then it resolves skipped', async () => {
-        // Arrange
-        const { runner } = makeHarness({
-          platform: 'linux',
+          label: 'the path is not a regular file, resolves skipped',
+        },
+        {
+          platform: 'linux' as const,
           stat: () => Promise.resolve({ mode: 0o644, isFile: () => true }),
-        });
+          label: 'a regular file has no executable bit on POSIX, resolves skipped',
+        },
+      ])('Then $label', async ({ stat, platform }) => {
+        // Arrange
+        const { runner } = makeHarness({ stat, platform });
 
         // Act & Assert
         expect(await runner.run(baseRequest('pre-commit'))).toEqual({ kind: 'skipped' });
@@ -204,40 +191,48 @@ describe('adapters/node NodeHookRunner — spawn wiring', () => {
     });
   });
 
-  describe('Given a hook that exits non-zero', () => {
+  describe('Given a hook whose outcome is reported via exitCode', () => {
     describe('When run', () => {
-      it('Then the exit code is reported', async () => {
-        // Arrange
-        const { runner, child } = makeHarness();
-
-        // Act
-        const result = ran(
-          await runWithChild(runner, child, baseRequest('pre-commit'), (c) => {
+      it.each([
+        {
+          interact: (c: FakeChild) => {
             c.emit('close', 7);
-          }),
-        );
-
-        // Assert
-        expect(result.exitCode).toBe(7);
-      });
-    });
-  });
-
-  describe('Given the child closes with a null code (signal-killed)', () => {
-    describe('When run', () => {
-      it('Then exit code 128 is reported', async () => {
+          },
+          expectedExitCode: 7,
+          label: 'a non-zero close code reports that exit code',
+        },
+        {
+          interact: (c: FakeChild) => {
+            c.emit('close', null);
+          },
+          expectedExitCode: 128,
+          label: 'a null close code (signal-killed) reports exit code 128',
+        },
+        {
+          interact: (c: FakeChild) => {
+            c.emit('error', new Error('boom'));
+            c.emit('close', 0);
+          },
+          expectedExitCode: 126,
+          label: 'error firing before close makes the error result win (resolve is idempotent)',
+        },
+        {
+          interact: (c: FakeChild) => {
+            c.emit('close', 4);
+            c.emit('error', new Error('boom'));
+          },
+          expectedExitCode: 4,
+          label: 'close firing before error makes the close result win',
+        },
+      ])('Then $label', async ({ interact, expectedExitCode }) => {
         // Arrange
         const { runner, child } = makeHarness();
 
         // Act
-        const result = ran(
-          await runWithChild(runner, child, baseRequest('pre-commit'), (c) => {
-            c.emit('close', null);
-          }),
-        );
+        const result = ran(await runWithChild(runner, child, baseRequest('pre-commit'), interact));
 
         // Assert
-        expect(result.exitCode).toBe(128);
+        expect(result.exitCode).toBe(expectedExitCode);
       });
     });
   });
@@ -259,46 +254,6 @@ describe('adapters/node NodeHookRunner — spawn wiring', () => {
         expect(result.exitCode).toBe(126);
         expect(result.stdout).toBe('');
         expect(result.stderr).toContain('spawn ENOENT');
-      });
-    });
-  });
-
-  describe('Given both error and close fire', () => {
-    describe('When error fires first', () => {
-      it('Then the error result wins', async () => {
-        // Arrange
-        const { runner, child } = makeHarness();
-
-        // Act
-        const result = ran(
-          await runWithChild(runner, child, baseRequest('pre-commit'), (c) => {
-            c.emit('error', new Error('boom'));
-            c.emit('close', 0);
-          }),
-        );
-
-        // Assert — resolve() is idempotent, so the first (error) result wins.
-        expect(result.exitCode).toBe(126);
-      });
-    });
-  });
-
-  describe('Given both close and error fire', () => {
-    describe('When close fires first', () => {
-      it('Then the close result wins', async () => {
-        // Arrange
-        const { runner, child } = makeHarness();
-
-        // Act
-        const result = ran(
-          await runWithChild(runner, child, baseRequest('pre-commit'), (c) => {
-            c.emit('close', 4);
-            c.emit('error', new Error('boom'));
-          }),
-        );
-
-        // Assert
-        expect(result.exitCode).toBe(4);
       });
     });
   });

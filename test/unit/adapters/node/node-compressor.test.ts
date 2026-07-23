@@ -366,64 +366,46 @@ describe('NodeCompressor', () => {
       });
     });
 
-    describe('Given deflate with an explicit compression level', () => {
-      describe('When level=9 (maximum compression)', () => {
-        it('Then the output starts with zlib header 0x78 0xda', async () => {
+    describe('Given deflate at a given compression level (explicit or default)', () => {
+      describe('When deflating the payload', () => {
+        it.each([
+          {
+            levelArgs: [9] as const,
+            data: 'hello zlib level 9',
+            header: [0x78, 0xda],
+            label: 'output for level=9 (maximum compression) starts with zlib header 0x78 0xda',
+          },
+          {
+            levelArgs: [0] as const,
+            data: 'hello zlib level 0',
+            header: [0x78, 0x01],
+            label: 'output for level=0 (no compression / store) starts with zlib header 0x78 0x01',
+          },
+          {
+            levelArgs: [-1] as const,
+            data: 'hello zlib level -1',
+            header: [0x78, 0x9c],
+            label:
+              'output for level=-1 (zlib default, same as 6) starts with zlib header 0x78 0x9c',
+          },
+          {
+            levelArgs: [] as const,
+            data: 'hello zlib no level',
+            header: [0x78, 0x9c],
+            label:
+              'output for no level given (adapter default) starts with zlib header 0x78 0x9c (Node default level 6)',
+          },
+        ])('Then the $label', async ({ levelArgs, data, header }) => {
           // Arrange
           const sut = new NodeCompressor();
-          const data = new TextEncoder().encode('hello zlib level 9');
+          const payload = new TextEncoder().encode(data);
 
           // Act
-          const result = await sut.deflate(data, 9);
+          const result = await sut.deflate(payload, ...levelArgs);
 
-          // Assert — zlib level-9 header is always 78 da
-          expect(result[0]).toBe(0x78);
-          expect(result[1]).toBe(0xda);
-        });
-      });
-
-      describe('When level=0 (no compression / store)', () => {
-        it('Then the output starts with zlib header 0x78 0x01', async () => {
-          // Arrange
-          const sut = new NodeCompressor();
-          const data = new TextEncoder().encode('hello zlib level 0');
-
-          // Act
-          const result = await sut.deflate(data, 0);
-
-          // Assert — zlib level-0 header is always 78 01
-          expect(result[0]).toBe(0x78);
-          expect(result[1]).toBe(0x01);
-        });
-      });
-
-      describe('When level=-1 (zlib default, same as 6)', () => {
-        it('Then the output starts with zlib header 0x78 0x9c', async () => {
-          // Arrange
-          const sut = new NodeCompressor();
-          const data = new TextEncoder().encode('hello zlib level -1');
-
-          // Act
-          const result = await sut.deflate(data, -1);
-
-          // Assert — zlib default level header is 78 9c
-          expect(result[0]).toBe(0x78);
-          expect(result[1]).toBe(0x9c);
-        });
-      });
-
-      describe('When no level is given (adapter default)', () => {
-        it('Then the output starts with zlib header 0x78 0x9c (Node default level 6)', async () => {
-          // Arrange
-          const sut = new NodeCompressor();
-          const data = new TextEncoder().encode('hello zlib no level');
-
-          // Act
-          const result = await sut.deflate(data);
-
-          // Assert — Node default (level 6) header is 78 9c
-          expect(result[0]).toBe(0x78);
-          expect(result[1]).toBe(0x9c);
+          // Assert — zlib header bytes are pinned per level
+          expect(result[0]).toBe(header[0]);
+          expect(result[1]).toBe(header[1]);
         });
       });
     });

@@ -14,6 +14,7 @@ import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.j
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
 import { NodeSshTransport } from '../../../../src/adapters/node/node-ssh-transport.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 
 describe('createNodeContext', () => {
   describe('Given workDir only', () => {
@@ -108,74 +109,52 @@ describe('createNodeContext', () => {
     });
   });
 
-  describe('Given default options', () => {
+  describe('Given a port wired by default and detachable via an explicit `false` option', () => {
     describe('When creating context', () => {
-      it('Then ctx.hooks is wired (a NodeHookRunner)', () => {
-        // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-on' });
+      it.each([
+        {
+          workDir: '/tmp/tsgit-hooks-on',
+          options: {},
+          check: (ctx: Context) => expect(ctx.hooks).toBeInstanceOf(NodeHookRunner),
+          label: 'ctx.hooks is wired (a NodeHookRunner)',
+        },
+        {
+          workDir: '/tmp/tsgit-hooks-off',
+          options: { hooks: false },
+          check: (ctx: Context) => expect(ctx.hooks).toBeUndefined(),
+          label: 'ctx.hooks is undefined',
+        },
+        {
+          workDir: '/tmp/tsgit-command-on',
+          options: {},
+          check: (ctx: Context) => expect(ctx.command).toBeInstanceOf(NodeCommandRunner),
+          label: 'ctx.command is wired (a NodeCommandRunner)',
+        },
+        {
+          workDir: '/tmp/tsgit-command-off',
+          options: { command: false },
+          check: (ctx: Context) => expect(ctx.command).toBeUndefined(),
+          label: 'ctx.command is undefined',
+        },
+        {
+          workDir: '/tmp/tsgit-ssh-on',
+          options: {},
+          check: (ctx: Context) => expect(ctx.ssh).toBeInstanceOf(NodeSshTransport),
+          label: 'ctx.ssh is a NodeSshTransport',
+        },
+        {
+          workDir: '/tmp/tsgit-ssh-off',
+          options: { ssh: false },
+          check: (ctx: Context) => expect(ctx.ssh).toBeUndefined(),
+          label: 'ctx.ssh is undefined',
+        },
+      ])('Then $label', ({ workDir, options, check }) => {
+        // Arrange / Act — hooks/command run by default like git (ADR-066); ssh reaches
+        // remotes out of the box; each explicit `false` opt-out detaches its port.
+        const sut = createNodeContext({ workDir, ...options });
 
-        // Assert — hooks run by default, like git (ADR-066).
-        expect(sut.hooks).toBeInstanceOf(NodeHookRunner);
-      });
-    });
-  });
-
-  describe('Given hooks: false', () => {
-    describe('When creating context', () => {
-      it('Then ctx.hooks is undefined', () => {
-        // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-hooks-off', hooks: false });
-
-        // Assert — the explicit opt-out detaches the runner.
-        expect(sut.hooks).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given default options', () => {
-    describe('When creating context', () => {
-      it('Then ctx.command is wired (a NodeCommandRunner)', () => {
-        // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-command-on' });
-
-        // Assert — external merge drivers run by default, like git.
-        expect(sut.command).toBeInstanceOf(NodeCommandRunner);
-      });
-    });
-  });
-
-  describe('Given command: false', () => {
-    describe('When creating context', () => {
-      it('Then ctx.command is undefined', () => {
-        // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-command-off', command: false });
-
-        // Assert — the explicit opt-out detaches the runner.
-        expect(sut.command).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given default options (ssh transport)', () => {
-    describe('When creating context', () => {
-      it('Then ctx.ssh is a NodeSshTransport', () => {
-        // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-ssh-on' });
-
-        // Assert — node contexts can reach ssh/scp remotes out of the box.
-        expect(sut.ssh).toBeInstanceOf(NodeSshTransport);
-      });
-    });
-  });
-
-  describe('Given ssh: false', () => {
-    describe('When creating context', () => {
-      it('Then ctx.ssh is undefined', () => {
-        // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-ssh-off', ssh: false });
-
-        // Assert — the explicit opt-out makes ssh remotes refuse as unavailable.
-        expect(sut.ssh).toBeUndefined();
+        // Assert
+        check(sut);
       });
     });
   });
