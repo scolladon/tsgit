@@ -18,7 +18,7 @@ describe('parseGitignore', () => {
           label: 'a line that becomes empty after trailing-space strip yields zero rules',
         },
       ])('Then $label', ({ input }) => {
-        // Act
+        // Arrange + Act
         const sut = parseGitignore(input);
 
         // Assert
@@ -99,7 +99,7 @@ describe('parseGitignore', () => {
           label: 'no slash anywhere leaves the pattern NOT anchored',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Act
+        // Arrange + Act
         const sut = parseGitignore(input);
 
         // Assert
@@ -135,7 +135,7 @@ describe('parseGitignore', () => {
           label: 'a bare escaped space (length-2 line) is preserved',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Act
+        // Arrange + Act
         const sut = parseGitignore(input);
 
         // Assert
@@ -291,7 +291,7 @@ describe('tokenizeIgnoreLine', () => {
         { input: '   ', label: 'a whitespace-only line yields undefined' },
         { input: '# a comment', label: 'a comment line yields undefined' },
       ])('Then $label', ({ input }) => {
-        // Act
+        // Arrange + Act
         const sut = tokenizeIgnoreLine(input);
 
         // Assert

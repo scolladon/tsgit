@@ -62,7 +62,7 @@ describe('pack-entry', () => {
             label: 'bytes too short (< 12)',
           },
         ])('Then throws INVALID_PACK_HEADER for $label', ({ bytes, reasonContains }) => {
-          // Act & Assert
+          // Arrange + Act & Assert
           try {
             parsePackHeader(bytes);
             // Assert

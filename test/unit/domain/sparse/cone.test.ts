@@ -44,7 +44,7 @@ describe('buildConeSpec', () => {
           label: 'a root-level directory: parents stays empty (root is implicit)',
         },
       ])('Then $label', ({ dirs, recursive, parents }) => {
-        // Act
+        // Arrange + Act
         const sut = buildConeSpec(dirs);
 
         // Assert
@@ -77,7 +77,7 @@ describe('buildConeSpec', () => {
         // Pins the `+` quantifier in the `/\/+$/` strip regex.
         { dirs: ['src//'], recursive: ['src'], label: 'every trailing slash is stripped' },
       ])('Then $label', ({ dirs, recursive }) => {
-        // Act
+        // Arrange + Act
         const sut = buildConeSpec(dirs);
 
         // Assert
@@ -106,7 +106,7 @@ describe('buildConeSpec', () => {
           label: 'a "*" metacharacter throws a glob-metacharacter INVALID_OPTION',
         },
       ])('Then $label', ({ dirs, reason }) => {
-        // Act
+        // Arrange + Act
         let caught: unknown;
         try {
           buildConeSpec(dirs);
@@ -133,7 +133,7 @@ describe('buildConeSpec', () => {
         // A doubled internal slash leaves an empty segment.
         { dirs: ['src//app'], label: 'an empty segment in the middle throws INVALID_OPTION' },
       ])('Then $label', ({ dirs }) => {
-        // Act
+        // Arrange + Act
         let caught: unknown;
         try {
           buildConeSpec(dirs);
@@ -355,7 +355,7 @@ describe('parseCone', () => {
           label: 'a slash-bounded line whose inner part starts with "!" returns undefined',
         },
       ])('Then $label', ({ text }) => {
-        // Act
+        // Arrange + Act
         const sut = parseCone(text);
 
         // Assert

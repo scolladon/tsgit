@@ -67,7 +67,7 @@ describe('line-diff — splitLines', () => {
           label: "'\\n\\n' (two empty lines) returns [bytes('\\n'), bytes('\\n')]",
         },
       ])('Then $label', ({ bytes, lines }) => {
-        // Act
+        // Arrange + Act
         const sut = splitLines(bytes);
 
         // Assert
@@ -174,7 +174,7 @@ describe('line-diff — isBinary', () => {
         label: 'MAX_LINES reached via trailing incomplete line (no final LF) returns true',
       },
     ])('Then $label', ({ bytes, expected }) => {
-      // Act
+      // Arrange + Act
       const sut = isBinary(bytes);
 
       // Assert
@@ -239,7 +239,7 @@ describe('line-diff — diffLines', () => {
           label: 'ours non-empty and theirs empty yields a single ours-only hunk',
         },
       ])('Then $label, degraded false', ({ ours, theirs, hunks }) => {
-        // Act
+        // Arrange + Act
         const sut = diffLines(ours, theirs);
 
         // Assert
@@ -283,7 +283,7 @@ describe('line-diff — diffLines', () => {
             'interleaved edits sharing a middle common line preserve it as its own common hunk',
         },
       ])('Then $label', ({ ours, theirs, summary }) => {
-        // Act
+        // Arrange + Act
         const sut = diffLines(ours, theirs);
 
         // Assert

@@ -40,7 +40,7 @@ describe('parseSparseCheckout', () => {
             'a non-cone file with coneRequested false yields a no-cone spec and degraded false',
         },
       ])('Then $label', ({ text, coneRequested, mode, degraded }) => {
-        // Act
+        // Arrange + Act
         const sut = parseSparseCheckout(text, coneRequested);
 
         // Assert

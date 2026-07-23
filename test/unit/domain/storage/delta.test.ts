@@ -131,7 +131,7 @@ describe('delta', () => {
             label: 'multiple consecutive INSERT instructions',
           },
         ])('Then result decodes to $expected for $label', ({ base, delta, expected }) => {
-          // Act
+          // Arrange + Act
           const sut = applyDelta(base, delta);
 
           // Assert
@@ -240,7 +240,7 @@ describe('delta', () => {
             label: 'a delta that partially fills the target',
           },
         ])('Then throws INVALID_DELTA for $label', ({ base, delta, reasonContains }) => {
-          // Act & Assert
+          // Arrange + Act & Assert
           try {
             applyDelta(base, delta);
             // Assert
@@ -572,7 +572,7 @@ describe('delta', () => {
             label: 'a varint continuation byte then exact EOF',
           },
         ])('Then throws INVALID_DELTA (truncated) for $label', ({ delta }) => {
-          // Act & Assert
+          // Arrange + Act & Assert
           try {
             readDeltaTargetSize(delta);
             // Assert

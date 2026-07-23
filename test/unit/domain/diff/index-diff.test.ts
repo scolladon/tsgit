@@ -90,7 +90,7 @@ describe('diffIndexAgainstTree', () => {
           label: 'a FlatTree with exactly MAX_FLAT_TREE_ENTRIES entries succeeds without throwing',
         },
       ])('Then $label', ({ idx, tree }) => {
-        // Act
+        // Arrange + Act
         const sut = diffIndexAgainstTree(idx, tree);
 
         // Assert
@@ -216,7 +216,7 @@ describe('diffIndexAgainstTree', () => {
           },
         },
       ])('Then $label', ({ idx, tree, expected }) => {
-        // Act
+        // Arrange + Act
         const sut = diffIndexAgainstTree(idx, tree);
 
         // Assert
@@ -344,7 +344,7 @@ describe('groupUnmergedEntries', () => {
           label: 'stages 1 + 3 only (no stage 2): stage2 absent',
         },
       ])('Then $label', ({ entries, path, stage1, stage2, stage3 }) => {
-        // Act
+        // Arrange + Act
         const sut = groupUnmergedEntries(index(entries));
 
         // Assert
@@ -976,7 +976,7 @@ describe('sortedRecordedPaths', () => {
             'a distinct-types conflict with only theirPath set returns only the present recorded path',
         },
       ])('Then $label', ({ conflicts, expected }) => {
-        // Act
+        // Arrange + Act
         const result = sortedRecordedPaths(conflicts);
 
         // Assert

@@ -85,7 +85,7 @@ describe('primaryPath — per-variant sort key', () => {
           expected: 'dst',
         },
       ])('Then $variant returns $expected', ({ change, expected }) => {
-        // Act
+        // Arrange + Act
         const sut = primaryPath(change);
 
         // Assert

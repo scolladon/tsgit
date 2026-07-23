@@ -41,7 +41,7 @@ describe('normalizeLine', () => {
           label: 'an unterminated line drops whitespace without appending a terminator',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Act
+        // Arrange + Act
         const result = normalizeLine(line(input), key);
         // Assert
         expect(result).toEqual(enc(expected));
@@ -91,7 +91,7 @@ describe('normalizeLine', () => {
             'a trailing CR before the LF terminator is dropped as EOL whitespace (CR1 under -b)',
         },
       ])('Then $label', ({ left, right }) => {
-        // Act
+        // Arrange + Act
         const a = normalizeLine(line(left), key);
         const b = normalizeLine(line(right), key);
         // Assert
@@ -119,7 +119,7 @@ describe('normalizeLine', () => {
           label: 'a CR appearing mid-line (not at EOL) is preserved so the keys differ (CR-narrow)',
         },
       ])('Then $label', ({ left, right }) => {
-        // Act
+        // Arrange + Act
         const a = normalizeLine(line(left), key);
         const b = normalizeLine(line(right), key);
         // Assert
@@ -146,7 +146,7 @@ describe('normalizeLine', () => {
           label: 'the line ending in a non-whitespace byte leaves the final byte intact',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Act
+        // Arrange + Act
         const result = normalizeLine(line(input), key);
         // Assert
         expect(result).toEqual(enc(expected));
@@ -190,7 +190,7 @@ describe('normalizeLine', () => {
             'trailing whitespace ending an unterminated line drops the run without inventing an LF',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Act
+        // Arrange + Act
         const result = normalizeLine(enc(input), key);
         // Assert
         expect(result).toEqual(enc(expected));
@@ -215,7 +215,7 @@ describe('normalizeLine', () => {
           label: 'a CR appearing mid-line (not at EOL) is preserved so the keys differ (CR-narrow)',
         },
       ])('Then $label', ({ left, right }) => {
-        // Act
+        // Arrange + Act
         const a = normalizeLine(line(left), key);
         const b = normalizeLine(line(right), key);
         // Assert
@@ -313,7 +313,7 @@ describe('normalizeLine', () => {
             'when no CR is present, trailing space is preserved (ignoreCrAtEol does not touch spaces)',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Act
+        // Arrange + Act
         const result = normalizeLine(line(input), key);
         // Assert
         expect(result).toEqual(enc(expected));
@@ -364,7 +364,7 @@ describe('linesEqualUnder', () => {
             'lines with space removed entirely (B-zero under all) are equal because all space is dropped',
         },
       ])('Then $label', ({ left, right, expected }) => {
-        // Act
+        // Arrange + Act
         const result = linesEqualUnder(line(left), line(right), key);
         // Assert
         expect(result).toBe(expected);
@@ -409,7 +409,7 @@ describe('linesEqualUnder', () => {
           label: 'a tab swapped for a space (B-tab) is equal',
         },
       ])('Then $label', ({ left, right, expected }) => {
-        // Act
+        // Arrange + Act
         const result = linesEqualUnder(line(left), line(right), key);
         // Assert
         expect(result).toBe(expected);
@@ -479,7 +479,7 @@ describe('resolveLineKey', () => {
       },
       { options: {}, mode: 'none', label: "absent resolves mode 'none'" },
     ])('Then $label', ({ options, mode }) => {
-      // Act
+      // Arrange + Act
       const result = resolveLineKey(options);
       // Assert
       expect(result.mode).toBe(mode);
@@ -603,7 +603,7 @@ describe('isBlankLine', () => {
       },
       { input: '', expected: true, label: 'an empty and unterminated line is blank' },
     ])('Then $label', ({ input, expected }) => {
-      // Act
+      // Arrange + Act
       const result = isBlankLine(line(input), NONE_KEY);
       // Assert
       expect(result).toBe(expected);

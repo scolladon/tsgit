@@ -14,7 +14,7 @@ describe('kindOf', () => {
         [FILE_MODE.DIRECTORY, 'directory'],
         [FILE_MODE.GITLINK, 'gitlink'],
       ])('Then mode %s returns kind %s', (mode, expected) => {
-        // Act
+        // Arrange + Act
         const sut = kindOf(mode);
 
         // Assert
@@ -35,7 +35,7 @@ describe('isSameKind', () => {
         [FILE_MODE.GITLINK, FILE_MODE.GITLINK, true],
         [FILE_MODE.GITLINK, FILE_MODE.DIRECTORY, false],
       ])('Then isSameKind(%s, %s) is %s', (a, b, expected) => {
-        // Act
+        // Arrange + Act
         const sut = isSameKind(a, b);
 
         // Assert

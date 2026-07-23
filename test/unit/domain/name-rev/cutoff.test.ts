@@ -24,7 +24,7 @@ describe('commitIsBeforeCutoff', () => {
           label: 'a date above the cutoff is not before it',
         },
       ])('Then $label', ({ commitDate, cutoff, expected }) => {
-        // Act
+        // Arrange + Act
         const sut = commitIsBeforeCutoff(commitDate, cutoff);
 
         // Assert
@@ -51,7 +51,7 @@ describe('nameRevCutoff', () => {
           label: 'it takes the subtract branch one second above the floor-plus-slop boundary',
         },
       ])('Then $label', ({ targetDate, expected }) => {
-        // Act
+        // Arrange + Act
         const sut = nameRevCutoff(targetDate);
 
         // Assert

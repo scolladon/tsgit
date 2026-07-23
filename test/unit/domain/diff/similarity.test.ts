@@ -77,7 +77,7 @@ describe('similarity', () => {
         label: 'DEFAULT_MERGE_SCORE equals 36000 (60% of MAX_SCORE)',
       },
     ])('Then $label', ({ sut, expected }) => {
-      // Act / Assert
+      // Arrange + Act / Assert
       expect(sut).toBe(expected);
     });
   });
@@ -103,7 +103,7 @@ describe('similarity', () => {
           label: '52799 (the upper bound of 87%) returns 87 (truncated, not 88)',
         },
       ])('Then $label', ({ score, expected }) => {
-        // Act
+        // Arrange + Act
         const result = toSimilarityPercent(score);
 
         // Assert
@@ -145,7 +145,7 @@ describe('similarity', () => {
           label: 'provably disjoint content (no shared 4-byte windows) returns 0',
         },
       ])('Then $label', ({ src, dst, expected }) => {
-        // Act
+        // Arrange + Act
         const result = estimateSimilarity(src, dst);
 
         // Assert
@@ -253,7 +253,7 @@ describe('similarity', () => {
           label: 'fully disjoint src and dst: srcCopied is 0 and literalAdded equals dstSize',
         },
       ])('Then $label', ({ src, dst, srcCopied, literalAdded }) => {
-        // Act
+        // Arrange + Act
         const result = countSpanhashChanges(src, dst);
 
         // Assert
@@ -449,7 +449,7 @@ describe('similarity', () => {
             '31 non-LF bytes followed by LF (in-loop flush, non-zero accum2) have hash 89031 and byte count 31 (kills mutants 4 %→* and 5 +→-)',
         },
       ])('Then $label', ({ data, hash, count }) => {
-        // Act
+        // Arrange + Act
         const result = buildChunkMap(data);
 
         // Assert

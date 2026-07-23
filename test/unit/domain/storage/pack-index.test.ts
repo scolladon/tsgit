@@ -128,7 +128,7 @@ describe('pack-index', () => {
             label: 'a truncated file (too short)',
           },
         ])('Then throws INVALID_PACK_INDEX for $label', ({ bytes, reasonContains }) => {
-          // Act & Assert
+          // Arrange + Act & Assert
           try {
             parsePackIndex(bytes);
             // Assert

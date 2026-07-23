@@ -96,7 +96,7 @@ describe('matchInStack', () => {
           label: 'a directory-only rule applies to a matching directory path',
         },
       ])('Then $label', ({ stack, filePath, isDir, expected }) => {
-        // Act
+        // Arrange + Act
         const sut = matchInStack(stack, path(filePath), isDir);
 
         // Assert
@@ -175,7 +175,7 @@ describe('matchInStackVerbose', () => {
             'a multi-level stack where no level matches is fully empty (kills initialiser mutants)',
         },
       ])('Then $label', ({ stack, filePath, isDir, verdict, expectedLevel, ruleIndex }) => {
-        // Act
+        // Arrange + Act
         const sut = matchInStackVerbose(stack, path(filePath), isDir);
 
         // Assert

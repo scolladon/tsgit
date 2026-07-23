@@ -372,7 +372,7 @@ describe('tree', () => {
             label: 'multiple directories sort by byte-level comparison with trailing "/"',
           },
         ])('Then $label', ({ entries, expected }) => {
-          // Act
+          // Arrange + Act
           const sut = sortTreeEntries(entries);
 
           // Assert

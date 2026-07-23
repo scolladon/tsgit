@@ -325,7 +325,7 @@ describe('author-identity', () => {
         ] satisfies ReadonlyArray<{ field: string; char: string; identity: AuthorIdentity }>)(
           'Then throws INVALID_IDENTITY for a $char in $field',
           ({ field, identity }) => {
-            // Act / Assert
+            // Arrange + Act / Assert
             try {
               serializeIdentity(identity);
               // Assert
@@ -372,7 +372,7 @@ describe('author-identity', () => {
         ] satisfies ReadonlyArray<{ identity: AuthorIdentity; expected: string; label: string }>)(
           'Then $label succeeds',
           ({ identity, expected }) => {
-            // Act
+            // Arrange + Act
             const sut = serializeIdentity(identity);
 
             // Assert
@@ -402,7 +402,7 @@ describe('author-identity', () => {
         ] satisfies ReadonlyArray<{ identity: AuthorIdentity; label: string }>)(
           'Then throws INVALID_IDENTITY for $label',
           ({ identity }) => {
-            // Act + Assert
+            // Arrange + Act + Assert
             expect(() => serializeIdentity(identity)).toThrow(
               expect.objectContaining({
                 data: expect.objectContaining({

@@ -199,7 +199,7 @@ describe('computeStatFields', () => {
           expected: { added: 0, deleted: 0, binary: false },
         },
       ])('Then $label', ({ old, next, options, expected }) => {
-        // Act
+        // Arrange + Act
         const result = computeStatFields(old, next, options);
 
         // Assert
