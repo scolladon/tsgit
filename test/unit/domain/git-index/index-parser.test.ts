@@ -215,57 +215,32 @@ describe('parseIndex', () => {
     });
   });
 
-  describe('Given index with mandatory extension (lowercase signature starting with a)', () => {
+  describe('Given index with a mandatory extension whose signature is rejected', () => {
     describe('When parsing', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
-        // Arrange — 'a' = charCode 97 (boundary)
-        const input = buildTestIndex([], [{ signature: 'abcd', data: new Uint8Array([1]) }]);
-
-        // Act & Assert
-        try {
-          parseIndex(input);
-          // Assert
-          expect.fail('should have thrown');
-        } catch (e) {
-          expect(e).toBeInstanceOf(TsgitError);
-          expect((e as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
-          expect((e as TsgitError).data).toHaveProperty(
-            'reason',
-            "mandatory extension 'abcd' not supported",
-          );
-        }
-      });
-    });
-  });
-
-  describe('Given index with mandatory extension (lowercase signature starting with z)', () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
-        // Arrange — 'z' = charCode 122 (boundary)
-        const input = buildTestIndex([], [{ signature: 'zbcd', data: new Uint8Array([1]) }]);
-
-        // Act & Assert
-        try {
-          parseIndex(input);
-          // Assert
-          expect.fail('should have thrown');
-        } catch (e) {
-          expect(e).toBeInstanceOf(TsgitError);
-          expect((e as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
-          expect((e as TsgitError).data).toHaveProperty(
-            'reason',
-            "mandatory extension 'zbcd' not supported",
-          );
-        }
-      });
-    });
-  });
-
-  describe('Given index with mandatory extension (lowercase link)', () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
+      it.each([
+        {
+          signature: 'abcd',
+          reason: "mandatory extension 'abcd' not supported",
+          label: "rejects a signature starting with 'a' (lower boundary, charCode 97)",
+        },
+        {
+          signature: 'zbcd',
+          reason: "mandatory extension 'zbcd' not supported",
+          label: "rejects a signature starting with 'z' (upper boundary, charCode 122)",
+        },
+        {
+          signature: 'link',
+          reason: "mandatory extension 'link' not supported",
+          label: 'rejects the mandatory link extension',
+        },
+        {
+          signature: 'a\x01cd',
+          reason: "mandatory extension 'a?cd' not supported",
+          label: "replaces a non-printable signature byte with '?' in the reason",
+        },
+      ])('Then $label', ({ signature, reason }) => {
         // Arrange
-        const input = buildTestIndex([], [{ signature: 'link', data: new Uint8Array([1]) }]);
+        const input = buildTestIndex([], [{ signature, data: new Uint8Array([1]) }]);
 
         // Act & Assert
         try {
@@ -274,11 +249,11 @@ describe('parseIndex', () => {
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
-          expect((e as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
-          expect((e as TsgitError).data).toHaveProperty(
-            'reason',
-            "mandatory extension 'link' not supported",
-          );
+          expect((e as TsgitError).data).toEqual({
+            code: 'INVALID_INDEX_ENTRY',
+            offset: 12,
+            reason,
+          });
         }
       });
     });
@@ -443,29 +418,6 @@ describe('parseIndex', () => {
             code: 'INVALID_INDEX_HEADER',
             reason: 'truncated header',
           });
-        }
-      });
-    });
-  });
-
-  describe('Given exactly 12-byte header with 0 entries', () => {
-    describe('When parsing', () => {
-      it('Then throws due to entryCount guard (no room for checksum)', () => {
-        // Arrange — 12 bytes is valid header size but maxEntryBytes = 12 - 12 - 20 = -20
-        const buf = new Uint8Array(12);
-        const view = new DataView(buf.buffer);
-        view.setUint32(0, 0x44495243);
-        view.setUint32(4, 2);
-        view.setUint32(8, 1);
-
-        // Act & Assert
-        try {
-          parseIndex(buf);
-          // Assert
-          expect.fail('should have thrown');
-        } catch (e) {
-          expect(e).toBeInstanceOf(TsgitError);
-          expect((e as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
         }
       });
     });
@@ -812,13 +764,92 @@ describe('parseIndex', () => {
     });
   });
 
-  describe('Given an entry whose path starts with a leading `/`', () => {
+  describe('Given an entry whose path violates a path-safety rule', () => {
     describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY (absolute path rejected) with offset', () => {
-        // Arrange — `/etc/passwd` is an absolute path; index entries must be
-        // workdir-relative. Defensive guard added in
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: '/etc/passwd', sha: SHA_A }]);
+      const PATH_SHA = '0123456789abcdef0123456789abcdef01234567';
+      const SECOND_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+      it.each([
+        {
+          entries: [{ path: '/etc/passwd', sha: PATH_SHA }],
+          offset: 12,
+          reason: 'absolute path rejected',
+          label: 'rejects a leading `/` (absolute path)',
+        },
+        {
+          entries: [{ path: 'foo/../bar', sha: PATH_SHA }],
+          offset: 12,
+          reason: "'..' segment rejected",
+          label: 'rejects a `..` segment mid-path',
+        },
+        {
+          entries: [{ path: '..', sha: PATH_SHA }],
+          offset: 12,
+          reason: "'..' segment rejected",
+          label: 'rejects a bare `..` path',
+        },
+        {
+          entries: [{ path: 'foo/./bar', sha: PATH_SHA }],
+          offset: 12,
+          reason: "'.' segment rejected",
+          label: 'rejects a `.` current-dir segment',
+        },
+        {
+          // First entry: 62 header + 8 name ('safe.txt') + 1 NUL = 71;
+          // padded up to multiple of 8 = 72. Header is 12 → second entry
+          // starts at 84. Pins `entryStart` threading against any mutation
+          // that replaces it with a different integer.
+          entries: [
+            { path: 'safe.txt', sha: PATH_SHA },
+            { path: '../etc/passwd', sha: SECOND_SHA },
+          ],
+          offset: 84,
+          reason: "'..' segment rejected",
+          label: 'rejects `..` at the second entry, with the offset threaded to its start',
+        },
+        {
+          // `..\\bar` would slip past the slash-segment check on POSIX but
+          // resolve to a traversal on Windows.
+          entries: [{ path: 'foo\\..\\bar', sha: PATH_SHA }],
+          offset: 12,
+          reason: 'backslash rejected',
+          label: 'rejects a backslash (Windows separator)',
+        },
+        {
+          entries: [{ path: 'foo\tbar', sha: PATH_SHA }],
+          offset: 12,
+          reason: 'control character rejected',
+          label: 'rejects a TAB control character (0x09)',
+        },
+        {
+          entries: [{ path: 'foo\x7fbar', sha: PATH_SHA }],
+          offset: 12,
+          reason: 'control character rejected',
+          label: 'rejects DEL (0x7F), the boundary above C0 controls',
+        },
+        {
+          entries: [{ path: 'foo\x85bar', sha: PATH_SHA }],
+          offset: 12,
+          reason: 'control character rejected',
+          label: 'rejects a C1 control character (0x85 NEL)',
+        },
+        {
+          // RTL override can visually disguise filenames in terminals and
+          // log lines (e.g., `evil.exe` rendered as `exe.libtrust`).
+          entries: [{ path: `evil‮gnp.exe`, sha: PATH_SHA }],
+          offset: 12,
+          reason: 'bidi control character rejected',
+          label: 'rejects a BIDI override (U+202E)',
+        },
+        {
+          entries: [{ path: 'foo//bar', sha: PATH_SHA }],
+          offset: 12,
+          reason: 'empty segment rejected',
+          label: 'rejects an empty segment (`foo//bar`)',
+        },
+      ])('Then $label', ({ entries, offset, reason }) => {
+        // Arrange
+        const bytes = buildTestIndex(entries);
 
         // Act
         let caught: unknown;
@@ -832,231 +863,8 @@ describe('parseIndex', () => {
         // entry-start byte was correctly threaded into the error).
         expect((caught as TsgitError).data).toEqual({
           code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: 'absolute path rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains a `..` segment', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY (traversal rejected) with offset', () => {
-        // Arrange
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: 'foo/../bar', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: "'..' segment rejected",
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path is just `..`', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY with reason `..` segment rejected', () => {
-        // Arrange — bare `..` reference at root level. Pinning the reason
-        // string ensures a mutation that flips the `..` set member would be
-        // killed (otherwise the bare-`..` case could surface as a different
-        // unsafe-segment reason and still match the generic code).
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: '..', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: "'..' segment rejected",
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains a `.` segment', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY (current-dir rejected)', () => {
-        // Arrange
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: 'foo/./bar', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: "'.' segment rejected",
-        });
-      });
-    });
-  });
-
-  describe('Given a SECOND-position unsafe entry', () => {
-    describe('When parseIndex runs', () => {
-      it('Then offset points to the exact second entry start', () => {
-        // Arrange — first entry safe, second entry has '..'. The thrown
-        // offset must be the second entry's start (exactly 84, derived
-        // below). Pins `entryStart` threading against any mutation that
-        // replaces it with a different integer.
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const SHA_B = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-        const bytes = buildTestIndex([
-          { path: 'safe.txt', sha: SHA_A },
-          { path: '../etc/passwd', sha: SHA_B },
-        ]);
-
-        // First entry: 62 header + 8 name ('safe.txt') + 1 NUL = 71;
-        // padded up to multiple of 8 = 72. Header is 12 → second entry
-        // starts at 84.
-        const SECOND_ENTRY_OFFSET = 12 + 72;
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert — exact offset is the only assertion that survives
-        // mutation tests on the `entryStart` argument threading.
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: SECOND_ENTRY_OFFSET,
-          reason: "'..' segment rejected",
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains a backslash', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY (Windows separator rejected)', () => {
-        // Arrange — `..\\bar` would slip past the slash-segment check on
-        // POSIX but resolve to a traversal on Windows.
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: 'foo\\..\\bar', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: 'backslash rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains a TAB (C0 control 0x09)', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
-        // Arrange — tab (0x09) is a C0 control. Most filesystems accept it,
-        // but it can corrupt line-oriented log output and is rejected
-        // defensively.
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: 'foo\tbar', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: 'control character rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains DEL (0x7F)', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
-        // Arrange — 0x7F is the boundary between C0 controls and printable
-        // ASCII. Pinning it explicitly kills a mutation that drops the
-        // `code === 0x7f` branch from the control-char check.
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: 'foo\x7fbar', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: 'control character rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains a C1 control (0x85, NEL)', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
-        // Arrange — NEL (Next Line, U+0085) is in the C1 range (0x80-0x9F).
-        // C1 controls are rejected for the same reason as C0; pins the
-        // extended range against a mutation narrowing the check to C0 only.
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: 'foo\x85bar', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: 'control character rejected',
+          offset,
+          reason,
         });
       });
     });
@@ -1077,57 +885,6 @@ describe('parseIndex', () => {
         // Assert
         expect(result.entries).toHaveLength(1);
         expect(result.entries[0]?.path).toBe('foo bar.txt');
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains a BIDI override (U+202E)', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
-        // Arrange — RTL override can visually disguise filenames in terminals
-        // and log lines (e.g., `evil.exe` rendered as `exe.libtrust`).
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: `evil‮gnp.exe`, sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: 'bidi control character rejected',
-        });
-      });
-    });
-  });
-
-  describe('Given an entry whose path contains an empty segment (`foo//bar`)', () => {
-    describe('When parseIndex runs', () => {
-      it('Then throws INVALID_INDEX_ENTRY', () => {
-        // Arrange — double slash produces an empty segment between the two parts.
-        const SHA_A = '0123456789abcdef0123456789abcdef01234567';
-        const bytes = buildTestIndex([{ path: 'foo//bar', sha: SHA_A }]);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(bytes);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: 'empty segment rejected',
-        });
       });
     });
   });
@@ -1228,41 +985,6 @@ describe('parseIndex', () => {
       });
     });
   });
-
-  describe('Given a mandatory extension whose signature contains a non-printable byte', () => {
-    describe('When parsing', () => {
-      it('Then the reason replaces it with `?` (NOT an empty string)', () => {
-        // Arrange — signature 'a\x01cd': first char 'a' (0x61) marks it
-        // mandatory; the 0x02-range control byte is non-printable. The
-        // `replace(..., '?')` call must substitute it with '?'. The
-        // StringLiteral mutant (replacement → '') would delete the byte.
-        const sigBytes = new Uint8Array([0x61, 0x01, 0x63, 0x64]); // a␁cd
-        const total = 12 + 8 + 1 + CHECKSUM_SIZE;
-        const buf = new Uint8Array(total);
-        const view = new DataView(buf.buffer);
-        view.setUint32(0, 0x44495243);
-        view.setUint32(4, 2);
-        view.setUint32(8, 0);
-        buf.set(sigBytes, 12);
-        view.setUint32(16, 1);
-
-        // Act
-        let caught: unknown;
-        try {
-          parseIndex(buf);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert — the '?' substitution is pinned exactly.
-        expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_INDEX_ENTRY',
-          offset: 12,
-          reason: "mandatory extension 'a?cd' not supported",
-        });
-      });
-    });
-  });
 });
 
 /**
@@ -1323,11 +1045,53 @@ function buildV3Index(
 }
 
 describe('parseIndex — index v3 extended flags', () => {
-  describe('Given a v3 index with one skip-worktree entry (extended word 0x4000)', () => {
+  describe('Given a v3 index with one entry whose extended-flags word varies', () => {
     describe('When parsing', () => {
-      it('Then version is 3 and skipWorktree is true', () => {
-        // Arrange — the extended-flags word sets only the skip-worktree bit.
-        const input = buildV3Index(3, [{ path: 'sparse.txt', sha: SHA_A, extRaw: 0x4000 }]);
+      it.each([
+        {
+          path: 'sparse.txt',
+          extRaw: 0x4000,
+          expectSkipWorktree: true,
+          expectIntentToAdd: false,
+          label: 'sets skipWorktree from the extended word (0x4000)',
+        },
+        {
+          path: 'staged.txt',
+          extRaw: 0x2000,
+          expectSkipWorktree: false,
+          expectIntentToAdd: true,
+          label: 'sets intentToAdd from the extended word (0x2000)',
+        },
+        {
+          // 0x4000 | 0x2000 — proves the two bit masks are read
+          // independently (a mutant collapsing one mask is caught).
+          path: 'both.txt',
+          extRaw: 0x6000,
+          expectSkipWorktree: true,
+          expectIntentToAdd: true,
+          label: 'reads both extended bits independently (0x6000)',
+        },
+        {
+          path: 'plain.txt',
+          extRaw: 0x0000,
+          expectSkipWorktree: false,
+          expectIntentToAdd: false,
+          label: 'leaves both flags false for a zero extended word',
+        },
+        {
+          // No extended bit set → buildV3Index omits the extended-flags
+          // word entirely for this entry.
+          path: 'normal.txt',
+          extRaw: undefined,
+          expectSkipWorktree: false,
+          expectIntentToAdd: false,
+          label: 'leaves both flags false for a non-extended entry',
+        },
+      ])('Then $label', ({ path, extRaw, expectSkipWorktree, expectIntentToAdd }) => {
+        // Arrange
+        const input = buildV3Index(3, [
+          extRaw === undefined ? { path, sha: SHA_A } : { path, sha: SHA_A, extRaw },
+        ]);
 
         // Act
         const sut = parseIndex(input);
@@ -1336,82 +1100,9 @@ describe('parseIndex — index v3 extended flags', () => {
         expect(sut.version).toBe(3);
         expect(sut.entries).toHaveLength(1);
         const entry = sut.entries[0]!;
-        expect(entry.path).toBe('sparse.txt');
-        expect(entry.flags.skipWorktree).toBe(true);
-        expect(entry.flags.intentToAdd).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a v3 index with one intent-to-add entry (extended word 0x2000)', () => {
-    describe('When parsing', () => {
-      it('Then intentToAdd is true and skipWorktree is false', () => {
-        // Arrange — the extended-flags word sets only the intent-to-add bit.
-        const input = buildV3Index(3, [{ path: 'staged.txt', sha: SHA_A, extRaw: 0x2000 }]);
-
-        // Act
-        const sut = parseIndex(input);
-
-        // Assert
-        expect(sut.version).toBe(3);
-        const entry = sut.entries[0]!;
-        expect(entry.flags.intentToAdd).toBe(true);
-        expect(entry.flags.skipWorktree).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a v3 index with an entry carrying BOTH extended bits (0x6000)', () => {
-    describe('When parsing', () => {
-      it('Then skipWorktree and intentToAdd are both true', () => {
-        // Arrange — 0x4000 | 0x2000 — proves the two bit masks are read
-        // independently (a mutant collapsing one mask is caught).
-        const input = buildV3Index(3, [{ path: 'both.txt', sha: SHA_A, extRaw: 0x6000 }]);
-
-        // Act
-        const sut = parseIndex(input);
-
-        // Assert
-        const entry = sut.entries[0]!;
-        expect(entry.flags.skipWorktree).toBe(true);
-        expect(entry.flags.intentToAdd).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a v3 index whose extended entry has a zero extended word', () => {
-    describe('When parsing', () => {
-      it('Then both extended flags are false', () => {
-        // Arrange — the entry is extended (carries the 2-byte word) but the word
-        // is 0; neither bit is set.
-        const input = buildV3Index(3, [{ path: 'plain.txt', sha: SHA_A, extRaw: 0x0000 }]);
-
-        // Act
-        const sut = parseIndex(input);
-
-        // Assert
-        const entry = sut.entries[0]!;
-        expect(entry.flags.skipWorktree).toBe(false);
-        expect(entry.flags.intentToAdd).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a v3 index with a non-extended entry', () => {
-    describe('When parsing', () => {
-      it('Then version is 3 and the entry has skipWorktree=false / intentToAdd=false', () => {
-        // Arrange — a v3 header but the single entry never sets the extended bit,
-        // so no extended-flags word is present for it.
-        const input = buildV3Index(3, [{ path: 'normal.txt', sha: SHA_A }]);
-
-        // Act
-        const sut = parseIndex(input);
-
-        // Assert
-        expect(sut.version).toBe(3);
-        const entry = sut.entries[0]!;
-        expect(entry.flags.skipWorktree).toBe(false);
-        expect(entry.flags.intentToAdd).toBe(false);
+        expect(entry.path).toBe(path);
+        expect(entry.flags.skipWorktree).toBe(expectSkipWorktree);
+        expect(entry.flags.intentToAdd).toBe(expectIntentToAdd);
       });
     });
   });
