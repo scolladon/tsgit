@@ -5,7 +5,10 @@
  * tools, and asserts the resulting commit / index (`git ls-files --stage`) /
  * working tree agree byte-for-byte for: an external driver that resolves cleanly
  * (exit 0), an external driver that conflicts (exit ≠ 0), `-merge` binary
- * take-ours, and a `merge=text` no-op.
+ * take-ours, a `merge=text` no-op, a user driver configured under a built-in name
+ * (`text`/`binary`/`union`) overriding the built-in, a selected but driverless
+ * section refusing lazily ("lacks command line"), and an absent registration
+ * falling back to the built-in text conflict.
  *
  * @proves
  *   surface:        repo.merge.run

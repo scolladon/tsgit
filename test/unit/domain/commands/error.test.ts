@@ -1463,6 +1463,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       "CONFIG_MISSING_VALUE: missing value for 'user.name' in file '/repo/.git/config' at line 2",
     ],
     [
+      { code: 'MERGE_DRIVER_MISSING_COMMAND', name: 'x' },
+      'MERGE_DRIVER_MISSING_COMMAND: custom merge driver x lacks command line.',
+    ],
+    [
       {
         code: 'CONFIG_BAD_NUMERIC_VALUE',
         key: 'core.loosecompression',
