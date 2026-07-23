@@ -98,81 +98,37 @@ const setupResolver = async (
 };
 
 describe('caching-index-resolver — statMatches per-field branches', () => {
-  describe('Given a warm cache and a subsequent stat that differs only on .size', () => {
+  describe('Given a warm cache and a subsequent stat that differs only on one field', () => {
     describe('When resolve runs through the stat-validated path', () => {
-      it('Then statMatches returns false and the resolver re-parses', async () => {
-        // Arrange — first call observes stat S0; force the second stat to differ only on size.
-        let firstStat: FileStat | undefined;
-        let calls = 0;
-        const { ctx, view, inner, sut } = await setupResolver((_p, real) => {
-          calls += 1;
-          if (calls === 1) {
-            firstStat = real;
-            return real;
-          }
-          return { ...(firstStat as FileStat), size: (firstStat as FileStat).size + 1 };
-        });
-        await sut.resolve(ctx);
+      it.each<{ label: string; mutate: (stat: FileStat) => FileStat }>([
+        { label: 'size', mutate: (s) => ({ ...s, size: s.size + 1 }) },
+        { label: 'ino', mutate: (s) => ({ ...s, ino: 99 }) },
+        { label: 'mtimeMs', mutate: (s) => ({ ...s, mtimeMs: s.mtimeMs + 1 }) },
+      ])(
+        'Then statMatches returns false and the resolver re-parses ($label differs)',
+        async ({ mutate }) => {
+          // Arrange — first call observes stat S0; force the second stat to differ only
+          // on the row's field.
+          let firstStat: FileStat | undefined;
+          let calls = 0;
+          const { ctx, view, inner, sut } = await setupResolver((_p, real) => {
+            calls += 1;
+            if (calls === 1) {
+              firstStat = real;
+              return real;
+            }
+            return mutate(firstStat as FileStat);
+          });
+          await sut.resolve(ctx);
 
-        // Act
-        view.bump('index'); // bypass the gen fast path
-        await sut.resolve(ctx);
+          // Act
+          view.bump('index'); // bypass the gen fast path
+          await sut.resolve(ctx);
 
-        // Assert
-        expect(inner.calls()).toBe(2);
-      });
-    });
-  });
-
-  describe('Given a warm cache and a subsequent stat that differs only on .ino', () => {
-    describe('When resolve runs through the stat-validated path', () => {
-      it('Then statMatches returns false and the resolver re-parses', async () => {
-        // Arrange
-        let firstStat: FileStat | undefined;
-        let calls = 0;
-        const { ctx, view, inner, sut } = await setupResolver((_p, real) => {
-          calls += 1;
-          if (calls === 1) {
-            firstStat = real;
-            return real;
-          }
-          return { ...(firstStat as FileStat), ino: 99 };
-        });
-        await sut.resolve(ctx);
-
-        // Act
-        view.bump('index');
-        await sut.resolve(ctx);
-
-        // Assert
-        expect(inner.calls()).toBe(2);
-      });
-    });
-  });
-
-  describe('Given a warm cache and a subsequent stat that differs only on .mtimeMs', () => {
-    describe('When resolve runs through the stat-validated path', () => {
-      it('Then statMatches returns false and the resolver re-parses', async () => {
-        // Arrange
-        let firstStat: FileStat | undefined;
-        let calls = 0;
-        const { ctx, view, inner, sut } = await setupResolver((_p, real) => {
-          calls += 1;
-          if (calls === 1) {
-            firstStat = real;
-            return real;
-          }
-          return { ...(firstStat as FileStat), mtimeMs: (firstStat as FileStat).mtimeMs + 1 };
-        });
-        await sut.resolve(ctx);
-
-        // Act
-        view.bump('index');
-        await sut.resolve(ctx);
-
-        // Assert
-        expect(inner.calls()).toBe(2);
-      });
+          // Assert
+          expect(inner.calls()).toBe(2);
+        },
+      );
     });
   });
 

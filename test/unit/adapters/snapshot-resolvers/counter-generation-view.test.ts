@@ -1,38 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCounterGenerationView } from '../../../../src/adapters/snapshot-resolvers/counter-generation-view.js';
+import type { WriteScope } from '../../../../src/ports/write-scope.js';
 
 describe('createCounterGenerationView', () => {
   describe('Given a freshly created CounterGenerationView', () => {
     describe('When current() is queried before any bump', () => {
-      it('Then current("index") returns 0', () => {
+      it.each(['index', 'refs', 'objects'] as const)('Then current("%s") returns 0', (scope) => {
         // Arrange
         const sut = createCounterGenerationView();
 
         // Act
-        const generation = sut.current('index');
-
-        // Assert
-        expect(generation).toBe(0);
-      });
-
-      it('Then current("refs") returns 0', () => {
-        // Arrange
-        const sut = createCounterGenerationView();
-
-        // Act
-        const generation = sut.current('refs');
-
-        // Assert
-        expect(generation).toBe(0);
-      });
-
-      it('Then current("objects") returns 0', () => {
-        // Arrange
-        const sut = createCounterGenerationView();
-
-        // Act
-        const generation = sut.current('objects');
+        const generation = sut.current(scope);
 
         // Assert
         expect(generation).toBe(0);
@@ -42,7 +21,11 @@ describe('createCounterGenerationView', () => {
 
   describe('Given a CounterGenerationView that has received bump("index")', () => {
     describe('When current() is queried per scope', () => {
-      it('Then current("index") returns 1', () => {
+      it.each<[WriteScope, number]>([
+        ['index', 1],
+        ['refs', 0],
+        ['objects', 0],
+      ])('Then current("%s") is %i', (scope, expected) => {
         // Arrange
         const sut = createCounterGenerationView();
 
@@ -50,29 +33,7 @@ describe('createCounterGenerationView', () => {
         sut.bump('index');
 
         // Assert
-        expect(sut.current('index')).toBe(1);
-      });
-
-      it('Then current("refs") is unaffected (still 0)', () => {
-        // Arrange
-        const sut = createCounterGenerationView();
-
-        // Act
-        sut.bump('index');
-
-        // Assert
-        expect(sut.current('refs')).toBe(0);
-      });
-
-      it('Then current("objects") is unaffected (still 0)', () => {
-        // Arrange
-        const sut = createCounterGenerationView();
-
-        // Act
-        sut.bump('index');
-
-        // Assert
-        expect(sut.current('objects')).toBe(0);
+        expect(sut.current(scope)).toBe(expected);
       });
     });
   });
