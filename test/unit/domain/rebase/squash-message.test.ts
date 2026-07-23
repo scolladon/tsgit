@@ -6,14 +6,14 @@ const skip = (message: string) => ({ message, skip: true });
 
 describe('rebase squash combined-message builder', () => {
   describe('Given buildCombinedMessage', () => {
-    describe('When given two kept (squash) messages', () => {
-      it('Then emits git 2.54 combination template (`1st` then `#2`)', () => {
-        // Arrange + Act
-        const sut = buildCombinedMessage([keep('t2 subject'), keep('t3 subject')]);
-
-        // Assert — byte-faithful to git (verified `od -c`)
-        expect(sut).toBe(
-          '# This is a combination of 2 commits.\n' +
+    describe('When given a mix of kept and/or skipped messages', () => {
+      it.each([
+        {
+          label: 'emits git 2.54 combination template (`1st` then `#2`) for two kept messages',
+          messages: [keep('t2 subject'), keep('t3 subject')],
+          // byte-faithful to git (verified `od -c`)
+          expected:
+            '# This is a combination of 2 commits.\n' +
             '# This is the 1st commit message:\n' +
             '\n' +
             't2 subject\n' +
@@ -21,22 +21,12 @@ describe('rebase squash combined-message builder', () => {
             '# This is the commit message #2:\n' +
             '\n' +
             't3 subject\n',
-        );
-      });
-    });
-
-    describe('When given three kept messages', () => {
-      it('Then numbers the third block `#3`', () => {
-        // Arrange + Act
-        const sut = buildCombinedMessage([
-          keep('t1 subject'),
-          keep('t2 subject'),
-          keep('t3 subject'),
-        ]);
-
-        // Assert
-        expect(sut).toBe(
-          '# This is a combination of 3 commits.\n' +
+        },
+        {
+          label: 'numbers the third block `#3` for three kept messages',
+          messages: [keep('t1 subject'), keep('t2 subject'), keep('t3 subject')],
+          expected:
+            '# This is a combination of 3 commits.\n' +
             '# This is the 1st commit message:\n' +
             '\n' +
             't1 subject\n' +
@@ -48,22 +38,13 @@ describe('rebase squash combined-message builder', () => {
             '# This is the commit message #3:\n' +
             '\n' +
             't3 subject\n',
-        );
-      });
-    });
-
-    describe('When a later member is a fixup (skipped)', () => {
-      it('Then comments out its body under a `will be skipped` header', () => {
-        // Arrange + Act
-        const sut = buildCombinedMessage([
-          keep('t1 subject'),
-          keep('t2 subject'),
-          skip('t3 subject'),
-        ]);
-
-        // Assert — byte-faithful to git (verified `od -c`)
-        expect(sut).toBe(
-          '# This is a combination of 3 commits.\n' +
+        },
+        {
+          label: 'comments out a fixup body under a `will be skipped` header',
+          messages: [keep('t1 subject'), keep('t2 subject'), skip('t3 subject')],
+          // byte-faithful to git (verified `od -c`)
+          expected:
+            '# This is a combination of 3 commits.\n' +
             '# This is the 1st commit message:\n' +
             '\n' +
             't1 subject\n' +
@@ -75,19 +56,62 @@ describe('rebase squash combined-message builder', () => {
             '# The commit message #3 will be skipped:\n' +
             '\n' +
             '# t3 subject\n',
-        );
-      });
-    });
-
-    describe('When given a single message', () => {
-      it('Then uses the singular header and only the first block', () => {
+        },
+        {
+          label: 'uses the singular header and only the first block for a single message',
+          messages: [keep('solo')],
+          expected:
+            '# This is a combination of 1 commit.\n# This is the 1st commit message:\n\nsolo\n',
+        },
+        {
+          label: 'strips every trailing newline down to the single separator',
+          messages: [keep('a\n\n'), keep('b\n\n\n')],
+          expected:
+            '# This is a combination of 2 commits.\n' +
+            '# This is the 1st commit message:\n' +
+            '\n' +
+            'a\n' +
+            '\n' +
+            '# This is the commit message #2:\n' +
+            '\n' +
+            'b\n',
+        },
+        {
+          label: 'comments every body line of a skipped multi-line message',
+          messages: [keep('base'), skip('subject\n\nbody')],
+          expected:
+            '# This is a combination of 2 commits.\n' +
+            '# This is the 1st commit message:\n' +
+            '\n' +
+            'base\n' +
+            '\n' +
+            '# The commit message #2 will be skipped:\n' +
+            '\n' +
+            '# subject\n' +
+            '#\n' +
+            '# body\n',
+        },
+        {
+          label: 'preserves the internal body lines of a kept multi-line message',
+          messages: [keep('subject\n\nbody line'), keep('second')],
+          expected:
+            '# This is a combination of 2 commits.\n' +
+            '# This is the 1st commit message:\n' +
+            '\n' +
+            'subject\n' +
+            '\n' +
+            'body line\n' +
+            '\n' +
+            '# This is the commit message #2:\n' +
+            '\n' +
+            'second\n',
+        },
+      ])('Then $label', ({ messages, expected }) => {
         // Arrange + Act
-        const sut = buildCombinedMessage([keep('solo')]);
+        const sut = buildCombinedMessage(messages);
 
         // Assert
-        expect(sut).toBe(
-          '# This is a combination of 1 commit.\n# This is the 1st commit message:\n\nsolo\n',
-        );
+        expect(sut).toBe(expected);
       });
     });
 
@@ -99,67 +123,6 @@ describe('rebase squash combined-message builder', () => {
 
         // Assert
         expect(withNewline).toBe(without);
-      });
-    });
-
-    describe('When a message carries multiple trailing newlines', () => {
-      it('Then strips every trailing newline down to the single separator', () => {
-        // Arrange + Act
-        const sut = buildCombinedMessage([keep('a\n\n'), keep('b\n\n\n')]);
-
-        // Assert
-        expect(sut).toBe(
-          '# This is a combination of 2 commits.\n' +
-            '# This is the 1st commit message:\n' +
-            '\n' +
-            'a\n' +
-            '\n' +
-            '# This is the commit message #2:\n' +
-            '\n' +
-            'b\n',
-        );
-      });
-    });
-
-    describe('When a skipped message is multi-line', () => {
-      it('Then comments every body line', () => {
-        // Arrange + Act
-        const sut = buildCombinedMessage([keep('base'), skip('subject\n\nbody')]);
-
-        // Assert
-        expect(sut).toBe(
-          '# This is a combination of 2 commits.\n' +
-            '# This is the 1st commit message:\n' +
-            '\n' +
-            'base\n' +
-            '\n' +
-            '# The commit message #2 will be skipped:\n' +
-            '\n' +
-            '# subject\n' +
-            '#\n' +
-            '# body\n',
-        );
-      });
-    });
-
-    describe('When a kept message is multi-line', () => {
-      it('Then preserves the internal body lines', () => {
-        // Arrange + Act
-        const sut = buildCombinedMessage([keep('subject\n\nbody line'), keep('second')]);
-
-        // Assert
-        expect(sut).toBe(
-          '# This is a combination of 2 commits.\n' +
-            '# This is the 1st commit message:\n' +
-            '\n' +
-            'subject\n' +
-            '\n' +
-            'body line\n' +
-            '\n' +
-            '# This is the commit message #2:\n' +
-            '\n' +
-            'second\n',
-        );
       });
     });
   });

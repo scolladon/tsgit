@@ -10,129 +10,86 @@ const pick = (oid: string, subject: string): RebaseTodoEntry => ({ action: 'pick
 
 describe('rebase todo grammar', () => {
   describe('Given serializeRebaseTodo', () => {
-    describe('When given an empty list', () => {
-      it('Then returns the empty string', () => {
+    describe('When given a list of rebase todo entries', () => {
+      it.each([
+        {
+          label: 'an empty list returns the empty string',
+          entries: [] as ReadonlyArray<RebaseTodoEntry>,
+          expected: '',
+        },
+        {
+          label: 'pick entries emit one `pick <oid> # <subject>` line per entry with a trailing LF',
+          entries: [pick('9dac856', 't1 subject'), pick('335bfa5', 't2 subject')],
+          expected: 'pick 9dac856 # t1 subject\npick 335bfa5 # t2 subject\n',
+        },
+        {
+          label: 'the interactive verbs are each emitted verbatim',
+          entries: [
+            { action: 'reword', oid: 'aaaaaaa', subject: 'r' },
+            { action: 'edit', oid: 'bbbbbbb', subject: 'e' },
+            { action: 'squash', oid: 'ccccccc', subject: 's' },
+            { action: 'fixup', oid: 'ddddddd', subject: 'f' },
+            { action: 'drop', oid: 'eeeeeee', subject: 'd' },
+          ] as ReadonlyArray<RebaseTodoEntry>,
+          expected:
+            'reword aaaaaaa # r\nedit bbbbbbb # e\nsquash ccccccc # s\nfixup ddddddd # f\ndrop eeeeeee # d\n',
+        },
+        {
+          label: 'a full 40-hex oid is written verbatim (tsgit emits full oids)',
+          entries: [pick('1e3c39c1814be4b7807a7fec7ee602f0570e55de', 'c1')],
+          expected: 'pick 1e3c39c1814be4b7807a7fec7ee602f0570e55de # c1\n',
+        },
+      ])('Then $label', ({ entries, expected }) => {
         // Arrange + Act
-        const sut = serializeRebaseTodo([]);
-
-        // Assert
-        expect(sut).toBe('');
-      });
-    });
-
-    describe('When given pick entries', () => {
-      it('Then emits one `pick <oid> # <subject>` line per entry with a trailing LF', () => {
-        // Arrange
-        const entries = [pick('9dac856', 't1 subject'), pick('335bfa5', 't2 subject')];
-
-        // Act
         const sut = serializeRebaseTodo(entries);
 
         // Assert
-        expect(sut).toBe('pick 9dac856 # t1 subject\npick 335bfa5 # t2 subject\n');
-      });
-    });
-
-    describe('When given the interactive verbs', () => {
-      it('Then emits each verb verbatim', () => {
-        // Arrange
-        const entries: ReadonlyArray<RebaseTodoEntry> = [
-          { action: 'reword', oid: 'aaaaaaa', subject: 'r' },
-          { action: 'edit', oid: 'bbbbbbb', subject: 'e' },
-          { action: 'squash', oid: 'ccccccc', subject: 's' },
-          { action: 'fixup', oid: 'ddddddd', subject: 'f' },
-          { action: 'drop', oid: 'eeeeeee', subject: 'd' },
-        ];
-
-        // Act
-        const sut = serializeRebaseTodo(entries);
-
-        // Assert
-        expect(sut).toBe(
-          'reword aaaaaaa # r\nedit bbbbbbb # e\nsquash ccccccc # s\nfixup ddddddd # f\ndrop eeeeeee # d\n',
-        );
-      });
-    });
-
-    describe('When the oid is a full 40-hex', () => {
-      it('Then writes it verbatim (tsgit emits full oids)', () => {
-        // Arrange
-        const full = '1e3c39c1814be4b7807a7fec7ee602f0570e55de';
-
-        // Act
-        const sut = serializeRebaseTodo([pick(full, 'c1')]);
-
-        // Assert
-        expect(sut).toBe(`pick ${full} # c1\n`);
+        expect(sut).toBe(expected);
       });
     });
   });
 
   describe('Given parseRebaseTodo', () => {
-    describe("When given git's abbreviated-oid output", () => {
-      it('Then extracts the raw oid token and subject (resolution deferred to the caller)', () => {
-        // Arrange
-        const text = 'pick f4cb28d # c1\npick 0a4f2a3 # c2\n';
-
-        // Act
+    describe('When given well-formed todo text', () => {
+      it.each([
+        {
+          label:
+            "git's abbreviated-oid output extracts the raw oid token and subject (resolution deferred to the caller)",
+          text: 'pick f4cb28d # c1\npick 0a4f2a3 # c2\n',
+          expected: [pick('f4cb28d', 'c1'), pick('0a4f2a3', 'c2')],
+        },
+        {
+          label: 'the interactive verbs parse into their action',
+          text: 'reword aaaaaaa # r\nedit bbbbbbb # e\nsquash ccccccc # s\nfixup ddddddd # f\ndrop eeeeeee # d\n',
+          expected: [
+            { action: 'reword', oid: 'aaaaaaa', subject: 'r' },
+            { action: 'edit', oid: 'bbbbbbb', subject: 'e' },
+            { action: 'squash', oid: 'ccccccc', subject: 's' },
+            { action: 'fixup', oid: 'ddddddd', subject: 'f' },
+            { action: 'drop', oid: 'eeeeeee', subject: 'd' },
+          ],
+        },
+        {
+          label: 'the backup blank and comment lines are skipped',
+          text: 'pick aaaaaaa # one\n\n# Rebase abc..def onto abc (2 commands)\n#\n# Commands:\npick bbbbbbb # two\n',
+          expected: [pick('aaaaaaa', 'one'), pick('bbbbbbb', 'two')],
+        },
+        {
+          label: 'a literal # after the separator keeps the whole remainder as the subject',
+          text: 'pick aaaaaaa # fix #42 in parser\n',
+          expected: [pick('aaaaaaa', 'fix #42 in parser')],
+        },
+        {
+          label: 'an empty subject parses to an empty string',
+          text: 'pick aaaaaaa # \n',
+          expected: [pick('aaaaaaa', '')],
+        },
+      ])('Then $label', ({ text, expected }) => {
+        // Arrange + Act
         const sut = parseRebaseTodo(text);
 
         // Assert
-        expect(sut).toEqual([pick('f4cb28d', 'c1'), pick('0a4f2a3', 'c2')]);
-      });
-    });
-
-    describe('When given the interactive verbs', () => {
-      it('Then parses each verb into its action', () => {
-        // Arrange
-        const text =
-          'reword aaaaaaa # r\nedit bbbbbbb # e\nsquash ccccccc # s\nfixup ddddddd # f\ndrop eeeeeee # d\n';
-
-        // Act
-        const sut = parseRebaseTodo(text);
-
-        // Assert
-        expect(sut).toEqual([
-          { action: 'reword', oid: 'aaaaaaa', subject: 'r' },
-          { action: 'edit', oid: 'bbbbbbb', subject: 'e' },
-          { action: 'squash', oid: 'ccccccc', subject: 's' },
-          { action: 'fixup', oid: 'ddddddd', subject: 'f' },
-          { action: 'drop', oid: 'eeeeeee', subject: 'd' },
-        ]);
-      });
-    });
-
-    describe('When the text has the backup blank and comment lines', () => {
-      it('Then skips them', () => {
-        // Arrange
-        const text =
-          'pick aaaaaaa # one\n\n# Rebase abc..def onto abc (2 commands)\n#\n# Commands:\npick bbbbbbb # two\n';
-
-        // Act
-        const sut = parseRebaseTodo(text);
-
-        // Assert
-        expect(sut).toEqual([pick('aaaaaaa', 'one'), pick('bbbbbbb', 'two')]);
-      });
-    });
-
-    describe('When a subject contains a literal # after the separator', () => {
-      it('Then keeps the whole remainder as the subject', () => {
-        // Arrange
-        const sut = parseRebaseTodo('pick aaaaaaa # fix #42 in parser\n');
-
-        // Assert
-        expect(sut).toEqual([pick('aaaaaaa', 'fix #42 in parser')]);
-      });
-    });
-
-    describe('When a subject is empty', () => {
-      it('Then parses an empty subject', () => {
-        // Arrange
-        const sut = parseRebaseTodo('pick aaaaaaa # \n');
-
-        // Assert
-        expect(sut).toEqual([pick('aaaaaaa', '')]);
+        expect(sut).toEqual(expected);
       });
     });
 

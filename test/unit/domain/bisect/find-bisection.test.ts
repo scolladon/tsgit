@@ -61,197 +61,37 @@ describe('findBisection', () => {
   });
 
   // ─── Linear-chain pinned matrix ──────────────────────────────────────────────
+  // approx_halfway boundary: diff = 2*weight - all; halfway ⟺ diff ∈ {-1, 0, 1}.
+  // all=9 (diff=-1), all=6 (diff=0) and all=3 (diff=1) each pin a distinct
+  // approx_halfway boundary value alongside every other candidate count.
 
-  describe('Given linear chain c0…c9 bad=c9 good=c0 (all=9), When finding bisection', () => {
-    it('Then midpoint is c4 with reaches=4', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(1, 9);
+  describe('Given a linear chain c0…c9 bad=c9 with a given good tip, When finding bisection', () => {
+    it.each([
+      { all: 9, lo: 1, nextCommit: 'c4', reaches: 4 },
+      { all: 8, lo: 2, nextCommit: 'c5', reaches: 4 },
+      { all: 7, lo: 3, nextCommit: 'c5', reaches: 3 },
+      { all: 6, lo: 4, nextCommit: 'c6', reaches: 3 },
+      { all: 5, lo: 5, nextCommit: 'c6', reaches: 2 },
+      { all: 4, lo: 6, nextCommit: 'c7', reaches: 2 },
+      { all: 3, lo: 7, nextCommit: 'c8', reaches: 2 },
+      { all: 2, lo: 8, nextCommit: 'c8', reaches: 1 },
+      { all: 1, lo: 9, nextCommit: 'c9', reaches: 1 },
+    ])(
+      'Then midpoint is $nextCommit with reaches=$reaches for all=$all',
+      ({ all, lo, nextCommit, reaches }) => {
+        // Arrange
+        const sut = findBisection;
+        const candidates = linearChain(lo, 9);
 
-      // Act
-      const result = sut(candidates);
+        // Act
+        const result = sut(candidates);
 
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c4'));
-      expect(result?.reaches).toBe(4);
-      expect(result?.candidateCount).toBe(9);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c1 (all=8), When finding bisection', () => {
-    it('Then midpoint is c5 with reaches=4', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(2, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c5'));
-      expect(result?.reaches).toBe(4);
-      expect(result?.candidateCount).toBe(8);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c2 (all=7), When finding bisection', () => {
-    it('Then midpoint is c5 with reaches=3', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(3, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c5'));
-      expect(result?.reaches).toBe(3);
-      expect(result?.candidateCount).toBe(7);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c3 (all=6), When finding bisection', () => {
-    it('Then midpoint is c6 with reaches=3', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(4, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c6'));
-      expect(result?.reaches).toBe(3);
-      expect(result?.candidateCount).toBe(6);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c4 (all=5), When finding bisection', () => {
-    it('Then midpoint is c6 with reaches=2', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(5, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c6'));
-      expect(result?.reaches).toBe(2);
-      expect(result?.candidateCount).toBe(5);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c5 (all=4), When finding bisection', () => {
-    it('Then midpoint is c7 with reaches=2', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(6, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c7'));
-      expect(result?.reaches).toBe(2);
-      expect(result?.candidateCount).toBe(4);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c6 (all=3), When finding bisection', () => {
-    it('Then midpoint is c8 with reaches=2', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(7, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c8'));
-      expect(result?.reaches).toBe(2);
-      expect(result?.candidateCount).toBe(3);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c7 (all=2), When finding bisection', () => {
-    it('Then midpoint is c8 with reaches=1', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(8, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c8'));
-      expect(result?.reaches).toBe(1);
-      expect(result?.candidateCount).toBe(2);
-    });
-  });
-
-  describe('Given linear chain c0…c9 bad=c9 good=c8 (all=1), When finding bisection', () => {
-    it('Then midpoint is c9 with reaches=1', () => {
-      // Arrange
-      const sut = findBisection;
-      const candidates = linearChain(9, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c9'));
-      expect(result?.reaches).toBe(1);
-      expect(result?.candidateCount).toBe(1);
-    });
-  });
-
-  // ─── approx_halfway boundary isolation ───────────────────────────────────────
-  // diff = 2*weight - all; halfway ⟺ diff ∈ {-1, 0, 1}
-
-  describe('Given all=9, a commit with weight=4 (diff=-1), When finding bisection', () => {
-    it('Then it fires approx_halfway and returns that commit (diff=-1 boundary)', () => {
-      // Arrange — linear chain [c1..c9], c4 has weight=4 (diff=2*4-9=-1)
-      const sut = findBisection;
-      const candidates = linearChain(1, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c4'));
-      expect(result?.reaches).toBe(4);
-    });
-  });
-
-  describe('Given all=6, a commit with weight=3 (diff=0), When finding bisection', () => {
-    it('Then it fires approx_halfway and returns that commit (diff=0 boundary)', () => {
-      // Arrange — linear chain [c4..c9] (all=6), c6 has weight=3 (diff=2*3-6=0)
-      const sut = findBisection;
-      const candidates = linearChain(4, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c6'));
-      expect(result?.reaches).toBe(3);
-    });
-  });
-
-  describe('Given all=3, a commit with weight=2 (diff=1), When finding bisection', () => {
-    it('Then it fires approx_halfway and returns that commit (diff=1 boundary)', () => {
-      // Arrange — linear chain [c7..c9] (all=3), c8 has weight=2 (diff=2*2-3=1)
-      const sut = findBisection;
-      const candidates = linearChain(7, 9);
-
-      // Act
-      const result = sut(candidates);
-
-      // Assert
-      expect(result?.nextCommit).toBe(oid('c8'));
-      expect(result?.reaches).toBe(2);
-    });
+        // Assert
+        expect(result?.nextCommit).toBe(oid(nextCommit));
+        expect(result?.reaches).toBe(reaches);
+        expect(result?.candidateCount).toBe(all);
+      },
+    );
   });
 
   describe('Given all=4 with a merge of weight=3 (diff=2), When finding bisection', () => {
