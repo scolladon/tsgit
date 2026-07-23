@@ -8,7 +8,7 @@
 
 Pinning ADR-496 against git 2.55.0 surfaced a **separate, pre-existing** divergence. When a
 `[merge "<name>"]` section registers a user driver entry — git creates one on the *first*
-`merge.<name>.<anykey>` it parses — but configures **no** `driver` command, and that name is
+`merge.<name>.<key>` it parses — but configures **no** `driver` command, and that name is
 selected for a content merge, git dies **lazily** at dispatch:
 `fatal: custom merge driver <name> lacks command line.` (exit 128). Confirmed live and pinned
 (design matrix M4/M5/M8/M10; an *unused* driverless section stays inert — M9). tsgit instead

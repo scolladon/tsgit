@@ -124,11 +124,11 @@ conflicts). Driver command `cp %B %A` copies *theirs* over *ours* and exits 0.
 | M8  | `data.txt merge=text` | `recursive = text` (no `driver`)      | **128**  | `ours`      | 0        | driverless section (any key) still "lacks command line" |
 | M9  | *(no merge attr)*     | `[merge "unused"] name = X`           | 1        | conflict    | 3        | driverless section **unused** → inert (lazy) |
 | M10 | `data.txt merge=unused`| `[merge "unused"] name = X`          | **128**  | `ours`      | 0        | driverless section **selected** → "lacks command line" (lazy, per-path) |
-| M11 | `data.txt merge=mydrv`| `driver` (valueless, no `=`)          | **128**  | `ours`      | 0        | `error: missing value for 'merge.mydrv.driver'` + `fatal: bad config variable … at line N` (eager, ADR-352) |
-| M12 | *(no merge attr)*     | `[merge "mydrv"] driver` (valueless)  | **128**  | `ours`      | 0        | same as M11 — eager whole-table (ADR-352 M4) |
-| M13 | `data.txt merge=mydrv`| `driver =` (empty valued string)      | 1        | conflict    | 3        | empty command = external that fails at runtime (`error: cannot run :`) → conflict |
+| M11 | `data.txt merge=my-driver`| `driver` (valueless, no `=`)      | **128**  | `ours`      | 0        | `error: missing value for 'merge.my-driver.driver'` + `fatal: bad config variable … at line N` (eager, ADR-352) |
+| M12 | *(no merge attr)*     | `[merge "my-driver"] driver` (valueless) | **128** | `ours`     | 0        | same as M11 — eager whole-table (ADR-352 M4) |
+| M13 | `data.txt merge=my-driver`| `driver =` (empty valued string)  | 1        | conflict    | 3        | empty command = external that fails at runtime (`error: cannot run :`) → conflict |
 | M14 | `data.txt -merge`     | `[merge "binary"] driver = cp %B %A`  | 1        | `ours`      | 3        | boolean-`false` path is **not** config-overridable |
-| M15 | `data.txt merge=mydrv`| `name` (valueless) + `driver = cp …`  | **128**  | `ours`      | 0        | valueless `name` refuses eagerly even with a valued `driver` (ADR-352) |
+| M15 | `data.txt merge=my-driver`| `name` (valueless) + `driver = cp …` | **128** | `ours`     | 0        | valueless `name` refuses eagerly even with a valued `driver` (ADR-352) |
 | M16 | `data.txt merge=x`    | `[merge "x"] foo = bar` (unknown key)  | **128**  | `ours`      | 0        | git registers a user entry on **any** first key → driverless → "lacks command line" |
 | M17 | `data.txt merge=x`    | `[merge "x"]` (empty, header only)     | 1        | conflict    | 3        | empty section registers **nothing** → default built-in text |
 
@@ -138,7 +138,7 @@ conflicts). Driver command `cp %B %A` copies *theirs* over *ours* and exits 0.
    valued `driver` command overrides the built-in. Precedence: user config **before** built-in.
    This is the core fix.
 2. **Driverless-but-registered (M4/M5/M8/M10):** a `[merge "<name>"]` section that registers a
-   user entry (git creates one on the first `merge.<name>.<anykey>` it sees) but has **no**
+   user entry (git creates one on the first `merge.<name>.<key>` it sees) but has **no**
    `driver` command → git dies **lazily** `custom merge driver <name> lacks command line.`
    (exit 128) *when that driver is dispatched for a content merge*, and stays **inert** when
    unused (M9). This is distinct from ADR-352's eager valueless refusal (M11/M12/M15). **This
