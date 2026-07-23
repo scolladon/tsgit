@@ -1,4 +1,4 @@
-import { configMissingValue } from '../../domain/commands/error.js';
+import { configMissingValue, mergeDriverMissingCommand } from '../../domain/commands/error.js';
 import {
   type ContentMergeResult,
   type ContentMerger,
@@ -64,6 +64,9 @@ export const buildContentMerger = (
         : Promise.resolve(undefined),
     ]);
     const { driver, markerSize } = await resolvePathMergeSpec(ctx, await provider(), mergeCtx.path);
+    if (driver.kind === 'missing-command') {
+      throw mergeDriverMissingCommand(driver.name);
+    }
     if (driver.kind === 'binary') {
       return { status: 'conflict', conflictType: 'binary', markedBytes: ours.content };
     }

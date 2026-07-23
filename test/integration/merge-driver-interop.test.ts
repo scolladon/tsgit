@@ -343,4 +343,58 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
       });
     });
   });
+
+  describe('Given a selected merge driver that is registered but has no `driver` command', () => {
+    describe('When both sides change the file differently', () => {
+      it('Then both refuse lazily with "lacks command line", leaving ours and a clean index', async () => {
+        // Arrange — `merge.x.name` is set (registers the section) but no `merge.x.driver`.
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'config', 'merge.x.name', 'x']);
+        }
+        await setupDiverged('data.txt merge=x\n');
+
+        // Act
+        const peerMerge = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        let tsgitError: { data?: { code?: string; name?: string } } | undefined;
+        try {
+          await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR, committer: AUTHOR });
+        } catch (err) {
+          tsgitError = err as { data?: { code?: string; name?: string } };
+        }
+
+        // Assert
+        expect(peerMerge.ok).toBe(false);
+        expect(peerMerge.stderr).toContain('custom merge driver x lacks command line.');
+        expect(tsgitError?.data?.code).toBe('MERGE_DRIVER_MISSING_COMMAND');
+        expect(tsgitError?.data?.name).toBe('x');
+        expect(await read(pair.ours, 'data.txt')).toBe('ours\n');
+        expect(await read(pair.peer, 'data.txt')).toBe('ours\n');
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(stageOf(pair.ours)).not.toMatch(/ [1-3]\t/);
+      });
+    });
+  });
+
+  describe('Given an empty/absent driver registration for a `merge=<name>` attribute', () => {
+    describe('When both sides change the file differently', () => {
+      it('Then both fall back to the built-in text conflict identically', async () => {
+        // Arrange — `merge=x` with no `merge.x.*` key configured on either tool.
+        await setupDiverged('data.txt merge=x\n');
+
+        // Act
+        const peerMerge = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        const result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+
+        // Assert
+        expect(peerMerge.ok).toBe(false);
+        expect(result.kind).toBe('conflict');
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+        expect(await read(pair.ours, 'data.txt')).toBe(await read(pair.peer, 'data.txt'));
+      });
+    });
+  });
 });

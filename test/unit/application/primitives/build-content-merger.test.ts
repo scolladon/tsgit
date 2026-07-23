@@ -433,4 +433,80 @@ describe('buildContentMerger', () => {
       });
     });
   });
+
+  describe('Given a registered-but-driverless merge driver', () => {
+    const missingCommandData = async (
+      sut: ContentMerger,
+      mergeCtx: ContentMergeContext,
+    ): Promise<{ code?: string; name?: string }> => {
+      try {
+        await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+      } catch (err) {
+        return (err as { data?: { code?: string; name?: string } }).data as {
+          code?: string;
+          name?: string;
+        };
+      }
+      return {};
+    };
+
+    describe('When a selected driverless section (valued name, no driver) enters content merge', () => {
+      it('Then it throws MERGE_DRIVER_MISSING_COMMAND for the resolved name', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async () => 0),
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "custom"]\n\tname = X\n');
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'b', ours: 'OURS', theirs: 'THEIRS' });
+
+        // Act
+        const result = await missingCommandData(sut, mergeCtx);
+
+        // Assert
+        expect(result.code).toBe('MERGE_DRIVER_MISSING_COMMAND');
+        expect(result.name).toBe('custom');
+      });
+    });
+
+    describe('When the same selection has no CommandRunner wired', () => {
+      it('Then it still throws MERGE_DRIVER_MISSING_COMMAND (platform-independent)', async () => {
+        // Arrange — no `command` runner; the throw precedes the ctx.command branch.
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "custom"]\n\tname = X\n');
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'b', ours: 'OURS', theirs: 'THEIRS' });
+
+        // Act
+        const result = await missingCommandData(sut, mergeCtx);
+
+        // Assert
+        expect(result.code).toBe('MERGE_DRIVER_MISSING_COMMAND');
+        expect(result.name).toBe('custom');
+      });
+    });
+
+    describe('When an unselected driverless section is configured but the path selects a different driver', () => {
+      it('Then it does not throw and returns a normal merge result', async () => {
+        // Arrange — [merge "unused"] is registered driverless, but the path resolves merge=text.
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=text\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "unused"]\n\tname = X\n');
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status).toBe('conflict');
+      });
+    });
+  });
 });
