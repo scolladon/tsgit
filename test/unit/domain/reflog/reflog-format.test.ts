@@ -95,23 +95,14 @@ describe('serializeReflogLine', () => {
     });
   });
 
-  describe('Given a message containing LF', () => {
+  describe('Given a message containing a line break', () => {
     describe('When serializing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
+      it.each([
+        { message: 'first\nsecond', label: 'an LF' },
+        { message: 'first\rsecond', label: 'a CR' },
+      ])('Then throws INVALID_REFLOG_ENTRY for $label', ({ message }) => {
         // Arrange
-        const sut: ReflogEntry = { ...ENTRY, message: 'first\nsecond' };
-
-        // Act & Assert
-        expectInvalidReflogEntry(() => serializeReflogLine(sut), 'message contains a line break');
-      });
-    });
-  });
-
-  describe('Given a message containing CR', () => {
-    describe('When serializing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
-        // Arrange
-        const sut: ReflogEntry = { ...ENTRY, message: 'first\rsecond' };
+        const sut: ReflogEntry = { ...ENTRY, message };
 
         // Act & Assert
         expectInvalidReflogEntry(() => serializeReflogLine(sut), 'message contains a line break');
@@ -198,63 +189,42 @@ describe('parseReflogLine', () => {
     });
   });
 
-  describe('Given a line with a short old OID', () => {
+  describe('Given a malformed line', () => {
     describe('When parsing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
+      it.each([
+        {
+          line: `${'a'.repeat(39)} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx`,
+          reason: 'misplaced field separator',
+          // a 39-char OID shifts the index-40 separator off; the separator
+          // guard fires before OID validation.
+          label: 'a short old OID',
+        },
+        {
+          line: `${OID_A} ${'g'.repeat(40)} Ada <ada@example.com> 1716240000 +0000\tx`,
+          reason: 'invalid object id',
+          label: 'a non-hex new OID',
+        },
+        {
+          line: `${OID_A}X${OID_B} Ada <ada@example.com> 1716240000 +0000\tx`,
+          reason: 'misplaced field separator',
+          label: 'a non-space field-separator at index 40 (between old and new OID)',
+        },
+        {
+          line: `${OID_A} ${OID_B}X Ada <ada@example.com> 1716240000 +0000\tx`,
+          reason: 'misplaced field separator',
+          label: 'a non-space field-separator at index 81 (between new OID and identity)',
+        },
+        {
+          line: `${OID_A} ${OID_B} no-brackets 1716240000 +0000\tx`,
+          reason: 'invalid identity',
+          label: 'an unparseable identity (no angle-bracketed email)',
+        },
+      ])('Then throws INVALID_REFLOG_ENTRY for $label', ({ line, reason }) => {
         // Arrange
-        const sut = `${'a'.repeat(39)} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx`;
-
-        // Act & Assert — a 39-char OID shifts the index-40 separator off; the
-        // separator guard fires before OID validation.
-        expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
-      });
-    });
-  });
-
-  describe('Given a line with a non-hex new OID', () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
-        // Arrange
-        const sut = `${OID_A} ${'g'.repeat(40)} Ada <ada@example.com> 1716240000 +0000\tx`;
+        const sut = line;
 
         // Act & Assert
-        expectInvalidReflogEntry(() => parseReflogLine(sut), 'invalid object id');
-      });
-    });
-  });
-
-  describe('Given a line whose field-separator at index 40 is not a space', () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
-        // Arrange — replace the separator between old and new OID with a non-space.
-        const sut = `${OID_A}X${OID_B} Ada <ada@example.com> 1716240000 +0000\tx`;
-
-        // Act & Assert
-        expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
-      });
-    });
-  });
-
-  describe('Given a line whose field-separator at index 81 is not a space', () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
-        // Arrange — replace the separator between new OID and identity with a non-space.
-        const sut = `${OID_A} ${OID_B}X Ada <ada@example.com> 1716240000 +0000\tx`;
-
-        // Act & Assert
-        expectInvalidReflogEntry(() => parseReflogLine(sut), 'misplaced field separator');
-      });
-    });
-  });
-
-  describe('Given a line with an unparseable identity', () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_REFLOG_ENTRY', () => {
-        // Arrange — identity lacks the angle-bracketed email.
-        const sut = `${OID_A} ${OID_B} no-brackets 1716240000 +0000\tx`;
-
-        // Act & Assert
-        expectInvalidReflogEntry(() => parseReflogLine(sut), 'invalid identity');
+        expectInvalidReflogEntry(() => parseReflogLine(sut), reason);
       });
     });
   });
@@ -324,62 +294,38 @@ describe('parseReflog', () => {
 });
 
 describe('sanitizeReflogMessage', () => {
-  describe('Given a message with embedded LF', () => {
+  describe('Given a message needing sanitization', () => {
     describe('When sanitizing', () => {
-      it('Then the LF becomes a space', () => {
+      it.each([
+        {
+          message: 'first\nsecond',
+          expected: 'first second',
+          label: 'an embedded LF becomes a space',
+        },
+        {
+          message: 'first\rsecond',
+          expected: 'first second',
+          label: 'an embedded CR becomes a space',
+        },
+        {
+          message: '  padded message  ',
+          expected: 'padded message',
+          label: 'leading and trailing whitespace is trimmed',
+        },
+        {
+          message: 'before\r\nafter',
+          expected: 'before after',
+          label: 'a CRLF sequence collapses to a single space',
+        },
+      ])('Then $label', ({ message, expected }) => {
         // Arrange
-        const sut = 'first\nsecond';
+        const sut = message;
 
         // Act
         const result = sanitizeReflogMessage(sut);
 
         // Assert
-        expect(result).toBe('first second');
-      });
-    });
-  });
-
-  describe('Given a message with embedded CR', () => {
-    describe('When sanitizing', () => {
-      it('Then the CR becomes a space', () => {
-        // Arrange
-        const sut = 'first\rsecond';
-
-        // Act
-        const result = sanitizeReflogMessage(sut);
-
-        // Assert
-        expect(result).toBe('first second');
-      });
-    });
-  });
-
-  describe('Given a message with leading and trailing whitespace', () => {
-    describe('When sanitizing', () => {
-      it('Then it is trimmed', () => {
-        // Arrange
-        const sut = '  padded message  ';
-
-        // Act
-        const result = sanitizeReflogMessage(sut);
-
-        // Assert
-        expect(result).toBe('padded message');
-      });
-    });
-  });
-
-  describe('Given a CRLF sequence', () => {
-    describe('When sanitizing', () => {
-      it('Then it collapses to a single space', () => {
-        // Arrange
-        const sut = 'before\r\nafter';
-
-        // Act
-        const result = sanitizeReflogMessage(sut);
-
-        // Assert
-        expect(result).toBe('before after');
+        expect(result).toBe(expected);
       });
     });
   });
