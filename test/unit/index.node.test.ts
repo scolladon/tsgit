@@ -274,44 +274,42 @@ describe('Node shim — ssh/env/runtime context wiring', () => {
 describe('Node shim — worktreeFs raw adapter root', () => {
   describe('Given the raw worktree filesystem (unsafeRawAdapters)', () => {
     describe('When a path inside the repo/worktree common ancestor is probed', () => {
-      // POSIX-only: makeWorktreeFs roots the raw adapter at `commonAncestor`,
-      // which operates on absolute POSIX paths and returns a `/`-shaped root.
-      // On Windows a real `C:\…` probe can never match that root, so this
-      // real-filesystem containment probe runs on POSIX platforms only — the
-      // linux mutation run still kills the mutant this test targets.
-      it.skipIf(process.platform === 'win32')(
-        'Then the raw adapter is rooted at the common ancestor and reaches it',
-        async () => {
-          // Arrange — unsafeRawAdapters:true exposes the raw NodeFileSystem the
-          // Node shim builds via makeWorktreeFs, rooted at the common ancestor of
-          // the workDir and the worktree paths (here the resolved cwd). The L87
-          // ArrayDeclaration mutant swaps that argument array for `[]`, so
-          // commonAncestor([]) collapses to '/', whose containment prefix rejects
-          // every real absolute path with PERMISSION_DENIED. A directory inside
-          // the repo must therefore stay reachable — the correct root contains it
-          // (exists resolves), the mutant root '/' refuses it. Every path is
-          // derived from the repo's own resolved workDir so the created directory,
-          // the worktree root and the probe all share one canonical form — the
-          // containment prefix stays case-exact on every platform (incl. Windows,
-          // where tmpdir's 8.3 short form would otherwise diverge from realpath).
-          const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });
-          const resolvedWorkDir = sut.ctx.layout.workDir;
-          await mkdir(path.join(resolvedWorkDir, 'inside'), { recursive: true });
-          const worktreeFs = sut.ctx.worktreeFs;
-          expect(worktreeFs).toBeDefined();
-          const rawFs = worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
+      // Runs on every platform: makeWorktreeFs roots the raw adapter at
+      // `commonAncestor`, which now resolves through the native `PathPolicy`
+      // (native separator, drive/UNC aware) instead of assuming POSIX
+      // shape — so the emitted root matches the real filesystem's own
+      // separator on Windows just as it does on POSIX.
+      it('Then the raw adapter is rooted at the common ancestor and reaches it', async () => {
+        // Arrange — unsafeRawAdapters:true exposes the raw NodeFileSystem the
+        // Node shim builds via makeWorktreeFs, rooted at the common ancestor of
+        // the workDir and the worktree paths (here the resolved cwd). The L87
+        // ArrayDeclaration mutant swaps that argument array for `[]`, so
+        // commonAncestor([], nativePolicy) collapses to policy.sep, whose
+        // containment prefix rejects every real absolute path with
+        // PERMISSION_DENIED. A directory inside the repo must therefore stay
+        // reachable — the correct root contains it (exists resolves), the
+        // mutant root refuses it. Every path is derived from the repo's own
+        // resolved workDir so the created directory, the worktree root and the
+        // probe all share one canonical form — the containment prefix stays
+        // case-exact on every platform (incl. Windows, where tmpdir's 8.3
+        // short form would otherwise diverge from realpath).
+        const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });
+        const resolvedWorkDir = sut.ctx.layout.workDir;
+        await mkdir(path.join(resolvedWorkDir, 'inside'), { recursive: true });
+        const worktreeFs = sut.ctx.worktreeFs;
+        expect(worktreeFs).toBeDefined();
+        const rawFs = worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
 
-          try {
-            // Act — probe an existing directory inside the common ancestor.
-            const result = await rawFs?.exists(path.join(resolvedWorkDir, 'inside'));
+        try {
+          // Act — probe an existing directory inside the common ancestor.
+          const result = await rawFs?.exists(path.join(resolvedWorkDir, 'inside'));
 
-            // Assert — reachable under the correct root; the mutant root would throw.
-            expect(result).toBe(true);
-          } finally {
-            await sut.dispose();
-          }
-        },
-      );
+          // Assert — reachable under the correct root; the mutant root would throw.
+          expect(result).toBe(true);
+        } finally {
+          await sut.dispose();
+        }
+      });
     });
   });
 });

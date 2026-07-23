@@ -15,6 +15,7 @@ import { NodeHashService } from './adapters/node/node-hash-service.js';
 import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
+import { nativePolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { commonAncestor } from './repository/common-ancestor.js';
@@ -82,9 +83,14 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     ),
     // A linked worktree lives outside `workDir`; root a fresh adapter at the
     // common ancestor of the repo and the worktree paths so it can reach both
-    // (the facade's multi-root validator then narrows access; ADR-298).
+    // (the facade's multi-root validator then narrows access). Threading the
+    // same policy into both calls keeps the root's separator shape and the
+    // containment comparison governed by one native, platform-matching rule.
     makeWorktreeFs: (worktreePaths: ReadonlyArray<string>): NodeFileSystem =>
-      new NodeFileSystem(commonAncestor([layout.workDir, ...worktreePaths])),
+      new NodeFileSystem(
+        commonAncestor([layout.workDir, ...worktreePaths], nativePolicy),
+        nativePolicy,
+      ),
   };
   // Strip the node-only opts AND `cwd` (we override with the realpath-resolved
   // form) before forwarding so the core sees only its own option surface.
