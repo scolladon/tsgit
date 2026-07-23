@@ -2,49 +2,34 @@ import { describe, expect, it } from 'vitest';
 import { adler32 } from '../../../src/adapters/adler32.js';
 
 describe('adler32', () => {
-  describe('Given an empty buffer', () => {
+  describe('Given a buffer with a known adler32 checksum', () => {
     describe('When adler32 is called', () => {
-      it('Then returns 1 (RFC 1950 initial value)', () => {
+      it.each([
+        {
+          input: new Uint8Array([]),
+          expected: 1,
+          label: 'an empty buffer returns 1 (RFC 1950 initial value)',
+        },
+        {
+          input: new Uint8Array([1]),
+          expected: 131074,
+          // a = (1+1)%65521 = 2, b = (0+2)%65521 = 2 → (2<<16)|2 = 131074
+          label: 'a single-byte buffer [1] returns 131074 (a=2, b=2)',
+        },
+        {
+          input: new TextEncoder().encode('Wikipedia'),
+          expected: 0x11e60398,
+          label: 'the ASCII string "Wikipedia" returns 0x11E60398 (RFC 1950 reference vector)',
+        },
+      ])('Then $label', ({ input, expected }) => {
         // Arrange
         const sut = adler32;
-
-        // Act
-        const result = sut(new Uint8Array([]));
-
-        // Assert
-        expect(result).toBe(1);
-      });
-    });
-  });
-
-  describe('Given a single-byte buffer', () => {
-    describe('When adler32 is called with [1]', () => {
-      it('Then returns 131074 (a=2, b=2)', () => {
-        // Arrange
-        const sut = adler32;
-
-        // Act
-        const result = sut(new Uint8Array([1]));
-
-        // Assert
-        // a = (1+1)%65521 = 2, b = (0+2)%65521 = 2 → (2<<16)|2 = 131074
-        expect(result).toBe(131074);
-      });
-    });
-  });
-
-  describe('Given the ASCII string "Wikipedia"', () => {
-    describe('When adler32 is called', () => {
-      it('Then returns 0x11E60398 (RFC 1950 reference vector)', () => {
-        // Arrange
-        const sut = adler32;
-        const input = new TextEncoder().encode('Wikipedia');
 
         // Act
         const result = sut(input);
 
         // Assert
-        expect(result).toBe(0x11e60398);
+        expect(result).toBe(expected);
       });
     });
   });
