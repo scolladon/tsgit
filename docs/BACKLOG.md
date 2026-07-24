@@ -453,13 +453,14 @@ Companion to (not replacement for) the mutation-pyramid harness shipped
 in Phase 19. Starts AFTER Phase 26 lands so 27.4 has the perf data it
 needs to define hot paths.
 
-- [ ] **27.1 Unit — minimise while preserving GWT discipline.** Keep one
+- [x] **27.1 Unit — minimise while preserving GWT discipline.** Keep one
   `it('Then …')` per distinct behaviour. Minimise by collapsing tests
   that prove the SAME behaviour with different inputs into one
   parameterised test (`it.each`). Delete strict-subset tests outright.
   Outcome: 100 % line / branch / function / statement coverage AND
   only provably-equivalent mutants surviving (documented inline per
   existing convention). Intention-revealing test titles preserved.
+  · ADR-498 · design/unit-test-minimisation.md
 - [ ] **27.2 Integration — collapse same-scenario-different-input
   overlap.** Two integration tests overlap when they exercise the same
   user journey or code path with different fixtures. Such tests merge
