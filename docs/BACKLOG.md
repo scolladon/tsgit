@@ -468,9 +468,10 @@ needs to define hot paths.
   **Parity cross-products (Node × Memory × Browser × Deno × Bun ×
   Workers) are NOT overlap** — they prove cross-adapter equivalence
   and stay distinct. · ADR-499 · design/integration-test-minimisation.md
-- [ ] **27.3 E2E — same overlap definition.** Each Playwright / browser
+- [x] **27.3 E2E — same overlap definition.** Each Playwright / browser
   flow asserts a user journey no other E2E flow asserts. Parity
   cross-products excluded from the overlap audit.
+  · ADR-500 · design/e2e-test-minimisation.md
 - [ ] **27.4 Perf — rebuild bench suite around hot paths.** Hot-path
   list is NOT pre-frozen here; it's derived from the Phase 26 perf
   pass output (the perf pass produces measurements that pick the
