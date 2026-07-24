@@ -156,80 +156,61 @@ describe('Given an empty file', () => {
   });
 });
 
-describe('Given a path absent from the revision', () => {
+describe('Given a path that cannot resolve to a blob in the tree', () => {
   describe('When blaming it', () => {
-    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+    it.each([
+      {
+        label: 'a path absent from the revision',
+        path: 'missing.txt',
+        arrange: async (ctx: Context): Promise<{ rev?: ObjectId }> => {
+          await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+          return {};
+        },
+      },
+      {
+        label: 'a path that names a directory',
+        path: 'dir',
+        arrange: async (ctx: Context): Promise<{ rev?: ObjectId }> => {
+          await commitFile(ctx, 'c1', 'dir/a.txt', 'x\n');
+          await commitFile(ctx, 'c2', 'dir/b.txt', 'y\n');
+          return {};
+        },
+      },
+      {
+        label: 'a path that names a gitlink submodule entry',
+        path: 'mysub',
+        arrange: async (ctx: Context): Promise<{ rev?: ObjectId }> => {
+          const base = await commitFile(ctx, 'c1', 'keep.txt', 'x\n');
+          const treeId = await writeObject(ctx, {
+            type: 'tree',
+            id: '' as ObjectId,
+            entries: [{ mode: FILE_MODE.GITLINK, name: 'mysub', id: base }],
+          } as Tree);
+          clock += 60;
+          const rev = await createCommit(ctx, {
+            tree: treeId,
+            parents: [base],
+            author: ident('c2', clock),
+            committer: ident('c2', clock),
+            message: 'add submodule',
+          });
+          return { rev };
+        },
+      },
+    ])('Then it refuses with PATH_NOT_IN_TREE ($label)', async ({ path, arrange }) => {
       // Arrange
       const ctx = await seed();
-      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+      const { rev } = await arrange(ctx);
 
       // Act + Assert
       try {
-        await blame(ctx, 'missing.txt');
-        expect.unreachable('blame should refuse an absent path');
+        await blame(ctx, path, rev !== undefined ? { rev } : undefined);
+        expect.unreachable('blame should refuse the path');
       } catch (error) {
         expect(error).toBeInstanceOf(TsgitError);
         expect((error as TsgitError).data).toMatchObject({
           code: 'PATH_NOT_IN_TREE',
-          path: 'missing.txt',
-        });
-      }
-    });
-  });
-});
-
-describe('Given a path that names a directory', () => {
-  describe('When blaming it', () => {
-    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
-      // Arrange
-      const ctx = await seed();
-      await commitFile(ctx, 'c1', 'dir/a.txt', 'x\n');
-      await commitFile(ctx, 'c2', 'dir/b.txt', 'y\n');
-
-      // Act + Assert
-      try {
-        await blame(ctx, 'dir');
-        expect.unreachable('blame should refuse a directory path');
-      } catch (error) {
-        expect(error).toBeInstanceOf(TsgitError);
-        expect((error as TsgitError).data).toMatchObject({
-          code: 'PATH_NOT_IN_TREE',
-          path: 'dir',
-        });
-      }
-    });
-  });
-});
-
-describe('Given a path that names a gitlink submodule entry', () => {
-  describe('When blaming it', () => {
-    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
-      // Arrange
-      const ctx = await seed();
-      const base = await commitFile(ctx, 'c1', 'keep.txt', 'x\n');
-      const treeId = await writeObject(ctx, {
-        type: 'tree',
-        id: '' as ObjectId,
-        entries: [{ mode: FILE_MODE.GITLINK, name: 'mysub', id: base }],
-      } as Tree);
-      clock += 60;
-      const rev = await createCommit(ctx, {
-        tree: treeId,
-        parents: [base],
-        author: ident('c2', clock),
-        committer: ident('c2', clock),
-        message: 'add submodule',
-      });
-
-      // Act + Assert
-      try {
-        await blame(ctx, 'mysub', { rev });
-        expect.unreachable('blame should refuse a gitlink path');
-      } catch (error) {
-        expect(error).toBeInstanceOf(TsgitError);
-        expect((error as TsgitError).data).toMatchObject({
-          code: 'PATH_NOT_IN_TREE',
-          path: 'mysub',
+          path,
         });
       }
     });
@@ -505,43 +486,34 @@ describe('Given a multi-commit file and a line range', () => {
   });
 
   describe('When the range is invalid', () => {
-    it('Then an inverted range refuses with INVALID_OPTION', async () => {
+    it.each([
+      {
+        label: 'an inverted range',
+        range: { start: 3, end: 1 },
+        reason: 'range end 1 precedes start 3',
+      },
+      {
+        label: 'a start below 1',
+        range: { start: 0, end: 2 },
+        reason: 'invalid line number: 0',
+      },
+      {
+        label: 'a start past the last line',
+        range: { start: 10, end: 12 },
+        reason: 'file has only 3 lines',
+      },
+      {
+        label: 'a non-integer bound',
+        range: { start: 1.5, end: 2 },
+        reason: 'line numbers must be integers',
+      },
+    ])('Then it refuses with INVALID_OPTION ($label)', async ({ range, reason }) => {
       // Arrange
       const { ctx } = await buildThreeLineFile();
 
       // Act + Assert
-      await expect(blame(ctx, 'f.txt', { range: { start: 3, end: 1 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L', reason: 'range end 1 precedes start 3' },
-      });
-    });
-
-    it('Then a start below 1 refuses with INVALID_OPTION', async () => {
-      // Arrange
-      const { ctx } = await buildThreeLineFile();
-
-      // Act + Assert
-      await expect(blame(ctx, 'f.txt', { range: { start: 0, end: 2 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L', reason: 'invalid line number: 0' },
-      });
-    });
-
-    it('Then a start past the last line refuses with INVALID_OPTION', async () => {
-      // Arrange
-      const { ctx } = await buildThreeLineFile();
-
-      // Act + Assert
-      await expect(blame(ctx, 'f.txt', { range: { start: 10, end: 12 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L', reason: 'file has only 3 lines' },
-      });
-    });
-
-    it('Then a non-integer bound refuses with INVALID_OPTION', async () => {
-      // Arrange
-      const { ctx } = await buildThreeLineFile();
-
-      // Act + Assert
-      await expect(blame(ctx, 'f.txt', { range: { start: 1.5, end: 2 } })).rejects.toMatchObject({
-        data: { code: 'INVALID_OPTION', option: '-L', reason: 'line numbers must be integers' },
+      await expect(blame(ctx, 'f.txt', { range })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L', reason },
       });
     });
   });
@@ -696,48 +668,44 @@ describe('Given a worktree blame with an empty working file', () => {
   });
 });
 
-describe('Given a worktree blame on an untracked file', () => {
-  describe('When blaming it', () => {
-    it('Then it refuses with PATH_NOT_IN_TREE', async () => {
+describe('Given a worktree blame that cannot resolve the path', () => {
+  describe('When blaming with the worktree option', () => {
+    it.each([
+      {
+        label: 'an untracked file',
+        arrange: async (ctx: Context): Promise<void> => {
+          await commitFile(ctx, 'c1', 'other.txt', 'x\n');
+          await write(ctx, 'untracked.txt', 'a\n');
+        },
+        path: 'untracked.txt',
+        expected: { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'untracked.txt' },
+      },
+      {
+        label: 'a tracked file deleted from disk',
+        arrange: async (ctx: Context): Promise<void> => {
+          await commitFile(ctx, 'c1', 'f.txt', 'a\n');
+          await ctx.fs.rm(`${ctx.layout.workDir}/f.txt`);
+        },
+        path: 'f.txt',
+        expected: { code: 'WORKTREE_FILE_ABSENT', path: 'f.txt' },
+      },
+      {
+        // An unborn HEAD: a working file present must not mask the refusal.
+        label: 'an unborn HEAD (a working file is present but there is no commit yet)',
+        arrange: async (ctx: Context): Promise<void> => {
+          await write(ctx, 'f.txt', 'a\n');
+        },
+        path: 'f.txt',
+        expected: { code: 'REF_NOT_FOUND' },
+      },
+    ])('Then it refuses ($label)', async ({ arrange, path, expected }) => {
       // Arrange
       const ctx = await seed();
-      await commitFile(ctx, 'c1', 'other.txt', 'x\n');
-      await write(ctx, 'untracked.txt', 'a\n');
+      await arrange(ctx);
 
       // Act + Assert
-      await expect(blame(ctx, 'untracked.txt', { worktree: true })).rejects.toMatchObject({
-        data: { code: 'PATH_NOT_IN_TREE', rev: 'HEAD', path: 'untracked.txt' },
-      });
-    });
-  });
-});
-
-describe('Given a worktree blame on a tracked file deleted from disk', () => {
-  describe('When blaming it', () => {
-    it('Then it refuses with WORKTREE_FILE_ABSENT', async () => {
-      // Arrange
-      const ctx = await seed();
-      await commitFile(ctx, 'c1', 'f.txt', 'a\n');
-      await ctx.fs.rm(`${ctx.layout.workDir}/f.txt`);
-
-      // Act + Assert
-      await expect(blame(ctx, 'f.txt', { worktree: true })).rejects.toMatchObject({
-        data: { code: 'WORKTREE_FILE_ABSENT', path: 'f.txt' },
-      });
-    });
-  });
-});
-
-describe('Given a worktree blame on an unborn HEAD', () => {
-  describe('When blaming it', () => {
-    it('Then it refuses with REF_NOT_FOUND before reading the working file', async () => {
-      // Arrange — init only, no commit; a working file present must not mask the refusal
-      const ctx = await seed();
-      await write(ctx, 'f.txt', 'a\n');
-
-      // Act + Assert
-      await expect(blame(ctx, 'f.txt', { worktree: true })).rejects.toMatchObject({
-        data: { code: 'REF_NOT_FOUND' },
+      await expect(blame(ctx, path, { worktree: true })).rejects.toMatchObject({
+        data: expected,
       });
     });
   });

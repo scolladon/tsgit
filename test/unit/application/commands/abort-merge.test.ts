@@ -70,52 +70,59 @@ describe('mergeAbort', () => {
     });
   });
 
-  describe('Given a bare repo', () => {
+  describe('Given a repo state that blocks mergeAbort before any merge-specific work happens', () => {
     describe('When mergeAbort runs', () => {
-      it('Then throws BARE_REPOSITORY with operation=merge --abort', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx, { bare: true });
+      it.each([
+        {
+          label: 'a bare repo',
+          arrange: async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+            await init(ctx, { bare: true });
+          },
+          code: 'BARE_REPOSITORY',
+          operation: 'merge --abort',
+        },
+        {
+          label: 'no MERGE_HEAD on disk',
+          arrange: async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+            await init(ctx);
+            await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+            await add(ctx, ['a.txt']);
+            await commit(ctx, { message: 'first', author });
+          },
+          code: 'NO_OPERATION_IN_PROGRESS',
+          operation: 'merge',
+        },
+        {
+          label: 'MERGE_HEAD present but ORIG_HEAD absent',
+          arrange: async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+            await setupConflictingMerge(ctx);
+            await mergeRun(ctx, { rev: 'feature', author });
+            await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+          },
+          code: 'NO_OPERATION_IN_PROGRESS',
+          operation: 'merge',
+        },
+      ])(
+        'Then throws $code with operation=$operation ($label)',
+        async ({ arrange, code, operation }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await arrange(ctx);
 
-        // Act
-        let caught: unknown;
-        try {
-          await mergeAbort(ctx);
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await mergeAbort(ctx);
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert — operation label is part of the surfaced error contract.
-        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
-        expect(data?.code).toBe('BARE_REPOSITORY');
-        expect(data?.operation).toBe('merge --abort');
-      });
-    });
-  });
-
-  describe('Given a repo with no MERGE_HEAD', () => {
-    describe('When mergeAbort runs', () => {
-      it('Then throws NO_OPERATION_IN_PROGRESS(merge)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        await commit(ctx, { message: 'first', author });
-
-        // Act
-        let caught: unknown;
-        try {
-          await mergeAbort(ctx);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
-        expect(data?.code).toBe('NO_OPERATION_IN_PROGRESS');
-        expect(data?.operation).toBe('merge');
-      });
+          // Assert — operation label is part of the surfaced error contract.
+          const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+          expect(data?.code).toBe(code);
+          expect(data?.operation).toBe(operation);
+        },
+      );
     });
   });
 
@@ -149,31 +156,6 @@ describe('mergeAbort', () => {
         expect(data?.code).toBe('NO_OPERATION_IN_PROGRESS');
         expect(data?.operation).toBe('merge');
         expect(await resolveRef(ctx, MAIN)).toBe(seed.id);
-      });
-    });
-  });
-
-  describe('Given MERGE_HEAD exists but ORIG_HEAD is absent', () => {
-    describe('When mergeAbort runs', () => {
-      it('Then throws NO_OPERATION_IN_PROGRESS(merge)', async () => {
-        // Arrange — synthesize a half-state: MERGE_HEAD on disk, ORIG_HEAD removed.
-        const ctx = createMemoryContext();
-        await setupConflictingMerge(ctx);
-        await mergeRun(ctx, { rev: 'feature', author });
-        await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
-
-        // Act
-        let caught: unknown;
-        try {
-          await mergeAbort(ctx);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
-        expect(data?.code).toBe('NO_OPERATION_IN_PROGRESS');
-        expect(data?.operation).toBe('merge');
       });
     });
   });

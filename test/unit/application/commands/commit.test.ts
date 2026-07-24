@@ -192,51 +192,57 @@ describe('commit', () => {
     });
   });
 
-  describe('Given a second commit with no index changes', () => {
-    describe('When commit (allowEmpty=false)', () => {
-      it('Then throws NOTHING_TO_COMMIT', async () => {
+  describe('Given a guard condition that must refuse the commit before it writes anything', () => {
+    describe('When commit runs', () => {
+      it.each([
+        {
+          label: 'a second commit with no index changes since the last one',
+          build: async (): Promise<{ ctx: Context; opts: Parameters<typeof commit>[1] }> => {
+            const ctx = await seed();
+            await commit(ctx, { message: 'first', author });
+            return { ctx, opts: { message: 'second', author } };
+          },
+          code: 'NOTHING_TO_COMMIT',
+        },
+        {
+          label: 'a whitespace-only message and allowEmptyMessage=false',
+          build: async (): Promise<{ ctx: Context; opts: Parameters<typeof commit>[1] }> => ({
+            ctx: await seed(),
+            opts: { message: '   \n   ', author },
+          }),
+          code: 'EMPTY_COMMIT_MESSAGE',
+        },
+        {
+          label: 'no author and no config user',
+          build: async (): Promise<{ ctx: Context; opts: Parameters<typeof commit>[1] }> => ({
+            ctx: await seed(),
+            opts: { message: 'x' },
+          }),
+          code: 'AUTHOR_UNCONFIGURED',
+        },
+        {
+          label: 'a non-repo context',
+          build: async (): Promise<{ ctx: Context; opts: Parameters<typeof commit>[1] }> => ({
+            ctx: createMemoryContext(),
+            opts: { message: 'x', author },
+          }),
+          code: 'NOT_A_REPOSITORY',
+        },
+        {
+          label: 'an empty message with a stray MERGE_MSG but no MERGE_HEAD',
+          build: async (): Promise<{ ctx: Context; opts: Parameters<typeof commit>[1] }> => {
+            const ctx = await seed();
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'should be ignored');
+            return { ctx, opts: { message: '', author } };
+          },
+          code: 'EMPTY_COMMIT_MESSAGE',
+        },
+      ])('Then throws $code ($label)', async ({ build, code }) => {
         // Arrange
-        const ctx = await seed();
-        await commit(ctx, { message: 'first', author });
+        const { ctx, opts } = await build();
 
         // Assert
-        await expectError(() => commit(ctx, { message: 'second', author }), 'NOTHING_TO_COMMIT');
-      });
-    });
-  });
-
-  describe('Given an empty message + allowEmptyMessage=false', () => {
-    describe('When commit', () => {
-      it('Then throws EMPTY_COMMIT_MESSAGE', async () => {
-        // Arrange
-        const ctx = await seed();
-        // Assert
-        await expectError(
-          () => commit(ctx, { message: '   \n   ', author }),
-          'EMPTY_COMMIT_MESSAGE',
-        );
-      });
-    });
-  });
-
-  describe('Given no author and no config user', () => {
-    describe('When commit', () => {
-      it('Then throws AUTHOR_UNCONFIGURED', async () => {
-        // Arrange
-        const ctx = await seed();
-        // Assert
-        await expectError(() => commit(ctx, { message: 'x' }), 'AUTHOR_UNCONFIGURED');
-      });
-    });
-  });
-
-  describe('Given a non-repo ctx', () => {
-    describe('When commit', () => {
-      it('Then throws NOT_A_REPOSITORY', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        // Assert
-        await expectError(() => commit(ctx, { message: 'x', author }), 'NOT_A_REPOSITORY');
+        await expectError(() => commit(ctx, opts), code);
       });
     });
   });
@@ -362,26 +368,6 @@ describe('commit', () => {
         const obj = await readObject(ctx, sut.id);
         if (obj.type !== 'commit') throw new Error('expected a commit object');
         expect(obj.data.message).toBe('explicit message\n');
-      });
-    });
-  });
-
-  describe('Given an empty message with a stray MERGE_MSG but no merge in progress', () => {
-    describe('When commit', () => {
-      it('Then throws EMPTY_COMMIT_MESSAGE', async () => {
-        // Arrange — MERGE_MSG present, but MERGE_HEAD absent → mergeHead is undefined.
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'should be ignored');
-
-        // Act
-        const err = await expectError(
-          () => commit(ctx, { message: '', author }),
-          'EMPTY_COMMIT_MESSAGE',
-        );
-
-        // Assert — kills the ConditionalExpression mutant on `mergeHead === undefined`
-        // (false would route to the MERGE_MSG fallback and succeed instead).
-        expect(err.data.code).toBe('EMPTY_COMMIT_MESSAGE');
       });
     });
   });
@@ -523,111 +509,58 @@ describe('commit', () => {
 });
 
 describe('commit — valueless identity refusal', () => {
-  describe('Given a config with valueless user.name and valued user.email', () => {
-    describe('When commit without an explicit author', () => {
-      it('Then throws CONFIG_MISSING_VALUE with key user.name at line 2', async () => {
-        // Arrange
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n\temail = a@b.c\n');
-        __resetConfigCacheForTests();
+  describe('Given a config with a valueless user.name and/or user.email', () => {
+    describe('When commit runs without an explicit author', () => {
+      it.each([
+        {
+          label: 'valueless user.name, valued user.email',
+          configText: '[user]\n\tname\n\temail = a@b.c\n',
+          key: 'user.name',
+          line: 2,
+        },
+        {
+          label: 'valued user.name, valueless user.email',
+          configText: '[user]\n\tname = Ada\n\temail\n',
+          key: 'user.email',
+          line: 3,
+        },
+        {
+          label: 'both valueless, name earlier',
+          configText: '[user]\n\tname\n\temail\n',
+          key: 'user.name',
+          line: 2,
+        },
+        {
+          label: 'both valueless, email earlier (file-position order)',
+          configText: '[user]\n\temail\n\tname\n',
+          key: 'user.email',
+          line: 2,
+        },
+      ])(
+        'Then throws CONFIG_MISSING_VALUE with key $key at line $line ($label)',
+        async ({ configText, key, line }) => {
+          // Arrange
+          const ctx = await seed();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, configText);
+          __resetConfigCacheForTests();
 
-        // Act
-        let caught: unknown;
-        try {
-          await commit(ctx, { message: 'x' });
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await commit(ctx, { message: 'x' });
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((data as { key: string }).key).toBe('user.name');
-        expect((data as { line: number }).line).toBe(2);
-        expect((data as { source: string }).source).toMatch(/\/config$/);
-      });
-    });
-  });
-
-  describe('Given a config with valued user.name and valueless user.email', () => {
-    describe('When commit without an explicit author', () => {
-      it('Then throws CONFIG_MISSING_VALUE with key user.email at line 3', async () => {
-        // Arrange
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n\temail\n');
-        __resetConfigCacheForTests();
-
-        // Act
-        let caught: unknown;
-        try {
-          await commit(ctx, { message: 'x' });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((data as { key: string }).key).toBe('user.email');
-        expect((data as { line: number }).line).toBe(3);
-        expect((data as { source: string }).source).toMatch(/\/config$/);
-      });
-    });
-  });
-
-  describe('Given a config with both user.name and user.email valueless, name earlier', () => {
-    describe('When commit without an explicit author', () => {
-      it('Then throws CONFIG_MISSING_VALUE with key user.name at line 2', async () => {
-        // Arrange
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname\n\temail\n');
-        __resetConfigCacheForTests();
-
-        // Act
-        let caught: unknown;
-        try {
-          await commit(ctx, { message: 'x' });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((data as { key: string }).key).toBe('user.name');
-        expect((data as { line: number }).line).toBe(2);
-        expect((data as { source: string }).source).toMatch(/\/config$/);
-      });
-    });
-  });
-
-  describe('Given a config with both user.email and user.name valueless, email earlier', () => {
-    describe('When commit without an explicit author', () => {
-      it('Then throws CONFIG_MISSING_VALUE with key user.email at line 2 (file-position order)', async () => {
-        // Arrange
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\temail\n\tname\n');
-        __resetConfigCacheForTests();
-
-        // Act
-        let caught: unknown;
-        try {
-          await commit(ctx, { message: 'x' });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('CONFIG_MISSING_VALUE');
-        expect((data as { key: string }).key).toBe('user.email');
-        expect((data as { line: number }).line).toBe(2);
-        expect((data as { source: string }).source).toMatch(/\/config$/);
-      });
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect((data as { key: string }).key).toBe(key);
+          expect((data as { line: number }).line).toBe(line);
+          expect((data as { source: string }).source).toMatch(/\/config$/);
+        },
+      );
     });
   });
 

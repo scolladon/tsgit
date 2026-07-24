@@ -266,21 +266,6 @@ describe('branch', () => {
     });
   });
 
-  describe('Given an unresolvable startPoint', () => {
-    describe('When branch create', () => {
-      it('Then throws BRANCH_NOT_FOUND', async () => {
-        // Arrange
-        const { ctx } = await seedWithCommit();
-
-        // Assert
-        await expectError(
-          () => branchCreate(ctx, { name: 'pin', startPoint: 'no-such' }),
-          'BRANCH_NOT_FOUND',
-        );
-      });
-    });
-  });
-
   describe('Given branch list on a repo with no refs/heads dir', () => {
     describe('When branch list', () => {
       it('Then returns an empty array', async () => {
@@ -506,84 +491,75 @@ describe('branch', () => {
     });
   });
 
-  describe('Given a startPoint of 40 hex chars with a trailing extra char', () => {
-    describe('When branch create', () => {
-      it('Then it is not treated as an oid', async () => {
-        // Arrange — kills the `$` anchor of the oid regex; the value is not a real oid
-        // and resolves as a ref name instead -> BRANCH_NOT_FOUND.
+  describe('Given a startPoint that does not resolve to a commit', () => {
+    describe('When branch create runs', () => {
+      it.each([
+        {
+          label: 'an unresolvable ref name',
+          buildStartPoint: (): string => 'no-such',
+        },
+        {
+          label: '40 hex chars with a trailing extra char',
+          buildStartPoint: (commitId: string): string => `${commitId}f`,
+        },
+        {
+          label: '40 hex chars with a leading extra char',
+          buildStartPoint: (commitId: string): string => `f${commitId}`,
+        },
+      ])('Then $label throws BRANCH_NOT_FOUND', async ({ buildStartPoint }) => {
+        // Arrange — the trailing/leading extra char breaks the oid regex's `$`/`^`
+        // anchor, so the value resolves as a ref name instead of an oid.
         const { ctx, commitId } = await seedWithCommit();
-
-        // Assert
-        await expectError(
-          () => branchCreate(ctx, { name: 'pin', startPoint: `${commitId}f` }),
-          'BRANCH_NOT_FOUND',
-        );
-      });
-    });
-  });
-
-  describe('Given a startPoint of 40 hex chars with a leading extra char', () => {
-    describe('When branch create', () => {
-      it('Then it is not treated as an oid', async () => {
-        // Arrange — kills the `^` anchor of the oid regex.
-        const { ctx, commitId } = await seedWithCommit();
-
-        // Assert
-        await expectError(
-          () => branchCreate(ctx, { name: 'pin', startPoint: `f${commitId}` }),
-          'BRANCH_NOT_FOUND',
-        );
-      });
-    });
-  });
-
-  describe('Given a left name lexically before the right', () => {
-    describe('When compareRefName', () => {
-      it('Then it returns exactly -1', () => {
-        // Arrange — `left < right` holds; kills `< -> >=` (would give 1) and the
-        // `if (lower)` ConditionalExpression `-> false` (would fall through to 0).
-        const left = 'refs/heads/alpha' as RefName;
-        const right = 'refs/heads/beta' as RefName;
+        const startPoint = buildStartPoint(commitId);
+        let caught: unknown;
 
         // Act
-        const sut = compareRefName(left, right);
+        try {
+          await branchCreate(ctx, { name: 'pin', startPoint });
+        } catch (err) {
+          caught = err;
+        }
 
         // Assert
-        expect(sut).toBe(-1);
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
       });
     });
   });
 
-  describe('Given a left name lexically after the right', () => {
-    describe('When compareRefName', () => {
-      it('Then it returns exactly 1', () => {
-        // Arrange — `left > right` holds; kills `> -> <=` (would give 0) and the
-        // `if (higher)` ConditionalExpression `-> false` (would fall through to 0).
-        const left = 'refs/heads/zeta' as RefName;
-        const right = 'refs/heads/main' as RefName;
+  describe('Given two ref names to compare', () => {
+    describe('When compareRefName runs', () => {
+      it.each([
+        {
+          label: 'left lexically before right',
+          left: 'refs/heads/alpha',
+          right: 'refs/heads/beta',
+          expected: -1,
+        },
+        {
+          label: 'left lexically after right',
+          left: 'refs/heads/zeta',
+          right: 'refs/heads/main',
+          expected: 1,
+        },
+        {
+          label: 'equal ref names (unreachable via listBranches, whose dir entries are unique)',
+          left: 'refs/heads/main',
+          right: 'refs/heads/main',
+          expected: 0,
+        },
+      ])('Then $label returns exactly $expected', ({ left, right, expected }) => {
+        // Arrange — kills the `<`/`>` relational-operator mutants (`< -> >=`,
+        // `> -> <=`, `<-><=`, `>->>=`) and the `if (lower)`/`if (higher)`
+        // ConditionalExpression boolean-literal mutants on each branch.
+        const l = left as RefName;
+        const r = right as RefName;
 
         // Act
-        const sut = compareRefName(left, right);
+        const sut = compareRefName(l, r);
 
         // Assert
-        expect(sut).toBe(1);
-      });
-    });
-  });
-
-  describe('Given two equal ref names', () => {
-    describe('When compareRefName', () => {
-      it('Then it returns exactly 0', () => {
-        // Arrange — the equal case `listBranches` cannot reach (unique dir
-        // entries). Kills `< -> <=` (would give -1) and `> -> >=` (would give 1),
-        // plus the `if` ConditionalExpression `-> true` mutants.
-        const name = 'refs/heads/main' as RefName;
-
-        // Act
-        const sut = compareRefName(name, name);
-
-        // Assert
-        expect(sut).toBe(0);
+        expect(sut).toBe(expected);
       });
     });
   });

@@ -349,30 +349,30 @@ describe('Given a commit with a mixed tree (regular, exec, symlink, dir with con
 
       // Regular file
       expect(byPath('a.txt')).toMatchObject({ mode: FILE_MODE.REGULAR, oid: regularId });
-      expect(byPath('a.txt')!.content).toEqual(regularContent);
+      expect(byPath('a.txt')?.content).toEqual(regularContent);
 
       // Executable file
       expect(byPath('run.sh')).toMatchObject({ mode: FILE_MODE.EXECUTABLE, oid: execId });
-      expect(byPath('run.sh')!.content).toEqual(execContent);
+      expect(byPath('run.sh')?.content).toEqual(execContent);
 
       // Symlink — content is link target bytes
       expect(byPath('link')).toMatchObject({ mode: FILE_MODE.SYMLINK, oid: symlinkId });
-      expect(byPath('link')!.content).toEqual(symlinkTarget);
+      expect(byPath('link')?.content).toEqual(symlinkTarget);
 
       // Directory entry — no content
       expect(byPath('dir')).toMatchObject({ mode: FILE_MODE.DIRECTORY, oid: dirTreeId });
-      expect(byPath('dir')!.content).toBeUndefined();
+      expect(byPath('dir')?.content).toBeUndefined();
 
       // Nested file under dir — pre-order: dir entry appears before dir/nested.txt
       expect(byPath('dir/nested.txt')).toMatchObject({
         mode: FILE_MODE.REGULAR,
         oid: nestedBlobId,
       });
-      expect(byPath('dir/nested.txt')!.content).toEqual(nestedContent);
+      expect(byPath('dir/nested.txt')?.content).toEqual(nestedContent);
 
       // Gitlink — no content
       expect(byPath('mysub')).toMatchObject({ mode: FILE_MODE.GITLINK, oid: submoduleOid });
-      expect(byPath('mysub')!.content).toBeUndefined();
+      expect(byPath('mysub')?.content).toBeUndefined();
 
       // Pre-order: 'dir' entry appears before 'dir/nested.txt'
       const dirIdx = entries.findIndex((e) => e.path === 'dir');
@@ -414,9 +414,9 @@ describe('Given a tree with a directory and a gitlink entry', () => {
       const dirEntry = entries.find((e) => e.path === 'emptydir');
       const subEntry = entries.find((e) => e.path === 'sub');
       expect(dirEntry).toBeDefined();
-      expect(dirEntry!.content).toBeUndefined();
+      expect(dirEntry?.content).toBeUndefined();
       expect(subEntry).toBeDefined();
-      expect(subEntry!.content).toBeUndefined();
+      expect(subEntry?.content).toBeUndefined();
     });
   });
 });
@@ -505,7 +505,7 @@ describe('Given a commit with a tree nested 1025 levels deep (beyond walkTree de
 
       // Assert — DEPTH directory entries + 1 blob = DEPTH + 1 total; no throws
       expect(entries).toHaveLength(DEPTH + 1);
-      expect(entries[entries.length - 1]!.mode).toBe(FILE_MODE.REGULAR);
+      expect(entries[entries.length - 1]?.mode).toBe(FILE_MODE.REGULAR);
     });
   });
 });
