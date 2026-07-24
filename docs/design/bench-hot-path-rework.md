@@ -4,8 +4,8 @@
 > list is NOT pre-frozen; it's derived from the Phase 26 perf-pass output. Once
 > that list lands as an ADR, hot paths get small / medium / large fixtures;
 > non-hot paths keep medium only. Bench gating only on hot paths."
-> Status: draft → self-reviewed ×3 → **decision candidates open** (awaiting the
-> ADR conversation).
+> Status: draft → self-reviewed ×3 → **decisions ratified (ADR-501..505) → ready
+> for planning**.
 
 This item confronts one central tension, stated up front so the rest of the doc
 can resolve it: **the committed Phase-26 baseline (`docs/perf/baseline.json`) is
@@ -17,7 +17,7 @@ about which command is *slower*. Yet the brief asks for a cross-command "hottest
 operations" list. The only cross-comparable absolute timing lives in the
 **non-committed nightly bench artifact** (ADR-483). §"The crux" pins how a
 defensible hot-path list is derived given that split; the picking methodology is
-DC-1 (the user ratifies).
+DC-1, ratified as ADR-501.
 
 This is a **bench-suite + CI/tooling** feature. It adds **no** library or command
 surface, and — per §Faithfulness — pins **no** git-observable behaviour.
@@ -182,7 +182,7 @@ single ephemeral measurement.
 > Isolation note: this section reasons from committed artifacts (`baseline.json`)
 > and code already in the tree — it ran **no** state-mutating probe. The one
 > place a throwaway probe would apply (re-running the nightly to snapshot the
-> absolute ranking) is deferred to the ADR conversation, and when run must live in
+> absolute ranking) belongs to the ADR-501 derivation, and when run must live in
 > a `mktemp` throwaway per the injected contract, never the worktree.
 
 ## Requirements
@@ -200,11 +200,13 @@ When this ships:
    (multi-file / deep-ancestry / evolving-delta) orthogonally (DC-3).
 4. **Hot-path operations run at all three size tiers**; the `-scale` two-file
    split collapses to **one tiered file per hot operation**.
-5. **Non-hot operations keep medium only** (DC-4); the un-benched profiled reads
-   gain medium coverage per DC-4's ratified scope.
-6. **`bench:check` gates only hot-path benches** (DC-5), narrowing the existing
-   `> tsgit` filter, without reintroducing the hand-maintained-allow-list smell
-   ADR-490 rejected — and gating a stable tier, not the sub-ms small tier.
+5. **Non-hot operations keep medium only** (DC-4, ADR-504); the un-benched profiled
+   reads **and writes** gain medium coverage — the writes via the 26.3
+   fresh-scratch-per-iteration factory, landing in this PR.
+6. **`bench:check` gates only hot-path benches** (DC-5, ADR-505), narrowing the
+   existing `> tsgit` filter via the registry alone, without reintroducing the
+   hand-maintained-allow-list smell ADR-490 rejected — gating **all CI-run tiers**
+   (small + medium), no tier filter.
 7. The gate-scoping logic is **pure and unit-tested** (extends
    `bench-check.test.ts`); benches themselves are validated by **running**
    `test:bench` green.
@@ -214,12 +216,13 @@ When this ships:
 
 ## Design
 
-The sections describe the shape **as the DCs would resolve on the recommendation**;
-each open fork is called out and deferred to the ADR conversation.
+The sections describe the **ratified** shape (ADR-501..505). Where a ratified
+outcome diverges from the design's original recommendation — the DC-4 write scope
+and the DC-5 gated-tier choice — that divergence is called out inline.
 
-### D1 — Hot-path list + the registry (DC-1, DC-2)
+### D1 — Hot-path list + the registry (DC-1 → ADR-501, DC-2 → ADR-502)
 
-**Derivation (DC-1 recommendation).** Rank the **benched** operations by absolute
+**Derivation (DC-1 → ADR-501).** Rank the **benched** operations by absolute
 median-ms from the **nightly `bench.yml` artifact** at freeze time; take the
 operations above a documented floor; cross-check against Phase 26's revealed
 optimisation effort (26.4*). The initial frozen list is expected to be:
@@ -232,7 +235,7 @@ The **self-shares are explicitly not the ranker** — they remain the *within-co
 drill-down* the 26.4-style work consumes. **Cadence:** re-derive each major version
 from that version's nightly artifact; the ADR records the snapshot used.
 
-**Granularity (DC-2 recommendation): per-command operation.** The registry is a
+**Granularity (DC-2 → ADR-502): per-command operation.** The registry is a
 set of **operation names** (`log`, `status`, …), matching `baseline.json`'s keying
 and how a caller invokes the library. Per-*primitive* is rejected — the hot frames
 (`checkContainment`, `isContainedInEitherRoot`) are cross-cutting across
@@ -258,7 +261,7 @@ bench files agree. Keeping the operation↔bench-file mapping by **file basename
 (`log.bench.ts` → `log`) means the gate needs only the registry + the key's
 embedded file path (§D5), no second mapping table.
 
-### D2 — Size taxonomy (DC-3): one generator, size-only variation, shape orthogonal
+### D2 — Size taxonomy (DC-3 → ADR-503): one generator, size-only variation, shape orthogonal
 
 **Three size points**, defined as commit/blob counts, generated by the **one**
 `fixture-generator.ts` (extend `FixtureSpec`, do **not** add a parallel path in
@@ -279,10 +282,10 @@ variable. This is the deliberate departure from today's loose-tmpdir `setupSmall
 read **loose** objects; medium/large read **packed**. Making `SMALL_FIXTURE`
 packed makes the tiers differ only in size (the point of tiering) but **drops the
 loose-object read path** the current `read-blob.bench.ts` cold scenario exercises.
-Recommendation: `SMALL_FIXTURE` is **packed** (size-only tiering) and the
+Decision (ADR-503): `SMALL_FIXTURE` is **packed** (size-only tiering) and the
 loose-object read path is preserved as **one explicitly-named non-tiered
-micro-scenario** (a fresh small loose repo), so no coverage is silently lost. The
-ADR ratifies whether the loose micro-scenario is retained or dropped.
+micro-scenario** (a fresh small loose repo), so no coverage is silently lost.
+ADR-503 ratified retaining the loose micro-scenario (kept, not dropped).
 
 **Shape axis stays orthogonal.** A hot operation is tiered **in its representative
 shape**: `log`/`status`/`pack-read` use the plain multi-file shape; `blame` uses
@@ -322,7 +325,7 @@ Bench key format is **unchanged** (`<file-path> > <describe title> > tsgit`) —
 gate keeps keying on it (§D5). The two `bench()` names stay exactly
 `tsgit` / `isomorphic-git` (`bench-dsl.ts` invariant).
 
-### D4 — Non-hot coverage (DC-4)
+### D4 — Non-hot coverage (DC-4 → ADR-504)
 
 "Non-hot paths keep medium only." Concretely:
 
@@ -331,27 +334,25 @@ gate keeps keying on it (§D5). The two `bench()` names stay exactly
   network dominates, not repo size — size-tiering it would measure the server, not
   tsgit). Not gated, not tiered. Unchanged.
 - **`delta-chain-read`**: a **shape** variant of the hot `pack-read` operation, not
-  a size tier. Keep as a **medium-only** memory-pressure scenario. Sub-choice: is
-  it *gated* (as part of `pack-read`'s hot coverage) or a non-gated shape probe?
-  Recommendation: **non-gated** (it is a worst-case shape stressor, inherently
-  higher-variance than the representative medium read).
-- **Un-benched profiled commands** — the DC-4 scope lever:
-  - **Reads** (`show`, `diff`, `cat-file`, `rev-parse`): **add medium-only benches**
-    — cheap, loop-in-place on the medium fixture (like `log`/`status`). This
-    realises "non-hot paths keep medium only" for the profiled surface.
+  a size tier. Stays a **medium-only** memory-pressure scenario, **non-gated**
+  (ADR-504) — a worst-case shape stressor, inherently higher-variance than the
+  representative medium read. Its bench-file basename (`delta-chain-read`) is not a
+  registry operation, so the operation filter (§D5) drops it automatically.
+- **Un-benched profiled commands** — reads **and** writes, both in this PR (ADR-504):
+  - **Reads** (`show`, `diff`, `cat-file`, `rev-parse`): **add medium benches** —
+    cheap, loop-in-place on the medium fixture (like `log`/`status`). This realises
+    "non-hot paths keep medium only" for the profiled read surface.
   - **Writes** (`commit`, `add`, `merge`): a medium write-bench needs a
     **fresh-scratch-repo-per-iteration** harness (each mutates state — cannot loop
-    in place), at medium scale, i.e. the 26.3 `profile-scratch-repo.ts`
-    (`buildCommitScratch`/`buildAddScratch`/`buildMergeScratch`) pattern adapted to
-    a bench. That is materially heavier than a read loop. **Flagged for the user**
-    (DC-4): include write benches now (reusing 26.3's scratch factory) or defer.
-    Recommendation: **add the reads now; surface the writes as an explicit
-    decision** rather than silently bundling or dropping them (repo default: no
-    silent follow-ups, but warn-and-ask on an item that genuinely inflates scope).
+    in place), at medium scale, reusing the 26.3 `profile-scratch-repo.ts` factory
+    (`buildCommitScratch`/`buildAddScratch`/`buildMergeScratch`) adapted to a bench.
+    Materially heavier than a read loop, but **included in this PR** (ADR-504
+    ratified adding them now) — the writes land alongside the reads, no follow-up
+    filed (repo default: no silent follow-ups). Non-gated (not in the registry).
 
-### D5 — Gate scoping: only hot-path benches (DC-5)
+### D5 — Gate scoping: only hot-path benches (DC-5 → ADR-505)
 
-**Mechanism (recommendation): the `docs/perf/hot-paths.json` registry, read by the
+**Mechanism (ratified): the `docs/perf/hot-paths.json` registry, read by the
 gate.** `gatedEntries` gains a second filter after the `> tsgit` filter: keep an
 entry only if the **operation** it belongs to is in `hotOperations`. The operation
 is recovered from the key's embedded bench-file path (`toSnapshotEntries` keys on
@@ -368,25 +369,26 @@ hotGatedEntries(entries, hot) =
 → basename without `.bench.ts`) — the new **unit-tested** surface (§Test strategy).
 `compareToBaseline` is unchanged; only the pre-filter narrows.
 
-**Which tier does the gate compare (sub-choice, recommended: medium).** The PR job
-builds small + medium (large is env-gated off). Small is ~50 commits / sub-ms —
-inside the noise floor the gate must not cry wolf on. Recommendation: the gate
-compares the **medium tier of hot operations**; small still *runs* (trend/summary/
-iso-git comparison) but is excluded from the gate by matching the `medium` token
-the tier phrase (`givenPhrase` → "Given a medium repo (5000 commits, …)") already
-carries in the describe title. Two consequences to make explicit:
+**Gated tier: all CI-run tiers, filtered by the registry alone (ADR-505).** The PR
+job builds small + medium (large is env-gated off), and the gate compares **every
+CI-run tier of the hot operations — there is no tier filter**. The gate keys on the
+registry alone: no `medium` token match, no prose-title parsing, so it stays keyed
+on **structured data** (the registry) rather than human describe titles. Small's
+~50-commit sub-ms jitter can flag ≈10 % on noise; that is the **accepted** cost,
+**absorbed by the gate's advisory/non-blocking posture** (ADR-488) — a flag is a
+prompt-to-look, never a build failure. (The design originally recommended gating a
+single stable tier and excluding small; the user ratified all-CI-tiers to keep the
+gate keyed on the registry alone, dropping the prose-title substring match that the
+narrower recommendation would have needed — a mild ADR-249-adjacent tooling smell,
+now avoided.) One consequence to make explicit:
 
-- The medium-tier filter is a **prose-title substring match** — the tier lives in
-  the human title, not a structured key field (the key format `<path> > <title> >
-  tsgit` is fixed). That is a mild ADR-249-adjacent smell *in tooling* (not the
-  library); the simpler fork is **gate all CI-run tiers (small + medium)** and lean
-  on the advisory posture (ADR-488) to absorb small's noise. The ADR ratifies
-  medium-only vs all-CI-tiers.
-- **Only scenarios registered through `tieredScenario` carry the tier phrase**, so
-  the non-tiered scenarios (dirty-`status`, the loose read micro-scenario,
-  `delta-chain-read`) naturally fall outside the gate — a clean consequence, not a
-  special case. A dirty-`status` scenario is gated only if its `Given` is
-  explicitly phrased at the medium tier.
+- **The operation filter is the only gate criterion.** Non-hot / non-tiered
+  scenarios — the loose read micro-scenario, a dirty-`status` variant, and
+  `delta-chain-read`, each registered under a bench-file basename that is *not* a
+  registry operation, plus the non-hot read/write benches (`show`/`diff`/`cat-file`/
+  `rev-parse`/`commit`/`add`/`merge`) and `clone` — fall outside the gate **by not
+  being in the registry**, a clean consequence of the operation filter, not a tier
+  special-case.
 
 **Reconciling with ADR-490's rejected allow-list.** ADR-490 refused a
 hand-maintained allow-list **on the iso-git axis** — *which external competitors to
@@ -402,8 +404,9 @@ control. A hot-path registry is a **different axis and a different smell**:
   registry and the tiered benches.
 
 So the registry is a *decision artifact*, the very thing ADR-490 wanted decisions
-to be — not the maintenance liability it rejected. (Alternatives — a key-naming
-marker, a `test/bench/hot/` directory convention — are DC-5's other forks.)
+to be — not the maintenance liability it rejected. (The rejected alternatives — a
+key-naming marker token, a `test/bench/hot/` directory convention — are recorded in
+ADR-505.)
 
 ### Pre-chewed context blocks (files the planner will part into TDD slices)
 
@@ -430,14 +433,18 @@ marker, a `test/bench/hot/` directory convention — are DC-5's other forks.)
   read micro-scenario + the `status` dirty variant.
 
 **Part D — non-hot medium benches (new).**
-- `show`/`diff`/`cat-file`/`rev-parse` medium-only read benches (loop-in-place on
-  `MEDIUM_FIXTURE`); write benches (`commit`/`add`/`merge`) per DC-4 ratification.
+- `show`/`diff`/`cat-file`/`rev-parse` medium read benches (loop-in-place on
+  `MEDIUM_FIXTURE`); `commit`/`add`/`merge` medium **write** benches via the 26.3
+  `profile-scratch-repo.ts` fresh-scratch-per-iteration factory
+  (`buildCommitScratch`/`buildAddScratch`/`buildMergeScratch`). Reads **and** writes
+  both land in this PR (ADR-504); none are gated (not in the registry).
 
 **Part E — `docs/perf/hot-paths.json` (new) + `tooling/bench-check.ts` (edit).**
 - Commit `hot-paths.json` (D1 shape). In `bench-check.ts`: add `operationOf(key)`
-  and `hotGatedEntries(entries, hot)`; `main()` reads the registry (`fs`) and the
-  medium-tier filter; `readReport` swaps `gatedEntries` → `hotGatedEntries`.
-  Missing/unreadable registry → hard error (no swallow), same `main().catch` idiom.
+  and `hotGatedEntries(entries, hot)`; `main()` reads the registry (`fs`) and
+  filters on `hotOperations` **alone** (no tier filter); `readReport` swaps
+  `gatedEntries` → `hotGatedEntries`. Missing/unreadable registry → hard error (no
+  swallow), same `main().catch` idiom.
 - **Import gotcha:** `bench-check.ts` imports only from `bench-to-snapshot.ts`
   (tooling-local) — strip-types safe; a `docs/perf/hot-paths.json` read is `fs`,
   not an import, so no cross-tree import edge.
@@ -455,7 +462,7 @@ marker, a `test/bench/hot/` directory convention — are DC-5's other forks.)
 **Part H — CI + docs (edit).**
 - `.github/workflows/ci.yml` `benchmark-compare`: no structural change — the tool
   now self-scopes to hot paths via the registry; update the informative comment
-  prose to say "hot-path-scoped, medium-tier". `bench.yml`, `benchmark-snapshot`,
+  prose to say "hot-path-scoped (all CI-run tiers)". `bench.yml`, `benchmark-snapshot`,
   `gh-pages` untouched (beyond bench-file renames the `files` globs already cover
   via `test/bench/**`).
 - `docs/understand/performance.md`: a line that the gate is hot-path-scoped and
@@ -480,17 +487,17 @@ marker, a `test/bench/hot/` directory convention — are DC-5's other forks.)
 
 ## Decision candidates
 
-Every load-bearing choice not pre-decided by an existing ADR. **The designer does
-not decide these; the user ratifies them in the ADR phase.** ADR numbers are
-assigned at ratification (next free ≈ **501**).
+Every load-bearing choice not pre-decided by an existing ADR. **All five were
+ratified in the ADR phase as ADR-501..505**; each row is annotated with its ADR
+number and the ratified outcome so the decision trail stays intact.
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
+| # | Choice | Alternatives (≤3) | Design recommendation | Ratified outcome (ADR) |
 |---|---|---|---|---|
-| **DC-1** | Hot-path picking methodology + source-of-truth + cadence | (a) **Absolute nightly wall-clock ranker**, frozen into the ADR + cross-checked against Phase-26 revealed effort; re-derived per major version. (b) Cross-command self-share ranking from `baseline.json`. (c) Freeze exactly the 26.4* revealed set, no fresh measurement. | **(a)** | (b) is **unsound** — self-shares are intra-command and cannot cross-rank (the crux). (a) uses the only cross-comparable absolute source (nightly, ADR-483), corroborated by (c)'s revealed effort, with an explicit refresh cadence. |
-| **DC-2** | Hot-path granularity | (a) **Per-command operation.** (b) Per-primitive/frame. (c) Per-bench-scenario. | **(a)** | Matches `baseline.json` keying and how callers invoke the library; (b) hot frames are cross-cutting and map to no bench; (c) duplicative across cold/warm/clean/dirty scenarios. |
-| **DC-3** | Size taxonomy (small/medium/large) + small-tier storage shape | (a) **One generator, packed small ~50c/~200b + medium 5k/20k + large 50k/200k, size-only variation; shape orthogonal; loose read kept as a named micro-scenario.** (b) Keep loose-tmpdir small (storage differs across tiers). (c) Only two tiers (medium/large), no small. | **(a)** | Isolates *size* as the tier variable (the point of tiering) via the existing scaled generator; preserves the loose path explicitly; brief mandates three tiers so (c) is out. |
-| **DC-4** | Non-hot coverage: which get medium benches | (a) **Add medium reads (`show`/`diff`/`cat-file`/`rev-parse`) now; surface write benches (`commit`/`add`/`merge`) as an explicit include-or-defer decision; `clone`/`delta-chain` stay as-is (non-gated).** (b) Add all 7 profiled-un-benched (reads + writes) now. (c) Reads only; writes out of scope entirely. | **(a)** | Reads are cheap loop-in-place; writes need the 26.3 fresh-scratch-per-iter harness at scale (materially heavier) — a genuine scope lever the user should weigh, not silently bundle (b) or drop (c). |
-| **DC-5** | Gate-scoping mechanism + which tier is gated | (a) **`docs/perf/hot-paths.json` registry read by the gate + a consistency check; gate the medium tier.** (b) Key-naming marker token in describe titles. (c) `test/bench/hot/` directory convention, filter by path prefix. | **(a)** | Single source shared with tiering (no drift), ADR-ratified with a defined refresh cadence (rebuts the ADR-490 allow-list smell — different axis, closed set, our own ops); (b) couples human titles to gate logic; (c) is a large file move that hides the tier in the path, not the data. Medium tier gated because small is sub-ms noise and large is env-gated-off. |
+| **DC-1** | Hot-path picking methodology + source-of-truth + cadence | (a) **Absolute nightly wall-clock ranker**, frozen into the ADR + cross-checked against Phase-26 revealed effort; re-derived per major version. (b) Cross-command self-share ranking from `baseline.json`. (c) Freeze exactly the 26.4* revealed set, no fresh measurement. | **(a)** — (b) is **unsound** (self-shares are intra-command and cannot cross-rank, the crux); (a) uses the only cross-comparable absolute source (nightly, ADR-483), corroborated by (c)'s revealed effort. | **(a) — ADR-501** (as recommended: nightly wall-clock ranker + revealed-effort cross-check; per-major-version refresh). |
+| **DC-2** | Hot-path granularity | (a) **Per-command operation.** (b) Per-primitive/frame. (c) Per-bench-scenario. | **(a)** — matches `baseline.json` keying and how callers invoke the library; (b) hot frames are cross-cutting and map to no bench; (c) duplicative across cold/warm/clean/dirty scenarios. | **(a) — ADR-502** (adopted as recommended: per-command operation). |
+| **DC-3** | Size taxonomy (small/medium/large) + small-tier storage shape | (a) **One generator, packed small ~50c/~200b + medium 5k/20k + large 50k/200k, size-only variation; shape orthogonal; loose read kept as a named micro-scenario.** (b) Keep loose-tmpdir small (storage differs across tiers). (c) Only two tiers (medium/large), no small. | **(a)** — isolates *size* as the tier variable via the existing scaled generator; preserves the loose path explicitly; brief mandates three tiers so (c) is out. | **(a) — ADR-503** (as recommended: packed small/medium/large; loose read retained as a named micro-scenario). |
+| **DC-4** | Non-hot coverage: which get medium benches | (a) Add medium reads (`show`/`diff`/`cat-file`/`rev-parse`) now; treat the heavier write benches (`commit`/`add`/`merge`) as a separate explicit call; `clone`/`delta-chain` stay as-is (non-gated). (b) **Add all 7 profiled-un-benched (reads + writes) now.** (c) Reads only; writes out of scope entirely. | **(a)** — reads are cheap loop-in-place; writes need the 26.3 fresh-scratch-per-iter harness at scale (materially heavier), a genuine scope lever the user should weigh rather than silently bundle. | **(b) — ADR-504** (user chose to include the write benches this PR, reusing the 26.3 scratch factory: reads **and** writes both land now — no follow-up, per the repo default). |
+| **DC-5** | Gate-scoping mechanism + which tier is gated | (a) **`docs/perf/hot-paths.json` registry read by the gate + a consistency check** — gate a single stable tier (medium), excluding sub-ms small. (b) Key-naming marker token in describe titles. (c) `test/bench/hot/` directory convention, filter by path prefix. | **(a)** mechanism, gate medium only — single source shared with tiering (no drift), ADR-ratified refresh cadence (rebuts the ADR-490 allow-list smell — different axis, closed set, our own ops); (b) couples human titles to gate logic; (c) hides the tier in the path, not the data. | **(a) mechanism — ADR-505**; gated tier = **all CI-run tiers (small + medium)** (user chose over the design's medium-only recommendation: the gate filters on the **registry alone**, no prose-title tier parsing; small's jitter is absorbed by the advisory posture, ADR-488). |
 
 ## Test strategy
 
@@ -507,8 +514,9 @@ assigned at ratification (next free ≈ **501**).
   - `hotGatedEntries(entries, hot)` — an entry whose operation ∈ `hot` **survives**;
     ∉ `hot` is **dropped**; an `isomorphic-git` entry is dropped by the retained
     `> tsgit` filter *before* the hot filter (both filters proven independently, per
-    CLAUDE.md guard-isolation — do not prove both in one test); the medium-tier
-    filter keeps `medium` and drops `small`.
+    CLAUDE.md guard-isolation — do not prove both in one test). There is **no tier
+    filter** (ADR-505 — the gate keys on the registry alone), so no tier-selection
+    test case exists.
   - Assert the **kept/dropped set**, not just a boolean — a set-membership assertion
     kills the StringLiteral/filter-predicate mutants a length-only check would miss.
 - **Consistency check** (Part G) — registry ⟷ tiered benches, so a drift fails in
@@ -562,10 +570,12 @@ pre-emptively here.
   the trend chart, not a CI failure** (the job is `fail-on-alert:false`), and it is
   a one-time discontinuity at the rework's landing. Called out so it is an expected
   reset, not a mystery gap. `gh-pages` itself is not deleted or repurposed.
-- **Small-tier noise if "gate all CI tiers" is chosen** (DC-5 sub-fork). A ~50-commit
-  sub-ms scenario can flag ≈10 % on pure jitter. Mitigation: the gate is advisory
-  (ADR-488) — a flag is a prompt-to-look; the medium-only recommendation avoids it
-  entirely.
+- **Small-tier noise — accepted (ADR-505).** Gating all CI-run tiers means a
+  ~50-commit sub-ms scenario can flag ≈10 % on pure jitter. This is the **ratified
+  path**, not something avoided: the jitter is **absorbed by the gate's advisory/
+  non-blocking posture** (ADR-488) — a flag is a prompt-to-look, never a build
+  failure. The narrower single-tier alternative that would have dodged it was
+  rejected to keep the gate keyed on the registry alone (no prose-title tier parsing).
 - **Inherited double-build cost.** The `benchmark-compare` PR job already builds the
   medium fixture twice (base + head); adding the small tier (cheap) and the non-hot
   medium reads (reuse the same cached medium fixture) adds little. No new large-tier
@@ -585,6 +595,4 @@ pre-emptively here.
   infra (deleting `gh-pages` breaks every main CI run at the snapshot step).
 - **Network-command size-tiering** (`clone`) — network dominates; a size tier would
   measure the server, not tsgit.
-- **Write benches for `commit`/`add`/`merge`** *if* DC-4 ratifies deferral — their
-  fresh-scratch-per-iter harness is called out for the user, not silently dropped.
 - **Any library/command surface change** — CI/tooling/bench only.
