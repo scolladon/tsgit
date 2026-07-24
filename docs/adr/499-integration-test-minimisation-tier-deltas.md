@@ -2,7 +2,7 @@
 
 - **Status:** accepted (user judgment — ratified the design's recommendations, with one deviation on scope)
 - **Date:** 2026-07-24
-- **Design:** docs/design/integration-test-minimisation.md · **Refines:** [ADR-498](498-unit-test-minimisation-classification-proof-thresholds.md)
+- **Design:** docs/design/integration-test-minimisation.md · **Refines:** [ADR-498](498-unit-test-minimisation-methodology.md)
   (the standing Phase-27 minimisation methodology; ADR-498 already names the integration
   tier as an inheritor). Complements ADR-226 (git-faithfulness prime directive),
   ADR-105 (directory-based test classification), ADR-134/136 (property tests as additive siblings).
