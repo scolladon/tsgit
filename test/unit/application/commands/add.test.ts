@@ -157,65 +157,38 @@ describe('add', () => {
     });
   });
 
-  describe('Given .git/MERGE_HEAD exists', () => {
-    describe('When add runs', () => {
-      it('Then succeeds (resolving a conflicted merge is the legitimate path forward.4b)', async () => {
-        // Arrange — MERGE_HEAD presence used to block `add`.4b
-        // changed the contract: `add` must allow staging resolved files
-        // during a conflicted merge. Other pending markers still block.
-        // The marker file content is a valid 40-hex ObjectId (matches the
-        // factory's validation contract).
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
-
-        // Act
-        const sut = await add(ctx, ['a.txt']);
-
-        // Assert
-        expect(sut.added).toEqual(['a.txt']);
-      });
-    });
-  });
-
-  describe('Given a rebase in progress (.git/REBASE_HEAD)', () => {
+  describe('Given a pending operation marker that add excepts (merge / rebase / revert / cherry-pick)', () => {
     describe('When add runs to stage the resolution', () => {
-      it('Then it is allowed (like a merge / cherry-pick / revert resolution)', async () => {
-        // Arrange — staging the conflict resolution is the path forward through a
-        // rebase too. Kills the mutant that drops `rebase` from the exception list.
+      it.each([
+        {
+          file: 'MERGE_HEAD',
+          content: `${'a'.repeat(40)}\n`,
+          label: 'succeeds for a conflicted merge (resolving is the legitimate path forward)',
+        },
+        {
+          file: 'REBASE_HEAD',
+          content: 'oid\n',
+          label:
+            'is allowed for a rebase in progress (like a merge / cherry-pick / revert resolution)',
+        },
+        {
+          file: 'REVERT_HEAD',
+          content: 'oid\n',
+          label: 'is allowed for a revert in progress (like a merge / cherry-pick resolution)',
+        },
+        {
+          file: 'CHERRY_PICK_HEAD',
+          content: 'oid\n',
+          label: 'is allowed for a cherry-pick in progress (like a merge resolution)',
+        },
+      ])('Then it $label', async ({ file, content }) => {
+        // Arrange — presence of any of these markers used to block `add`; the
+        // contract changed to allow staging resolved files during a
+        // conflicted merge/rebase/revert/cherry-pick, while every other
+        // pending marker still blocks. Kills a mutant that drops any one
+        // label from the exception list.
         const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, 'oid\n');
-
-        // Act
-        const sut = await add(ctx, ['a.txt']);
-
-        // Assert
-        expect(sut.added).toEqual(['a.txt']);
-      });
-    });
-  });
-
-  describe('Given a revert in progress (.git/REVERT_HEAD)', () => {
-    describe('When add runs to stage the resolution', () => {
-      it('Then it is allowed (like a merge / cherry-pick resolution)', async () => {
-        // Arrange
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REVERT_HEAD`, 'oid\n');
-
-        // Act
-        const sut = await add(ctx, ['a.txt']);
-
-        // Assert
-        expect(sut.added).toEqual(['a.txt']);
-      });
-    });
-  });
-
-  describe('Given a cherry-pick in progress (.git/CHERRY_PICK_HEAD)', () => {
-    describe('When add runs to stage the resolution', () => {
-      it('Then it is allowed (like a merge resolution)', async () => {
-        // Arrange
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, 'oid\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${file}`, content);
 
         // Act
         const sut = await add(ctx, ['a.txt']);
@@ -682,88 +655,61 @@ describe('add', () => {
     });
   });
 
-  describe('Given a stat type that flips between walk and stage (symlink -> regular)', () => {
+  describe('Given a stat type that flips between walk and stage', () => {
     describe('When add({ all: true })', () => {
-      it('Then throws OPERATION_ABORTED', async () => {
-        // Arrange — walk sees a symlink leaf; re-lstat sees a regular file.
-        // Kills the mutant that swaps `!==` for `===` in the type-flip guard.
-        const ctx = await seedFreshRepo({});
-        await ctx.fs.symlink('target', `${ctx.layout.workDir}/link`);
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/link', { isSymbolicLink: false, isFile: true }),
-        };
+      it.each([
+        {
+          seed: {},
+          symlinkTarget: 'target',
+          suffix: '/link',
+          flipTo: { isSymbolicLink: false, isFile: true },
+          label: 'a symlink flips to a regular file — kills the `!==`→`===` type-flip mutant',
+        },
+        {
+          seed: { 'a.txt': 'a' },
+          symlinkTarget: undefined,
+          suffix: '/a.txt',
+          flipTo: { isFile: false, isDirectory: true },
+          label: 'a file flips to a directory — extends the guard to the isDirectory axis',
+        },
+        {
+          seed: { 'a.txt': 'a' },
+          symlinkTarget: undefined,
+          suffix: '/a.txt',
+          flipTo: { isSymbolicLink: true },
+          label: 'ONLY isSymbolicLink flips — kills `||`→`&&` mutants on the type-flip guard',
+        },
+        {
+          seed: { 'a.txt': 'a' },
+          symlinkTarget: undefined,
+          suffix: '/a.txt',
+          flipTo: { isDirectory: true },
+          label: 'ONLY isDirectory flips',
+        },
+        {
+          seed: { 'a.txt': 'a' },
+          symlinkTarget: undefined,
+          suffix: '/a.txt',
+          flipTo: { isFile: false },
+          label: 'ONLY isFile flips',
+        },
+      ])(
+        'Then throws OPERATION_ABORTED — $label',
+        async ({ seed, symlinkTarget, suffix, flipTo }) => {
+          // Arrange — re-lstat under the lock reports a different type than the
+          // walk-time stat; each row isolates ONE flipped axis (or a real
+          // regular<->symlink/directory transition) of the `!==` guard so a
+          // dropped `||` branch is caught independently.
+          const ctx = await seedFreshRepo(seed);
+          if (symlinkTarget !== undefined) {
+            await ctx.fs.symlink(symlinkTarget, `${ctx.layout.workDir}${suffix}`);
+          }
+          const racingCtx = { ...ctx, fs: racingLstatFs(ctx, suffix, flipTo) };
 
-        // Assert
-        await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
-      });
-    });
-  });
-
-  describe('Given a stat type that flips file -> directory between walk and stage', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws OPERATION_ABORTED', async () => {
-        // Arrange — extends the type-flip guard to the isDirectory axis so a
-        // mutant that drops the isDirectory check is killed.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.txt', { isFile: false, isDirectory: true }),
-        };
-
-        // Assert
-        await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
-      });
-    });
-  });
-
-  describe('Given ONLY isSymbolicLink flips between walk and stage (isFile and isDirectory unchanged)', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws OPERATION_ABORTED — kills `||` → `&&` mutants on the type-flip guard', async () => {
-        // Arrange — flip exactly ONE axis. With `||` → `&&` the whole guard
-        // would only fire if all three differ, so single-axis flips would
-        // sneak through. This test pins isSymbolicLink-only.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.txt', { isSymbolicLink: true }),
-        };
-
-        // Assert
-        await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
-      });
-    });
-  });
-
-  describe('Given ONLY isDirectory flips between walk and stage', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws OPERATION_ABORTED', async () => {
-        // Arrange
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.txt', { isDirectory: true }),
-        };
-
-        // Assert
-        await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
-      });
-    });
-  });
-
-  describe('Given ONLY isFile flips between walk and stage', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws OPERATION_ABORTED', async () => {
-        // Arrange
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.txt', { isFile: false }),
-        };
-
-        // Assert
-        await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
-      });
+          // Assert
+          await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
+        },
+      );
     });
   });
 
@@ -1456,133 +1402,77 @@ describe('add', () => {
     });
   });
 
-  describe('Given a tracked file whose ancestor directory is ignored', () => {
+  describe('Given a tracked file and a custom ignore predicate for the addAll removal pass', () => {
     describe('When add({ all: true })', () => {
-      it('Then the entry is preserved via the ancestor walk', async () => {
-        // Arrange — stage `vendor/foo.ts`, then re-run addAll with a custom
-        // ignore predicate that ignores ONLY the `vendor` directory entry
-        // (isDirectory === true) and never the leaf. isPathOrAncestorIgnored
-        // must skip the leaf check (L249 -> false) and find the ancestor in
-        // the loop (L251 increment, L253 hit). A mutant on the loop or the
-        // ancestor check would mark `vendor/foo.ts` as removed.
-        const ctx = await seedFreshRepo({ 'vendor/foo.ts': 'export {};' });
-        await add(ctx, ['vendor/foo.ts']);
-        const ancestorIgnore = async (path: string, isDirectory: boolean) =>
-          isDirectory && path === 'vendor';
+      it.each([
+        {
+          path: 'vendor/foo.ts',
+          content: 'export {};',
+          deleteFromDisk: false,
+          ignore: async (path: string, isDirectory: boolean) => isDirectory && path === 'vendor',
+          expectedRemoved: [],
+          expectedEntries: ['vendor/foo.ts'],
+          label:
+            'the entry is preserved when an ancestor directory is ignored (leaf check -> false, ancestor loop hits)',
+        },
+        {
+          path: 'keep.bin',
+          content: 'k',
+          deleteFromDisk: false,
+          ignore: async (path: string, isDirectory: boolean) => !isDirectory && path === 'keep.bin',
+          expectedRemoved: [],
+          expectedEntries: ['keep.bin'],
+          label:
+            'the entry is preserved when the leaf is reported ignored for files only (L249 passes isDirectory=false)',
+        },
+        {
+          path: 'a/b/c.txt',
+          content: 'c',
+          deleteFromDisk: false,
+          ignore: async (path: string, isDirectory: boolean) => isDirectory && path === 'a/b',
+          expectedRemoved: [],
+          expectedEntries: ['a/b/c.txt'],
+          label:
+            'the entry is preserved when a deep ancestor directory is ignored (ancestor loop visits proper sub-prefixes)',
+        },
+        {
+          path: 'gone.txt',
+          content: 'g',
+          deleteFromDisk: true,
+          ignore: async (path: string, isDirectory: boolean) => isDirectory && path === 'gone.txt',
+          expectedRemoved: ['gone.txt'],
+          expectedEntries: [],
+          label:
+            'it is still marked removed when the predicate ignores only the leaf-as-directory (ancestor loop excludes the leaf itself)',
+        },
+        {
+          path: 'dir/gone.txt',
+          content: 'g',
+          deleteFromDisk: true,
+          ignore: async () => false,
+          expectedRemoved: ['dir/gone.txt'],
+          expectedEntries: [],
+          label: 'it is removed when no ancestor is ignored (the ancestor loop completes normally)',
+        },
+      ])(
+        'Then $label',
+        async ({ path, content, deleteFromDisk, ignore, expectedRemoved, expectedEntries }) => {
+          // Arrange — each row isolates one branch of isPathOrAncestorIgnored's
+          // leaf check + proper-prefix ancestor loop; a mutant on either would
+          // mis-classify the tracked entry as removed/preserved.
+          const ctx = await seedFreshRepo({ [path]: content });
+          await add(ctx, [path]);
+          if (deleteFromDisk) await ctx.fs.rm(`${ctx.layout.workDir}/${path}`);
 
-        // Act
-        const sut = await addAllInternal(ctx, ancestorIgnore);
+          // Act
+          const sut = await addAllInternal(ctx, ignore);
 
-        // Assert — the leaf is filtered from the walk but its ancestor is
-        // ignored, so the tracked entry is preserved, NOT removed.
-        expect(sut.removed).toEqual([]);
-        const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual(['vendor/foo.ts']);
-      });
-    });
-  });
-
-  describe('Given a tracked file whose leaf is reported ignored for files only', () => {
-    describe('When add({ all: true })', () => {
-      it('Then the entry is preserved (L249 passes isDirectory=false)', async () => {
-        // Arrange — stage `keep.bin`, then re-run addAll with a predicate that
-        // ignores the leaf path ONLY when queried with isDirectory === false.
-        // Kills L249 BooleanLiteral (`ignore(path, false)` -> `ignore(path,
-        // true)`): the mutant would query with `true`, miss the ignore, and
-        // mark the tracked file as removed.
-        const ctx = await seedFreshRepo({ 'keep.bin': 'k' });
-        await add(ctx, ['keep.bin']);
-        const leafFileIgnore = async (path: string, isDirectory: boolean) =>
-          !isDirectory && path === 'keep.bin';
-
-        // Act
-        const sut = await addAllInternal(ctx, leafFileIgnore);
-
-        // Assert
-        expect(sut.removed).toEqual([]);
-        const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual(['keep.bin']);
-      });
-    });
-  });
-
-  describe('Given a tracked nested file and a predicate ignoring only the deepest ancestor directory', () => {
-    describe('When add({ all: true })', () => {
-      it('Then the entry is preserved (ancestor loop visits proper sub-prefixes)', async () => {
-        // Arrange — `a/b/c.txt`: ancestors are `a` and `a/b`. The predicate
-        // ignores ONLY `a/b` (a directory, NOT the leaf `a/b/c.txt`). The loop
-        // must visit `a/b` (i in [1, segments.length)). Kills the L251
-        // EqualityOperator `<` -> `<=` mutant (which would also pass the full
-        // path as a directory) only in combination, but mainly proves the
-        // loop's proper-prefix range is exercised.
-        const ctx = await seedFreshRepo({ 'a/b/c.txt': 'c' });
-        await add(ctx, ['a/b/c.txt']);
-        const deepIgnore = async (path: string, isDirectory: boolean) =>
-          isDirectory && path === 'a/b';
-
-        // Act
-        const sut = await addAllInternal(ctx, deepIgnore);
-
-        // Assert
-        expect(sut.removed).toEqual([]);
-        const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual(['a/b/c.txt']);
-      });
-    });
-  });
-
-  describe('Given a tracked file deleted from disk and a predicate that ignores only the leaf-as-directory', () => {
-    describe('When add({ all: true })', () => {
-      it('Then it is still marked removed (ancestor loop excludes the leaf itself)', async () => {
-        // Arrange — stage `gone.txt`, delete it, then re-run addAll with a
-        // predicate that returns true ONLY for `ignore('gone.txt', true)` —
-        // i.e. the leaf path queried as a directory. The L251 loop runs over
-        // proper-prefix ancestors `[1, segments.length)`; for a single-segment
-        // path there are none, so isPathOrAncestorIgnored returns false and
-        // the file is removed. A `<` -> `<=` mutant would additionally query
-        // `ignore('gone.txt', true)` -> true -> wrongly preserve the entry.
-        const ctx = await seedFreshRepo({ 'gone.txt': 'g' });
-        await add(ctx, ['gone.txt']);
-        await ctx.fs.rm(`${ctx.layout.workDir}/gone.txt`);
-        const leafAsDirIgnore = async (path: string, isDirectory: boolean) =>
-          isDirectory && path === 'gone.txt';
-
-        // Act
-        const sut = await addAllInternal(ctx, leafAsDirIgnore);
-
-        // Assert — the leaf is NOT consulted as a directory, so it is removed.
-        expect(sut.removed).toEqual(['gone.txt']);
-        const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a tracked nested file deleted from disk with no ancestor ignored', () => {
-    describe('When add({ all: true })', () => {
-      it('Then the ancestor loop completes and the file is removed', async () => {
-        // Arrange — stage `dir/gone.txt`, delete it, then re-run addAll with a
-        // never-ignore predicate. The post-walk loop finds `dir/gone.txt` unseen
-        // and calls isPathOrAncestorIgnored: the leaf check is false and the
-        // ancestor `dir` is NOT ignored, so the `for` loop must run a full
-        // iteration WITHOUT returning, then advance and terminate normally.
-        //   - Kills L251 AssignmentOperator `i += 1` -> `i -= 1`: with `-=` the
-        //     index walks 1, 0, -1, ... and the loop never terminates (hang).
-        //   - Kills L253 ConditionalExpression `-> true`: a constant-true guard
-        //     would treat `dir` as ignored and wrongly preserve the index entry.
-        const ctx = await seedFreshRepo({ 'dir/gone.txt': 'g' });
-        await add(ctx, ['dir/gone.txt']);
-        await ctx.fs.rm(`${ctx.layout.workDir}/dir/gone.txt`);
-        const neverIgnore = async () => false;
-
-        // Act
-        const sut = await addAllInternal(ctx, neverIgnore);
-
-        // Assert — no ancestor is ignored, so the deleted file is removed.
-        expect(sut.removed).toEqual(['dir/gone.txt']);
-        const idx = await readIndex(ctx);
-        expect(idx.entries.map((e) => e.path)).toEqual([]);
-      });
+          // Assert
+          expect(sut.removed).toEqual(expectedRemoved);
+          const idx = await readIndex(ctx);
+          expect(idx.entries.map((e) => e.path)).toEqual(expectedEntries);
+        },
+      );
     });
   });
 
