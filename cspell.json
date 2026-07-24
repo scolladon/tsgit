@@ -1102,7 +1102,8 @@
     "uncitable",
     "undercounts",
     "comparand",
-    "localisation"
+    "localisation",
+    "duplicative"
   ],
   "ignorePaths": [
     "node_modules",
