@@ -29,6 +29,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import type { BundleCreateOptions } from '../../src/application/commands/bundle-create.js';
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { bundleListHeads } from '../../src/application/commands/bundle-list-heads.js';
 import { bundleVerify } from '../../src/application/commands/bundle-verify.js';
@@ -293,52 +294,49 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     });
   });
 
-  describe('Given bundleCreate with a single tip "refs/heads/main", When comparing to git bundle create refs/heads/main', () => {
-    it('Then the header bytes are byte-identical', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const env = runGitEnv();
-      const bundleFile = path.join(bundleDir, 'pin1-single.bundle');
-      const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['refs/heads/main'], env);
+  const HEADER_BYTE_IDENTICAL_MATRIX: ReadonlyArray<{
+    label: string;
+    file: string;
+    gitArgs: readonly string[];
+    options: BundleCreateOptions;
+  }> = [
+    {
+      label: 'single tip "refs/heads/main"',
+      file: 'pin1-single.bundle',
+      gitArgs: ['refs/heads/main'],
+      options: { revs: [{ tip: 'refs/heads/main' }] },
+    },
+    {
+      label: '{ branches: true }',
+      file: 'pin1-branches.bundle',
+      gitArgs: ['--branches'],
+      options: { branches: true },
+    },
+    {
+      label: '{ tags: true }',
+      file: 'pin1-tags.bundle',
+      gitArgs: ['--tags'],
+      options: { tags: true },
+    },
+  ];
 
-      // Act
-      const sut = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+  describe('Given bundleCreate ref-selection variants, When comparing to the matching git bundle create flag', () => {
+    it.each(HEADER_BYTE_IDENTICAL_MATRIX)(
+      'Then the header bytes are byte-identical for $label',
+      async ({ file, gitArgs, options }) => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.peer });
+        const env = runGitEnv();
+        const bundleFile = path.join(bundleDir, file);
+        const gitBytes = gitBundleCreate(pair.peer, bundleFile, gitArgs, env);
 
-      // Assert
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
-    });
-  });
+        // Act
+        const sut = await bundleCreate(ctx, options);
 
-  describe('Given bundleCreate({ branches: true }), When comparing to git bundle create --branches', () => {
-    it('Then the header bytes are byte-identical', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const env = runGitEnv();
-      const bundleFile = path.join(bundleDir, 'pin1-branches.bundle');
-      const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--branches'], env);
-
-      // Act
-      const sut = await bundleCreate(ctx, { branches: true });
-
-      // Assert
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
-    });
-  });
-
-  describe('Given bundleCreate({ tags: true }), When comparing to git bundle create --tags', () => {
-    it('Then the header bytes are byte-identical', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const env = runGitEnv();
-      const bundleFile = path.join(bundleDir, 'pin1-tags.bundle');
-      const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--tags'], env);
-
-      // Act
-      const sut = await bundleCreate(ctx, { tags: true });
-
-      // Assert
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
-    });
+        // Assert
+        expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
+      },
+    );
   });
 
   describe('Given bundleCreate two-dot range main~2..main, When comparing to git bundle create main~2..main', () => {
@@ -817,54 +815,53 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     });
   });
 
-  describe('Given a directory path passed to bundleVerify', () => {
-    it('Then BUNDLE_BAD_HEADER is thrown, reconstructing git "does not look like" error', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const dirPath = path.join(bundleDir, 'a-directory');
-      await mkdir(dirPath, { recursive: true });
+  const BAD_HEADER_MATRIX: ReadonlyArray<{
+    label: string;
+    file: string;
+    setup: (targetPath: string) => Promise<void>;
+  }> = [
+    {
+      label: 'directory path',
+      file: 'a-directory',
+      setup: async (targetPath) => {
+        await mkdir(targetPath, { recursive: true });
+      },
+    },
+    {
+      label: 'plain-text (non-bundle) file',
+      file: 'plain.txt',
+      setup: async (targetPath) => {
+        writeFileSync(targetPath, 'this is not a bundle file\n');
+      },
+    },
+  ];
 
-      // Act
-      let caught: unknown;
-      try {
-        await bundleVerify(ctx, { path: dirPath });
-      } catch (err) {
-        caught = err;
-      }
+  describe('Given a bad-header path passed to bundleVerify (directory or plain-text file)', () => {
+    it.each(BAD_HEADER_MATRIX)(
+      'Then BUNDLE_BAD_HEADER is thrown, reconstructing git "does not look like" error for $label',
+      async ({ file, setup }) => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.peer });
+        const targetPath = path.join(bundleDir, file);
+        await setup(targetPath);
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('BUNDLE_BAD_HEADER');
+        // Act
+        let caught: unknown;
+        try {
+          await bundleVerify(ctx, { path: targetPath });
+        } catch (err) {
+          caught = err;
+        }
 
-      const gitResult = tryRunGit(['bundle', 'verify', dirPath], { env: runGitEnv() });
-      expect(gitResult.ok).toBe(false);
-      expect(gitResult.stderr).toContain('does not look like a v2 or v3 bundle file');
-    });
-  });
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('BUNDLE_BAD_HEADER');
 
-  describe('Given a plain-text (non-bundle) file passed to bundleVerify', () => {
-    it('Then BUNDLE_BAD_HEADER is thrown, reconstructing git "does not look like" error', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const textFile = path.join(bundleDir, 'plain.txt');
-      writeFileSync(textFile, 'this is not a bundle file\n');
-
-      // Act
-      let caught: unknown;
-      try {
-        await bundleVerify(ctx, { path: textFile });
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('BUNDLE_BAD_HEADER');
-
-      const gitResult = tryRunGit(['bundle', 'verify', textFile], { env: runGitEnv() });
-      expect(gitResult.ok).toBe(false);
-      expect(gitResult.stderr).toContain('does not look like a v2 or v3 bundle file');
-    });
+        const gitResult = tryRunGit(['bundle', 'verify', targetPath], { env: runGitEnv() });
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toContain('does not look like a v2 or v3 bundle file');
+      },
+    );
   });
 
   describe('Given a hand-crafted # v3 git bundle file, When bundleVerify is called', () => {
