@@ -198,161 +198,115 @@ describe.skipIf(!GIT_AVAILABLE)('lfs pointer diff interop — filter-less git ba
         expect(dataBinChange).toBeDefined();
         expect(dataBinChange?.type).toBe('add');
       });
-
-      it('Then name-status matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = pointerAdd;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--name-status', from, to).trim();
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result).join('\n');
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then numstat matches git diff --numstat (3 lines added)', async () => {
-        // Arrange
-        const { from, to } = pointerAdd;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--numstat', from, to).trim();
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-        const ours = numstatRowsFrom(result).join('\n');
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructed patch matches git diff --no-ext-diff byte-for-byte', async () => {
-        // Arrange
-        const { from, to } = pointerAdd;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
     });
   });
 
-  describe('Given a commit that bumps the pointer oid and size (pointer modify)', () => {
+  // pointer-modify (oid+size bump) and pointer-to-real drive the identical
+  // single-change assertion shape, differing only in the commit pair.
+  const MODIFY_STRUCTURED_TYPE_MATRIX: ReadonlyArray<{
+    label: string;
+    fixture: () => CommitPair;
+  }> = [
+    { label: 'pointer modify (oid+size bump)', fixture: () => pointerModify },
+    { label: 'pointer to real content', fixture: () => pointerToReal },
+  ];
+
+  describe('Given a commit that produces a single modify change (oid+size bump or pointer→real)', () => {
     describe('When diff is called', () => {
-      it('Then the structured change is type modify for data.bin', async () => {
-        // Arrange
-        const { from, to } = pointerModify;
+      it.each(MODIFY_STRUCTURED_TYPE_MATRIX)(
+        'Then the structured change is type modify for data.bin ($label)',
+        async ({ fixture }) => {
+          // Arrange
+          const { from, to } = fixture();
 
-        // Act
-        const result = await repo.diff({ from, to });
+          // Act
+          const result = await repo.diff({ from, to });
 
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('modify');
-        if (change?.type !== 'modify') return;
-        expect(change.path).toBe('data.bin');
-      });
-
-      it('Then name-status matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = pointerModify;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--name-status', from, to).trim();
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result).join('\n');
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then numstat matches git diff --numstat (2 added, 2 deleted)', async () => {
-        // Arrange
-        const { from, to } = pointerModify;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--numstat', from, to).trim();
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-        const ours = numstatRowsFrom(result).join('\n');
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructed patch matches git diff --no-ext-diff byte-for-byte', async () => {
-        // Arrange
-        const { from, to } = pointerModify;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
+          // Assert
+          expect(result.changes).toHaveLength(1);
+          const change = result.changes[0];
+          expect(change?.type).toBe('modify');
+          if (change?.type !== 'modify') return;
+          expect(change.path).toBe('data.bin');
+        },
+      );
     });
   });
 
-  describe('Given a commit that replaces the lfs pointer blob with real file content', () => {
-    describe('When diff is called', () => {
-      it('Then the structured change is type modify for data.bin', async () => {
-        // Arrange
-        const { from, to } = pointerToReal;
+  // add / modify / pointer-to-real each produce exactly one change, so
+  // name-status and numstat compare directly without needing a sort.
+  const SINGLE_CHANGE_MATRIX: ReadonlyArray<{ label: string; fixture: () => CommitPair }> = [
+    { label: 'pointer add', fixture: () => pointerAdd },
+    { label: 'pointer modify', fixture: () => pointerModify },
+    { label: 'pointer to real', fixture: () => pointerToReal },
+  ];
 
-        // Act
-        const result = await repo.diff({ from, to });
+  describe('Given the three commit pairs that produce a single tree-diff change (add / modify / pointer-to-real)', () => {
+    describe('When diff --name-status is compared to git', () => {
+      it.each(SINGLE_CHANGE_MATRIX)(
+        'Then name-status matches git diff --name-status ($label)',
+        async ({ fixture }) => {
+          // Arrange
+          const { from, to } = fixture();
+          const peer = git(dir, 'diff', '--no-ext-diff', '--name-status', from, to).trim();
 
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('modify');
-        if (change?.type !== 'modify') return;
-        expect(change.path).toBe('data.bin');
-      });
+          // Act
+          const result = await repo.diff({ from, to });
+          const ours = nameStatusFrom(result).join('\n');
 
-      it('Then name-status matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = pointerToReal;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--name-status', from, to).trim();
+          // Assert
+          expect(ours).toBe(peer);
+        },
+      );
+    });
 
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result).join('\n');
+    describe('When diff --numstat is compared to git', () => {
+      it.each(SINGLE_CHANGE_MATRIX)(
+        'Then numstat matches git diff --numstat ($label)',
+        async ({ fixture }) => {
+          // Arrange
+          const { from, to } = fixture();
+          const peer = git(dir, 'diff', '--no-ext-diff', '--numstat', from, to).trim();
 
-        // Assert
-        expect(ours).toBe(peer);
-      });
+          // Act
+          const result = await diff(ctx, { from, to, withStat: true });
+          const ours = numstatRowsFrom(result).join('\n');
 
-      it('Then numstat matches git diff --numstat (1 added, 3 deleted)', async () => {
-        // Arrange
-        const { from, to } = pointerToReal;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--numstat', from, to).trim();
+          // Assert
+          expect(ours).toBe(peer);
+        },
+      );
+    });
+  });
 
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-        const ours = numstatRowsFrom(result).join('\n');
+  // The reconstructed-patch oracle is identical across all four scenarios —
+  // declared-but-inert included, since git's own patch output preserves path
+  // order regardless of how many paths changed.
+  const ALL_FIXTURES_MATRIX: ReadonlyArray<{ label: string; fixture: () => CommitPair }> = [
+    ...SINGLE_CHANGE_MATRIX,
+    {
+      label: 'declared-but-inert (gitattributes + tracked pointer)',
+      fixture: () => declaredButInert,
+    },
+  ];
 
-        // Assert
-        expect(ours).toBe(peer);
-      });
+  describe('Given all four pointer-diff commit pairs (add / modify / pointer-to-real / declared-but-inert)', () => {
+    describe('When the reconstructed patch is compared to git diff --no-ext-diff', () => {
+      it.each(ALL_FIXTURES_MATRIX)(
+        'Then reconstructed patch matches git diff --no-ext-diff byte-for-byte ($label)',
+        async ({ fixture }) => {
+          // Arrange
+          const { from, to } = fixture();
+          const peer = git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
 
-      it('Then reconstructed patch matches git diff --no-ext-diff byte-for-byte', async () => {
-        // Arrange
-        const { from, to } = pointerToReal;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
+          // Act
+          const treeDiff = await diff(ctx, { from, to });
+          const result = await reconstructPatch(ctx, treeDiff);
 
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
+          // Assert
+          expect(result).toBe(peer);
+        },
+      );
     });
   });
 
@@ -407,19 +361,6 @@ describe.skipIf(!GIT_AVAILABLE)('lfs pointer diff interop — filter-less git ba
 
         // Assert
         expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructed patch matches git diff --no-ext-diff (pointer text shown as plain content)', async () => {
-        // Arrange
-        const { from, to } = declaredButInert;
-        const peer = git(dir, 'diff', '--no-ext-diff', '--no-color', from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
       });
     });
   });

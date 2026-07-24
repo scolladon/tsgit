@@ -3,8 +3,9 @@
  * and `git diff` across the full whitespace faithfulness matrix.
  *
  * Covers every matrix row: W1, W3, B-none, B-zero, B-amt, B-run, B-tab, EOL1,
- * CR1, CR-narrow, M1, D1, D2, BL1, BL-two, BL2, BL-spaces, BL-combo, C1, C2,
- * and the similarity-invariant regression guard.
+ * CR1, CR-narrow, M1, D1, D2, BL1, BL-two, BL2, BL-spaces, BL-combo, C2,
+ * and the similarity-invariant regression guard. (C1 is subsumed by B-zero: same
+ * fixture, same ignoreWhitespace:'all' no-diff assertion.)
  *
  * For each mode the test asserts:
  *   - name-status membership (TreeDiff.changes paths and types)
@@ -332,77 +333,54 @@ describe.skipIf(!GIT_AVAILABLE)(
       }
     });
 
-    // B-run: internal run grows (a b to a  b) hidden under -b
-    it('Given internal whitespace run grows, When diffing with change mode (-b), Then no diff', async () => {
-      // Arrange
-      const pair = await makePeerPair('ws-brun');
-      try {
-        runGit(['init', '-q', '-b', 'main', pair.peer]);
-        await writePeerFile(pair.peer, 'f.txt', 'xx a b yy\n');
-        runGit(['-C', pair.peer, 'add', 'f.txt']);
-        gitCommit(pair.peer, 'first');
-        await writePeerFile(pair.peer, 'f.txt', 'xx a  b yy\n');
-        runGit(['-C', pair.peer, 'add', 'f.txt']);
-        gitCommit(pair.peer, 'second');
+    // B-run, B-tab: whitespace-only changes fully internal to the line (a run growing, a
+    // tab swapped for a space) collapse to nothing under change mode (-b).
+    const NO_DIFF_UNDER_CHANGE_MODE_MATRIX: ReadonlyArray<{
+      label: string;
+      before: string;
+      after: string;
+    }> = [
+      { label: 'internal whitespace run grows', before: 'xx a b yy\n', after: 'xx a  b yy\n' },
+      { label: 'tab replaced by space (a tab b to a b)', before: 'a\tb\n', after: 'a b\n' },
+    ];
 
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await writeCtxFile(ctx, 'f.txt', 'xx a b yy\n');
-        await add(ctx, ['f.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await writeCtxFile(ctx, 'f.txt', 'xx a  b yy\n');
-        await add(ctx, ['f.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
+    it.each(NO_DIFF_UNDER_CHANGE_MODE_MATRIX)(
+      'Given $label, When diffing with change mode (-b), Then no diff',
+      async ({ before, after }) => {
+        // Arrange
+        const pair = await makePeerPair('ws-bmode');
+        try {
+          runGit(['init', '-q', '-b', 'main', pair.peer]);
+          await writePeerFile(pair.peer, 'f.txt', before);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'first');
+          await writePeerFile(pair.peer, 'f.txt', after);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'second');
 
-        // Act
-        const sut = await diff(ctx, {
-          from: c1.id,
-          to: c2.id,
-          ignoreWhitespace: 'change',
-        });
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await writeCtxFile(ctx, 'f.txt', before);
+          await add(ctx, ['f.txt']);
+          const c1 = await commit(ctx, { message: 'first', author });
+          await writeCtxFile(ctx, 'f.txt', after);
+          await add(ctx, ['f.txt']);
+          const c2 = await commit(ctx, { message: 'second', author });
 
-        // Assert — B-run: run-collapse hides the extra space
-        expect(sut.changes).toHaveLength(0);
-      } finally {
-        await pair.dispose();
-      }
-    });
+          // Act
+          const sut = await diff(ctx, {
+            from: c1.id,
+            to: c2.id,
+            ignoreWhitespace: 'change',
+          });
 
-    // B-tab: tab replaced by space inside line hidden under -b
-    it('Given tab replaced by space (a tab b to a b), When diffing with change mode (-b), Then no diff', async () => {
-      // Arrange
-      const pair = await makePeerPair('ws-btab');
-      try {
-        runGit(['init', '-q', '-b', 'main', pair.peer]);
-        await writePeerFile(pair.peer, 'f.txt', 'a\tb\n');
-        runGit(['-C', pair.peer, 'add', 'f.txt']);
-        gitCommit(pair.peer, 'first');
-        await writePeerFile(pair.peer, 'f.txt', 'a b\n');
-        runGit(['-C', pair.peer, 'add', 'f.txt']);
-        gitCommit(pair.peer, 'second');
-
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await writeCtxFile(ctx, 'f.txt', 'a\tb\n');
-        await add(ctx, ['f.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await writeCtxFile(ctx, 'f.txt', 'a b\n');
-        await add(ctx, ['f.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
-
-        // Act
-        const sut = await diff(ctx, {
-          from: c1.id,
-          to: c2.id,
-          ignoreWhitespace: 'change',
-        });
-
-        // Assert — B-tab: tab and space collapse to one whitespace token under -b
-        expect(sut.changes).toHaveLength(0);
-      } finally {
-        await pair.dispose();
-      }
-    });
+          // Assert — internal whitespace-only edit hides entirely under -b
+          expect(sut.changes).toHaveLength(0);
+        } finally {
+          await pair.dispose();
+        }
+      },
+    );
 
     // EOL1: trailing whitespace dropped under --ignore-space-at-eol
     it('Given trailing spaces removed, When diffing with at-eol mode, Then no diff', async () => {
@@ -1004,38 +982,6 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert — BL-combo: -w makes spaces-only line blank => drop pass fires => file gone
         expect(nameStatusFrom(treeDiff).join('\n')).toBe(liveNs.trim());
         expect(treeDiff.changes).toHaveLength(0);
-      } finally {
-        await pair.dispose();
-      }
-    });
-
-    // C1: -w dominates -b (enum mutual exclusion; 'all' subsumes 'change')
-    it('Given internal space removed (a b to ab), When diffing with all mode, Then result matches all alone (all dominates change)', async () => {
-      // Arrange
-      const pair = await makePeerPair('ws-c1');
-      try {
-        runGit(['init', '-q', '-b', 'main', pair.peer]);
-        await writePeerFile(pair.peer, 'f.txt', 'a b\n');
-        runGit(['-C', pair.peer, 'add', 'f.txt']);
-        gitCommit(pair.peer, 'first');
-        await writePeerFile(pair.peer, 'f.txt', 'ab\n');
-        runGit(['-C', pair.peer, 'add', 'f.txt']);
-        gitCommit(pair.peer, 'second');
-
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await writeCtxFile(ctx, 'f.txt', 'a b\n');
-        await add(ctx, ['f.txt']);
-        const c1 = await commit(ctx, { message: 'first', author });
-        await writeCtxFile(ctx, 'f.txt', 'ab\n');
-        await add(ctx, ['f.txt']);
-        const c2 = await commit(ctx, { message: 'second', author });
-
-        // Act — ignoreWhitespace:'all' dominates 'change'; the enum enforces mutual exclusion
-        const sutAll = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
-
-        // Assert — C1: -w subsumes -b; all => no diff
-        expect(sutAll.changes).toHaveLength(0);
       } finally {
         await pair.dispose();
       }

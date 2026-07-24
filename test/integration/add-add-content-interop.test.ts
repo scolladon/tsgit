@@ -540,188 +540,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    // ── Scenario 9: branch named `feature/x` → rename suffix `f~feature_x` ─
-
-    describe('Given the branch is named feature/x (slash in name)', () => {
-      describe('When a distinct-types conflict occurs on both tools', () => {
-        it('Then the rename suffix flattens the slash: f~feature_x, matching git', async () => {
-          // Arrange
-          const branchName = 'feature/x';
-
-          // Peer: main adds regular `f`, feature/x adds symlink `f`
-          peerWrite('root.txt', 'root\n');
-          peerAdd('root.txt');
-          peerCommit('root');
-          peerBranch(branchName);
-          peerSymlink('fx-target', 'f');
-          peerAdd('f');
-          peerCommit('side-add-link');
-          peerCheckout('main');
-          peerWrite('f', 'regular-main\n');
-          peerAdd('f');
-          peerCommit('main-add-regular');
-
-          // tsgit
-          await oursWrite('root.txt', 'root\n');
-          await repo.add(['root.txt']);
-          await oursCommit('root');
-          // feature/x branch: symlink f
-          await repo.branch.create({ name: branchName });
-          await repo.checkout({ rev: branchName });
-          symlinkSync('fx-target', path.join(pair.ours, 'f'));
-          await repo.add(['f']);
-          await oursCommit('side-add-link');
-          // Checkout main removes `f` (not in main's tree); place regular file directly
-          await repo.checkout({ rev: 'main' });
-          await oursWrite('f', 'regular-main\n');
-          await repo.add(['f']);
-          await oursCommit('main-add-regular');
-
-          // Act
-          const peerResult = peerMergeConflict(branchName);
-          const result = await repo.merge.run({ rev: branchName, message: 'm', author: AUTHOR });
-
-          // Assert — slash flattened to underscore in rename suffix
-          expect(peerResult.ok).toBe(false);
-          expect(result.kind).toBe('conflict');
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
-          // Regular file renamed with flattened suffix f~HEAD (ours is on main/HEAD)
-          const renamedContent = await readFile(path.join(pair.ours, 'f~HEAD'), 'utf8');
-          expect(renamedContent).toBe('regular-main\n');
-          // Symlink at f (theirs' side)
-          const oursLink = readlinkSync(path.join(pair.ours, 'f'));
-          expect(oursLink).toBe('fx-target');
-          // Peer has the same layout
-          expect(() => readlinkSync(path.join(pair.peer, 'f'))).not.toThrow();
-        });
-      });
-    });
-
-    // ── Scenario 10: tracked file at `f~side` → rename goes to `f~side_0` ──
-    //
-    // The REGULAR side is `side` (theirs), so the distinct-types rename label is
-    // `side`. The first probe candidate `f~side` is already occupied as a tracked
-    // file, forcing the probe to increment: `f~side_0`.
-
-    describe('Given the rename target f~side is already tracked in the tree', () => {
-      describe('When a distinct-types conflict occurs on both tools', () => {
-        it('Then the unique-path probe appends _0: f~side_0, matching git', async () => {
-          // Arrange
-          // main: symlink `f` + tracked `f~side`; side: regular `f`
-          // The regular side (side/theirs) gets renamed; probe: f~side → occupied → f~side_0
-          peerWrite('root.txt', 'root\n');
-          peerAdd('root.txt');
-          peerCommit('root');
-          peerBranch('side');
-          peerWrite('f', 'regular-side\n');
-          peerAdd('f');
-          peerCommit('side-add-regular');
-          peerCheckout('main');
-          peerSymlink('sym-target-main', 'f');
-          peerWrite('f~side', 'existing-file\n'); // occupies the first rename target
-          peerAdd('f', 'f~side');
-          peerCommit('main-add-symlink-with-collision');
-
-          // tsgit
-          await oursWrite('root.txt', 'root\n');
-          await repo.add(['root.txt']);
-          await oursCommit('root');
-          // Side branch: regular file f
-          await repo.branch.create({ name: 'side' });
-          await repo.checkout({ rev: 'side' });
-          await oursWrite('f', 'regular-side\n');
-          await repo.add(['f']);
-          await oursCommit('side-add-regular');
-          // Checkout main removes `f`; add symlink f + f~side
-          await repo.checkout({ rev: 'main' });
-          symlinkSync('sym-target-main', path.join(pair.ours, 'f'));
-          await oursWrite('f~side', 'existing-file\n');
-          await repo.add(['f', 'f~side']);
-          await oursCommit('main-add-symlink-with-collision');
-
-          // Act
-          const peerResult = peerMergeConflict('side');
-          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
-
-          // Assert
-          expect(peerResult.ok).toBe(false);
-          expect(result.kind).toBe('conflict');
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
-          // Regular side renamed to f~side_0 (f~side is occupied)
-          const renamedContent = await readFile(path.join(pair.ours, 'f~side_0'), 'utf8');
-          expect(renamedContent).toBe('regular-side\n');
-          // Peer has the same path
-          const peerRenamed = await readFile(path.join(pair.peer, 'f~side_0'), 'utf8');
-          expect(peerRenamed).toBe('regular-side\n');
-          // Symlink stays at f
-          const oursLink = readlinkSync(path.join(pair.ours, 'f'));
-          expect(oursLink).toBe('sym-target-main');
-        });
-      });
-    });
-
-    // ── Scenario 10b: tracked f~HEAD and f~HEAD_0 both occupied → probe f~HEAD_1 ─
-    //
-    // The REGULAR side is ours (HEAD), so the rename label is `HEAD`.
-    // Both `f~HEAD` and `f~HEAD_0` are already tracked in the input trees,
-    // so the probe must reset to the stem each time: f~HEAD → f~HEAD_0 → f~HEAD_1.
-
-    describe('Given f~HEAD and f~HEAD_0 are both already tracked', () => {
-      describe('When a distinct-types conflict occurs on both tools', () => {
-        it('Then the rename probes to f~HEAD_1 matching git', async () => {
-          // Arrange
-          // root: tracks f~HEAD and f~HEAD_0; side branch adds symlink f;
-          // main adds regular f (ours is regular → renamed with label HEAD).
-          peerWrite('f~HEAD', 'occupied-a\n');
-          peerWrite('f~HEAD_0', 'occupied-b\n');
-          peerWrite('root.txt', 'root\n');
-          peerAdd('f~HEAD', 'f~HEAD_0', 'root.txt');
-          peerCommit('root');
-          peerBranch('side');
-          peerSymlink('sym-target', 'f');
-          peerAdd('f');
-          peerCommit('side-add-symlink');
-          peerCheckout('main');
-          peerWrite('f', 'regular-main\n');
-          peerAdd('f');
-          peerCommit('main-add-regular');
-
-          // tsgit
-          await oursWrite('f~HEAD', 'occupied-a\n');
-          await oursWrite('f~HEAD_0', 'occupied-b\n');
-          await oursWrite('root.txt', 'root\n');
-          await repo.add(['f~HEAD', 'f~HEAD_0', 'root.txt']);
-          await oursCommit('root');
-          await repo.branch.create({ name: 'side' });
-          await repo.checkout({ rev: 'side' });
-          symlinkSync('sym-target', path.join(pair.ours, 'f'));
-          await repo.add(['f']);
-          await oursCommit('side-add-symlink');
-          await repo.checkout({ rev: 'main' });
-          await oursWrite('f', 'regular-main\n');
-          await repo.add(['f']);
-          await oursCommit('main-add-regular');
-
-          // Act
-          const peerResult = peerMergeConflict('side');
-          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
-
-          // Assert
-          expect(peerResult.ok).toBe(false);
-          expect(result.kind).toBe('conflict');
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
-          // Regular (ours) renamed to f~HEAD_1 — both f~HEAD and f~HEAD_0 were occupied
-          const oursRenamed = await readFile(path.join(pair.ours, 'f~HEAD_1'), 'utf8');
-          expect(oursRenamed).toBe('regular-main\n');
-          const peerRenamed = await readFile(path.join(pair.peer, 'f~HEAD_1'), 'utf8');
-          expect(peerRenamed).toBe('regular-main\n');
-          // Symlink at f (theirs' side)
-          const oursLink = readlinkSync(path.join(pair.ours, 'f'));
-          expect(oursLink).toBe('sym-target');
-        });
-      });
-    });
-
     // ── Scenario 11: untracked file at rename target → both tools refuse ────
     //
     // The REGULAR side is `side` (theirs) so the rename label is `side`.
@@ -795,21 +613,176 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    // ── Scenario 12: distinct-types via cherry-pick → f~<abbrev> (<subject>) ─
+    // ── Scenario 9/10/10b/12: distinct-types rename-suffix probing ─────────
     //
-    // In cherry-pick, `theirs` is the cherry-picked commit (label = `<abbrev>
-    // (<subject>)`). When the cherry-picked commit's `f` is REGULAR and HEAD's
-    // `f` is a SYMLINK, the regular side (theirs) gets renamed to
-    // `f~<abbrev> (<subject>)` — the cherry-pick label suffix.
+    // Each row pins a distinct rename-suffix rule: a slash in the branch name
+    // — the regular side here is ours/HEAD, so the label is `HEAD`, not the
+    // branch name; an occupied `f~side` probes to `f~side_0`; both `f~HEAD`
+    // and `f~HEAD_0` occupied probes to `f~HEAD_1`; and reaching the same
+    // distinct-types conflict via cherry-pick renames to the cherry-pick
+    // label `f~<abbrev> (<subject>)`.
 
-    describe('Given a cherry-pick produces a distinct-types conflict', () => {
-      describe('When cherry-pick runs on both tools', () => {
-        it('Then the rename suffix is f~<7-char-abbrev> (<subject>) matching git', async () => {
-          // Arrange
-          // main: symlink `f`; feature: regular `f`.
+    type RenameSuffixOutcome = {
+      readonly peerOk: boolean;
+      readonly kind: string;
+      readonly expectedSuffix: string;
+      readonly expectedContent: string;
+      readonly expectedLinkTarget: string;
+      readonly checkPeerRenamedContent: boolean;
+      readonly peerLinkCheck: 'value' | 'exists' | 'none';
+    };
+
+    const RENAME_SUFFIX_CASES: ReadonlyArray<{
+      label: string;
+      run: () => Promise<RenameSuffixOutcome>;
+    }> = [
+      {
+        label: 'branch name has a slash (feature/x); the regular side is ours, renamed f~HEAD',
+        run: async () => {
+          // Arrange — main adds regular `f`, feature/x adds symlink `f`
+          const branchName = 'feature/x';
+          peerWrite('root.txt', 'root\n');
+          peerAdd('root.txt');
+          peerCommit('root');
+          peerBranch(branchName);
+          peerSymlink('fx-target', 'f');
+          peerAdd('f');
+          peerCommit('side-add-link');
+          peerCheckout('main');
+          peerWrite('f', 'regular-main\n');
+          peerAdd('f');
+          peerCommit('main-add-regular');
+
+          await oursWrite('root.txt', 'root\n');
+          await repo.add(['root.txt']);
+          await oursCommit('root');
+          await repo.branch.create({ name: branchName });
+          await repo.checkout({ rev: branchName });
+          symlinkSync('fx-target', path.join(pair.ours, 'f'));
+          await repo.add(['f']);
+          await oursCommit('side-add-link');
+          await repo.checkout({ rev: 'main' });
+          await oursWrite('f', 'regular-main\n');
+          await repo.add(['f']);
+          await oursCommit('main-add-regular');
+
+          // Act
+          const peerResult = peerMergeConflict(branchName);
+          const result = await repo.merge.run({ rev: branchName, message: 'm', author: AUTHOR });
+
+          return {
+            peerOk: peerResult.ok,
+            kind: result.kind,
+            expectedSuffix: 'f~HEAD',
+            expectedContent: 'regular-main\n',
+            expectedLinkTarget: 'fx-target',
+            checkPeerRenamedContent: false,
+            peerLinkCheck: 'exists',
+          };
+        },
+      },
+      {
+        label: 'f~side is already tracked; the unique-path probe appends _0',
+        run: async () => {
+          // Arrange — main: symlink `f` + tracked `f~side`; side: regular `f`.
+          // The regular side (side/theirs) gets renamed; probe: f~side → occupied → f~side_0
+          peerWrite('root.txt', 'root\n');
+          peerAdd('root.txt');
+          peerCommit('root');
+          peerBranch('side');
+          peerWrite('f', 'regular-side\n');
+          peerAdd('f');
+          peerCommit('side-add-regular');
+          peerCheckout('main');
+          peerSymlink('sym-target-main', 'f');
+          peerWrite('f~side', 'existing-file\n'); // occupies the first rename target
+          peerAdd('f', 'f~side');
+          peerCommit('main-add-symlink-with-collision');
+
+          await oursWrite('root.txt', 'root\n');
+          await repo.add(['root.txt']);
+          await oursCommit('root');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          await oursWrite('f', 'regular-side\n');
+          await repo.add(['f']);
+          await oursCommit('side-add-regular');
+          await repo.checkout({ rev: 'main' });
+          symlinkSync('sym-target-main', path.join(pair.ours, 'f'));
+          await oursWrite('f~side', 'existing-file\n');
+          await repo.add(['f', 'f~side']);
+          await oursCommit('main-add-symlink-with-collision');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          return {
+            peerOk: peerResult.ok,
+            kind: result.kind,
+            expectedSuffix: 'f~side_0',
+            expectedContent: 'regular-side\n',
+            expectedLinkTarget: 'sym-target-main',
+            checkPeerRenamedContent: true,
+            peerLinkCheck: 'none',
+          };
+        },
+      },
+      {
+        label: 'f~HEAD and f~HEAD_0 are both already tracked; the probe reaches f~HEAD_1',
+        run: async () => {
+          // Arrange — root: tracks f~HEAD and f~HEAD_0; side branch adds symlink f;
+          // main adds regular f (ours is regular → renamed with label HEAD).
+          peerWrite('f~HEAD', 'occupied-a\n');
+          peerWrite('f~HEAD_0', 'occupied-b\n');
+          peerWrite('root.txt', 'root\n');
+          peerAdd('f~HEAD', 'f~HEAD_0', 'root.txt');
+          peerCommit('root');
+          peerBranch('side');
+          peerSymlink('sym-target', 'f');
+          peerAdd('f');
+          peerCommit('side-add-symlink');
+          peerCheckout('main');
+          peerWrite('f', 'regular-main\n');
+          peerAdd('f');
+          peerCommit('main-add-regular');
+
+          await oursWrite('f~HEAD', 'occupied-a\n');
+          await oursWrite('f~HEAD_0', 'occupied-b\n');
+          await oursWrite('root.txt', 'root\n');
+          await repo.add(['f~HEAD', 'f~HEAD_0', 'root.txt']);
+          await oursCommit('root');
+          await repo.branch.create({ name: 'side' });
+          await repo.checkout({ rev: 'side' });
+          symlinkSync('sym-target', path.join(pair.ours, 'f'));
+          await repo.add(['f']);
+          await oursCommit('side-add-symlink');
+          await repo.checkout({ rev: 'main' });
+          await oursWrite('f', 'regular-main\n');
+          await repo.add(['f']);
+          await oursCommit('main-add-regular');
+
+          // Act
+          const peerResult = peerMergeConflict('side');
+          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+
+          return {
+            peerOk: peerResult.ok,
+            kind: result.kind,
+            expectedSuffix: 'f~HEAD_1',
+            expectedContent: 'regular-main\n',
+            expectedLinkTarget: 'sym-target',
+            checkPeerRenamedContent: true,
+            peerLinkCheck: 'none',
+          };
+        },
+      },
+      {
+        label:
+          'the same distinct-types conflict reached via cherry-pick renames to the cherry-pick label',
+        run: async () => {
+          // Arrange — main: symlink `f`; feature: regular `f`.
           // Cherry-pick feature onto main → distinct-types, regular (theirs) renamed.
-
-          // Peer
           peerWrite('root.txt', 'root\n');
           peerAdd('root.txt');
           peerCommit('root');
@@ -825,23 +798,19 @@ describe.skipIf(!GIT_AVAILABLE)(
           const featureOid = runGit(['-C', pair.peer, 'rev-parse', 'feature']).trim();
           const abbrev = featureOid.slice(0, 7);
           const expectedSuffix = `f~${abbrev} (add regular f)`;
-          // Peer cherry-pick (conflicts expected)
           const peerPickResult = tryRunGit(
             ['-C', pair.peer, '-c', 'core.editor=true', 'cherry-pick', featureOid],
             { env: COMMIT_ENV },
           );
 
-          // tsgit
           await oursWrite('root.txt', 'root\n');
           await repo.add(['root.txt']);
           await oursCommit('root');
-          // Feature branch: regular file f
           await repo.branch.create({ name: 'feature' });
           await repo.checkout({ rev: 'feature' });
           await oursWrite('f', 'regular-feature\n');
           await repo.add(['f']);
           await oursCommit('add regular f');
-          // Checkout main removes `f`; place symlink directly
           await repo.checkout({ rev: 'main' });
           symlinkSync('link-target', path.join(pair.ours, 'f'));
           await repo.add(['f']);
@@ -850,22 +819,51 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Act — cherry-pick the feature commit onto main
           const pickResult = await repo.cherryPick.run({ commits: ['feature'] });
 
-          // Assert — both tools conflict
-          expect(peerPickResult.ok).toBe(false);
-          expect(pickResult.kind).toBe('conflict');
-          // Stages must match
+          return {
+            peerOk: peerPickResult.ok,
+            kind: pickResult.kind,
+            expectedSuffix,
+            expectedContent: 'regular-feature\n',
+            expectedLinkTarget: 'link-target',
+            checkPeerRenamedContent: true,
+            peerLinkCheck: 'value',
+          };
+        },
+      },
+    ];
+
+    describe('Given a distinct-types conflict resolved by a rename-suffix probe', () => {
+      describe('When the conflict is reached on both tools', () => {
+        it.each(RENAME_SUFFIX_CASES)('Then $label, matching git', async ({ run }) => {
+          // Act
+          const {
+            peerOk,
+            kind,
+            expectedSuffix,
+            expectedContent,
+            expectedLinkTarget,
+            checkPeerRenamedContent,
+            peerLinkCheck,
+          } = await run();
+
+          // Assert
+          expect(peerOk).toBe(false);
+          expect(kind).toBe('conflict');
           expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
-          // tsgit: regular at f~<abbrev> (<subject>)
           const oursRenamed = await readFile(path.join(pair.ours, expectedSuffix), 'utf8');
-          expect(oursRenamed).toBe('regular-feature\n');
-          // Peer: same rename path
-          const peerRenamed = await readFile(path.join(pair.peer, expectedSuffix), 'utf8');
-          expect(peerRenamed).toBe('regular-feature\n');
-          // Symlink at f on both
+          expect(oursRenamed).toBe(expectedContent);
+          if (checkPeerRenamedContent) {
+            const peerRenamed = await readFile(path.join(pair.peer, expectedSuffix), 'utf8');
+            expect(peerRenamed).toBe(expectedContent);
+          }
           const oursLink = readlinkSync(path.join(pair.ours, 'f'));
-          const peerLink = readlinkSync(path.join(pair.peer, 'f'));
-          expect(oursLink).toBe('link-target');
-          expect(peerLink).toBe('link-target');
+          expect(oursLink).toBe(expectedLinkTarget);
+          if (peerLinkCheck === 'value') {
+            const peerLink = readlinkSync(path.join(pair.peer, 'f'));
+            expect(peerLink).toBe(expectedLinkTarget);
+          } else if (peerLinkCheck === 'exists') {
+            expect(() => readlinkSync(path.join(pair.peer, 'f'))).not.toThrow();
+          }
         });
       });
     });

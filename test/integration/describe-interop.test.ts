@@ -105,8 +105,31 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     await rm(rich, { recursive: true, force: true });
   });
 
-  it('Then the nearest-tag line matches git describe', async () => {
-    expect(render(await describeCmd(richCtx))).toBe(gitDescribe(rich));
+  const DESCRIBE_FLAG_MATRIX: ReadonlyArray<{
+    label: string;
+    run: () => Promise<DescribeResult>;
+    gitArgs: () => readonly string[];
+  }> = [
+    { label: 'the nearest tag (no flags)', run: () => describeCmd(richCtx), gitArgs: () => [] },
+    {
+      label: 'a --match filter',
+      run: () => describeCmd(richCtx, undefined, { match: 'v*' }),
+      gitArgs: () => ['--match', 'v*'],
+    },
+    {
+      label: '--tags',
+      run: () => describeCmd(richCtx, undefined, { tags: true }),
+      gitArgs: () => ['--tags'],
+    },
+    {
+      label: '--all on a branch commit',
+      run: () => describeCmd(richCtx, c2, { all: true }),
+      gitArgs: () => ['--all', c2],
+    },
+  ];
+
+  it.each(DESCRIBE_FLAG_MATRIX)('Then $label matches git describe', async ({ run, gitArgs }) => {
+    expect(render(await run())).toBe(gitDescribe(rich, ...gitArgs()));
   });
 
   it('Then the --long line matches git describe --long', async () => {
@@ -117,24 +140,6 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     const sut = await describeCmd(richCtx, c1);
     expect(sut.exact).toBe(true);
     expect(render(sut)).toBe(gitDescribe(rich, c1));
-  });
-
-  it('Then a --match filter matches git describe --match', async () => {
-    expect(render(await describeCmd(richCtx, undefined, { match: 'v*' }))).toBe(
-      gitDescribe(rich, '--match', 'v*'),
-    );
-  });
-
-  it('Then --tags reconstructs git describe --tags', async () => {
-    expect(render(await describeCmd(richCtx, undefined, { tags: true }))).toBe(
-      gitDescribe(rich, '--tags'),
-    );
-  });
-
-  it('Then --all on a branch commit matches git describe --all', async () => {
-    expect(render(await describeCmd(richCtx, c2, { all: true }))).toBe(
-      gitDescribe(rich, '--all', c2),
-    );
   });
 
   it('Then exactMatch on an untagged HEAD co-refuses with git', async () => {
@@ -341,93 +346,98 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     });
   });
 
-  describe('Given a tagged HEAD with --dirty', () => {
-    let dir = '';
-    let ctx: Context;
+  interface DirtyStateFixture {
+    readonly dir: string;
+    readonly ctx: Context;
+  }
 
-    beforeAll(async () => {
-      dir = await makeRepo('dirty');
-      ctx = createNodeContext({ workDir: dir });
-      await commitFile(dir, 'c1');
-      annotate(dir, 'v1.0', clock + 30);
-    }, SETUP_TIMEOUT);
-
-    afterAll(async () => {
-      await rm(dir, { recursive: true, force: true });
-    });
-
-    it('Then a clean tree has no dirty mark', async () => {
-      expect(render(await describeCmd(ctx, undefined, { dirty: true }))).toBe(
-        gitDescribe(dir, '--dirty'),
-      );
-    });
-
-    it('Then a tracked change reconstructs git describe --dirty', async () => {
-      await writeFile(path.join(dir, 'c1.txt'), 'changed\n');
-      const sut = await describeCmd(ctx, undefined, { dirty: true });
-      expect(sut.dirty).toBe(true);
-      expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
-    });
-  });
-
-  describe('Given a tagged HEAD with a staged-only change and --dirty', () => {
-    let dir = '';
-    let ctx: Context;
-
-    beforeAll(async () => {
-      dir = await makeRepo('staged-dirty');
-      ctx = createNodeContext({ workDir: dir });
-      await commitFile(dir, 'c1');
-      annotate(dir, 'v1.0', clock + 30);
-    }, SETUP_TIMEOUT);
-
-    afterAll(async () => {
-      await rm(dir, { recursive: true, force: true });
-    });
-
-    it('Then a staged change reconstructs git describe --dirty', async () => {
+  const DIRTY_STATE_MATRIX: ReadonlyArray<{
+    label: string;
+    expectedDirty: boolean;
+    build: () => Promise<DirtyStateFixture>;
+  }> = [
+    {
+      label: 'a clean tree has no dirty mark',
+      expectedDirty: false,
+      build: async () => {
+        const dir = await makeRepo('dirty-clean');
+        const ctx = createNodeContext({ workDir: dir });
+        await commitFile(dir, 'c1');
+        annotate(dir, 'v1.0', clock + 30);
+        return { dir, ctx };
+      },
+    },
+    {
+      label: 'a tracked change reconstructs git describe --dirty',
+      expectedDirty: true,
+      build: async () => {
+        const dir = await makeRepo('dirty-tracked');
+        const ctx = createNodeContext({ workDir: dir });
+        await commitFile(dir, 'c1');
+        annotate(dir, 'v1.0', clock + 30);
+        await writeFile(path.join(dir, 'c1.txt'), 'changed\n');
+        return { dir, ctx };
+      },
+    },
+    {
       // Stage (not just touch) the change — the working tree matches the index, so
       // only the staged column is dirty. git's `--dirty` (diff-index HEAD) agrees.
-      await writeFile(path.join(dir, 'c1.txt'), 'changed\n');
-      git(dir, 'add', 'c1.txt');
-      const sut = await describeCmd(ctx, undefined, { dirty: true });
-      expect(sut.dirty).toBe(true);
-      expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
-    });
-  });
-
-  describe('Given a conflicted index (mid-merge) with --dirty', () => {
-    let dir = '';
-    let ctx: Context;
-
-    beforeAll(async () => {
-      dir = await makeRepo('conflict-dirty');
-      ctx = createNodeContext({ workDir: dir });
-      await writeFile(path.join(dir, 'f.txt'), 'shared\n');
-      git(dir, 'add', '-A');
-      runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: datedEnv(clock) });
-      annotate(dir, 'v1.0', clock + 30);
-      git(dir, 'checkout', '-q', '-b', 'feature');
-      await writeFile(path.join(dir, 'f.txt'), 'theirs\n');
-      git(dir, 'add', '-A');
-      runGit(['-C', dir, 'commit', '-q', '-m', 'feature'], { env: datedEnv(clock + 60) });
-      git(dir, 'checkout', '-q', 'main');
-      await writeFile(path.join(dir, 'f.txt'), 'ours\n');
-      git(dir, 'add', '-A');
-      runGit(['-C', dir, 'commit', '-q', '-m', 'on-main'], { env: datedEnv(clock + 120) });
-      tryRunGit(['-C', dir, 'merge', 'feature'], { env: datedEnv(clock + 180) });
-    }, SETUP_TIMEOUT);
-
-    afterAll(async () => {
-      await rm(dir, { recursive: true, force: true });
-    });
-
-    it('Then the conflicted index reconstructs git describe --dirty', async () => {
+      label: 'a staged-only change reconstructs git describe --dirty',
+      expectedDirty: true,
+      build: async () => {
+        const dir = await makeRepo('dirty-staged');
+        const ctx = createNodeContext({ workDir: dir });
+        await commitFile(dir, 'c1');
+        annotate(dir, 'v1.0', clock + 30);
+        await writeFile(path.join(dir, 'c1.txt'), 'changed\n');
+        git(dir, 'add', 'c1.txt');
+        return { dir, ctx };
+      },
+    },
+    {
       // A mid-merge index (stage 1/2/3 entries) is dirty per git's diff-index HEAD,
       // even though no path appears in the staged or working-tree columns.
-      const sut = await describeCmd(ctx, undefined, { dirty: true });
-      expect(sut.dirty).toBe(true);
-      expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
-    });
+      label: 'a conflicted (mid-merge) index reconstructs git describe --dirty',
+      expectedDirty: true,
+      build: async () => {
+        const dir = await makeRepo('dirty-conflict');
+        const ctx = createNodeContext({ workDir: dir });
+        await writeFile(path.join(dir, 'f.txt'), 'shared\n');
+        git(dir, 'add', '-A');
+        runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env: datedEnv(clock) });
+        annotate(dir, 'v1.0', clock + 30);
+        git(dir, 'checkout', '-q', '-b', 'feature');
+        await writeFile(path.join(dir, 'f.txt'), 'theirs\n');
+        git(dir, 'add', '-A');
+        runGit(['-C', dir, 'commit', '-q', '-m', 'feature'], { env: datedEnv(clock + 60) });
+        git(dir, 'checkout', '-q', 'main');
+        await writeFile(path.join(dir, 'f.txt'), 'ours\n');
+        git(dir, 'add', '-A');
+        runGit(['-C', dir, 'commit', '-q', '-m', 'on-main'], { env: datedEnv(clock + 120) });
+        tryRunGit(['-C', dir, 'merge', 'feature'], { env: datedEnv(clock + 180) });
+        return { dir, ctx };
+      },
+    },
+  ];
+
+  describe('Given a repository state that determines the --dirty mark', () => {
+    it.each(DIRTY_STATE_MATRIX)(
+      'Then $label',
+      async ({ expectedDirty, build }) => {
+        // Arrange
+        const { dir, ctx } = await build();
+        try {
+          // Act
+          const sut = await describeCmd(ctx, undefined, { dirty: true });
+
+          // Assert
+          expect(sut.dirty).toBe(expectedDirty);
+          expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      },
+      SETUP_TIMEOUT,
+    );
   });
 });

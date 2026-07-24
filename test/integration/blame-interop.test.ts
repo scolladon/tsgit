@@ -234,61 +234,81 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     );
   });
 
-  it('Then linear history reconstructs git blame --porcelain', async () => {
-    expect(renderPorcelain(await blame(linear.ctx, 'f.txt'))).toBe(
-      gitPorcelain(linear.dir, 'f.txt'),
-    );
-  });
+  interface BlameScenario {
+    readonly label: string;
+    readonly fixture: () => { dir: string; ctx: Context };
+    readonly file: string;
+    readonly worktreeMode?: boolean;
+    readonly range?: { start: number; end: number };
+  }
 
-  it('Then a prepend shift reconstructs git blame --porcelain', async () => {
-    expect(renderPorcelain(await blame(prepend.ctx, 'f.txt'))).toBe(
-      gitPorcelain(prepend.dir, 'f.txt'),
-    );
-  });
+  // Every row reconstructs `git blame --porcelain` from tsgit's structured
+  // `BlameResult` and byte-compares; the fixture, target file, `-L` range, and
+  // HEAD-vs-worktree mode vary per row (ADR-approved: the consuming git args
+  // ride along with the fixture, same journey/oracle throughout).
+  const BLAME_PORCELAIN_MATRIX: ReadonlyArray<BlameScenario> = [
+    { label: 'linear history', fixture: () => linear, file: 'f.txt' },
+    { label: 'a prepend shift', fixture: () => prepend, file: 'f.txt' },
+    { label: 'a clean merge', fixture: () => merged, file: 'f.txt' },
+    { label: 'a followed rename', fixture: () => renamed, file: 'renamed.txt' },
+    {
+      label: 'an -L range',
+      fixture: () => linear,
+      file: 'f.txt',
+      range: { start: 2, end: 3 },
+    },
+    {
+      label: 'a dirty working tree (bare)',
+      fixture: () => worktree,
+      file: 'f.txt',
+      worktreeMode: true,
+    },
+    {
+      label: 'a staged-new file (bare)',
+      fixture: () => worktree,
+      file: 'staged.txt',
+      worktreeMode: true,
+    },
+    {
+      label: 'a worktree -L range spanning committed and uncommitted lines',
+      fixture: () => worktree,
+      file: 'f.txt',
+      worktreeMode: true,
+      range: { start: 1, end: 2 },
+    },
+    {
+      label: 'an unchanged file across deep ancestry',
+      fixture: () => deepAncestry,
+      file: 'stable.txt',
+    },
+    {
+      label: 'a -s ours first-parent-TREESAME merge',
+      fixture: () => oursMerge,
+      file: 'f.txt',
+    },
+  ];
 
-  it('Then a clean merge reconstructs git blame --porcelain', async () => {
-    expect(renderPorcelain(await blame(merged.ctx, 'f.txt'))).toBe(
-      gitPorcelain(merged.dir, 'f.txt'),
-    );
-  });
+  it.each(BLAME_PORCELAIN_MATRIX)(
+    'Then $label reconstructs git blame --porcelain',
+    async ({ fixture, file, worktreeMode, range }) => {
+      // Arrange
+      const { dir, ctx } = fixture();
+      const gitArgs = range ? ['-L', `${range.start},${range.end}`] : [];
 
-  it('Then a followed rename reconstructs git blame --porcelain', async () => {
-    expect(renderPorcelain(await blame(renamed.ctx, 'renamed.txt'))).toBe(
-      gitPorcelain(renamed.dir, 'renamed.txt'),
-    );
-  });
+      // Act
+      const ours = renderPorcelain(
+        await blame(ctx, file, {
+          ...(worktreeMode ? { worktree: true } : {}),
+          ...(range ? { range } : {}),
+        }),
+      );
 
-  it('Then an -L range reconstructs git blame --porcelain -L', async () => {
-    const ours = renderPorcelain(await blame(linear.ctx, 'f.txt', { range: { start: 2, end: 3 } }));
-    expect(ours).toBe(gitPorcelain(linear.dir, 'f.txt', '-L', '2,3'));
-  });
-
-  it('Then a dirty working tree reconstructs bare git blame --porcelain', async () => {
-    const ours = renderPorcelain(await blame(worktree.ctx, 'f.txt', { worktree: true }));
-    expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(worktree.dir, 'f.txt')));
-  });
-
-  it('Then a staged-new file reconstructs bare git blame --porcelain', async () => {
-    const ours = renderPorcelain(await blame(worktree.ctx, 'staged.txt', { worktree: true }));
-    expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(worktree.dir, 'staged.txt')));
-  });
-
-  it('Then a worktree -L range spanning committed and uncommitted lines reconstructs git blame', async () => {
-    const ours = renderPorcelain(
-      await blame(worktree.ctx, 'f.txt', { worktree: true, range: { start: 1, end: 2 } }),
-    );
-    expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(worktree.dir, 'f.txt', '-L', '1,2')));
-  });
-
-  it('Then an unchanged file across deep ancestry reconstructs git blame --porcelain', async () => {
-    expect(renderPorcelain(await blame(deepAncestry.ctx, 'stable.txt'))).toBe(
-      gitPorcelain(deepAncestry.dir, 'stable.txt'),
-    );
-  });
-
-  it('Then a -s ours first-parent-TREESAME merge reconstructs git blame --porcelain', async () => {
-    expect(renderPorcelain(await blame(oursMerge.ctx, 'f.txt'))).toBe(
-      gitPorcelain(oursMerge.dir, 'f.txt'),
-    );
-  });
+      // Assert
+      if (worktreeMode) {
+        expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(dir, file, ...gitArgs)));
+      } else {
+        expect(ours).toBe(gitPorcelain(dir, file, ...gitArgs));
+      }
+    },
+  );
 });

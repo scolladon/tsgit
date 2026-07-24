@@ -332,83 +332,49 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
   });
 
   describe('Given a linear history rebased interactively', () => {
-    it('Then dropping a commit matches git: resulting tree + commit count', async () => {
-      // Arrange — identical history; git drops c2 via the scripted todo
-      buildInteractiveLinear(pair.peer);
-      buildInteractiveLinear(pair.ours);
-      gitRebaseInteractive(pair.peer, 's/^pick (.*c2 subject)/drop $1/');
-      const base = oidAt(pair.ours, 'HEAD~3');
-      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
-      const repo = await openRepository({ cwd: pair.ours });
+    const REBASE_TODO_MATRIX: ReadonlyArray<{
+      label: string;
+      action: 'drop' | 'squash' | 'fixup';
+      target: 'c2' | 'c3';
+    }> = [
+      { label: 'dropping a commit', action: 'drop', target: 'c2' },
+      { label: 'squashing a commit', action: 'squash', target: 'c3' },
+      { label: 'fixing up a commit', action: 'fixup', target: 'c3' },
+    ];
 
-      // Act
-      const result = await repo.rebase.run({
-        upstream: base,
-        interactive: [
-          { action: 'pick', oid: c1 as string },
-          { action: 'drop', oid: c2 as string },
-          { action: 'pick', oid: c3 as string },
-        ],
-      });
-      await repo.dispose();
+    it.each(REBASE_TODO_MATRIX)(
+      'Then $label matches git: resulting tree + commit count',
+      async ({ action, target }) => {
+        // Arrange — identical history; git applies the scripted todo action
+        buildInteractiveLinear(pair.peer);
+        buildInteractiveLinear(pair.ours);
+        gitRebaseInteractive(pair.peer, `s/^pick (.*${target} subject)/${action} $1/`);
+        const base = oidAt(pair.ours, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        const repo = await openRepository({ cwd: pair.ours });
+        const todo =
+          target === 'c2'
+            ? [
+                { action: 'pick' as const, oid: c1 as string },
+                { action, oid: c2 as string },
+                { action: 'pick' as const, oid: c3 as string },
+              ]
+            : [
+                { action: 'pick' as const, oid: c1 as string },
+                { action: 'pick' as const, oid: c2 as string },
+                { action, oid: c3 as string },
+              ];
 
-      // Assert
-      expect(result.kind).toBe('rebased');
-      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
-      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
-    });
+        // Act
+        const result = await repo.rebase.run({ upstream: base, interactive: todo });
+        await repo.dispose();
 
-    it('Then squashing a commit matches git: resulting tree + commit count', async () => {
-      // Arrange
-      buildInteractiveLinear(pair.peer);
-      buildInteractiveLinear(pair.ours);
-      gitRebaseInteractive(pair.peer, 's/^pick (.*c3 subject)/squash $1/');
-      const base = oidAt(pair.ours, 'HEAD~3');
-      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
-      const repo = await openRepository({ cwd: pair.ours });
-
-      // Act — squash c3 into c2 (default combined message on both)
-      const result = await repo.rebase.run({
-        upstream: base,
-        interactive: [
-          { action: 'pick', oid: c1 as string },
-          { action: 'pick', oid: c2 as string },
-          { action: 'squash', oid: c3 as string },
-        ],
-      });
-      await repo.dispose();
-
-      // Assert
-      expect(result.kind).toBe('rebased');
-      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
-      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
-    });
-
-    it('Then fixing up a commit matches git: resulting tree + commit count', async () => {
-      // Arrange
-      buildInteractiveLinear(pair.peer);
-      buildInteractiveLinear(pair.ours);
-      gitRebaseInteractive(pair.peer, 's/^pick (.*c3 subject)/fixup $1/');
-      const base = oidAt(pair.ours, 'HEAD~3');
-      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
-      const repo = await openRepository({ cwd: pair.ours });
-
-      // Act
-      const result = await repo.rebase.run({
-        upstream: base,
-        interactive: [
-          { action: 'pick', oid: c1 as string },
-          { action: 'pick', oid: c2 as string },
-          { action: 'fixup', oid: c3 as string },
-        ],
-      });
-      await repo.dispose();
-
-      // Assert
-      expect(result.kind).toBe('rebased');
-      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
-      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
-    });
+        // Assert
+        expect(result.kind).toBe('rebased');
+        expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+        expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+      },
+    );
 
     it('Then an all-pick edit is a byte-identical no-op (HEAD oid unchanged)', async () => {
       // Arrange — both repos identical; git rebases -i with no edits

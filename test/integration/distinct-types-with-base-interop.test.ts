@@ -247,171 +247,100 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    // ── S1: base=file, ours=file, theirs=symlink ─────────────────────────────
+    // ── S1–S4: stage-1 rename-target family ───────────────────────────────────
     //
-    // Regular side (ours) is renamed to p~HEAD; symlink (theirs) stays at p.
-    // Stage 1 (base, regular) travels with the regular renamed side → p~HEAD.
-    // Expected index: 120000 <theirs> 3 p  |  100644 <base> 1 p~HEAD  |  100644 <ours> 2 p~HEAD
+    // Whichever of ours/theirs is NOT a symlink is the "regular side" and gets
+    // renamed to make room for the surviving symlink at p. The renamed path is
+    // p~HEAD when ours holds the regular file, p~side (the branch label) when
+    // theirs does. Same journey, same oracle shape, differing only by the
+    // base/ours/theirs kind assignment and the resulting rename target.
 
-    describe('Given base=file, ours=file, theirs=symlink (S1)', () => {
+    const STAGE1_RENAME_TARGET_ROWS: ReadonlyArray<{
+      readonly label: string;
+      readonly base: KindSpec;
+      readonly ours: KindSpec;
+      readonly theirs: KindSpec;
+      readonly expectedSymlinkTarget: string;
+      readonly renamedPath: string;
+      readonly expectedRegularContent: string;
+    }> = [
+      {
+        label: 'base=file, ours=file, theirs=symlink (S1)',
+        base: { kind: 'file', bytes: 'base\n' },
+        ours: { kind: 'file', bytes: 'ours\n' },
+        theirs: { kind: 'symlink', target: 'target-b' },
+        expectedSymlinkTarget: 'target-b',
+        renamedPath: 'p~HEAD',
+        expectedRegularContent: 'ours\n',
+      },
+      {
+        label: 'base=file, ours=symlink, theirs=file (S2)',
+        base: { kind: 'file', bytes: 'base\n' },
+        ours: { kind: 'symlink', target: 'target-a' },
+        theirs: { kind: 'file', bytes: 'theirs\n' },
+        expectedSymlinkTarget: 'target-a',
+        renamedPath: 'p~side',
+        expectedRegularContent: 'theirs\n',
+      },
+      {
+        label: 'base=symlink, ours=symlink, theirs=file (S3)',
+        base: { kind: 'symlink', target: 'base-target' },
+        ours: { kind: 'symlink', target: 'ours-target' },
+        theirs: { kind: 'file', bytes: 'theirs\n' },
+        expectedSymlinkTarget: 'ours-target',
+        renamedPath: 'p~side',
+        expectedRegularContent: 'theirs\n',
+      },
+      {
+        label: 'base=symlink, ours=file, theirs=symlink (S4)',
+        base: { kind: 'symlink', target: 'base-target' },
+        ours: { kind: 'file', bytes: 'ours\n' },
+        theirs: { kind: 'symlink', target: 'theirs-target' },
+        expectedSymlinkTarget: 'theirs-target',
+        renamedPath: 'p~HEAD',
+        expectedRegularContent: 'ours\n',
+      },
+    ];
+
+    describe('Given a with-base distinct-types conflict whose regular side needs a stage-1 rename', () => {
       describe('When both tools merge', () => {
-        it('Then index stage-1 is at p~HEAD (regular kind) matching git, and working tree matches', async () => {
-          // Arrange
-          await setupWithBase({
-            base: { kind: 'file', bytes: 'base\n' },
-            ours: { kind: 'file', bytes: 'ours\n' },
-            theirs: { kind: 'symlink', target: 'target-b' },
-          });
+        it.each(STAGE1_RENAME_TARGET_ROWS)(
+          'Then index stage-1 is at the renamed path matching git, and working tree matches ($label)',
+          async ({
+            base,
+            ours,
+            theirs,
+            expectedSymlinkTarget,
+            renamedPath,
+            expectedRegularContent,
+          }) => {
+            // Arrange
+            await setupWithBase({ base, ours, theirs });
 
-          // Act
-          const peerResult = peerMergeConflict('side');
-          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
+            // Act
+            const peerResult = peerMergeConflict('side');
+            const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
 
-          // Assert — both tools report conflict
-          expect(peerResult.ok).toBe(false);
-          expect(result.kind).toBe('conflict');
+            // Assert — both tools report conflict
+            expect(peerResult.ok).toBe(false);
+            expect(result.kind).toBe('conflict');
 
-          // Index parity — stage-1 at p~HEAD pins byte-for-byte
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+            // Index parity — stage-1 rename target pins byte-for-byte
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
 
-          // Working tree: p is a symlink to target-b on both
-          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
-          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
-          expect(oursLink).toBe(peerLink);
-          expect(oursLink).toBe('target-b');
+            // Working tree: p is the pinned symlink target on both
+            const oursLink = readlinkSync(path.join(pair.ours, 'p'));
+            const peerLink = readlinkSync(path.join(pair.peer, 'p'));
+            expect(oursLink).toBe(peerLink);
+            expect(oursLink).toBe(expectedSymlinkTarget);
 
-          // Working tree: p~HEAD is the regular file on both
-          const oursRegular = await readFile(path.join(pair.ours, 'p~HEAD'), 'utf8');
-          const peerRegular = await readFile(path.join(pair.peer, 'p~HEAD'), 'utf8');
-          expect(oursRegular).toBe(peerRegular);
-          expect(oursRegular).toBe('ours\n');
-        });
-      });
-    });
-
-    // ── S2: mirror — ours=symlink, theirs=file ────────────────────────────────
-    //
-    // Regular side (theirs) is renamed to p~B; symlink (ours) stays at p.
-    // Stage 1 (base, regular) travels with the regular renamed side → p~B.
-    // Expected index: 120000 <ours> 2 p  |  100644 <base> 1 p~B  |  100644 <theirs> 3 p~B
-
-    describe('Given base=file, ours=symlink, theirs=file (S2)', () => {
-      describe('When both tools merge', () => {
-        it('Then index stage-1 is at p~B (regular kind) matching git, and working tree matches', async () => {
-          // Arrange
-          await setupWithBase({
-            base: { kind: 'file', bytes: 'base\n' },
-            ours: { kind: 'symlink', target: 'target-a' },
-            theirs: { kind: 'file', bytes: 'theirs\n' },
-          });
-
-          // Act
-          const peerResult = peerMergeConflict('side');
-          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
-
-          // Assert — both tools report conflict
-          expect(peerResult.ok).toBe(false);
-          expect(result.kind).toBe('conflict');
-
-          // Index parity — stage-1 at p~side pins byte-for-byte
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
-
-          // Working tree: p is a symlink to target-a on both
-          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
-          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
-          expect(oursLink).toBe(peerLink);
-          expect(oursLink).toBe('target-a');
-
-          // Working tree: p~side is the regular file on both (theirs label = branch name 'side')
-          const oursRegular = await readFile(path.join(pair.ours, 'p~side'), 'utf8');
-          const peerRegular = await readFile(path.join(pair.peer, 'p~side'), 'utf8');
-          expect(oursRegular).toBe(peerRegular);
-          expect(oursRegular).toBe('theirs\n');
-        });
-      });
-    });
-
-    // ── S3: base=symlink, ours=symlink, theirs=file ───────────────────────────
-    //
-    // Regular side (theirs) renamed to p~B; symlink side (ours) + base stay at p.
-    // Stage 1 (base, symlink) is at p alongside stage 2.
-    // Expected index: 120000 <base> 1 p  |  120000 <ours> 2 p  |  100644 <theirs> 3 p~B
-
-    describe('Given base=symlink, ours=symlink, theirs=file (S3)', () => {
-      describe('When both tools merge', () => {
-        it('Then index stage-1 is at p (symlink kind) matching git, and working tree matches', async () => {
-          // Arrange
-          await setupWithBase({
-            base: { kind: 'symlink', target: 'base-target' },
-            ours: { kind: 'symlink', target: 'ours-target' },
-            theirs: { kind: 'file', bytes: 'theirs\n' },
-          });
-
-          // Act
-          const peerResult = peerMergeConflict('side');
-          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
-
-          // Assert — both tools report conflict
-          expect(peerResult.ok).toBe(false);
-          expect(result.kind).toBe('conflict');
-
-          // Index parity — stage-1 at p (symlink) pins byte-for-byte
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
-
-          // Working tree: p is ours' symlink on both
-          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
-          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
-          expect(oursLink).toBe(peerLink);
-          expect(oursLink).toBe('ours-target');
-
-          // Working tree: p~side is the regular file on both (theirs label = branch name 'side')
-          const oursRegular = await readFile(path.join(pair.ours, 'p~side'), 'utf8');
-          const peerRegular = await readFile(path.join(pair.peer, 'p~side'), 'utf8');
-          expect(oursRegular).toBe(peerRegular);
-          expect(oursRegular).toBe('theirs\n');
-        });
-      });
-    });
-
-    // ── S4: mirror — base=symlink, ours=file, theirs=symlink ─────────────────
-    //
-    // Regular side (ours) renamed to p~HEAD; symlink side (theirs) + base stay at p.
-    // Stage 1 (base, symlink) is at p alongside stage 3.
-    // Expected index: 120000 <base> 1 p  |  120000 <theirs> 3 p  |  100644 <ours> 2 p~HEAD
-
-    describe('Given base=symlink, ours=file, theirs=symlink (S4)', () => {
-      describe('When both tools merge', () => {
-        it('Then index stage-1 is at p (symlink kind) matching git, and working tree matches', async () => {
-          // Arrange
-          await setupWithBase({
-            base: { kind: 'symlink', target: 'base-target' },
-            ours: { kind: 'file', bytes: 'ours\n' },
-            theirs: { kind: 'symlink', target: 'theirs-target' },
-          });
-
-          // Act
-          const peerResult = peerMergeConflict('side');
-          const result = await repo.merge.run({ rev: 'side', message: 'm', author: AUTHOR });
-
-          // Assert — both tools report conflict
-          expect(peerResult.ok).toBe(false);
-          expect(result.kind).toBe('conflict');
-
-          // Index parity — stage-1 at p (symlink) pins byte-for-byte
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
-
-          // Working tree: p is theirs' symlink on both
-          const oursLink = readlinkSync(path.join(pair.ours, 'p'));
-          const peerLink = readlinkSync(path.join(pair.peer, 'p'));
-          expect(oursLink).toBe(peerLink);
-          expect(oursLink).toBe('theirs-target');
-
-          // Working tree: p~HEAD is the regular file on both
-          const oursRegular = await readFile(path.join(pair.ours, 'p~HEAD'), 'utf8');
-          const peerRegular = await readFile(path.join(pair.peer, 'p~HEAD'), 'utf8');
-          expect(oursRegular).toBe(peerRegular);
-          expect(oursRegular).toBe('ours\n');
-        });
+            // Working tree: renamed path is the regular file on both
+            const oursRegular = await readFile(path.join(pair.ours, renamedPath), 'utf8');
+            const peerRegular = await readFile(path.join(pair.peer, renamedPath), 'utf8');
+            expect(oursRegular).toBe(peerRegular);
+            expect(oursRegular).toBe(expectedRegularContent);
+          },
+        );
       });
     });
 

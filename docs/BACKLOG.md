@@ -461,13 +461,13 @@ needs to define hot paths.
   only provably-equivalent mutants surviving (documented inline per
   existing convention). Intention-revealing test titles preserved.
   · ADR-498 · design/unit-test-minimisation.md
-- [ ] **27.2 Integration — collapse same-scenario-different-input
+- [x] **27.2 Integration — collapse same-scenario-different-input
   overlap.** Two integration tests overlap when they exercise the same
   user journey or code path with different fixtures. Such tests merge
   into one parameterised case; strict-subset tests delete.
   **Parity cross-products (Node × Memory × Browser × Deno × Bun ×
   Workers) are NOT overlap** — they prove cross-adapter equivalence
-  and stay distinct.
+  and stay distinct. · ADR-499 · design/integration-test-minimisation.md
 - [ ] **27.3 E2E — same overlap definition.** Each Playwright / browser
   flow asserts a user journey no other E2E flow asserts. Parity
   cross-products excluded from the overlap audit.

@@ -28,7 +28,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { diff } from '../../src/application/commands/diff.js';
-import type { StatTreeDiff } from '../../src/domain/diff/index.js';
+import type { DiffChangeType, StatDiffChange, StatTreeDiff } from '../../src/domain/diff/index.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -47,20 +47,25 @@ const dateEnv = (epoch: number): NodeJS.ProcessEnv => ({
   GIT_COMMITTER_DATE: `${epoch} +0000`,
 });
 
+/** Path key per change type, matching git's numstat path column. */
+const changePath = (c: StatDiffChange): string =>
+  c.type === 'rename' || c.type === 'copy'
+    ? c.newPath
+    : c.type === 'add'
+      ? c.newPath
+      : c.type === 'delete'
+        ? c.oldPath
+        : c.path;
+
+/** Restrict numstat lines to the fixture's own path (multi-file commits only). */
+const filterByPath = (lines: string[], pathFilter: string | undefined): string[] =>
+  pathFilter === undefined ? lines : lines.filter((l) => l.includes(pathFilter));
+
 /** Derive numstat rows from a StatTreeDiff matching git's output format. */
 const numstatRowsFrom = (treeDiff: StatTreeDiff): string[] =>
-  treeDiff.changes.map((c) => {
-    const p =
-      c.type === 'rename' || c.type === 'copy'
-        ? c.newPath
-        : c.type === 'add'
-          ? c.newPath
-          : c.type === 'delete'
-            ? c.oldPath
-            : c.path;
-    if (c.binary) return `-\t-\t${p}`;
-    return `${c.added}\t${c.deleted}\t${p}`;
-  });
+  treeDiff.changes.map((c) =>
+    c.binary ? `-\t-\t${changePath(c)}` : `${c.added}\t${c.deleted}\t${changePath(c)}`,
+  );
 
 // --- Shared fixture repo ---
 
@@ -237,268 +242,158 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
     await rm(dir, { recursive: true, force: true });
   });
 
-  // B1 — -diff forces binary on text file
-  describe('Given a modify change on a file with -diff attribute (B1)', () => {
+  // B1, Bn, Ba, Bd, Bmacro, T2, T2n, N1, N3, N3s, N4 — one numstat family: every
+  // fixture drives `diff({ withStat: true })` and compares numstat rows against
+  // live git; rows that isolate a specific change additionally pin its StatFields.
+  interface ExpectedChange {
+    readonly type?: DiffChangeType;
+    readonly binary?: boolean;
+    readonly added?: number;
+    readonly deleted?: number;
+  }
+
+  interface NumstatCase {
+    readonly label: string;
+    readonly getPair: () => CommitPair;
+    readonly pathFilter?: string;
+    readonly changeCheck?: {
+      readonly find: (changes: ReadonlyArray<StatDiffChange>) => StatDiffChange | undefined;
+      readonly requireDefined: boolean;
+      readonly expected: ExpectedChange;
+    };
+  }
+
+  const firstChange = (changes: ReadonlyArray<StatDiffChange>): StatDiffChange | undefined =>
+    changes[0];
+
+  const findByPath =
+    (path: string) =>
+    (changes: ReadonlyArray<StatDiffChange>): StatDiffChange | undefined =>
+      changes.find((c) => changePath(c) === path);
+
+  const NUMSTAT_CASES: readonly NumstatCase[] = [
+    {
+      label: '-diff forces binary on a modify (B1)',
+      getPair: () => b1ForceBinary,
+      changeCheck: {
+        find: firstChange,
+        requireDefined: false,
+        expected: { type: 'modify', added: 0, deleted: 0, binary: true },
+      },
+    },
+    {
+      // git reads the CURRENT .gitattributes at diff time; both tsgit and git use
+      // the same attributes so the numstat rows must match regardless of override value.
+      label: 'removing -diff restores text detection — current attributes drive both (Bn)',
+      getPair: () => bnRestoredText,
+    },
+    {
+      label: '-diff forces binary on an add (Ba)',
+      getPair: () => baForceBinaryAdd,
+      pathFilter: 'new.forced',
+      changeCheck: {
+        find: findByPath('new.forced'),
+        requireDefined: true,
+        expected: { type: 'add', added: 0, deleted: 0, binary: true },
+      },
+    },
+    {
+      label: '-diff forces binary on a delete (Bd)',
+      getPair: () => bdForceBinaryDelete,
+      pathFilter: 'new.forced',
+      changeCheck: {
+        find: findByPath('new.forced'),
+        requireDefined: true,
+        expected: { type: 'delete', added: 0, deleted: 0, binary: true },
+      },
+    },
+    {
+      label: 'binary macro attribute forces binary (Bmacro)',
+      getPair: () => bMacro,
+      changeCheck: {
+        find: firstChange,
+        requireDefined: false,
+        expected: { binary: true, added: 0, deleted: 0 },
+      },
+    },
+    {
+      // diff=ghost has no [diff "ghost"] config — falls back to current attributes,
+      // so both tools honour the same source of truth and rows stay identical.
+      label: 'diff=ghost unconfigured driver falls back to current attributes (T2)',
+      getPair: () => t2Named,
+    },
+    {
+      label: '-diff replacing diff=ghost forces binary (T2n)',
+      getPair: () => t2nNamedForceBinary,
+      pathFilter: 'file.ghost',
+      changeCheck: {
+        find: findByPath('file.ghost'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: true, added: 0, deleted: 0 },
+      },
+    },
+    {
+      label: 'bare diff forces text on a NUL-bearing file (N1)',
+      getPair: () => n1ForceText,
+      changeCheck: {
+        find: firstChange,
+        requireDefined: false,
+        expected: { binary: false },
+      },
+    },
+    {
+      label: 'diff=up textconv with no NUL in raw blob (N3)',
+      getPair: () => n3TextconvText,
+      pathFilter: 'plain.up',
+      changeCheck: {
+        find: findByPath('plain.up'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: false },
+      },
+    },
+    {
+      // raw blob has NUL: numstat shows binary even though textconv output is clean.
+      label: 'diff=up textconv with NUL in raw blob — numstat binary despite clean textconv (N3s)',
+      getPair: () => n3sTextconvNul,
+      changeCheck: {
+        find: findByPath('nul.up'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: true, added: 0, deleted: 0 },
+      },
+    },
+    {
+      label: 'diff=up textconv clean on both sides (N4)',
+      getPair: () => n4TextconvBoth,
+      pathFilter: 'other.up',
+      changeCheck: {
+        find: findByPath('other.up'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: false },
+      },
+    },
+  ];
+
+  describe('Given a change under a gitattributes diff/binary override (numstat family)', () => {
     describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows -\\t-\\t{path} matching live git', async () => {
+      it.each(NUMSTAT_CASES)('Then numstat matches live git for $label', async (row) => {
         // Arrange
-        const { from, to } = b1ForceBinary;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to).trim().split('\n');
+        const { from, to } = row.getPair();
+        const gitNumstat = filterByPath(
+          git(dir, 'diff', '--numstat', from, to).trim().split('\n'),
+          row.pathFilter,
+        );
 
         // Act
         const result = await diff(ctx, { from, to, withStat: true });
 
         // Assert
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff);
+        const tsgitNumstat = filterByPath(numstatRowsFrom(result as StatTreeDiff), row.pathFilter);
         expect(tsgitNumstat).toEqual(gitNumstat);
-        expect((result as StatTreeDiff).changes[0]).toMatchObject({
-          type: 'modify',
-          added: 0,
-          deleted: 0,
-          binary: true,
-        });
-      });
-    });
-  });
-
-  // Bn — numstat parity after removing -diff (current .gitattributes determines attribute)
-  describe('Given a modify change on a file after removing -diff attribute (Bn)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat matches live git (current gitattributes is the source of truth)', async () => {
-        // Arrange — git reads the CURRENT .gitattributes at diff time; both tsgit and git
-        // use the same attributes so the numstat rows must match regardless of override value
-        const { from, to } = bnRestoredText;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to).trim().split('\n');
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert — parity: current attributes drive both, so rows are identical
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff);
-        expect(tsgitNumstat).toEqual(gitNumstat);
-      });
-    });
-  });
-
-  // Ba — -diff on an add
-  describe('Given an add change on a file with -diff attribute (Ba)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows -\\t- for the added file matching live git', async () => {
-        // Arrange
-        const { from, to } = baForceBinaryAdd;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to)
-          .trim()
-          .split('\n')
-          .filter((l) => l.includes('new.forced'));
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).filter((l) =>
-          l.includes('new.forced'),
-        );
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        const addChange = (result as StatTreeDiff).changes.find(
-          (c) => c.type === 'add' && c.newPath === 'new.forced',
-        );
-        expect(addChange).toBeDefined();
-        expect(addChange).toMatchObject({ added: 0, deleted: 0, binary: true });
-      });
-    });
-  });
-
-  // Bd — -diff on a delete
-  describe('Given a delete change on a file with -diff attribute (Bd)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows -\\t- for the deleted file matching live git', async () => {
-        // Arrange
-        const { from, to } = bdForceBinaryDelete;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to)
-          .trim()
-          .split('\n')
-          .filter((l) => l.includes('new.forced'));
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).filter((l) =>
-          l.includes('new.forced'),
-        );
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        const delChange = (result as StatTreeDiff).changes.find(
-          (c) => c.type === 'delete' && c.oldPath === 'new.forced',
-        );
-        expect(delChange).toBeDefined();
-        expect(delChange).toMatchObject({ added: 0, deleted: 0, binary: true });
-      });
-    });
-  });
-
-  // Bmacro — binary macro attribute
-  describe('Given a modify change with the binary macro attribute (Bmacro)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows -\\t- matching live git (binary macro forces binary override)', async () => {
-        // Arrange
-        const { from, to } = bMacro;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to).trim().split('\n');
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff);
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        expect((result as StatTreeDiff).changes[0]).toMatchObject({
-          binary: true,
-          added: 0,
-          deleted: 0,
-        });
-      });
-    });
-  });
-
-  // T2 — named diff driver without [diff "ghost"] config: numstat parity
-  describe('Given a modify change with diff=ghost (unconfigured driver) (T2)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat matches live git (current gitattributes is the source of truth)', async () => {
-        // Arrange — git uses current .gitattributes at diff time; both tools use same attributes
-        const { from, to } = t2Named;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to).trim().split('\n');
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert — parity: both tools honour current attributes, so rows are identical
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff);
-        expect(tsgitNumstat).toEqual(gitNumstat);
-      });
-    });
-  });
-
-  // T2n — named driver replaced by -diff override
-  describe('Given a modify change with -diff attribute replacing diff=ghost (T2n)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows -\\t- for file.ghost matching live git', async () => {
-        // Arrange
-        const { from, to } = t2nNamedForceBinary;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to)
-          .trim()
-          .split('\n')
-          .filter((l) => l.includes('file.ghost'));
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).filter((l) =>
-          l.includes('file.ghost'),
-        );
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        const change = (result as StatTreeDiff).changes.find(
-          (c) => c.type === 'modify' && c.path === 'file.ghost',
-        );
-        expect(change).toBeDefined();
-        expect(change).toMatchObject({ binary: true, added: 0, deleted: 0 });
-      });
-    });
-  });
-
-  // N1 — bare diff (force text) on NUL-bearing file: numstat counts lines
-  describe('Given a modify change with bare diff attribute forcing text on NUL-bearing file (N1)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows line counts (not -\\t-) matching live git', async () => {
-        // Arrange
-        const { from, to } = n1ForceText;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to).trim().split('\n');
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert — bare diff=text forces text even with NUL
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff);
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        expect((result as StatTreeDiff).changes[0]).toMatchObject({ binary: false });
-      });
-    });
-  });
-
-  // N3 — diff=up textconv + raw text: numstat=text
-  describe('Given a modify change with diff=up textconv and no NUL in raw blob (N3)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows line counts for plain.up matching live git', async () => {
-        // Arrange
-        const { from, to } = n3TextconvText;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to)
-          .trim()
-          .split('\n')
-          .filter((l) => l.includes('plain.up'));
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).filter((l) =>
-          l.includes('plain.up'),
-        );
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        const change = (result as StatTreeDiff).changes.find(
-          (c) => c.type === 'modify' && c.path === 'plain.up',
-        );
-        expect(change).toBeDefined();
-        expect(change).toMatchObject({ binary: false });
-      });
-    });
-  });
-
-  // N3s — diff=up + raw NUL: textconv ran (patch=text), numstat=binary
-  describe('Given a modify change with diff=up textconv and NUL bytes in raw blob (N3s)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows -\\t- for nul.up (raw NUL ⇒ numstat binary even though textconv output is clean)', async () => {
-        // Arrange
-        const { from, to } = n3sTextconvNul;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to).trim().split('\n');
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert — raw blob had NUL: numstat shows binary even though textconv output is clean
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff);
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        const change = (result as StatTreeDiff).changes.find(
-          (c) => c.type === 'modify' && c.path === 'nul.up',
-        );
-        expect(change).toBeDefined();
-        expect(change).toMatchObject({ binary: true, added: 0, deleted: 0 });
-      });
-    });
-  });
-
-  // N4 — diff=up textconv + clean both sides
-  describe('Given a modify change with diff=up textconv on clean raw blobs (N4)', () => {
-    describe('When diff is called with withStat: true', () => {
-      it('Then numstat shows line counts for other.up matching live git', async () => {
-        // Arrange
-        const { from, to } = n4TextconvBoth;
-        const gitNumstat = git(dir, 'diff', '--numstat', from, to)
-          .trim()
-          .split('\n')
-          .filter((l) => l.includes('other.up'));
-
-        // Act
-        const result = await diff(ctx, { from, to, withStat: true });
-
-        // Assert
-        const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).filter((l) =>
-          l.includes('other.up'),
-        );
-        expect(tsgitNumstat).toEqual(gitNumstat);
-        const change = (result as StatTreeDiff).changes.find(
-          (c) => c.type === 'modify' && c.path === 'other.up',
-        );
-        expect(change).toBeDefined();
-        expect(change).toMatchObject({ binary: false });
+        if (row.changeCheck) {
+          const change = row.changeCheck.find((result as StatTreeDiff).changes);
+          if (row.changeCheck.requireDefined) expect(change).toBeDefined();
+          expect(change).toMatchObject(row.changeCheck.expected);
+        }
       });
     });
   });

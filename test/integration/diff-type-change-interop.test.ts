@@ -311,369 +311,141 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  describe('Given file → symlink (100644 → 120000)', () => {
+  // Union of all 6 reachable leaf-kind type-pairs. Every pair holds the same
+  // four oracles (modes+oids, raw line, name-status, reconstructPatch) — only
+  // the fixture (path/modes/pinned oid) differs, so the four oracle families
+  // collapse across this one matrix. `pair` is a lazy accessor because these
+  // rows are evaluated before `beforeAll` assigns the commit pairs.
+  const TYPE_CHANGE_MATRIX: ReadonlyArray<{
+    label: string;
+    pair: () => CommitPair;
+    expectedPath: string;
+    fromMode: string;
+    toMode: string;
+    expectedOldId?: ObjectId;
+    expectedNewId?: ObjectId;
+  }> = [
+    {
+      label: 'file → symlink (100644 → 120000)',
+      pair: () => fileToSymlink,
+      expectedPath: 'fs',
+      fromMode: '100644',
+      toMode: '120000',
+    },
+    {
+      label: 'symlink → file (120000 → 100644)',
+      pair: () => symlinkToFile,
+      expectedPath: 'sf',
+      fromMode: '120000',
+      toMode: '100644',
+    },
+    {
+      label: 'file → gitlink (100644 → 160000)',
+      pair: () => fileToGitlink,
+      expectedPath: 'fg',
+      fromMode: '100644',
+      toMode: '160000',
+      expectedNewId: GITLINK_OID as ObjectId,
+    },
+    {
+      label: 'gitlink → file (160000 → 100644)',
+      pair: () => gitlinkToFile,
+      expectedPath: 'gf',
+      fromMode: '160000',
+      toMode: '100644',
+      expectedOldId: GITLINK_OID as ObjectId,
+    },
+    {
+      label: 'symlink → gitlink (120000 → 160000)',
+      pair: () => symlinkToGitlink,
+      expectedPath: 'sg',
+      fromMode: '120000',
+      toMode: '160000',
+      expectedNewId: GITLINK_OID as ObjectId,
+    },
+    {
+      label: 'gitlink → symlink (160000 → 120000)',
+      pair: () => gitlinkToSymlink,
+      expectedPath: 'gs',
+      fromMode: '160000',
+      toMode: '120000',
+      expectedOldId: GITLINK_OID as ObjectId,
+    },
+  ];
+
+  describe('Given a tree pair whose leaf changes object type', () => {
     describe('When diff called', () => {
-      it('Then emits type-change with correct modes and oids', async () => {
-        // Arrange
-        const { from, to } = fileToSymlink;
-
-        // Act
-        const result = await repo.diff({ from, to });
-
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('type-change');
-        if (change?.type !== 'type-change') return;
-        expect(change.path).toBe('fs');
-        expect(change.oldMode).toBe('100644');
-        expect(change.newMode).toBe('120000');
-        expect(change.oldId).toHaveLength(40);
-        expect(change.newId).toHaveLength(40);
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = fileToSymlink;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = result.changes.map(rawLine);
-
-        // Assert
-        expect(ours).toEqual(peer);
-      });
-
-      it('Then name-status T line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = fileToSymlink;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = fileToSymlink;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-    });
-  });
-
-  describe('Given symlink → file (120000 → 100644)', () => {
-    describe('When diff called', () => {
-      it('Then emits type-change with correct modes and oids', async () => {
-        // Arrange
-        const { from, to } = symlinkToFile;
-
-        // Act
-        const result = await repo.diff({ from, to });
-
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('type-change');
-        if (change?.type !== 'type-change') return;
-        expect(change.path).toBe('sf');
-        expect(change.oldMode).toBe('120000');
-        expect(change.newMode).toBe('100644');
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = symlinkToFile;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = result.changes.map(rawLine);
-
-        // Assert
-        expect(ours).toEqual(peer);
-      });
-
-      it('Then name-status T line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = symlinkToFile;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = symlinkToFile;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-    });
-  });
-
-  describe('Given file → gitlink (100644 → 160000)', () => {
-    describe('When diff called', () => {
-      it('Then emits type-change with correct modes and oids', async () => {
-        // Arrange
-        const { from, to } = fileToGitlink;
-
-        // Act
-        const result = await repo.diff({ from, to });
-
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('type-change');
-        if (change?.type !== 'type-change') return;
-        expect(change.path).toBe('fg');
-        expect(change.oldMode).toBe('100644');
-        expect(change.newMode).toBe('160000');
-        expect(change.newId).toBe(GITLINK_OID as ObjectId);
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = fileToGitlink;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = result.changes.map(rawLine);
-
-        // Assert
-        expect(ours).toEqual(peer);
-      });
-
-      it('Then name-status T line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = fileToGitlink;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = fileToGitlink;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-    });
-  });
-
-  describe('Given gitlink → file (160000 → 100644)', () => {
-    describe('When diff called', () => {
-      it('Then emits type-change with correct modes and oids', async () => {
-        // Arrange
-        const { from, to } = gitlinkToFile;
-
-        // Act
-        const result = await repo.diff({ from, to });
-
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('type-change');
-        if (change?.type !== 'type-change') return;
-        expect(change.path).toBe('gf');
-        expect(change.oldMode).toBe('160000');
-        expect(change.newMode).toBe('100644');
-        expect(change.oldId).toBe(GITLINK_OID as ObjectId);
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = gitlinkToFile;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = result.changes.map(rawLine);
-
-        // Assert
-        expect(ours).toEqual(peer);
-      });
-
-      it('Then name-status T line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = gitlinkToFile;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = gitlinkToFile;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-    });
-  });
-
-  describe('Given symlink → gitlink (120000 → 160000)', () => {
-    describe('When diff called', () => {
-      it('Then emits type-change with correct modes and oids', async () => {
-        // Arrange
-        const { from, to } = symlinkToGitlink;
-
-        // Act
-        const result = await repo.diff({ from, to });
-
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('type-change');
-        if (change?.type !== 'type-change') return;
-        expect(change.path).toBe('sg');
-        expect(change.oldMode).toBe('120000');
-        expect(change.newMode).toBe('160000');
-        expect(change.newId).toBe(GITLINK_OID as ObjectId);
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = symlinkToGitlink;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = result.changes.map(rawLine);
-
-        // Assert
-        expect(ours).toEqual(peer);
-      });
-
-      it('Then name-status T line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = symlinkToGitlink;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = symlinkToGitlink;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-    });
-  });
-
-  describe('Given gitlink → symlink (160000 → 120000)', () => {
-    describe('When diff called', () => {
-      it('Then emits type-change with correct modes and oids', async () => {
-        // Arrange
-        const { from, to } = gitlinkToSymlink;
-
-        // Act
-        const result = await repo.diff({ from, to });
-
-        // Assert
-        expect(result.changes).toHaveLength(1);
-        const change = result.changes[0];
-        expect(change?.type).toBe('type-change');
-        if (change?.type !== 'type-change') return;
-        expect(change.path).toBe('gs');
-        expect(change.oldMode).toBe('160000');
-        expect(change.newMode).toBe('120000');
-        expect(change.oldId).toBe(GITLINK_OID as ObjectId);
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = gitlinkToSymlink;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = result.changes.map(rawLine);
-
-        // Assert
-        expect(ours).toEqual(peer);
-      });
-
-      it('Then name-status T line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = gitlinkToSymlink;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const result = await repo.diff({ from, to });
-        const ours = nameStatusFrom(result);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-
-      it('Then reconstructPatch emits delete+add blocks matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = gitlinkToSymlink;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
+      it.each(TYPE_CHANGE_MATRIX)(
+        'Then emits type-change with correct modes and oids for $label',
+        async ({ pair, expectedPath, fromMode, toMode, expectedOldId, expectedNewId }) => {
+          // Arrange
+          const { from, to } = pair();
+
+          // Act
+          const result = await repo.diff({ from, to });
+
+          // Assert
+          expect(result.changes).toHaveLength(1);
+          const change = result.changes[0];
+          expect(change?.type).toBe('type-change');
+          if (change?.type !== 'type-change') return;
+          expect(change.path).toBe(expectedPath);
+          expect(change.oldMode).toBe(fromMode);
+          expect(change.newMode).toBe(toMode);
+          expect(change.oldId).toHaveLength(40);
+          expect(change.newId).toHaveLength(40);
+          if (expectedOldId !== undefined) expect(change.oldId).toBe(expectedOldId);
+          if (expectedNewId !== undefined) expect(change.newId).toBe(expectedNewId);
+        },
+      );
+
+      it.each(TYPE_CHANGE_MATRIX)(
+        'Then reconstructed raw line matches git diff-tree for $label',
+        async ({ pair }) => {
+          // Arrange
+          const { from, to } = pair();
+          const peer = gitRawLines(dir, from, to);
+
+          // Act
+          const result = await repo.diff({ from, to });
+          const ours = result.changes.map(rawLine);
+
+          // Assert
+          expect(ours).toEqual(peer);
+        },
+      );
+
+      it.each(TYPE_CHANGE_MATRIX)(
+        'Then name-status T line matches git diff --name-status for $label',
+        async ({ pair }) => {
+          // Arrange
+          const { from, to } = pair();
+          const peer = gitNameStatus(dir, from, to);
+
+          // Act
+          const result = await repo.diff({ from, to });
+          const ours = nameStatusFrom(result);
+
+          // Assert
+          expect(ours).toBe(peer);
+        },
+      );
+
+      it.each(TYPE_CHANGE_MATRIX)(
+        'Then reconstructPatch emits delete+add blocks matching git diff patch bytes for $label',
+        async ({ pair }) => {
+          // Arrange
+          const { from, to } = pair();
+          const peer = gitDiff(dir, from, to);
+
+          // Act
+          const treeDiff = await diff(ctx, { from, to });
+          const result = await reconstructPatch(ctx, treeDiff);
+
+          // Assert
+          expect(result).toBe(peer);
+        },
+      );
     });
   });
 
@@ -700,132 +472,67 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     });
   });
 
-  describe('Given a pure gitlink add (absent → 160000)', () => {
+  // Union of the three pure single-op gitlink pairs (add / delete / pointer
+  // bump). Each pair holds the same three oracles (reconstructPatch,
+  // name-status, raw line) — the expected patch/name-status shape differs
+  // per op (new-file / deleted-file / modify block), but every oracle is a
+  // self-checking byte-compare against live git, so no per-op shape field
+  // is needed.
+  const GITLINK_OP_MATRIX: ReadonlyArray<{ label: string; pair: () => CommitPair }> = [
+    { label: 'gitlink add (absent → 160000)', pair: () => gitlinkAdd },
+    { label: 'gitlink delete (160000 → absent)', pair: () => gitlinkDelete },
+    { label: 'gitlink pointer bump (oid1 → oid2)', pair: () => gitlinkModify },
+  ];
+
+  describe('Given a pure gitlink add, delete, or pointer bump', () => {
     describe('When diff called', () => {
-      it('Then reconstructPatch emits new-file block matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = gitlinkAdd;
-        const peer = gitDiff(dir, from, to);
+      it.each(GITLINK_OP_MATRIX)(
+        'Then reconstructPatch matches git diff patch bytes for $label',
+        async ({ pair }) => {
+          // Arrange
+          const { from, to } = pair();
+          const peer = gitDiff(dir, from, to);
 
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
+          // Act
+          const treeDiff = await diff(ctx, { from, to });
+          const result = await reconstructPatch(ctx, treeDiff);
 
-        // Assert
-        expect(result).toBe(peer);
-      });
+          // Assert
+          expect(result).toBe(peer);
+        },
+      );
 
-      it('Then name-status A line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = gitlinkAdd;
-        const peer = gitNameStatus(dir, from, to);
+      it.each(GITLINK_OP_MATRIX)(
+        'Then name-status line matches git diff --name-status for $label',
+        async ({ pair }) => {
+          // Arrange
+          const { from, to } = pair();
+          const peer = gitNameStatus(dir, from, to);
 
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = nameStatusFrom(treeDiff);
+          // Act
+          const treeDiff = await diff(ctx, { from, to });
+          const result = nameStatusFrom(treeDiff);
 
-        // Assert
-        expect(result).toBe(peer);
-      });
+          // Assert
+          expect(result).toBe(peer);
+        },
+      );
 
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = gitlinkAdd;
-        const peer = gitRawLines(dir, from, to);
+      it.each(GITLINK_OP_MATRIX)(
+        'Then reconstructed raw line matches git diff-tree for $label',
+        async ({ pair }) => {
+          // Arrange
+          const { from, to } = pair();
+          const peer = gitRawLines(dir, from, to);
 
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = treeDiff.changes.map(rawLine);
+          // Act
+          const treeDiff = await diff(ctx, { from, to });
+          const result = treeDiff.changes.map(rawLine);
 
-        // Assert
-        expect(result).toEqual(peer);
-      });
-    });
-  });
-
-  describe('Given a pure gitlink delete (160000 → absent)', () => {
-    describe('When diff called', () => {
-      it('Then reconstructPatch emits deleted-file block matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = gitlinkDelete;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-
-      it('Then name-status D line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = gitlinkDelete;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = nameStatusFrom(treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = gitlinkDelete;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = treeDiff.changes.map(rawLine);
-
-        // Assert
-        expect(result).toEqual(peer);
-      });
-    });
-  });
-
-  describe('Given a gitlink pointer bump (160000 oid1 → 160000 oid2)', () => {
-    describe('When diff called', () => {
-      it('Then reconstructPatch emits single modify block matching git diff patch bytes', async () => {
-        // Arrange
-        const { from, to } = gitlinkModify;
-        const peer = gitDiff(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = await reconstructPatch(ctx, treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-
-      it('Then name-status M line matches git diff --name-status', async () => {
-        // Arrange
-        const { from, to } = gitlinkModify;
-        const peer = gitNameStatus(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = nameStatusFrom(treeDiff);
-
-        // Assert
-        expect(result).toBe(peer);
-      });
-
-      it('Then reconstructed raw line matches git diff-tree', async () => {
-        // Arrange
-        const { from, to } = gitlinkModify;
-        const peer = gitRawLines(dir, from, to);
-
-        // Act
-        const treeDiff = await diff(ctx, { from, to });
-        const result = treeDiff.changes.map(rawLine);
-
-        // Assert
-        expect(result).toEqual(peer);
-      });
+          // Assert
+          expect(result).toEqual(peer);
+        },
+      );
     });
   });
 
