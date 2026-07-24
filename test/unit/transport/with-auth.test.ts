@@ -37,35 +37,24 @@ describe('withAuth — validation', () => {
     });
   });
 
-  describe('Given basic with empty username', () => {
+  describe('Given a config withAuth accepts without a validation error', () => {
     describe('When created', () => {
-      it('Then returns a factory', () => {
+      it.each([
+        {
+          config: { type: 'basic', username: '', password: 'x' } as const,
+          label: 'basic with empty username returns a factory',
+        },
+        {
+          config: { type: 'basic', username: 'u', password: '' } as const,
+          label: 'basic with empty password returns a factory',
+        },
+        {
+          config: { type: 'custom', header: () => 'token' } as const,
+          label: 'custom config returns a factory',
+        },
+      ])('Then $label', ({ config }) => {
         // Arrange
-        const sut = typeof withAuth({ type: 'basic', username: '', password: 'x' });
-
-        // Assert
-        expect(sut).toBe('function');
-      });
-    });
-  });
-
-  describe('Given basic with empty password', () => {
-    describe('When created', () => {
-      it('Then returns a factory', () => {
-        // Arrange
-        const sut = typeof withAuth({ type: 'basic', username: 'u', password: '' });
-
-        // Assert
-        expect(sut).toBe('function');
-      });
-    });
-  });
-
-  describe('Given custom config', () => {
-    describe('When created', () => {
-      it('Then returns a factory', () => {
-        // Arrange
-        const sut = typeof withAuth({ type: 'custom', header: () => 'token' });
+        const sut = typeof withAuth(config);
 
         // Assert
         expect(sut).toBe('function');
@@ -134,59 +123,38 @@ describe('withAuth — bearer', () => {
 });
 
 describe('withAuth — basic (UTF-8)', () => {
-  describe('Given username/password ASCII', () => {
+  describe('Given basic credentials', () => {
     describe('When sent', () => {
-      it('Then header equals base64(username:password)', async () => {
+      it.each([
+        {
+          username: 'alice',
+          password: 'wonderland',
+          label: 'ASCII credentials → header equals base64(username:password)',
+        },
+        {
+          username: 'münchen',
+          password: 'paßwort',
+          label: 'non-ASCII credentials → header equals "Basic " + base64(utf8 bytes)',
+        },
+        {
+          username: '',
+          password: 'secret',
+          label: 'empty username → header equals base64(":secret")',
+        },
+        {
+          username: 'user',
+          password: '',
+          label: 'empty password → header equals base64("user:")',
+        },
+      ])('Then $label', async ({ username, password }) => {
         // Arrange
         const { transport, calls } = fakeTransport([makeResponse()]);
-        const sut = withAuth({ type: 'basic', username: 'alice', password: 'wonderland' })(
-          transport,
-        );
-        await sut.request(makeRequest());
-        // Assert
-        expect(calls[0]?.headers.authorization).toBe('Basic YWxpY2U6d29uZGVybGFuZA==');
-      });
-    });
-  });
+        const sut = withAuth({ type: 'basic', username, password })(transport);
+        const expected = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`;
 
-  describe('Given non-ASCII credentials', () => {
-    describe('When sent', () => {
-      it('Then header equals "Basic " + base64(utf8 bytes)', async () => {
-        // Arrange
-        const { transport, calls } = fakeTransport([makeResponse()]);
-        const sut = withAuth({ type: 'basic', username: 'münchen', password: 'paßwort' })(
-          transport,
-        );
+        // Act
         await sut.request(makeRequest());
-        const expected = `Basic ${Buffer.from('münchen:paßwort', 'utf8').toString('base64')}`;
-        // Assert
-        expect(calls[0]?.headers.authorization).toBe(expected);
-      });
-    });
-  });
 
-  describe('Given empty username', () => {
-    describe('When sent', () => {
-      it('Then header equals base64(":secret")', async () => {
-        // Arrange
-        const { transport, calls } = fakeTransport([makeResponse()]);
-        const sut = withAuth({ type: 'basic', username: '', password: 'secret' })(transport);
-        await sut.request(makeRequest());
-        const expected = `Basic ${Buffer.from(':secret', 'utf8').toString('base64')}`;
-        // Assert
-        expect(calls[0]?.headers.authorization).toBe(expected);
-      });
-    });
-  });
-
-  describe('Given empty password', () => {
-    describe('When sent', () => {
-      it('Then header equals base64("user:")', async () => {
-        // Arrange
-        const { transport, calls } = fakeTransport([makeResponse()]);
-        const sut = withAuth({ type: 'basic', username: 'user', password: '' })(transport);
-        await sut.request(makeRequest());
-        const expected = `Basic ${Buffer.from('user:', 'utf8').toString('base64')}`;
         // Assert
         expect(calls[0]?.headers.authorization).toBe(expected);
       });
