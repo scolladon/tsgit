@@ -14,7 +14,10 @@
       "*.json",
       "tooling/profile.ts",
       "tooling/profile-*.ts",
-      "tooling/test/unit/profile-*.test.ts"
+      "tooling/test/unit/profile-*.test.ts",
+      "tooling/bench-check.ts",
+      "tooling/test/unit/bench-check.test.ts",
+      "tooling/test/unit/hot-paths-consistency.test.ts"
     ]
   },
   "formatter": {

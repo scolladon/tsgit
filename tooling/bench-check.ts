@@ -8,7 +8,7 @@
  * threshold is `DEFAULT_THRESHOLD_PCT`; callers may override it (e.g. via
  * the `REGRESSION_THRESHOLD` env var, resolved by the CLI wrapper).
  */
-import { readFile, appendFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type RawReport, type SnapshotEntry, toSnapshotEntries } from './bench-to-snapshot.ts';
@@ -19,6 +19,31 @@ const TSGIT_KEY_SUFFIX = ' > tsgit';
 
 export const gatedEntries = (entries: readonly SnapshotEntry[]): readonly SnapshotEntry[] =>
   entries.filter((entry) => entry.name.endsWith(TSGIT_KEY_SUFFIX));
+
+const BENCH_KEY_SEPARATOR = ' > ';
+const BENCH_FILE_SUFFIX = '.bench.ts';
+
+export const operationOf = (key: string): string => {
+  const firstSegment = key.split(BENCH_KEY_SEPARATOR)[0] ?? '';
+  const basename = path.basename(firstSegment);
+  return basename.endsWith(BENCH_FILE_SUFFIX) ? basename.slice(0, -BENCH_FILE_SUFFIX.length) : '';
+};
+
+export const hotGatedEntries = (
+  entries: readonly SnapshotEntry[],
+  hot: readonly string[],
+): readonly SnapshotEntry[] =>
+  gatedEntries(entries).filter((entry) => hot.includes(operationOf(entry.name)));
+
+export const parseHotOperations = (parsed: unknown): readonly string[] => {
+  const hotOperations = (parsed as { hotOperations?: unknown } | null)?.hotOperations;
+  const isValid =
+    Array.isArray(hotOperations) && hotOperations.every((op) => typeof op === 'string');
+  if (!isValid) {
+    throw new Error('hot-paths.json: "hotOperations" must be an array of operation strings');
+  }
+  return hotOperations;
+};
 
 type Verdict = 'pass' | 'regress' | 'new' | 'missing';
 
@@ -74,8 +99,14 @@ export const compareToBaseline = (
 
 const PR_COMMENT_PATH = '/tmp/bench-comment.md';
 
-const readReport = async (filePath: string): Promise<readonly SnapshotEntry[]> =>
-  gatedEntries(toSnapshotEntries(JSON.parse(await readFile(filePath, 'utf8')) as RawReport));
+const readReport = async (
+  filePath: string,
+  hot: readonly string[],
+): Promise<readonly SnapshotEntry[]> =>
+  hotGatedEntries(
+    toSnapshotEntries(JSON.parse(await readFile(filePath, 'utf8')) as RawReport),
+    hot,
+  );
 
 export const resolveThresholdPct = (
   rawEnv: string | undefined = process.env.REGRESSION_THRESHOLD,
@@ -144,7 +175,15 @@ const main = async (): Promise<void> => {
     throw new Error('usage: bench-check <base-raw.json> <head-raw.json>');
   }
 
-  const [base, current] = await Promise.all([readReport(basePath), readReport(headPath)]);
+  const REGISTRY = path.join(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+    'docs',
+    'perf',
+    'hot-paths.json',
+  );
+  const hot = parseHotOperations(JSON.parse(await readFile(REGISTRY, 'utf8')));
+
+  const [base, current] = await Promise.all([readReport(basePath, hot), readReport(headPath, hot)]);
   if (base.length === 0 && current.length === 0) {
     await emit('No benchmark data to compare.');
     process.exit(0);
