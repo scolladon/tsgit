@@ -826,7 +826,7 @@
     "rollup-plugin-visualizer": "7.0.1",
     "size-limit": "13.0.1",
     "typedoc": "0.28.20",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vitest": "4.1.10",
     "wireit": "0.14.13",
     "wrangler": "4.114.0"
