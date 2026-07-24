@@ -497,14 +497,39 @@ describe('rebaseRun', () => {
   });
 
   describe('Given refusal conditions', () => {
-    describe('When the working tree is dirty', () => {
-      it('Then it refuses with WORKING_TREE_DIRTY', async () => {
+    describe('When rebaseRun hits an early guard', () => {
+      it.each([
+        {
+          code: 'WORKING_TREE_DIRTY',
+          arrange: async () => {
+            const { ctx } = await seedDivergent();
+            await ctx.fs.writeUtf8(work(ctx, 't1.txt'), 'dirty edit\n');
+            return ctx;
+          },
+        },
+        {
+          code: 'OPERATION_IN_PROGRESS',
+          arrange: async () => {
+            const { ctx } = await seedDivergent();
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'0'.repeat(40)}\n`);
+            return ctx;
+          },
+        },
+        {
+          code: 'NO_INITIAL_COMMIT',
+          arrange: async () => {
+            const ctx = createMemoryContext();
+            await init(ctx);
+            await setUser(ctx);
+            return ctx;
+          },
+        },
+      ])('Then it refuses with $code', async ({ arrange, code }) => {
         // Arrange
-        const { ctx } = await seedDivergent();
-        await ctx.fs.writeUtf8(work(ctx, 't1.txt'), 'dirty edit\n');
+        const ctx = await arrange();
 
         // Act + Assert
-        expect(await codeOf(() => rebaseRun(ctx, { upstream: 'main' }))).toBe('WORKING_TREE_DIRTY');
+        expect(await codeOf(() => rebaseRun(ctx, { upstream: 'main' }))).toBe(code);
       });
     });
 
@@ -534,31 +559,6 @@ describe('rebaseRun', () => {
         // Assert — the pick refused, and the finally-block released the index lock.
         expect(data.code).toBe('WORKING_TREE_DIRTY');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
-      });
-    });
-
-    describe('When another operation is already in progress', () => {
-      it('Then it refuses with OPERATION_IN_PROGRESS', async () => {
-        // Arrange
-        const { ctx } = await seedDivergent();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'0'.repeat(40)}\n`);
-
-        // Act + Assert
-        expect(await codeOf(() => rebaseRun(ctx, { upstream: 'main' }))).toBe(
-          'OPERATION_IN_PROGRESS',
-        );
-      });
-    });
-
-    describe('When the branch is unborn', () => {
-      it('Then it refuses with NO_INITIAL_COMMIT', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await setUser(ctx);
-
-        // Act + Assert
-        expect(await codeOf(() => rebaseRun(ctx, { upstream: 'main' }))).toBe('NO_INITIAL_COMMIT');
       });
     });
 
