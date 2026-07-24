@@ -179,32 +179,34 @@ describe('commands/submodule — init', () => {
     });
   });
 
-  describe('Given an unsafe-named submodule section', () => {
+  describe('Given a .gitmodules row that init must skip, drop, or accept unchanged', () => {
     describe('When init runs', () => {
-      it('Then the unsafe row is dropped', async () => {
-        // Arrange
-        const ctx = await seed({
+      it.each([
+        {
+          label: 'an unsafe-named submodule section is dropped',
           gitmodules: `[submodule "../evil"]\n\tpath = e\n\turl = ../x\n${GITMODULES_ONE}`,
-          config: ORIGIN,
-        });
-
-        // Act
-        const sut = await submoduleInit(ctx);
-
-        // Assert
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
-      });
-    });
-  });
-
-  describe('Given a submodule whose path escapes the worktree', () => {
-    describe('When init runs', () => {
-      it('Then the unsafe-path row is dropped', async () => {
-        // Arrange
-        const ctx = await seed({
+        },
+        {
+          label: 'a submodule whose path escapes the worktree is dropped',
           gitmodules: `[submodule "evil"]\n\tpath = ../escape\n\turl = ../x\n${GITMODULES_ONE}`,
-          config: ORIGIN,
-        });
+        },
+        {
+          label: 'a submodule section without a path is skipped',
+          gitmodules: `[submodule "nopath"]\n\turl = ../x\n${GITMODULES_ONE}`,
+        },
+        {
+          label: 'a submodule section without a url is skipped',
+          gitmodules: `[submodule "nourl"]\n\tpath = nourl\n${GITMODULES_ONE}`,
+        },
+        {
+          // pad a valid block to exactly MAX_GITMODULES_BYTES bytes — the row
+          // still registers; `>` did not trip at exactly the cap.
+          label: 'a .gitmodules exactly at the byte cap still parses (the cap is exclusive)',
+          gitmodules: `${GITMODULES_ONE}${'\n'.repeat(MAX_GITMODULES_BYTES - GITMODULES_ONE.length)}`,
+        },
+      ])('Then only libs/a registers ($label)', async ({ gitmodules }) => {
+        // Arrange
+        const ctx = await seed({ gitmodules, config: ORIGIN });
 
         // Act
         const sut = await submoduleInit(ctx);
@@ -232,42 +234,6 @@ describe('commands/submodule — init', () => {
           expect(err).toBeInstanceOf(TsgitError);
           expect((err as TsgitError).data.code).toBe('WORKING_TREE_FILE_TOO_LARGE');
         }
-      });
-    });
-  });
-
-  describe('Given a submodule section without a path', () => {
-    describe('When init runs', () => {
-      it('Then the path-less row is skipped', async () => {
-        // Arrange
-        const ctx = await seed({
-          gitmodules: `[submodule "nopath"]\n\turl = ../x\n${GITMODULES_ONE}`,
-          config: ORIGIN,
-        });
-
-        // Act
-        const sut = await submoduleInit(ctx);
-
-        // Assert
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
-      });
-    });
-  });
-
-  describe('Given a submodule section without a url', () => {
-    describe('When init runs', () => {
-      it('Then the url-less row is skipped', async () => {
-        // Arrange
-        const ctx = await seed({
-          gitmodules: `[submodule "nourl"]\n\tpath = nourl\n${GITMODULES_ONE}`,
-          config: ORIGIN,
-        });
-
-        // Act
-        const sut = await submoduleInit(ctx);
-
-        // Assert
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
       });
     });
   });
@@ -340,22 +306,6 @@ describe('commands/submodule — init', () => {
           expect(err).toBeInstanceOf(TsgitError);
           expect((err as TsgitError).data.code).toBe('NOT_A_REPOSITORY');
         }
-      });
-    });
-  });
-
-  describe('Given a .gitmodules exactly at the byte cap', () => {
-    describe('When init runs', () => {
-      it('Then it parses without refusing (the cap is exclusive)', async () => {
-        // Arrange — pad a valid block to exactly MAX_GITMODULES_BYTES bytes
-        const pad = '\n'.repeat(MAX_GITMODULES_BYTES - GITMODULES_ONE.length);
-        const ctx = await seed({ gitmodules: `${GITMODULES_ONE}${pad}`, config: ORIGIN });
-
-        // Act
-        const sut = await submoduleInit(ctx);
-
-        // Assert — the row still registers; `>` did not trip at exactly the cap
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
       });
     });
   });

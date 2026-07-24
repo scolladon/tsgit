@@ -187,19 +187,6 @@ describe('worktreeAdd', () => {
     });
   });
 
-  describe('Given a non-empty target directory', () => {
-    describe('When worktreeAdd runs', () => {
-      it('Then it refuses with WORKTREE_PATH_EXISTS', async () => {
-        // Arrange
-        const { ctx } = await seedWithCommit();
-        await ctx.fs.writeUtf8('/repo/taken/keep.txt', 'x');
-
-        // Act & Assert
-        await expectError(() => worktreeAdd(ctx, { path: 'taken' }), 'WORKTREE_PATH_EXISTS');
-      });
-    });
-  });
-
   describe('Given a path that resolves to the filesystem root', () => {
     describe('When worktreeAdd runs', () => {
       it('Then it refuses with INVALID_OPTION carrying the command and reason', async () => {
@@ -365,17 +352,6 @@ describe('worktreeAdd', () => {
   });
 
   describe('Given a -b branch that already exists', () => {
-    describe('When worktreeAdd runs', () => {
-      it('Then it refuses with BRANCH_EXISTS', async () => {
-        // Arrange
-        const { ctx } = await seedWithCommit();
-        await branchCreate(ctx, { name: 'dup' });
-
-        // Act & Assert
-        await expectError(() => worktreeAdd(ctx, { path: 'wt6', branch: 'dup' }), 'BRANCH_EXISTS');
-      });
-    });
-
     describe('When worktreeAdd runs with force', () => {
       it('Then it resets the branch and creates the worktree', async () => {
         // Arrange
@@ -391,17 +367,40 @@ describe('worktreeAdd', () => {
     });
   });
 
-  describe('Given a commit-ish branch already checked out by the main worktree', () => {
+  describe('Given a request worktreeAdd must refuse before creating anything', () => {
     describe('When worktreeAdd runs', () => {
-      it('Then it refuses with BRANCH_CHECKED_OUT', async () => {
+      it.each([
+        {
+          label: 'a non-empty target directory',
+          setup: async (ctx: Context): Promise<void> => {
+            await ctx.fs.writeUtf8('/repo/taken/keep.txt', 'x');
+          },
+          options: { path: 'taken' },
+          code: 'WORKTREE_PATH_EXISTS',
+        },
+        {
+          label: 'a -b branch that already exists',
+          setup: async (ctx: Context): Promise<void> => {
+            await branchCreate(ctx, { name: 'dup' });
+          },
+          options: { path: 'wt6', branch: 'dup' },
+          code: 'BRANCH_EXISTS',
+        },
+        {
+          label: 'a commit-ish branch already checked out by the main worktree',
+          setup: async (): Promise<void> => {
+            // no extra setup — the main worktree already has `main` checked out
+          },
+          options: { path: 'wt7', commitish: 'main' },
+          code: 'BRANCH_CHECKED_OUT',
+        },
+      ])('Then it refuses with $code for $label', async ({ setup, options, code }) => {
         // Arrange
         const { ctx } = await seedWithCommit();
+        await setup(ctx);
 
         // Act & Assert
-        await expectError(
-          () => worktreeAdd(ctx, { path: 'wt7', commitish: 'main' }),
-          'BRANCH_CHECKED_OUT',
-        );
+        await expectError(() => worktreeAdd(ctx, options), code);
       });
     });
   });
@@ -470,42 +469,43 @@ describe('worktreeMove', () => {
     });
   });
 
-  describe('Given a path that is not a worktree', () => {
+  describe('Given a request worktreeMove must refuse before relocating anything', () => {
     describe('When worktreeMove runs', () => {
-      it('Then it refuses with NOT_A_WORKTREE', async () => {
+      it.each([
+        {
+          label: 'a path that is not a worktree',
+          setup: async (): Promise<void> => {},
+          from: 'nope',
+          to: 'x',
+          code: 'NOT_A_WORKTREE',
+        },
+        {
+          label: 'a locked worktree, without force',
+          setup: async (ctx: Context): Promise<void> => {
+            const added = await worktreeAdd(ctx, { path: 'wm2' });
+            await ctx.fs.writeUtf8(adminFile(ctx, added.id, 'locked'), '');
+          },
+          from: 'wm2',
+          to: 'wm2-moved',
+          code: 'WORKTREE_LOCKED',
+        },
+        {
+          label: 'a non-empty destination',
+          setup: async (ctx: Context): Promise<void> => {
+            await worktreeAdd(ctx, { path: 'wm3' });
+            await ctx.fs.writeUtf8('/repo/dest/keep.txt', 'x');
+          },
+          from: 'wm3',
+          to: 'dest',
+          code: 'WORKTREE_PATH_EXISTS',
+        },
+      ])('Then it refuses with $code for $label', async ({ setup, from, to, code }) => {
         // Arrange
         const { ctx } = await seedWithCommit();
+        await setup(ctx);
 
         // Act & Assert
-        await expectError(() => worktreeMove(ctx, 'nope', 'x'), 'NOT_A_WORKTREE');
-      });
-    });
-  });
-
-  describe('Given a locked worktree', () => {
-    describe('When worktreeMove runs without force', () => {
-      it('Then it refuses with WORKTREE_LOCKED', async () => {
-        // Arrange
-        const { ctx } = await seedWithCommit();
-        const added = await worktreeAdd(ctx, { path: 'wm2' });
-        await ctx.fs.writeUtf8(adminFile(ctx, added.id, 'locked'), '');
-
-        // Act & Assert
-        await expectError(() => worktreeMove(ctx, 'wm2', 'wm2-moved'), 'WORKTREE_LOCKED');
-      });
-    });
-  });
-
-  describe('Given a non-empty destination', () => {
-    describe('When worktreeMove runs', () => {
-      it('Then it refuses with WORKTREE_PATH_EXISTS', async () => {
-        // Arrange
-        const { ctx } = await seedWithCommit();
-        await worktreeAdd(ctx, { path: 'wm3' });
-        await ctx.fs.writeUtf8('/repo/dest/keep.txt', 'x');
-
-        // Act & Assert
-        await expectError(() => worktreeMove(ctx, 'wm3', 'dest'), 'WORKTREE_PATH_EXISTS');
+        await expectError(() => worktreeMove(ctx, from, to), code);
       });
     });
   });

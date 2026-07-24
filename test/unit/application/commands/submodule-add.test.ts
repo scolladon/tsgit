@@ -160,73 +160,55 @@ describe('Given a superproject and a submodule remote', () => {
     return caught as TsgitError;
   };
 
-  describe('When add is given an unsafe name', () => {
-    it('Then it refuses with INVALID_OPTION without cloning', async () => {
-      // Arrange
-      const { ctx } = await seedSuper();
-      // Act
-      const error = await expectRefusal(
-        submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub', name: '../escape' }),
-        'INVALID_OPTION',
-      );
-      // Assert
-      expect(error.data).toMatchObject({
+  describe('When add is given an option that fails validation', () => {
+    it.each([
+      {
+        label: 'an unsafe name',
+        opts: { url: SUB_URL, path: 'libs/sub', name: '../escape' },
         option: 'submodule.add.name',
-        reason: expect.stringContaining("unsafe name '../escape'"),
-      });
-      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
-    });
-  });
-
-  describe('When add is given an unsafe path (with a safe name)', () => {
-    it('Then it refuses with INVALID_OPTION on the path guard', async () => {
-      // Arrange — a safe name isolates the path guard from the name guard
-      const { ctx } = await seedSuper();
-      // Act
-      const error = await expectRefusal(
-        submoduleAdd(ctx, { url: SUB_URL, path: '../escape', name: 'safe' }),
-        'INVALID_OPTION',
-      );
-      // Assert
-      expect(error.data).toMatchObject({
+        reasonContains: "unsafe name '../escape'",
+        checksNoModulesDir: true,
+      },
+      {
+        label: 'an unsafe path (with a safe name, isolating the path guard)',
+        opts: { url: SUB_URL, path: '../escape', name: 'safe' },
         option: 'submodule.add.path',
-        reason: expect.stringContaining("unsafe path '../escape'"),
-      });
-    });
-  });
-
-  describe('When add is given an empty url', () => {
-    it('Then it refuses with INVALID_OPTION', async () => {
-      // Arrange
-      const { ctx } = await seedSuper();
-      // Act
-      const error = await expectRefusal(
-        submoduleAdd(ctx, { url: '', path: 'libs/sub' }),
-        'INVALID_OPTION',
-      );
-      // Assert
-      expect(error.data).toMatchObject({
+        reasonContains: "unsafe path '../escape'",
+        checksNoModulesDir: false,
+      },
+      {
+        label: 'an empty url',
+        opts: { url: '', path: 'libs/sub' },
         option: 'submodule.add',
-        reason: expect.stringContaining('url must not be empty'),
-      });
-    });
-  });
-
-  describe('When add is given an empty path', () => {
-    it('Then it refuses with INVALID_OPTION', async () => {
-      // Arrange
-      const { ctx } = await seedSuper();
-      // Act
-      const error = await expectRefusal(
-        submoduleAdd(ctx, { url: SUB_URL, path: '' }),
-        'INVALID_OPTION',
-      );
-      // Assert
-      expect(error.data).toMatchObject({
+        reasonContains: 'url must not be empty',
+        checksNoModulesDir: false,
+      },
+      {
+        label: 'an empty path',
+        opts: { url: SUB_URL, path: '' },
         option: 'submodule.add',
-        reason: expect.stringContaining('path must not be empty'),
-      });
-    });
+        reasonContains: 'path must not be empty',
+        checksNoModulesDir: false,
+      },
+    ])(
+      'Then it refuses with INVALID_OPTION on $label',
+      async ({ opts, option, reasonContains, checksNoModulesDir }) => {
+        // Arrange
+        const { ctx } = await seedSuper();
+
+        // Act
+        const error = await expectRefusal(submoduleAdd(ctx, opts), 'INVALID_OPTION');
+
+        // Assert
+        expect(error.data).toMatchObject({
+          option,
+          reason: expect.stringContaining(reasonContains),
+        });
+        if (checksNoModulesDir) {
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
+        }
+      },
+    );
   });
 
   describe('When the path is already tracked in the index', () => {

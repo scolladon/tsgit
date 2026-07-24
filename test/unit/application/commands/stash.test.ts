@@ -532,54 +532,72 @@ describe('stash apply', () => {
     });
   });
 
-  describe('Given a dirty working file on the stashed path', () => {
+  describe('Given content already present at the stashed path (working file or symlink)', () => {
     describe('When apply runs', () => {
-      it('Then it refuses with STASH_APPLY_WOULD_OVERWRITE and writes nothing', async () => {
-        // Arrange
-        const ctx = await setupRepo();
-        await write(ctx, 'a.txt', 'stashed\n');
-        await stashPush(ctx, {});
-        await write(ctx, 'a.txt', 'local edit\n');
+      it.each([
+        {
+          label: 'a dirty working file on the stashed path',
+          build: async (): Promise<Context> => {
+            const ctx = await setupRepo();
+            await write(ctx, 'a.txt', 'stashed\n');
+            await stashPush(ctx, {});
+            await write(ctx, 'a.txt', 'local edit\n');
+            return ctx;
+          },
+          paths: ['a.txt'],
+          preserved: { path: 'a.txt', content: 'local edit\n' },
+        },
+        {
+          label: 'a dangling symlink squatting a stashed untracked path',
+          // The lstat-based presence probe sees the link where a
+          // target-following probe would not (its target does not exist).
+          build: async (): Promise<Context> => {
+            const ctx = await setupRepo();
+            await write(ctx, 'new.txt', 'untracked\n');
+            await stashPush(ctx, { includeUntracked: true });
+            await ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`);
+            return ctx;
+          },
+          paths: ['new.txt'],
+          preserved: undefined,
+        },
+        {
+          label: 'an untracked file already present at a stashed untracked path',
+          build: async (): Promise<Context> => {
+            const ctx = await setupRepo();
+            await write(ctx, 'new.txt', 'untracked\n');
+            await stashPush(ctx, { includeUntracked: true });
+            await write(ctx, 'new.txt', 'in the way\n');
+            return ctx;
+          },
+          paths: ['new.txt'],
+          preserved: undefined,
+        },
+      ])(
+        'Then it refuses with STASH_APPLY_WOULD_OVERWRITE for $label',
+        async ({ build, paths, preserved }) => {
+          // Arrange
+          const ctx = await build();
 
-        // Act + Assert
-        try {
-          await stashApply(ctx, {});
-          expect.fail('stash apply must refuse a dirty working file on the stashed path');
-        } catch (err) {
-          expect(err).toBeInstanceOf(TsgitError);
-          expect((err as TsgitError).data).toEqual({
+          // Act
+          let caught: unknown;
+          try {
+            await stashApply(ctx, {});
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
             code: 'STASH_APPLY_WOULD_OVERWRITE',
-            paths: ['a.txt'],
+            paths,
           });
-        }
-        expect(await read(ctx, 'a.txt')).toBe('local edit\n');
-      });
-    });
-  });
-
-  describe('Given a dangling symlink squatting a stashed untracked path', () => {
-    describe('When apply runs', () => {
-      it('Then it refuses with STASH_APPLY_WOULD_OVERWRITE naming the dangling path', async () => {
-        // Arrange — stash an untracked file, then squat its path with a dangling
-        // symlink (its target does not exist). The lstat-based presence probe sees
-        // the link where a target-following probe would not.
-        const ctx = await setupRepo();
-        await write(ctx, 'new.txt', 'untracked\n');
-        await stashPush(ctx, { includeUntracked: true });
-        await ctx.fs.symlink('/nonexistent/target', `${ctx.layout.workDir}/new.txt`);
-
-        // Act + Assert
-        try {
-          await stashApply(ctx, {});
-          expect.fail('stash apply must refuse the dangling-symlink squat');
-        } catch (err) {
-          expect(err).toBeInstanceOf(TsgitError);
-          expect((err as TsgitError).data).toEqual({
-            code: 'STASH_APPLY_WOULD_OVERWRITE',
-            paths: ['new.txt'],
-          });
-        }
-      });
+          if (preserved !== undefined) {
+            expect(await read(ctx, preserved.path)).toBe(preserved.content);
+          }
+        },
+      );
     });
   });
 
@@ -596,27 +614,6 @@ describe('stash apply', () => {
 
         // Assert
         expect(await read(ctx, 'new.txt')).toBe('untracked\n');
-      });
-    });
-  });
-
-  describe('Given an untracked file already present at a stashed untracked path', () => {
-    describe('When apply runs', () => {
-      it('Then it refuses with STASH_APPLY_WOULD_OVERWRITE', async () => {
-        // Arrange
-        const ctx = await setupRepo();
-        await write(ctx, 'new.txt', 'untracked\n');
-        await stashPush(ctx, { includeUntracked: true });
-        await write(ctx, 'new.txt', 'in the way\n');
-
-        // Act
-        const act = stashApply(ctx, {});
-
-        // Assert
-        await act.catch((err: TsgitError) => {
-          expect(err.data).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths: ['new.txt'] });
-        });
-        await expect(act).rejects.toBeInstanceOf(TsgitError);
       });
     });
   });

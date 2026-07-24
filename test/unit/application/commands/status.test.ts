@@ -411,22 +411,6 @@ describe('status — staged column (index-vs-HEAD)', () => {
     });
   });
 
-  describe('Given a clean repo', () => {
-    describe('When status', () => {
-      it('Then changes is empty and clean is true', async () => {
-        // Arrange
-        const ctx = await seedClean();
-
-        // Act
-        const sut = await status(ctx);
-
-        // Assert
-        expect(sut.changes).toEqual([]);
-        expect(sut.clean).toBe(true);
-      });
-    });
-  });
-
   describe('Given staged changes whose union order is not byte-sorted', () => {
     describe('When status', () => {
       it('Then changes is sorted ascending by path', async () => {
@@ -813,93 +797,77 @@ describe('toStagedKind', () => {
   const EXEC = '100755' as FileMode;
   const SYMLINK = '120000' as FileMode;
 
-  describe('Given an add change', () => {
+  describe('Given each structural diff change', () => {
     describe('When projected to a staged kind', () => {
-      it("Then it is 'added'", () => {
+      it.each([
+        {
+          label: "an add change is 'added'",
+          change: {
+            type: 'add',
+            newPath: path('a.txt'),
+            newId: oid('aaa'),
+            newMode: REGULAR,
+          } satisfies DiffChange,
+          expected: 'added',
+        },
+        {
+          label: "a delete change is 'deleted'",
+          change: {
+            type: 'delete',
+            oldPath: path('a.txt'),
+            oldId: oid('aaa'),
+            oldMode: REGULAR,
+          } satisfies DiffChange,
+          expected: 'deleted',
+        },
+        {
+          // regular file became a symlink in the index.
+          label: "a type-change is 'type-changed' (git T)",
+          change: {
+            type: 'type-change',
+            path: path('a.txt'),
+            oldId: oid('aaa'),
+            newId: oid('bbb'),
+            oldMode: REGULAR,
+            newMode: SYMLINK,
+          } satisfies DiffChange,
+          expected: 'type-changed',
+        },
+        {
+          // identical oid, mode promoted to executable.
+          label: "a modify with an unchanged blob id is 'mode-changed' (exec bit flipped)",
+          change: {
+            type: 'modify',
+            path: path('a.txt'),
+            oldId: oid('aaa'),
+            newId: oid('aaa'),
+            oldMode: REGULAR,
+            newMode: EXEC,
+          } satisfies DiffChange,
+          expected: 'mode-changed',
+        },
+        {
+          // different oid (content edit).
+          label: "a modify with a differing blob id is 'modified' (content change)",
+          change: {
+            type: 'modify',
+            path: path('a.txt'),
+            oldId: oid('aaa'),
+            newId: oid('bbb'),
+            oldMode: REGULAR,
+            newMode: REGULAR,
+          } satisfies DiffChange,
+          expected: 'modified',
+        },
+      ])('Then $label', ({ change, expected }) => {
         // Arrange
-        const change: DiffChange = {
-          type: 'add',
-          newPath: path('a.txt'),
-          newId: oid('aaa'),
-          newMode: REGULAR,
-        };
+        const sut: DiffChange = change;
 
-        // Act / Assert
-        expect(toStagedKind(change)).toBe('added');
-      });
-    });
-  });
+        // Act
+        const result = toStagedKind(sut);
 
-  describe('Given a delete change', () => {
-    describe('When projected to a staged kind', () => {
-      it("Then it is 'deleted'", () => {
-        // Arrange
-        const change: DiffChange = {
-          type: 'delete',
-          oldPath: path('a.txt'),
-          oldId: oid('aaa'),
-          oldMode: REGULAR,
-        };
-
-        // Act / Assert
-        expect(toStagedKind(change)).toBe('deleted');
-      });
-    });
-  });
-
-  describe('Given a type-change', () => {
-    describe('When projected to a staged kind', () => {
-      it("Then it is 'type-changed' (git T)", () => {
-        // Arrange — regular file became a symlink in the index.
-        const change: DiffChange = {
-          type: 'type-change',
-          path: path('a.txt'),
-          oldId: oid('aaa'),
-          newId: oid('bbb'),
-          oldMode: REGULAR,
-          newMode: SYMLINK,
-        };
-
-        // Act / Assert
-        expect(toStagedKind(change)).toBe('type-changed');
-      });
-    });
-  });
-
-  describe('Given a modify change whose blob id is unchanged', () => {
-    describe('When projected to a staged kind', () => {
-      it("Then it is 'mode-changed' (same blob, exec bit flipped)", () => {
-        // Arrange — identical oid, mode promoted to executable.
-        const change: DiffChange = {
-          type: 'modify',
-          path: path('a.txt'),
-          oldId: oid('aaa'),
-          newId: oid('aaa'),
-          oldMode: REGULAR,
-          newMode: EXEC,
-        };
-
-        // Act / Assert
-        expect(toStagedKind(change)).toBe('mode-changed');
-      });
-    });
-  });
-
-  describe('Given a modify change whose blob id differs', () => {
-    describe('When projected to a staged kind', () => {
-      it("Then it is 'modified' (content change)", () => {
-        // Arrange — different oid (content edit).
-        const change: DiffChange = {
-          type: 'modify',
-          path: path('a.txt'),
-          oldId: oid('aaa'),
-          newId: oid('bbb'),
-          oldMode: REGULAR,
-          newMode: REGULAR,
-        };
-
-        // Act / Assert
-        expect(toStagedKind(change)).toBe('modified');
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
@@ -908,39 +876,26 @@ describe('toStagedKind', () => {
 describe('toUnstagedKind', () => {
   describe('Given each working-tree comparison', () => {
     describe('When projected to an unstaged kind', () => {
-      it("Then 'absent' is deleted", () => {
-        // Arrange / Act
-        const sut = toUnstagedKind('absent');
-        // Assert
-        expect(sut).toBe('deleted');
-      });
+      it.each([
+        { label: "'absent' is deleted", input: 'absent', expected: 'deleted' },
+        {
+          label: "'type-changed' is type-changed",
+          input: 'type-changed',
+          expected: 'type-changed',
+        },
+        {
+          label: "'mode-changed' is mode-changed",
+          input: 'mode-changed',
+          expected: 'mode-changed',
+        },
+        { label: "'modified' is modified", input: 'modified', expected: 'modified' },
+        { label: "'unchanged' yields no kind", input: 'unchanged', expected: undefined },
+      ] as const)('Then $label', ({ input, expected }) => {
+        // Arrange + Act
+        const sut = toUnstagedKind(input);
 
-      it("Then 'type-changed' is type-changed", () => {
-        // Arrange / Act
-        const sut = toUnstagedKind('type-changed');
         // Assert
-        expect(sut).toBe('type-changed');
-      });
-
-      it("Then 'mode-changed' is mode-changed", () => {
-        // Arrange / Act
-        const sut = toUnstagedKind('mode-changed');
-        // Assert
-        expect(sut).toBe('mode-changed');
-      });
-
-      it("Then 'modified' is modified", () => {
-        // Arrange / Act
-        const sut = toUnstagedKind('modified');
-        // Assert
-        expect(sut).toBe('modified');
-      });
-
-      it("Then 'unchanged' yields no kind", () => {
-        // Arrange / Act
-        const sut = toUnstagedKind('unchanged');
-        // Assert
-        expect(sut).toBeUndefined();
+        expect(sut).toBe(expected);
       });
     });
   });

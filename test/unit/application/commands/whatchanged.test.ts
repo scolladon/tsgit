@@ -255,64 +255,57 @@ describe('whatchanged', () => {
     });
   });
 
-  describe('Given an unresolvable rev, When whatchanged runs', () => {
-    it('Then it throws OBJECT_NOT_FOUND', async () => {
-      // Arrange
-      const { ctx } = await seedLinear();
-      const sut = whatchanged;
+  describe('Given a revision whatchanged cannot resolve — explicit, excluded, or the default HEAD', () => {
+    describe('When whatchanged runs', () => {
+      it.each([
+        {
+          label: 'an unresolvable rev',
+          build: async (): Promise<{
+            ctx: Context;
+            options?: Parameters<typeof whatchanged>[1];
+          }> => {
+            const { ctx } = await seedLinear();
+            return { ctx, options: { rev: 'no-such-rev' } };
+          },
+        },
+        {
+          label: 'an unresolvable excluding entry',
+          build: async (): Promise<{
+            ctx: Context;
+            options?: Parameters<typeof whatchanged>[1];
+          }> => {
+            const { ctx, c3 } = await seedLinear();
+            return { ctx, options: { rev: c3, excluding: ['no-such-rev'] } };
+          },
+        },
+        {
+          label: 'an unborn branch (HEAD points at a ref that no longer resolves)',
+          build: async (): Promise<{
+            ctx: Context;
+            options?: Parameters<typeof whatchanged>[1];
+          }> => {
+            const { ctx } = await seedLinear();
+            await ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/main`);
+            return { ctx };
+          },
+        },
+      ])('Then it throws OBJECT_NOT_FOUND ($label)', async ({ build }) => {
+        // Arrange
+        const { ctx, options } = await build();
+        const sut = whatchanged;
 
-      // Act
-      let caught: unknown;
-      try {
-        await sut(ctx, { rev: 'no-such-rev' });
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, options);
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert
-      expect(caught).toBeInstanceOf(Error);
-      expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
-    });
-  });
-
-  describe('Given an unresolvable excluding entry, When whatchanged runs', () => {
-    it('Then it throws OBJECT_NOT_FOUND', async () => {
-      // Arrange
-      const { ctx, c3 } = await seedLinear();
-      const sut = whatchanged;
-
-      // Act
-      let caught: unknown;
-      try {
-        await sut(ctx, { rev: c3, excluding: ['no-such-rev'] });
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(Error);
-      expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
-    });
-  });
-
-  describe('Given an unborn branch, When whatchanged runs', () => {
-    it('Then it throws OBJECT_NOT_FOUND', async () => {
-      // Arrange — wipe the only ref so HEAD points at an unresolvable branch
-      const { ctx } = await seedLinear();
-      await ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/main`);
-      const sut = whatchanged;
-
-      // Act
-      let caught: unknown;
-      try {
-        await sut(ctx);
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(Error);
-      expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
+        // Assert
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
+      });
     });
   });
 });

@@ -117,9 +117,28 @@ describe('commands/submodule', () => {
     });
   });
 
-  describe('Given recursive=true', () => {
-    describe('When submodules()', () => {
-      it('Then walkSubmodules is invoked recursively', async () => {
+  describe('Given a repo with an absorbed nested submodule', () => {
+    describe('When submodules() runs with a recursion option', () => {
+      it.each([
+        {
+          label: 'recursive=true walks into the nested submodule',
+          options: { recursive: true },
+          expectedDepths: [0, 1],
+          expectedParent: 'foo',
+        },
+        {
+          label: 'recursive omitted yields only depth-0 entries',
+          options: {},
+          expectedDepths: [0],
+          expectedParent: undefined,
+        },
+        {
+          label: 'recursive=true with maxDepth=0 forwards the cap and stays at depth 0',
+          options: { recursive: true, maxDepth: 0 },
+          expectedDepths: [0],
+          expectedParent: undefined,
+        },
+      ])('Then $label', async ({ options, expectedDepths, expectedParent }) => {
         // Arrange — set up an absorbed nested submodule.
         __resetConfigCacheForTests();
         const ctx = await buildSeededContext();
@@ -140,73 +159,13 @@ describe('commands/submodule', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${parentCommit}\n`);
 
         // Act
-        const sut = await submoduleList(ctx, { recursive: true });
+        const sut = await submoduleList(ctx, options);
 
         // Assert
-        expect(sut.entries.map((e) => e.depth)).toEqual([0, 1]);
-        expect(sut.entries[1]?.parent).toBe('foo');
-      });
-    });
-  });
-
-  describe('Given recursive omitted', () => {
-    describe('When submodules()', () => {
-      it('Then only depth-0 entries yield', async () => {
-        // Arrange
-        __resetConfigCacheForTests();
-        const ctx = await buildSeededContext();
-        const childGitDir = `${ctx.layout.gitDir}/modules/foo`;
-        const childCtx: Context = Object.freeze({
-          ...ctx,
-          layout: Object.freeze({ ...ctx.layout, gitDir: childGitDir }),
-        });
-        const childTreeId = await writeRoot(childCtx, undefined, [
-          { name: 'inner', id: FAKE_COMMIT_NESTED },
-        ]);
-        const childCommit = await writeCommit(childCtx, childTreeId);
-        await ctx.fs.writeUtf8(`${childGitDir}/HEAD`, `${childCommit}\n`);
-
-        const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
-        const parentTree = await writeRoot(ctx, text, [{ name: 'foo', id: childCommit }]);
-        const parentCommit = await writeCommit(ctx, parentTree);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${parentCommit}\n`);
-
-        // Act
-        const sut = await submoduleList(ctx);
-
-        // Assert
-        expect(sut.entries.map((e) => e.depth)).toEqual([0]);
-      });
-    });
-  });
-
-  describe('Given recursive=true and maxDepth=0', () => {
-    describe('When submodules()', () => {
-      it('Then the depth cap is forwarded and only depth-0 entries yield', async () => {
-        // Arrange — set up an absorbed nested submodule.
-        __resetConfigCacheForTests();
-        const ctx = await buildSeededContext();
-        const childGitDir = `${ctx.layout.gitDir}/modules/foo`;
-        const childCtx: Context = Object.freeze({
-          ...ctx,
-          layout: Object.freeze({ ...ctx.layout, gitDir: childGitDir }),
-        });
-        const childTreeId = await writeRoot(childCtx, undefined, [
-          { name: 'inner', id: FAKE_COMMIT_NESTED },
-        ]);
-        const childCommit = await writeCommit(childCtx, childTreeId);
-        await ctx.fs.writeUtf8(`${childGitDir}/HEAD`, `${childCommit}\n`);
-
-        const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
-        const parentTree = await writeRoot(ctx, text, [{ name: 'foo', id: childCommit }]);
-        const parentCommit = await writeCommit(ctx, parentTree);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${parentCommit}\n`);
-
-        // Act
-        const sut = await submoduleList(ctx, { recursive: true, maxDepth: 0 });
-
-        // Assert — the cap was forwarded; recursion entered then short-circuited.
-        expect(sut.entries.map((e) => e.depth)).toEqual([0]);
+        expect(sut.entries.map((e) => e.depth)).toEqual(expectedDepths);
+        if (expectedParent !== undefined) {
+          expect(sut.entries[1]?.parent).toBe(expectedParent);
+        }
       });
     });
   });
