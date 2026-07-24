@@ -20,10 +20,13 @@ export interface ScaledContext {
   readonly given: string;
 }
 
-/** Given-phrase for a resolved spec — evolving fixtures have no `blobs` file count. */
+/** Given-phrase for a resolved spec — evolving/deep-ancestry fixtures have no `blobs` file count. */
 const givenPhrase = (spec: FixtureSpec): string => {
   if (spec.strategy === 'evolving') {
     return `Given a ${spec.label} repo (${spec.commits} commits, deep delta chains)`;
+  }
+  if (spec.strategy === 'deep-ancestry') {
+    return `Given a ${spec.label} deep-ancestry repo (${spec.commits} commits)`;
   }
   return `Given a ${spec.label} repo (${spec.commits} commits, ${spec.blobs} blobs)`;
 };

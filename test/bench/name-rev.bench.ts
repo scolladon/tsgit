@@ -1,9 +1,10 @@
 /**
- * Scaled bench: `repo.nameRev()` naming a tagged commit dated more than one
+ * Tiered bench: `repo.nameRev()` naming a tagged commit dated more than one
  * day after the deep fixture history — pins the date-cutoff pruning win
  * (O(distance) reads instead of walking the full history per ref; the
  * fixture's commits are seconds apart, so only a >1-day-newer target makes
- * the cutoff fire). tsgit-only: isomorphic-git has no name-rev.
+ * the cutoff fire) at each fixture tier. tsgit-only: isomorphic-git has no
+ * name-rev. Date-cutoff pruning keeps cost O(distance) at every tier.
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -11,7 +12,7 @@ import { promisify } from 'node:util';
 import { afterAll } from 'vitest';
 
 import { openRepository } from '../../src/index.node.js';
-import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
+import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -63,10 +64,8 @@ const ensurePrunableTaggedTip = async (cwd: string): Promise<string> => {
   return target;
 };
 
-const ctx = await resolveScaledContext();
-
-scaledScenario(
-  ctx,
+await tieredScenario(
+  MULTI_TIERS,
   'When name-rev() names a commit a day newer than the deep history, Then the walk stops at the date cutoff',
   async (fixture) => {
     const target = await ensurePrunableTaggedTip(fixture.cwd);

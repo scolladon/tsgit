@@ -6,6 +6,9 @@
  */
 import type { BenchComparison } from './bench-dsl.js';
 import {
+  DEEP_ANCESTRY_LARGE,
+  DEEP_ANCESTRY_MEDIUM,
+  DEEP_ANCESTRY_SMALL,
   type FixtureSpec,
   LARGE_FIXTURE,
   MEDIUM_FIXTURE,
@@ -24,6 +27,12 @@ export const MULTI_TIERS: TierSpecs = {
   small: SMALL_FIXTURE,
   medium: MEDIUM_FIXTURE,
   large: LARGE_FIXTURE,
+};
+
+export const DEEP_ANCESTRY_TIERS: TierSpecs = {
+  small: DEEP_ANCESTRY_SMALL,
+  medium: DEEP_ANCESTRY_MEDIUM,
+  large: DEEP_ANCESTRY_LARGE,
 };
 
 /**
