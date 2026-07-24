@@ -47,62 +47,39 @@ const realResolver: TreeResolver = {
 };
 
 describe('tree-snapshot — kindFromMode discriminator', () => {
-  describe('Given a tree entry with mode 120000', () => {
+  describe('Given a tree entry with a known mode', () => {
     describe('When the row is yielded', () => {
-      it('Then kind is exactly "symlink"', async () => {
+      it.each([
+        {
+          mode: FILE_MODE.SYMLINK as FileMode,
+          name: 'lnk',
+          expectedKind: 'symlink',
+          label: 'kind is exactly "symlink" for mode 120000',
+        },
+        {
+          mode: FILE_MODE.GITLINK as FileMode,
+          name: 'vendor',
+          expectedKind: 'submodule',
+          label: 'kind is exactly "submodule" for mode 160000',
+        },
+        {
+          mode: FILE_MODE.REGULAR as FileMode,
+          name: 'a.txt',
+          expectedKind: 'file',
+          label: 'kind is exactly "file" for mode 100644',
+        },
+      ])('Then $label', async ({ mode, name, expectedKind }) => {
         // Arrange
         const ctx = await buildSeededContext();
         const target = await writeBlob(ctx, new TextEncoder().encode('target/path'));
-        const treeId = await buildTree(ctx, [
-          { name: 'lnk', mode: FILE_MODE.SYMLINK as FileMode, id: target },
-        ]);
+        const treeId = await buildTree(ctx, [{ name, mode, id: target }]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, treeId);
 
         // Act
         const rows = await collect(sut.entries());
 
         // Assert
-        expect(rows[0]?.kind).toBe('symlink');
-      });
-    });
-  });
-
-  describe('Given a tree entry with mode 160000 (submodule)', () => {
-    describe('When the row is yielded', () => {
-      it('Then kind is exactly "submodule"', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const subOid = '0123456789abcdef0123456789abcdef01234567' as ObjectId;
-        const treeId = await buildTree(ctx, [
-          { name: 'vendor', mode: FILE_MODE.GITLINK as FileMode, id: subOid },
-        ]);
-        const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, treeId);
-
-        // Act
-        const rows = await collect(sut.entries());
-
-        // Assert
-        expect(rows[0]?.kind).toBe('submodule');
-      });
-    });
-  });
-
-  describe('Given a tree entry with mode 100644 (regular file)', () => {
-    describe('When the row is yielded', () => {
-      it('Then kind is exactly "file"', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const blob = await writeBlob(ctx, new Uint8Array([1]));
-        const treeId = await buildTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
-        ]);
-        const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, treeId);
-
-        // Act
-        const rows = await collect(sut.entries());
-
-        // Assert
-        expect(rows[0]?.kind).toBe('file');
+        expect(rows[0]?.kind).toBe(expectedKind);
       });
     });
   });
