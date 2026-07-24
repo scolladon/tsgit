@@ -68,14 +68,16 @@ describe('NodeHookRunner (POSIX real-process smoke)', () => {
     ...over,
   });
 
-  it('Given no hook file, When run, Then it resolves skipped', async () => {
-    const result = await new NodeHookRunner().run(request('pre-commit'));
+  const skippedCases: ReadonlyArray<{ label: string; setup: () => Promise<void> }> = [
+    { label: 'no hook file', setup: async () => {} },
+    {
+      label: 'a hook file with no executable bit',
+      setup: async () => writeHook('pre-commit', '#!/bin/sh\nexit 0\n', { exec: false }),
+    },
+  ];
 
-    expect(result).toEqual({ kind: 'skipped' });
-  });
-
-  it('Given a hook file with no executable bit, When run, Then it resolves skipped', async () => {
-    await writeHook('pre-commit', '#!/bin/sh\nexit 0\n', { exec: false });
+  it.each(skippedCases)('Given $label, When run, Then it resolves skipped', async ({ setup }) => {
+    await setup();
 
     const result = await new NodeHookRunner().run(request('pre-commit'));
 
