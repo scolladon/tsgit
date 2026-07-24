@@ -436,38 +436,33 @@ describe('openRepository — dispose state machine', () => {
   });
 
   describe('Given a disposed repo', () => {
-    describe('When fetchMissing is invoked', () => {
-      it('Then throws REPOSITORY_DISPOSED', async () => {
+    describe('When a bound primitive, command, or namespace method is invoked', () => {
+      it.each([
+        ['fetchMissing', (repo: Repository) => repo.fetchMissing({ oids: [] })],
+        ['grep', (repo: Repository) => repo.grep({ patterns: [{ fixed: 'hello' }] })],
+        ['primitives.readIndex', (repo: Repository) => repo.primitives.readIndex()],
+        ['merge.abort', (repo: Repository) => repo.merge.abort()],
+        ['merge.continue', (repo: Repository) => repo.merge.continue()],
+        ['merge.run', (repo: Repository) => repo.merge.run({ rev: 'feature' })],
+        ['show', (repo: Repository) => repo.show()],
+      ] as const)('Then %s throws REPOSITORY_DISPOSED', async (_label, call) => {
         // Arrange
         const sut = await open();
-
         await sut.dispose();
+
+        // Act
+        let caught: unknown;
         try {
-          await sut.fetchMissing({ oids: [] });
-          // Assert
-          expect.unreachable();
+          await call(sut);
         } catch (err) {
-          const data = (err as TsgitError).data;
-          expect(data.code).toBe('REPOSITORY_DISPOSED');
+          caught = err;
         }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
       });
     });
-    describe('When grep is invoked', () => {
-      it('Then throws REPOSITORY_DISPOSED', async () => {
-        // Arrange
-        const sut = await open();
 
-        await sut.dispose();
-        try {
-          await sut.grep({ patterns: [{ fixed: 'hello' }] });
-          // Assert
-          expect.unreachable();
-        } catch (err) {
-          const data = (err as TsgitError).data;
-          expect(data.code).toBe('REPOSITORY_DISPOSED');
-        }
-      });
-    });
     describe('When dispose is called again', () => {
       it('Then resolves without throwing (idempotent)', async () => {
         // Arrange
@@ -506,25 +501,6 @@ describe('openRepository — dispose state machine', () => {
     });
   });
 
-  describe('Given dispose has been called', () => {
-    describe('When any bound primitive is invoked', () => {
-      it('Then throws REPOSITORY_DISPOSED', async () => {
-        // Arrange
-        const sut = await open();
-
-        await sut.dispose();
-        try {
-          await sut.primitives.readIndex();
-          // Assert
-          expect.unreachable();
-        } catch (err) {
-          const data = (err as TsgitError).data;
-          expect(data.code).toBe('REPOSITORY_DISPOSED');
-        }
-      });
-    });
-  });
-
   describe('Given a Repository handle', () => {
     describe('When the merge namespace is accessed', () => {
       it('Then run / continue / abort are all functions', async () => {
@@ -535,81 +511,6 @@ describe('openRepository — dispose state machine', () => {
         expect(typeof sut.merge.run).toBe('function');
         expect(typeof sut.merge.continue).toBe('function');
         expect(typeof sut.merge.abort).toBe('function');
-      });
-    });
-  });
-
-  describe('Given a disposed Repository', () => {
-    describe('When merge.abort is invoked', () => {
-      it('Then throws REPOSITORY_DISPOSED', async () => {
-        // Arrange
-        const sut = await open();
-        await sut.dispose();
-
-        // Act
-        let caught: unknown;
-        try {
-          await sut.merge.abort();
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
-      });
-    });
-    describe('When merge.continue is invoked', () => {
-      it('Then throws REPOSITORY_DISPOSED', async () => {
-        // Arrange
-        const sut = await open();
-        await sut.dispose();
-
-        // Act
-        let caught: unknown;
-        try {
-          await sut.merge.continue();
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
-      });
-    });
-    describe('When merge.run is invoked', () => {
-      it('Then throws REPOSITORY_DISPOSED', async () => {
-        // Arrange
-        const sut = await open();
-        await sut.dispose();
-
-        // Act
-        let caught: unknown;
-        try {
-          await sut.merge.run({ rev: 'feature' });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
-      });
-    });
-    describe('When show is invoked', () => {
-      it('Then throws REPOSITORY_DISPOSED', async () => {
-        // Arrange
-        const sut = await open();
-        await sut.dispose();
-
-        // Act
-        let caught: unknown;
-        try {
-          await sut.show();
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data.code).toBe('REPOSITORY_DISPOSED');
       });
     });
   });
@@ -1123,57 +1024,43 @@ describe('openRepository — worktreeFs capability', () => {
 
 describe('openRepository — config-scope allowlist', () => {
   describe('Given a default-wrapped repo whose adapter exposes home, XDG and system config scopes', () => {
-    describe('When accessing the user home git config through the wrapped fs', () => {
-      it('Then it escapes the workDir guard and reaches the adapter', async () => {
-        // Arrange — MemoryFileSystem defaults home to '/home/user'.
-        const sut = await open();
-
-        // Act — '/home/user/.gitconfig' is outside workDir; only the config-scope
-        // allowlist admits it. Reaching the adapter yields its own out-of-root
-        // PERMISSION_DENIED; a blocked path would raise PATHSPEC_OUTSIDE_REPO.
-        const code = await rejectionCode(() => sut.ctx.fs.read('/home/user/.gitconfig'));
-
-        // Assert
-        expect(code).toBe('PERMISSION_DENIED');
-      });
-    });
-
-    describe('When accessing the XDG git config through the wrapped fs', () => {
-      it('Then it escapes the workDir guard and reaches the adapter', async () => {
-        // Arrange — MemoryFileSystem defaults XDG to '/home/user/.config'.
-        const sut = await open();
-
-        // Act
-        const code = await rejectionCode(() => sut.ctx.fs.read('/home/user/.config/git/config'));
-
-        // Assert
-        expect(code).toBe('PERMISSION_DENIED');
-      });
-    });
-
-    describe('When accessing the system git config through the wrapped fs', () => {
-      it('Then it escapes the workDir guard and reaches the adapter', async () => {
-        // Arrange — MemoryFileSystem defaults the system config to '/etc/gitconfig'.
-        const sut = await open();
-
-        // Act
-        const code = await rejectionCode(() => sut.ctx.fs.read('/etc/gitconfig'));
-
-        // Assert
-        expect(code).toBe('PERMISSION_DENIED');
-      });
-    });
-
-    describe('When accessing a non-config path outside the repo', () => {
-      it('Then it is rejected — the allowlist admits only the computed config scopes', async () => {
+    describe('When accessing a config-scope or arbitrary path through the wrapped fs', () => {
+      it.each([
+        {
+          path: '/home/user/.gitconfig',
+          expectedCode: 'PERMISSION_DENIED',
+          label:
+            'the user home git config escapes the workDir guard and reaches the adapter (MemoryFileSystem defaults home to /home/user)',
+        },
+        {
+          path: '/home/user/.config/git/config',
+          expectedCode: 'PERMISSION_DENIED',
+          label:
+            'the XDG git config escapes the workDir guard and reaches the adapter (MemoryFileSystem defaults XDG to /home/user/.config)',
+        },
+        {
+          path: '/etc/gitconfig',
+          expectedCode: 'PERMISSION_DENIED',
+          label:
+            'the system git config escapes the workDir guard and reaches the adapter (MemoryFileSystem defaults the system config to /etc/gitconfig)',
+        },
+        {
+          path: 'Stryker was here',
+          expectedCode: 'PATHSPEC_OUTSIDE_REPO',
+          label:
+            'a non-config path is rejected — the allowlist admits only the computed config scopes',
+        },
+      ])('Then $label', async ({ path, expectedCode }) => {
         // Arrange
         const sut = await open();
 
-        // Act — proves the allowlist base is empty: no phantom entry is admitted.
-        const code = await rejectionCode(() => sut.ctx.fs.read('Stryker was here'));
+        // Act — PERMISSION_DENIED means the config-scope allowlist admitted the path and
+        // the adapter was reached; PATHSPEC_OUTSIDE_REPO means the wrapper's guard blocked
+        // it first (proving the allowlist base is empty for non-config paths).
+        const code = await rejectionCode(() => sut.ctx.fs.read(path));
 
         // Assert
-        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+        expect(code).toBe(expectedCode);
       });
     });
   });
