@@ -52,153 +52,32 @@ describe('isStatClean', () => {
     });
   });
 
-  describe('Given different mtimeSeconds', () => {
+  describe('Given a StatData that differs from the IndexEntry in one field', () => {
     describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, mtimeSeconds: 9999 };
+      it.each([
+        { label: 'mtimeSeconds', overrides: { mtimeSeconds: 9999 } },
+        { label: 'mtimeNanoseconds', overrides: { mtimeNanoseconds: 9999 } },
+        { label: 'ctimeSeconds', overrides: { ctimeSeconds: 9999 } },
+        { label: 'ctimeNanoseconds', overrides: { ctimeNanoseconds: 9999 } },
+        { label: 'dev', overrides: { dev: 9999 } },
+        { label: 'ino', overrides: { ino: 9999 } },
+        { label: 'mode', overrides: { mode: FILE_MODE.EXECUTABLE } },
+        { label: 'uid', overrides: { uid: 9999 } },
+        { label: 'gid', overrides: { gid: 9999 } },
+        { label: 'fileSize', overrides: { fileSize: 9999 } },
+      ] satisfies ReadonlyArray<{ label: string; overrides: Partial<StatData> }>)(
+        'Then returns false ($label differs)',
+        ({ overrides }) => {
+          // Arrange
+          const stat: StatData = { ...BASE_STAT, ...overrides };
 
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
+          // Act
+          const sut = isStatClean(BASE_ENTRY, stat);
 
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different mtimeNanoseconds', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, mtimeNanoseconds: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different ctimeSeconds', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, ctimeSeconds: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different ctimeNanoseconds', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, ctimeNanoseconds: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different dev', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, dev: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different ino', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, ino: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different mode', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, mode: FILE_MODE.EXECUTABLE };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different uid', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, uid: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different gid', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, gid: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given different fileSize', () => {
-    describe('When comparing', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const stat: StatData = { ...BASE_STAT, fileSize: 9999 };
-
-        // Act
-        const sut = isStatClean(BASE_ENTRY, stat);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
+          // Assert
+          expect(sut).toBe(false);
+        },
+      );
     });
   });
 
@@ -286,28 +165,15 @@ describe('STAGE0_FLAGS', () => {
         });
       });
     });
-    describe('When reading assumeValid', () => {
-      it('Then it is exactly false', () => {
+    describe('When reading a flag field', () => {
+      it.each([
+        { field: 'assumeValid', expected: false },
+        { field: 'stage', expected: 0 },
+        { field: 'skipWorktree', expected: false },
+        { field: 'intentToAdd', expected: false },
+      ] as const)('Then $field is exactly $expected', ({ field, expected }) => {
         // Arrange & Act & Assert
-        expect(STAGE0_FLAGS.assumeValid).toBe(false);
-      });
-    });
-    describe('When reading stage', () => {
-      it('Then it is exactly 0', () => {
-        // Arrange & Act & Assert
-        expect(STAGE0_FLAGS.stage).toBe(0);
-      });
-    });
-    describe('When reading skipWorktree', () => {
-      it('Then it is exactly false', () => {
-        // Arrange & Act & Assert
-        expect(STAGE0_FLAGS.skipWorktree).toBe(false);
-      });
-    });
-    describe('When reading intentToAdd', () => {
-      it('Then it is exactly false', () => {
-        // Arrange & Act & Assert
-        expect(STAGE0_FLAGS.intentToAdd).toBe(false);
+        expect(STAGE0_FLAGS[field]).toBe(expected);
       });
     });
   });

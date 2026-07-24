@@ -163,66 +163,44 @@ describe('commands/internal commit-hooks applyCommitMessageHooks', () => {
     });
   });
 
-  describe('Given a hook that does not touch the file', () => {
-    describe('When applyCommitMessageHooks', () => {
-      it('Then it returns the sanitised message', async () => {
+  describe('Given a runner that may rewrite COMMIT_EDITMSG', () => {
+    describe('When applyCommitMessageHooks resolves the final message', () => {
+      it.each([
+        {
+          rewrites: {},
+          message: '  spaced  ',
+          expected: '  spaced\n',
+          label:
+            'a hook that does not touch the file returns the sanitised message (stripspace round-trip)',
+        },
+        {
+          rewrites: { 'commit-msg': 'rewritten by hook' },
+          message: 'original',
+          expected: 'rewritten by hook\n',
+          label: 'a commit-msg hook that rewrites COMMIT_EDITMSG returns the rewritten message',
+        },
+        {
+          rewrites: { 'prepare-commit-msg': 'from prepare', 'commit-msg': 'from commit-msg' },
+          message: 'original',
+          expected: 'from commit-msg\n',
+          label:
+            'a prepare-commit-msg and a commit-msg hook that both rewrite: the commit-msg rewrite (last) wins, proving order',
+        },
+        {
+          rewrites: { 'prepare-commit-msg': 'from prepare' },
+          message: 'original',
+          expected: 'from prepare\n',
+          label: 'only a prepare-commit-msg hook that rewrites is picked up',
+        },
+      ])('Then $label', async ({ rewrites, message, expected }) => {
         // Arrange
-        const ctx = hookedContext();
+        const ctx = hookedContext(rewrites);
 
         // Act
-        const result = await applyCommitMessageHooks(ctx, '  spaced  ', opts);
-
-        // Assert — the round-trip re-sanitises (stripspace) the message: trailing
-        // whitespace + blank lines go, leading whitespace and a single newline stay.
-        expect(result).toBe('  spaced\n');
-      });
-    });
-  });
-
-  describe('Given a commit-msg hook that rewrites COMMIT_EDITMSG', () => {
-    describe('When applyCommitMessageHooks', () => {
-      it('Then it returns the rewritten message', async () => {
-        // Arrange
-        const ctx = hookedContext({ 'commit-msg': 'rewritten by hook' });
-
-        // Act
-        const result = await applyCommitMessageHooks(ctx, 'original', opts);
+        const result = await applyCommitMessageHooks(ctx, message, opts);
 
         // Assert
-        expect(result).toBe('rewritten by hook\n');
-      });
-    });
-  });
-
-  describe('Given a prepare-commit-msg and a commit-msg hook that both rewrite', () => {
-    describe('When applyCommitMessageHooks', () => {
-      it('Then the commit-msg rewrite (last) wins, proving order', async () => {
-        // Arrange
-        const ctx = hookedContext({
-          'prepare-commit-msg': 'from prepare',
-          'commit-msg': 'from commit-msg',
-        });
-
-        // Act
-        const result = await applyCommitMessageHooks(ctx, 'original', opts);
-
-        // Assert — commit-msg runs after prepare-commit-msg, so its edit is final.
-        expect(result).toBe('from commit-msg\n');
-      });
-    });
-  });
-
-  describe('Given only a prepare-commit-msg hook that rewrites', () => {
-    describe('When applyCommitMessageHooks', () => {
-      it('Then the prepare-commit-msg rewrite is picked up', async () => {
-        // Arrange
-        const ctx = hookedContext({ 'prepare-commit-msg': 'from prepare' });
-
-        // Act
-        const result = await applyCommitMessageHooks(ctx, 'original', opts);
-
-        // Assert
-        expect(result).toBe('from prepare\n');
+        expect(result).toBe(expected);
       });
     });
   });

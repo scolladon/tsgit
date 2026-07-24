@@ -52,38 +52,30 @@ describe('stash-message builders', () => {
     });
   });
 
-  describe('Given a symbolic HEAD on refs/heads/feature', () => {
+  describe('Given a HEAD ref state', () => {
     describe('When the stash branch label is derived', () => {
-      it('Then the short branch name is used', () => {
+      it.each([
+        {
+          headRef: 'refs/heads/feature',
+          expected: 'feature',
+          label: 'a symbolic HEAD on refs/heads/feature uses the short branch name',
+        },
+        {
+          headRef: undefined,
+          expected: '(no branch)',
+          label: 'a detached HEAD (no branch ref) uses the (no branch) literal',
+        },
+        {
+          headRef: 'refs/something/weird',
+          expected: '(no branch)',
+          label: 'a symbolic HEAD on a non-heads ref uses the (no branch) literal',
+        },
+      ])('Then $label', ({ headRef, expected }) => {
         // Arrange + Act
-        const sut = stashBranchLabel('refs/heads/feature');
+        const sut = stashBranchLabel(headRef);
 
         // Assert
-        expect(sut).toBe('feature');
-      });
-    });
-  });
-
-  describe('Given a detached HEAD (no branch ref)', () => {
-    describe('When the stash branch label is derived', () => {
-      it('Then the (no branch) literal is used', () => {
-        // Arrange + Act
-        const sut = stashBranchLabel(undefined);
-
-        // Assert
-        expect(sut).toBe('(no branch)');
-      });
-    });
-  });
-
-  describe('Given a symbolic HEAD on a non-heads ref', () => {
-    describe('When the stash branch label is derived', () => {
-      it('Then the (no branch) literal is used', () => {
-        // Arrange + Act
-        const sut = stashBranchLabel('refs/something/weird');
-
-        // Assert
-        expect(sut).toBe('(no branch)');
+        expect(sut).toBe(expected);
       });
     });
   });

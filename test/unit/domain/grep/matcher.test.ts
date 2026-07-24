@@ -240,36 +240,6 @@ describe('buildGrepMatcher', () => {
 
   describe('-w whole-word gating', () => {
     describe('Given wholeWord=true and a regex pattern /hello/', () => {
-      describe('When matchLine is called and LEFT boundary is a word byte', () => {
-        it('Then does NOT match (left guard triggered)', () => {
-          // Arrange
-          const sut = buildGrepMatcher([/hello/], { wholeWord: true });
-          // 'xhello world' — 'x' before 'hello' is a word byte
-          const line = enc('xhello world');
-
-          // Act
-          const result = sut.matchLine(line);
-
-          // Assert
-          expect(result.returned).toBe(false);
-        });
-      });
-
-      describe('When matchLine is called and RIGHT boundary is a word byte', () => {
-        it('Then does NOT match (right guard triggered)', () => {
-          // Arrange
-          const sut = buildGrepMatcher([/hello/], { wholeWord: true });
-          // ' hellox' — 'x' after 'hello' is a word byte
-          const line = enc(' hellox world');
-
-          // Act
-          const result = sut.matchLine(line);
-
-          // Assert
-          expect(result.returned).toBe(false);
-        });
-      });
-
       describe('When matchLine is called and both boundaries are non-word bytes', () => {
         it('Then matches', () => {
           // Arrange
@@ -285,138 +255,119 @@ describe('buildGrepMatcher', () => {
         });
       });
 
-      describe('When match is at line start and right boundary is non-word', () => {
-        it('Then matches (edge is non-word boundary)', () => {
+      describe('When matchLine is called at a guard, edge, or match boundary', () => {
+        it.each([
+          {
+            // 'xhello world' — 'x' before 'hello' is a word byte
+            line: 'xhello world',
+            expected: false,
+            label: 'does NOT match when the LEFT boundary is a word byte (left guard triggered)',
+          },
+          {
+            // ' hellox' — 'x' after 'hello' is a word byte
+            line: ' hellox world',
+            expected: false,
+            label: 'does NOT match when the RIGHT boundary is a word byte (right guard triggered)',
+          },
+          {
+            line: 'hello world',
+            expected: true,
+            label:
+              'matches when at line start and the right boundary is non-word (edge is non-word boundary)',
+          },
+          {
+            line: 'say hello',
+            expected: true,
+            label:
+              'matches when at line end and the left boundary is non-word (edge is non-word boundary)',
+          },
+        ])('Then $label', ({ line, expected }) => {
           // Arrange
           const sut = buildGrepMatcher([/hello/], { wholeWord: true });
-          const line = enc('hello world');
+          const encoded = enc(line);
 
           // Act
-          const result = sut.matchLine(line);
+          const result = sut.matchLine(encoded);
 
           // Assert
-          expect(result.returned).toBe(true);
-        });
-      });
-
-      describe('When match is at line end and left boundary is non-word', () => {
-        it('Then matches (edge is non-word boundary)', () => {
-          // Arrange
-          const sut = buildGrepMatcher([/hello/], { wholeWord: true });
-          const line = enc('say hello');
-
-          // Act
-          const result = sut.matchLine(line);
-
-          // Assert
-          expect(result.returned).toBe(true);
+          expect(result.returned).toBe(expected);
         });
       });
     });
 
     describe('Given a fixed pattern { fixed: "word" } with wholeWord=true', () => {
-      describe('When the fixed match has a word byte on the left', () => {
-        it('Then does NOT match (left guard triggered for fixed form)', () => {
+      describe('When matchLine is called at a guard or non-word boundary', () => {
+        it.each([
+          {
+            line: 'aword sentence',
+            expected: false,
+            label:
+              'does NOT match when there is a word byte on the left (left guard triggered for fixed form)',
+          },
+          {
+            line: ' worda sentence',
+            expected: false,
+            label:
+              'does NOT match when there is a word byte on the right (right guard triggered for fixed form)',
+          },
+          {
+            line: ' word sentence',
+            expected: true,
+            label: 'matches when there are non-word boundaries on both sides',
+          },
+        ])('Then $label', ({ line, expected }) => {
           // Arrange
           const sut = buildGrepMatcher([{ fixed: 'word' }], { wholeWord: true });
-          const line = enc('aword sentence');
+          const encoded = enc(line);
 
           // Act
-          const result = sut.matchLine(line);
+          const result = sut.matchLine(encoded);
 
           // Assert
-          expect(result.returned).toBe(false);
-        });
-      });
-
-      describe('When the fixed match has a word byte on the right', () => {
-        it('Then does NOT match (right guard triggered for fixed form)', () => {
-          // Arrange
-          const sut = buildGrepMatcher([{ fixed: 'word' }], { wholeWord: true });
-          const line = enc(' worda sentence');
-
-          // Act
-          const result = sut.matchLine(line);
-
-          // Assert
-          expect(result.returned).toBe(false);
-        });
-      });
-
-      describe('When the fixed match has non-word boundaries on both sides', () => {
-        it('Then matches', () => {
-          // Arrange
-          const sut = buildGrepMatcher([{ fixed: 'word' }], { wholeWord: true });
-          const line = enc(' word sentence');
-
-          // Act
-          const result = sut.matchLine(line);
-
-          // Assert
-          expect(result.returned).toBe(true);
+          expect(result.returned).toBe(expected);
         });
       });
     });
   });
 
   describe('Given invert=true option', () => {
-    describe('When matchLine is called on a line that matches the pattern', () => {
-      it('Then returned=false with empty spans', () => {
+    describe('When matchLine is called', () => {
+      it.each([
+        {
+          patterns: [/hello/],
+          line: 'say hello',
+          expected: false,
+          label: 'a line that matches the pattern returns returned=false with empty spans',
+        },
+        {
+          patterns: [/hello/],
+          line: 'no match here',
+          expected: true,
+          label: 'a line that does NOT match returns returned=true with empty spans',
+        },
+        {
+          // Line matches /bar/ → should be excluded under invert
+          patterns: [/foo/, /bar/],
+          line: 'contains bar',
+          expected: false,
+          label: 'a line matching ANY of multiple patterns is excluded (OR-then-invert order)',
+        },
+        {
+          patterns: [/foo/, /bar/],
+          line: 'nothing relevant here',
+          expected: true,
+          label: 'a line matching NO pattern under multiple patterns is included with empty spans',
+        },
+      ])('Then $label', ({ patterns, line, expected }) => {
         // Arrange
-        const sut = buildGrepMatcher([/hello/], { invert: true });
-        const line = enc('say hello');
+        const sut = buildGrepMatcher(patterns, { invert: true });
+        const encoded = enc(line);
 
         // Act
-        const result = sut.matchLine(line);
+        const result = sut.matchLine(encoded);
 
         // Assert
-        expect(result.returned).toBe(false);
-        expect(result.spans).toHaveLength(0);
-      });
-    });
-
-    describe('When matchLine is called on a line that does NOT match', () => {
-      it('Then returned=true with empty spans', () => {
-        // Arrange
-        const sut = buildGrepMatcher([/hello/], { invert: true });
-        const line = enc('no match here');
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(true);
-        expect(result.spans).toHaveLength(0);
-      });
-    });
-
-    describe('When a line matches ANY of multiple patterns', () => {
-      it('Then invert excludes it (OR-then-invert order)', () => {
-        // Arrange
-        const sut = buildGrepMatcher([/foo/, /bar/], { invert: true });
-        // Line matches /bar/ → should be excluded under invert
-        const line = enc('contains bar');
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-        expect(result.spans).toHaveLength(0);
-      });
-    });
-
-    describe('When a line matches NO pattern under multiple patterns', () => {
-      it('Then invert includes it with empty spans', () => {
-        // Arrange
-        const sut = buildGrepMatcher([/foo/, /bar/], { invert: true });
-        const line = enc('nothing relevant here');
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(true);
+        expect(result.returned).toBe(expected);
         expect(result.spans).toHaveLength(0);
       });
     });
@@ -564,25 +515,6 @@ describe('buildGrepMatcher', () => {
     });
   });
 
-  describe('Given two patterns matching at the SAME start with different lengths', () => {
-    describe('When matchLine unions their spans', () => {
-      it('Then orders the same-start spans by end ascending', () => {
-        // Arrange
-        const sut = buildGrepMatcher([/ab/, /abc/]);
-        const line = enc('abc');
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert — secondary comparator (a.end - b.end) breaks the same-start tie
-        expect(result.spans).toEqual([
-          { start: 0, end: 2 },
-          { start: 0, end: 3 },
-        ]);
-      });
-    });
-  });
-
   describe('Given a caller RegExp already carrying the global flag (/o/g)', () => {
     describe('When matchLine is called', () => {
       it('Then finds all occurrences and leaves the caller lastIndex at 0', () => {
@@ -602,42 +534,30 @@ describe('buildGrepMatcher', () => {
   });
 
   describe('Given a word byte on the boundary (wholeWord)', () => {
-    describe('When the left boundary is an uppercase letter', () => {
-      it('Then does NOT match (uppercase counts as a word byte)', () => {
+    describe('When the left boundary is a letter, digit, or underscore', () => {
+      it.each([
+        {
+          pattern: { fixed: 'end' },
+          line: 'Bend',
+          label: 'does NOT match an uppercase letter (uppercase counts as a word byte)',
+        },
+        {
+          pattern: { fixed: 'cat' },
+          line: '9cat',
+          label: 'does NOT match a digit (a digit is a word byte)',
+        },
+        {
+          pattern: { fixed: 'cat' },
+          line: '_cat',
+          label: 'does NOT match an underscore (an underscore is a word byte)',
+        },
+      ])('Then $label', ({ pattern, line }) => {
         // Arrange
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = enc('Bend');
+        const sut = buildGrepMatcher([pattern], { wholeWord: true });
+        const encoded = enc(line);
 
         // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary is a digit', () => {
-      it('Then does NOT match (a digit is a word byte)', () => {
-        // Arrange
-        const sut = buildGrepMatcher([{ fixed: 'cat' }], { wholeWord: true });
-        const line = enc('9cat');
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary is an underscore', () => {
-      it('Then does NOT match (an underscore is a word byte)', () => {
-        // Arrange
-        const sut = buildGrepMatcher([{ fixed: 'cat' }], { wholeWord: true });
-        const line = enc('_cat');
-
-        // Act
-        const result = sut.matchLine(line);
+        const result = sut.matchLine(encoded);
 
         // Assert
         expect(result.returned).toBe(false);
@@ -648,169 +568,114 @@ describe('buildGrepMatcher', () => {
   // ─── isWordByte exact range boundaries (kills ids 154,156,157,164,165,170,172) ─
 
   describe('Given wholeWord=true and a fixed pattern "end"', () => {
-    describe('When the left boundary byte is exactly A (0x41 — lower edge of upper-case range)', () => {
-      it('Then does NOT match (A is a word byte)', () => {
-        // Arrange — 'A' immediately before "end"
+    describe('When the left boundary byte is exactly at a word-byte range edge', () => {
+      it.each([
+        {
+          byte: 0x41,
+          expected: false,
+          label: 'A (0x41 — lower edge of upper-case range) is a word byte',
+        },
+        {
+          byte: 0x5a,
+          expected: false,
+          label: 'Z (0x5a — upper edge of upper-case range) is a word byte',
+        },
+        {
+          byte: 0x5b,
+          expected: true,
+          label: '[ (0x5b — one above Z, just outside upper-case range) is NOT a word byte',
+        },
+        {
+          byte: 0x61,
+          expected: false,
+          label: 'a (0x61 — lower edge of lower-case range) is a word byte',
+        },
+        {
+          byte: 0x7a,
+          expected: false,
+          label: 'z (0x7a — upper edge of lower-case range) is a word byte',
+        },
+        {
+          byte: 0x7b,
+          expected: true,
+          label: '{ (0x7b — one above z, just outside lower-case range) is NOT a word byte',
+        },
+        {
+          byte: 0x30,
+          expected: false,
+          label: '0 (0x30 — lower edge of digit range) is a word byte',
+        },
+        {
+          byte: 0x39,
+          expected: false,
+          label: '9 (0x39 — upper edge of digit range) is a word byte',
+        },
+        {
+          byte: 0x3a,
+          expected: true,
+          label: ': (0x3a — one above 9, just outside digit range) is NOT a word byte',
+        },
+      ])('Then $label', ({ byte, expected }) => {
+        // Arrange
         const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x41, ...new TextEncoder().encode('end')]); // 'A' + 'end'
+        const line = new Uint8Array([byte, ...new TextEncoder().encode('end')]);
 
         // Act
         const result = sut.matchLine(line);
 
         // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary byte is exactly Z (0x5a — upper edge of upper-case range)', () => {
-      it('Then does NOT match (Z is a word byte)', () => {
-        // Arrange — 'Z' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x5a, ...new TextEncoder().encode('end')]); // 'Z' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary byte is [ (0x5b — one above Z, just outside upper-case range)', () => {
-      it('Then MATCHES ([ is NOT a word byte)', () => {
-        // Arrange — '[' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x5b, ...new TextEncoder().encode('end')]); // '[' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(true);
-      });
-    });
-
-    describe('When the left boundary byte is exactly a (0x61 — lower edge of lower-case range)', () => {
-      it('Then does NOT match (a is a word byte)', () => {
-        // Arrange — 'a' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x61, ...new TextEncoder().encode('end')]); // 'a' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary byte is exactly z (0x7a — upper edge of lower-case range)', () => {
-      it('Then does NOT match (z is a word byte)', () => {
-        // Arrange — 'z' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x7a, ...new TextEncoder().encode('end')]); // 'z' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary byte is { (0x7b — one above z, just outside lower-case range)', () => {
-      it('Then MATCHES ({ is NOT a word byte)', () => {
-        // Arrange — '{' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x7b, ...new TextEncoder().encode('end')]); // '{' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(true);
-      });
-    });
-
-    describe('When the left boundary byte is exactly 0 (0x30 — lower edge of digit range)', () => {
-      it('Then does NOT match (0 is a word byte)', () => {
-        // Arrange — '0' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x30, ...new TextEncoder().encode('end')]); // '0' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary byte is exactly 9 (0x39 — upper edge of digit range)', () => {
-      it('Then does NOT match (9 is a word byte)', () => {
-        // Arrange — '9' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x39, ...new TextEncoder().encode('end')]); // '9' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(false);
-      });
-    });
-
-    describe('When the left boundary byte is : (0x3a — one above 9, just outside digit range)', () => {
-      it('Then MATCHES (: is NOT a word byte)', () => {
-        // Arrange — ':' immediately before "end"
-        const sut = buildGrepMatcher([{ fixed: 'end' }], { wholeWord: true });
-        const line = new Uint8Array([0x3a, ...new TextEncoder().encode('end')]); // ':' + 'end'
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.returned).toBe(true);
+        expect(result.returned).toBe(expected);
       });
     });
   });
 
   // ─── unionSpans sort ordering (kills ids 253, 257, 258, 259) ────────────────
 
-  describe('Given two patterns where the second pattern matches EARLIER in the line', () => {
+  describe('Given two patterns whose spans need sorting by (start, end)', () => {
     describe('When matchLine returns the union of spans', () => {
-      it('Then spans are sorted by start ascending regardless of pattern order', () => {
-        // Arrange — /bar/ matches at [4,7], /foo/ at [0,3]; must come out start-sorted
-        const sut = buildGrepMatcher([/bar/, /foo/]);
-        const line = enc('foo bar');
+      it.each([
+        {
+          // /bar/ matches at [4,7], /foo/ at [0,3]; must come out start-sorted
+          patterns: [/bar/, /foo/],
+          line: 'foo bar',
+          expected: [
+            { start: 0, end: 3 },
+            { start: 4, end: 7 },
+          ],
+          label: 'spans are sorted by start ascending regardless of pattern order',
+        },
+        {
+          // /ab/ matches [0,2], /abc/ matches [0,3]; same start, different end
+          patterns: [/ab/, /abc/],
+          line: 'abc',
+          expected: [
+            { start: 0, end: 2 },
+            { start: 0, end: 3 },
+          ],
+          label: 'orders the same-start spans by end ascending',
+        },
+        {
+          // Reversed pattern order from the row above — a "no real sort" bug
+          // would return the spans in input order, which is wrong here.
+          patterns: [/abc/, /ab/],
+          line: 'abc',
+          expected: [
+            { start: 0, end: 2 },
+            { start: 0, end: 3 },
+          ],
+          label:
+            'same-start spans are ordered by end ascending regardless of pattern order (secondary sort key)',
+        },
+      ])('Then $label', ({ patterns, line, expected }) => {
+        // Arrange
+        const sut = buildGrepMatcher(patterns);
+        const encoded = enc(line);
 
         // Act
-        const result = sut.matchLine(line);
+        const result = sut.matchLine(encoded);
 
         // Assert
-        expect(result.spans).toEqual([
-          { start: 0, end: 3 },
-          { start: 4, end: 7 },
-        ]);
-      });
-    });
-  });
-
-  describe('Given two patterns with the SAME start byte-offset but different end positions', () => {
-    describe('When matchLine returns the union of spans', () => {
-      it('Then same-start spans are ordered by end ascending (secondary sort key)', () => {
-        // Arrange — /ab/ matches [0,2], /abc/ matches [0,3]; same start, different end
-        const sut = buildGrepMatcher([/abc/, /ab/]);
-        const line = enc('abc');
-
-        // Act
-        const result = sut.matchLine(line);
-
-        // Assert
-        expect(result.spans).toEqual([
-          { start: 0, end: 2 },
-          { start: 0, end: 3 },
-        ]);
+        expect(result.spans).toEqual(expected);
       });
     });
   });

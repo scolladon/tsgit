@@ -83,152 +83,83 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given same path with different ids (same kind)', () => {
+  describe('Given same path with differing id and/or mode', () => {
     describe('When diffTrees called', () => {
-      it('Then returns [ModifyChange]', () => {
+      it.each([
+        {
+          label: 'different ids (same kind) yields [ModifyChange]',
+          path: 'foo',
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          oldId: ID_A,
+          newId: ID_B,
+          type: 'modify' as const,
+        },
+        {
+          label: '100644 → 100755 (same kind) yields [ModifyChange]',
+          path: 'foo',
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.EXECUTABLE,
+          oldId: ID_A,
+          newId: ID_A,
+          type: 'modify' as const,
+        },
+        {
+          label:
+            'both directory mode with different ids yields [ModifyChange] (directory kind preserved)',
+          path: 'dir',
+          oldMode: FILE_MODE.DIRECTORY,
+          newMode: FILE_MODE.DIRECTORY,
+          oldId: ID_A,
+          newId: ID_B,
+          type: 'modify' as const,
+        },
+        {
+          label: '100644 → 120000 (file → symlink) yields [TypeChangeChange]',
+          path: 'foo',
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.SYMLINK,
+          oldId: ID_A,
+          newId: ID_B,
+          type: 'type-change' as const,
+        },
+        {
+          label: 'file → gitlink yields [TypeChangeChange]',
+          path: 'sub',
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.GITLINK,
+          oldId: ID_A,
+          newId: ID_B,
+          type: 'type-change' as const,
+        },
+        {
+          label: '120000 → 160000 (symlink → gitlink) yields [TypeChangeChange]',
+          path: 'sub',
+          oldMode: FILE_MODE.SYMLINK,
+          newMode: FILE_MODE.GITLINK,
+          oldId: ID_A,
+          newId: ID_B,
+          type: 'type-change' as const,
+        },
+        {
+          label: '160000 → 120000 (gitlink → symlink) yields [TypeChangeChange]',
+          path: 'sub',
+          oldMode: FILE_MODE.GITLINK,
+          newMode: FILE_MODE.SYMLINK,
+          oldId: ID_A,
+          newId: ID_B,
+          type: 'type-change' as const,
+        },
+      ])('Then $label', ({ path, oldMode, newMode, oldId, newId, type }) => {
         // Arrange
-        const oldTree = tree([entry('foo', FILE_MODE.REGULAR, ID_A)]);
-        const newTree = tree([entry('foo', FILE_MODE.REGULAR, ID_B)]);
+        const oldTree = tree([entry(path, oldMode, oldId)]);
+        const newTree = tree([entry(path, newMode, newId)]);
 
         // Act
         const sut = diffTrees(oldTree, newTree);
 
         // Assert
-        expect(sut.changes).toEqual([
-          {
-            type: 'modify',
-            path: 'foo',
-            oldId: ID_A,
-            newId: ID_B,
-            oldMode: FILE_MODE.REGULAR,
-            newMode: FILE_MODE.REGULAR,
-          },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path with 100644 → 100755 mode (same kind)', () => {
-    describe('When diffTrees called', () => {
-      it('Then returns [ModifyChange]', () => {
-        // Arrange — same id, different mode, both are "file" kind
-        const oldTree = tree([entry('foo', FILE_MODE.REGULAR, ID_A)]);
-        const newTree = tree([entry('foo', FILE_MODE.EXECUTABLE, ID_A)]);
-
-        // Act
-        const sut = diffTrees(oldTree, newTree);
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
-            type: 'modify',
-            path: 'foo',
-            oldId: ID_A,
-            newId: ID_A,
-            oldMode: FILE_MODE.REGULAR,
-            newMode: FILE_MODE.EXECUTABLE,
-          },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path with 100644 → 120000 (file → symlink)', () => {
-    describe('When diffTrees called', () => {
-      it('Then returns [TypeChangeChange]', () => {
-        // Arrange
-        const oldTree = tree([entry('foo', FILE_MODE.REGULAR, ID_A)]);
-        const newTree = tree([entry('foo', FILE_MODE.SYMLINK, ID_B)]);
-
-        // Act
-        const sut = diffTrees(oldTree, newTree);
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
-            type: 'type-change',
-            path: 'foo',
-            oldId: ID_A,
-            newId: ID_B,
-            oldMode: FILE_MODE.REGULAR,
-            newMode: FILE_MODE.SYMLINK,
-          },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path with file → gitlink', () => {
-    describe('When diffTrees called', () => {
-      it('Then returns [TypeChangeChange]', () => {
-        // Arrange
-        const oldTree = tree([entry('sub', FILE_MODE.REGULAR, ID_A)]);
-        const newTree = tree([entry('sub', FILE_MODE.GITLINK, ID_B)]);
-
-        // Act
-        const sut = diffTrees(oldTree, newTree);
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
-            type: 'type-change',
-            path: 'sub',
-            oldId: ID_A,
-            newId: ID_B,
-            oldMode: FILE_MODE.REGULAR,
-            newMode: FILE_MODE.GITLINK,
-          },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path with 120000 → 160000 (symlink → gitlink)', () => {
-    describe('When diffTrees called', () => {
-      it('Then returns [TypeChangeChange]', () => {
-        // Arrange
-        const oldTree = tree([entry('sub', FILE_MODE.SYMLINK, ID_A)]);
-        const newTree = tree([entry('sub', FILE_MODE.GITLINK, ID_B)]);
-
-        // Act
-        const sut = diffTrees(oldTree, newTree);
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
-            type: 'type-change',
-            path: 'sub',
-            oldId: ID_A,
-            newId: ID_B,
-            oldMode: FILE_MODE.SYMLINK,
-            newMode: FILE_MODE.GITLINK,
-          },
-        ]);
-      });
-    });
-  });
-
-  describe('Given same path with 160000 → 120000 (gitlink → symlink)', () => {
-    describe('When diffTrees called', () => {
-      it('Then returns [TypeChangeChange]', () => {
-        // Arrange
-        const oldTree = tree([entry('sub', FILE_MODE.GITLINK, ID_A)]);
-        const newTree = tree([entry('sub', FILE_MODE.SYMLINK, ID_B)]);
-
-        // Act
-        const sut = diffTrees(oldTree, newTree);
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
-            type: 'type-change',
-            path: 'sub',
-            oldId: ID_A,
-            newId: ID_B,
-            oldMode: FILE_MODE.GITLINK,
-            newMode: FILE_MODE.SYMLINK,
-          },
-        ]);
+        expect(sut.changes).toEqual([{ type, path, oldId, newId, oldMode, newMode }]);
       });
     });
   });
@@ -299,31 +230,6 @@ describe('diffTrees', () => {
           return c.path;
         });
         expect(primaryKeys).toEqual(['a', 'a-', 'b', 'c']);
-      });
-    });
-  });
-
-  describe('Given same path both directory mode with different ids', () => {
-    describe('When diffTrees called', () => {
-      it('Then returns [ModifyChange] (directory kind preserved)', () => {
-        // Arrange
-        const oldTree = tree([entry('dir', FILE_MODE.DIRECTORY, ID_A)]);
-        const newTree = tree([entry('dir', FILE_MODE.DIRECTORY, ID_B)]);
-
-        // Act
-        const sut = diffTrees(oldTree, newTree);
-
-        // Assert
-        expect(sut.changes).toEqual([
-          {
-            type: 'modify',
-            path: 'dir',
-            oldId: ID_A,
-            newId: ID_B,
-            oldMode: FILE_MODE.DIRECTORY,
-            newMode: FILE_MODE.DIRECTORY,
-          },
-        ]);
       });
     });
   });

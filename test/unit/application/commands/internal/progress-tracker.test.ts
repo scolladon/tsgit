@@ -109,51 +109,35 @@ describe('createByteGranularityTracker', () => {
     });
   });
 
-  describe('Given byte granularity 65536 and exactly 65536 bytes added', () => {
+  describe('Given byte granularity 65536 and adds crossing the boundary', () => {
     describe('When ticked', () => {
-      it('Then update fires once at current=65536', () => {
+      it.each([
+        {
+          adds: [65536],
+          expectedCurrent: 65536,
+          label: 'update fires once at current=65536',
+        },
+        {
+          adds: [65537],
+          expectedCurrent: 65537,
+          label: 'update fires once at 65536 only',
+        },
+        {
+          adds: [40000, 30000],
+          expectedCurrent: 70000,
+          label: 'update fires with the cumulative count (two adds crossing a boundary)',
+        },
+      ])('Then $label', ({ adds, expectedCurrent }) => {
         // Arrange
         const reporter = stubReporter();
         const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
 
-        sut.add(65536);
+        // Act
+        for (const amount of adds) sut.add(amount);
 
         // Assert
         expect(reporter.update).toHaveBeenCalledTimes(1);
-        expect(reporter.update).toHaveBeenCalledWith('push:upload', 65536);
-      });
-    });
-  });
-
-  describe('Given byte granularity 65536 and 65537 bytes added', () => {
-    describe('When ticked', () => {
-      it('Then update fires once at 65536 only', () => {
-        // Arrange
-        const reporter = stubReporter();
-        const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
-
-        sut.add(65537);
-
-        // Assert
-        expect(reporter.update).toHaveBeenCalledTimes(1);
-        expect(reporter.update).toHaveBeenCalledWith('push:upload', 65537);
-      });
-    });
-  });
-
-  describe('Given two adds that together cross a boundary', () => {
-    describe('When the second add lands', () => {
-      it('Then update fires with the cumulative count', () => {
-        // Arrange
-        const reporter = stubReporter();
-        const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
-
-        sut.add(40000);
-        sut.add(30000);
-
-        // Assert
-        expect(reporter.update).toHaveBeenCalledTimes(1);
-        expect(reporter.update).toHaveBeenCalledWith('push:upload', 70000);
+        expect(reporter.update).toHaveBeenCalledWith('push:upload', expectedCurrent);
       });
     });
   });

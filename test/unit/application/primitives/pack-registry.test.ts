@@ -235,36 +235,18 @@ describe('nextOffsetForEntry', () => {
       trailerStart: 980,
     };
 
-    describe('When nextOffsetForEntry is called with offset=100 (non-last)', () => {
-      it('Then returns 500', () => {
+    describe('When nextOffsetForEntry is called with an offset present in sortedOffsets', () => {
+      it.each([
+        [100, 500], // non-last
+        [500, 900], // middle
+        [900, 980], // last (returns trailerStart)
+      ])('Then offset=%s returns %s', (offset, expected) => {
         // Arrange
         const sut = nextOffsetForEntry;
         // Act
-        const result = sut(table, 100);
+        const result = sut(table, offset);
         // Assert
-        expect(result).toBe(500);
-      });
-    });
-
-    describe('When nextOffsetForEntry is called with offset=500 (middle)', () => {
-      it('Then returns 900', () => {
-        // Arrange
-        const sut = nextOffsetForEntry;
-        // Act
-        const result = sut(table, 500);
-        // Assert
-        expect(result).toBe(900);
-      });
-    });
-
-    describe('When nextOffsetForEntry is called with offset=900 (last)', () => {
-      it('Then returns trailerStart = 980', () => {
-        // Arrange
-        const sut = nextOffsetForEntry;
-        // Act
-        const result = sut(table, 900);
-        // Assert
-        expect(result).toBe(980);
+        expect(result).toBe(expected);
       });
     });
 

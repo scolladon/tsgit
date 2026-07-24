@@ -14,32 +14,23 @@ const SHA1 = 'a'.repeat(40) as ObjectId;
 const SHA256 = 'b'.repeat(64) as ObjectId;
 
 describe('parseLooseRef', () => {
-  describe("Given '<40-char-sha>\\\\n'", () => {
+  describe('Given loose-ref content encoding a direct ref', () => {
     describe('When parsing', () => {
-      it('Then returns DirectRef with correct ObjectId', () => {
-        // Arrange
-        const content = `${SHA1}\n`;
-
-        // Act
+      it.each([
+        { content: `${SHA1}\n`, target: SHA1, label: 'returns DirectRef with correct ObjectId' },
+        { content: `${SHA256}\n`, target: SHA256, label: 'returns DirectRef for a SHA-256 id' },
+        { content: `${SHA1}\r\n`, target: SHA1, label: 'handles CRLF gracefully' },
+        {
+          content: SHA1 as string,
+          target: SHA1,
+          label: 'handles a missing trailing newline gracefully',
+        },
+      ])('Then $label', ({ content, target }) => {
+        // Arrange & Act
         const sut = parseLooseRef(content);
 
         // Assert
-        expect(sut).toEqual({ type: 'direct', target: SHA1 });
-      });
-    });
-  });
-
-  describe("Given '<64-char-sha>\\\\n' (SHA-256)", () => {
-    describe('When parsing', () => {
-      it('Then returns DirectRef', () => {
-        // Arrange
-        const content = `${SHA256}\n`;
-
-        // Act
-        const sut = parseLooseRef(content);
-
-        // Assert
-        expect(sut).toEqual({ type: 'direct', target: SHA256 });
+        expect(sut).toEqual({ type: 'direct', target });
       });
     });
   });
@@ -59,36 +50,6 @@ describe('parseLooseRef', () => {
     });
   });
 
-  describe("Given '<sha>\\\\r\\\\n'", () => {
-    describe('When parsing', () => {
-      it('Then handles CRLF gracefully', () => {
-        // Arrange
-        const content = `${SHA1}\r\n`;
-
-        // Act
-        const sut = parseLooseRef(content);
-
-        // Assert
-        expect(sut).toEqual({ type: 'direct', target: SHA1 });
-      });
-    });
-  });
-
-  describe("Given '<sha>' (no trailing newline)", () => {
-    describe('When parsing', () => {
-      it('Then handles gracefully', () => {
-        // Arrange
-        const content = SHA1 as string;
-
-        // Act
-        const sut = parseLooseRef(content);
-
-        // Assert
-        expect(sut).toEqual({ type: 'direct', target: SHA1 });
-      });
-    });
-  });
-
   describe("Given 'ref: refs/heads/main' (no newline)", () => {
     describe('When parsing', () => {
       it('Then handles gracefully', () => {
@@ -104,18 +65,30 @@ describe('parseLooseRef', () => {
     });
   });
 
-  describe("Given '' (empty)", () => {
+  describe('Given loose-ref content producing a specific INVALID_REF reason', () => {
     describe('When parsing', () => {
-      it('Then throws INVALID_REF', () => {
-        // Arrange
+      it.each([
+        { content: '', label: 'empty content', reason: 'empty ref content' },
+        {
+          content: 'ref: ',
+          label: 'empty symbolic ref target',
+          reason: 'empty symbolic ref target',
+        },
+        {
+          content: 'ref: \n',
+          label: 'whitespace-only target after trim',
+          reason: 'empty symbolic ref target',
+        },
+      ])('Then $label throws INVALID_REF', ({ content, reason }) => {
+        // Arrange & Act & Assert
         try {
-          parseLooseRef('');
+          parseLooseRef(content);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
           expect((e as TsgitError).data.code).toBe('INVALID_REF');
-          expect((e as TsgitError).data).toHaveProperty('reason', 'empty ref content');
+          expect((e as TsgitError).data).toHaveProperty('reason', reason);
         }
       });
     });
@@ -132,40 +105,6 @@ describe('parseLooseRef', () => {
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
           expect((e as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
-        }
-      });
-    });
-  });
-
-  describe("Given 'ref: ' (empty target)", () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_REF', () => {
-        // Arrange
-        try {
-          parseLooseRef('ref: ');
-          // Assert
-          expect.fail('should have thrown');
-        } catch (e) {
-          expect(e).toBeInstanceOf(TsgitError);
-          expect((e as TsgitError).data.code).toBe('INVALID_REF');
-          expect((e as TsgitError).data).toHaveProperty('reason', 'empty symbolic ref target');
-        }
-      });
-    });
-  });
-
-  describe("Given 'ref: \\\\n' (whitespace-only target after trim)", () => {
-    describe('When parsing', () => {
-      it('Then throws INVALID_REF', () => {
-        // Arrange
-        try {
-          parseLooseRef('ref: \n');
-          // Assert
-          expect.fail('should have thrown');
-        } catch (e) {
-          expect(e).toBeInstanceOf(TsgitError);
-          expect((e as TsgitError).data.code).toBe('INVALID_REF');
-          expect((e as TsgitError).data).toHaveProperty('reason', 'empty symbolic ref target');
         }
       });
     });

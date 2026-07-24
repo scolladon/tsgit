@@ -56,520 +56,257 @@ describe('isEmptyFrom', () => {
 });
 
 describe('exceedsMaxWalkSeeds boundary triple', () => {
-  describe('Given 1023 elements (just-under MAX_WALK_SEEDS)', () => {
+  describe('Given an array length around MAX_WALK_SEEDS', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { length: 1023, expected: false, label: 'returns false (just-under)' },
+        { length: 1024, expected: false, label: 'returns false (at cap)' },
+        { length: 1025, expected: true, label: 'returns true (just-over cap)' },
+      ])('Then $label', ({ length, expected }) => {
         // Arrange
-        const sut = exceedsMaxWalkSeeds(new Array(1023).fill(0));
+        const sut = exceedsMaxWalkSeeds(new Array(length).fill(0));
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given 1024 elements (at cap)', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = exceedsMaxWalkSeeds(new Array(1024).fill(0));
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given 1025 elements (just-over cap)', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxWalkSeeds(new Array(1025).fill(0));
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('messageContainsNul', () => {
-  describe('Given a NUL byte anywhere in the string', () => {
+  describe('Given a message string', () => {
     describe('When invoked', () => {
-      it('Then returns true', () => {
+      it.each([
+        {
+          value: 'a\0b',
+          expected: true,
+          label: 'returns true for a NUL byte anywhere in the string',
+        },
+        { value: 'hello world', expected: false, label: 'returns false for a clean message' },
+        { value: '', expected: false, label: 'returns false for an empty string' },
+      ])('Then $label', ({ value, expected }) => {
         // Arrange
-        const sut = messageContainsNul('a\0b');
+        const sut = messageContainsNul(value);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a clean message', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = messageContainsNul('hello world');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given an empty string', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = messageContainsNul('');
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('exceedsMaxCommitMessageBytes boundary triple', () => {
-  describe('Given message of 16 MiB − 1 bytes (just-under)', () => {
+  describe('Given a message length around 16 MiB', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        {
+          length: 16 * 1024 * 1024 - 1,
+          expected: false,
+          label: 'returns false (just-under)',
+        },
+        { length: 16 * 1024 * 1024, expected: false, label: 'returns false (at cap)' },
+        {
+          length: 16 * 1024 * 1024 + 1,
+          expected: true,
+          label: 'returns true (just-over)',
+        },
+      ])('Then $label', ({ length, expected }) => {
         // Arrange
-        const sut = exceedsMaxCommitMessageBytes('x'.repeat(16 * 1024 * 1024 - 1));
+        const sut = exceedsMaxCommitMessageBytes('x'.repeat(length));
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given message of exactly 16 MiB (at cap)', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = exceedsMaxCommitMessageBytes('x'.repeat(16 * 1024 * 1024));
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given message of 16 MiB + 1 bytes (just-over)', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxCommitMessageBytes('x'.repeat(16 * 1024 * 1024 + 1));
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('exceedsMaxIndexBytes boundary triple', () => {
-  describe('Given size 256 MiB − 1 (just-under)', () => {
+  describe('Given a size around 256 MiB', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { size: 256 * 1024 * 1024 - 1, expected: false, label: 'returns false (just-under)' },
+        { size: 256 * 1024 * 1024, expected: false, label: 'returns false (at cap)' },
+        { size: 256 * 1024 * 1024 + 1, expected: true, label: 'returns true (just-over)' },
+      ])('Then $label', ({ size, expected }) => {
         // Arrange
-        const sut = exceedsMaxIndexBytes(256 * 1024 * 1024 - 1);
+        const sut = exceedsMaxIndexBytes(size);
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given size 256 MiB (at cap)', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = exceedsMaxIndexBytes(256 * 1024 * 1024);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given size 256 MiB + 1 (just-over)', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxIndexBytes(256 * 1024 * 1024 + 1);
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('exceedsMaxSymbolicDepth boundary triple (default cap = 5)', () => {
-  describe('Given depth 4 (just-under)', () => {
+  describe('Given a depth around the default or an overridden cap', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { depth: 4, cap: undefined, expected: false, label: 'returns false (just-under)' },
+        { depth: 5, cap: undefined, expected: false, label: 'returns false (at cap)' },
+        { depth: 6, cap: undefined, expected: true, label: 'returns true (just-over)' },
+        {
+          depth: 6,
+          cap: 10,
+          expected: false,
+          label: 'returns false (cap override works)',
+        },
+      ])('Then $label', ({ depth, cap, expected }) => {
         // Arrange
-        const sut = exceedsMaxSymbolicDepth(4);
+        const sut = exceedsMaxSymbolicDepth(depth, cap);
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given depth 5 (at cap)', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = exceedsMaxSymbolicDepth(5);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given depth 6 (just-over)', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxSymbolicDepth(6);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given depth 6 with custom cap 10', () => {
-    describe('When invoked', () => {
-      it('Then returns false (cap override works)', () => {
-        // Arrange
-        const sut = exceedsMaxSymbolicDepth(6, 10);
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('exceedsMaxPeelDepth boundary triple (default cap = 5)', () => {
-  describe('Given depth 4', () => {
+  describe('Given a depth around the default cap', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { depth: 4, expected: false, label: 'returns false (just-under)' },
+        { depth: 5, expected: false, label: 'returns false (at cap)' },
+        { depth: 6, expected: true, label: 'returns true (just-over)' },
+      ])('Then $label', ({ depth, expected }) => {
         // Arrange
-        const sut = exceedsMaxPeelDepth(4);
+        const sut = exceedsMaxPeelDepth(depth);
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given depth 5', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = exceedsMaxPeelDepth(5);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given depth 6', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxPeelDepth(6);
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('isContainedRefSegment', () => {
-  describe('Given "refs/heads/main"', () => {
+  describe('Given a ref-segment candidate', () => {
     describe('When invoked', () => {
-      it('Then returns true (baseline accept)', () => {
+      it.each([
+        { value: 'refs/heads/main', expected: true, label: 'returns true (baseline accept)' },
+        { value: 'HEAD', expected: true, label: 'returns true' },
+        { value: '/etc/passwd', expected: false, label: 'returns false (absolute)' },
+        {
+          value: 'refs\\heads\\main',
+          expected: false,
+          label: 'returns false (Windows drive)',
+        },
+        { value: 'C:/foo', expected: false, label: 'returns false (UNC/drive)' },
+        { value: 'refs/../escape', expected: false, label: 'returns false (traversal)' },
+      ])('Then $label', ({ value, expected }) => {
         // Arrange
-        const sut = isContainedRefSegment('refs/heads/main');
+        const sut = isContainedRefSegment(value);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given "HEAD"', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = isContainedRefSegment('HEAD');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a name starting with /', () => {
-    describe('When invoked', () => {
-      it('Then returns false (absolute)', () => {
-        // Arrange
-        const sut = isContainedRefSegment('/etc/passwd');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given a name containing backslash', () => {
-    describe('When invoked', () => {
-      it('Then returns false (Windows drive)', () => {
-        // Arrange
-        const sut = isContainedRefSegment('refs\\heads\\main');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given a name containing colon', () => {
-    describe('When invoked', () => {
-      it('Then returns false (UNC/drive)', () => {
-        // Arrange
-        const sut = isContainedRefSegment('C:/foo');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given a name containing ..', () => {
-    describe('When invoked', () => {
-      it('Then returns false (traversal)', () => {
-        // Arrange
-        const sut = isContainedRefSegment('refs/../escape');
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('isHead', () => {
-  describe('Given "HEAD"', () => {
+  describe('Given a ref-name candidate', () => {
     describe('When invoked', () => {
-      it('Then returns true', () => {
+      it.each([
+        { value: 'HEAD', expected: true, label: 'returns true' },
+        { value: 'refs/heads/main', expected: false, label: 'returns false' },
+        { value: 'head', expected: false, label: 'returns false (case-sensitive)' },
+      ])('Then $label', ({ value, expected }) => {
         // Arrange
-        const sut = isHead('HEAD');
+        const sut = isHead(value);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given "refs/heads/main"', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = isHead('refs/heads/main');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given "head" (lowercase)', () => {
-    describe('When invoked', () => {
-      it('Then returns false (case-sensitive)', () => {
-        // Arrange
-        const sut = isHead('head');
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('isGitlink', () => {
-  describe('Given "160000"', () => {
+  describe('Given a file mode', () => {
     describe('When invoked', () => {
-      it('Then returns true', () => {
+      it.each([
+        { mode: '160000', expected: true, label: 'returns true' },
+        { mode: '100644', expected: false, label: 'returns false (blob)' },
+        { mode: '040000', expected: false, label: 'returns false (tree)' },
+      ])('Then $label', ({ mode, expected }) => {
         // Arrange
-        const sut = isGitlink('160000');
+        const sut = isGitlink(mode);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given "100644" (blob)', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = isGitlink('100644');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given "040000" (tree)', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = isGitlink('040000');
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('exceedsMaxTreeDepth boundary triple', () => {
-  describe('Given depth 4 with cap 5', () => {
+  describe('Given a depth around a cap of 5', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { depth: 4, cap: 5, expected: false, label: 'returns false' },
+        { depth: 5, cap: 5, expected: false, label: 'returns false (at)' },
+        { depth: 6, cap: 5, expected: true, label: 'returns true' },
+      ])('Then $label', ({ depth, cap, expected }) => {
         // Arrange
-        const sut = exceedsMaxTreeDepth(4, 5);
+        const sut = exceedsMaxTreeDepth(depth, cap);
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given depth 5 with cap 5', () => {
-    describe('When invoked', () => {
-      it('Then returns false (at)', () => {
-        // Arrange
-        const sut = exceedsMaxTreeDepth(5, 5);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given depth 6 with cap 5', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxTreeDepth(6, 5);
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('exceedsMaxTreeEntries boundary triple', () => {
-  describe('Given count 2 with cap 3', () => {
+  describe('Given a count around a cap of 3', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { count: 2, cap: 3, expected: false, label: 'returns false' },
+        { count: 3, cap: 3, expected: false, label: 'returns false (at)' },
+        { count: 4, cap: 3, expected: true, label: 'returns true' },
+      ])('Then $label', ({ count, cap, expected }) => {
         // Arrange
-        const sut = exceedsMaxTreeEntries(2, 3);
+        const sut = exceedsMaxTreeEntries(count, cap);
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given count 3 with cap 3', () => {
-    describe('When invoked', () => {
-      it('Then returns false (at)', () => {
-        // Arrange
-        const sut = exceedsMaxTreeEntries(3, 3);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given count 4 with cap 3', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxTreeEntries(4, 3);
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('looksLikeObjectId', () => {
-  describe('Given a 40-char hex string', () => {
+  describe('Given a candidate object-id string', () => {
     describe('When invoked', () => {
-      it('Then returns true (SHA1)', () => {
+      it.each([
+        {
+          value: '0123456789abcdef0123456789abcdef01234567',
+          expected: true,
+          label: 'returns true (SHA1)',
+        },
+        { value: 'a'.repeat(64), expected: true, label: 'returns true (SHA256)' },
+        { value: '0'.repeat(39), expected: false, label: 'returns false (too short)' },
+        {
+          value: '0'.repeat(41),
+          expected: false,
+          label: 'returns false (not SHA1 or SHA256)',
+        },
+        {
+          value: 'A'.repeat(40),
+          expected: false,
+          label: 'returns false (only lowercase accepted)',
+        },
+        { value: 'refs/heads/main', expected: false, label: 'returns false (ref-like)' },
+        { value: '', expected: false, label: 'returns false (empty string)' },
+      ])('Then $label', ({ value, expected }) => {
         // Arrange
-        const sut = looksLikeObjectId('0123456789abcdef0123456789abcdef01234567');
+        const sut = looksLikeObjectId(value);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a 64-char hex string', () => {
-    describe('When invoked', () => {
-      it('Then returns true (SHA256)', () => {
-        // Arrange
-        const sut = looksLikeObjectId('a'.repeat(64));
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a 39-char hex string', () => {
-    describe('When invoked', () => {
-      it('Then returns false (too short)', () => {
-        // Arrange
-        const sut = looksLikeObjectId('0'.repeat(39));
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given a 41-char hex string', () => {
-    describe('When invoked', () => {
-      it('Then returns false (not SHA1 or SHA256)', () => {
-        // Arrange
-        const sut = looksLikeObjectId('0'.repeat(41));
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given 40 chars with uppercase', () => {
-    describe('When invoked', () => {
-      it('Then returns false (only lowercase accepted)', () => {
-        // Arrange
-        const sut = looksLikeObjectId('A'.repeat(40));
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given a ref-like string', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = looksLikeObjectId('refs/heads/main');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given an empty string', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = looksLikeObjectId('');
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
@@ -601,337 +338,170 @@ describe('hasDeclaredId', () => {
 });
 
 describe('isInvalidExtraHeaderKey', () => {
-  describe('Given a clean key like "mergetag"', () => {
+  describe('Given an extraHeader key candidate', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { key: 'mergetag', expected: false, label: 'returns false for a clean key' },
+        { key: '', expected: true, label: 'returns true for an empty key' },
+        { key: 'a\0b', expected: true, label: 'returns true for a key with NUL' },
+        { key: 'a\rb', expected: true, label: 'returns true for a key with CR' },
+        { key: 'a\nb', expected: true, label: 'returns true for a key with LF' },
+        {
+          key: 'two words',
+          expected: true,
+          label: 'returns true for a key with a space (the key/value separator)',
+        },
+        { key: 'a\tb', expected: true, label: 'returns true for a key with a tab' },
+      ])('Then $label', ({ key, expected }) => {
         // Arrange
-        const sut = isInvalidExtraHeaderKey('mergetag');
+        const sut = isInvalidExtraHeaderKey(key);
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given an empty key', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = isInvalidExtraHeaderKey('');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a key with NUL', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = isInvalidExtraHeaderKey('a\0b');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a key with CR', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = isInvalidExtraHeaderKey('a\rb');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a key with LF', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = isInvalidExtraHeaderKey('a\nb');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a key with a space', () => {
-    describe('When invoked', () => {
-      it('Then returns true (space is the key/value separator)', () => {
-        // Arrange
-        const sut = isInvalidExtraHeaderKey('two words');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-  describe('Given a key with a tab', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = isInvalidExtraHeaderKey('a\tb');
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('hasHeaderInjectionChars', () => {
-  describe('Given a clean value', () => {
+  describe('Given a header-value candidate', () => {
     describe('When hasHeaderInjectionChars', () => {
-      it('Then returns false', () => {
-        // Arrange & Act
-        const sut = hasHeaderInjectionChars('a clean header value');
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a value containing NUL', () => {
-    describe('When hasHeaderInjectionChars', () => {
-      it('Then returns true', () => {
+      it.each([
+        {
+          value: 'a clean header value',
+          expected: false,
+          label: 'returns false for a clean value',
+        },
+        { value: 'a\0b', expected: true, label: 'returns true for a value containing NUL' },
+        { value: 'a\rb', expected: true, label: 'returns true for a value containing CR' },
+        {
+          value: 'a\n\nb',
+          expected: true,
+          label: 'returns true for a value containing a double LF',
+        },
+        {
+          value: '\nabc',
+          expected: true,
+          label:
+            'returns true for a LEADING LF only (isolates the startsWith(\\n) operand — no trailing LF)',
+        },
+        {
+          value: 'abc\n',
+          expected: true,
+          label:
+            'returns true for a TRAILING LF only (isolates the endsWith(\\n) operand — no leading LF)',
+        },
+        {
+          value: 'a\nb',
+          expected: false,
+          label: 'returns false for an INTERIOR single LF only (every guard is false)',
+        },
+      ])('Then $label', ({ value, expected }) => {
         // Arrange
-        const sut = hasHeaderInjectionChars('a\0b');
+        const sut = hasHeaderInjectionChars(value);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a value containing CR', () => {
-    describe('When hasHeaderInjectionChars', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = hasHeaderInjectionChars('a\rb');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a value containing a double LF', () => {
-    describe('When hasHeaderInjectionChars', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = hasHeaderInjectionChars('a\n\nb');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a value with a LEADING LF only (no trailing LF)', () => {
-    describe('When hasHeaderInjectionChars', () => {
-      it('Then returns true', () => {
-        // Arrange
-        // Isolates the `value.startsWith(\'\\n\')` operand: trailing is false here,
-        // so an `&&` mutant or a dropped startsWith operand would return false.
-        const sut = hasHeaderInjectionChars('\nabc');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a value with a TRAILING LF only (no leading LF)', () => {
-    describe('When hasHeaderInjectionChars', () => {
-      it('Then returns true', () => {
-        // Arrange
-        // Isolates the `value.endsWith(\'\\n\')` operand: leading is false here,
-        // so an `&&` mutant or a dropped endsWith operand would return false.
-        const sut = hasHeaderInjectionChars('abc\n');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a value with an INTERIOR single LF only', () => {
-    describe('When hasHeaderInjectionChars', () => {
-      it('Then returns false', () => {
-        // Arrange
-        // No NUL/CR, no `\n\n`, not leading/trailing — every guard must be false.
-        const sut = hasHeaderInjectionChars('a\nb');
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('hasSignatureInjectionChars', () => {
-  describe('Given a value containing NUL', () => {
+  describe('Given a gpgSignature-field value candidate', () => {
     describe('When hasSignatureInjectionChars', () => {
-      it('Then returns true', () => {
+      it.each([
+        { value: 'a\0b', expected: true, label: 'returns true for a value containing NUL' },
+        { value: 'a\rb', expected: true, label: 'returns true for a value containing CR' },
+        {
+          value: '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n',
+          expected: false,
+          label:
+            'returns false for a genuine PGP armor block (blank line after BEGIN + trailing LF) — real armor carries no NUL/CR',
+        },
+        {
+          value: 'a\n\nb',
+          expected: false,
+          label:
+            'returns false for an interior double LF but no NUL/CR — the double-LF rule does not apply to this predicate',
+        },
+      ])('Then $label', ({ value, expected }) => {
         // Arrange
-        const sut = hasSignatureInjectionChars('a\0b');
+        const sut = hasSignatureInjectionChars(value);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a value containing CR', () => {
-    describe('When hasSignatureInjectionChars', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = hasSignatureInjectionChars('a\rb');
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a genuine PGP armor block with a blank line after BEGIN and a trailing LF', () => {
-    describe('When hasSignatureInjectionChars', () => {
-      it('Then returns false — real armor carries no NUL/CR', () => {
-        // Arrange
-        // This exact shape (interior \n\n + trailing \n) trips the broader
-        // hasHeaderInjectionChars guard — this narrower predicate must accept it.
-        const armor = '-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----\n';
-        const sut = hasSignatureInjectionChars(armor);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a value with an interior double LF but no NUL/CR', () => {
-    describe('When hasSignatureInjectionChars', () => {
-      it('Then returns false — the double-LF rule does not apply to this predicate', () => {
-        // Arrange
-        const sut = hasSignatureInjectionChars('a\n\nb');
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('exceedsMaxPackIdxBytes boundary triple', () => {
-  describe('Given size MAX_PACK_IDX_BYTES − 1 (just-under)', () => {
+  describe('Given a size around MAX_PACK_IDX_BYTES', () => {
     describe('When invoked', () => {
-      it('Then returns false', () => {
+      it.each([
+        { size: MAX_PACK_IDX_BYTES - 1, expected: false, label: 'returns false (just-under)' },
+        { size: MAX_PACK_IDX_BYTES, expected: false, label: 'returns false (at cap)' },
+        { size: MAX_PACK_IDX_BYTES + 1, expected: true, label: 'returns true (just-over)' },
+      ])('Then $label', ({ size, expected }) => {
         // Arrange
-        const sut = exceedsMaxPackIdxBytes(MAX_PACK_IDX_BYTES - 1);
+        const sut = exceedsMaxPackIdxBytes(size);
 
         // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given size MAX_PACK_IDX_BYTES (at cap)', () => {
-    describe('When invoked', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const sut = exceedsMaxPackIdxBytes(MAX_PACK_IDX_BYTES);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-  describe('Given size MAX_PACK_IDX_BYTES + 1 (just-over)', () => {
-    describe('When invoked', () => {
-      it('Then returns true', () => {
-        // Arrange
-        const sut = exceedsMaxPackIdxBytes(MAX_PACK_IDX_BYTES + 1);
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('error-reason constants are stable identifiers', () => {
-  describe('Given the REASON_WALK_EMPTY_FROM constant', () => {
+  describe('Given a REASON_* constant', () => {
     describe('When read', () => {
-      it('Then matches expected string', () => {
+      it.each([
+        { actual: REASON_WALK_EMPTY_FROM, expected: 'empty from', label: 'REASON_WALK_EMPTY_FROM' },
+        {
+          actual: REASON_WALK_TOO_MANY_SEEDS,
+          expected: 'too many seeds',
+          label: 'REASON_WALK_TOO_MANY_SEEDS',
+        },
+        {
+          actual: REASON_MESSAGE_CONTAINS_NUL,
+          expected: 'message contains NUL',
+          label: 'REASON_MESSAGE_CONTAINS_NUL',
+        },
+        {
+          actual: REASON_MESSAGE_EXCEEDS_MAX,
+          expected: 'message exceeds 16 MiB',
+          label: 'REASON_MESSAGE_EXCEEDS_MAX',
+        },
+        {
+          actual: REASON_INDEX_EXCEEDS_MAX,
+          expected: 'index file exceeds 256 MiB',
+          label: 'REASON_INDEX_EXCEEDS_MAX',
+        },
+        {
+          actual: REASON_TARGET_ESCAPES_GIT_DIR,
+          expected: 'target escapes gitDir',
+          label: 'REASON_TARGET_ESCAPES_GIT_DIR',
+        },
+        {
+          actual: REASON_INDEX_CHECKSUM_MISMATCH,
+          expected: 'index trailer checksum mismatch',
+          label: 'REASON_INDEX_CHECKSUM_MISMATCH',
+        },
+        {
+          actual: REASON_PACK_IDX_EXCEEDS_MAX,
+          expected: 'pack .idx file exceeds 64 MiB',
+          label: 'REASON_PACK_IDX_EXCEEDS_MAX',
+        },
+        {
+          actual: REASON_EXTRA_HEADER_KEY_INVALID,
+          expected: 'extraHeader key contains forbidden characters',
+          label: 'REASON_EXTRA_HEADER_KEY_INVALID',
+        },
+      ])('Then $label matches expected string', ({ actual, expected }) => {
         // Arrange + Assert
-        expect(REASON_WALK_EMPTY_FROM).toBe('empty from');
-      });
-    });
-  });
-  describe('Given the REASON_WALK_TOO_MANY_SEEDS constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_WALK_TOO_MANY_SEEDS).toBe('too many seeds');
-      });
-    });
-  });
-  describe('Given the REASON_MESSAGE_CONTAINS_NUL constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_MESSAGE_CONTAINS_NUL).toBe('message contains NUL');
-      });
-    });
-  });
-  describe('Given the REASON_MESSAGE_EXCEEDS_MAX constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_MESSAGE_EXCEEDS_MAX).toBe('message exceeds 16 MiB');
-      });
-    });
-  });
-  describe('Given the REASON_INDEX_EXCEEDS_MAX constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_INDEX_EXCEEDS_MAX).toBe('index file exceeds 256 MiB');
-      });
-    });
-  });
-  describe('Given the REASON_TARGET_ESCAPES_GIT_DIR constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_TARGET_ESCAPES_GIT_DIR).toBe('target escapes gitDir');
-      });
-    });
-  });
-  describe('Given the REASON_INDEX_CHECKSUM_MISMATCH constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_INDEX_CHECKSUM_MISMATCH).toBe('index trailer checksum mismatch');
-      });
-    });
-  });
-  describe('Given the REASON_PACK_IDX_EXCEEDS_MAX constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_PACK_IDX_EXCEEDS_MAX).toBe('pack .idx file exceeds 64 MiB');
-      });
-    });
-  });
-  describe('Given the REASON_EXTRA_HEADER_KEY_INVALID constant', () => {
-    describe('When read', () => {
-      it('Then matches expected string', () => {
-        // Arrange + Assert
-        expect(REASON_EXTRA_HEADER_KEY_INVALID).toBe(
-          'extraHeader key contains forbidden characters',
-        );
+        expect(actual).toBe(expected);
       });
     });
   });

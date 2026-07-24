@@ -218,47 +218,47 @@ describe('findTreeEntry', () => {
     });
   });
 
-  describe('Given a path whose final segment is absent', () => {
+  describe('Given a path that cannot resolve within the tree', () => {
     describe('When findTreeEntry walks it', () => {
-      it('Then returns undefined', async () => {
+      it.each([
+        {
+          label: 'a path whose final segment is absent',
+          arrange: async (): Promise<{ root: Tree; path: string }> => ({
+            root: { type: 'tree', id: '' as ObjectId, entries: [] },
+            path: 'missing',
+          }),
+        },
+        {
+          label: 'a path whose intermediate segment is absent',
+          arrange: async (): Promise<{ root: Tree; path: string }> => ({
+            root: { type: 'tree', id: '' as ObjectId, entries: [] },
+            path: 'nope/leaf',
+          }),
+        },
+        {
+          label: 'an intermediate segment that is a blob',
+          arrange: async (
+            ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+          ): Promise<{ root: Tree; path: string }> => {
+            const fileId = await writeObject(ctx, blobOf(7));
+            return {
+              root: {
+                type: 'tree',
+                id: '' as ObjectId,
+                entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+              },
+              path: 'file/leaf',
+            };
+          },
+        },
+      ])('Then returns undefined ($label)', async ({ arrange }) => {
         // Arrange
         const ctx = await buildSeededContext();
-        const root: Tree = { type: 'tree', id: '' as ObjectId, entries: [] };
-        // Act
-        const sut = await findTreeEntry(ctx, root, 'missing');
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
+        const { root, path } = await arrange(ctx);
 
-  describe('Given a path whose intermediate segment is absent', () => {
-    describe('When findTreeEntry walks it', () => {
-      it('Then returns undefined', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const root: Tree = { type: 'tree', id: '' as ObjectId, entries: [] };
         // Act
-        const sut = await findTreeEntry(ctx, root, 'nope/leaf');
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
+        const sut = await findTreeEntry(ctx, root, path);
 
-  describe('Given an intermediate segment that is a blob', () => {
-    describe('When findTreeEntry descends into it', () => {
-      it('Then returns undefined', async () => {
-        // Arrange — a file used as a directory
-        const ctx = await buildSeededContext();
-        const fileId = await writeObject(ctx, blobOf(7));
-        const root: Tree = {
-          type: 'tree',
-          id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
-        };
-        // Act
-        const sut = await findTreeEntry(ctx, root, 'file/leaf');
         // Assert
         expect(sut).toBeUndefined();
       });

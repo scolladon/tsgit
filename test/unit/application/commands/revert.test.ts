@@ -154,23 +154,10 @@ describe('revert run', () => {
         );
         const index = await readIndex(ctx);
         expect(index.entries.some((e) => e.flags.stage !== 0)).toBe(true);
-        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain('<<<<<<<');
-      });
-
-      it('Then the markers are labelled HEAD and the parent of the reverted commit', async () => {
-        // Arrange — c3 changes the same line c2 did, so reverting c2 conflicts.
-        const { ctx, c2 } = await seedLinear();
-        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
-        await add(ctx, ['f.txt']);
-        await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
-
-        // Act
-        await revertRun(ctx, { commits: [c2] });
-
-        // Assert
-        const file = await ctx.fs.readUtf8(work(ctx, 'f.txt'));
-        expect(file).toContain('<<<<<<< HEAD\n');
-        expect(file).toContain(`>>>>>>> parent of ${c2.slice(0, 7)} (c2 mid)\n`);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain('<<<<<<< HEAD\n');
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain(
+          `>>>>>>> parent of ${c2.slice(0, 7)} (c2 mid)\n`,
+        );
       });
 
       it('Then MERGE_MSG lists recorded paths when a distinct-types conflict occurs', async () => {
@@ -329,60 +316,45 @@ describe('revert run', () => {
   });
 
   describe('Given an invalid repository state', () => {
-    describe('When HEAD is detached', () => {
-      it('Then refuses with UNSUPPORTED_OPERATION', async () => {
+    describe('When revertRun hits a precondition guard', () => {
+      it.each([
+        {
+          label: 'the branch is unborn',
+          code: 'NO_INITIAL_COMMIT',
+          arrange: async (): Promise<{ ctx: Context; commits: ReadonlyArray<string> }> => {
+            const ctx = createMemoryContext();
+            await init(ctx);
+            await setUser(ctx);
+            return { ctx, commits: ['HEAD'] };
+          },
+        },
+        {
+          label: 'another operation is already in progress',
+          code: 'OPERATION_IN_PROGRESS',
+          arrange: async (): Promise<{ ctx: Context; commits: ReadonlyArray<string> }> => {
+            const { ctx, c2 } = await seedLinear();
+            await ctx.fs.writeUtf8(`${gitDir(ctx)}/MERGE_HEAD`, `${c2}\n`);
+            return { ctx, commits: [c2] };
+          },
+        },
+        {
+          label: 'the working tree is dirty',
+          code: 'WORKING_TREE_DIRTY',
+          arrange: async (): Promise<{ ctx: Context; commits: ReadonlyArray<string> }> => {
+            const { ctx, c2 } = await seedLinear();
+            await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'dirty\n');
+            return { ctx, commits: [c2] };
+          },
+        },
+      ])('Then refuses with $code ($label)', async ({ code, arrange }) => {
         // Arrange
-        const { ctx, c2 } = await seedLinear();
-        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${c2}\n`);
+        const { ctx, commits } = await arrange();
 
         // Act
-        const code = await codeOf(() => revertRun(ctx, { commits: [c2] }));
+        const sut = await codeOf(() => revertRun(ctx, { commits }));
 
         // Assert
-        expect(code).toBe('UNSUPPORTED_OPERATION');
-      });
-    });
-
-    describe('When the branch is unborn', () => {
-      it('Then refuses with NO_INITIAL_COMMIT', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await setUser(ctx);
-
-        // Act
-        const code = await codeOf(() => revertRun(ctx, { commits: ['HEAD'] }));
-
-        // Assert
-        expect(code).toBe('NO_INITIAL_COMMIT');
-      });
-    });
-
-    describe('When another operation is already in progress', () => {
-      it('Then refuses with OPERATION_IN_PROGRESS', async () => {
-        // Arrange
-        const { ctx, c2 } = await seedLinear();
-        await ctx.fs.writeUtf8(`${gitDir(ctx)}/MERGE_HEAD`, `${c2}\n`);
-
-        // Act
-        const code = await codeOf(() => revertRun(ctx, { commits: [c2] }));
-
-        // Assert
-        expect(code).toBe('OPERATION_IN_PROGRESS');
-      });
-    });
-
-    describe('When the working tree is dirty', () => {
-      it('Then refuses with WORKING_TREE_DIRTY', async () => {
-        // Arrange
-        const { ctx, c2 } = await seedLinear();
-        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'dirty\n');
-
-        // Act
-        const code = await codeOf(() => revertRun(ctx, { commits: [c2] }));
-
-        // Assert
-        expect(code).toBe('WORKING_TREE_DIRTY');
+        expect(sut).toBe(code);
       });
     });
   });
@@ -695,21 +667,6 @@ describe('revert continue', () => {
     });
   });
 
-  describe('Given an unresolved (still-conflicted) index', () => {
-    describe('When continue runs', () => {
-      it('Then refuses with MERGE_HAS_CONFLICTS', async () => {
-        // Arrange — leave the conflict markers / stage>0 entries in place.
-        const { ctx } = await seedConflictStop();
-
-        // Act
-        const code = await codeOf(() => revertContinue(ctx));
-
-        // Assert
-        expect(code).toBe('MERGE_HAS_CONFLICTS');
-      });
-    });
-  });
-
   describe('Given a detached HEAD', () => {
     describe('When continue runs', () => {
       it('Then refuses with UNSUPPORTED_OPERATION', async () => {
@@ -901,23 +858,6 @@ describe('revert abort', () => {
       });
     });
   });
-
-  describe('Given a detached HEAD with a revert in progress', () => {
-    describe('When abort runs', () => {
-      it('Then refuses with UNSUPPORTED_OPERATION', async () => {
-        // Arrange
-        const { ctx } = await seedConflictStop();
-        const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
-        await ctx.fs.writeUtf8(`${gitDir(ctx)}/HEAD`, `${head}\n`);
-
-        // Act
-        const code = await codeOf(() => revertAbort(ctx));
-
-        // Assert
-        expect(code).toBe('UNSUPPORTED_OPERATION');
-      });
-    });
-  });
 });
 
 describe('bindRevertNamespace', () => {
@@ -1100,6 +1040,7 @@ describe('revert observable surfaces', () => {
         const data = await dataOf(() => revertRun(ctx, { commits: [c2] }));
 
         // Assert
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
         expect(data.operation).toBe('revert');
         expect(data.reason).toBe('cannot revert with detached HEAD');
       });
@@ -1148,6 +1089,7 @@ describe('revert observable surfaces', () => {
         const data = await dataOf(() => revertAbort(ctx));
 
         // Assert
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
         expect(data.operation).toBe('revert --abort');
         expect(data.reason).toBe('cannot run with detached HEAD');
       });

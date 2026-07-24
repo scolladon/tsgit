@@ -35,49 +35,37 @@ const baseInput = (over: Partial<CommitPatchInput> = {}): CommitPatchInput => ({
 });
 
 describe('renderRangePatch', () => {
-  describe('Given a commit with metadata and a multi-paragraph message, When rendered', () => {
-    it('Then the metadata and 4-space-indented message sections are produced', () => {
+  describe('Given a commit with a message, When rendered', () => {
+    it.each([
+      {
+        message: 'subject\n\nbody one\nbody two\n',
+        expected:
+          ' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n    subject\n\n    body one\n    body two\n',
+        label:
+          'the metadata and 4-space-indented message sections are produced for a multi-paragraph message',
+      },
+      {
+        message: '',
+        expected: ' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n',
+        label: 'the commit message section carries no body lines for an empty message',
+      },
+      {
+        message: 'summary line',
+        expected:
+          ' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n    summary line\n',
+        label:
+          'the whole final line is kept, 4-space indented, for a message without a trailing newline',
+      },
+    ])('Then $label', ({ message, expected }) => {
       // Arrange
       const sut = renderRangePatch;
-      const input = baseInput({ message: 'subject\n\nbody one\nbody two\n' });
+      const input = baseInput({ message });
 
       // Act
       const result = sut(input);
 
       // Assert
-      expect(result.patch).toBe(
-        ' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n    subject\n\n    body one\n    body two\n',
-      );
-    });
-  });
-
-  describe('Given a commit with an empty message, When rendered', () => {
-    it('Then the commit message section carries no body lines', () => {
-      // Arrange
-      const sut = renderRangePatch;
-      const input = baseInput({ message: '' });
-
-      // Act
-      const result = sut(input);
-
-      // Assert
-      expect(result.patch).toBe(' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n');
-    });
-  });
-
-  describe('Given a message without a trailing newline, When rendered', () => {
-    it('Then the whole final line is kept, 4-space indented', () => {
-      // Arrange
-      const sut = renderRangePatch;
-      const input = baseInput({ message: 'summary line' });
-
-      // Act
-      const result = sut(input);
-
-      // Assert
-      expect(result.patch).toBe(
-        ' ## Metadata ##\nAuthor: Alice <a@x>\n\n ## Commit message ##\n    summary line\n',
-      );
+      expect(result.patch).toBe(expected);
     });
   });
 
@@ -166,52 +154,6 @@ describe('renderRangePatch', () => {
     });
   });
 
-  describe('Given a new file, When rendered', () => {
-    it('Then the header is annotated (new)', () => {
-      // Arrange
-      const sut = renderRangePatch;
-      const add: PatchFile = {
-        change: {
-          type: 'add',
-          newPath: path('added.txt'),
-          newId: oid('c'),
-          newMode: FILE_MODE.REGULAR,
-        },
-        newContent: bytes('hello\n'),
-      };
-      const input = baseInput({ files: [add] });
-
-      // Act
-      const result = sut(input);
-
-      // Assert
-      expect(result.diff).toBe(' ## added.txt (new) ##\n@@\n+hello\n');
-    });
-  });
-
-  describe('Given a deleted file, When rendered', () => {
-    it('Then the header is annotated (deleted)', () => {
-      // Arrange
-      const sut = renderRangePatch;
-      const del: PatchFile = {
-        change: {
-          type: 'delete',
-          oldPath: path('gone.txt'),
-          oldId: oid('d'),
-          oldMode: FILE_MODE.REGULAR,
-        },
-        oldContent: bytes('bye\n'),
-      };
-      const input = baseInput({ files: [del] });
-
-      // Act
-      const result = sut(input);
-
-      // Assert
-      expect(result.diff).toBe(' ## gone.txt (deleted) ##\n@@\n-bye\n');
-    });
-  });
-
   describe('Given a mode-changing modification, When rendered', () => {
     it('Then the header records the mode change', () => {
       // Arrange
@@ -237,51 +179,119 @@ describe('renderRangePatch', () => {
     });
   });
 
-  describe('Given a rename, When rendered', () => {
-    it('Then the header records old => new', () => {
+  describe('Given a single-file change, When rendered', () => {
+    it.each([
+      {
+        file: {
+          change: {
+            type: 'add',
+            newPath: path('added.txt'),
+            newId: oid('c'),
+            newMode: FILE_MODE.REGULAR,
+          },
+          newContent: bytes('hello\n'),
+        } satisfies PatchFile,
+        expected: ' ## added.txt (new) ##\n@@\n+hello\n',
+        label: 'the header is annotated (new) for a new file',
+      },
+      {
+        file: {
+          change: {
+            type: 'delete',
+            oldPath: path('gone.txt'),
+            oldId: oid('d'),
+            oldMode: FILE_MODE.REGULAR,
+          },
+          oldContent: bytes('bye\n'),
+        } satisfies PatchFile,
+        expected: ' ## gone.txt (deleted) ##\n@@\n-bye\n',
+        label: 'the header is annotated (deleted) for a deleted file',
+      },
+      {
+        file: {
+          change: {
+            type: 'rename',
+            oldPath: path('old.txt'),
+            newPath: path('new.txt'),
+            oldId: oid('a'),
+            newId: oid('a'),
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+        } satisfies PatchFile,
+        expected: ' ## old.txt => new.txt ##\n',
+        label: 'the header records old => new for a rename',
+      },
+      {
+        file: {
+          change: {
+            type: 'copy',
+            oldPath: path('src.txt'),
+            newPath: path('dst.txt'),
+            oldId: oid('a'),
+            newId: oid('b'),
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
+        } satisfies PatchFile,
+        expected: ' ## src.txt => dst.txt ##\n',
+        label:
+          'fileHeader records old => new and displayName returns newPath for a copy change — the path-pair format (like rename); no hunk since no content',
+      },
+      {
+        file: {
+          change: {
+            type: 'add',
+            newPath: path('blob.bin'),
+            newId: oid('c'),
+            newMode: FILE_MODE.REGULAR,
+          },
+          newContent: new Uint8Array([0x01, 0x00, 0x02]),
+        } satisfies PatchFile,
+        expected: ' ## blob.bin (new) ##\n Binary files /dev/null and blob.bin differ\n',
+        label: 'a Binary files line is emitted against /dev/null for a new binary file',
+      },
+      {
+        file: {
+          change: {
+            type: 'delete',
+            oldPath: path('blob.bin'),
+            oldId: oid('d'),
+            oldMode: FILE_MODE.REGULAR,
+          },
+          oldContent: new Uint8Array([0x00, 0x01]),
+        } satisfies PatchFile,
+        expected: ' ## blob.bin (deleted) ##\n Binary files blob.bin and /dev/null differ\n',
+        label: 'a Binary files line is emitted against /dev/null for a deleted binary file',
+      },
+      {
+        file: {
+          change: {
+            type: 'modify',
+            path: path('blob.bin'),
+            oldId: oid('a'),
+            newId: oid('b'),
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          oldContent: new Uint8Array([0x00, 0x01]),
+          newContent: new Uint8Array([0x00, 0x02]),
+        } satisfies PatchFile,
+        expected: ' ## blob.bin ##\n Binary files blob.bin and blob.bin differ\n',
+        label: 'a Binary files line names both sides for a modified binary file',
+      },
+    ])('Then $label', ({ file, expected }) => {
       // Arrange
       const sut = renderRangePatch;
-      const change: DiffChange = {
-        type: 'rename',
-        oldPath: path('old.txt'),
-        newPath: path('new.txt'),
-        oldId: oid('a'),
-        newId: oid('a'),
-        oldMode: FILE_MODE.REGULAR,
-        newMode: FILE_MODE.REGULAR,
-        similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
-      };
-      const input = baseInput({ files: [{ change }] });
+      const input = baseInput({ files: [file] });
 
       // Act
       const result = sut(input);
 
       // Assert
-      expect(result.diff).toBe(' ## old.txt => new.txt ##\n');
-    });
-  });
-
-  describe('Given a copy change, When rendered', () => {
-    it('Then fileHeader records old => new and displayName returns newPath', () => {
-      // Arrange — copy mirrors rename in the range-diff: path-only header, displayName = newPath
-      const sut = renderRangePatch;
-      const change: DiffChange = {
-        type: 'copy',
-        oldPath: path('src.txt'),
-        newPath: path('dst.txt'),
-        oldId: oid('a'),
-        newId: oid('b'),
-        oldMode: FILE_MODE.REGULAR,
-        newMode: FILE_MODE.REGULAR,
-        similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
-      };
-      const input = baseInput({ files: [{ change }] });
-
-      // Act
-      const result = sut(input);
-
-      // Assert — header uses the path-pair format (like rename); no hunk since no content
-      expect(result.diff).toBe(' ## src.txt => dst.txt ##\n');
+      expect(result.diff).toBe(expected);
     });
   });
 
@@ -311,86 +321,6 @@ describe('renderRangePatch', () => {
 
       // Assert
       expect(result.diff).toContain('+TWO\n \\ No newline at end of file\n');
-    });
-  });
-
-  describe('Given a new binary file, When rendered', () => {
-    it('Then a Binary files line is emitted against /dev/null', () => {
-      // Arrange
-      const sut = renderRangePatch;
-      const add: PatchFile = {
-        change: {
-          type: 'add',
-          newPath: path('blob.bin'),
-          newId: oid('c'),
-          newMode: FILE_MODE.REGULAR,
-        },
-        newContent: new Uint8Array([0x01, 0x00, 0x02]),
-      };
-      const input = baseInput({ files: [add] });
-
-      // Act
-      const result = sut(input);
-
-      // Assert
-      expect(result.diff).toBe(
-        ' ## blob.bin (new) ##\n Binary files /dev/null and blob.bin differ\n',
-      );
-    });
-  });
-
-  describe('Given a deleted binary file, When rendered', () => {
-    it('Then a Binary files line is emitted against /dev/null', () => {
-      // Arrange
-      const sut = renderRangePatch;
-      const del: PatchFile = {
-        change: {
-          type: 'delete',
-          oldPath: path('blob.bin'),
-          oldId: oid('d'),
-          oldMode: FILE_MODE.REGULAR,
-        },
-        oldContent: new Uint8Array([0x00, 0x01]),
-      };
-      const input = baseInput({ files: [del] });
-
-      // Act
-      const result = sut(input);
-
-      // Assert
-      expect(result.diff).toBe(
-        ' ## blob.bin (deleted) ##\n Binary files blob.bin and /dev/null differ\n',
-      );
-    });
-  });
-
-  describe('Given a modified binary file, When rendered', () => {
-    it('Then a Binary files line names both sides', () => {
-      // Arrange
-      const sut = renderRangePatch;
-      const change: DiffChange = {
-        type: 'modify',
-        path: path('blob.bin'),
-        oldId: oid('a'),
-        newId: oid('b'),
-        oldMode: FILE_MODE.REGULAR,
-        newMode: FILE_MODE.REGULAR,
-      };
-      const input = baseInput({
-        files: [
-          {
-            change,
-            oldContent: new Uint8Array([0x00, 0x01]),
-            newContent: new Uint8Array([0x00, 0x02]),
-          },
-        ],
-      });
-
-      // Act
-      const result = sut(input);
-
-      // Assert
-      expect(result.diff).toBe(' ## blob.bin ##\n Binary files blob.bin and blob.bin differ\n');
     });
   });
 });

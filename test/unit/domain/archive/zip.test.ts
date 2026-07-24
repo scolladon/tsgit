@@ -439,12 +439,46 @@ describe('Given a symlink entry with a long, highly-compressible target and shri
 // Central directory: version-made-by + external-attr per kind
 // ---------------------------------------------------------------------------
 
-describe('Given a regular text entry (100644)', () => {
+describe('Given an archive entry of a given kind', () => {
   describe('When central directory is emitted', () => {
-    it('Then version-made-by is 0x0000 and external-attr is 0x00000000', async () => {
+    it.each([
+      {
+        label:
+          'a regular text entry (100644) has version-made-by 0x0000 and external-attr 0x00000000',
+        makeEntry: () => regularEntry('a.txt', new Uint8Array([0x74, 0x65, 0x78, 0x74]), '100644'),
+        versionMadeBy: 0x0000,
+        externalAttr: 0x00000000,
+      },
+      {
+        label:
+          'an exec entry (100755) has version-made-by 0x0317 (unix) and external-attr 0x81ed0000',
+        makeEntry: () => regularEntry('run.sh', new TextEncoder().encode('#!/bin/sh\n'), '100755'),
+        versionMadeBy: 0x0317,
+        externalAttr: 0x81ed0000,
+      },
+      {
+        label:
+          'a symlink entry (120000) has version-made-by 0x0317 (unix) and external-attr 0xa1ff0000',
+        makeEntry: () => symlinkEntry('link', 'target.txt'),
+        versionMadeBy: 0x0317,
+        externalAttr: 0xa1ff0000,
+      },
+      {
+        label: 'a directory entry (40000) has version-made-by 0x0000 and external-attr 0x00000010',
+        makeEntry: () => dirEntry('mydir'),
+        versionMadeBy: 0x0000,
+        externalAttr: 0x00000010,
+      },
+      {
+        label:
+          'a gitlink entry (160000) has version-made-by 0x0000 and external-attr 0x00000010 (same as dir)',
+        makeEntry: () => gitlinkEntry('mysub'),
+        versionMadeBy: 0x0000,
+        externalAttr: 0x00000010,
+      },
+    ])('Then $label', async ({ makeEntry, versionMadeBy, externalAttr }) => {
       // Arrange
-      const content = new Uint8Array([0x74, 0x65, 0x78, 0x74]); // "text"
-      const result = makeResult([regularEntry('a.txt', content, '100644')]);
+      const result = makeResult([makeEntry()]);
       const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
 
       // Act
@@ -452,81 +486,8 @@ describe('Given a regular text entry (100644)', () => {
       const central = mustGet(parseZip(bytes).centrals);
 
       // Assert
-      expect(central.versionMadeBy).toBe(0x0000);
-      expect(central.externalAttr).toBe(0x00000000);
-    });
-  });
-});
-
-describe('Given an exec entry (100755)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then version-made-by is 0x0317 (unix) and external-attr is 0x81ed0000', async () => {
-      // Arrange
-      const content = new TextEncoder().encode('#!/bin/sh\n');
-      const result = makeResult([regularEntry('run.sh', content, '100755')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.versionMadeBy).toBe(0x0317);
-      expect(central.externalAttr).toBe(0x81ed0000);
-    });
-  });
-});
-
-describe('Given a symlink entry (120000)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then version-made-by is 0x0317 (unix) and external-attr is 0xa1ff0000', async () => {
-      // Arrange
-      const result = makeResult([symlinkEntry('link', 'target.txt')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.versionMadeBy).toBe(0x0317);
-      expect(central.externalAttr).toBe(0xa1ff0000);
-    });
-  });
-});
-
-describe('Given a directory entry (40000)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then version-made-by is 0x0000 and external-attr is 0x00000010', async () => {
-      // Arrange
-      const result = makeResult([dirEntry('mydir')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.versionMadeBy).toBe(0x0000);
-      expect(central.externalAttr).toBe(0x00000010);
-    });
-  });
-});
-
-describe('Given a gitlink entry (160000)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then version-made-by is 0x0000 and external-attr is 0x00000010 (same as dir)', async () => {
-      // Arrange
-      const result = makeResult([gitlinkEntry('mysub')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.versionMadeBy).toBe(0x0000);
-      expect(central.externalAttr).toBe(0x00000010);
+      expect(central.versionMadeBy).toBe(versionMadeBy);
+      expect(central.externalAttr).toBe(externalAttr);
     });
   });
 });
@@ -535,12 +496,48 @@ describe('Given a gitlink entry (160000)', () => {
 // Internal attr: text bit
 // ---------------------------------------------------------------------------
 
-describe('Given a regular entry with no NUL bytes (text)', () => {
+describe('Given an archive entry of a given kind and content', () => {
   describe('When central directory is emitted', () => {
-    it('Then internal-attr is 0x0001 (text)', async () => {
+    it.each([
+      {
+        label: 'a regular entry with no NUL bytes is text (internal-attr 0x0001)',
+        makeEntry: () => regularEntry('a.txt', new TextEncoder().encode('hello\n')), // no NUL
+        internalAttr: 0x0001,
+      },
+      {
+        label: 'a regular entry with a NUL byte is binary (internal-attr 0x0000)',
+        makeEntry: () => regularEntry('data.bin', new Uint8Array([0x00, 0x01, 0x02])), // has NUL
+        internalAttr: 0x0000,
+      },
+      {
+        label: 'an exec entry with no NUL bytes is text (internal-attr 0x0001)',
+        makeEntry: () => regularEntry('run.sh', new TextEncoder().encode('#!/bin/sh\n'), '100755'),
+        internalAttr: 0x0001,
+      },
+      {
+        label: 'an exec entry with a NUL byte is binary (internal-attr 0x0000)',
+        makeEntry: () =>
+          regularEntry('prog', new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00]), '100755'), // ELF magic + NUL
+        internalAttr: 0x0000,
+      },
+      {
+        label: 'a symlink entry is always text (internal-attr 0x0001)',
+        makeEntry: () => symlinkEntry('link', 'some/target'),
+        internalAttr: 0x0001,
+      },
+      {
+        label: 'a directory entry (40000) is always binary (internal-attr 0x0000)',
+        makeEntry: () => dirEntry('mydir'),
+        internalAttr: 0x0000,
+      },
+      {
+        label: 'a gitlink entry (160000) is always binary (internal-attr 0x0000)',
+        makeEntry: () => gitlinkEntry('mysub'),
+        internalAttr: 0x0000,
+      },
+    ])('Then $label', async ({ makeEntry, internalAttr }) => {
       // Arrange
-      const content = new TextEncoder().encode('hello\n'); // no NUL
-      const result = makeResult([regularEntry('a.txt', content)]);
+      const result = makeResult([makeEntry()]);
       const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
 
       // Act
@@ -548,112 +545,7 @@ describe('Given a regular entry with no NUL bytes (text)', () => {
       const central = mustGet(parseZip(bytes).centrals);
 
       // Assert
-      expect(central.internalAttr).toBe(0x0001);
-    });
-  });
-});
-
-describe('Given a regular entry with a NUL byte (binary)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then internal-attr is 0x0000 (binary)', async () => {
-      // Arrange
-      const content = new Uint8Array([0x00, 0x01, 0x02]); // has NUL
-      const result = makeResult([regularEntry('data.bin', content)]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.internalAttr).toBe(0x0000);
-    });
-  });
-});
-
-describe('Given an exec entry with no NUL bytes', () => {
-  describe('When central directory is emitted', () => {
-    it('Then internal-attr is 0x0001 (text)', async () => {
-      // Arrange
-      const content = new TextEncoder().encode('#!/bin/sh\n');
-      const result = makeResult([regularEntry('run.sh', content, '100755')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.internalAttr).toBe(0x0001);
-    });
-  });
-});
-
-describe('Given an exec entry with a NUL byte (binary exec)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then internal-attr is 0x0000 (binary)', async () => {
-      // Arrange
-      const content = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00]); // ELF magic + NUL
-      const result = makeResult([regularEntry('prog', content, '100755')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.internalAttr).toBe(0x0000);
-    });
-  });
-});
-
-describe('Given a symlink entry', () => {
-  describe('When central directory is emitted', () => {
-    it('Then internal-attr is 0x0001 (always text for symlinks)', async () => {
-      // Arrange
-      const result = makeResult([symlinkEntry('link', 'some/target')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.internalAttr).toBe(0x0001);
-    });
-  });
-});
-
-describe('Given a directory entry (40000)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then internal-attr is 0x0000 (always binary for dirs)', async () => {
-      // Arrange
-      const result = makeResult([dirEntry('mydir')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.internalAttr).toBe(0x0000);
-    });
-  });
-});
-
-describe('Given a gitlink entry (160000)', () => {
-  describe('When central directory is emitted', () => {
-    it('Then internal-attr is 0x0000 (always binary for gitlinks)', async () => {
-      // Arrange
-      const result = makeResult([gitlinkEntry('mysub')]);
-      const sut = zipArchive(result, { deflateRaw: identityDeflateRaw });
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const central = mustGet(parseZip(bytes).centrals);
-
-      // Assert
-      expect(central.internalAttr).toBe(0x0000);
+      expect(central.internalAttr).toBe(internalAttr);
     });
   });
 });
@@ -815,72 +707,52 @@ describe('Given two entries whose central directory has a known byte span', () =
 // DOS time: tzOffsetMinutes variants
 // ---------------------------------------------------------------------------
 
-describe('Given mtime=1112904793 and tzOffsetMinutes=0 (UTC)', () => {
+describe('Given an mtime and tzOffsetMinutes pair (pinned against git)', () => {
   describe('When DOS time fields are emitted', () => {
-    it('Then modTime=0xa1a6 and modDate=0x3287 (pinned against git in UTC)', async () => {
-      // Arrange — epoch 1112904793 = 2005-04-07T20:13:13Z
+    it.each([
+      {
+        // epoch 1112904793 = 2005-04-07T20:13:13Z
+        label: 'tzOffsetMinutes=0 (UTC) yields modTime=0xa1a6 and modDate=0x3287',
+        mtime: FIXED_MTIME,
+        tzOffsetMinutes: 0,
+        modTime: 0xa1a6,
+        modDate: 0x3287,
+      },
+      {
+        // same epoch, but breakdowns in +0200 local
+        label: 'tzOffsetMinutes=120 (+0200) yields modTime=0xb1a6 and modDate=0x3287',
+        mtime: FIXED_MTIME,
+        tzOffsetMinutes: 120,
+        modTime: 0xb1a6,
+        modDate: 0x3287,
+      },
+      {
+        // 1112917800 = 2005-04-07T23:50:00Z; with tzOffsetMinutes=15 (adds 900s):
+        // adjusted UTC = 2005-04-08T00:05:00Z.
+        // DOS time: (0<<11)|(5<<5)|0 = 0x00A0
+        // DOS date: (25<<9)|(4<<5)|8  = 0x3288  (day 8, not 7)
+        label: 'tzOffsetMinutes=15 near midnight rolls modDate over to the next day',
+        mtime: 1_112_917_800,
+        tzOffsetMinutes: 15,
+        modTime: 0x00a0,
+        modDate: 0x3288,
+      },
+    ])('Then $label', async ({ mtime, tzOffsetMinutes, modTime, modDate }) => {
+      // Arrange
       const result = makeResult([regularEntry('a.txt', new TextEncoder().encode('x'))]);
       const sut = zipArchive(
         result,
         { deflateRaw: identityDeflateRaw },
-        { mtime: FIXED_MTIME, tzOffsetMinutes: 0 },
+        { mtime, tzOffsetMinutes },
       );
 
       // Act
       const bytes = await collectBytes(sut);
       const local = mustGet(parseZip(bytes).locals);
 
-      // Assert — pinned from faithfulness matrix Z (UTC)
-      expect(local.modTime).toBe(0xa1a6);
-      expect(local.modDate).toBe(0x3287);
-    });
-  });
-});
-
-describe('Given mtime=1112904793 and tzOffsetMinutes=120 (+0200)', () => {
-  describe('When DOS time fields are emitted', () => {
-    it('Then modTime=0xb1a6 and modDate=0x3287 (pinned against git in +0200)', async () => {
-      // Arrange — same epoch, but breakdowns in +0200 local
-      const result = makeResult([regularEntry('a.txt', new TextEncoder().encode('x'))]);
-      const sut = zipArchive(
-        result,
-        { deflateRaw: identityDeflateRaw },
-        { mtime: FIXED_MTIME, tzOffsetMinutes: 120 },
-      );
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const local = mustGet(parseZip(bytes).locals);
-
-      // Assert — pinned from faithfulness matrix Z (+0200)
-      expect(local.modTime).toBe(0xb1a6);
-      expect(local.modDate).toBe(0x3287);
-    });
-  });
-});
-
-describe('Given mtime=1112917800 (2005-04-07T23:50:00Z) and tzOffsetMinutes=15', () => {
-  describe('When DOS time fields are emitted', () => {
-    it('Then modDate advances by one day (day-rollover across midnight pinned)', async () => {
-      // Arrange — 1112917800 = 2005-04-07T23:50:00Z.
-      // With tzOffsetMinutes=15 (adds 900 s): adjusted UTC = 2005-04-08T00:05:00Z.
-      // DOS time: (0<<11)|(5<<5)|0 = 0x00A0
-      // DOS date: (25<<9)|(4<<5)|8  = 0x3288  (day 8, not 7)
-      const NEAR_MIDNIGHT = 1_112_917_800;
-      const result = makeResult([regularEntry('f.txt', new TextEncoder().encode('x'))]);
-      const sut = zipArchive(
-        result,
-        { deflateRaw: identityDeflateRaw },
-        { mtime: NEAR_MIDNIGHT, tzOffsetMinutes: 15 },
-      );
-
-      // Act
-      const bytes = await collectBytes(sut);
-      const local = mustGet(parseZip(bytes).locals);
-
-      // Assert — date rolled over to next day
-      expect(local.modTime).toBe(0x00a0);
-      expect(local.modDate).toBe(0x3288);
+      // Assert
+      expect(local.modTime).toBe(modTime);
+      expect(local.modDate).toBe(modDate);
     });
   });
 });

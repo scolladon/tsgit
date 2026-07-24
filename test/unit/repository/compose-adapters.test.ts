@@ -43,32 +43,53 @@ describe('composeAdapters — fallback only', () => {
 });
 
 describe('composeAdapters — partial user overrides', () => {
-  describe('Given user overrides fs only', () => {
+  describe('Given user overrides one field and every other field comes from fallback', () => {
     describe('When composeAdapters runs', () => {
-      it('Then returned fs is sentinelFs and the other three come from fallback', () => {
+      it.each([
+        {
+          overrides: { fs: sentinelFs },
+          expected: {
+            fs: sentinelFs,
+            hash: fallbackHash,
+            compressor: fallbackCompressor,
+            transport: fallbackTransport,
+          },
+          label: 'fs is sentinelFs and the other three come from fallback',
+        },
+        {
+          overrides: { hash: sentinelHash },
+          expected: {
+            fs: fallbackFs,
+            hash: sentinelHash,
+            compressor: fallbackCompressor,
+            transport: fallbackTransport,
+          },
+          label: 'only hash is sentinelHash',
+        },
+        {
+          overrides: {
+            fs: sentinelFs,
+            hash: sentinelHash,
+            compressor: sentinelCompressor,
+            transport: sentinelTransport,
+          },
+          expected: {
+            fs: sentinelFs,
+            hash: sentinelHash,
+            compressor: sentinelCompressor,
+            transport: sentinelTransport,
+          },
+          label: 'every slot is the user-supplied value',
+        },
+      ])('Then $label', ({ overrides, expected }) => {
         // Arrange
-        const sut = composeAdapters({ fs: sentinelFs }, fallback);
+        const sut = composeAdapters(overrides, fallback);
 
         // Assert
-        expect(sut.fs).toBe(sentinelFs);
-        expect(sut.hash).toBe(fallbackHash);
-        expect(sut.compressor).toBe(fallbackCompressor);
-        expect(sut.transport).toBe(fallbackTransport);
-      });
-    });
-  });
-
-  describe('Given user overrides hash only', () => {
-    describe('When composeAdapters runs', () => {
-      it('Then only hash is sentinelHash', () => {
-        // Arrange
-        const sut = composeAdapters({ hash: sentinelHash }, fallback);
-
-        // Assert
-        expect(sut.fs).toBe(fallbackFs);
-        expect(sut.hash).toBe(sentinelHash);
-        expect(sut.compressor).toBe(fallbackCompressor);
-        expect(sut.transport).toBe(fallbackTransport);
+        expect(sut.fs).toBe(expected.fs);
+        expect(sut.hash).toBe(expected.hash);
+        expect(sut.compressor).toBe(expected.compressor);
+        expect(sut.transport).toBe(expected.transport);
       });
     });
   });
@@ -98,45 +119,23 @@ describe('composeAdapters — partial user overrides', () => {
       });
     });
   });
-
-  describe('Given user overrides all four', () => {
-    describe('When composeAdapters runs', () => {
-      it('Then every slot is the user-supplied value', () => {
-        // Arrange
-        const sut = composeAdapters(
-          {
-            fs: sentinelFs,
-            hash: sentinelHash,
-            compressor: sentinelCompressor,
-            transport: sentinelTransport,
-          },
-          fallback,
-        );
-
-        // Assert
-        expect(sut.fs).toBe(sentinelFs);
-        expect(sut.hash).toBe(sentinelHash);
-        expect(sut.compressor).toBe(sentinelCompressor);
-        expect(sut.transport).toBe(sentinelTransport);
-      });
-    });
-  });
 });
 
 describe('composeAdapters — ADAPTER_UNAVAILABLE', () => {
-  describe('Given no fs override AND fallback.fs is undefined', () => {
+  describe('Given a fallback missing exactly one adapter slot', () => {
     describe('When composeAdapters runs', () => {
-      it('Then throws ADAPTER_UNAVAILABLE for runtime fallback.runtime', () => {
+      it.each([
+        ['fs', 'memory'],
+        ['hash', 'node'],
+        ['compressor', 'node'],
+        ['transport', 'browser'],
+      ] as const)('Then throws ADAPTER_UNAVAILABLE mentioning %s', (field, runtime) => {
         // Arrange
+        const sut = composeAdapters;
         try {
-          composeAdapters(
-            {},
-            {
-              ...fallback,
-              fs: undefined as unknown as FileSystem,
-              runtime: 'memory',
-            },
-          );
+          sut({}, { ...fallback, [field]: undefined, runtime } as unknown as Parameters<
+            typeof composeAdapters
+          >[1]);
           // Assert
           expect.unreachable();
         } catch (err) {
@@ -144,81 +143,8 @@ describe('composeAdapters — ADAPTER_UNAVAILABLE', () => {
           const data = (err as TsgitError).data;
           expect(data.code).toBe('ADAPTER_UNAVAILABLE');
           if (data.code === 'ADAPTER_UNAVAILABLE') {
-            expect(data.runtime).toBe('memory');
-            expect(data.reason).toContain('fs');
-          }
-        }
-      });
-    });
-  });
-
-  describe('Given fallback.hash is undefined with runtime node', () => {
-    describe('When composeAdapters runs', () => {
-      it('Then throws ADAPTER_UNAVAILABLE with reason mentioning hash', () => {
-        // Arrange
-        try {
-          composeAdapters(
-            {},
-            { ...fallback, hash: undefined as unknown as HashService, runtime: 'node' },
-          );
-          // Assert
-          expect.unreachable();
-        } catch (err) {
-          const data = (err as TsgitError).data;
-          expect(data.code).toBe('ADAPTER_UNAVAILABLE');
-          if (data.code === 'ADAPTER_UNAVAILABLE') {
-            expect(data.runtime).toBe('node');
-            expect(data.reason).toContain('hash');
-          }
-        }
-      });
-    });
-  });
-
-  describe('Given fallback.compressor is undefined with runtime node', () => {
-    describe('When composeAdapters runs', () => {
-      it('Then throws ADAPTER_UNAVAILABLE with reason mentioning compressor', () => {
-        // Arrange
-        try {
-          composeAdapters(
-            {},
-            { ...fallback, compressor: undefined as unknown as Compressor, runtime: 'node' },
-          );
-          // Assert
-          expect.unreachable();
-        } catch (err) {
-          const data = (err as TsgitError).data;
-          expect(data.code).toBe('ADAPTER_UNAVAILABLE');
-          if (data.code === 'ADAPTER_UNAVAILABLE') {
-            expect(data.runtime).toBe('node');
-            expect(data.reason).toContain('compressor');
-          }
-        }
-      });
-    });
-  });
-
-  describe('Given no override AND fallback.transport is undefined with runtime browser', () => {
-    describe('When composeAdapters runs', () => {
-      it('Then throws ADAPTER_UNAVAILABLE with runtime browser', () => {
-        // Arrange
-        try {
-          composeAdapters(
-            {},
-            {
-              ...fallback,
-              transport: undefined as unknown as HttpTransport,
-              runtime: 'browser',
-            },
-          );
-          // Assert
-          expect.unreachable();
-        } catch (err) {
-          const data = (err as TsgitError).data;
-          expect(data.code).toBe('ADAPTER_UNAVAILABLE');
-          if (data.code === 'ADAPTER_UNAVAILABLE') {
-            expect(data.runtime).toBe('browser');
-            expect(data.reason).toContain('transport');
+            expect(data.runtime).toBe(runtime);
+            expect(data.reason).toContain(field);
           }
         }
       });

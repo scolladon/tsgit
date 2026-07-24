@@ -976,7 +976,9 @@ describe('revParse', () => {
     describe('Given a branch reflog', () => {
       describe('When revParse(main@{0})', () => {
         it('Then the branch log resolves the newest tip', async () => {
-          // Arrange — kills a mutant that hard-codes the base to HEAD.
+          // Arrange — kills a mutant that hard-codes the base to HEAD; the
+          // reflog file lives at refs/heads/main, so the short base `main`
+          // must be canonicalized to it (the candidate-ladder path).
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
           await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
@@ -1220,25 +1222,6 @@ describe('revParse', () => {
 
           // Assert
           expect((caught as TsgitError).data.code).toBe('REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe('Given a base resolvable as a ref but with a reflog only under refs/heads/', () => {
-      describe('When revParse(main@{0})', () => {
-        it('Then the candidate ladder finds the branch log', async () => {
-          // Arrange — the reflog file lives at refs/heads/main; the short base
-          // `main` must be canonicalized to it.
-          const ctx = createMemoryContext();
-          const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
-          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
-          await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
-
-          // Act
-          const sut = await revParse(ctx, 'main@{0}');
-
-          // Assert
-          expect(sut).toBe(tip);
         });
       });
     });

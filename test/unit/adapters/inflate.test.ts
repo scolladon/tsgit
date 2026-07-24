@@ -299,59 +299,57 @@ describe('inflateZlibMember', () => {
     });
   });
 
-  describe('Given a member with an unsupported compression method (CM != 8)', () => {
+  describe('Given a zlib member with an invalid or corrupted header', () => {
     describe('When decoding', () => {
-      it('Then throws DECOMPRESS_FAILED with the unsupported-method reason', () => {
+      it.each([
+        {
+          buildMember: () => {
+            const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
+            const corrupted = new Uint8Array(member);
+            corrupted[0] = ((corrupted[0] as number) & 0xf0) | 0x07;
+            return corrupted;
+          },
+          reason: 'unsupported compression method',
+          label:
+            'an unsupported compression method (CM != 8) throws with the unsupported-method reason',
+        },
+        {
+          buildMember: () => {
+            const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
+            const corrupted = new Uint8Array(member);
+            corrupted[0] = ((corrupted[0] as number) & 0x0f) | (8 << 4);
+            return corrupted;
+          },
+          reason: 'invalid window size',
+          label:
+            'CINFO above the maximum window size (CINFO > 7) throws with the invalid-window-size reason',
+        },
+        {
+          buildMember: () => new Uint8Array([ZLIB_CMF_CM8_CINFO7, 0x00]),
+          reason: 'invalid zlib header checksum',
+          label:
+            'FCHECK bits that do not satisfy the mod-31 checksum throw with the invalid-header-checksum reason',
+        },
+        {
+          buildMember: () => {
+            const [cmf, flg] = buildZlibHeader(1);
+            return new Uint8Array([cmf, flg]);
+          },
+          reason: 'preset dictionary not supported',
+          label: 'FDICT set (preset dictionary) throws with the preset-dictionary reason',
+        },
+        {
+          buildMember: () => new Uint8Array([0xff, 0xff, 0xff, 0xff]),
+          reason: 'unsupported compression method',
+          label: 'non-zlib junk bytes throw with the unsupported-method reason',
+        },
+      ])('Then $label', ({ buildMember, reason }) => {
         // Arrange
         const sut = inflateZlibMember;
-        const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
-        const corrupted = new Uint8Array(member);
-        corrupted[0] = ((corrupted[0] as number) & 0xf0) | 0x07;
+        const member = buildMember();
 
         // Act & Assert
-        assertDecompressFailed(() => sut(corrupted, 0), 'unsupported compression method');
-      });
-    });
-  });
-
-  describe('Given a member with CINFO above the maximum window size (CINFO > 7)', () => {
-    describe('When decoding', () => {
-      it('Then throws DECOMPRESS_FAILED with the invalid-window-size reason', () => {
-        // Arrange
-        const sut = inflateZlibMember;
-        const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
-        const corrupted = new Uint8Array(member);
-        corrupted[0] = ((corrupted[0] as number) & 0x0f) | (8 << 4);
-
-        // Act & Assert
-        assertDecompressFailed(() => sut(corrupted, 0), 'invalid window size');
-      });
-    });
-  });
-
-  describe('Given a header whose FCHECK bits do not satisfy the mod-31 checksum', () => {
-    describe('When decoding', () => {
-      it('Then throws DECOMPRESS_FAILED with the invalid-header-checksum reason', () => {
-        // Arrange
-        const sut = inflateZlibMember;
-        const member = new Uint8Array([ZLIB_CMF_CM8_CINFO7, 0x00]);
-
-        // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid zlib header checksum');
-      });
-    });
-  });
-
-  describe('Given a header with FDICT set (preset dictionary)', () => {
-    describe('When decoding', () => {
-      it('Then throws DECOMPRESS_FAILED with the preset-dictionary reason', () => {
-        // Arrange
-        const sut = inflateZlibMember;
-        const [cmf, flg] = buildZlibHeader(1);
-        const member = new Uint8Array([cmf, flg]);
-
-        // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'preset dictionary not supported');
+        assertDecompressFailed(() => sut(member, 0), reason);
       });
     });
   });
@@ -412,19 +410,6 @@ describe('inflateZlibMember', () => {
 
         // Act & Assert
         assertDecompressFailed(() => sut(member, 0), 'reserved block type');
-      });
-    });
-  });
-
-  describe('Given non-zlib junk bytes', () => {
-    describe('When decoding', () => {
-      it('Then throws DECOMPRESS_FAILED with the unsupported-method reason', () => {
-        // Arrange
-        const sut = inflateZlibMember;
-        const junk = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
-
-        // Act & Assert
-        assertDecompressFailed(() => sut(junk, 0), 'unsupported compression method');
       });
     });
   });

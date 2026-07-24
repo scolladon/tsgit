@@ -1014,33 +1014,29 @@ describe('MemoryFileSystem', () => {
 
 describe('MemoryFileSystem config-path capabilities', () => {
   describe('Given a MemoryFileSystem constructed without overrides', () => {
-    describe('When homedir() is called', () => {
-      it('Then returns the default "/home/user"', () => {
+    describe('When a config-path accessor is called', () => {
+      it.each([
+        {
+          read: (fs: MemoryFileSystem) => fs.homedir(),
+          expected: '/home/user',
+          label: 'homedir() returns the default "/home/user"',
+        },
+        {
+          read: (fs: MemoryFileSystem) => fs.xdgConfigHome(),
+          expected: '/home/user/.config',
+          label: 'xdgConfigHome() returns the default "/home/user/.config"',
+        },
+        {
+          read: (fs: MemoryFileSystem) => fs.systemConfigPath(),
+          expected: '/etc/gitconfig',
+          label: 'systemConfigPath() returns the default "/etc/gitconfig"',
+        },
+      ])('Then $label', ({ read, expected }) => {
         // Arrange
         const sut = new MemoryFileSystem({ rootDir: '/repo' });
 
         // Act + Assert
-        expect(sut.homedir()).toBe('/home/user');
-      });
-    });
-
-    describe('When xdgConfigHome() is called', () => {
-      it('Then returns the default "/home/user/.config"', () => {
-        // Arrange
-        const sut = new MemoryFileSystem({ rootDir: '/repo' });
-
-        // Act + Assert
-        expect(sut.xdgConfigHome()).toBe('/home/user/.config');
-      });
-    });
-
-    describe('When systemConfigPath() is called', () => {
-      it('Then returns the default "/etc/gitconfig"', () => {
-        // Arrange
-        const sut = new MemoryFileSystem({ rootDir: '/repo' });
-
-        // Act + Assert
-        expect(sut.systemConfigPath()).toBe('/etc/gitconfig');
+        expect(read(sut)).toBe(expected);
       });
     });
   });

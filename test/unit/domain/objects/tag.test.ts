@@ -145,68 +145,28 @@ describe('tag', () => {
       });
     });
 
-    describe('Given a tag pointing to another tag', () => {
+    describe('Given a tag pointing to another object type', () => {
       describe('When parsing', () => {
-        it("Then objectType is 'tag'", () => {
+        it.each([
+          { type: 'tag', tagName: 'nested', message: 'nested tag' },
+          { type: 'blob', tagName: 'blob-tag', message: 'blob tag' },
+          { type: 'tree', tagName: 'tree-tag', message: 'tree tag' },
+        ])("Then objectType is '$type'", ({ type, tagName, message }) => {
           // Arrange
           const content = tagText([
             `object ${'b'.repeat(40)}`,
-            'type tag',
-            'tag nested',
+            `type ${type}`,
+            `tag ${tagName}`,
             'tagger A <a@a.com> 0 +0000',
             '',
-            'nested tag',
+            message,
           ]);
 
           // Act
           const sut = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.objectType).toBe('tag');
-        });
-      });
-    });
-
-    describe('Given a tag pointing to a blob', () => {
-      describe('When parsing', () => {
-        it("Then objectType is 'blob'", () => {
-          // Arrange
-          const content = tagText([
-            `object ${'b'.repeat(40)}`,
-            'type blob',
-            'tag blob-tag',
-            'tagger A <a@a.com> 0 +0000',
-            '',
-            'blob tag',
-          ]);
-
-          // Act
-          const sut = parseTagContent(DUMMY_ID, content);
-
-          // Assert
-          expect(sut.data.objectType).toBe('blob');
-        });
-      });
-    });
-
-    describe('Given a tag pointing to a tree', () => {
-      describe('When parsing', () => {
-        it("Then objectType is 'tree'", () => {
-          // Arrange
-          const content = tagText([
-            `object ${'b'.repeat(40)}`,
-            'type tree',
-            'tag tree-tag',
-            'tagger A <a@a.com> 0 +0000',
-            '',
-            'tree tag',
-          ]);
-
-          // Act
-          const sut = parseTagContent(DUMMY_ID, content);
-
-          // Assert
-          expect(sut.data.objectType).toBe('tree');
+          expect(sut.data.objectType).toBe(type);
         });
       });
     });
@@ -255,116 +215,65 @@ describe('tag', () => {
       });
     });
 
-    describe('Given a tag with invalid objectType', () => {
+    // Each row isolates one distinct parseTagContent validation guard. The
+    // 'first line must be object' / 'second line must be type' rows each have
+    // 2 routes (missing entirely vs empty content) to the same single guard.
+    describe('Given content that fails a parseTagContent validation guard', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_TAG with invalid object type reason', () => {
-          // Arrange
-          const content = tagText([
-            `object ${'b'.repeat(40)}`,
-            'type invalid',
-            'tag v1.0',
-            '',
-            'msg',
-          ]);
-
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'invalid object type: invalid',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given content missing object field', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG with first line must be object reason', () => {
-          // Arrange
-          const content = tagText(['type commit', 'tag v1.0', '', 'msg']);
-
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'first line must be object',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given content missing tag name field', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG with third line must be tag name reason', () => {
-          // Arrange
-          const content = tagText([`object ${'b'.repeat(40)}`, 'type commit', '', 'msg']);
-
-          // Act
-          let sut: unknown;
-          try {
-            parseTagContent(DUMMY_ID, content);
-          } catch (e) {
-            sut = e;
-          }
-
-          // Assert
-          expect(sut).toBeInstanceOf(TsgitError);
-          expect((sut as TsgitError).data).toEqual({
-            code: 'INVALID_TAG',
+        it.each([
+          {
+            lines: [`object ${'b'.repeat(40)}`, 'type invalid', 'tag v1.0', '', 'msg'],
+            reason: 'invalid object type: invalid',
+            label: 'an invalid objectType',
+          },
+          {
+            lines: ['type commit', 'tag v1.0', '', 'msg'],
+            reason: 'first line must be object',
+            label: 'a missing object field',
+          },
+          { lines: [], reason: 'first line must be object', label: 'empty content' },
+          {
+            lines: [`object ${'b'.repeat(40)}`, 'tag v1.0', '', 'msg'],
+            reason: 'second line must be type',
+            label: 'a missing type field',
+          },
+          {
+            lines: [`object ${'b'.repeat(40)}`],
+            reason: 'second line must be type',
+            label: 'only the object line',
+          },
+          {
+            lines: [`object ${'b'.repeat(40)}`, 'type commit'],
             reason: 'third line must be tag name',
-          });
-        });
-      });
-    });
-
-    describe('Given content with third line not starting with "tag "', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG', () => {
-          // Arrange — 3 lines so length check passes, but third line is wrong
-          const content = tagText([
-            `object ${'b'.repeat(40)}`,
-            'type commit',
-            'notatag v1.0',
-            '',
-            'msg',
-          ]);
-
-          // Act
-          let sut: unknown;
-          try {
-            parseTagContent(DUMMY_ID, content);
-          } catch (e) {
-            sut = e;
-          }
-
-          // Assert
-          expect(sut).toBeInstanceOf(TsgitError);
-          expect((sut as TsgitError).data).toEqual({
-            code: 'INVALID_TAG',
-            reason: 'third line must be tag name',
-          });
-        });
-      });
-    });
-
-    describe('Given content missing type field', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG with second line must be type reason', () => {
+            label: 'object and type but no tag line',
+          },
+          {
+            lines: [`object ${'b'.repeat(40)}`, 'type commit', 'tag ', '', 'msg'],
+            reason: 'invalid tag name: ',
+            label: 'an empty tag name',
+          },
+          {
+            lines: [
+              `object ${'b'.repeat(40)}`,
+              'type commit',
+              'tag v1.0',
+              ' orphan continuation',
+              '',
+              'msg',
+            ],
+            reason: 'unexpected continuation line without preceding header',
+            label: 'an orphan continuation line (no preceding header)',
+          },
+        ])('Then throws INVALID_TAG for $label', ({ lines, reason }) => {
           // Arrange
-          const content = tagText([`object ${'b'.repeat(40)}`, 'tag v1.0', '', 'msg']);
+          const content = tagText(lines);
 
           // Act + Assert
           expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
             expect.objectContaining({
               data: expect.objectContaining({
                 code: 'INVALID_TAG',
-                reason: 'second line must be type',
+                reason,
               }),
             }),
           );
@@ -372,79 +281,41 @@ describe('tag', () => {
       });
     });
 
-    describe('Given empty content', () => {
+    // 'no tag line at all' trips `lines.length < 3`; 'third line wrong' trips
+    // `!lines[2].startsWith('tag ')` — the other side of the same OR guard.
+    describe('Given content missing a valid tag-name line', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_TAG with first line must be object reason', () => {
-          // Arrange
-          const content = tagText([]);
+        it.each([
+          {
+            lines: [`object ${'b'.repeat(40)}`, 'type commit', '', 'msg'],
+            label: 'the tag name field is missing entirely',
+          },
+          {
+            lines: [`object ${'b'.repeat(40)}`, 'type commit', 'notatag v1.0', '', 'msg'],
+            label: 'the third line does not start with "tag "',
+          },
+        ])(
+          'Then throws INVALID_TAG with third line must be tag name reason when $label',
+          ({ lines }) => {
+            // Arrange
+            const content = tagText(lines);
 
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'first line must be object',
-              }),
-            }),
-          );
-        });
-      });
-    });
+            // Act
+            let sut: unknown;
+            try {
+              parseTagContent(DUMMY_ID, content);
+            } catch (e) {
+              sut = e;
+            }
 
-    describe('Given content with only object line', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG with second line must be type reason', () => {
-          // Arrange
-          const content = tagText([`object ${'b'.repeat(40)}`]);
-
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'second line must be type',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given content with object and type but no tag line', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG with third line must be tag name reason', () => {
-          // Arrange
-          const content = tagText([`object ${'b'.repeat(40)}`, 'type commit']);
-
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'third line must be tag name',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given tag with empty tag name', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG with invalid tag name reason', () => {
-          // Arrange
-          const content = tagText([`object ${'b'.repeat(40)}`, 'type commit', 'tag ', '', 'msg']);
-
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'invalid tag name: ',
-              }),
-            }),
-          );
-        });
+            // Assert
+            expect(sut).toBeInstanceOf(TsgitError);
+            expect((sut as TsgitError).data).toEqual({
+              code: 'INVALID_TAG',
+              reason: 'third line must be tag name',
+            });
+          },
+        );
       });
     });
 
@@ -495,32 +366,6 @@ describe('tag', () => {
             { key: 'gpgsig', value: 'first-sig' },
             { key: 'gpgsig', value: 'second-sig' },
           ]);
-        });
-      });
-    });
-
-    describe('Given tag with orphan continuation line (no preceding header)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TAG with unexpected continuation line reason', () => {
-          // Arrange
-          const content = tagText([
-            `object ${'b'.repeat(40)}`,
-            'type commit',
-            'tag v1.0',
-            ' orphan continuation',
-            '',
-            'msg',
-          ]);
-
-          // Act + Assert
-          expect(() => parseTagContent(DUMMY_ID, content)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TAG',
-                reason: 'unexpected continuation line without preceding header',
-              }),
-            }),
-          );
         });
       });
     });
@@ -586,9 +431,17 @@ describe('tag', () => {
       });
     });
 
-    describe('Given a tag with newline in tagName', () => {
+    // Each row isolates one operand of the L124 `tagName === '' ||
+    // tagName.includes('\0') || tagName.includes('\n')` guard; the exact
+    // reason (rather than just the code) kills the L125 empty-template
+    // StringLiteral mutant too.
+    describe('Given a tag with an invalid tagName', () => {
       describe('When serializing', () => {
-        it('Then throws INVALID_TAG with the exact invalid-tag-name reason', () => {
+        it.each([
+          { tagName: 'v1.0\ninjected', label: 'containing a newline' },
+          { tagName: '', label: 'empty' },
+          { tagName: 'v1\0bad', label: 'containing a NUL byte' },
+        ])('Then throws INVALID_TAG for a tagName $label', ({ tagName }) => {
           // Arrange
           const tag: Tag = {
             type: 'tag',
@@ -596,42 +449,7 @@ describe('tag', () => {
             data: {
               object: OBJ_ID,
               objectType: 'commit',
-              tagName: 'v1.0\ninjected',
-              message: 'msg',
-              extraHeaders: [],
-            },
-          };
-
-          // Act
-          let thrown: unknown;
-          try {
-            serializeTagContent(tag);
-          } catch (e) {
-            thrown = e;
-          }
-
-          // Assert — exact reason kills the L125 empty-template StringLiteral mutant
-          expect(thrown).toBeInstanceOf(TsgitError);
-          expect((thrown as TsgitError).data).toEqual({
-            code: 'INVALID_TAG',
-            reason: 'invalid tag name: v1.0\ninjected',
-          });
-        });
-      });
-    });
-
-    describe('Given a tag with an empty tagName', () => {
-      describe('When serializing', () => {
-        it('Then throws INVALID_TAG with invalid tag name reason', () => {
-          // Arrange — kills the L124 `=== ''` StringLiteral mutant: under the mutant
-          // an empty tagName no longer matches the guard and serialization succeeds.
-          const tag: Tag = {
-            type: 'tag',
-            id: DUMMY_ID,
-            data: {
-              object: OBJ_ID,
-              objectType: 'commit',
-              tagName: '',
+              tagName,
               message: 'msg',
               extraHeaders: [],
             },
@@ -649,41 +467,7 @@ describe('tag', () => {
           expect(thrown).toBeInstanceOf(TsgitError);
           expect((thrown as TsgitError).data).toEqual({
             code: 'INVALID_TAG',
-            reason: 'invalid tag name: ',
-          });
-        });
-      });
-    });
-
-    describe('Given a tag with a NUL byte in tagName', () => {
-      describe('When serializing', () => {
-        it('Then throws INVALID_TAG with invalid tag name reason', () => {
-          // Arrange — isolates the `includes('\0')` operand of the L124 guard.
-          const tag: Tag = {
-            type: 'tag',
-            id: DUMMY_ID,
-            data: {
-              object: OBJ_ID,
-              objectType: 'commit',
-              tagName: 'v1\0bad',
-              message: 'msg',
-              extraHeaders: [],
-            },
-          };
-
-          // Act
-          let thrown: unknown;
-          try {
-            serializeTagContent(tag);
-          } catch (e) {
-            thrown = e;
-          }
-
-          // Assert
-          expect(thrown).toBeInstanceOf(TsgitError);
-          expect((thrown as TsgitError).data).toEqual({
-            code: 'INVALID_TAG',
-            reason: 'invalid tag name: v1\0bad',
+            reason: `invalid tag name: ${tagName}`,
           });
         });
       });

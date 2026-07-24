@@ -84,52 +84,75 @@ describe('encodeCommandRequest', () => {
 });
 
 describe('readSections', () => {
-  describe('Given a response with two sections separated by a delim and terminated by a flush', () => {
+  describe('Given a decoded v2 section stream', () => {
     describe('When readSections drains the stream', () => {
-      it('Then it yields both sections, in order, with their own lines', async () => {
+      it.each([
+        {
+          buildStream: () =>
+            asyncOf([
+              concatBytes(
+                pktBytes('acknowledgments\n'),
+                pktBytes('ACK 1111111111111111111111111111111111111111\n'),
+                DELIM,
+                pktBytes('packfile\n'),
+                pktBytes('PACK-DATA'),
+                FLUSH,
+              ),
+            ]),
+          expected: [
+            {
+              name: 'acknowledgments',
+              lines: [dataLine('ACK 1111111111111111111111111111111111111111\n')],
+            },
+            { name: 'packfile', lines: [dataLine('PACK-DATA')] },
+          ],
+          label:
+            'it yields both sections, in order, with their own lines, for two sections separated by a delim and terminated by a flush',
+        },
+        {
+          // The terminator's `kind` is 'flush', not 'delim', so `continues`
+          // must be false; treating any non-done boundary (or any boundary at
+          // all) as `continues: true` would make readSections keep reading
+          // and misparse the stray bytes below as another section header.
+          buildStream: () =>
+            asyncOf([
+              concatBytes(
+                pktBytes('packfile\n'),
+                pktBytes('PACK-DATA'),
+                FLUSH,
+                pktBytes('garbage\n'),
+              ),
+            ]),
+          expected: [{ name: 'packfile', lines: [dataLine('PACK-DATA')] }],
+          label:
+            'it yields the one section and never reads past its terminating flush, for a single section followed by stray bytes',
+        },
+        {
+          buildStream: () => asyncOf([FLUSH]),
+          expected: [],
+          label: 'it yields no sections, for a response with zero sections (an immediate flush)',
+        },
+        {
+          buildStream: () => asyncOf([concatBytes(pktBytes('packfile\n'), pktBytes('PACK-DATA'))]),
+          expected: [{ name: 'packfile', lines: [dataLine('PACK-DATA')] }],
+          label:
+            'it yields the single section and stops without throwing, for a body with no terminating delim or flush',
+        },
+        {
+          buildStream: () => asyncOf([concatBytes(pktBytes('packfile'), FLUSH)]),
+          expected: [{ name: 'packfile', lines: [] }],
+          label:
+            'it is still recognised as a valid section name, for a header with no trailing newline',
+        },
+      ])('Then $label', async ({ buildStream, expected }) => {
         // Arrange
-        const stream = asyncOf([
-          concatBytes(
-            pktBytes('acknowledgments\n'),
-            pktBytes('ACK 1111111111111111111111111111111111111111\n'),
-            DELIM,
-            pktBytes('packfile\n'),
-            pktBytes('PACK-DATA'),
-            FLUSH,
-          ),
-        ]);
+        const stream = buildStream();
 
         // Act
         const sut = await collectSections(decodePktStream(stream, { v2: true }));
 
         // Assert
-        expect(sut).toEqual([
-          {
-            name: 'acknowledgments',
-            lines: [dataLine('ACK 1111111111111111111111111111111111111111\n')],
-          },
-          { name: 'packfile', lines: [dataLine('PACK-DATA')] },
-        ]);
-      });
-    });
-  });
-
-  describe('Given a single section terminated by a flush, followed by stray bytes', () => {
-    describe('When readSections drains the stream', () => {
-      it('Then it yields the one section and never reads past its terminating flush', async () => {
-        // Arrange — the terminator's `kind` is 'flush', not 'delim', so
-        // `continues` must be false; treating any non-done boundary (or any
-        // boundary at all) as `continues: true` would make readSections keep
-        // reading and misparse the stray bytes below as another section header.
-        const stream = asyncOf([
-          concatBytes(pktBytes('packfile\n'), pktBytes('PACK-DATA'), FLUSH, pktBytes('garbage\n')),
-        ]);
-
-        // Act
-        const sut = await collectSections(decodePktStream(stream, { v2: true }));
-
-        // Assert
-        expect(sut).toEqual([{ name: 'packfile', lines: [dataLine('PACK-DATA')] }]);
+        expect(sut).toEqual(expected);
       });
     });
   });
@@ -154,51 +177,6 @@ describe('readSections', () => {
           code: 'UNEXPECTED_V2_SECTION',
           section: 'bogus',
         });
-      });
-    });
-  });
-
-  describe('Given a response with zero sections (an immediate flush)', () => {
-    describe('When readSections drains the stream', () => {
-      it('Then it yields no sections', async () => {
-        // Arrange
-        const stream = asyncOf([FLUSH]);
-
-        // Act
-        const sut = await collectSections(decodePktStream(stream, { v2: true }));
-
-        // Assert
-        expect(sut).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a section body whose stream ends without any terminating delim or flush', () => {
-    describe('When readSections drains the stream', () => {
-      it('Then it yields the single section and stops without throwing', async () => {
-        // Arrange
-        const stream = asyncOf([concatBytes(pktBytes('packfile\n'), pktBytes('PACK-DATA'))]);
-
-        // Act
-        const sut = await collectSections(decodePktStream(stream, { v2: true }));
-
-        // Assert
-        expect(sut).toEqual([{ name: 'packfile', lines: [dataLine('PACK-DATA')] }]);
-      });
-    });
-  });
-
-  describe('Given a section header with no trailing newline', () => {
-    describe('When readSections drains the stream', () => {
-      it('Then it is still recognised as a valid section name', async () => {
-        // Arrange
-        const stream = asyncOf([concatBytes(pktBytes('packfile'), FLUSH)]);
-
-        // Act
-        const sut = await collectSections(decodePktStream(stream, { v2: true }));
-
-        // Assert
-        expect(sut).toEqual([{ name: 'packfile', lines: [] }]);
       });
     });
   });

@@ -114,83 +114,22 @@ describe('take', () => {
     });
   });
 
-  describe('Given take(-1)', () => {
+  describe('Given an invalid take(count) argument', () => {
     describe('When invoked', () => {
-      it('Then RangeError /non-negative integer/', () => {
-        // Arrange
-        try {
-          take<number>(-1);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(RangeError);
-          expect((error as Error).message).toMatch(/non-negative integer/);
-        }
-      });
-    });
-  });
-
-  describe('Given take(-2)', () => {
-    describe('When invoked', () => {
-      it('Then RangeError /non-negative integer/', () => {
-        // Arrange
-        try {
-          take<number>(-2);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(RangeError);
-          expect((error as Error).message).toMatch(/non-negative integer/);
-        }
-      });
-    });
-  });
-
-  describe('Given take(1.5)', () => {
-    describe('When invoked', () => {
-      it('Then RangeError /non-negative integer/', () => {
-        // Arrange
-        try {
-          take<number>(1.5);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(RangeError);
-          expect((error as Error).message).toMatch(/non-negative integer/);
-        }
-      });
-    });
-  });
-
-  describe('Given take(NaN)', () => {
-    describe('When invoked', () => {
-      it('Then RangeError /non-negative integer/', () => {
-        // Arrange
-        try {
-          take<number>(Number.NaN);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(RangeError);
-          expect((error as Error).message).toMatch(/non-negative integer/);
-        }
-      });
-    });
-  });
-
-  describe('Given take(Infinity)', () => {
-    describe('When invoked', () => {
-      it('Then RangeError /non-negative integer/', () => {
-        // Arrange
-        try {
-          take<number>(Number.POSITIVE_INFINITY);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(RangeError);
-          expect((error as Error).message).toMatch(/non-negative integer/);
-        }
-      });
+      it.each([[-1], [-2], [1.5], [Number.NaN], [Number.POSITIVE_INFINITY]])(
+        'Then take(%s) throws RangeError /non-negative integer/',
+        (count) => {
+          // Arrange
+          try {
+            take<number>(count);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(RangeError);
+            expect((error as Error).message).toMatch(/non-negative integer/);
+          }
+        },
+      );
     });
   });
 

@@ -177,49 +177,38 @@ describe('bundleCreate', () => {
   // ── Empty-bundle refusals ─────────────────────────────────────────────────
 
   describe('Given a repository with one commit on main', () => {
-    describe('When bundleCreate is called with no revs and no pseudo-ref flags', () => {
-      it('Then throws BUNDLE_EMPTY with reason no-refs', async () => {
-        // Arrange
-        const { ctx } = await buildSingleCommitRepo();
-
-        // Act
-        const result = await catchBundleEmpty(() => sut(ctx, {}));
-
-        // Assert
-        expect(result.code).toBe('BUNDLE_EMPTY');
-        expect(result.reason).toBe('no-refs');
-      });
-    });
-
-    describe('When bundleCreate is called with a bare-rev tip that names no ref', () => {
-      it('Then throws BUNDLE_EMPTY with reason no-refs', async () => {
+    describe('When bundleCreate is called with an option set that yields no bundle content', () => {
+      it.each([
+        {
+          label: 'no revs and no pseudo-ref flags',
+          buildOpts: (): BundleCreateOptions => ({}),
+          reason: 'no-refs',
+        },
+        {
+          label: 'a bare-rev tip that names no ref',
+          buildOpts: (commit1: ObjectId): BundleCreateOptions => ({
+            revs: [{ tip: commit1 }], // raw OID tip
+          }),
+          reason: 'no-refs',
+        },
+        {
+          label: 'a range whose endpoints are equal',
+          buildOpts: (): BundleCreateOptions => ({
+            revs: [{ range: ['refs/heads/main', 'refs/heads/main'] }],
+          }),
+          reason: 'no-objects',
+        },
+      ])('Then throws BUNDLE_EMPTY with reason $reason ($label)', async ({ buildOpts, reason }) => {
         // Arrange
         const { ctx, commit1 } = await buildSingleCommitRepo();
-        const opts: BundleCreateOptions = { revs: [{ tip: commit1 }] }; // raw OID tip
+        const opts = buildOpts(commit1);
 
         // Act
         const result = await catchBundleEmpty(() => sut(ctx, opts));
 
         // Assert
         expect(result.code).toBe('BUNDLE_EMPTY');
-        expect(result.reason).toBe('no-refs');
-      });
-    });
-
-    describe('When bundleCreate is called with a range whose endpoints are equal', () => {
-      it('Then throws BUNDLE_EMPTY with reason no-objects', async () => {
-        // Arrange
-        const { ctx } = await buildSingleCommitRepo();
-        const opts: BundleCreateOptions = {
-          revs: [{ range: ['refs/heads/main', 'refs/heads/main'] }],
-        };
-
-        // Act
-        const result = await catchBundleEmpty(() => sut(ctx, opts));
-
-        // Assert
-        expect(result.code).toBe('BUNDLE_EMPTY');
-        expect(result.reason).toBe('no-objects');
+        expect(result.reason).toBe(reason);
       });
     });
   });

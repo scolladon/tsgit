@@ -158,89 +158,60 @@ describe('selectFetchCapabilities', () => {
 });
 
 describe('advertisesFilter', () => {
-  describe('Given a capability set including filter', () => {
+  describe('Given a capability set', () => {
     describe('When advertisesFilter runs', () => {
-      it('Then returns true', () => {
+      it.each([
+        {
+          capabilities: ['ofs-delta', 'filter', 'side-band-64k'],
+          expected: true,
+          label: 'a set including filter returns true',
+        },
+        {
+          capabilities: ['ofs-delta', 'side-band-64k'],
+          expected: false,
+          label: 'a set without filter returns false',
+        },
+        { capabilities: [], expected: false, label: 'an empty set returns false' },
+      ])('Then $label', ({ capabilities, expected }) => {
         // Arrange & Act
-        const sut = advertisesFilter(['ofs-delta', 'filter', 'side-band-64k']);
+        const sut = advertisesFilter(capabilities);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a capability set without filter', () => {
-    describe('When advertisesFilter runs', () => {
-      it('Then returns false', () => {
-        // Arrange & Act
-        const sut = advertisesFilter(['ofs-delta', 'side-band-64k']);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given an empty capability set', () => {
-    describe('When advertisesFilter runs', () => {
-      it('Then returns false', () => {
-        // Arrange & Act
-        const sut = advertisesFilter([]);
-
-        // Assert
-        expect(sut).toBe(false);
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('uniqueRefOids', () => {
-  describe('Given two refs sharing the same oid', () => {
+  describe('Given a list of refs', () => {
     describe('When uniqueRefOids runs', () => {
-      it('Then the oid appears once in the result', async () => {
-        // Arrange — kills the `if (seen.has(r.id)) continue` mutant.
-        const refs = [
-          { name: 'refs/heads/main', id: OID_A },
-          { name: 'refs/heads/release', id: OID_A },
-          { name: 'refs/tags/v1', id: OID_B },
-        ];
-
-        // Act
+      it.each([
+        {
+          refs: [
+            { name: 'refs/heads/main', id: OID_A },
+            { name: 'refs/heads/release', id: OID_A },
+            { name: 'refs/tags/v1', id: OID_B },
+          ],
+          // kills the `if (seen.has(r.id)) continue` mutant.
+          expected: [OID_A, OID_B] as ObjectId[],
+          label: 'two refs sharing the same oid: the oid appears once in the result',
+        },
+        { refs: [], expected: [], label: 'an empty refs list returns an empty array' },
+        {
+          refs: [
+            { name: 'refs/heads/a', id: OID_B },
+            { name: 'refs/heads/b', id: OID_A },
+          ],
+          expected: [OID_B, OID_A] as ObjectId[],
+          label: 'refs with distinct oids preserve insertion order',
+        },
+      ])('Then $label', ({ refs, expected }) => {
+        // Arrange + Act
         const sut = uniqueRefOids(refs);
 
         // Assert
-        expect(sut).toEqual([OID_A, OID_B] as ObjectId[]);
-      });
-    });
-  });
-
-  describe('Given an empty refs list', () => {
-    describe('When uniqueRefOids runs', () => {
-      it('Then returns an empty array', async () => {
-        // Arrange & Act
-        const sut = uniqueRefOids([]);
-
-        // Assert
-        expect(sut).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given refs with distinct oids', () => {
-    describe('When uniqueRefOids runs', () => {
-      it('Then preserves insertion order', async () => {
-        // Arrange
-        const refs = [
-          { name: 'refs/heads/a', id: OID_B },
-          { name: 'refs/heads/b', id: OID_A },
-        ];
-
-        // Act
-        const sut = uniqueRefOids(refs);
-
-        // Assert
-        expect(sut).toEqual([OID_B, OID_A] as ObjectId[]);
+        expect(sut).toEqual(expected);
       });
     });
   });

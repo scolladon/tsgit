@@ -9,53 +9,34 @@ import {
 } from '../../../../src/adapters/node/path-policy.js';
 
 describe('selectNativePolicy', () => {
-  describe('Given platform = "win32"', () => {
+  describe('Given a platform', () => {
     describe('When selectNativePolicy is called', () => {
-      it('Then returns windowsPolicy', () => {
+      it.each([
+        {
+          platform: 'win32' as const,
+          expected: windowsPolicy,
+          label: '"win32" returns windowsPolicy',
+        },
+        {
+          platform: 'darwin' as const,
+          expected: posixPolicy,
+          label: '"darwin" returns posixPolicy',
+        },
+        { platform: 'linux' as const, expected: posixPolicy, label: '"linux" returns posixPolicy' },
+        {
+          // `freebsd` is a valid `NodeJS.Platform` member, so no cast is needed. This row
+          // guards the default arm of the ternary against a ConditionalExpression mutant
+          // that would flip the fallback to windowsPolicy.
+          platform: 'freebsd' as const,
+          expected: posixPolicy,
+          label: 'any other platform falls back to posixPolicy',
+        },
+      ])('Then $label', ({ platform, expected }) => {
         // Arrange & Act
-        const sut = selectNativePolicy('win32');
+        const sut = selectNativePolicy(platform);
 
         // Assert
-        expect(sut).toBe(windowsPolicy);
-      });
-    });
-  });
-
-  describe('Given platform = "darwin"', () => {
-    describe('When selectNativePolicy is called', () => {
-      it('Then returns posixPolicy', () => {
-        // Arrange & Act
-        const sut = selectNativePolicy('darwin');
-
-        // Assert
-        expect(sut).toBe(posixPolicy);
-      });
-    });
-  });
-
-  describe('Given platform = "linux"', () => {
-    describe('When selectNativePolicy is called', () => {
-      it('Then returns posixPolicy', () => {
-        // Arrange & Act
-        const sut = selectNativePolicy('linux');
-
-        // Assert
-        expect(sut).toBe(posixPolicy);
-      });
-    });
-  });
-
-  describe('Given a non-win32 platform', () => {
-    describe('When selectNativePolicy is called', () => {
-      it('Then it falls back to posixPolicy', () => {
-        // Arrange & Act — guards the default arm of the ternary against a
-        // ConditionalExpression mutant that would flip the fallback to
-        // windowsPolicy. Any non-"win32" platform must yield posixPolicy.
-        // `freebsd` is a valid `NodeJS.Platform` member, so no cast is needed.
-        const sut = selectNativePolicy('freebsd');
-
-        // Assert
-        expect(sut).toBe(posixPolicy);
+        expect(sut).toBe(expected);
       });
     });
   });
@@ -219,47 +200,36 @@ describe('windowsPolicy', () => {
     });
   });
 
-  describe('Given mixed-case input', () => {
+  describe('Given a Windows path shape', () => {
     describe('When normalizeForCompare runs', () => {
-      it('Then returns lowercased string', () => {
+      it.each([
+        {
+          input: 'C:\\Users\\Foo',
+          expected: 'c:\\users\\foo',
+          label: 'mixed-case input is lowercased',
+        },
+        {
+          // Guards the `return p` fall-through arm of stripWinExtendedPrefix.
+          input: 'D:\\proj\\src',
+          expected: 'd:\\proj\\src',
+          label: 'a drive path with no extended-length prefix has no characters stripped',
+        },
+        {
+          input: '\\\\?\\C:\\Users\\Foo',
+          expected: 'c:\\users\\foo',
+          label: 'a \\\\?\\ extended-length drive path has its prefix stripped before case-folding',
+        },
+        {
+          input: '\\\\?\\UNC\\Server\\Share\\file.bin',
+          expected: '\\\\server\\share\\file.bin',
+          label: 'a \\\\?\\UNC\\ extended-length path collapses to the plain UNC form',
+        },
+      ])('Then $label', ({ input, expected }) => {
         // Arrange
-        const sut = windowsPolicy.normalizeForCompare('C:\\Users\\Foo');
+        const sut = windowsPolicy.normalizeForCompare(input);
 
         // Assert
-        expect(sut).toBe('c:\\users\\foo');
-      });
-    });
-  });
-
-  describe('Given a drive path with no extended-length prefix', () => {
-    describe('When normalizeForCompare runs', () => {
-      it('Then no characters are stripped', () => {
-        // Arrange + Assert
-        // Guards the `return p` fall-through arm of stripWinExtendedPrefix.
-        expect(windowsPolicy.normalizeForCompare('D:\\proj\\src')).toBe('d:\\proj\\src');
-      });
-    });
-  });
-
-  describe('Given a \\\\\\\\?\\\\ extended-length drive path', () => {
-    describe('When normalizeForCompare runs', () => {
-      it('Then the prefix is stripped before case-folding', () => {
-        // Arrange
-        const sut = windowsPolicy.normalizeForCompare('\\\\?\\C:\\Users\\Foo');
-
-        // Assert
-        expect(sut).toBe('c:\\users\\foo');
-      });
-    });
-  });
-
-  describe('Given a \\\\\\\\?\\\\UNC\\\\ extended-length path', () => {
-    describe('When normalizeForCompare runs', () => {
-      it('Then it collapses to the plain UNC form', () => {
-        // Arrange + Assert
-        expect(windowsPolicy.normalizeForCompare('\\\\?\\UNC\\Server\\Share\\file.bin')).toBe(
-          '\\\\server\\share\\file.bin',
-        );
+        expect(sut).toBe(expected);
       });
     });
   });

@@ -6,43 +6,19 @@ import {
 } from '../../../../src/domain/ignore/parse-gitignore.js';
 
 describe('parseGitignore', () => {
-  describe('Given empty input', () => {
+  describe('Given input containing no effective rule', () => {
     describe('When parsed', () => {
-      it('Then yields zero rules', () => {
-        // Arrange
-        const input = '';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given only a comment line', () => {
-    describe('When parsed', () => {
-      it('Then yields zero rules', () => {
-        // Arrange
-        const input = '# this is a comment\n';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given only a blank line', () => {
-    describe('When parsed', () => {
-      it('Then yields zero rules', () => {
-        // Arrange
-        const input = '\n   \n\n';
-
-        // Act
+      it.each([
+        { input: '', label: 'empty input yields zero rules' },
+        { input: '# this is a comment\n', label: 'a comment-only line yields zero rules' },
+        { input: '\n   \n\n', label: 'a blank-only line yields zero rules' },
+        // A line of only spaces (no escape) → stripTrailingSpaces returns ''.
+        {
+          input: '   \n',
+          label: 'a line that becomes empty after trailing-space strip yields zero rules',
+        },
+      ])('Then $label', ({ input }) => {
+        // Arrange + Act
         const sut = parseGitignore(input);
 
         // Assert
@@ -103,124 +79,68 @@ describe('parseGitignore', () => {
     });
   });
 
-  describe('Given "/dist"', () => {
+  describe('Given a pattern with a given slash position', () => {
     describe('When parsed', () => {
-      it('Then yields one anchored rule', () => {
-        // Arrange
-        const input = '/dist';
-
-        // Act
+      it.each([
+        { input: '/dist', expected: true, label: 'a leading slash makes the pattern anchored' },
+        // Kills the `||` -> `&&` LogicalOperator mutant on the `anchored`
+        // expression: `startsWith('/')` is false here, `includes('/')` is
+        // true, so `||` yields true while `&&` would yield false.
+        {
+          input: 'a/b',
+          expected: true,
+          label: 'a slash only in the middle makes the pattern anchored',
+        },
+        // Complements the `a/b` row: with no slash, `anchored` is false —
+        // pins that `includes('/')` actually drives the result.
+        {
+          input: 'plain',
+          expected: false,
+          label: 'no slash anywhere leaves the pattern NOT anchored',
+        },
+      ])('Then $label', ({ input, expected }) => {
+        // Arrange + Act
         const sut = parseGitignore(input);
 
         // Assert
         expect(sut).toHaveLength(1);
-        expect(sut[0]?.anchored).toBe(true);
+        expect(sut[0]?.anchored).toBe(expected);
       });
     });
   });
 
-  describe('Given a line with trailing spaces', () => {
+  describe('Given a line with a trailing space, escaped or not', () => {
     describe('When parsed', () => {
-      it('Then trailing spaces stripped from pattern', () => {
-        // Arrange
-        const input = 'foo   \n';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.pattern).toBe('foo');
-      });
-    });
-  });
-
-  describe('Given "foo " (one unescaped trailing space)', () => {
-    describe('When parsed', () => {
-      it('Then the trailing space is stripped', () => {
-        // Arrange — `foo` followed by exactly one space, no backslash. The
+      it.each([
+        { input: 'foo   \n', expected: 'foo', label: 'unescaped trailing spaces are stripped' },
+        // `foo` followed by exactly one space, no backslash. The
         // backslash-escape guard inside the trim loop must NOT break here:
         // charCodeAt(end-2) is 'o' (0x6f), not '\' (0x5c), so the loop must
         // proceed and strip the space. A mutant that forces an immediate
         // `break` leaves the pattern as `foo ` instead of `foo`.
-        const input = 'foo ';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.pattern).toBe('foo');
-      });
-    });
-  });
-
-  describe('Given a line with escaped trailing space', () => {
-    describe('When parsed', () => {
-      it('Then escaped space is preserved', () => {
-        // Arrange
-        const input = 'foo\\ \n';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.pattern).toBe('foo ');
-      });
-    });
-  });
-
-  describe('Given a two-char line of escaped space "\\\\ "', () => {
-    describe('When parsed', () => {
-      it('Then the escaped space is preserved', () => {
-        // Arrange — line is exactly backslash + space (length 2). stripTrailingSpaces
+        {
+          input: 'foo ',
+          expected: 'foo',
+          label: 'a single unescaped trailing space is stripped',
+        },
+        { input: 'foo\\ \n', expected: 'foo ', label: 'an escaped trailing space is preserved' },
+        // Line is exactly backslash + space (length 2). stripTrailingSpaces
         // starts at end=2; the `end >= 2` guard must hold so it inspects
-        // charCodeAt(0)===0x5c and breaks, preserving the space. The `end > 2`
-        // mutant would make `2 > 2` false → no break → space stripped → pattern '\'.
-        const input = '\\ ';
-
-        // Act
+        // charCodeAt(0)===0x5c and breaks, preserving the space. The
+        // `end > 2` mutant would make `2 > 2` false → no break → space
+        // stripped → pattern '\'.
+        {
+          input: '\\ ',
+          expected: ' ',
+          label: 'a bare escaped space (length-2 line) is preserved',
+        },
+      ])('Then $label', ({ input, expected }) => {
+        // Arrange + Act
         const sut = parseGitignore(input);
 
         // Assert
         expect(sut).toHaveLength(1);
-        expect(sut[0]?.pattern).toBe(' ');
-      });
-    });
-  });
-
-  describe('Given "a/b" (slash only in the middle)', () => {
-    describe('When parsed', () => {
-      it('Then the rule is anchored', () => {
-        // Arrange — kills the `||` -> `&&` LogicalOperator mutant on the `anchored`
-        // expression: `startsWith('/')` is false here, `includes('/')` is true, so
-        // `||` yields true while `&&` would yield false.
-        const input = 'a/b';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.anchored).toBe(true);
-      });
-    });
-  });
-
-  describe('Given "plain" (no slash anywhere)', () => {
-    describe('When parsed', () => {
-      it('Then the rule is NOT anchored', () => {
-        // Arrange — complements the `a/b` case: with no slash, `anchored` is false.
-        // Pins that `includes('/')` actually drives the result.
-        const input = 'plain';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.anchored).toBe(false);
+        expect(sut[0]?.pattern).toBe(expected);
       });
     });
   });
@@ -289,21 +209,6 @@ describe('parseGitignore', () => {
         expect(sut).toHaveLength(1);
         expect(sut[0]?.compiled.test('foo')).toBe(true);
         expect(sut[0]?.compiled.test('a/b/foo')).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a line that becomes empty after trailing-space strip', () => {
-    describe('When parsed', () => {
-      it('Then yields no rule', () => {
-        // Arrange — a line of only spaces (no escape) → stripTrailingSpaces returns ''
-        const input = '   \n';
-
-        // Act
-        const sut = parseGitignore(input);
-
-        // Assert
-        expect(sut).toEqual([]);
       });
     });
   });
@@ -379,43 +284,14 @@ describe('parseGitignore', () => {
 });
 
 describe('tokenizeIgnoreLine', () => {
-  describe('Given an empty line', () => {
+  describe('Given a line with no effective pattern', () => {
     describe('When tokenized', () => {
-      it('Then yields undefined', () => {
-        // Arrange
-        const input = '';
-
-        // Act
-        const sut = tokenizeIgnoreLine(input);
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a whitespace-only line', () => {
-    describe('When tokenized', () => {
-      it('Then yields undefined', () => {
-        // Arrange
-        const input = '   ';
-
-        // Act
-        const sut = tokenizeIgnoreLine(input);
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a comment line', () => {
-    describe('When tokenized', () => {
-      it('Then yields undefined', () => {
-        // Arrange
-        const input = '# a comment';
-
-        // Act
+      it.each([
+        { input: '', label: 'an empty line yields undefined' },
+        { input: '   ', label: 'a whitespace-only line yields undefined' },
+        { input: '# a comment', label: 'a comment line yields undefined' },
+      ])('Then $label', ({ input }) => {
+        // Arrange + Act
         const sut = tokenizeIgnoreLine(input);
 
         // Assert

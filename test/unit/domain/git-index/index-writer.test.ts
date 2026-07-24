@@ -45,52 +45,49 @@ function makeEntry(
 }
 
 describe('compareEntryPath', () => {
-  describe('Given two entries whose paths sort ascending (a before b)', () => {
+  describe('Given two entries to compare by path', () => {
     describe('When compared', () => {
-      it('Then returns exactly -1', () => {
+      it.each([
+        {
+          // Pins the `< → -1` branch.
+          label: 'returns exactly -1 when the first path sorts before the second',
+          firstPath: 'a.txt',
+          firstSha: SHA_A,
+          secondPath: 'b.txt',
+          secondSha: SHA_A,
+          expected: -1,
+        },
+        {
+          // Kills the `> → <=` mutant and the ConditionalExpression→false
+          // mutant (both would return 0).
+          label: 'returns exactly +1 when the first path sorts after the second',
+          firstPath: 'b.txt',
+          firstSha: SHA_A,
+          secondPath: 'a.txt',
+          secondSha: SHA_A,
+          expected: 1,
+        },
+        {
+          // Distinct SHAs prove the comparator looks only at paths. Kills
+          // `< → <=` (would return -1), `> → >=` (would return 1) and
+          // ConditionalExpression→true (would return 1).
+          label: 'returns exactly 0 when the paths are identical (stable order preserved)',
+          firstPath: 'same.txt',
+          firstSha: 'a'.repeat(40) as ObjectId,
+          secondPath: 'same.txt',
+          secondSha: 'b'.repeat(40) as ObjectId,
+          expected: 0,
+        },
+      ])('Then $label', ({ firstPath, firstSha, secondPath, secondSha, expected }) => {
         // Arrange
-        const lower = makeEntry('a.txt');
-        const higher = makeEntry('b.txt');
-
-        // Act
-        const sut = compareEntryPath(lower, higher);
-
-        // Assert — pins the `< → -1` branch.
-        expect(sut).toBe(-1);
-      });
-    });
-  });
-
-  describe('Given two entries whose paths sort descending (b before a)', () => {
-    describe('When compared', () => {
-      it('Then returns exactly +1', () => {
-        // Arrange
-        const higher = makeEntry('b.txt');
-        const lower = makeEntry('a.txt');
-
-        // Act
-        const sut = compareEntryPath(higher, lower);
-
-        // Assert — kills the `> → <=` mutant (would return 0) and the
-        // ConditionalExpression→false mutant (would return 0).
-        expect(sut).toBe(1);
-      });
-    });
-  });
-
-  describe('Given two entries with identical paths', () => {
-    describe('When compared', () => {
-      it('Then returns exactly 0 (equal — stable order preserved)', () => {
-        // Arrange — distinct SHAs prove the comparator looks only at paths.
-        const first = makeEntry('same.txt', 'a'.repeat(40) as ObjectId);
-        const second = makeEntry('same.txt', 'b'.repeat(40) as ObjectId);
+        const first = makeEntry(firstPath, firstSha);
+        const second = makeEntry(secondPath, secondSha);
 
         // Act
         const sut = compareEntryPath(first, second);
 
-        // Assert — kills `< → <=` (would return -1), `> → >=` (would return
-        // 1) and ConditionalExpression→true (would return 1).
-        expect(sut).toBe(0);
+        // Assert
+        expect(sut).toBe(expected);
       });
     });
   });

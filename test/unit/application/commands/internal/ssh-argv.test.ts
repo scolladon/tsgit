@@ -14,192 +14,104 @@ const sshUrl = (overrides: Partial<SshRemoteUrl> & { readonly host: string }): S
 });
 
 describe('sqQuote', () => {
-  describe('Given a plain path with no special characters', () => {
+  describe('Given a path', () => {
     describe('When quoted', () => {
-      it('Then it is wrapped in single quotes', () => {
+      it.each([
+        {
+          input: '/path/to/repo.git',
+          expected: "'/path/to/repo.git'",
+          label: 'a plain path with no special characters is wrapped in single quotes',
+        },
+        {
+          input: '/pa th.git',
+          expected: "'/pa th.git'",
+          label: 'a path containing a space preserves the space verbatim inside the quotes',
+        },
+        {
+          input: "o'brien/repo.git",
+          expected: "'o'\\''brien/repo.git'",
+          label:
+            'a path containing an embedded single quote escapes it as close-quote, escaped-quote, reopen-quote',
+        },
+        { input: '', expected: "''", label: 'an empty string becomes an empty quoted token' },
+      ])('Then $label', ({ input, expected }) => {
         // Arrange
         const sut = sqQuote;
 
         // Act
-        const result = sut('/path/to/repo.git');
+        const result = sut(input);
 
         // Assert
-        expect(result).toBe("'/path/to/repo.git'");
-      });
-    });
-  });
-
-  describe('Given a path containing a space', () => {
-    describe('When quoted', () => {
-      it('Then the space is preserved verbatim inside the quotes', () => {
-        // Arrange
-        const sut = sqQuote;
-
-        // Act
-        const result = sut('/pa th.git');
-
-        // Assert
-        expect(result).toBe("'/pa th.git'");
-      });
-    });
-  });
-
-  describe('Given a path containing an embedded single quote', () => {
-    describe('When quoted', () => {
-      it('Then the quote is escaped as close-quote, escaped-quote, reopen-quote', () => {
-        // Arrange
-        const sut = sqQuote;
-
-        // Act
-        const result = sut("o'brien/repo.git");
-
-        // Assert
-        expect(result).toBe("'o'\\''brien/repo.git'");
-      });
-    });
-  });
-
-  describe('Given an empty string', () => {
-    describe('When quoted', () => {
-      it('Then it becomes an empty quoted token', () => {
-        // Arrange
-        const sut = sqQuote;
-
-        // Act
-        const result = sut('');
-
-        // Assert
-        expect(result).toBe("''");
+        expect(result).toBe(expected);
       });
     });
   });
 });
 
 describe('buildSshArgs', () => {
-  describe('Given an ssh url with no explicit port', () => {
-    describe('When building argv for git-upload-pack', () => {
-      it('Then no -p flag is emitted', () => {
-        // Arrange
-        const sut = buildSshArgs;
-        const parsed = sshUrl({ user: 'git', host: 'example.com' });
-
-        // Act
-        const result = sut({ service: 'git-upload-pack', parsed, baseArgs: [] });
-
-        // Assert
-        expect(result).toEqual(['git@example.com', "git-upload-pack '/path/to/repo.git'"]);
-      });
-    });
-  });
-
-  describe('Given an ssh url with an explicit non-default port', () => {
+  describe('Given an ssh url and a service/baseArgs combination', () => {
     describe('When building argv', () => {
-      it('Then a -p flag with the port is emitted', () => {
+      it.each([
+        {
+          parsed: sshUrl({ user: 'git', host: 'example.com' }),
+          service: 'git-upload-pack',
+          baseArgs: [],
+          expected: ['git@example.com', "git-upload-pack '/path/to/repo.git'"],
+          label: 'no explicit port emits no -p flag',
+        },
+        {
+          parsed: sshUrl({ user: 'git', host: 'example.com', port: 2222 }),
+          service: 'git-upload-pack',
+          baseArgs: [],
+          expected: ['-p', '2222', 'git@example.com', "git-upload-pack '/path/to/repo.git'"],
+          label: 'an explicit non-default port emits a -p flag with the port',
+        },
+        {
+          parsed: sshUrl({ user: 'git', host: 'example.com', port: 22 }),
+          service: 'git-upload-pack',
+          baseArgs: [],
+          expected: ['-p', '22', 'git@example.com', "git-upload-pack '/path/to/repo.git'"],
+          label:
+            'the explicit default port 22 still emits the -p flag (explicit port is never dropped)',
+        },
+        {
+          parsed: sshUrl({ host: 'example.com' }),
+          service: 'git-upload-pack',
+          baseArgs: [],
+          expected: ['example.com', "git-upload-pack '/path/to/repo.git'"],
+          label: 'no user makes the host token the bare host',
+        },
+        {
+          parsed: sshUrl({ user: 'git', host: 'example.com' }),
+          service: 'git-receive-pack',
+          baseArgs: [],
+          expected: ['git@example.com', "git-receive-pack '/path/to/repo.git'"],
+          label: 'a push (git-receive-pack) service names the remote command git-receive-pack',
+        },
+        {
+          parsed: sshUrl({ user: 'git', host: 'example.com', port: 2222 }),
+          service: 'git-upload-pack',
+          baseArgs: ['-v'],
+          expected: ['-v', '-p', '2222', 'git@example.com', "git-upload-pack '/path/to/repo.git'"],
+          label:
+            'non-empty baseArgs from ssh-command resolution are placed before the port flag and host token',
+        },
+        {
+          parsed: sshUrl({ user: 'git', host: 'example.com', path: '~/repo.git' }),
+          service: 'git-upload-pack',
+          baseArgs: [],
+          expected: ['git@example.com', "git-upload-pack '~/repo.git'"],
+          label: 'a tilde-collapsed remote path is sq-quoted verbatim',
+        },
+      ] as const)('Then $label', ({ parsed, service, baseArgs, expected }) => {
         // Arrange
         const sut = buildSshArgs;
-        const parsed = sshUrl({ user: 'git', host: 'example.com', port: 2222 });
 
         // Act
-        const result = sut({ service: 'git-upload-pack', parsed, baseArgs: [] });
+        const result = sut({ service, parsed, baseArgs });
 
         // Assert
-        expect(result).toEqual([
-          '-p',
-          '2222',
-          'git@example.com',
-          "git-upload-pack '/path/to/repo.git'",
-        ]);
-      });
-    });
-  });
-
-  describe('Given an ssh url with the explicit default port 22', () => {
-    describe('When building argv', () => {
-      it('Then the -p flag is still emitted (explicit port is never dropped)', () => {
-        // Arrange
-        const sut = buildSshArgs;
-        const parsed = sshUrl({ user: 'git', host: 'example.com', port: 22 });
-
-        // Act
-        const result = sut({ service: 'git-upload-pack', parsed, baseArgs: [] });
-
-        // Assert
-        expect(result).toEqual([
-          '-p',
-          '22',
-          'git@example.com',
-          "git-upload-pack '/path/to/repo.git'",
-        ]);
-      });
-    });
-  });
-
-  describe('Given an ssh url with no user', () => {
-    describe('When building argv', () => {
-      it('Then the host token is the bare host', () => {
-        // Arrange
-        const sut = buildSshArgs;
-        const parsed = sshUrl({ host: 'example.com' });
-
-        // Act
-        const result = sut({ service: 'git-upload-pack', parsed, baseArgs: [] });
-
-        // Assert
-        expect(result).toEqual(['example.com', "git-upload-pack '/path/to/repo.git'"]);
-      });
-    });
-  });
-
-  describe('Given a push (git-receive-pack) service', () => {
-    describe('When building argv', () => {
-      it('Then the remote command token names git-receive-pack', () => {
-        // Arrange
-        const sut = buildSshArgs;
-        const parsed = sshUrl({ user: 'git', host: 'example.com' });
-
-        // Act
-        const result = sut({ service: 'git-receive-pack', parsed, baseArgs: [] });
-
-        // Assert
-        expect(result).toEqual(['git@example.com', "git-receive-pack '/path/to/repo.git'"]);
-      });
-    });
-  });
-
-  describe('Given non-empty baseArgs from ssh-command resolution', () => {
-    describe('When building argv', () => {
-      it('Then baseArgs are placed before the port flag and host token', () => {
-        // Arrange
-        const sut = buildSshArgs;
-        const parsed = sshUrl({ user: 'git', host: 'example.com', port: 2222 });
-
-        // Act
-        const result = sut({ service: 'git-upload-pack', parsed, baseArgs: ['-v'] });
-
-        // Assert
-        expect(result).toEqual([
-          '-v',
-          '-p',
-          '2222',
-          'git@example.com',
-          "git-upload-pack '/path/to/repo.git'",
-        ]);
-      });
-    });
-  });
-
-  describe('Given a tilde-collapsed remote path', () => {
-    describe('When building argv', () => {
-      it('Then the remote command sq-quotes the tilde path verbatim', () => {
-        // Arrange
-        const sut = buildSshArgs;
-        const parsed = sshUrl({ user: 'git', host: 'example.com', path: '~/repo.git' });
-
-        // Act
-        const result = sut({ service: 'git-upload-pack', parsed, baseArgs: [] });
-
-        // Assert
-        expect(result).toEqual(['git@example.com', "git-upload-pack '~/repo.git'"]);
+        expect(result).toEqual(expected);
       });
     });
   });

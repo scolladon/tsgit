@@ -20,68 +20,23 @@ describe('stripspace', () => {
     });
   });
 
-  describe('Given a line with trailing spaces, When stripspace runs', () => {
-    it('Then the trailing spaces are stripped', () => {
-      // Arrange
-      const message = 'a  ';
-
-      // Act
+  describe('Given a line ending in trailing ASCII whitespace, When stripspace runs', () => {
+    it.each([
+      { message: 'a  ', expected: 'a\n', label: 'trailing spaces are stripped' },
+      { message: 'a\t', expected: 'a\n', label: 'a trailing tab is stripped' },
+      { message: 'a\v', expected: 'a\n', label: 'a trailing vertical tab is stripped' },
+      { message: 'a\f', expected: 'a\n', label: 'a trailing form feed is stripped' },
+      {
+        message: 'a\r\nb\r\n',
+        expected: 'a\nb\n',
+        label: 'trailing carriage returns are stripped, leaving LF',
+      },
+    ])('Then $label', ({ message, expected }) => {
+      // Arrange & Act
       const sut = stripspace(message);
 
       // Assert
-      expect(sut).toBe('a\n');
-    });
-  });
-
-  describe('Given a line with a trailing tab, When stripspace runs', () => {
-    it('Then the trailing tab is stripped', () => {
-      // Arrange
-      const message = 'a\t';
-
-      // Act
-      const sut = stripspace(message);
-
-      // Assert
-      expect(sut).toBe('a\n');
-    });
-  });
-
-  describe('Given a line ending in a vertical tab, When stripspace runs', () => {
-    it('Then the trailing vertical tab is stripped', () => {
-      // Arrange
-      const message = 'a\v';
-
-      // Act
-      const sut = stripspace(message);
-
-      // Assert
-      expect(sut).toBe('a\n');
-    });
-  });
-
-  describe('Given a line ending in a form feed, When stripspace runs', () => {
-    it('Then the trailing form feed is stripped', () => {
-      // Arrange
-      const message = 'a\f';
-
-      // Act
-      const sut = stripspace(message);
-
-      // Assert
-      expect(sut).toBe('a\n');
-    });
-  });
-
-  describe('Given CRLF line endings, When stripspace runs', () => {
-    it('Then the carriage returns are stripped, leaving LF', () => {
-      // Arrange
-      const message = 'a\r\nb\r\n';
-
-      // Act
-      const sut = stripspace(message);
-
-      // Assert
-      expect(sut).toBe('a\nb\n');
+      expect(sut).toBe(expected);
     });
   });
 
@@ -217,81 +172,41 @@ describe('stripspace', () => {
 });
 
 describe('subjectLine', () => {
-  describe('Given a multi-line message, When subjectLine runs', () => {
-    it('Then it returns the first line only', () => {
-      // Arrange
-      const message = 'subject\n\nbody paragraph\nmore';
-
-      // Act
+  describe('Given a message, When subjectLine runs', () => {
+    it.each([
+      {
+        message: 'subject\n\nbody paragraph\nmore',
+        expected: 'subject',
+        label: 'a multi-line message returns the first line only',
+      },
+      {
+        message: 'solo subject',
+        expected: 'solo subject',
+        label: 'a single-line message with no newline is returned unchanged',
+      },
+      { message: '', expected: '', label: 'an empty message returns the empty string' },
+      {
+        message: '\nbody after a blank subject',
+        expected: '',
+        label:
+          'a message starting with a newline returns the empty string (the first line is blank)',
+      },
+      {
+        message: 'a\r\nb',
+        expected: 'a\r',
+        label: 'CRLF line endings retain the carriage return (git splits on LF only)',
+      },
+      {
+        message: 'a\n',
+        expected: 'a',
+        label: 'a single trailing newline is not part of the returned line',
+      },
+    ])('Then $label', ({ message, expected }) => {
+      // Arrange & Act
       const sut = subjectLine(message);
 
       // Assert
-      expect(sut).toBe('subject');
-    });
-  });
-
-  describe('Given a single-line message with no newline, When subjectLine runs', () => {
-    it('Then it returns the message unchanged', () => {
-      // Arrange
-      const message = 'solo subject';
-
-      // Act
-      const sut = subjectLine(message);
-
-      // Assert
-      expect(sut).toBe('solo subject');
-    });
-  });
-
-  describe('Given an empty message, When subjectLine runs', () => {
-    it('Then it returns the empty string', () => {
-      // Arrange
-      const message = '';
-
-      // Act
-      const sut = subjectLine(message);
-
-      // Assert
-      expect(sut).toBe('');
-    });
-  });
-
-  describe('Given a message starting with a newline, When subjectLine runs', () => {
-    it('Then it returns the empty string (the first line is blank)', () => {
-      // Arrange
-      const message = '\nbody after a blank subject';
-
-      // Act
-      const sut = subjectLine(message);
-
-      // Assert
-      expect(sut).toBe('');
-    });
-  });
-
-  describe('Given a message with CRLF line endings, When subjectLine runs', () => {
-    it('Then the carriage return is retained (git splits on LF only)', () => {
-      // Arrange
-      const message = 'a\r\nb';
-
-      // Act
-      const sut = subjectLine(message);
-
-      // Assert
-      expect(sut).toBe('a\r');
-    });
-  });
-
-  describe('Given a message with a single trailing newline, When subjectLine runs', () => {
-    it('Then it returns the line without the trailing newline', () => {
-      // Arrange
-      const message = 'a\n';
-
-      // Act
-      const sut = subjectLine(message);
-
-      // Assert
-      expect(sut).toBe('a');
+      expect(sut).toBe(expected);
     });
   });
 });
@@ -349,42 +264,29 @@ describe('foldSubject', () => {
     });
   });
 
-  describe('Given a message starting with a blank line, When foldSubject runs', () => {
-    it('Then the leading blank is skipped and the following line is the subject', () => {
-      // Arrange
-      const message = '\nbody after a blank subject';
-
-      // Act
+  describe('Given a message with a skippable leading blank (or whitespace-only) line, When foldSubject runs', () => {
+    it.each([
+      {
+        message: '\nbody after a blank subject',
+        expected: 'body after a blank subject',
+        label: 'a single leading blank line is skipped',
+      },
+      {
+        message: '\n\ndouble leading blank',
+        expected: 'double leading blank',
+        label: 'two leading blank lines are both skipped',
+      },
+      {
+        message: '   \nwhitespace-only first line',
+        expected: 'whitespace-only first line',
+        label: 'a whitespace-only first line is treated as a leading blank and skipped',
+      },
+    ])('Then $label', ({ message, expected }) => {
+      // Arrange & Act
       const result = foldSubject(message);
 
       // Assert
-      expect(result).toBe('body after a blank subject');
-    });
-  });
-
-  describe('Given a message starting with two blank lines, When foldSubject runs', () => {
-    it('Then both leading blanks are skipped', () => {
-      // Arrange
-      const message = '\n\ndouble leading blank';
-
-      // Act
-      const result = foldSubject(message);
-
-      // Assert
-      expect(result).toBe('double leading blank');
-    });
-  });
-
-  describe('Given a whitespace-only first line, When foldSubject runs', () => {
-    it('Then it is treated as a leading blank and skipped', () => {
-      // Arrange
-      const message = '   \nwhitespace-only first line';
-
-      // Act
-      const result = foldSubject(message);
-
-      // Assert
-      expect(result).toBe('whitespace-only first line');
+      expect(result).toBe(expected);
     });
   });
 
@@ -401,38 +303,13 @@ describe('foldSubject', () => {
     });
   });
 
-  describe('Given a single line ending in a tab, When foldSubject runs', () => {
-    it('Then the trailing tab is stripped', () => {
-      // Arrange
-      const message = 'a\t';
-
-      // Act
-      const result = foldSubject(message);
-
-      // Assert
-      expect(result).toBe('a');
-    });
-  });
-
-  describe('Given a single line ending in a vertical tab, When foldSubject runs', () => {
-    it('Then the trailing vertical tab is stripped', () => {
-      // Arrange
-      const message = 'a\v';
-
-      // Act
-      const result = foldSubject(message);
-
-      // Assert
-      expect(result).toBe('a');
-    });
-  });
-
-  describe('Given a single line ending in a form feed, When foldSubject runs', () => {
-    it('Then the trailing form feed is stripped', () => {
-      // Arrange
-      const message = 'a\f';
-
-      // Act
+  describe('Given a single line ending in trailing ASCII whitespace, When foldSubject runs', () => {
+    it.each([
+      { message: 'a\t', label: 'a trailing tab is stripped' },
+      { message: 'a\v', label: 'a trailing vertical tab is stripped' },
+      { message: 'a\f', label: 'a trailing form feed is stripped' },
+    ])('Then $label', ({ message }) => {
+      // Arrange & Act
       const result = foldSubject(message);
 
       // Assert

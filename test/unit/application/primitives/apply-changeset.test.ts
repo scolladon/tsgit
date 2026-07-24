@@ -999,19 +999,37 @@ describe('applyChangeset', () => {
 
   // ── Smudge filter (F2 identity + active smudge + fallback) ──────────────
 
-  describe('Given a regular file add with an active smudge filter and a runner that lowercases', () => {
+  describe('Given a regular file add whose smudge runner is invoked exactly once', () => {
     describe('When applyChangeset runs', () => {
-      it('Then the worktree file contains the smudged (lowercased) bytes, not the raw blob bytes', async () => {
-        // Arrange — blob contains uppercase; smudge produces lowercase
+      it.each([
+        {
+          label: 'an active smudge filter succeeds, the smudged bytes are written',
+          filterConfig: '[filter "myf"]\n\tsmudge = lowercase\n',
+          exitCode: 0,
+          expectedWritten: 'hello world',
+        },
+        {
+          label:
+            'an active smudge filter (required=false) fails, the raw blob bytes are written (fallback)',
+          filterConfig: '[filter "myf"]\n\tsmudge = fail-cmd\n',
+          exitCode: 1,
+          expectedWritten: 'HELLO WORLD',
+        },
+        {
+          label:
+            'an active smudge filter (required=true) succeeds, the smudged bytes are written without throwing',
+          filterConfig: '[filter "myf"]\n\tsmudge = lowercase\n\trequired = true\n',
+          exitCode: 0,
+          expectedWritten: 'hello world',
+        },
+      ])('Then $label', async ({ filterConfig, exitCode, expectedWritten }) => {
+        // Arrange — blob contains uppercase; a successful smudge produces lowercase
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
         const id = await writeBlob(ctx, blobContent);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[filter "myf"]\n\tsmudge = lowercase\n',
-        );
-        const runner = new FakeSmudgeRunner(0, lowercase);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, filterConfig);
+        const runner = new FakeSmudgeRunner(exitCode, lowercase);
         const enrichedCtx: Context = { ...ctx, command: runner };
         const sut = applyChangeset;
 
@@ -1022,9 +1040,9 @@ describe('applyChangeset', () => {
           workdir: WORKDIR,
         });
 
-        // Assert — worktree file must be lowercased (smudged), not the raw uppercase bytes
+        // Assert
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
-        expect(dec(written)).toBe('hello world');
+        expect(dec(written)).toBe(expectedWritten);
         expect(runner.calls).toHaveLength(1);
       });
     });
@@ -1068,38 +1086,6 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given a regular file add with an active smudge filter (required=false) but smudge exits non-zero', () => {
-    describe('When applyChangeset runs (smudge failure fallback)', () => {
-      it('Then the worktree file contains the raw blob bytes and runner was invoked', async () => {
-        // Arrange — smudge fails (non-zero exit); required absent → graceful fallback
-        const ctx = await buildSeededContext();
-        const blobContent = enc('HELLO WORLD');
-        const id = await writeBlob(ctx, blobContent);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[filter "myf"]\n\tsmudge = fail-cmd\n',
-        );
-        const runner = new FakeSmudgeRunner(1);
-        const enrichedCtx: Context = { ...ctx, command: runner };
-        const sut = applyChangeset;
-
-        // Act — must NOT throw
-        await sut(enrichedCtx, {
-          changeset: makeChangeset([makeAdd('a.y', id)]),
-          force: false,
-          workdir: WORKDIR,
-        });
-
-        // Assert — raw blob bytes written (graceful fallback); runner WAS invoked
-        // (distinguishes this from the F2 identity path where runner.calls === 0)
-        const written = await ctx.fs.read(`${WORKDIR}/a.y`);
-        expect(dec(written)).toBe('HELLO WORLD');
-        expect(runner.calls).toHaveLength(1);
-      });
-    });
-  });
-
   describe('Given a regular file add with an active smudge filter (required=true) and smudge exits non-zero', () => {
     describe('When applyChangeset runs', () => {
       it('Then throws SMUDGE_FILTER_FAILED with structured data and the worktree file is not written', async () => {
@@ -1139,37 +1125,6 @@ describe('applyChangeset', () => {
         // Worktree file must NOT be written
         const fileExists = await ctx.fs.exists(`${WORKDIR}/a.y`);
         expect(fileExists).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a regular file add with an active smudge filter (required=true) and smudge exits zero', () => {
-    describe('When applyChangeset runs', () => {
-      it('Then writes smudged bytes without throwing (required=true does not throw on success)', async () => {
-        // Arrange — smudge required=true; runner succeeds (exit 0, lowercases)
-        const ctx = await buildSeededContext();
-        const blobContent = enc('HELLO WORLD');
-        const id = await writeBlob(ctx, blobContent);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[filter "myf"]\n\tsmudge = lowercase\n\trequired = true\n',
-        );
-        const runner = new FakeSmudgeRunner(0, lowercase);
-        const enrichedCtx: Context = { ...ctx, command: runner };
-        const sut = applyChangeset;
-
-        // Act — must NOT throw
-        await sut(enrichedCtx, {
-          changeset: makeChangeset([makeAdd('a.y', id)]),
-          force: false,
-          workdir: WORKDIR,
-        });
-
-        // Assert — smudged bytes written; runner invoked
-        const written = await ctx.fs.read(`${WORKDIR}/a.y`);
-        expect(dec(written)).toBe('hello world');
-        expect(runner.calls).toHaveLength(1);
       });
     });
   });

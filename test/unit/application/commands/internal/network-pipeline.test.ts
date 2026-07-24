@@ -63,46 +63,31 @@ describe('internal/network-pipeline', () => {
       });
     });
 
-    describe('Given an event with LF (0x0A) in URL', () => {
+    describe('Given an event whose URL character must be preserved verbatim', () => {
       describe('When logged', () => {
-        it('Then LF is preserved verbatim', () => {
+        it.each([
+          { url: 'a\nb', label: 'LF (0x0A) is preserved verbatim' },
+          { url: 'a\tb', label: 'TAB (0x09) is preserved' },
+          {
+            url: 'a b',
+            label:
+              'SPACE (0x20, low boundary) is preserved verbatim (the guard is `code < 0x20`, so a `<= 0x20` mutant would escape it)',
+          },
+          {
+            url: 'a~b',
+            label:
+              'TILDE (0x7E, high boundary) is preserved verbatim (the guard is `code > 0x7e`, so a `>= 0x7e` mutant would escape it)',
+          },
+        ])('Then $label', ({ url }) => {
           // Arrange
           const sut = wrapLoggerSanitizer(inner.logger);
 
           // Act
-          sut.log({
-            kind: 'request',
-            method: 'GET',
-            url: 'a\nb',
-            headers: {},
-            bodyBytes: 0,
-          });
+          sut.log({ kind: 'request', method: 'GET', url, headers: {}, bodyBytes: 0 });
 
           // Assert
           const recorded = inner.events[0] as { url: string };
-          expect(recorded.url).toBe('a\nb');
-        });
-      });
-    });
-
-    describe('Given an event with TAB (0x09)', () => {
-      describe('When logged', () => {
-        it('Then TAB is preserved', () => {
-          // Arrange
-          const sut = wrapLoggerSanitizer(inner.logger);
-
-          // Act
-          sut.log({
-            kind: 'request',
-            method: 'GET',
-            url: 'a\tb',
-            headers: {},
-            bodyBytes: 0,
-          });
-
-          // Assert
-          const recorded = inner.events[0] as { url: string };
-          expect(recorded.url).toBe('a\tb');
+          expect(recorded.url).toBe(url);
         });
       });
     });
@@ -148,54 +133,6 @@ describe('internal/network-pipeline', () => {
           const recorded = inner.events[0] as { url: string; headers: Record<string, string> };
           expect(recorded.url).toBe('https://example.com/path');
           expect(recorded.headers['x-foo']).toBe('bar');
-        });
-      });
-    });
-
-    describe('Given an event with SPACE (0x20) in URL', () => {
-      describe('When logged', () => {
-        it('Then SPACE is preserved verbatim', () => {
-          // Arrange — 0x20 is the lower bound of the printable range; the guard is
-          // `code < 0x20`, so SPACE must pass through. A `<= 0x20` mutant would
-          // escape it to \x20.
-          const sut = wrapLoggerSanitizer(inner.logger);
-
-          // Act
-          sut.log({
-            kind: 'request',
-            method: 'GET',
-            url: 'a b',
-            headers: {},
-            bodyBytes: 0,
-          });
-
-          // Assert
-          const recorded = inner.events[0] as { url: string };
-          expect(recorded.url).toBe('a b');
-        });
-      });
-    });
-
-    describe('Given an event with TILDE (0x7E) in URL', () => {
-      describe('When logged', () => {
-        it('Then TILDE is preserved verbatim', () => {
-          // Arrange — 0x7E is the upper bound of the printable range; the guard is
-          // `code > 0x7e`, so TILDE must pass through. A `>= 0x7e` mutant would
-          // escape it to \x7E.
-          const sut = wrapLoggerSanitizer(inner.logger);
-
-          // Act
-          sut.log({
-            kind: 'request',
-            method: 'GET',
-            url: 'a~b',
-            headers: {},
-            bodyBytes: 0,
-          });
-
-          // Assert
-          const recorded = inner.events[0] as { url: string };
-          expect(recorded.url).toBe('a~b');
         });
       });
     });

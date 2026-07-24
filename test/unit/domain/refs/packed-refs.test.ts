@@ -25,34 +25,46 @@ describe('parsePackedRefs', () => {
     });
   });
 
-  describe("Given '# pack-refs with: peeled fully-peeled sorted\\\\n'", () => {
+  describe('Given a pack-refs header with varying trait combinations', () => {
     describe('When parsing', () => {
-      it("Then peeling='fully', sorted=true", () => {
-        // Arrange
-        const content = '# pack-refs with: peeled fully-peeled sorted\n';
-
-        // Act
+      it.each([
+        {
+          content: '# pack-refs with: peeled fully-peeled sorted\n',
+          peeling: 'fully',
+          sorted: true,
+          label: "'peeled fully-peeled sorted' yields peeling='fully', sorted=true",
+        },
+        {
+          content: '# pack-refs with: peeled sorted\n',
+          peeling: 'tags',
+          sorted: true,
+          label: "'peeled sorted' yields peeling='tags', sorted=true",
+        },
+        {
+          content: `# pack-refs with:  sorted\n${'a'.repeat(40)} refs/heads/main\n`,
+          peeling: 'none',
+          sorted: true,
+          label: 'extra whitespace before sorted still yields sorted=true',
+        },
+        {
+          content: `# pack-refs with: peeled\n${'a'.repeat(40)} refs/heads/main\n`,
+          peeling: 'tags',
+          sorted: false,
+          label: "only the 'peeled' trait yields peeling='tags', sorted=false",
+        },
+        {
+          content: '# pack-refs with: sorted\n',
+          peeling: 'none',
+          sorted: true,
+          label: "'sorted' alone yields peeling='none', sorted=true",
+        },
+      ] as const)('Then $label', ({ content, peeling, sorted }) => {
+        // Arrange & Act
         const sut = parsePackedRefs(content);
 
         // Assert
-        expect(sut.peeling).toBe('fully');
-        expect(sut.sorted).toBe(true);
-      });
-    });
-  });
-
-  describe("Given '# pack-refs with: peeled sorted\\\\n'", () => {
-    describe('When parsing', () => {
-      it("Then peeling='tags', sorted=true", () => {
-        // Arrange
-        const content = '# pack-refs with: peeled sorted\n';
-
-        // Act
-        const sut = parsePackedRefs(content);
-
-        // Assert
-        expect(sut.peeling).toBe('tags');
-        expect(sut.sorted).toBe(true);
+        expect(sut.peeling).toBe(peeling);
+        expect(sut.sorted).toBe(sorted);
       });
     });
   });
@@ -70,54 +82,6 @@ describe('parsePackedRefs', () => {
         expect(sut.peeling).toBe('none');
         expect(sut.sorted).toBe(false);
         expect(sut.entries).toHaveLength(1);
-      });
-    });
-  });
-
-  describe("Given '# pack-refs with:  sorted\\\\n' (extra whitespace)", () => {
-    describe('When parsing', () => {
-      it('Then sorted=true', () => {
-        // Arrange — kills .trim() removal mutant
-        const content = `# pack-refs with:  sorted\n${'a'.repeat(40)} refs/heads/main\n`;
-
-        // Act
-        const sut = parsePackedRefs(content);
-
-        // Assert
-        expect(sut.sorted).toBe(true);
-        expect(sut.peeling).toBe('none');
-      });
-    });
-  });
-
-  describe("Given header with only 'peeled' trait (no fully-peeled, no sorted)", () => {
-    describe('When parsing', () => {
-      it("Then peeling='tags' and sorted=false", () => {
-        // Arrange — kills mutants that skip .slice() or misparse traits
-        const content = `# pack-refs with: peeled\n${'a'.repeat(40)} refs/heads/main\n`;
-
-        // Act
-        const sut = parsePackedRefs(content);
-
-        // Assert
-        expect(sut.peeling).toBe('tags');
-        expect(sut.sorted).toBe(false);
-      });
-    });
-  });
-
-  describe("Given '# pack-refs with: sorted\\\\n'", () => {
-    describe('When parsing', () => {
-      it("Then peeling='none', sorted=true", () => {
-        // Arrange
-        const content = '# pack-refs with: sorted\n';
-
-        // Act
-        const sut = parsePackedRefs(content);
-
-        // Assert
-        expect(sut.peeling).toBe('none');
-        expect(sut.sorted).toBe(true);
       });
     });
   });

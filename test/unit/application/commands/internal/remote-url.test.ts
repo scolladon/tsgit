@@ -22,28 +22,13 @@ const expectInvalidUrl = (raw: string): TsgitError => {
 
 describe('internal/remote-url', () => {
   describe('http(s) pass-through', () => {
-    describe('Given an https URL', () => {
+    describe('Given an http(s) URL', () => {
       describe('When parseRemoteUrl', () => {
-        it('Then returns kind http carrying the raw url verbatim', () => {
-          // Arrange
-          const raw = 'https://example.com/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({ kind: 'http', url: raw });
-        });
-      });
-    });
-
-    describe('Given an http URL', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then returns kind http carrying the raw url verbatim', () => {
-          // Arrange
-          const raw = 'http://example.com/repo.git';
-
-          // Act
+        it.each([
+          { raw: 'https://example.com/repo.git', label: 'an https URL' },
+          { raw: 'http://example.com/repo.git', label: 'an http URL' },
+        ])('Then $label returns kind http carrying the raw url verbatim', ({ raw }) => {
+          // Arrange + Act
           const result = parseRemoteUrl(raw);
 
           // Assert
@@ -54,119 +39,57 @@ describe('internal/remote-url', () => {
   });
 
   describe('ssh:// host/port/path extraction (design matrix B)', () => {
-    describe('Given ssh://git@example.com/path/to/repo.git', () => {
+    describe('Given an ssh:// URL', () => {
       describe('When parseRemoteUrl', () => {
-        it('Then extracts user, host, and path with no port', () => {
-          // Arrange
-          const raw = 'ssh://git@example.com/path/to/repo.git';
-
-          // Act
+        it.each([
+          {
+            raw: 'ssh://git@example.com/path/to/repo.git',
+            expected: { kind: 'ssh', user: 'git', host: 'example.com', path: '/path/to/repo.git' },
+            label: 'extracts user, host, and path with no port',
+          },
+          {
+            raw: 'ssh://git@example.com:2222/path/to/repo.git',
+            expected: {
+              kind: 'ssh',
+              user: 'git',
+              host: 'example.com',
+              port: 2222,
+              path: '/path/to/repo.git',
+            },
+            label: 'extracts the explicit non-default port',
+          },
+          {
+            raw: 'ssh://git@example.com:22/repo.git',
+            expected: {
+              kind: 'ssh',
+              user: 'git',
+              host: 'example.com',
+              port: 22,
+              path: '/repo.git',
+            },
+            label: 'keeps the explicit default port 22 rather than dropping it',
+          },
+          {
+            raw: 'ssh://example.com/repo.git',
+            expected: { kind: 'ssh', host: 'example.com', path: '/repo.git' },
+            label: 'omits the user field (no user in the URL)',
+          },
+          {
+            raw: 'ssh://git@example.com/~/repo.git',
+            expected: { kind: 'ssh', user: 'git', host: 'example.com', path: '~/repo.git' },
+            label: 'collapses the leading slash before a home-relative tilde',
+          },
+          {
+            raw: 'ssh://git@example.com/~user/repo.git',
+            expected: { kind: 'ssh', user: 'git', host: 'example.com', path: '~user/repo.git' },
+            label: 'collapses the leading slash before a named-user tilde',
+          },
+        ])('Then $label', ({ raw, expected }) => {
+          // Arrange + Act
           const result = parseRemoteUrl(raw);
 
           // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            path: '/path/to/repo.git',
-          });
-        });
-      });
-    });
-
-    describe('Given ssh://git@example.com:2222/path/to/repo.git', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then extracts the explicit non-default port', () => {
-          // Arrange
-          const raw = 'ssh://git@example.com:2222/path/to/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            port: 2222,
-            path: '/path/to/repo.git',
-          });
-        });
-      });
-    });
-
-    describe('Given ssh://git@example.com:22/repo.git (explicit default port)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then keeps port 22 rather than dropping it', () => {
-          // Arrange
-          const raw = 'ssh://git@example.com:22/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            port: 22,
-            path: '/repo.git',
-          });
-        });
-      });
-    });
-
-    describe('Given ssh://example.com/repo.git (no user)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then omits the user field', () => {
-          // Arrange
-          const raw = 'ssh://example.com/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({ kind: 'ssh', host: 'example.com', path: '/repo.git' });
-        });
-      });
-    });
-
-    describe('Given ssh://git@example.com/~/repo.git (home-relative tilde)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then collapses the leading slash before the tilde', () => {
-          // Arrange
-          const raw = 'ssh://git@example.com/~/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            path: '~/repo.git',
-          });
-        });
-      });
-    });
-
-    describe('Given ssh://git@example.com/~user/repo.git (named-user tilde)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then collapses the leading slash before the tilde', () => {
-          // Arrange
-          const raw = 'ssh://git@example.com/~user/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            path: '~user/repo.git',
-          });
+          expect(result).toEqual(expected);
         });
       });
     });
@@ -186,88 +109,60 @@ describe('internal/remote-url', () => {
   });
 
   describe('scp-like host/path extraction (design matrix B)', () => {
-    describe('Given git@example.com:path/to/repo.git (relative)', () => {
+    describe('Given an scp-like URL', () => {
       describe('When parseRemoteUrl', () => {
-        it('Then keeps the path relative with no leading slash', () => {
-          // Arrange
-          const raw = 'git@example.com:path/to/repo.git';
-
-          // Act
+        it.each([
+          {
+            raw: 'git@example.com:path/to/repo.git',
+            expected: { kind: 'ssh', user: 'git', host: 'example.com', path: 'path/to/repo.git' },
+            label: 'a relative path keeps it relative with no leading slash',
+          },
+          {
+            raw: 'git@example.com:/abs/path/repo.git',
+            expected: {
+              kind: 'ssh',
+              user: 'git',
+              host: 'example.com',
+              path: '/abs/path/repo.git',
+            },
+            label: 'an absolute path keeps the leading slash verbatim',
+          },
+          {
+            raw: 'git@example.com:~user/repo.git',
+            expected: { kind: 'ssh', user: 'git', host: 'example.com', path: '~user/repo.git' },
+            label: 'a tilde-user path keeps the tilde verbatim (scp form never collapses)',
+          },
+          {
+            raw: 'example.com:repo.git',
+            expected: { kind: 'ssh', host: 'example.com', path: 'repo.git' },
+            label: 'no user omits the user field',
+          },
+        ])('Then $label', ({ raw, expected }) => {
+          // Arrange + Act
           const result = parseRemoteUrl(raw);
 
           // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            path: 'path/to/repo.git',
-          });
-        });
-      });
-    });
-
-    describe('Given git@example.com:/abs/path/repo.git (absolute)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then keeps the leading slash verbatim', () => {
-          // Arrange
-          const raw = 'git@example.com:/abs/path/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            path: '/abs/path/repo.git',
-          });
-        });
-      });
-    });
-
-    describe('Given git@example.com:~user/repo.git (tilde-user)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then keeps the tilde verbatim (scp form never collapses)', () => {
-          // Arrange
-          const raw = 'git@example.com:~user/repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            path: '~user/repo.git',
-          });
-        });
-      });
-    });
-
-    describe('Given example.com:repo.git (no user)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then omits the user field', () => {
-          // Arrange
-          const raw = 'example.com:repo.git';
-
-          // Act
-          const result = parseRemoteUrl(raw);
-
-          // Assert
-          expect(result).toEqual({ kind: 'ssh', host: 'example.com', path: 'repo.git' });
+          expect(result).toEqual(expected);
         });
       });
     });
   });
 
   describe('scp-vs-ssh disambiguation', () => {
-    describe('Given an unrecognised scheme with a colon before its first slash (ftp://)', () => {
+    describe('Given a URL misreadable as scp-like', () => {
       describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL rather than misreading it as scp-like', () => {
+        it.each([
+          {
+            raw: 'ftp://example.com/repo.git',
+            label: 'an unrecognised scheme with a colon before its first slash (ftp://)',
+          },
+          {
+            raw: 'path/to:something',
+            label: 'a string whose first slash appears before its first colon',
+          },
+        ])('Then $label throws INVALID_URL rather than misreading it as scp-like', ({ raw }) => {
           // Arrange + Act + Assert
-          const err = expectInvalidUrl('ftp://example.com/repo.git');
+          const err = expectInvalidUrl(raw);
           const data = err.data;
           if (data.code === 'INVALID_URL') {
             expect(data.reason).toContain('unrecognised');
@@ -284,56 +179,36 @@ describe('internal/remote-url', () => {
         });
       });
     });
-
-    describe('Given a string whose first slash appears before its first colon', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL rather than misreading it as scp-like', () => {
-          // Arrange + Act + Assert
-          const err = expectInvalidUrl('path/to:something');
-          const data = err.data;
-          if (data.code === 'INVALID_URL') {
-            expect(data.reason).toContain('unrecognised');
-          }
-        });
-      });
-    });
   });
 
   describe('Dash-guard (SSH argument-injection refusal, design matrix E)', () => {
-    describe('Given ssh://-oProxyCommand=evil/repo.git (host-dash, ssh form)', () => {
+    describe('Given a URL rejected by the dash-guard', () => {
       describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL naming the sanitized hostname', () => {
+        it.each([
+          {
+            raw: 'ssh://-oProxyCommand=evil/repo.git',
+            reasonContains: "strange hostname '-oProxyCommand=evil' blocked",
+            label:
+              'a host-dash in ssh form (ssh://-oProxyCommand=evil/repo.git) names the sanitized hostname',
+          },
+          {
+            raw: 'git@example.com:-leadingdash/repo.git',
+            reasonContains: "strange pathname '-leadingdash/repo.git' blocked",
+            label:
+              'a path-dash in scp form (git@example.com:-leadingdash/repo.git) names the sanitized pathname',
+          },
+          {
+            raw: '-evil.example.com:repo.git',
+            reasonContains: "strange hostname '-evil.example.com' blocked",
+            label:
+              'a host-dash in scp form with no user (-evil.example.com:repo.git) names the sanitized hostname',
+          },
+        ])('Then $label', ({ raw, reasonContains }) => {
           // Arrange + Act + Assert
-          const err = expectInvalidUrl('ssh://-oProxyCommand=evil/repo.git');
+          const err = expectInvalidUrl(raw);
           const data = err.data;
           if (data.code === 'INVALID_URL') {
-            expect(data.reason).toContain("strange hostname '-oProxyCommand=evil' blocked");
-          }
-        });
-      });
-    });
-
-    describe('Given git@example.com:-leadingdash/repo.git (path-dash, scp form)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL naming the sanitized pathname', () => {
-          // Arrange + Act + Assert
-          const err = expectInvalidUrl('git@example.com:-leadingdash/repo.git');
-          const data = err.data;
-          if (data.code === 'INVALID_URL') {
-            expect(data.reason).toContain("strange pathname '-leadingdash/repo.git' blocked");
-          }
-        });
-      });
-    });
-
-    describe('Given -evil.example.com:repo.git (host-dash, scp form, no user)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL naming the sanitized hostname', () => {
-          // Arrange + Act + Assert
-          const err = expectInvalidUrl('-evil.example.com:repo.git');
-          const data = err.data;
-          if (data.code === 'INVALID_URL') {
-            expect(data.reason).toContain("strange hostname '-evil.example.com' blocked");
+            expect(data.reason).toContain(reasonContains);
           }
         });
       });
@@ -381,37 +256,15 @@ describe('internal/remote-url', () => {
   });
 
   describe('Control-character rejection', () => {
-    describe('Given a URL containing a lone LF (0x0a)', () => {
+    describe('Given a URL containing a control character', () => {
       describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL naming a control character', () => {
+        it.each([
+          { raw: 'ssh://example.com/repo.git\n', label: 'a lone LF (0x0a)' },
+          { raw: 'ssh://example.com/repo.git\r', label: 'a lone CR (0x0d)' },
+          { raw: 'ssh://example.com/repo.git\0', label: 'a NUL byte (0x00)' },
+        ])('Then $label throws INVALID_URL naming a control character', ({ raw }) => {
           // Arrange + Act + Assert
-          const err = expectInvalidUrl('ssh://example.com/repo.git\n');
-          const data = err.data;
-          if (data.code === 'INVALID_URL') {
-            expect(data.reason.toLowerCase()).toContain('control');
-          }
-        });
-      });
-    });
-
-    describe('Given a URL containing a lone CR (0x0d)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL naming a control character', () => {
-          // Arrange + Act + Assert
-          const err = expectInvalidUrl('ssh://example.com/repo.git\r');
-          const data = err.data;
-          if (data.code === 'INVALID_URL') {
-            expect(data.reason.toLowerCase()).toContain('control');
-          }
-        });
-      });
-    });
-
-    describe('Given a URL containing a NUL byte (0x00)', () => {
-      describe('When parseRemoteUrl', () => {
-        it('Then throws INVALID_URL naming a control character', () => {
-          // Arrange + Act + Assert
-          const err = expectInvalidUrl('ssh://example.com/repo.git\0');
+          const err = expectInvalidUrl(raw);
           const data = err.data;
           if (data.code === 'INVALID_URL') {
             expect(data.reason.toLowerCase()).toContain('control');
@@ -422,78 +275,52 @@ describe('internal/remote-url', () => {
   });
 
   describe('formatRemoteUrl (inverse used by the round-trip property)', () => {
-    describe('Given an http RemoteUrl', () => {
+    describe('Given a RemoteUrl', () => {
       describe('When formatRemoteUrl', () => {
-        it('Then returns the stored url verbatim', () => {
-          // Arrange
-          const parsed: RemoteUrl = { kind: 'http', url: 'https://example.com/repo.git' };
-
-          // Act
+        it.each([
+          {
+            parsed: { kind: 'http', url: 'https://example.com/repo.git' } as RemoteUrl,
+            expected: 'https://example.com/repo.git',
+            label: 'an http RemoteUrl returns the stored url verbatim',
+          },
+          {
+            parsed: {
+              kind: 'ssh',
+              user: 'git',
+              host: 'example.com',
+              port: 2222,
+              path: '/repo.git',
+            } as RemoteUrl,
+            expected: 'ssh://git@example.com:2222/repo.git',
+            label: 'an ssh RemoteUrl with a port reconstructs the canonical ssh:// form',
+          },
+          {
+            parsed: {
+              kind: 'ssh',
+              host: 'example.com',
+              port: 22,
+              path: '~/repo.git',
+            } as RemoteUrl,
+            expected: 'ssh://example.com:22/~/repo.git',
+            label:
+              'an ssh RemoteUrl with a tilde path and a port re-adds the leading slash before the tilde',
+          },
+          {
+            parsed: {
+              kind: 'ssh',
+              user: 'git',
+              host: 'example.com',
+              path: 'path/to/repo.git',
+            } as RemoteUrl,
+            expected: 'git@example.com:path/to/repo.git',
+            label: 'an ssh RemoteUrl without a port reconstructs the scp form',
+          },
+        ])('Then $label', ({ parsed, expected }) => {
+          // Arrange + Act
           const result = formatRemoteUrl(parsed);
 
           // Assert
-          expect(result).toBe('https://example.com/repo.git');
-        });
-      });
-    });
-
-    describe('Given an ssh RemoteUrl with a port', () => {
-      describe('When formatRemoteUrl', () => {
-        it('Then reconstructs the canonical ssh:// form', () => {
-          // Arrange
-          const parsed: RemoteUrl = {
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            port: 2222,
-            path: '/repo.git',
-          };
-
-          // Act
-          const result = formatRemoteUrl(parsed);
-
-          // Assert
-          expect(result).toBe('ssh://git@example.com:2222/repo.git');
-        });
-      });
-    });
-
-    describe('Given an ssh RemoteUrl with a tilde path and a port', () => {
-      describe('When formatRemoteUrl', () => {
-        it('Then re-adds the leading slash before the tilde', () => {
-          // Arrange
-          const parsed: RemoteUrl = {
-            kind: 'ssh',
-            host: 'example.com',
-            port: 22,
-            path: '~/repo.git',
-          };
-
-          // Act
-          const result = formatRemoteUrl(parsed);
-
-          // Assert
-          expect(result).toBe('ssh://example.com:22/~/repo.git');
-        });
-      });
-    });
-
-    describe('Given an ssh RemoteUrl without a port', () => {
-      describe('When formatRemoteUrl', () => {
-        it('Then reconstructs the scp form', () => {
-          // Arrange
-          const parsed: RemoteUrl = {
-            kind: 'ssh',
-            user: 'git',
-            host: 'example.com',
-            path: 'path/to/repo.git',
-          };
-
-          // Act
-          const result = formatRemoteUrl(parsed);
-
-          // Assert
-          expect(result).toBe('git@example.com:path/to/repo.git');
+          expect(result).toBe(expected);
         });
       });
     });
@@ -562,160 +389,86 @@ describe('internal/remote-url', () => {
 
   // secretlint-disable @secretlint/secretlint-rule-basicauth
   describe('Given anonymizeRemoteUrl for a reflog message', () => {
-    describe('When the https URL carries user and password', () => {
-      it('Then the userinfo is stripped, keeping the scheme and host', () => {
+    describe('When anonymizeRemoteUrl runs', () => {
+      it.each([
+        {
+          raw: 'https://user:secret@example.com/x.git',
+          expected: 'https://example.com/x.git',
+          label:
+            'an https URL carrying user and password has the userinfo stripped, keeping the scheme and host',
+        },
+        {
+          raw: 'ssh://git@example.com:2222/x.git',
+          expected: 'ssh://example.com:2222/x.git',
+          label: 'an ssh URL carrying a user has the user stripped from the authority',
+        },
+        {
+          raw: 'git@example.com:path/to/repo.git',
+          expected: 'example.com:path/to/repo.git',
+          label: 'a scp-like remote with a user has the user@ prefix stripped, leaving host:path',
+        },
+        {
+          raw: 'https://example.com/x.git',
+          expected: 'https://example.com/x.git',
+          label: 'a URL with no userinfo is returned unchanged',
+        },
+        {
+          raw: 'https://example.com/a@b.git',
+          expected: 'https://example.com/a@b.git',
+          label:
+            'an @ that sits in the path, not the authority, is left untouched (git keeps a path @ literal)',
+        },
+        {
+          raw: 'example.com:pa/th@x.git',
+          expected: 'example.com:pa/th@x.git',
+          label:
+            'a scp-like remote with an @ only in the path is left untouched (no colon after the @, so it is path data)',
+        },
+        {
+          raw: 'localhost:foo@bar/baz.git',
+          expected: 'localhost:foo@bar/baz.git',
+          // pinned against real git: `clone localhost:foo@bar/baz.git`
+          // records the URL literally (transport_anonymize_url literal-copy).
+          label:
+            'a scp-like path carrying an @ before its first slash is left untouched, matching real git byte-for-byte',
+        },
+        {
+          raw: 'git@example.com:repo.git',
+          expected: 'example.com:repo.git',
+          label:
+            'a slash-free scp remote carrying a user has the user@ prefix stripped (the colon after @ marks it as userinfo)',
+        },
+        {
+          raw: 'https://:secret@example.com/x.git',
+          expected: 'https://example.com/x.git',
+          label: 'an https userinfo that is password-only has the whole userinfo stripped',
+        },
+        {
+          raw: 'ssh://user@[::1]:22/x.git',
+          expected: 'ssh://[::1]:22/x.git',
+          label:
+            'an ssh URL with a user and an IPv6 host has only the user stripped, brackets and port kept',
+        },
+        {
+          raw: 'example.com:@x.git',
+          expected: 'example.com:@x.git',
+          label:
+            'a scp-like path starting with @ right after the colon is left untouched (nothing after the @ carries a colon)',
+        },
+        {
+          raw: 'ssh://git@example.com',
+          expected: 'ssh://example.com',
+          label: 'a scheme URL carrying a user but no path slash still has the userinfo stripped',
+        },
+      ])('Then $label', ({ raw, expected }) => {
         // Arrange
         const sut = anonymizeRemoteUrl;
 
         // Act
-        const result = sut('https://user:secret@example.com/x.git');
+        const result = sut(raw);
 
         // Assert
-        expect(result).toBe('https://example.com/x.git');
-      });
-    });
-
-    describe('When the ssh URL carries a user', () => {
-      it('Then the user is stripped from the authority', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('ssh://git@example.com:2222/x.git');
-
-        // Assert
-        expect(result).toBe('ssh://example.com:2222/x.git');
-      });
-    });
-
-    describe('When the remote is scp-like with a user', () => {
-      it('Then the user@ prefix is stripped, leaving host:path', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('git@example.com:path/to/repo.git');
-
-        // Assert
-        expect(result).toBe('example.com:path/to/repo.git');
-      });
-    });
-
-    describe('When the URL has no userinfo', () => {
-      it('Then it is returned unchanged', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('https://example.com/x.git');
-
-        // Assert
-        expect(result).toBe('https://example.com/x.git');
-      });
-    });
-
-    describe('When the @ sits in the path, not the authority', () => {
-      it('Then the URL is left untouched (git keeps a path @ literal)', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('https://example.com/a@b.git');
-
-        // Assert
-        expect(result).toBe('https://example.com/a@b.git');
-      });
-    });
-
-    describe('When a scp-like remote has an @ only in the path', () => {
-      it('Then the URL is left untouched (no colon after the @, so it is path data)', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('example.com:pa/th@x.git');
-
-        // Assert
-        expect(result).toBe('example.com:pa/th@x.git');
-      });
-    });
-
-    describe('When a scp-like path carries an @ before its first slash', () => {
-      it('Then the URL is left untouched, matching real git byte-for-byte', () => {
-        // Arrange — pinned against real git: `clone localhost:foo@bar/baz.git`
-        // records the URL literally (transport_anonymize_url literal-copy).
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('localhost:foo@bar/baz.git');
-
-        // Assert
-        expect(result).toBe('localhost:foo@bar/baz.git');
-      });
-    });
-
-    describe('When a slash-free scp remote carries a user', () => {
-      it('Then the user@ prefix is stripped (the colon after @ marks it as userinfo)', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('git@example.com:repo.git');
-
-        // Assert
-        expect(result).toBe('example.com:repo.git');
-      });
-    });
-
-    describe('When the https userinfo is password-only', () => {
-      it('Then the whole userinfo is stripped', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('https://:secret@example.com/x.git');
-
-        // Assert
-        expect(result).toBe('https://example.com/x.git');
-      });
-    });
-
-    describe('When an ssh URL has a user and an IPv6 host', () => {
-      it('Then only the user is stripped, brackets and port kept', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('ssh://user@[::1]:22/x.git');
-
-        // Assert
-        expect(result).toBe('ssh://[::1]:22/x.git');
-      });
-    });
-
-    describe('When a scp-like path starts with @ right after the colon', () => {
-      it('Then the URL is left untouched (nothing after the @ carries a colon)', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('example.com:@x.git');
-
-        // Assert
-        expect(result).toBe('example.com:@x.git');
-      });
-    });
-
-    describe('When a scheme URL carries a user but no path slash', () => {
-      it('Then the userinfo is still stripped', () => {
-        // Arrange
-        const sut = anonymizeRemoteUrl;
-
-        // Act
-        const result = sut('ssh://git@example.com');
-
-        // Assert
-        expect(result).toBe('ssh://example.com');
+        expect(result).toBe(expected);
       });
     });
   });

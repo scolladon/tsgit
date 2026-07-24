@@ -608,82 +608,62 @@ const seedSuperWithModes = async (opts: {
 };
 
 describe('Given a superproject whose submodule update mode is sourced from config', () => {
-  describe('When config update=checkout overrides .gitmodules update=none', () => {
-    it('Then the update is performed in checkout mode (config wins over .gitmodules)', async () => {
+  describe('When submoduleUpdate resolves the mode-precedence chain (CLI > config > .gitmodules > default)', () => {
+    it.each([
+      {
+        label: 'config update=checkout overrides .gitmodules update=none',
+        seedOpts: { gitmodulesMode: 'none', configMode: 'checkout' },
+        actOpts: { paths: ['lib'] },
+        expected: { mode: 'checkout', changed: true, cloned: true },
+        checkNoModules: false,
+      },
+      {
+        label: 'config update=none overrides .gitmodules update=checkout',
+        seedOpts: { gitmodulesMode: 'checkout', configMode: 'none' },
+        actOpts: { paths: ['lib'] },
+        expected: { mode: 'none', changed: false, cloned: false },
+        checkNoModules: true,
+      },
+      {
+        label: 'opts.mode (CLI) overrides config update=none',
+        seedOpts: { configMode: 'none' },
+        actOpts: { paths: ['lib'], mode: 'checkout' },
+        expected: { mode: 'checkout', changed: true, cloned: true },
+        checkNoModules: false,
+      },
+      {
+        label: 'only config sets the update mode (.gitmodules unset)',
+        seedOpts: { configMode: 'none' },
+        actOpts: { paths: ['lib'] },
+        expected: { mode: 'none', changed: false, cloned: false },
+        checkNoModules: false,
+      },
+      {
+        label: 'only .gitmodules sets the update mode (config unset)',
+        seedOpts: { gitmodulesMode: 'none' },
+        actOpts: { paths: ['lib'] },
+        expected: { mode: 'none', changed: false, cloned: false },
+        checkNoModules: false,
+      },
+      {
+        label: 'neither config nor .gitmodules sets the update mode (checkout default)',
+        seedOpts: {},
+        actOpts: { paths: ['lib'] },
+        expected: { mode: 'checkout', changed: true, cloned: true },
+        checkNoModules: false,
+      },
+    ] as const)('Then $label', async ({ seedOpts, actOpts, expected, checkNoModules }) => {
       // Arrange
-      const ctx = await seedSuperWithModes({ gitmodulesMode: 'none', configMode: 'checkout' });
+      const ctx = await seedSuperWithModes(seedOpts);
 
       // Act
-      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+      const result = await submoduleUpdate(ctx, actOpts);
 
       // Assert
-      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true, cloned: true });
-    });
-  });
-
-  describe('When config update=none overrides .gitmodules update=checkout', () => {
-    it('Then the update is a no-op in none mode (config suppresses the .gitmodules mode)', async () => {
-      // Arrange
-      const ctx = await seedSuperWithModes({ gitmodulesMode: 'checkout', configMode: 'none' });
-
-      // Act
-      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
-
-      // Assert
-      expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false, cloned: false });
-      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
-    });
-  });
-
-  describe('When opts.mode overrides a config update mode', () => {
-    it('Then the CLI mode wins over config update=none and checks out the pin', async () => {
-      // Arrange
-      const ctx = await seedSuperWithModes({ configMode: 'none' });
-
-      // Act
-      const result = await submoduleUpdate(ctx, { paths: ['lib'], mode: 'checkout' });
-
-      // Assert
-      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true, cloned: true });
-    });
-  });
-
-  describe('When only config sets the update mode (.gitmodules unset)', () => {
-    it('Then the config mode is applied', async () => {
-      // Arrange
-      const ctx = await seedSuperWithModes({ configMode: 'none' });
-
-      // Act
-      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
-
-      // Assert
-      expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false, cloned: false });
-    });
-  });
-
-  describe('When only .gitmodules sets the update mode (config unset)', () => {
-    it('Then the .gitmodules mode is applied', async () => {
-      // Arrange
-      const ctx = await seedSuperWithModes({ gitmodulesMode: 'none' });
-
-      // Act
-      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
-
-      // Assert
-      expect(result.entries[0]).toMatchObject({ mode: 'none', changed: false, cloned: false });
-    });
-  });
-
-  describe('When neither config nor .gitmodules sets the update mode', () => {
-    it('Then the checkout default is applied', async () => {
-      // Arrange
-      const ctx = await seedSuperWithModes({});
-
-      // Act
-      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
-
-      // Assert
-      expect(result.entries[0]).toMatchObject({ mode: 'checkout', changed: true, cloned: true });
+      expect(result.entries[0]).toMatchObject(expected);
+      if (checkNoModules) {
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/modules`)).toBe(false);
+      }
     });
   });
 
@@ -786,10 +766,27 @@ const URL_VALUELESS_UPDATE_ABSENT_CONFIG =
   '[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl\n';
 
 describe('Given a superproject whose submodule.lib has co-occurring valueless keys', () => {
-  describe('When url is valueless on an earlier line than a valueless update', () => {
-    it('Then it reports submodule.lib.update with priority (not the earlier-line url)', async () => {
+  describe('When submoduleUpdate resolves the valueless-key priority', () => {
+    it.each([
+      {
+        label:
+          'url valueless on an earlier line than a valueless update reports update, not the earlier-line url',
+        config: URL_THEN_UPDATE_VALUELESS_CONFIG,
+        key: 'submodule.lib.update',
+      },
+      {
+        label: 'update valueless on an earlier line than a valueless url reports update',
+        config: UPDATE_THEN_URL_VALUELESS_CONFIG,
+        key: 'submodule.lib.update',
+      },
+      {
+        label: 'url valueless and update absent reports url (the url path still refuses)',
+        config: URL_VALUELESS_UPDATE_ABSENT_CONFIG,
+        key: 'submodule.lib.url',
+      },
+    ])('Then it reports $key ($label)', async ({ config, key }) => {
       // Arrange
-      const ctx = await seedSuperWithConfigText(URL_THEN_UPDATE_VALUELESS_CONFIG);
+      const ctx = await seedSuperWithConfigText(config);
 
       // Act
       let caught: unknown;
@@ -803,49 +800,7 @@ describe('Given a superproject whose submodule.lib has co-occurring valueless ke
       expect(caught).toBeInstanceOf(TsgitError);
       const data = (caught as TsgitError).data as { code: string; key: string };
       expect(data.code).toBe('CONFIG_MISSING_VALUE');
-      expect(data.key).toBe('submodule.lib.update');
-    });
-  });
-
-  describe('When update is valueless on an earlier line than a valueless url', () => {
-    it('Then it reports submodule.lib.update', async () => {
-      // Arrange
-      const ctx = await seedSuperWithConfigText(UPDATE_THEN_URL_VALUELESS_CONFIG);
-
-      // Act
-      let caught: unknown;
-      try {
-        await submoduleUpdate(ctx, { paths: ['lib'] });
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data as { code: string; key: string };
-      expect(data.code).toBe('CONFIG_MISSING_VALUE');
-      expect(data.key).toBe('submodule.lib.update');
-    });
-  });
-
-  describe('When url is valueless and update is absent', () => {
-    it('Then it reports submodule.lib.url (the url path still refuses)', async () => {
-      // Arrange
-      const ctx = await seedSuperWithConfigText(URL_VALUELESS_UPDATE_ABSENT_CONFIG);
-
-      // Act
-      let caught: unknown;
-      try {
-        await submoduleUpdate(ctx, { paths: ['lib'] });
-      } catch (err) {
-        caught = err;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data as { code: string; key: string };
-      expect(data.code).toBe('CONFIG_MISSING_VALUE');
-      expect(data.key).toBe('submodule.lib.url');
+      expect(data.key).toBe(key);
     });
   });
 });

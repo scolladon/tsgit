@@ -37,14 +37,20 @@ describe('Given the reflog message builders', () => {
   });
 
   describe('When building reset, clone and fetch reflog lines', () => {
-    it('Then resetMovingTo renders "reset: moving to <target>"', () => {
+    it.each([
+      {
+        target: 'abc123',
+        expected: 'reset: moving to abc123',
+        label: 'renders "reset: moving to <target>"',
+      },
+      {
+        target: 'HEAD',
+        expected: 'reset: moving to HEAD',
+        label: 'with HEAD renders "reset: moving to HEAD"',
+      },
+    ])('Then resetMovingTo $label', ({ target, expected }) => {
       // Arrange / Act / Assert
-      expect(sut.resetMovingTo('abc123')).toBe('reset: moving to abc123');
-    });
-
-    it('Then resetMovingTo with HEAD renders "reset: moving to HEAD"', () => {
-      // Arrange / Act / Assert
-      expect(sut.resetMovingTo('HEAD')).toBe('reset: moving to HEAD');
+      expect(sut.resetMovingTo(target)).toBe(expected);
     });
 
     it('Then cloneFrom renders "clone: from <url>"', () => {

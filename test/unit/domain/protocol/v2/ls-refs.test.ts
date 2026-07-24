@@ -131,37 +131,74 @@ describe('parseLsRefsResponse', () => {
     });
   });
 
-  describe('Given a symref-target HEAD line whose first token is an empty oid (leading space)', () => {
+  describe('Given an ls-refs response line that fails ref-line validation', () => {
     describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE — the symref branch must still validate the oid token', async () => {
-        // Arrange — a leading space makes the first token the empty string. Git
-        // requires an ls-refs line's first token to be a valid oid or `unborn`;
-        // the symref branch previously skipped that check and accepted it.
-        const line = ' HEAD symref-target:refs/heads/main';
-        const stream = responseBody([`${line}\n`]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
-      });
-    });
-  });
-
-  describe('Given a symref-target HEAD line whose first token is neither an oid nor unborn', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE — a garbage first token is rejected on the symref branch', async () => {
-        // Arrange — `zzzz` is neither a valid oid nor the `unborn` literal, so
-        // git rejects the line; the symref branch previously accepted it and
-        // advertised a bogus symref capability.
-        const line = 'zzzz HEAD symref-target:refs/heads/main';
+      it.each([
+        {
+          line: ' HEAD symref-target:refs/heads/main',
+          // A leading space makes the first token the empty string. Git
+          // requires an ls-refs line's first token to be a valid oid or
+          // `unborn`; the symref branch previously skipped that check and
+          // accepted it.
+          label: 'it throws INVALID_REF_LINE — the symref branch must still validate the oid token',
+        },
+        {
+          line: 'zzzz HEAD symref-target:refs/heads/main',
+          // `zzzz` is neither a valid oid nor the `unborn` literal, so git
+          // rejects the line; the symref branch previously accepted it and
+          // advertised a bogus symref capability.
+          label:
+            'it throws INVALID_REF_LINE — a garbage first token is rejected on the symref branch',
+        },
+        {
+          line: `${OID1} refs/tags/v1 peeled:nonsense`,
+          // Only the line's first token is checked while the ref line is
+          // split; the peeled oid is validated when the ref is appended.
+          label: 'it throws INVALID_REF_LINE carrying the line (peeled attribute not an oid)',
+        },
+        {
+          line: 'unborn refs/heads/main',
+          // `unborn` is tolerated as a first token so the symref branch can
+          // read it, but a line that never reaches that branch still has to
+          // produce a real oid.
+          label: 'it throws INVALID_REF_LINE — unborn is only meaningful on a symref line',
+        },
+        {
+          line: 'not-an-oid refs/heads/main',
+          label: 'it throws INVALID_REF_LINE carrying the line (malformed oid)',
+        },
+        {
+          line: `zz${'3'.repeat(40)} refs/heads/main`,
+          // An unanchored start would let the oid regex find a valid 40-hex
+          // run starting after the "zz" prefix instead of rejecting the
+          // token outright.
+          label: 'it throws INVALID_REF_LINE — the oid check must anchor at the start',
+        },
+        {
+          line: `${'3'.repeat(40)}zz refs/heads/main`,
+          // An unanchored end would let the oid regex stop matching after
+          // the first 40 hex chars instead of rejecting the trailing
+          // garbage.
+          label: 'it throws INVALID_REF_LINE — the oid check must anchor at the end',
+        },
+        {
+          line: 'garbage',
+          label: 'it throws INVALID_REF_LINE carrying the line (no space separator)',
+        },
+        {
+          line: '1'.repeat(41),
+          // 41 hex chars, no space at all. The first 40 chars alone would
+          // pass the oid check, so only the `spaceIdx < 0` guard (not later
+          // oid validation) can catch this malformed line.
+          label:
+            'it throws INVALID_REF_LINE via the missing-space guard rather than accepting a corrupted parse',
+        },
+        {
+          line: `${OID1} `,
+          label: 'it throws INVALID_REF_LINE carrying the line (empty ref name)',
+        },
+      ])('Then $label', async ({ line }) => {
+        // Arrange
         const stream = responseBody([`${line}\n`]);
 
         // Act
@@ -194,126 +231,6 @@ describe('parseLsRefsResponse', () => {
     });
   });
 
-  describe('Given an ls-refs response whose peeled attribute is not an oid', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE carrying the line', async () => {
-        // Arrange — only the line's first token is checked while the ref line is
-        // split; the peeled oid is validated when the ref is appended.
-        const line = `${OID1} refs/tags/v1 peeled:nonsense`;
-        const stream = responseBody([`${line}\n`]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
-      });
-    });
-  });
-
-  describe('Given an unborn ref line that carries no symref-target', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE — unborn is only meaningful on a symref line', async () => {
-        // Arrange — `unborn` is tolerated as a first token so the symref branch
-        // can read it, but a line that never reaches that branch still has to
-        // produce a real oid.
-        const line = 'unborn refs/heads/main';
-        const stream = responseBody([`${line}\n`]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
-      });
-    });
-  });
-
-  describe('Given an ls-refs response line with a malformed oid', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE carrying the line', async () => {
-        // Arrange
-        const line = 'not-an-oid refs/heads/main\n';
-        const stream = responseBody([line]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({
-          code: 'INVALID_REF_LINE',
-          line: 'not-an-oid refs/heads/main',
-        });
-      });
-    });
-  });
-
-  describe('Given an oid token with garbage before an otherwise-valid 40-hex suffix', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE — the oid check must anchor at the start', async () => {
-        // Arrange — an unanchored start would let the oid regex find a valid
-        // 40-hex run starting after the "zz" prefix instead of rejecting the
-        // token outright.
-        const line = `zz${'3'.repeat(40)} refs/heads/main`;
-        const stream = responseBody([`${line}\n`]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
-      });
-    });
-  });
-
-  describe('Given an oid token with a 40-hex prefix followed by trailing garbage', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE — the oid check must anchor at the end', async () => {
-        // Arrange — an unanchored end would let the oid regex stop matching
-        // after the first 40 hex chars instead of rejecting the trailing
-        // garbage.
-        const line = `${'3'.repeat(40)}zz refs/heads/main`;
-        const stream = responseBody([`${line}\n`]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
-      });
-    });
-  });
-
   describe('Given an oid token that is a valid 64-hex SHA-256-style id', () => {
     describe('When parsed', () => {
       it('Then it is accepted — the optional 24-hex-char suffix group must allow 64-char oids', async () => {
@@ -326,76 +243,6 @@ describe('parseLsRefsResponse', () => {
 
         // Assert
         expect(sut.refs).toEqual([{ name: 'refs/heads/main', id: OID.from(oid64) }]);
-      });
-    });
-  });
-
-  describe('Given an ls-refs response line with no space separator', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE carrying the line', async () => {
-        // Arrange
-        const stream = responseBody(['garbage\n']);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line: 'garbage' });
-      });
-    });
-  });
-
-  describe('Given a ref line with no space separator whose implied name-slice still looks like a valid oid', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE via the missing-space guard rather than accepting a corrupted parse', async () => {
-        // Arrange — 41 hex chars, no space at all. The first 40 chars alone
-        // would pass the oid check, so only the `spaceIdx < 0` guard (not
-        // later oid validation) can catch this malformed line.
-        const line = '1'.repeat(41);
-        const stream = responseBody([`${line}\n`]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
-      });
-    });
-  });
-
-  describe('Given an ls-refs response line with an empty ref name', () => {
-    describe('When parsed', () => {
-      it('Then it throws INVALID_REF_LINE carrying the line', async () => {
-        // Arrange
-        const line = `${OID1} \n`;
-        const stream = responseBody([line]);
-
-        // Act
-        let sut: unknown;
-        try {
-          await parseLsRefsResponse(stream);
-        } catch (e) {
-          sut = e;
-        }
-
-        // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({
-          code: 'INVALID_REF_LINE',
-          line: `${OID1} `,
-        });
       });
     });
   });

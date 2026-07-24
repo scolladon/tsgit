@@ -171,45 +171,33 @@ describe('NodeSshTransport', () => {
       });
     });
 
-    describe('When the child closes with an exit code', () => {
-      it('Then channel.exit resolves with that code', async () => {
+    describe('When the child ends and channel.exit is awaited', () => {
+      it.each([
+        {
+          emit: (c: FakeChild) => c.emit('close', 3),
+          expectedExit: 3,
+          label: 'a close event with an exit code resolves channel.exit with that code',
+        },
+        {
+          emit: (c: FakeChild) => c.emit('close', null),
+          expectedExit: 128,
+          label: 'a close event with a null code (signal-killed) resolves channel.exit with 128',
+        },
+        {
+          emit: (c: FakeChild) => c.emit('error', new Error('ENOENT')),
+          expectedExit: 127,
+          label: 'a spawn error resolves channel.exit with 127',
+        },
+      ])('Then $label', async ({ emit, expectedExit }) => {
         // Arrange
         const { transport: sut, child } = makeHarness();
         const channel = await sut.open(baseRequest());
 
         // Act
-        child.emit('close', 3);
+        emit(child);
 
         // Assert
-        await expect(channel.exit).resolves.toBe(3);
-      });
-    });
-
-    describe('When the child closes with a null code (signal-killed)', () => {
-      it('Then channel.exit resolves with 128', async () => {
-        // Arrange
-        const { transport: sut, child } = makeHarness();
-        const channel = await sut.open(baseRequest());
-
-        // Act
-        child.emit('close', null);
-
-        // Assert
-        await expect(channel.exit).resolves.toBe(128);
-      });
-    });
-
-    describe('When the spawn errors', () => {
-      it('Then channel.exit resolves with 127', async () => {
-        // Arrange
-        const { transport: sut, child } = makeHarness();
-        const channel = await sut.open(baseRequest());
-
-        // Act
-        child.emit('error', new Error('ENOENT'));
-
-        // Assert
-        await expect(channel.exit).resolves.toBe(127);
+        await expect(channel.exit).resolves.toBe(expectedExit);
       });
     });
 

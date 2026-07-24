@@ -4,37 +4,31 @@ import { shortBranchName as sut } from '../../../../src/domain/refs/short-branch
 
 describe('Given a ref name', () => {
   describe('When stripping the heads prefix', () => {
-    it('Then a top-level branch ref loses refs/heads/', () => {
+    it.each([
+      {
+        ref: 'refs/heads/main',
+        expected: 'main',
+        label: 'a top-level branch ref loses refs/heads/',
+      },
+      {
+        ref: 'refs/heads/feature/x',
+        expected: 'feature/x',
+        label: 'a nested branch ref keeps its inner slashes',
+      },
+      {
+        ref: 'refs/tags/v1',
+        expected: 'refs/tags/v1',
+        label: 'a non-heads ref is returned unchanged',
+      },
+    ])('Then $label', ({ ref, expected }) => {
       // Arrange
-      const ref = RefName.from('refs/heads/main');
+      const name = RefName.from(ref);
 
       // Act
-      const result = sut(ref);
+      const result = sut(name);
 
       // Assert
-      expect(result).toBe('main');
-    });
-
-    it('Then a nested branch ref keeps its inner slashes', () => {
-      // Arrange
-      const ref = RefName.from('refs/heads/feature/x');
-
-      // Act
-      const result = sut(ref);
-
-      // Assert
-      expect(result).toBe('feature/x');
-    });
-
-    it('Then a non-heads ref is returned unchanged', () => {
-      // Arrange
-      const ref = RefName.from('refs/tags/v1');
-
-      // Act
-      const result = sut(ref);
-
-      // Assert
-      expect(result).toBe('refs/tags/v1');
+      expect(result).toBe(expected);
     });
   });
 });

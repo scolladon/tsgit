@@ -462,23 +462,9 @@ describe('Given prefix option "pre/" (the prefix block is counted in the record 
 // ---------------------------------------------------------------------------
 // 10240 EOF padding
 // ---------------------------------------------------------------------------
-
-describe('Given an empty entry stream with no commit', () => {
-  describe('When tarArchive is called', () => {
-    it('Then the total output is exactly 10240 bytes (two EOF blocks + padding)', async () => {
-      // Arrange
-      const sut = tarArchive(makeResult([], undefined, undefined), {
-        mtime: FIXED_MTIME,
-      });
-
-      // Act
-      const result = await collectBytes(sut);
-
-      // Assert
-      expect(result.length).toBe(RECORD_SIZE);
-    });
-  });
-});
+// (the empty-stream/no-commit case is already covered above by "Given a
+// bare-tree result (no commit)", whose assertions are a superset: total
+// length === RECORD_SIZE AND every byte is zero.)
 
 describe('Given a single regular-file entry (512 header + 512 data = 1024) with a commit (pax = 1024)', () => {
   describe('When tarArchive is called', () => {
@@ -712,29 +698,9 @@ describe('Given a regular-file entry whose content length exceeds the 11-digit o
 // ---------------------------------------------------------------------------
 // linkname guard: symlink target longer than the 100-byte ustar field
 // ---------------------------------------------------------------------------
-
-describe('Given a symlink entry whose target exceeds the 100-byte ustar linkname field', () => {
-  describe('When tarArchive is called', () => {
-    it('Then it throws indicating the symlink target is too long for ustar', async () => {
-      // Arrange — a 101-byte symlink target (pax extended linkname is out of scope).
-      const longTarget = new Uint8Array(101).fill(0x61);
-      const entry = makeEntry('link', '120000', longTarget);
-      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
-
-      // Act
-      let thrown: unknown;
-      try {
-        await collectBytes(sut);
-      } catch (err) {
-        thrown = err;
-      }
-
-      // Assert
-      expect(thrown).toBeInstanceOf(Error);
-      expect((thrown as Error).message).toMatch(/Symlink target too long for ustar archive/);
-    });
-  });
-});
+// (the >100-byte case is already covered below by the "exactly 101 bytes"
+// linkname boundary row, using the identical 101-byte 0x61-filled target and
+// the identical throw assertion — pax extended linkname is out of scope.)
 
 // ---------------------------------------------------------------------------
 // Mutation boundary: writeOctal NUL byte position
@@ -1079,34 +1045,12 @@ describe('Given a regular-file entry whose path with a valid split is exactly 25
 // ---------------------------------------------------------------------------
 // Mutation boundary: splitPath Math.max(byteLen-1, PREFIX_MAX) start offset
 // ---------------------------------------------------------------------------
-
-describe('Given a 256-byte path whose only valid split is at position 155 (start of search)', () => {
-  describe('When tarArchive is called', () => {
-    it('Then the split succeeds — Math.min(byteLen-1, PREFIX_MAX) starts at the right position', async () => {
-      // Arrange — path = 'a'×155 + '/' + 'b'×100 = 256 bytes.
-      // Math.min(255, 155) = 155. The slash at i=155 yields nameLen = 256-155-1 = 100 ≤ NAME_MAX → valid.
-      // Math.max(255, 155) = 255. Starting at 255, the loop finds no '/' at the end of a 'b' string,
-      // scans all the way down to the single '/' at i=155. Same result — this mutant IS equivalent
-      // for this specific case (the '/' is found in both directions).
-      // To distinguish: use a path where the ONLY valid split is at i <= PREFIX_MAX but the Math.max
-      // start would be byteLen-1 > PREFIX_MAX... but the loop is capped at PREFIX_MAX via Math.min.
-      // Actually for paths in (256, 256] the start is always 155 with Math.min. The mutant starts
-      // at 255 with Math.max(byteLen-1, PREFIX_MAX) = max(255,155) = 255. It scans from 255 down
-      // to the '/' at 155 — and finds it. Equivalent for this fixture.
-      // We document the equivalence and still pin behavior:
-      const path256 = `${'a'.repeat(155)}/${'b'.repeat(100)}`;
-      const entry = makeEntry(path256, '100644', new Uint8Array([1]));
-      const sut = tarArchive(makeResult([entry], undefined, undefined), { mtime: FIXED_MTIME });
-
-      // Act — must not throw
-      const result = await collectBytes(sut);
-      const header = result.slice(0, HEADER_SIZE);
-
-      // Assert
-      expect(readField(header, OFF_NAME, 100)).toBe('b'.repeat(100));
-    });
-  });
-});
+// (the Math.min-vs-Math.max start-offset mutant is provably equivalent for the
+// 256-byte 'a'×155+'/'+'b'×100 fixture — both directions land on the same
+// slash — so a dedicated row here would assert nothing the "byteLen > 256"
+// and "nameLen <= NAME_MAX" rows below don't already assert against the
+// identical path256 input. The mutant is properly killed by the genuinely
+// distinguishing 200-byte two-slash fixture further down.)
 
 // ---------------------------------------------------------------------------
 // Mutation boundary: nameLen >= 1 (the split point yields a 1-byte name)

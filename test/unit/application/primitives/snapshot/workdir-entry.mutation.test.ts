@@ -106,37 +106,21 @@ describe('workdir-entry — statMatches per-field branches', () => {
     }
   };
 
-  describe('Given the live stat differs only on mode (chmod-race)', () => {
+  describe('Given the live stat differs on exactly one watched field', () => {
     describe('When verify() is called', () => {
-      it('Then it throws WORKDIR_RACE (statMatches mode-arm returns false)', async () => {
-        // Arrange + Act — flip the executable bit so deriveFileMode produces "100755"
-        const result = await seedAndVerify({ mode: 0o755 });
-
-        // Assert
-        expect(result.pass).toBe(false);
-        expect(result.code).toBe('WORKDIR_RACE');
-      });
-    });
-  });
-
-  describe('Given the live stat differs only on size', () => {
-    describe('When verify() is called', () => {
-      it('Then it throws WORKDIR_RACE (statMatches size-arm returns false)', async () => {
+      it.each([
+        {
+          overrides: { mode: 0o755 },
+          label: 'statMatches mode-arm returns false (chmod-race)',
+        },
+        { overrides: { size: 9999 }, label: 'statMatches size-arm returns false' },
+        {
+          overrides: { mtimeMs: 999999999 },
+          label: 'statMatches mtimeMs-arm returns false',
+        },
+      ])('Then it throws WORKDIR_RACE ($label)', async ({ overrides }) => {
         // Arrange + Act
-        const result = await seedAndVerify({ size: 9999 });
-
-        // Assert
-        expect(result.pass).toBe(false);
-        expect(result.code).toBe('WORKDIR_RACE');
-      });
-    });
-  });
-
-  describe('Given the live stat differs only on mtimeMs', () => {
-    describe('When verify() is called', () => {
-      it('Then it throws WORKDIR_RACE (statMatches mtimeMs-arm returns false)', async () => {
-        // Arrange + Act
-        const result = await seedAndVerify({ mtimeMs: 999999999 });
+        const result = await seedAndVerify(overrides);
 
         // Assert
         expect(result.pass).toBe(false);

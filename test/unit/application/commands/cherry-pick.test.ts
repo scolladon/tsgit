@@ -325,21 +325,6 @@ describe('cherryPickRun — merge commits', () => {
       });
     });
   });
-
-  describe('Given --no-commit and a merge commit', () => {
-    describe('When run', () => {
-      it('Then refuses with CHERRY_PICK_MERGE_NO_MAINLINE', async () => {
-        // Arrange
-        const { ctx, mergeId } = await seedMerge();
-
-        // Act
-        const code = await codeOf(() => cherryPickRun(ctx, { commits: [mergeId], noCommit: true }));
-
-        // Assert
-        expect(code).toBe('CHERRY_PICK_MERGE_NO_MAINLINE');
-      });
-    });
-  });
 });
 
 describe('cherryPickRun — ranges and the sequencer', () => {
@@ -371,36 +356,6 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         expect(await ctx.fs.readUtf8(work(ctx, 'f1.txt'))).toBe('f1\n');
         expect(await ctx.fs.readUtf8(work(ctx, 'f3.txt'))).toBe('f3\n');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
-      });
-    });
-  });
-
-  describe('Given an A...B symmetric-difference range', () => {
-    describe('When run', () => {
-      it('Then rejects with INVALID_OPTION', async () => {
-        // Arrange
-        const { ctx } = await seedFeature();
-
-        // Act
-        const code = await codeOf(() => cherryPickRun(ctx, { commits: ['main...feature'] }));
-
-        // Assert
-        expect(code).toBe('INVALID_OPTION');
-      });
-    });
-  });
-
-  describe('Given a ^-exclusion revision form', () => {
-    describe('When run', () => {
-      it('Then rejects with INVALID_OPTION', async () => {
-        // Arrange
-        const { ctx } = await seedFeature();
-
-        // Act
-        const code = await codeOf(() => cherryPickRun(ctx, { commits: ['feature^'] }));
-
-        // Assert
-        expect(code).toBe('INVALID_OPTION');
       });
     });
   });
@@ -602,22 +557,6 @@ describe('cherryPickAbort', () => {
       });
     });
   });
-
-  describe('Given a detached HEAD mid cherry-pick', () => {
-    describe('When abort', () => {
-      it('Then refuses with UNSUPPORTED_OPERATION', async () => {
-        // Arrange
-        const { ctx, feature } = await seedConflictPick();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${feature}\n`);
-
-        // Act
-        const code = await codeOf(() => cherryPickAbort(ctx));
-
-        // Assert
-        expect(code).toBe('UNSUPPORTED_OPERATION');
-      });
-    });
-  });
 });
 
 describe('cherryPickSkip', () => {
@@ -713,21 +652,6 @@ describe('cherryPickContinue', () => {
 
         // Assert
         expect(code).toBe('NO_OPERATION_IN_PROGRESS');
-      });
-    });
-  });
-
-  describe('Given the index still has unmerged entries', () => {
-    describe('When continue', () => {
-      it('Then refuses with MERGE_HAS_CONFLICTS', async () => {
-        // Arrange — conflict left unresolved
-        const { ctx } = await seedConflictPick();
-
-        // Act
-        const code = await codeOf(() => cherryPickContinue(ctx));
-
-        // Assert
-        expect(code).toBe('MERGE_HAS_CONFLICTS');
       });
     });
   });
@@ -905,33 +829,10 @@ describe('cherryPickRun', () => {
         const index = await readIndex(ctx);
         expect(index.entries.some((e) => e.path === 'f.txt' && e.flags.stage !== 0)).toBe(true);
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain('<<<<<<<');
-      });
-
-      it('Then the markers are labelled HEAD and the picked commit', async () => {
-        // Arrange — feature and main change the same line differently
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await setUser(ctx);
-        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nl2\n');
-        await add(ctx, ['f.txt']);
-        await commit(ctx, { message: 'base', author: MAIN_AUTHOR });
-        await branchCreate(ctx, { name: 'feature' });
-        await checkout(ctx, { rev: 'feature' });
-        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nFEAT\n');
-        await add(ctx, ['f.txt']);
-        const feature = await commit(ctx, { message: 'feat change', author: FEAT_AUTHOR });
-        await checkout(ctx, { rev: 'main' });
-        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
-        await add(ctx, ['f.txt']);
-        await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
-
-        // Act
-        await cherryPickRun(ctx, { commits: [feature.id] });
-
-        // Assert
-        const file = await ctx.fs.readUtf8(work(ctx, 'f.txt'));
-        expect(file).toContain('<<<<<<< HEAD\n');
-        expect(file).toContain(`>>>>>>> ${feature.id.slice(0, 7)} (feat change)\n`);
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain('<<<<<<< HEAD\n');
+        expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toContain(
+          `>>>>>>> ${feature.id.slice(0, 7)} (feat change)\n`,
+        );
       });
     });
 
@@ -1133,22 +1034,6 @@ describe('cherryPickRun', () => {
     });
   });
 
-  describe('Given a detached HEAD', () => {
-    describe('When run', () => {
-      it('Then refuses with UNSUPPORTED_OPERATION', async () => {
-        // Arrange
-        const { ctx, base } = await seedFeature();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${base}\n`);
-
-        // Act
-        const code = await codeOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
-
-        // Assert
-        expect(code).toBe('UNSUPPORTED_OPERATION');
-      });
-    });
-  });
-
   describe('Given an unborn branch', () => {
     describe('When run', () => {
       it('Then refuses with NO_INITIAL_COMMIT', async () => {
@@ -1252,25 +1137,6 @@ describe('cherryPick — observable surfaces', () => {
     });
   });
 
-  describe('Given -x and a source message with a trailing body word', () => {
-    describe('When run', () => {
-      it('Then the committed message keeps the full body before the provenance line', async () => {
-        // Arrange
-        const { ctx, feature } = await seedFeature();
-
-        // Act
-        const sut = await cherryPickRun(ctx, { commits: ['feature'], recordOrigin: true });
-
-        // Assert — full body retained, then a blank line, then the origin line.
-        const created = sut.kind === 'picked' ? (sut.commits[0]?.created as ObjectId) : undefined;
-        const pick = await readCommit(ctx, created as ObjectId);
-        expect(pick.message).toBe(
-          `add feat\n\nbody line\n\n(cherry picked from commit ${feature})\n`,
-        );
-      });
-    });
-  });
-
   describe('Given a range whose first pick conflicts under --no-commit', () => {
     describe('When run', () => {
       it('Then it returns conflict with the remaining-pick count', async () => {
@@ -1351,6 +1217,7 @@ describe('cherryPick — observable surfaces', () => {
         const data = await dataOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
 
         // Assert
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
         expect(data.operation).toBe('cherry-pick');
         expect(data.reason).toBe('cannot cherry-pick with detached HEAD');
       });
@@ -1439,6 +1306,7 @@ describe('cherryPick — observable surfaces', () => {
         const data = await dataOf(() => cherryPickAbort(ctx));
 
         // Assert
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
         expect(data.operation).toBe('cherry-pick --abort');
       });
     });

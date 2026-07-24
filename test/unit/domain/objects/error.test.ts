@@ -19,15 +19,6 @@ import { assertExhaustiveSwitch } from '../exhaustiveness.js';
 describe('error', () => {
   describe('factory functions', () => {
     describe("Given invalidObjectId('xyz')", () => {
-      describe('When checking error.data.code', () => {
-        it("Then equals 'INVALID_OBJECT_ID'", () => {
-          // Arrange & Act
-          const sut = invalidObjectId('xyz');
-
-          // Assert
-          expect(sut.data.code).toBe('INVALID_OBJECT_ID');
-        });
-      });
       describe('When checking error.data.value', () => {
         it("Then equals 'xyz'", () => {
           // Arrange & Act

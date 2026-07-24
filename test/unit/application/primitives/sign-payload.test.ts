@@ -296,41 +296,35 @@ describe('signPayload', () => {
     });
   });
 
-  describe('Given a runner returning a non-zero exit', () => {
+  describe('Given an openpgp runner result that yields no usable armor', () => {
     describe('When signPayload runs (openpgp format)', () => {
-      it('Then result is { ok: false, reason: "signer-failed" }', async () => {
-        // Arrange
-        const runner = stubCommandRunner({ exitCode: 1, stdout: enc('') });
-        const ctx = createMemoryContext({ command: runner });
+      it.each([
+        { exitCode: 1, stdout: enc(''), label: 'a non-zero exit code' },
+        {
+          exitCode: 0,
+          stdout: enc('not an armor block'),
+          label: 'a malformed armor on stdout',
+        },
+        { exitCode: 0, stdout: undefined, label: 'no stdout captured' },
+      ])(
+        'Then $label yields result { ok: false, reason: "signer-failed" }',
+        async ({ exitCode, stdout }) => {
+          // Arrange
+          const runner = stubCommandRunner(
+            stdout === undefined ? { exitCode } : { exitCode, stdout },
+          );
+          const ctx = createMemoryContext({ command: runner });
 
-        // Act
-        const result = await signPayload(ctx, enc('payload'), {
-          format: 'openpgp',
-          selector: 'ABCD1234',
-        });
+          // Act
+          const result = await signPayload(ctx, enc('payload'), {
+            format: 'openpgp',
+            selector: 'ABCD1234',
+          });
 
-        // Assert
-        expect(result).toEqual({ ok: false, reason: 'signer-failed' });
-      });
-    });
-  });
-
-  describe('Given a runner returning exit 0 but stdout without a well-formed armor', () => {
-    describe('When signPayload runs (openpgp format)', () => {
-      it('Then result is { ok: false, reason: "signer-failed" }', async () => {
-        // Arrange
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc('not an armor block') });
-        const ctx = createMemoryContext({ command: runner });
-
-        // Act
-        const result = await signPayload(ctx, enc('payload'), {
-          format: 'openpgp',
-          selector: 'ABCD1234',
-        });
-
-        // Assert
-        expect(result).toEqual({ ok: false, reason: 'signer-failed' });
-      });
+          // Assert
+          expect(result).toEqual({ ok: false, reason: 'signer-failed' });
+        },
+      );
     });
   });
 
@@ -397,26 +391,6 @@ describe('signPayload', () => {
         const result = await signPayload(ctx, enc('payload'), {
           format: 'ssh',
           selector: '/key',
-        });
-
-        // Assert
-        expect(result).toEqual({ ok: false, reason: 'signer-failed' });
-      });
-    });
-  });
-
-  describe('Given a runner returning exit 0 with no stdout captured', () => {
-    describe('When signPayload runs (openpgp format)', () => {
-      it('Then result is { ok: false, reason: "signer-failed" }', async () => {
-        // Arrange — kills the `result.stdout ?? EMPTY` mutant: an absent
-        // stdout must decode to an empty (non-armor) string, not crash.
-        const runner = stubCommandRunner({ exitCode: 0 });
-        const ctx = createMemoryContext({ command: runner });
-
-        // Act
-        const result = await signPayload(ctx, enc('payload'), {
-          format: 'openpgp',
-          selector: 'ABCD1234',
         });
 
         // Assert
@@ -577,45 +551,34 @@ describe('signPayload', () => {
 });
 
 describe('resolveSigningSelector', () => {
-  describe('Given a keyOverride', () => {
+  describe('Given a signing-selector precedence input', () => {
     describe('When resolveSigningSelector runs', () => {
-      it('Then it returns the keyOverride', () => {
+      it.each([
+        {
+          options: {
+            keyOverride: 'OVERRIDE',
+            signingKey: 'CONFIGURED',
+            fallbackIdent: 'Name <email>',
+          },
+          expected: 'OVERRIDE',
+          label: 'returns the keyOverride',
+        },
+        {
+          options: { signingKey: 'CONFIGURED', fallbackIdent: 'Name <email>' },
+          expected: 'CONFIGURED',
+          label: 'returns the signingKey (no keyOverride)',
+        },
+        {
+          options: { fallbackIdent: 'Name <email>' },
+          expected: 'Name <email>',
+          label: 'returns the fallbackIdent (neither keyOverride nor signingKey)',
+        },
+      ])('Then it $label', ({ options, expected }) => {
         // Arrange
-        const sut = resolveSigningSelector({
-          keyOverride: 'OVERRIDE',
-          signingKey: 'CONFIGURED',
-          fallbackIdent: 'Name <email>',
-        });
+        const sut = resolveSigningSelector(options);
 
         // Assert
-        expect(sut).toBe('OVERRIDE');
-      });
-    });
-  });
-
-  describe('Given no keyOverride but a signingKey', () => {
-    describe('When resolveSigningSelector runs', () => {
-      it('Then it returns the signingKey', () => {
-        // Arrange
-        const sut = resolveSigningSelector({
-          signingKey: 'CONFIGURED',
-          fallbackIdent: 'Name <email>',
-        });
-
-        // Assert
-        expect(sut).toBe('CONFIGURED');
-      });
-    });
-  });
-
-  describe('Given neither keyOverride nor signingKey', () => {
-    describe('When resolveSigningSelector runs', () => {
-      it('Then it returns the fallbackIdent', () => {
-        // Arrange
-        const sut = resolveSigningSelector({ fallbackIdent: 'Name <email>' });
-
-        // Assert
-        expect(sut).toBe('Name <email>');
+        expect(sut).toBe(expected);
       });
     });
   });

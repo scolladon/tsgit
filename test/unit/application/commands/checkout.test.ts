@@ -64,15 +64,41 @@ describe('checkout', () => {
     });
   });
 
-  describe('Given a symbolic HEAD pointing outside refs/heads/', () => {
+  describe('Given a symbolic prior HEAD on a ref path shape that stresses the basename computation', () => {
     describe('When checkout', () => {
-      it('Then the reflog label is the rev basename (not a mangled prefix-strip)', async () => {
-        // Arrange — point HEAD at refs/remotes/origin/main. A naive
-        // slice(HEADS_PREFIX.length) would yield `gin/main`; the label must be the
-        // last path segment, `main`.
+      it.each([
+        {
+          label:
+            'a ref outside refs/heads/, the label is the rev basename (not a mangled prefix-strip)',
+          refPath: 'refs/remotes/origin/main',
+          expected: 'main',
+        },
+        {
+          label:
+            'a nested branch under refs/heads/, the label keeps the full sub-path (prefix-strip, not basename)',
+          refPath: 'refs/heads/topic/sub',
+          expected: 'topic/sub',
+        },
+        {
+          label: 'a ref with no slash, the label is that ref verbatim',
+          refPath: 'legacy',
+          expected: 'legacy',
+        },
+        {
+          label:
+            'a two-segment ref outside refs/heads/, the label is the segment after the single slash',
+          refPath: 'x/main',
+          expected: 'main',
+        },
+      ])('Then $label', async ({ refPath, expected }) => {
+        // Arrange — point HEAD at a loose ref of the given shape. The label
+        // computation must strip only the refs/heads/ prefix and otherwise fall
+        // back to the basename after the last slash (pinning both the
+        // HEADS_PREFIX slice and the `lastIndexOf('/') === -1` guard against a
+        // `=== 1` mutation).
         const { ctx, commitId } = await seedWithBranches();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${commitId}\n`);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/remotes/origin/main\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${refPath}`, `${commitId}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `ref: ${refPath}\n`);
         const { readReflog } = await import(
           '../../../../src/application/primitives/reflog-store.js'
         );
@@ -80,80 +106,11 @@ describe('checkout', () => {
         // Act
         await checkout(ctx, { rev: 'feature' });
 
-        // Assert — the newest HEAD reflog entry records the move from `main`.
-        const headLog = await readReflog(ctx, 'HEAD' as RefName);
-        expect(headLog[headLog.length - 1]?.message).toBe('checkout: moving from main to feature');
-      });
-    });
-  });
-
-  describe('Given a symbolic HEAD on a nested branch under refs/heads/', () => {
-    describe('When checkout', () => {
-      it('Then the label keeps the full sub-path (prefix-strip, not basename)', async () => {
-        // Arrange — prior HEAD on refs/heads/topic/sub. The label must strip only
-        // the refs/heads/ prefix (`topic/sub`); a basename fallback (`sub`) is wrong.
-        const { ctx, commitId } = await seedWithBranches();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/topic/sub`, `${commitId}\n`);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/topic/sub\n');
-        const { readReflog } = await import(
-          '../../../../src/application/primitives/reflog-store.js'
-        );
-
-        // Act
-        await checkout(ctx, { rev: 'feature' });
-
-        // Assert
-        const headLog = await readReflog(ctx, 'HEAD' as RefName);
-        expect(headLog[headLog.length - 1]?.message).toBe(
-          'checkout: moving from topic/sub to feature',
-        );
-      });
-    });
-  });
-
-  describe('Given a symbolic HEAD on a ref with no slash', () => {
-    describe('When checkout', () => {
-      it('Then the label is that ref verbatim', async () => {
-        // Arrange — prior HEAD on a single-segment ref `legacy`. With no `/`, the
-        // basename fallback must return the whole name untouched.
-        const { ctx, commitId } = await seedWithBranches();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/legacy`, `${commitId}\n`);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: legacy\n');
-        const { readReflog } = await import(
-          '../../../../src/application/primitives/reflog-store.js'
-        );
-
-        // Act
-        await checkout(ctx, { rev: 'feature' });
-
-        // Assert
+        // Assert — the newest HEAD reflog entry records the move from the label.
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog[headLog.length - 1]?.message).toBe(
-          'checkout: moving from legacy to feature',
+          `checkout: moving from ${expected} to feature`,
         );
-      });
-    });
-  });
-
-  describe('Given a symbolic HEAD on a two-segment ref outside refs/heads/', () => {
-    describe('When checkout', () => {
-      it('Then the label is the segment after the single slash', async () => {
-        // Arrange — prior HEAD on `x/main`: the only `/` is at index 1, so the
-        // basename is the part after it. Pins the `lastIndexOf('/') === -1` guard
-        // against a `=== 1` mutation that would return the whole `x/main`.
-        const { ctx, commitId } = await seedWithBranches();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/x/main`, `${commitId}\n`);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: x/main\n');
-        const { readReflog } = await import(
-          '../../../../src/application/primitives/reflog-store.js'
-        );
-
-        // Act
-        await checkout(ctx, { rev: 'feature' });
-
-        // Assert
-        const headLog = await readReflog(ctx, 'HEAD' as RefName);
-        expect(headLog[headLog.length - 1]?.message).toBe('checkout: moving from main to feature');
       });
     });
   });
@@ -277,64 +234,6 @@ describe('checkout', () => {
         expect(sut.changedPaths).toBeGreaterThanOrEqual(1);
         const bytes = await ctx.fs.read(`${ctx.layout.workDir}/foo.txt`);
         expect(new TextDecoder().decode(bytes)).toBe('v1');
-      });
-    });
-  });
-
-  describe('Given both rev and paths are provided', () => {
-    describe('When checkout', () => {
-      it('Then throws INVALID_OPTION', async () => {
-        // Arrange
-        const { ctx } = await seedWithBranches();
-
-        // Act + Assert
-        try {
-          await checkout(ctx, {
-            rev: 'main',
-            paths: ['a.txt'],
-          } as unknown as Parameters<typeof checkout>[1]);
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect(err).toBeInstanceOf(TsgitError);
-          expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
-        }
-      });
-    });
-  });
-
-  describe('Given neither rev nor paths', () => {
-    describe('When checkout', () => {
-      it('Then throws INVALID_OPTION', async () => {
-        // Arrange
-        const { ctx } = await seedWithBranches();
-
-        // Act + Assert
-        try {
-          await checkout(ctx, {} as unknown as Parameters<typeof checkout>[1]);
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
-        }
-      });
-    });
-  });
-
-  describe('Given paths=[] (empty array)', () => {
-    describe('When checkout in paths mode', () => {
-      it('Then throws INVALID_OPTION', async () => {
-        // Arrange
-        const { ctx } = await seedWithBranches();
-
-        // Act + Assert
-        try {
-          await checkout(ctx, { paths: [] });
-          throw new Error('expected throw');
-        } catch (err) {
-          // Assert
-          expect((err as TsgitError).data.code).toBe('INVALID_OPTION');
-        }
       });
     });
   });
@@ -615,75 +514,38 @@ describe('checkout — mutation hardening', () => {
     });
   });
 
-  describe('Given a 39-hex rev (one short)', () => {
+  describe('Given a rev that narrowly fails to match the 40-hex oid pattern', () => {
     describe('When checkout', () => {
-      it('Then it is treated as a ref name not a raw oid', async () => {
-        // Arrange — 39 hex chars must NOT match `/^[0-9a-f]{40}$/`. If the
-        // trailing `$` anchor were stripped, a 39-hex prefix of a longer string
-        // could match; here the value is exactly 39 chars so only the `{40}`
-        // quantifier discriminates. Treated as a ref → branchNotFound.
+      it.each([
+        {
+          label: 'a 39-hex rev (one short) is treated as a ref name not a raw oid',
+          rev: 'a'.repeat(39),
+        },
+        {
+          label:
+            'a rev with a trailing non-hex char after 40 hex is treated as a branch ref not a detached oid (kills the `$`-anchor drop)',
+          rev: `${'a'.repeat(40)}z`,
+        },
+        {
+          label:
+            'a rev with a non-hex char before 40 hex is treated as a branch ref not a detached oid (kills the `^`-anchor drop)',
+          rev: `z${'a'.repeat(40)}`,
+        },
+      ])('Then $label', async ({ rev }) => {
+        // Arrange — none of these values match `/^[0-9a-f]{40}$/`, so
+        // resolveSwitchOid must NOT treat them as raw oids; they fall through to
+        // the (non-existent) branch lookup.
         const { ctx } = await seedWithBranches();
-        const thirtyNineHex = 'a'.repeat(39);
 
         // Act
         let caught: unknown;
         try {
-          await checkout(ctx, { rev: thirtyNineHex });
+          await checkout(ctx, { rev });
         } catch (err) {
           caught = err;
         }
 
-        // Assert — resolved as a ref name → branch not found.
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
-      });
-    });
-  });
-
-  describe('Given a rev with a trailing non-hex char after 40 hex', () => {
-    describe('When checkout', () => {
-      it('Then it is treated as a branch ref not a detached oid', async () => {
-        // Arrange — `<40 hex>z` (41 chars) must NOT match `/^[0-9a-f]{40}$/`.
-        // Without the `$` anchor (`/^[0-9a-f]{40}/`) the 40-hex prefix matches and
-        // both the L60 detach detector and the L55 oid check would misfire,
-        // routing the value through resolveSwitchOid as a detached oid. The
-        // correct path treats it as a (non-existent) branch name.
-        const { ctx } = await seedWithBranches();
-        const fortyHexPlus = `${'a'.repeat(40)}z`;
-
-        // Act
-        let caught: unknown;
-        try {
-          await checkout(ctx, { rev: fortyHexPlus });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert — non-detached branch lookup → BRANCH_NOT_FOUND, not an oid path.
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
-      });
-    });
-  });
-
-  describe('Given a rev with a non-hex char before 40 hex', () => {
-    describe('When checkout', () => {
-      it('Then it is treated as a branch ref not a detached oid', async () => {
-        // Arrange — `z<40 hex>` (41 chars) must NOT match. Without the `^` anchor
-        // (`/[0-9a-f]{40}$/`) the 40-hex suffix matches and the value is routed as
-        // a detached oid instead of a branch name.
-        const { ctx } = await seedWithBranches();
-        const prefixedHex = `z${'a'.repeat(40)}`;
-
-        // Act
-        let caught: unknown;
-        try {
-          await checkout(ctx, { rev: prefixedHex });
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
+        // Assert — resolved as a ref name → branch not found, not an oid path.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
       });

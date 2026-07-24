@@ -190,55 +190,42 @@ describe('reflog-store', () => {
   });
 
   describe('writeReflog', () => {
-    describe('Given an existing reflog', () => {
-      describe('When writeReflog with fewer entries', () => {
-        it('Then the file is fully replaced', async () => {
+    describe('Given an existing reflog state', () => {
+      describe('When writeReflog', () => {
+        it.each([
+          {
+            label: 'replaces existing entries with fewer entries',
+            existing: [entry(), entry({ oldId: OID_A, newId: OID_B, message: 'second' })],
+            written: [entry({ message: 'kept' })],
+          },
+          {
+            // A multi-entry write proves the lines are concatenated with no
+            // separator between them.
+            label: 'round-trips several entries back, oldest-first',
+            existing: [],
+            written: [
+              entry({ message: 'first' }),
+              entry({ oldId: OID_A, newId: OID_B, message: 'second' }),
+              entry({ oldId: OID_B, newId: OID_A, message: 'third' }),
+            ],
+          },
+          {
+            label: 'clears the file when given an empty entry list',
+            existing: [entry()],
+            written: [],
+          },
+        ])('Then $label', async ({ existing, written }) => {
           // Arrange
           const ctx = createMemoryContext();
-          await appendReflog(ctx, HEAD, entry());
-          await appendReflog(ctx, HEAD, entry({ oldId: OID_A, newId: OID_B, message: 'second' }));
-          const survivor = entry({ message: 'kept' });
+          for (const previous of existing) {
+            await appendReflog(ctx, HEAD, previous);
+          }
 
           // Act
-          await writeReflog(ctx, HEAD, [survivor]);
+          await writeReflog(ctx, HEAD, written);
 
           // Assert
-          expect(await readReflog(ctx, HEAD)).toEqual([survivor]);
-        });
-      });
-    });
-
-    describe('Given several entries', () => {
-      describe('When writeReflog', () => {
-        it('Then each one round-trips back, oldest-first', async () => {
-          // Arrange — a multi-entry write proves the lines are concatenated with no
-          // separator between them.
-          const ctx = createMemoryContext();
-          const first = entry({ message: 'first' });
-          const second = entry({ oldId: OID_A, newId: OID_B, message: 'second' });
-          const third = entry({ oldId: OID_B, newId: OID_A, message: 'third' });
-
-          // Act
-          await writeReflog(ctx, HEAD, [first, second, third]);
-
-          // Assert
-          expect(await readReflog(ctx, HEAD)).toEqual([first, second, third]);
-        });
-      });
-    });
-
-    describe('Given an empty entry list', () => {
-      describe('When writeReflog', () => {
-        it('Then the file holds no entries', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await appendReflog(ctx, HEAD, entry());
-
-          // Act
-          await writeReflog(ctx, HEAD, []);
-
-          // Assert
-          expect(await readReflog(ctx, HEAD)).toEqual([]);
+          expect(await readReflog(ctx, HEAD)).toEqual(written);
         });
       });
     });

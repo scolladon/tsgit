@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MSG_EXTRA_HEADER_ENTRY } from '../../../../src/domain/fsck/msg-ids.js';
 import { resolveSeverity } from '../../../../src/domain/fsck/severity.js';
+import type { FsckObjectType } from '../../../../src/domain/fsck/types.js';
 import { validateObject } from '../../../../src/domain/fsck/validate-object.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
 
@@ -277,60 +278,20 @@ describe('Given tag without tagger entry', () => {
 // Valid objects return no findings
 // ---------------------------------------------------------------------------
 
-describe('Given a valid commit object', () => {
+describe('Given a valid object', () => {
   describe('When validateObject runs', () => {
-    it('Then returns empty findings', () => {
+    it.each<{ kind: FsckObjectType; build: () => Uint8Array }>([
+      { kind: 'commit', build: () => VALID_COMMIT },
+      { kind: 'tag', build: () => VALID_TAG },
+      { kind: 'tree', build: () => buildTree(buildTreeEntry('100644', 'file.txt', BLOB_SHA)) },
+      { kind: 'blob', build: () => encode('hello world\n') },
+    ])('Then returns empty findings for a valid $kind object', ({ kind, build }) => {
       // Arrange
       const sut = validateObject;
+      const rawBody = build();
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: VALID_COMMIT, strict: false });
-
-      // Assert
-      expect(result).toHaveLength(0);
-    });
-  });
-});
-
-describe('Given a valid tag object', () => {
-  describe('When validateObject runs', () => {
-    it('Then returns empty findings', () => {
-      // Arrange
-      const sut = validateObject;
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: VALID_TAG, strict: false });
-
-      // Assert
-      expect(result).toHaveLength(0);
-    });
-  });
-});
-
-describe('Given a valid tree object', () => {
-  describe('When validateObject runs', () => {
-    it('Then returns empty findings', () => {
-      // Arrange
-      const sut = validateObject;
-      const rawBytes = buildTree(buildTreeEntry('100644', 'file.txt', BLOB_SHA));
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toHaveLength(0);
-    });
-  });
-});
-
-describe('Given a valid blob object', () => {
-  describe('When validateObject runs', () => {
-    it('Then returns empty findings', () => {
-      // Arrange
-      const sut = validateObject;
-
-      // Act
-      const result = sut({ kind: 'blob', rawBody: encode('hello world\n'), strict: false });
+      const result = sut({ kind, rawBody, strict: false });
 
       // Assert
       expect(result).toHaveLength(0);
@@ -675,18 +636,122 @@ describe('Given tree with duplicate entry names', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tree — badTree (ERROR) — truncated/unparseable tree
+// tree — badTree (ERROR): malformed/truncated tree-entry byte layouts.
+// Row rationale (each kills a distinct parseTreeEntriesTolerant mutant):
+//  - truncated content: not a parseable tree entry at all.
+//  - mode field empty: spaceIdx === offset (leading space, mode is empty).
+//  - truncated SHA: shaEnd > raw.length (valid mode/name, SHA cut short).
+//  - no space byte (M2): spaceIdx === -1 guard, not spaceIdx === +1.
+//  - NUL at spaceIdx-1 (M3): indexOf(raw, 0x00, spaceIdx + 1), not spaceIdx - 1.
+//  - no null after space (M4/M5): nullIdx === -1 guard must fire immediately.
 // ---------------------------------------------------------------------------
 
-describe('Given tree with truncated content', () => {
+describe('Given tree bytes that are malformed or truncated', () => {
   describe('When validateObject runs', () => {
-    it('Then emits badTree at error severity', () => {
+    it.each([
+      {
+        label: 'truncated content',
+        build: () => encode('100644 incomplete'),
+      },
+      {
+        label: 'mode field empty (leading space)',
+        build: () => {
+          // Tree entry starting with space: mode is empty → spaceIdx === offset branch.
+          // Format: <space><name>\0<sha20> — the leading space means spaceIdx === offset.
+          const nameBytes = new TextEncoder().encode('file');
+          const raw = new Uint8Array(1 + nameBytes.length + 1 + 20);
+          raw[0] = 0x20; // leading space — empty mode
+          raw.set(nameBytes, 1);
+          raw[1 + nameBytes.length] = 0x00; // null terminator
+          return raw;
+        },
+      },
+      {
+        label: 'valid mode+name but truncated SHA',
+        build: () => {
+          // Valid mode ' 100644', space, name 'f', null — then only 10 bytes of SHA
+          // instead of 20, so shaEnd (1+6+1+1+20=29) > raw.length (1+6+1+1+10=19).
+          const modeBytes = new TextEncoder().encode('100644');
+          const nameBytes = new TextEncoder().encode('f');
+          const raw = new Uint8Array(modeBytes.length + 1 + nameBytes.length + 1 + 10);
+          raw.set(modeBytes, 0);
+          raw[modeBytes.length] = 0x20; // space after mode
+          raw.set(nameBytes, modeBytes.length + 1);
+          raw[modeBytes.length + 1 + nameBytes.length] = 0x00; // null terminator
+          // remaining 10 bytes are the truncated SHA (zeros)
+          return raw;
+        },
+      },
+      {
+        label: 'no space byte anywhere, null present, raw long enough (kills M2)',
+        build: () => {
+          // Raw: 8 non-space ASCII bytes + NUL + 20 sha bytes = 29 bytes total.
+          // spaceIdx = indexOf(raw, 0x20) = -1 (no space byte).
+          // Original: spaceIdx === -1 fires → badTree.
+          // Mutant (=== +1): -1 !== +1 → skips guard; shaEnd = (-1+1+20) = 20 ≤ 29 → no shaEnd fault.
+          const raw = new Uint8Array(29);
+          for (let i = 0; i < 8; i++) raw[i] = 0x61; // 'a' — no space
+          raw[8] = 0x00; // null (no space before it)
+          raw.set(BLOB_SHA, 9);
+          return raw;
+        },
+      },
+      {
+        label: 'NUL byte at position spaceIdx-1, raw sized to mutant shaEnd (kills M3)',
+        build: () => {
+          // Raw: "100" + NUL(pos 3) + SPACE(pos 4) + "file"(pos 5..8) + NUL(pos 9) + 14 sha bytes
+          //   total: 4 + 1 + 4 + 1 + 14 = 24 bytes.
+          // spaceIdx=4. spaceIdx !== -1, spaceIdx !== offset(0).
+          //
+          // Original: indexOf(raw, 0x00, 5) → finds NUL at 9. nullIdx=9.
+          //   shaEnd = 9+1+20 = 30. raw.length=24. 30 > 24 → badTree!
+          //
+          // Mutant (spaceIdx-1=3): indexOf(raw, 0x00, 3) → finds NUL at 3 (inside mode field).
+          //   nullIdx=3. shaEnd = 3+1+20 = 24. raw.length=24. 24 ≤ 24 → no shaEnd fault.
+          //   Entry parsed with name=raw.subarray(5,3)=empty. offset=24. Loop exits. No badTree.
+          const raw = new Uint8Array(24);
+          raw[0] = 0x31; // '1'
+          raw[1] = 0x30; // '0'
+          raw[2] = 0x30; // '0'
+          raw[3] = 0x00; // NUL inside mode — at spaceIdx-1
+          raw[4] = 0x20; // space (spaceIdx=4)
+          raw[5] = 0x66; // 'f'
+          raw[6] = 0x69; // 'i'
+          raw[7] = 0x6c; // 'l'
+          raw[8] = 0x65; // 'e'
+          raw[9] = 0x00; // NUL terminating name
+          // bytes 10..23: 14 non-null sha bytes (prefix of BLOB_SHA)
+          raw.set(BLOB_SHA.subarray(0, 14), 10);
+          return raw;
+        },
+      },
+      {
+        label:
+          'space present but no null after it, raw sized exactly to mutant shaEnd (kills M4/M5)',
+        build: () => {
+          // Raw: "ab" + SPACE + 17 non-null bytes = 20 bytes. No NUL after the space.
+          // spaceIdx=2. indexOf(raw, 0x00, 3) = -1 (no NUL from pos 3 onward). nullIdx=-1.
+          //
+          // Original: nullIdx === -1 → badTree immediately.
+          //
+          // M4 (if false): skips. shaEnd = (-1+1+20) = 20. raw.length=20. 20 ≤ 20 → no shaEnd fault.
+          //   Entry parsed (wrong). offset=20. Loop exits (20 < 20 = false). No badTree emitted.
+          // M5 (nullIdx === +1): -1 !== +1 → skips. Same result as M4.
+          const raw = new Uint8Array(20);
+          raw[0] = 0x61; // 'a'
+          raw[1] = 0x62; // 'b'
+          raw[2] = 0x20; // space (spaceIdx=2)
+          for (let i = 3; i < 20; i++) raw[i] = 0x61; // 'a' — non-null filler
+          return raw;
+        },
+      },
+    ])('Then emits badTree at error severity — $label', ({ build }) => {
       // Arrange
       const sut = validateObject;
-      const rawBytes = encode('100644 incomplete');
+      const rawBody = build();
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = sut({ kind: 'tree', rawBody, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
@@ -1003,24 +1068,34 @@ describe('Given commit with non-numeric timestamp', () => {
 // commit — badDateOverflow (ERROR)
 // Pinned real git 2.54.0: timestamp > 9223372036854775807 (INT64_MAX = 2^63-1)
 // emits badDateOverflow; timestamp == INT64_MAX is valid (no error).
-// Non-numeric emits badDate (not badDateOverflow).
+// Non-numeric emits badDate (not badDateOverflow). Row rationale:
+//  - 20 nines / one-above-INT64_MAX: string-length and lexicographic overflow.
+//  - 20-digit starting with '1': kills C1 (length>19 guard) — a leading '1'
+//    would lexicographically compare less than INT64_MAX without the guard.
 // ---------------------------------------------------------------------------
 
-describe('Given commit with timestamp that overflows INT64_MAX (20-digit number)', () => {
+describe('Given commit with an author timestamp that overflows INT64_MAX', () => {
   describe('When validateObject runs', () => {
-    it('Then emits badDateOverflow at error severity', () => {
+    it.each([
+      { label: '20-digit all-nines (99999999999999999999)', timestamp: '99999999999999999999' },
+      { label: 'one above INT64_MAX (9223372036854775808)', timestamp: '9223372036854775808' },
+      {
+        label: '20-digit starting with 1 (10000000000000000000)',
+        timestamp: '10000000000000000000',
+      },
+    ])('Then emits badDateOverflow at error severity — $label', ({ timestamp }) => {
       // Arrange
       const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 99999999999999999999 +0000',
+        author: `T <t@t.com> ${timestamp} +0000`,
         committer: VALID_IDENTITY,
       });
 
       // Act
       const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
 
-      // Assert — badDateOverflow, not badDate
+      // Assert
       expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
     });
@@ -1048,35 +1123,27 @@ describe('Given commit with timestamp exactly at INT64_MAX (9223372036854775807)
   });
 });
 
-describe('Given commit with timestamp one above INT64_MAX (9223372036854775808)', () => {
+// ---------------------------------------------------------------------------
+// commit — badDate (ERROR). Row rationale:
+//  - 'not-a-number': no digits at all.
+//  - 'abc123' (E1): kills /^\d+$/ → /\d+$/ — trailing digits must not let a
+//    leading-letter timestamp slip past the missing '^' anchor.
+//  - '123abc' (E2): kills /^\d+$/ → /^\d+/ — leading digits must not let a
+//    trailing-letter timestamp slip past the missing '$' anchor.
+// ---------------------------------------------------------------------------
+
+describe('Given commit with a non-numeric author timestamp', () => {
   describe('When validateObject runs', () => {
-    it('Then emits badDateOverflow at error severity', () => {
+    it.each([
+      { label: 'no digits at all ("not-a-number")', timestamp: 'not-a-number' },
+      { label: 'leading non-digit characters ("abc123")', timestamp: 'abc123' },
+      { label: 'trailing non-digit characters ("123abc")', timestamp: '123abc' },
+    ])('Then emits badDate at error severity, not badDateOverflow — $label', ({ timestamp }) => {
       // Arrange
       const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 9223372036854775808 +0000',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
-    });
-  });
-});
-
-describe('Given commit with non-numeric timestamp (no digits)', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badDate (not badDateOverflow) at error severity', () => {
-      // Arrange — non-numeric emits badDate, not badDateOverflow (distinct from overflow)
-      const sut = validateObject;
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> not-a-number +0000',
+        author: `T <t@t.com> ${timestamp} +0000`,
         committer: VALID_IDENTITY,
       });
 
@@ -1091,112 +1158,37 @@ describe('Given commit with non-numeric timestamp (no digits)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// commit — badTimezone (ERROR)
+// commit — badTimezone (ERROR). Row rationale (each kills a distinct mutant):
+//  - malformed offset: fails TIMEZONE_RE (/^[+-]\d{4}$/) outright.
+//  - hours/minutes out-of-range: passes the regex but hours>=24 / minutes>=60.
+//  - hours===24 / minutes===60: EqualityOperator boundary (strictly < required).
+//  - non-digit offset: TIMEZONE_RE bypass guard (B1) must still reject it.
+//  - double-tab separator: split(/\s+/) must collapse consecutive whitespace
+//    (G1 mutant /\s/ would put '' in the timezone slot and skip the check).
 // ---------------------------------------------------------------------------
 
-describe('Given commit with invalid timezone offset', () => {
+describe('Given commit with an invalid author timezone', () => {
   describe('When validateObject runs', () => {
-    it('Then emits badTimezone at error severity', () => {
+    it.each([
+      { label: 'malformed offset (+99999)', author: 'T <t@t.com> 1234567890 +99999' },
+      { label: 'hours out of range (+9900)', author: 'T <t@t.com> 1234567890 +9900' },
+      { label: 'minutes out of range (+0099)', author: 'T <t@t.com> 1234567890 +0099' },
+      { label: 'hours exactly 24 (+2400)', author: 'T <t@t.com> 1234567890 +2400' },
+      { label: 'minutes exactly 60 (+0060)', author: 'T <t@t.com> 1234567890 +0060' },
+      { label: 'non-digit in offset (+003a)', author: 'T <t@t.com> 1234567890 +003a' },
+      {
+        label: 'double-tab separator before offset (+9900)',
+        author: 'T <t@t.com> 1234567890\t\t+9900',
+      },
+    ])('Then emits badTimezone at error severity — $label', ({ author }) => {
       // Arrange
       const sut = validateObject;
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 1234567890 +99999',
-        committer: VALID_IDENTITY,
-      });
+      const rawBytes = buildCommit({ tree: BLOB_SHA_HEX, author, committer: VALID_IDENTITY });
 
       // Act
       const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
-      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
-    });
-  });
-});
-
-describe('Given commit with timezone that matches format but has out-of-range hours', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTimezone at error severity (hours >= 24)', () => {
-      // Arrange
-      const sut = validateObject;
-      // +9900 passes TIMEZONE_RE (/^[+-]\d{4}$/) but hours=99 >= 24 →
-      // hours < 24 is false → && short-circuits → isValidTimezone returns false.
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 1234567890 +9900',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
-    });
-  });
-});
-
-describe('Given commit with timezone that matches format but has out-of-range minutes', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTimezone at error severity (minutes >= 60)', () => {
-      // Arrange
-      const sut = validateObject;
-      // +0099 passes TIMEZONE_RE but hours=0 < 24 and minutes=99 >= 60 →
-      // hours < 24 is true, minutes < 60 is false → isValidTimezone returns false.
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 1234567890 +0099',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// commit — badTimezone boundary: hours === 24 (+2400) kills EqualityOperator mutant
-// ---------------------------------------------------------------------------
-
-describe('Given commit with timezone hours exactly 24 (+2400)', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTimezone at error severity (24 is not a valid hour offset)', () => {
-      // Arrange
-      const sut = validateObject;
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 1234567890 +2400',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert — hours must be strictly < 24; hours===24 is invalid
-      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
-    });
-  });
-});
-
-describe('Given commit with timezone minutes exactly 60 (+0060)', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTimezone at error severity (60 is not a valid minute offset)', () => {
-      // Arrange
-      const sut = validateObject;
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 1234567890 +0060',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert — minutes must be strictly < 60; minutes===60 is invalid
       expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
     });
   });
@@ -1314,30 +1306,6 @@ describe('Given commit with invalid tree SHA1', () => {
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTreeSha1', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tag — missingObject (ERROR)
-// ---------------------------------------------------------------------------
-
-describe('Given tag without object line', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits missingObject at error severity', () => {
-      // Arrange
-      const sut = validateObject;
-      const rawBytes = buildTag({
-        type: 'blob',
-        tag: 'v1.0',
-        tagger: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'missingObject', severity: 'error' });
     });
   });
 });
@@ -1949,18 +1917,34 @@ describe('Given commit with author that has < but no closing >', () => {
 // tag — badDateOverflow in tagger line (ERROR)
 // Pinned real git 2.54.0: fires for tag tagger timestamps > INT64_MAX,
 // same rule as commit author/committer (both emit badDateOverflow, exit 1).
+// Row rationale:
+//  - 20 nines: string-length overflow.
+//  - 19-digit one-above-INT64_MAX: same length as INT64_MAX_STR, lexicographically
+//    greater — exercises the string-comparison branch, not the length guard.
+//  - 20-digit starting with '1': kills A2 (length>19 early-return) — a leading
+//    '1' would lexicographically compare less than INT64_MAX without the guard.
 // ---------------------------------------------------------------------------
 
-describe('Given tag with tagger timestamp that overflows INT64_MAX', () => {
+describe('Given tag with a tagger timestamp that overflows INT64_MAX', () => {
   describe('When validateObject runs', () => {
-    it('Then emits badDateOverflow at error severity', () => {
+    it.each([
+      { label: '20-digit all-nines (99999999999999999999)', timestamp: '99999999999999999999' },
+      {
+        label: '19-digit one-above-INT64_MAX (9223372036854775808)',
+        timestamp: '9223372036854775808',
+      },
+      {
+        label: '20-digit starting with 1 (10000000000000000000)',
+        timestamp: '10000000000000000000',
+      },
+    ])('Then emits badDateOverflow at error severity — $label', ({ timestamp }) => {
       // Arrange
       const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         type: 'blob',
         tag: 'v1.0',
-        tagger: 'T <t@t.com> 99999999999999999999 +0000',
+        tagger: `T <t@t.com> ${timestamp} +0000`,
       });
 
       // Act
@@ -2022,19 +2006,44 @@ describe('Given tag body with no blank-line separator between header and message
 });
 
 // ---------------------------------------------------------------------------
-// tree — treeEntrySortKey directory branch (mode '40000' appends '/')
+// tree — treeEntrySortKey directory branch (mode '40000' appends '/'). Row
+// rationale (each row is a correctly-sorted tree that must NOT flag
+// treeNotSorted, exercising a different pair of the sort-key mutants):
+//  - file then dir, no shared prefix: baseline directory sort-key path.
+//  - file "a-" then dir "a": kills M7/M8/M10/M11 (dir key must be "a/", not "a").
+//  - file "bbb" then file "bbb-x", shared prefix: kills M6/M9/M12 (files must
+//    never get a slash appended).
 // ---------------------------------------------------------------------------
 
-describe('Given tree with a file entry followed by a directory entry in correct sort order', () => {
+describe('Given a correctly-sorted tree exercising the directory sort-key', () => {
   describe('When validateObject runs', () => {
-    it('Then exercises the directory sort-key path and emits no treeNotSorted finding', () => {
+    it.each([
+      {
+        label: 'file "aaa" then directory "bbb", no shared prefix',
+        entries: [
+          { mode: '100644', name: 'aaa' },
+          { mode: '40000', name: 'bbb' },
+        ],
+      },
+      {
+        label: 'file "a-" then directory "a" (dir sort key "a/" precedes "a-")',
+        entries: [
+          { mode: '100644', name: 'a-' },
+          { mode: '40000', name: 'a' },
+        ],
+      },
+      {
+        label: 'file "bbb" then file "bbb-x" (shared prefix, no slash injected)',
+        entries: [
+          { mode: '100644', name: 'bbb' },
+          { mode: '100644', name: 'bbb-x' },
+        ],
+      },
+    ])('Then emits no treeNotSorted finding — $label', ({ entries }) => {
       // Arrange
       const sut = validateObject;
-      // 'aaa' (file, 100644) followed by 'bbb' (dir, 40000): git sort 'aaa' < 'bbb/'
-      // so this is correctly sorted. treeEntrySortKey appends '/' for the dir entry.
       const rawBytes = buildTree(
-        buildTreeEntry('100644', 'aaa', BLOB_SHA),
-        buildTreeEntry('40000', 'bbb', BLOB_SHA),
+        ...entries.map(({ mode, name }) => buildTreeEntry(mode, name, BLOB_SHA)),
       );
 
       // Act
@@ -2114,61 +2123,6 @@ describe('Given tree with a symlink entry NOT named .mailmap', () => {
 
       // Assert — mailmapSymlink must only fire for '.mailmap' specifically
       expect(result.map((f) => f.msgId)).not.toContain('mailmapSymlink');
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tree — parseTreeEntriesTolerant spaceIdx === offset (mode is empty)
-// ---------------------------------------------------------------------------
-
-describe('Given tree bytes where mode field is empty (space is the first byte)', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTree at error severity', () => {
-      // Arrange
-      const sut = validateObject;
-      // Tree entry starting with space: mode is empty → spaceIdx === offset branch.
-      // Format: <space><name>\0<sha20> — the leading space means spaceIdx === offset.
-      const nameBytes = new TextEncoder().encode('file');
-      const raw = new Uint8Array(1 + nameBytes.length + 1 + 20);
-      raw[0] = 0x20; // leading space — empty mode
-      raw.set(nameBytes, 1);
-      raw[1 + nameBytes.length] = 0x00; // null terminator
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tree — parseTreeEntriesTolerant shaEnd > raw.length (truncated SHA)
-// ---------------------------------------------------------------------------
-
-describe('Given tree bytes with valid mode+name but truncated SHA', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTree at error severity', () => {
-      // Arrange
-      const sut = validateObject;
-      // Valid mode ' 100644', space, name 'f', null — then only 10 bytes of SHA
-      // instead of 20, so shaEnd (1+6+1+1+20=29) > raw.length (1+6+1+1+10=19).
-      const modeBytes = new TextEncoder().encode('100644');
-      const nameBytes = new TextEncoder().encode('f');
-      const raw = new Uint8Array(modeBytes.length + 1 + nameBytes.length + 1 + 10);
-      raw.set(modeBytes, 0);
-      raw[modeBytes.length] = 0x20; // space after mode
-      raw.set(nameBytes, modeBytes.length + 1);
-      raw[modeBytes.length + 1 + nameBytes.length] = 0x00; // null terminator
-      // remaining 10 bytes are the truncated SHA (zeros)
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
     });
   });
 });
@@ -2369,82 +2323,39 @@ describe('Given commit with author that has no timezone after the timestamp', ()
 });
 
 // ---------------------------------------------------------------------------
-// tag — badDateOverflow: tagger timestamp 19 digits but > INT64_MAX (line 36 branch)
-// Pinned real git 2.54.0: '9223372036854775808' has same length as INT64_MAX_STR
-// but is lexicographically greater → overflow (badDateOverflow, exit 1).
+// tag — checkTaggerLine early-return guards that must never reach the date
+// check (badDateOverflow must not fire when the tagger line's identity part
+// is malformed, regardless of the timestamp text). Row rationale:
+//  - unclosed '<': gtIdx === -1 branch fires, returns [] before the date field.
+//  - no space after '>': afterGt.startsWith(' ') is false, same early return.
+//  - C3 (/^\d+/ vs /^\d+$/): trailing non-digits must disqualify the overflow
+//    check, not just be tolerated by an unanchored regex.
+//  - C4 (/\d+$/ vs /^\d+$/): leading non-digits must equally disqualify it.
 // ---------------------------------------------------------------------------
 
-describe('Given tag with tagger timestamp that is 19 digits and exceeds INT64_MAX', () => {
+describe('Given a tag tagger line that must not reach the date-overflow check', () => {
   describe('When validateObject runs', () => {
-    it('Then emits badDateOverflow at error severity', () => {
-      // Arrange
-      const sut = validateObject;
-      // '9223372036854775808' == INT64_MAX + 1, same 19-digit length as INT64_MAX_STR,
-      // so isTaggerTimestampOverflow falls through to the lexicographic comparison branch.
-      const rawBytes = buildTag({
-        object: BLOB_SHA_HEX,
-        type: 'blob',
-        tag: 'v1.0',
-        tagger: 'T <t@t.com> 9223372036854775808 +0000',
-      });
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tag — checkTaggerLine: no closing '>' in tagger address → no date-check (early return)
-// Pinned real git 2.54.0: unclosed angle-bracket in tagger does not produce a
-// badDate or badDateOverflow finding; the parser bails out before the date.
-// ---------------------------------------------------------------------------
-
-describe('Given tag with tagger line that has an opening angle-bracket but no closing one', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits no badDateOverflow finding (date section never reached)', () => {
-      // Arrange
-      const sut = validateObject;
-      // Tagger has '<' but no '>' — gtIdx === -1 branch fires, returning [] immediately.
-      const rawBytes = buildTag({
-        object: BLOB_SHA_HEX,
-        type: 'blob',
-        tag: 'v1.0',
+    it.each([
+      {
+        label: 'opening angle-bracket with no closing one',
         tagger: 'T <unclosed 9999999999999999999 +0000',
-      });
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
-
-      // Assert — no date fault because the parser bails before the date field
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tag — checkTaggerLine: no space after closing '>' → no date-check (early return)
-// Pinned real git 2.54.0: tagger '<email>' with no space separator does not
-// produce a badDateOverflow finding; the parser bails out before the date.
-// ---------------------------------------------------------------------------
-
-describe('Given tag with tagger line that has no space after the closing angle-bracket', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits no badDateOverflow finding (date section never reached)', () => {
+      },
+      {
+        label: 'no space after the closing angle-bracket',
+        tagger: 'T <t@t.com>9999999999999999999 +0000',
+      },
+      {
+        label: 'trailing non-digit characters in the timestamp',
+        tagger: 'T <t@t.com> 99999999999999999999abc +0000',
+      },
+      {
+        label: 'leading non-digit characters in the timestamp',
+        tagger: 'T <t@t.com> abc99999999999999999999 +0000',
+      },
+    ])('Then emits no badDateOverflow finding — $label', ({ tagger }) => {
       // Arrange
       const sut = validateObject;
-      // Tagger has '<...>' but the character immediately after '>' is not a space.
-      // afterGt.startsWith(' ') is false → early return [] without date check.
-      const rawBytes = buildTag({
-        object: BLOB_SHA_HEX,
-        type: 'blob',
-        tag: 'v1.0',
-        tagger: 'T <t@t.com>9999999999999999999 +0000',
-      });
+      const rawBytes = buildTag({ object: BLOB_SHA_HEX, type: 'blob', tag: 'v1.0', tagger });
 
       // Act
       const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
@@ -2710,140 +2621,6 @@ describe('Given commit with missing tree header', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tree — parseTreeEntriesTolerant: no space byte, null present, raw long enough
-// Kills M2: spaceIdx === -1 guard replaced by spaceIdx === +1
-// ---------------------------------------------------------------------------
-
-describe('Given tree bytes with no space byte anywhere, but with a null byte and enough trailing bytes', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTree (missing space between mode and name)', () => {
-      // Arrange
-      const sut = validateObject;
-      // Raw: 8 non-space ASCII bytes + NUL + 20 sha bytes = 29 bytes total.
-      // spaceIdx = indexOf(raw, 0x20) = -1 (no space byte).
-      // Original: spaceIdx === -1 fires → badTree.
-      // Mutant (=== +1): -1 !== +1 → skips guard; shaEnd = (-1+1+20) = 20 ≤ 29 → no shaEnd fault.
-      const raw = new Uint8Array(29);
-      for (let i = 0; i < 8; i++) raw[i] = 0x61; // 'a' — no space
-      raw[8] = 0x00; // null (no space before it)
-      raw.set(BLOB_SHA, 9);
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tree — parseTreeEntriesTolerant: NUL inside mode, raw sized so mutant exits loop cleanly
-// Kills M3: indexOf(raw, 0x00, spaceIdx + 1) → indexOf(raw, 0x00, spaceIdx - 1)
-// ---------------------------------------------------------------------------
-
-describe('Given tree bytes with a NUL byte at position spaceIdx-1, and raw sized to mutant shaEnd', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTree (original nullIdx overshoots raw.length; mutant exits loop cleanly with bad entry)', () => {
-      // Arrange
-      const sut = validateObject;
-      // Raw: "100" + NUL(pos 3) + SPACE(pos 4) + "file"(pos 5..8) + NUL(pos 9) + 14 sha bytes
-      //   total: 4 + 1 + 4 + 1 + 14 = 24 bytes.
-      // spaceIdx=4. spaceIdx !== -1, spaceIdx !== offset(0).
-      //
-      // Original: indexOf(raw, 0x00, 5) → finds NUL at 9. nullIdx=9.
-      //   shaEnd = 9+1+20 = 30. raw.length=24. 30 > 24 → badTree!
-      //
-      // Mutant (spaceIdx-1=3): indexOf(raw, 0x00, 3) → finds NUL at 3 (inside mode field).
-      //   nullIdx=3. shaEnd = 3+1+20 = 24. raw.length=24. 24 ≤ 24 → no shaEnd fault.
-      //   Entry parsed with name=raw.subarray(5,3)=empty. offset=24. Loop exits. No badTree.
-      const raw = new Uint8Array(24);
-      raw[0] = 0x31; // '1'
-      raw[1] = 0x30; // '0'
-      raw[2] = 0x30; // '0'
-      raw[3] = 0x00; // NUL inside mode — at spaceIdx-1
-      raw[4] = 0x20; // space (spaceIdx=4)
-      raw[5] = 0x66; // 'f'
-      raw[6] = 0x69; // 'i'
-      raw[7] = 0x6c; // 'l'
-      raw[8] = 0x65; // 'e'
-      raw[9] = 0x00; // NUL terminating name
-      // bytes 10..23: 14 non-null sha bytes (prefix of BLOB_SHA)
-      raw.set(BLOB_SHA.subarray(0, 14), 10);
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
-
-      // Assert — original: badTree (shaEnd=30 > raw.length=24); mutant: no badTree
-      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tree — parseTreeEntriesTolerant: no null after space, raw sized exactly to mutant shaEnd
-// Kills M4 (if false skips guard) and M5 (nullIdx === +1 skips when nullIdx=-1)
-// ---------------------------------------------------------------------------
-
-describe('Given tree bytes with space present but no null after it, and raw sized exactly to mutant shaEnd', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTree (nullIdx === -1 guard fires; mutant skips and exits loop cleanly with wrong entry)', () => {
-      // Arrange
-      const sut = validateObject;
-      // Raw: "ab" + SPACE + 17 non-null bytes = 20 bytes. No NUL after the space.
-      // spaceIdx=2. indexOf(raw, 0x00, 3) = -1 (no NUL from pos 3 onward). nullIdx=-1.
-      //
-      // Original: nullIdx === -1 → badTree immediately.
-      //
-      // M4 (if false): skips. shaEnd = (-1+1+20) = 20. raw.length=20. 20 ≤ 20 → no shaEnd fault.
-      //   Entry parsed (wrong). offset=20. Loop exits (20 < 20 = false). No badTree emitted.
-      // M5 (nullIdx === +1): -1 !== +1 → skips. Same result as M4.
-      const raw = new Uint8Array(20);
-      raw[0] = 0x61; // 'a'
-      raw[1] = 0x62; // 'b'
-      raw[2] = 0x20; // space (spaceIdx=2)
-      for (let i = 3; i < 20; i++) raw[i] = 0x61; // 'a' — non-null filler
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: raw, strict: false });
-
-      // Assert — original catches nullIdx=-1 → badTree; mutants skip guard and exit cleanly
-      expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tree — treeEntrySortKey: file "a-" before dir "a" (40000) is correct git order
-// Kills M7 (isDir=false), M8 (mode==='' not '40000'), M10 (!isDir→isDir), M11 (cond→true)
-// ---------------------------------------------------------------------------
-
-describe('Given tree with file "a-" (mode 100644) before directory "a" (mode 40000), which is correct git order', () => {
-  describe('When validateObject runs', () => {
-    it('Then does not emit treeNotSorted (dir sort key "a/" makes file "a-" correctly precede it)', () => {
-      // Arrange
-      const sut = validateObject;
-      // git sort keys: "a-" (file) = "a-"; "a" (dir, 40000) = "a/".
-      // compareBytes("a-", "a/") = '-'(0x2d) vs '/'(0x2f) → 0x2d < 0x2f → correct order.
-      // M7 (isDir=false): dir "a" → key "a". compareBytes("a-","a") = len diff 2-1=1 > 0 → treeNotSorted.
-      // M8 (mode==='' for first cond): '40000'!=='' && '40000'!=='040000' → isDir=false. Same as M7.
-      // M10 (if isDir → return nameBytes): dir "a" → key "a". Same as M7.
-      // M11 (if true → return nameBytes): every entry skips slash. Same as M7.
-      const rawBytes = buildTree(
-        buildTreeEntry('100644', 'a-', BLOB_SHA),
-        buildTreeEntry('40000', 'a', BLOB_SHA),
-      );
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // tree — treeEntrySortKey: dir "a" before file "a-" is WRONG git order
 // Kills M7 (isDir=false), M10 (!isDir→isDir), M11 (cond→true) from the positive direction
 // ---------------------------------------------------------------------------
@@ -2867,34 +2644,6 @@ describe('Given tree with directory "a" (mode 40000) before file "a-" (mode 1006
 
       // Assert
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tree — treeEntrySortKey: files with shared prefix must not get slash injected
-// Kills M6 (isDir=true), M9 (mode!=='040000'), M12 (cond→false, always appends slash)
-// ---------------------------------------------------------------------------
-
-describe('Given tree with file "bbb" before file "bbb-x" (both mode 100644), which is correct order', () => {
-  describe('When validateObject runs', () => {
-    it('Then does not emit treeNotSorted (file sort keys have no slash)', () => {
-      // Arrange
-      const sut = validateObject;
-      // Sort keys: "bbb" < "bbb-x" (prefix match, shorter wins). Correct.
-      // M6 (isDir=true): both get slash. "bbb/" vs "bbb-x/". '/'(0x2f) > '-'(0x2d) → treeNotSorted.
-      // M9 (mode!=='040000'): '100644'!=='040000' → isDir=true. Same as M6.
-      // M12 (if false → never early-return): always appends slash. Same as M6.
-      const rawBytes = buildTree(
-        buildTreeEntry('100644', 'bbb', BLOB_SHA),
-        buildTreeEntry('100644', 'bbb-x', BLOB_SHA),
-      );
-
-      // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
     });
   });
 });
@@ -3061,39 +2810,6 @@ describe('Given tag with tagger timestamp exactly equal to INT64_MAX (9223372036
 });
 
 // ---------------------------------------------------------------------------
-// tag — isTaggerTimestampOverflow: 20-digit number starting with 1 overflows
-// Kills A2 (skip length>19 early-return): 10000000000000000000 > INT64_MAX
-// numerically but '1...' < '9...' lexicographically, so without the length
-// guard the string comparison incorrectly returns false (no overflow).
-// ---------------------------------------------------------------------------
-
-describe('Given tag with tagger timestamp of 20 digits starting with 1 (10000000000000000000)', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badDateOverflow (20-digit number exceeds INT64_MAX regardless of leading digit)', () => {
-      // Arrange
-      const sut = validateObject;
-      // '10000000000000000000' has length 20 > 19 → early-return true (overflow).
-      // A2 mutant (if false): skips the length guard entirely, falls through to
-      // string comparison: '10000000000000000000' > '9223372036854775807' = false
-      // (lexicographic: '1' < '9') → returns false → no badDateOverflow. FAILS.
-      const rawBytes = buildTag({
-        object: BLOB_SHA_HEX,
-        type: 'blob',
-        tag: 'v1.0',
-        tagger: 'T <t@t.com> 10000000000000000000 +0000',
-      });
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // tag — isTaggerTimestampOverflow: 18-digit all-nines timestamp is valid
 // Kills A3 (skip length<19 early-return): '999999999999999999' is less than
 // INT64_MAX numerically but '9...' > '9...' lexicographic comparison is
@@ -3122,33 +2838,6 @@ describe('Given tag with tagger timestamp of 18 nines (999999999999999999, less 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tag — typeVal non-empty but unknown type emits missingTypeEntry
-// Kills D1: || → && means a non-empty invalid type is silently accepted.
-// ---------------------------------------------------------------------------
-
-describe('Given tag with non-empty but unknown type value (e.g. "frog")', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits missingTypeEntry at error severity (unknown type is not valid)', () => {
-      // Arrange
-      const sut = validateObject;
-      // typeVal = 'frog': typeVal !== '' (first OR-condition false), but
-      // !VALID_OBJECT_TYPES.has('frog') = true (second OR-condition true).
-      // Original (||): true → missingTypeEntry emitted.
-      // D1 mutant (&&): false && true = false → missingTypeEntry NOT emitted. FAILS.
-      const rawBytes = encode(
-        `object ${BLOB_SHA_HEX}\ntype frog\ntag v1.0\ntagger ${VALID_IDENTITY}\n\nmsg\n`,
-      );
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'missingTypeEntry', severity: 'error' });
     });
   });
 });
@@ -3193,66 +2882,6 @@ describe('Given tag with a valid tagger where the identity has a space before th
 
       // Assert — no name before email in tagger: missingSpaceBeforeEmail must fire
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tag — checkTaggerLine: timestamp regex anchoring (C3: /^\d+/ vs /^\d+$/)
-// A timestamp of mixed digits and letters like '12345abc' passes /^\d+/ but
-// not /^\d+$/ — the overflow check must not fire for such non-numeric strings.
-// ---------------------------------------------------------------------------
-
-describe('Given tag with tagger timestamp containing trailing non-digit characters', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits no badDateOverflow (only purely numeric timestamps are overflow-checked)', () => {
-      // Arrange
-      const sut = validateObject;
-      // Timestamp '99999999999999999999abc' (23 chars): /^\d+$/ = false (has 'abc') → no
-      // overflow check. C3 mutant (/^\d+/): matches '9...' → checks overflow →
-      // length 23 > 19 → true → badDateOverflow emitted. FAILS.
-      const rawBytes = buildTag({
-        object: BLOB_SHA_HEX,
-        type: 'blob',
-        tag: 'v1.0',
-        tagger: 'T <t@t.com> 99999999999999999999abc +0000',
-      });
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// tag — checkTaggerLine: timestamp regex anchoring (C4: /\d+$/ vs /^\d+$/)
-// A timestamp with a leading non-digit prefix like 'abc99999999999999999999'
-// passes /\d+$/ but not /^\d+$/ — the overflow check must not fire.
-// ---------------------------------------------------------------------------
-
-describe('Given tag with tagger timestamp containing leading non-digit characters', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits no badDateOverflow (leading non-digits disqualify the overflow check)', () => {
-      // Arrange
-      const sut = validateObject;
-      // Timestamp 'abc99999999999999999999' (25 chars): /^\d+$/ = false (has 'abc') → no
-      // overflow check. C4 mutant (/\d+$/): matches trailing '9...' → checks overflow →
-      // length 25 > 19 → true → badDateOverflow emitted. FAILS.
-      const rawBytes = buildTag({
-        object: BLOB_SHA_HEX,
-        type: 'blob',
-        tag: 'v1.0',
-        tagger: 'T <t@t.com> abc99999999999999999999 +0000',
-      });
-
-      // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
     });
   });
 });
@@ -3383,6 +3012,8 @@ describe('Given tag with object and tagger but neither type nor tag-name line', 
 // for an invalid type (e.g. 'frog'), validateTag calls checkTagAndTagger(lines, 1).
 // lines[1] = 'type frog' → NOT 'tag ...' → missingTag spuriously emitted alongside
 // missingTypeEntry, producing more findings than expected.
+// Also kills D1 (|| → &&): typeVal='frog' is non-empty but invalid, so the
+// missingTypeEntry OR-condition must still emit on the second operand alone.
 // ---------------------------------------------------------------------------
 
 describe('Given tag with a non-empty invalid type value (e.g. "frog")', () => {
@@ -3444,38 +3075,6 @@ describe('Given tag where tagger line is present but has wrong prefix (author in
 });
 
 // ---------------------------------------------------------------------------
-// commit — isValidTimezone: TIMEZONE_RE bypass (line 38 ConditionalExpression→false)
-// Kills B1: if (!TIMEZONE_RE.test(tz)) return false → if (false) return false.
-// '+003a' fails TIMEZONE_RE (non-digit at position 4) but has numerically
-// plausible hours=0 and minutes=parseInt('3a')=3. With B1 the regex guard is
-// bypassed and isValidTimezone returns true → no badTimezone.
-// ---------------------------------------------------------------------------
-
-describe('Given commit author with timezone containing a non-digit character that fails TIMEZONE_RE', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTimezone (regex guard rejects non-digit in tz field)', () => {
-      // Arrange
-      const sut = validateObject;
-      // '+003a' fails /^[+-]\d{4}$/ (position 4 is 'a').
-      // Original: !TIMEZONE_RE.test → return false → badTimezone.
-      // B1 mutant (if false): regex guard skipped → hours=0 <24, minutes=parseInt('3a')=3 <60
-      // → returns true → no badTimezone. FAILS.
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 1234567890 +003a',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // commit — isValidTimezone: slice(1,3) and slice(3,5) mutations (lines 39-40)
 // Kills B2 (tz.slice(1,3) → tz) and B3 (tz.slice(3,5) → tz).
 // A valid timezone '+0230' (hours=2, minutes=30) must NOT emit badTimezone.
@@ -3502,38 +3101,6 @@ describe('Given commit author with a valid timezone offset of +0230', () => {
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badTimezone' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// commit — isTimestampOverflow length>19 guard (line 52 ConditionalExpression→false)
-// Kills C1: if (timestamp.length > 19) return true → if (false) return true.
-// '10000000000000000000' has 20 digits so the length guard fires (20>19=true).
-// C1 mutant (if false): falls through to string comparison.
-// '10000000000000000000' > '9223372036854775807' is false ('1' < '9') →
-// no overflow detected → no badDateOverflow.
-// ---------------------------------------------------------------------------
-
-describe('Given commit author with 20-digit timestamp starting with 1 (10000000000000000000)', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badDateOverflow (20 digits exceeds INT64_MAX regardless of leading digit)', () => {
-      // Arrange
-      const sut = validateObject;
-      // length=20 > 19 → return true → badDateOverflow.
-      // C1 mutant (if false): '10000000000000000000'>'9223372036854775807'='1'<'9'→false → no overflow. FAILS.
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 10000000000000000000 +0000',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
     });
   });
 });
@@ -3601,66 +3168,6 @@ describe('Given commit author with single-character zero timestamp ("0")', () =>
 });
 
 // ---------------------------------------------------------------------------
-// commit — checkTimestamp badDate regex anchoring: missing ^ anchor (line 61 /\d+$/)
-// Kills E1: /^\d+$/ → /\d+$/.
-// 'abc123' ends with digits so /\d+$/ matches → !/\d+$/.test('abc123')=false → no badDate.
-// Original /^\d+$/: 'abc123' fails (starts with 'a') → badDate.
-// ---------------------------------------------------------------------------
-
-describe('Given commit author timestamp with leading non-digit characters ("abc123")', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badDate (timestamp must be all digits; leading letters disqualify it)', () => {
-      // Arrange
-      const sut = validateObject;
-      // 'abc123': /^\d+$/ = false → badDate.
-      // E1 mutant (/\d+$/): 'abc123' ends with '3' → matches → no badDate. FAILS.
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> abc123 +0000',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// commit — checkTimestamp badDate regex anchoring: missing $ anchor (line 61 /^\d+/)
-// Kills E2: /^\d+$/ → /^\d+/.
-// '123abc' starts with digits so /^\d+/ matches → !/^\d+/.test('123abc')=false → no badDate.
-// Original /^\d+$/: '123abc' fails (ends with 'c') → badDate.
-// ---------------------------------------------------------------------------
-
-describe('Given commit author timestamp with trailing non-digit characters ("123abc")', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badDate (timestamp must be all digits; trailing letters disqualify it)', () => {
-      // Arrange
-      const sut = validateObject;
-      // '123abc': /^\d+$/ = false → badDate.
-      // E2 mutant (/^\d+/): starts with '1' → matches → no badDate. FAILS.
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 123abc +0000',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
-      expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // commit — checkIdentityLine ltIdx===-1 branch (line 80 Block/Unary/Conditional)
 // Kills F1 (block {}), F2 (ltIdx===+1), F3 (if false).
 // An identity string with '>' but no '<' has ltIdx=-1.
@@ -3690,39 +3197,6 @@ describe('Given commit author identity with ">" but no "<" (opening angle-bracke
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// commit — checkIdentityLine split /\s+/ → /\s/ (line 120)
-// Kills G1: afterGt.trim().split(/\s+/) → split(/\s/).
-// Two consecutive tab characters between timestamp and timezone cause
-// split(/\s+/) to yield ['timestamp', 'tz'] while split(/\s/) yields
-// ['timestamp', '', 'tz'] — putting '' in the timezone slot and skipping
-// the timezone validity check.
-// ---------------------------------------------------------------------------
-
-describe('Given commit author with double-tab separator between timestamp and an invalid timezone', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits badTimezone (split /\\s+/ collapses consecutive whitespace correctly)', () => {
-      // Arrange
-      const sut = validateObject;
-      // afterGt = ' 1234567890\t\t+9900' (space after '>'; two tabs before tz).
-      // afterGt.startsWith(' ') = true. afterGt.trim() = '1234567890\t\t+9900'.
-      // split(/\s+/): ['1234567890', '+9900'] → tz='+9900' (hours=99≥24) → badTimezone.
-      // G1 mutant (/\s/): ['1234567890', '', '+9900'] → tz='' → no check → no badTimezone. FAILS.
-      const rawBytes = buildCommit({
-        tree: BLOB_SHA_HEX,
-        author: 'T <t@t.com> 1234567890\t\t+9900',
-        committer: VALID_IDENTITY,
-      });
-
-      // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
-
-      // Assert
-      expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
     });
   });
 });

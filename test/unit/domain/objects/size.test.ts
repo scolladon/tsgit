@@ -86,52 +86,22 @@ describe('payloadByteLength', () => {
     });
   });
 
-  describe('Given a tree', () => {
+  describe('Given a header-encoded object (tree, commit, or tag)', () => {
     describe('When measured', () => {
-      it('Then size equals the header size of its on-disk encoding', () => {
+      it.each([
+        { build: buildTree, label: 'a tree' },
+        { build: buildCommit, label: 'a commit' },
+        { build: buildTag, label: 'a tag' },
+      ])('Then $label size equals the header size of its on-disk encoding', ({ build }) => {
         // Arrange — cross-check via `serializeObject` + `parseHeader` so a
         // type-swap mutant inside `payloadByteLength` cannot pass by routing
         // through the same serializer.
-        const tree = buildTree();
-        const onDiskBytes = serializeObject(tree, SHA1_CONFIG);
+        const object = build();
+        const onDiskBytes = serializeObject(object, SHA1_CONFIG);
         const expected = parseHeader(onDiskBytes).size;
 
         // Act
-        const sut = payloadByteLength(tree, SHA1_CONFIG);
-
-        // Assert
-        expect(sut).toBe(expected);
-      });
-    });
-  });
-
-  describe('Given a commit', () => {
-    describe('When measured', () => {
-      it('Then size equals the header size of its on-disk encoding', () => {
-        // Arrange
-        const commit = buildCommit();
-        const onDiskBytes = serializeObject(commit, SHA1_CONFIG);
-        const expected = parseHeader(onDiskBytes).size;
-
-        // Act
-        const sut = payloadByteLength(commit, SHA1_CONFIG);
-
-        // Assert
-        expect(sut).toBe(expected);
-      });
-    });
-  });
-
-  describe('Given a tag', () => {
-    describe('When measured', () => {
-      it('Then size equals the header size of its on-disk encoding', () => {
-        // Arrange
-        const tag = buildTag();
-        const onDiskBytes = serializeObject(tag, SHA1_CONFIG);
-        const expected = parseHeader(onDiskBytes).size;
-
-        // Act
-        const sut = payloadByteLength(tag, SHA1_CONFIG);
+        const sut = payloadByteLength(object, SHA1_CONFIG);
 
         // Assert
         expect(sut).toBe(expected);

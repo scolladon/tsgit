@@ -13,6 +13,15 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 
+function makeHeaderBytes(magic: number, version: number, objectCount: number): Uint8Array {
+  const bytes = new Uint8Array(12);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, magic);
+  view.setUint32(4, version);
+  view.setUint32(8, objectCount);
+  return bytes;
+}
+
 describe('pack-entry', () => {
   describe('parsePackHeader', () => {
     describe("Given bytes with magic 'PACK' version 2 count 42", () => {
@@ -34,19 +43,28 @@ describe('pack-entry', () => {
       });
     });
 
-    describe('Given bytes with wrong magic', () => {
+    describe('Given malformed pack header bytes', () => {
       describe('When parsing', () => {
-        it("Then throws INVALID_PACK_HEADER with reason containing 'magic'", () => {
-          // Arrange
-          const sut = new Uint8Array(12);
-          const view = new DataView(sut.buffer);
-          view.setUint32(0, 0xdeadbeef);
-          view.setUint32(4, 2);
-          view.setUint32(8, 1);
-
-          // Act & Assert
+        it.each([
+          {
+            bytes: makeHeaderBytes(0xdeadbeef, 2, 1),
+            reasonContains: 'magic',
+            label: 'wrong magic',
+          },
+          {
+            bytes: makeHeaderBytes(0x5041434b, 3, 1),
+            reasonContains: 'version',
+            label: 'an unsupported version (3)',
+          },
+          {
+            bytes: new Uint8Array(8),
+            reasonContains: 'truncated',
+            label: 'bytes too short (< 12)',
+          },
+        ])('Then throws INVALID_PACK_HEADER for $label', ({ bytes, reasonContains }) => {
+          // Arrange + Act & Assert
           try {
-            parsePackHeader(sut);
+            parsePackHeader(bytes);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -54,59 +72,7 @@ describe('pack-entry', () => {
             expect(err.data).toEqual(
               expect.objectContaining({
                 code: 'INVALID_PACK_HEADER',
-                reason: expect.stringContaining('magic'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given bytes with version 3', () => {
-      describe('When parsing', () => {
-        it("Then throws INVALID_PACK_HEADER with reason containing 'version'", () => {
-          // Arrange
-          const sut = new Uint8Array(12);
-          const view = new DataView(sut.buffer);
-          view.setUint32(0, 0x5041434b);
-          view.setUint32(4, 3);
-          view.setUint32(8, 1);
-
-          // Act & Assert
-          try {
-            parsePackHeader(sut);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_HEADER',
-                reason: expect.stringContaining('version'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given bytes too short (< 12)', () => {
-      describe('When parsing', () => {
-        it("Then throws INVALID_PACK_HEADER with reason containing 'truncated'", () => {
-          // Arrange
-          const sut = new Uint8Array(8);
-
-          // Act & Assert
-          try {
-            parsePackHeader(sut);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_HEADER',
-                reason: expect.stringContaining('truncated'),
+                reason: expect.stringContaining(reasonContains),
               }),
             );
           }
@@ -160,88 +126,57 @@ describe('pack-entry', () => {
   });
 
   describe('parsePackEntryHeader — base types', () => {
-    describe('Given byte 0b0_001_0101 (type=1/COMMIT, size=5)', () => {
+    describe('Given bytes encoding a base entry type', () => {
       describe('When parsing at offset 0', () => {
-        it('Then type=1 size=5 dataOffset=1', () => {
+        it.each([
+          {
+            bytes: [0b0_001_0101],
+            type: PACK_ENTRY_TYPE.COMMIT,
+            size: 5,
+            dataOffset: 1,
+            label: 'type=1/COMMIT, size=5',
+          },
+          {
+            // size = 3 (low 4 bits) | (2 << 4) = 3 + 32 = 35
+            bytes: [0b1_010_0011, 0b0_0000010],
+            type: PACK_ENTRY_TYPE.TREE,
+            size: 35,
+            dataOffset: 2,
+            label: 'type=2/TREE, size=35',
+          },
+          {
+            // type=3/BLOB, size = 0x0F | (0x7F << 4) | (0x01 << 11) = 15 + 2032 + 2048 = 4095
+            bytes: [0b1_011_1111, 0b1_1111111, 0b0_0000001],
+            type: PACK_ENTRY_TYPE.BLOB,
+            size: 4095,
+            dataOffset: 3,
+            label: 'a multi-byte size spanning 3 bytes',
+          },
+          {
+            bytes: [0b0_011_1010],
+            type: PACK_ENTRY_TYPE.BLOB,
+            size: 10,
+            dataOffset: 1,
+            label: 'type=3/BLOB, size=10',
+          },
+          {
+            bytes: [0b0_100_0000],
+            type: PACK_ENTRY_TYPE.TAG,
+            size: 0,
+            dataOffset: 1,
+            label: 'type=4/TAG, size=0',
+          },
+        ])('Then decodes $label', ({ bytes, type, size, dataOffset }) => {
           // Arrange
-          const sut = new Uint8Array([0b0_001_0101]);
+          const sut = new Uint8Array(bytes);
 
           // Act
           const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
 
           // Assert
-          expect(result.type).toBe(PACK_ENTRY_TYPE.COMMIT);
-          expect(result.size).toBe(5);
-          expect(result.dataOffset).toBe(1);
-        });
-      });
-    });
-
-    describe('Given byte 0b1_010_0011 + 0b0_0000010 (type=2/TREE, size=35)', () => {
-      describe('When parsing', () => {
-        it('Then type=2 size=35 dataOffset=2', () => {
-          // Arrange — size = 3 (low 4 bits) | (2 << 4) = 3 + 32 = 35
-          const sut = new Uint8Array([0b1_010_0011, 0b0_0000010]);
-
-          // Act
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-
-          // Assert
-          expect(result.type).toBe(PACK_ENTRY_TYPE.TREE);
-          expect(result.size).toBe(35);
-          expect(result.dataOffset).toBe(2);
-        });
-      });
-    });
-
-    describe('Given multi-byte size spanning 3 bytes', () => {
-      describe('When parsing', () => {
-        it('Then size correctly assembled', () => {
-          // Arrange — type=3/BLOB, size = 0x0F | (0x7F << 4) | (0x01 << 11)
-          //   = 15 + 2032 + 2048 = 4095
-          const sut = new Uint8Array([0b1_011_1111, 0b1_1111111, 0b0_0000001]);
-
-          // Act
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-
-          // Assert
-          expect(result.type).toBe(PACK_ENTRY_TYPE.BLOB);
-          expect(result.size).toBe(4095);
-          expect(result.dataOffset).toBe(3);
-        });
-      });
-    });
-
-    describe('Given byte 0b0_011_1010 (type=3/BLOB, size=10)', () => {
-      describe('When parsing', () => {
-        it('Then type=3 size=10 dataOffset=1', () => {
-          // Arrange
-          const sut = new Uint8Array([0b0_011_1010]);
-
-          // Act
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-
-          // Assert
-          expect(result.type).toBe(PACK_ENTRY_TYPE.BLOB);
-          expect(result.size).toBe(10);
-          expect(result.dataOffset).toBe(1);
-        });
-      });
-    });
-
-    describe('Given byte 0b0_100_0000 (type=4/TAG, size=0)', () => {
-      describe('When parsing', () => {
-        it('Then type=4 size=0 dataOffset=1', () => {
-          // Arrange
-          const sut = new Uint8Array([0b0_100_0000]);
-
-          // Act
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-
-          // Assert
-          expect(result.type).toBe(PACK_ENTRY_TYPE.TAG);
-          expect(result.size).toBe(0);
-          expect(result.dataOffset).toBe(1);
+          expect(result.type).toBe(type);
+          expect(result.size).toBe(size);
+          expect(result.dataOffset).toBe(dataOffset);
         });
       });
     });
@@ -268,57 +203,125 @@ describe('pack-entry', () => {
       });
     });
 
-    describe('Given type=7/REF_DELTA with SHA1_CONFIG', () => {
+    describe('Given type=7/REF_DELTA with a hash config', () => {
       describe('When parsing', () => {
-        it('Then type=7 baseId extracted (20 bytes)', () => {
-          // Arrange — type=7, size=0 → 0b0_111_0000 = 0x70
-          const sha = new Uint8Array(20).fill(0xab);
-          const sut = new Uint8Array(1 + 20);
-          sut[0] = 0x70;
-          sut.set(sha, 1);
+        it.each([
+          {
+            config: SHA1_CONFIG,
+            byteLength: 20,
+            fillByte: 0xab,
+            expectedBaseId: 'ab'.repeat(20),
+            label: 'SHA1_CONFIG (20 bytes)',
+          },
+          {
+            config: SHA256_CONFIG,
+            byteLength: 32,
+            fillByte: 0xcd,
+            expectedBaseId: 'cd'.repeat(32),
+            label: 'SHA256_CONFIG (32 bytes)',
+          },
+        ])(
+          'Then baseId is extracted for $label',
+          ({ config, byteLength, fillByte, expectedBaseId }) => {
+            // Arrange — type=7, size=0 → 0b0_111_0000 = 0x70
+            const sha = new Uint8Array(byteLength).fill(fillByte);
+            const sut = new Uint8Array(1 + byteLength);
+            sut[0] = 0x70;
+            sut.set(sha, 1);
 
-          // Act
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+            // Act
+            const result = parsePackEntryHeader(sut, 0, config);
 
-          // Assert
-          expect(result.type).toBe(PACK_ENTRY_TYPE.REF_DELTA);
-          expect(result.type === PACK_ENTRY_TYPE.REF_DELTA && result.baseId).toBe('ab'.repeat(20));
-          expect(result.dataOffset).toBe(21);
-        });
-      });
-    });
-
-    describe('Given type=7/REF_DELTA with SHA256_CONFIG', () => {
-      describe('When parsing', () => {
-        it('Then baseId extracted (32 bytes)', () => {
-          // Arrange
-          const sha = new Uint8Array(32).fill(0xcd);
-          const sut = new Uint8Array(1 + 32);
-          sut[0] = 0x70;
-          sut.set(sha, 1);
-
-          // Act
-          const result = parsePackEntryHeader(sut, 0, SHA256_CONFIG);
-
-          // Assert
-          expect(result.type).toBe(PACK_ENTRY_TYPE.REF_DELTA);
-          expect(result.type === PACK_ENTRY_TYPE.REF_DELTA && result.baseId).toBe('cd'.repeat(32));
-          expect(result.dataOffset).toBe(33);
-        });
+            // Assert
+            expect(result.type).toBe(PACK_ENTRY_TYPE.REF_DELTA);
+            expect(result.type === PACK_ENTRY_TYPE.REF_DELTA && result.baseId).toBe(expectedBaseId);
+            expect(result.dataOffset).toBe(1 + byteLength);
+          },
+        );
       });
     });
   });
 
   describe('parsePackEntryHeader — errors', () => {
-    describe('Given type=5 (reserved)', () => {
+    describe('Given malformed pack-entry header bytes', () => {
       describe('When parsing', () => {
-        it("Then throws INVALID_PACK_ENTRY with reason 'reserved type 5'", () => {
-          // Arrange — type=5 → 0b0_101_0000 = 0x50
-          const sut = new Uint8Array([0x50]);
+        it.each([
+          {
+            // type=5 → 0b0_101_0000 = 0x50
+            bytes: [0x50],
+            offset: 0,
+            reasonContains: 'reserved type 5',
+            label: 'a reserved type (5)',
+          },
+          {
+            // 0b1_001_0000 has continuation bit set but no next byte
+            bytes: [0b1_001_0000],
+            offset: 0,
+            reasonContains: 'unexpected end of header',
+            label: 'a truncated size-continuation byte',
+          },
+          {
+            // type=6 size=0 no continuation → single byte 0x60, but no distance byte
+            bytes: [0x60],
+            offset: 0,
+            reasonContains: 'unexpected end of OFS_DELTA distance',
+            label: 'an OFS_DELTA with no distance bytes',
+          },
+          {
+            // type=6 size=0 → 0x60, distance byte with continuation set but no next byte
+            bytes: [0x60, 0x80],
+            offset: 0,
+            reasonContains: 'unexpected end of OFS_DELTA distance',
+            label: 'an OFS_DELTA with a truncated multi-byte distance',
+          },
+          {
+            // type=6 size=0 → 0x60, then 6 bytes all with continuation bit set
+            bytes: [0x60, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00],
+            offset: 0,
+            reasonContains: 'OFS_DELTA distance encoding too long',
+            label: 'an OFS_DELTA distance encoding exceeding 4 continuation bytes',
+          },
+          {
+            bytes: [0x30],
+            offset: 5,
+            reasonContains: 'unexpected end of header',
+            label: 'an offset past the end of the bytes',
+          },
+          {
+            // offset = length (off by one)
+            bytes: [0x30],
+            offset: 1,
+            reasonContains: 'unexpected end of header',
+            label: 'an offset exactly at bytes.length',
+          },
+          {
+            // type=1 (COMMIT) + 7 continuation bytes (exceeds MAX_SIZE_EXTENSION_BYTES=5)
+            bytes: [0b1_001_0000, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00],
+            offset: 0,
+            reasonContains: 'size encoding too long',
+            label: 'a size encoding exceeding 5 continuation bytes',
+          },
+          {
+            // type=0 → 0b0_000_0000 = 0x00
+            bytes: [0x00],
+            offset: 0,
+            reasonContains: 'unknown type 0',
+            label: 'type=0 (invalid)',
+          },
+          {
+            // type=7 size=0 → 0x70, but only 5 bytes of SHA instead of 20
+            bytes: [0x70, 0, 0, 0, 0, 0],
+            offset: 0,
+            reasonContains: 'unexpected end of REF_DELTA base id',
+            label: 'a REF_DELTA with a truncated base id',
+          },
+        ])('Then throws INVALID_PACK_ENTRY for $label', ({ bytes, offset, reasonContains }) => {
+          // Arrange
+          const sut = new Uint8Array(bytes);
 
           // Act & Assert
           try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+            parsePackEntryHeader(sut, offset, SHA1_CONFIG);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -326,103 +329,7 @@ describe('pack-entry', () => {
             expect(err.data).toEqual(
               expect.objectContaining({
                 code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('reserved type 5'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given truncated bytes with continuation but no next byte', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — 0b1_001_0000 has continuation bit set
-          const sut = new Uint8Array([0b1_001_0000]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('unexpected end of header'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given OFS_DELTA with no distance bytes', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — type=6 size=0 no continuation → single byte 0x60, but no distance byte
-          const sut = new Uint8Array([0x60]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('unexpected end of OFS_DELTA distance'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given OFS_DELTA with truncated multi-byte distance', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — type=6 size=0 → 0x60, distance byte with continuation set but no next byte
-          const sut = new Uint8Array([0x60, 0x80]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('unexpected end of OFS_DELTA distance'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given OFS_DELTA with distance encoding exceeding 4 continuation bytes', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — type=6 size=0 → 0x60, then 6 bytes all with continuation bit set
-          const sut = new Uint8Array([0x60, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('OFS_DELTA distance encoding too long'),
+                reason: expect.stringContaining(reasonContains),
               }),
             );
           }
@@ -449,78 +356,6 @@ describe('pack-entry', () => {
       });
     });
 
-    describe('Given offset past end of bytes', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange
-          const sut = new Uint8Array([0x30]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 5, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('unexpected end of header'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given offset exactly at bytes.length', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — offset = length (off by one)
-          const sut = new Uint8Array([0x30]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 1, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('unexpected end of header'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given entry with size encoding exceeding 5 continuation bytes', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — type=1 (COMMIT) + 7 continuation bytes (exceeds MAX_SIZE_EXTENSION_BYTES=5)
-          const sut = new Uint8Array([0b1_001_0000, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('size encoding too long'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
     describe('Given a size encoding with exactly 5 continuation bytes (the maximum)', () => {
       describe('When parsing', () => {
         it('Then it is accepted', () => {
@@ -539,226 +374,93 @@ describe('pack-entry', () => {
         });
       });
     });
-
-    describe('Given type=0 (invalid)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — type=0 → 0b0_000_0000 = 0x00
-          const sut = new Uint8Array([0x00]);
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('unknown type 0'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given REF_DELTA with truncated base id', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_ENTRY', () => {
-          // Arrange — type=7 size=0 → 0x70, but only 5 bytes of SHA instead of 20
-          const sut = new Uint8Array(6);
-          sut[0] = 0x70;
-
-          // Act & Assert
-          try {
-            parsePackEntryHeader(sut, 0, SHA1_CONFIG);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_ENTRY',
-                reason: expect.stringContaining('unexpected end of REF_DELTA base id'),
-              }),
-            );
-          }
-        });
-      });
-    });
   });
 
   describe('encodePackEntryHeader', () => {
-    describe('Given type=1 size=5', () => {
+    describe('Given a type and size', () => {
       describe('When encoding', () => {
-        it('Then single byte 0b0_001_0101', () => {
-          // Arrange
-          const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.COMMIT, 5);
+        it.each([
+          {
+            type: PACK_ENTRY_TYPE.COMMIT,
+            size: 5,
+            expected: [0b0_001_0101],
+            label: 'type=1 size=5 fits a single byte',
+          },
+          {
+            // low 4 bits = 0, continuation byte = 1
+            type: PACK_ENTRY_TYPE.BLOB,
+            size: 16,
+            expected: [0b1_011_0000, 0b0_0000001],
+            label: 'type=3 size=16 needs a continuation byte',
+          },
+          { type: PACK_ENTRY_TYPE.TAG, size: 0, expected: [0b0_100_0000], label: 'type=4 size=0' },
+        ])('Then encodes $label', ({ type, size, expected }) => {
+          // Arrange & Act
+          const sut = encodePackEntryHeader(type, size);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array([0b0_001_0101]));
-        });
-      });
-    });
-
-    describe('Given type=3 size=16', () => {
-      describe('When encoding', () => {
-        it('Then two bytes (continuation needed for size > 15)', () => {
-          // Arrange
-          const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, 16);
-
-          // Assert — low 4 bits = 0, continuation byte = 1
-          expect(sut).toEqual(new Uint8Array([0b1_011_0000, 0b0_0000001]));
-        });
-      });
-    });
-
-    describe('Given type=4 size=0', () => {
-      describe('When encoding', () => {
-        it('Then single byte with size bits = 0', () => {
-          // Arrange
-          const sut = encodePackEntryHeader(PACK_ENTRY_TYPE.TAG, 0);
-
-          // Assert
-          expect(sut).toEqual(new Uint8Array([0b0_100_0000]));
+          expect(sut).toEqual(new Uint8Array(expected));
         });
       });
     });
   });
 
   describe('encodeOfsDistance', () => {
-    describe('Given distance=0', () => {
+    describe('Given a distance that fits in a single byte', () => {
       describe('When encoding', () => {
-        it('Then single byte 0x00', () => {
-          // Arrange
-          const sut = encodeOfsDistance(0);
+        it.each([
+          { distance: 0, expected: [0x00], label: 'distance=0' },
+          { distance: 127, expected: [0x7f], label: 'distance=127' },
+        ])('Then produces a single byte for $label', ({ distance, expected }) => {
+          // Arrange & Act
+          const sut = encodeOfsDistance(distance);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array([0x00]));
+          expect(sut).toEqual(new Uint8Array(expected));
         });
       });
     });
 
-    describe('Given distance=127', () => {
-      describe('When encoding', () => {
-        it('Then single byte 0x7F', () => {
+    describe('Given a distance requiring continuation bytes', () => {
+      describe('When encoding then roundtripping through an OFS_DELTA entry header', () => {
+        it.each([
+          { distance: 128, label: 'distance=128 (minimum requiring continuation)' },
+          { distance: 100000, label: 'a large distance (100000)' },
+        ])('Then baseDistance matches for $label', ({ distance }) => {
           // Arrange
-          const sut = encodeOfsDistance(127);
-
-          // Assert
-          expect(sut).toEqual(new Uint8Array([0x7f]));
-        });
-      });
-    });
-
-    describe('Given distance=128', () => {
-      describe('When encoding', () => {
-        it('Then two bytes with continuation', () => {
-          // Arrange
-          const sut = encodeOfsDistance(128);
-
-          // Assert — Verify roundtrip
+          const sut = encodeOfsDistance(distance);
           const entryHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0);
           const combined = new Uint8Array(entryHeader.length + sut.length);
           combined.set(entryHeader);
           combined.set(sut, entryHeader.length);
-          const result = parsePackEntryHeader(combined, 0, SHA1_CONFIG);
-          expect(result.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
-          expect(result.type === PACK_ENTRY_TYPE.OFS_DELTA && result.baseDistance).toBe(128);
-        });
-      });
-    });
 
-    describe('Given large distance (100000)', () => {
-      describe('When encoding then roundtripping', () => {
-        it('Then baseDistance matches', () => {
-          // Arrange
-          const sut = encodeOfsDistance(100000);
-          const entryHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0);
-          const combined = new Uint8Array(entryHeader.length + sut.length);
-          combined.set(entryHeader);
-          combined.set(sut, entryHeader.length);
+          // Act
           const result = parsePackEntryHeader(combined, 0, SHA1_CONFIG);
 
           // Assert
           expect(result.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
-          expect(result.type === PACK_ENTRY_TYPE.OFS_DELTA && result.baseDistance).toBe(100000);
+          expect(result.type === PACK_ENTRY_TYPE.OFS_DELTA && result.baseDistance).toBe(distance);
         });
       });
     });
   });
 
   describe('packEntryTypeToObjectType', () => {
-    describe('Given COMMIT(1)', () => {
+    describe('Given a pack entry type', () => {
       describe('When mapping', () => {
-        it("Then returns 'commit'", () => {
-          // Arrange
-          const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.COMMIT);
+        it.each([
+          { type: PACK_ENTRY_TYPE.COMMIT, expected: 'commit', label: 'COMMIT(1)' },
+          { type: PACK_ENTRY_TYPE.TREE, expected: 'tree', label: 'TREE(2)' },
+          { type: PACK_ENTRY_TYPE.BLOB, expected: 'blob', label: 'BLOB(3)' },
+          { type: PACK_ENTRY_TYPE.TAG, expected: 'tag', label: 'TAG(4)' },
+          { type: PACK_ENTRY_TYPE.OFS_DELTA, expected: undefined, label: 'OFS_DELTA(6)' },
+          { type: PACK_ENTRY_TYPE.REF_DELTA, expected: undefined, label: 'REF_DELTA(7)' },
+        ])('Then $label maps to $expected', ({ type, expected }) => {
+          // Arrange & Act
+          const sut = packEntryTypeToObjectType(type);
 
           // Assert
-          expect(sut).toBe('commit');
-        });
-      });
-    });
-
-    describe('Given TREE(2)', () => {
-      describe('When mapping', () => {
-        it("Then returns 'tree'", () => {
-          // Arrange
-          const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.TREE);
-
-          // Assert
-          expect(sut).toBe('tree');
-        });
-      });
-    });
-
-    describe('Given BLOB(3)', () => {
-      describe('When mapping', () => {
-        it("Then returns 'blob'", () => {
-          // Arrange
-          const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.BLOB);
-
-          // Assert
-          expect(sut).toBe('blob');
-        });
-      });
-    });
-
-    describe('Given TAG(4)', () => {
-      describe('When mapping', () => {
-        it("Then returns 'tag'", () => {
-          // Arrange
-          const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.TAG);
-
-          // Assert
-          expect(sut).toBe('tag');
-        });
-      });
-    });
-
-    describe('Given OFS_DELTA(6)', () => {
-      describe('When mapping', () => {
-        it('Then returns undefined', () => {
-          // Arrange
-          const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.OFS_DELTA);
-
-          // Assert
-          expect(sut).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given REF_DELTA(7)', () => {
-      describe('When mapping', () => {
-        it('Then returns undefined', () => {
-          // Arrange
-          const sut = packEntryTypeToObjectType(PACK_ENTRY_TYPE.REF_DELTA);
-
-          // Assert
-          expect(sut).toBeUndefined();
+          expect(sut).toBe(expected);
         });
       });
     });

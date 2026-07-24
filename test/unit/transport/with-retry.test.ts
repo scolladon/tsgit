@@ -144,20 +144,6 @@ describe('withRetry — retry behavior', () => {
     });
   });
 
-  describe('Given attempts=1 and inner rejects', () => {
-    describe('When request is awaited', () => {
-      it('Then inner called exactly once and rejection propagates', async () => {
-        // Arrange
-        const err = new Error('boom');
-        const { transport, calls } = fakeTransport([err]);
-        const sut = withRetry({ attempts: 1, baseMs: 0 })(transport);
-        // Assert
-        await expect(sut.request(makeRequest())).rejects.toBe(err);
-        expect(calls).toHaveLength(1);
-      });
-    });
-  });
-
   describe('Given attempts=2, inner rejects then resolves', () => {
     describe('When request is awaited', () => {
       it('Then inner called twice and second response returned', async () => {
@@ -174,32 +160,46 @@ describe('withRetry — retry behavior', () => {
     });
   });
 
-  describe('Given attempts=2 and inner rejects twice', () => {
+  describe('Given inner rejects on every attempt', () => {
     describe('When request is awaited', () => {
-      it('Then rejection propagates after 2 calls', async () => {
+      it.each([
+        {
+          attempts: 1,
+          makeErrors: () => {
+            const err = new Error('boom');
+            return { errors: [err], expected: err };
+          },
+          expectedCalls: 1,
+          label: 'attempts=1: inner called exactly once and rejection propagates',
+        },
+        {
+          attempts: 2,
+          makeErrors: () => {
+            const err1 = new Error('first');
+            const err2 = new Error('second');
+            return { errors: [err1, err2], expected: err2 };
+          },
+          expectedCalls: 2,
+          label: 'attempts=2: rejection propagates after 2 calls',
+        },
+        {
+          attempts: 10,
+          makeErrors: () => {
+            const err = new Error('persistent');
+            return { errors: Array(10).fill(err), expected: err };
+          },
+          expectedCalls: 10,
+          label: 'attempts=10: inner called exactly 10 times',
+        },
+      ])('Then $label', async ({ attempts, makeErrors, expectedCalls }) => {
         // Arrange
-        const err1 = new Error('first');
-        const err2 = new Error('second');
-        const { transport, calls } = fakeTransport([err1, err2]);
-        const sut = withRetry({ attempts: 2, baseMs: 0 })(transport);
-        // Assert
-        await expect(sut.request(makeRequest())).rejects.toBe(err2);
-        expect(calls).toHaveLength(2);
-      });
-    });
-  });
+        const { errors, expected } = makeErrors();
+        const { transport, calls } = fakeTransport(errors);
+        const sut = withRetry({ attempts, baseMs: 0 })(transport);
 
-  describe('Given attempts=10 and inner always rejects', () => {
-    describe('When request is awaited', () => {
-      it('Then inner called exactly 10 times', async () => {
-        // Arrange
-        const err = new Error('persistent');
-        const seq: ReadonlyArray<Error> = Array(10).fill(err);
-        const { transport, calls } = fakeTransport(seq);
-        const sut = withRetry({ attempts: 10, baseMs: 0 })(transport);
         // Assert
-        await expect(sut.request(makeRequest())).rejects.toBe(err);
-        expect(calls).toHaveLength(10);
+        await expect(sut.request(makeRequest())).rejects.toBe(expected);
+        expect(calls).toHaveLength(expectedCalls);
       });
     });
   });
@@ -513,36 +513,34 @@ describe('defaultDelay primitive', () => {
 });
 
 describe('defaultIsRetryable — direct table', () => {
-  describe('Given an error with no response', () => {
+  describe('Given a partial retry-evaluation context', () => {
     describe('When evaluated', () => {
-      it('Then returns true', () => {
+      it.each([
+        {
+          makeError: undefined,
+          expected: true,
+          label: 'an error with no response returns true',
+        },
+        {
+          makeError: () => new DOMException('aborted', 'AbortError'),
+          expected: false,
+          label: 'an AbortError DOMException returns false',
+        },
+        {
+          makeError: () => new DOMException('timed out', 'TimeoutError'),
+          expected: true,
+          label:
+            'a non-AbortError DOMException (TimeoutError) returns true (only AbortError gets the special case)',
+        },
+      ])('Then $label', ({ makeError, expected }) => {
         // Arrange
-        const sut = defaultIsRetryable({ error: new Error('boom'), attempt: 1 });
+        const error = makeError ? makeError() : new Error('boom');
+
+        // Act
+        const sut = defaultIsRetryable({ error, attempt: 1 });
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given an AbortError DOMException', () => {
-    describe('When evaluated', () => {
-      it('Then returns false', () => {
-        // Arrange
-        const err = new DOMException('aborted', 'AbortError');
-        // Assert
-        expect(defaultIsRetryable({ error: err, attempt: 1 })).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a NON-AbortError DOMException (TimeoutError)', () => {
-    describe('When evaluated', () => {
-      it('Then returns true (only AbortError gets the special case)', () => {
-        // Arrange
-        const err = new DOMException('timed out', 'TimeoutError');
-        // Assert
-        expect(defaultIsRetryable({ error: err, attempt: 1 })).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });

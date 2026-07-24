@@ -152,24 +152,35 @@ describe('readInfoExclude', () => {
 });
 
 describe('readGlobalExcludes', () => {
-  describe('Given no core.excludesFile in config', () => {
-    describe('When read', () => {
-      it('Then returns undefined', async () => {
-        // Arrange
-        const ctx = await seed();
-
-        // Assert
-        expect(await readGlobalExcludes(ctx)).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given core.excludesFile = "" (empty, feature-off)', () => {
+  describe('Given a config guard that silently misses (no excludesFile to load)', () => {
     describe('When readGlobalExcludes runs', () => {
-      it('Then it returns undefined', async () => {
+      it.each([
+        { configBody: undefined, label: 'no core.excludesFile in config returns undefined' },
+        {
+          configBody: '[core]\n\texcludesFile = \n',
+          label: 'core.excludesFile = "" (empty, feature-off) returns undefined',
+        },
+        {
+          configBody: '[core]\n  excludesFile = ~/ignore\n',
+          label:
+            'core.excludesFile starting with `~/` but homeDir is undefined returns undefined (silent miss)',
+        },
+        {
+          configBody: '[core]\n  excludesFile = ~\n',
+          label:
+            'core.excludesFile = "~" alone and homeDir is undefined returns undefined (silent miss — symmetric with the `~/...` case)',
+        },
+        {
+          configBody: `[core]\n  excludesFile = ${'/repo'}\n`,
+          label:
+            'core.excludesFile = directory (non-regular file) returns undefined (defends against /dev/zero and friends)',
+        },
+      ])('Then $label', async ({ configBody }) => {
         // Arrange
         const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesFile = \n');
+        if (configBody !== undefined) {
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, configBody);
+        }
 
         // Act
         const sut = await readGlobalExcludes(ctx);
@@ -177,7 +188,11 @@ describe('readGlobalExcludes', () => {
         // Assert
         expect(sut).toBeUndefined();
       });
+    });
+  });
 
+  describe('Given core.excludesFile = "" (empty, feature-off)', () => {
+    describe('When readGlobalExcludes runs', () => {
       it('Then it never lstats the empty path', async () => {
         // Arrange — the memory adapter resolves lstat('') to the rootDir
         // directory, which masks a bare toBeUndefined() assertion. The
@@ -239,44 +254,6 @@ describe('readGlobalExcludes', () => {
     });
   });
 
-  describe('Given core.excludesFile starting with `~/` but homeDir is undefined', () => {
-    describe('When read', () => {
-      it('Then returns undefined (silent miss)', async () => {
-        // Arrange
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[core]\n  excludesFile = ~/ignore\n',
-        );
-
-        // Act
-        const sut = await readGlobalExcludes(ctx);
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given core.excludesFile = "~" alone and homeDir is undefined', () => {
-    describe('When read', () => {
-      it('Then returns undefined (silent miss — symmetric with the `~/...` case)', async () => {
-        // Arrange — covers the bare-`~` branch of expandUserPath when no
-        // homeDir is configured. The branch must NOT return `undefined as
-        // string` downstream — verify by asserting the loader silently
-        // misses without throwing.
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  excludesFile = ~\n');
-
-        // Act
-        const sut = await readGlobalExcludes(ctx);
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-
   describe('Given a non-FILE_NOT_FOUND error from lstat', () => {
     describe('When read', () => {
       it('Then the error propagates (kills mutants that widen the FILE_NOT_FOUND swallow)', async () => {
@@ -305,43 +282,6 @@ describe('readGlobalExcludes', () => {
         // Assert
         expect(caught).toBeInstanceOf(Error);
         expect((caught as Error).message).toBe('unexpected I/O failure');
-      });
-    });
-  });
-
-  describe('Given core.excludesFile = directory (non-regular file)', () => {
-    describe('When read', () => {
-      it('Then returns undefined (defends against /dev/zero and friends)', async () => {
-        // Arrange — config points at the workDir itself, which IS a directory.
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          `[core]\n  excludesFile = ${'/repo'}\n`,
-        );
-
-        // Act
-        const sut = await readGlobalExcludes(ctx);
-
-        // Assert
-        expect(sut).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given the error payload from oversize.gitignore', () => {
-    describe('When read', () => {
-      it('Then path is sanitized to basename (does not leak home-dir layout)', async () => {
-        // Arrange — write an oversize file at a sub-path; capture the error
-        // and assert the path field is the basename.
-        const ctx = await seed();
-        const content = 'x'.repeat(MAX_GITIGNORE_BYTES + 1);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, content);
-
-        // Act
-        const err = await expectError(() => readGitignore(ctx, ''), 'GITIGNORE_FILE_TOO_LARGE');
-
-        // Assert
-        expect((err.data as { path: string }).path).toBe('.gitignore');
       });
     });
   });

@@ -133,6 +133,43 @@ const withReadPermissionDenied = (
 
 const BUNDLE_PATH = '/repo/test.bundle';
 
+/** A bundle whose pack contains a REF_DELTA against `prereqOid` (thin pack). */
+const buildThinBundle = async (ctx: Context, prereqOid: ObjectId): Promise<Uint8Array> => {
+  const baseContent = enc.encode('base blob from prereq commit');
+  const baseHeader = enc.encode(`blob ${baseContent.length}\0`);
+  const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+  baseRaw.set(baseHeader, 0);
+  baseRaw.set(baseContent, baseHeader.length);
+  const baseId = await ctx.hash.hashHex(baseRaw);
+
+  const targetContent = enc.encode('derived blob content');
+  const targetHeader = enc.encode(`blob ${targetContent.length}\0`);
+  const targetRaw = new Uint8Array(targetHeader.length + targetContent.length);
+  targetRaw.set(targetHeader, 0);
+  targetRaw.set(targetContent, targetHeader.length);
+  const targetId = await ctx.hash.hashHex(targetRaw);
+
+  const { packBytes } = await buildSyntheticPack(ctx, [
+    {
+      kind: 'ref-delta',
+      baseId,
+      baseUncompressed: baseContent,
+      targetContent,
+    } as EntrySpec,
+  ]);
+
+  const headerBytes = serializeBundleHeader({
+    version: 2,
+    prerequisites: [{ oid: prereqOid, comment: 'test prereq' }],
+    refs: [{ oid: targetId as ObjectId, name: 'refs/heads/main' as RefName }],
+  });
+
+  const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+  bundleBytes.set(headerBytes, 0);
+  bundleBytes.set(packBytes, headerBytes.length);
+  return bundleBytes;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,25 +223,67 @@ describe('bundleVerify', () => {
     });
   });
 
-  describe('Given the same range bundle bytes in a fresh empty repo', () => {
+  describe('Given a bundle verified where its prerequisite is absent from the target repo', () => {
     describe('When bundleVerify is called', () => {
-      it('Then prerequisitesPresent is false and missingPrerequisites contains the boundary oid', async () => {
-        // Arrange
-        const { ctx: sourceCtx, commit1 } = await buildTwoCommitRepo();
-        const createResult = await bundleCreate(sourceCtx, {
-          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
-        });
-        const emptyCtx = await initRepo();
-        await emptyCtx.fs.write(BUNDLE_PATH, createResult.bytes);
+      it.each([
+        {
+          label: 'a range bundle bytes verified in a fresh empty repo',
+          buildScenario: async (): Promise<{ ctx: Context; missing: ObjectId }> => {
+            const { ctx: sourceCtx, commit1 } = await buildTwoCommitRepo();
+            const createResult = await bundleCreate(sourceCtx, {
+              revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+            });
+            const emptyCtx = await initRepo();
+            await emptyCtx.fs.write(BUNDLE_PATH, createResult.bytes);
+            return { ctx: emptyCtx, missing: commit1 };
+          },
+        },
+        {
+          label: 'a thin bundle whose REF_DELTA base is absent (no pack walk attempted)',
+          buildScenario: async (): Promise<{ ctx: Context; missing: ObjectId }> => {
+            const sourceCtx = await initRepo();
+            const baseContent = enc.encode('base blob from prereq commit');
+            const prereqOid = await writeObject(sourceCtx, {
+              type: 'blob',
+              id: '' as ObjectId,
+              content: baseContent,
+            });
+            const bundleBytes = await buildThinBundle(sourceCtx, prereqOid);
+            const emptyCtx = await initRepo();
+            await emptyCtx.fs.write(BUNDLE_PATH, bundleBytes);
+            return { ctx: emptyCtx, missing: prereqOid };
+          },
+        },
+        {
+          label: 'a range bundle with a corrupt pack trailer (no throw despite corruption)',
+          buildScenario: async (): Promise<{ ctx: Context; missing: ObjectId }> => {
+            const { ctx: sourceCtx, commit1 } = await buildTwoCommitRepo();
+            const createResult = await bundleCreate(sourceCtx, {
+              revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+            });
+            const corruptBytes = new Uint8Array(createResult.bytes);
+            // Corrupt the pack trailer (last 20 bytes = SHA-1 digest)
+            corruptBytes.set(new Uint8Array(20).fill(0xff), corruptBytes.length - 20);
+            const emptyCtx = await initRepo();
+            await emptyCtx.fs.write(BUNDLE_PATH, corruptBytes);
+            return { ctx: emptyCtx, missing: commit1 };
+          },
+        },
+      ])(
+        'Then prerequisitesPresent is false and missingPrerequisites contains the boundary oid — $label',
+        async ({ buildScenario }) => {
+          // Arrange
+          const { ctx, missing } = await buildScenario();
 
-        // Act
-        const result: BundleVerifyResult = await sut(emptyCtx, { path: BUNDLE_PATH });
+          // Act
+          const result: BundleVerifyResult = await sut(ctx, { path: BUNDLE_PATH });
 
-        // Assert
-        expect(result.prerequisitesPresent).toBe(false);
-        expect(result.missingPrerequisites).toContain(commit1);
-        expect(result.missingPrerequisites).toHaveLength(1);
-      });
+          // Assert
+          expect(result.prerequisitesPresent).toBe(false);
+          expect(result.missingPrerequisites).toContain(missing);
+          expect(result.missingPrerequisites).toHaveLength(1);
+        },
+      );
     });
   });
 
@@ -282,18 +361,51 @@ describe('bundleVerify', () => {
     });
   });
 
-  // ── read-failure: missing file ─────────────────────────────────────────────
+  // ── read-failure: BUNDLE_READ_FAILED (three converging causes) ─────────────
 
-  describe('Given a path that does not exist', () => {
+  describe('Given a path whose read failure classifies as BUNDLE_READ_FAILED', () => {
     describe('When bundleVerify is called', () => {
-      it('Then throws BUNDLE_READ_FAILED with the path', async () => {
+      it.each([
+        {
+          label: 'a path that does not exist (default fs behaviour, no interception)',
+          path: '/repo/missing.bundle',
+          buildCtx: (_path: string): Context => createMemoryContext(),
+        },
+        {
+          label: 'a path that is unreadable (PERMISSION_DENIED + stat says not a directory)',
+          path: '/repo/unreadable.bundle',
+          buildCtx: (path: string): Context =>
+            withReadPermissionDenied(createMemoryContext(), path, false),
+        },
+        {
+          label: 'a path where read throws PERMISSION_DENIED and stat also throws',
+          path: '/repo/unreadable.bundle',
+          buildCtx: (path: string): Context => {
+            const baseCtx = createMemoryContext();
+            return {
+              ...baseCtx,
+              fs: {
+                ...baseCtx.fs,
+                read: async (p: string): Promise<Uint8Array> => {
+                  if (p === path) throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+                  return baseCtx.fs.read(p);
+                },
+                stat: async (p: string) => {
+                  if (p === path) throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });
+                  return baseCtx.fs.stat(p);
+                },
+              },
+            };
+          },
+        },
+      ])('Then throws BUNDLE_READ_FAILED with the path — $label', async ({ path, buildCtx }) => {
         // Arrange
-        const ctx = createMemoryContext();
+        const ctx = buildCtx(path);
 
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: '/repo/missing.bundle' });
+          await sut(ctx, { path });
         } catch (err) {
           thrown = err;
         }
@@ -302,7 +414,7 @@ describe('bundleVerify', () => {
         expect(thrown).toBeInstanceOf(TsgitError);
         const tsErr = thrown as TsgitError;
         expect(tsErr.data.code).toBe('BUNDLE_READ_FAILED');
-        expect((tsErr.data as { path: string }).path).toBe('/repo/missing.bundle');
+        expect((tsErr.data as { path: string }).path).toBe(path);
       });
     });
   });
@@ -311,7 +423,7 @@ describe('bundleVerify', () => {
 
   describe('Given a path that is a directory (PERMISSION_DENIED + isDirectory)', () => {
     describe('When bundleVerify is called', () => {
-      it('Then throws BUNDLE_BAD_HEADER', async () => {
+      it('Then throws BUNDLE_BAD_HEADER with reason not-a-bundle', async () => {
         // Arrange
         const baseCtx = createMemoryContext();
         const DIR_PATH = '/repo/some-dir';
@@ -325,38 +437,12 @@ describe('bundleVerify', () => {
           thrown = err;
         }
 
-        // Assert
+        // Assert — classifyReadFailure sets reason='not-a-bundle' for a directory path
         expect(thrown).toBeInstanceOf(TsgitError);
         const tsErr = thrown as TsgitError;
         expect(tsErr.data.code).toBe('BUNDLE_BAD_HEADER');
         expect((tsErr.data as { path: string }).path).toBe(DIR_PATH);
-      });
-    });
-  });
-
-  // ── read-failure: unreadable file (permission denied, not directory) ───────
-
-  describe('Given a path that is unreadable (PERMISSION_DENIED + not a directory)', () => {
-    describe('When bundleVerify is called', () => {
-      it('Then throws BUNDLE_READ_FAILED with the path', async () => {
-        // Arrange
-        const baseCtx = createMemoryContext();
-        const FILE_PATH = '/repo/unreadable.bundle';
-        const ctx = withReadPermissionDenied(baseCtx, FILE_PATH, false);
-
-        // Act
-        let thrown: unknown;
-        try {
-          await sut(ctx, { path: FILE_PATH });
-        } catch (err) {
-          thrown = err;
-        }
-
-        // Assert
-        expect(thrown).toBeInstanceOf(TsgitError);
-        const tsErr = thrown as TsgitError;
-        expect(tsErr.data.code).toBe('BUNDLE_READ_FAILED');
-        expect((tsErr.data as { path: string }).path).toBe(FILE_PATH);
+        expect((tsErr.data as { reason: string }).reason).toBe('not-a-bundle');
       });
     });
   });
@@ -422,42 +508,6 @@ describe('bundleVerify', () => {
   // ── thin-pack completion ──────────────────────────────────────────────────
 
   describe('Given a bundle whose pack contains a REF_DELTA against a prerequisite blob', () => {
-    const buildThinBundle = async (ctx: Context, prereqOid: ObjectId): Promise<Uint8Array> => {
-      const baseContent = enc.encode('base blob from prereq commit');
-      const baseHeader = enc.encode(`blob ${baseContent.length}\0`);
-      const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
-      baseRaw.set(baseHeader, 0);
-      baseRaw.set(baseContent, baseHeader.length);
-      const baseId = await ctx.hash.hashHex(baseRaw);
-
-      const targetContent = enc.encode('derived blob content');
-      const targetHeader = enc.encode(`blob ${targetContent.length}\0`);
-      const targetRaw = new Uint8Array(targetHeader.length + targetContent.length);
-      targetRaw.set(targetHeader, 0);
-      targetRaw.set(targetContent, targetHeader.length);
-      const targetId = await ctx.hash.hashHex(targetRaw);
-
-      const { packBytes } = await buildSyntheticPack(ctx, [
-        {
-          kind: 'ref-delta',
-          baseId,
-          baseUncompressed: baseContent,
-          targetContent,
-        } as EntrySpec,
-      ]);
-
-      const headerBytes = serializeBundleHeader({
-        version: 2,
-        prerequisites: [{ oid: prereqOid, comment: 'test prereq' }],
-        refs: [{ oid: targetId as ObjectId, name: 'refs/heads/main' as RefName }],
-      });
-
-      const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
-      bundleBytes.set(headerBytes, 0);
-      bundleBytes.set(packBytes, headerBytes.length);
-      return bundleBytes;
-    };
-
     describe('When bundleVerify is called in a repo where the prerequisite blob is present', () => {
       it('Then prerequisitesPresent is true and verify completes without error', async () => {
         // Arrange
@@ -479,60 +529,6 @@ describe('bundleVerify', () => {
         expect(result.prerequisitesPresent).toBe(true);
         expect(result.missingPrerequisites).toEqual([]);
         expect(result.recordsCompleteHistory).toBe(false);
-      });
-    });
-
-    describe('When bundleVerify is called in a repo where the prerequisite is absent', () => {
-      it('Then prerequisitesPresent is false and no error is thrown (no pack walk attempted)', async () => {
-        // Arrange
-        const sourceCtx = await initRepo();
-        const baseContent = enc.encode('base blob from prereq commit');
-        const prereqOid = await writeObject(sourceCtx, {
-          type: 'blob',
-          id: '' as ObjectId,
-          content: baseContent,
-        });
-        const bundleBytes = await buildThinBundle(sourceCtx, prereqOid);
-
-        // Fresh repo — prereq absent
-        const emptyCtx = await initRepo();
-        await emptyCtx.fs.write(BUNDLE_PATH, bundleBytes);
-
-        // Act — must NOT throw even though the pack is thin and would fail without resolver
-        const result: BundleVerifyResult = await sut(emptyCtx, { path: BUNDLE_PATH });
-
-        // Assert
-        expect(result.prerequisitesPresent).toBe(false);
-        expect(result.missingPrerequisites).toContain(prereqOid);
-        expect(result.missingPrerequisites).toHaveLength(1);
-      });
-    });
-  });
-
-  // ── missing prereq + corrupt pack trailer ─────────────────────────────────
-
-  describe('Given a bundle with a missing prerequisite and a corrupt pack trailer', () => {
-    describe('When bundleVerify is called in a repo without the prerequisite', () => {
-      it('Then returns prerequisitesPresent:false without throwing despite corrupt pack trailer', async () => {
-        // Arrange
-        const { ctx: sourceCtx, commit1 } = await buildTwoCommitRepo();
-        const createResult = await bundleCreate(sourceCtx, {
-          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
-        });
-        const corruptBytes = new Uint8Array(createResult.bytes);
-        // Corrupt the pack trailer (last 20 bytes = SHA-1 digest)
-        corruptBytes.set(new Uint8Array(20).fill(0xff), corruptBytes.length - 20);
-
-        const emptyCtx = await initRepo();
-        await emptyCtx.fs.write(BUNDLE_PATH, corruptBytes);
-
-        // Act — must NOT throw even though pack trailer is corrupt
-        const result = await sut(emptyCtx, { path: BUNDLE_PATH });
-
-        // Assert
-        expect(result.prerequisitesPresent).toBe(false);
-        expect(result.missingPrerequisites).toContain(commit1);
-        expect(result.missingPrerequisites).toHaveLength(1);
       });
     });
   });
@@ -574,33 +570,6 @@ describe('bundleVerify', () => {
     });
   });
 
-  // ── read-failure: directory path with reason field ────────────────────────
-
-  describe('Given a path that is a directory (PERMISSION_DENIED + stat.isDirectory)', () => {
-    describe('When bundleVerify is called', () => {
-      it('Then throws BUNDLE_BAD_HEADER with reason not-a-bundle', async () => {
-        // Arrange
-        const baseCtx = createMemoryContext();
-        const DIR_PATH = '/repo/some-dir-b';
-        const ctx = withReadPermissionDenied(baseCtx, DIR_PATH, true);
-
-        // Act
-        let thrown: unknown;
-        try {
-          await sut(ctx, { path: DIR_PATH });
-        } catch (err) {
-          thrown = err;
-        }
-
-        // Assert — classifyReadFailure sets reason='not-a-bundle' for a directory path
-        expect(thrown).toBeInstanceOf(TsgitError);
-        const tsErr = thrown as TsgitError;
-        expect(tsErr.data.code).toBe('BUNDLE_BAD_HEADER');
-        expect((tsErr.data as { reason: string }).reason).toBe('not-a-bundle');
-      });
-    });
-  });
-
   // ── read-failure: directory path via FILE_NOT_FOUND (memory/OPFS adapter) ─
 
   describe('Given a path where read throws FILE_NOT_FOUND and stat reports a directory', () => {
@@ -637,46 +606,6 @@ describe('bundleVerify', () => {
         const tsErr = thrown as TsgitError;
         expect(tsErr.data.code).toBe('BUNDLE_BAD_HEADER');
         expect((tsErr.data as { path: string }).path).toBe(DIR_PATH);
-      });
-    });
-  });
-
-  // ── read-failure: PERMISSION_DENIED when stat also throws ─────────────────
-
-  describe('Given a path where read throws PERMISSION_DENIED and stat also throws', () => {
-    describe('When bundleVerify is called', () => {
-      it('Then throws BUNDLE_READ_FAILED with the path', async () => {
-        // Arrange
-        const baseCtx = createMemoryContext();
-        const PERM_PATH = '/repo/unreadable.bundle';
-        const ctx: Context = {
-          ...baseCtx,
-          fs: {
-            ...baseCtx.fs,
-            read: async (p: string): Promise<Uint8Array> => {
-              if (p === PERM_PATH) throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
-              return baseCtx.fs.read(p);
-            },
-            stat: async (p: string) => {
-              if (p === PERM_PATH) throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });
-              return baseCtx.fs.stat(p);
-            },
-          },
-        };
-
-        // Act
-        let thrown: unknown;
-        try {
-          await sut(ctx, { path: PERM_PATH });
-        } catch (err) {
-          thrown = err;
-        }
-
-        // Assert
-        expect(thrown).toBeInstanceOf(TsgitError);
-        const tsErr = thrown as TsgitError;
-        expect(tsErr.data.code).toBe('BUNDLE_READ_FAILED');
-        expect((tsErr.data as { path: string }).path).toBe(PERM_PATH);
       });
     });
   });

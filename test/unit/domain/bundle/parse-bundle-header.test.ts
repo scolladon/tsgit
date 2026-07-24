@@ -73,150 +73,107 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
-  describe('When magic line is not a bundle magic', () => {
-    it('Then throws bundleBadHeader with code BUNDLE_BAD_HEADER and reason not-a-bundle', () => {
+  describe('When parsed with a malformed or unsupported header', () => {
+    it.each([
+      {
+        label: 'the magic line is not a bundle magic',
+        bytes: encode('not a bundle file\nsome content\n\n'),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'not-a-bundle' },
+      },
+      {
+        label: 'the magic line is v3 git bundle',
+        bytes: encode(`# v3 git bundle\n${OID_A} refs/heads/main\n\n`),
+        expected: { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3 },
+      },
+      {
+        label: 'the magic line is missing (empty bytes)',
+        bytes: encode(''),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'not-a-bundle' },
+      },
+      {
+        label: 'the header has no blank line terminator',
+        bytes: encode(`# v2 git bundle\n${OID_A} refs/heads/main\n`),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
+      },
+      {
+        label: 'a ref line has a non-hex oid',
+        bytes: encode(`# v2 git bundle\n${'z'.repeat(40)} refs/heads/main\n\n`),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
+      },
+      {
+        label: 'a prerequisite line has a non-hex oid',
+        bytes: encode(
+          `# v2 git bundle\n-${'z'.repeat(40)} bad prereq\n${OID_B} refs/heads/main\n\n`,
+        ),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
+      },
+      {
+        label: 'the v2 header contains a capability (@) line',
+        bytes: encode(`# v2 git bundle\n@object-format=sha1\n${OID_A} refs/heads/main\n\n`),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
+      },
+      {
+        label: 'a ref line contains no space (oid only, no refname)',
+        bytes: encode(`# v2 git bundle\n${'a'.repeat(40)}\n\n`),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
+      },
+      {
+        label: 'the header starts with a blank line and has no magic line before the terminator',
+        bytes: (() => {
+          const headerBytes = encode('\n\n');
+          const packBytes = new Uint8Array([0x50, 0x41, 0x43, 0x4b]); // 'PACK'
+          const bytes = new Uint8Array(headerBytes.length + packBytes.length);
+          bytes.set(headerBytes, 0);
+          bytes.set(packBytes, headerBytes.length);
+          return bytes;
+        })(),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'not-a-bundle' },
+      },
+      {
+        label: 'the header is v3 magic line with no blank line terminator',
+        bytes: encode('# v3 git bundle'),
+        expected: { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3 },
+      },
+      {
+        // 41-char string, first 40 chars are valid hex; no space present. Without the
+        // spaceIdx===-1 guard, slice(0,-1) yields 40 valid hex chars and the line would
+        // be misread as a valid ref line instead of throwing.
+        label: 'a ref line has 41 chars and no space (valid-hex-40 prefix plus one extra char)',
+        bytes: encode(`# v2 git bundle\n${'a'.repeat(40)}b\n\n`),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
+      },
+      {
+        // Leading bytes precede the v3 magic, so the header does not START with a bundle
+        // signature; classification keys off the leading bytes (not-a-bundle). An
+        // endsWith check would misread the trailing magic and reclassify it as malformed.
+        label:
+          'the header ends with the v3 magic but does not start with a bundle signature and has no blank-line terminator',
+        bytes: encode('X# v3 git bundle'),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'not-a-bundle' },
+      },
+      {
+        label: 'a large payload has v2 magic but no blank-line terminator',
+        bytes: (() => {
+          const headerPart = encode(`# v2 git bundle\n${OID_A} refs/heads/main\n`);
+          // 1 MB of zeros simulating a large embedded packfile with no blank line in header
+          const packData = new Uint8Array(1_000_000);
+          const bytes = new Uint8Array(headerPart.length + packData.length);
+          bytes.set(headerPart, 0);
+          bytes.set(packData, headerPart.length);
+          return bytes;
+        })(),
+        expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
+      },
+    ])('Then throws because $label', ({ bytes, expected }) => {
       // Arrange
       const sut = parseBundleHeader;
-      const bytes = encode('not a bundle file\nsome content\n\n');
 
       // Act + Assert
       try {
-        sut(bytes, 'bad.bundle');
+        sut(bytes, 'test.bundle');
         expect.fail('should have thrown');
       } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'not-a-bundle',
-        );
-      }
-    });
-  });
-
-  describe('When magic line is v3 git bundle', () => {
-    it('Then throws bundleUnsupportedVersion with code BUNDLE_UNSUPPORTED_VERSION and version 3', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const bytes = encode(`# v3 git bundle\n${OID_A} refs/heads/main\n\n`);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'v3.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; version: number } }).data.code).toBe(
-          'BUNDLE_UNSUPPORTED_VERSION',
-        );
-        expect((err as { data: { code: string; version: number } }).data.version).toBe(3);
-      }
-    });
-  });
-
-  describe('When magic line is missing (empty bytes)', () => {
-    it('Then throws bundleBadHeader with reason not-a-bundle', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const bytes = encode('');
-
-      // Act + Assert
-      try {
-        sut(bytes, 'empty.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'not-a-bundle',
-        );
-      }
-    });
-  });
-
-  describe('When header has no blank line terminator', () => {
-    it('Then throws bundleBadHeader with reason malformed-header', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      // No blank line at end
-      const bytes = encode(`# v2 git bundle\n${OID_A} refs/heads/main\n`);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'no-blank.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'malformed-header',
-        );
-      }
-    });
-  });
-
-  describe('When a ref line has a non-hex oid', () => {
-    it('Then throws bundleBadHeader with reason malformed-header', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const bytes = encode(`# v2 git bundle\n${'z'.repeat(40)} refs/heads/main\n\n`);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'bad-oid.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'malformed-header',
-        );
-      }
-    });
-  });
-
-  describe('When a prerequisite line has a non-hex oid', () => {
-    it('Then throws bundleBadHeader with reason malformed-header', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const bytes = encode(
-        `# v2 git bundle\n-${'z'.repeat(40)} bad prereq\n${OID_B} refs/heads/main\n\n`,
-      );
-
-      // Act + Assert
-      try {
-        sut(bytes, 'bad-prereq.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'malformed-header',
-        );
-      }
-    });
-  });
-
-  describe('When v2 header contains a capability (@) line', () => {
-    it('Then throws bundleBadHeader with reason malformed-header', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const bytes = encode(`# v2 git bundle\n@object-format=sha1\n${OID_A} refs/heads/main\n\n`);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'v2-with-cap.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'malformed-header',
-        );
+        expect((err as { data: Record<string, unknown> }).data).toMatchObject(expected);
       }
     });
   });
@@ -252,94 +209,6 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
-  describe('When a ref line contains no space (oid only, no refname)', () => {
-    it('Then throws bundleBadHeader with code BUNDLE_BAD_HEADER and reason malformed-header', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const bytes = encode(`# v2 git bundle\n${'a'.repeat(40)}\n\n`);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'no-space-ref.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'malformed-header',
-        );
-      }
-    });
-  });
-
-  describe('When header starts with a blank line and has no magic line before the terminator', () => {
-    it('Then throws bundleBadHeader with code BUNDLE_BAD_HEADER and reason not-a-bundle', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const headerBytes = encode('\n\n');
-      const packBytes = new Uint8Array([0x50, 0x41, 0x43, 0x4b]); // 'PACK'
-      const bytes = new Uint8Array(headerBytes.length + packBytes.length);
-      bytes.set(headerBytes, 0);
-      bytes.set(packBytes, headerBytes.length);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'blank-start.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'not-a-bundle',
-        );
-      }
-    });
-  });
-
-  describe('When header is v3 magic line with no blank line terminator', () => {
-    it('Then throws bundleUnsupportedVersion with code BUNDLE_UNSUPPORTED_VERSION and version 3', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const bytes = encode('# v3 git bundle');
-
-      // Act + Assert
-      try {
-        sut(bytes, 'v3-no-blank.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; version: number } }).data.code).toBe(
-          'BUNDLE_UNSUPPORTED_VERSION',
-        );
-        expect((err as { data: { code: string; version: number } }).data.version).toBe(3);
-      }
-    });
-  });
-
-  describe('When a ref line has 41 chars and no space (valid-hex-40 prefix plus one extra char)', () => {
-    it('Then throws BUNDLE_BAD_HEADER with reason malformed-header', () => {
-      // Arrange — 41-char string, first 40 chars are valid hex; no space present.
-      // Without the spaceIdx===-1 guard, slice(0,-1) yields 40 valid hex chars and
-      // the line would be misread as a valid ref line instead of throwing.
-      const sut = parseBundleHeader;
-      const bytes = encode(`# v2 git bundle\n${'a'.repeat(40)}b\n\n`);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'no-space-41.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'malformed-header',
-        );
-      }
-    });
-  });
-
   describe('When a ref line has a valid oid and a refname ending with @', () => {
     it('Then parses successfully without throwing', () => {
       // Arrange — a refname ending in @ is valid; the startsWith('@') guard at the
@@ -353,55 +222,6 @@ describe('Given parseBundleHeader', () => {
       // Assert
       expect(result.refs).toHaveLength(1);
       expect(result.refs[0]!.name).toBe('refs/heads/main@');
-    });
-  });
-
-  describe('When header ends with the v3 magic but does not start with a bundle signature and has no blank-line terminator', () => {
-    it('Then throws BUNDLE_BAD_HEADER with reason not-a-bundle', () => {
-      // Arrange — leading bytes precede the v3 magic, so the header does not START with a
-      // bundle signature; classification keys off the leading bytes (not-a-bundle). An
-      // endsWith check would misread the trailing magic and reclassify it as malformed.
-      const sut = parseBundleHeader;
-      const bytes = encode('X# v3 git bundle');
-
-      // Act + Assert
-      try {
-        sut(bytes, 'trailing-v3-magic.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'not-a-bundle',
-        );
-      }
-    });
-  });
-
-  describe('When given a large payload with v2 magic but no blank-line terminator', () => {
-    it('Then throws BUNDLE_BAD_HEADER on a large no-terminator input', () => {
-      // Arrange
-      const sut = parseBundleHeader;
-      const headerPart = encode(`# v2 git bundle\n${OID_A} refs/heads/main\n`);
-      // 1 MB of zeros simulating a large embedded packfile with no blank line in header
-      const packData = new Uint8Array(1_000_000);
-      const bytes = new Uint8Array(headerPart.length + packData.length);
-      bytes.set(headerPart, 0);
-      bytes.set(packData, headerPart.length);
-
-      // Act + Assert
-      try {
-        sut(bytes, 'large-no-blank.bundle');
-        expect.fail('should have thrown');
-      } catch (err: unknown) {
-        expect((err as { data: { code: string; reason: string } }).data.code).toBe(
-          'BUNDLE_BAD_HEADER',
-        );
-        expect((err as { data: { code: string; reason: string } }).data.reason).toBe(
-          'malformed-header',
-        );
-      }
     });
   });
 });

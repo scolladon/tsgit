@@ -4,28 +4,16 @@ import { findFuncLine, matchFuncRec } from '../../../../src/domain/range-diff/fu
 const line = (text: string): Uint8Array => new TextEncoder().encode(text);
 
 describe('matchFuncRec', () => {
-  describe('Given a line beginning with a letter, When matched', () => {
-    it('Then it returns the line as the heading', () => {
-      // Arrange
-      const sut = matchFuncRec;
-
-      // Act
-      const result = sut(line('int main(void)'));
-
-      // Assert
-      expect(result).toBe('int main(void)');
-    });
-  });
-
-  describe.each([
-    ['underscore', '_private(void)'],
-    ['dollar', '$vms_routine'],
-    ['uppercase A boundary', 'Apply()'],
-    ['uppercase Z boundary', 'Zero()'],
-    ['lowercase a boundary', 'apply()'],
-    ['lowercase z boundary', 'zip()'],
-  ])('Given a line beginning with an %s identifier byte, When matched', (_label, text) => {
-    it('Then it returns the line as the heading', () => {
+  describe('Given a line beginning with a valid identifier byte, When matched', () => {
+    it.each([
+      ['a letter', 'int main(void)'],
+      ['an underscore', '_private(void)'],
+      ['a dollar', '$vms_routine'],
+      ['an uppercase A boundary', 'Apply()'],
+      ['an uppercase Z boundary', 'Zero()'],
+      ['a lowercase a boundary', 'apply()'],
+      ['a lowercase z boundary', 'zip()'],
+    ])('Then a line beginning with %s is returned as the heading', (_label, text) => {
       // Arrange
       const sut = matchFuncRec;
 
@@ -122,28 +110,45 @@ describe('findFuncLine', () => {
     });
   });
 
-  describe('Given a block with no function line in range, When searched', () => {
-    it('Then it returns undefined', () => {
+  describe('Given a scan that finds no function line, When searched', () => {
+    it.each([
+      {
+        lines: ['{', '\tx', '\ty'],
+        start: 2,
+        limit: -1,
+        label: 'it returns undefined',
+      },
+      {
+        lines: ['fn a()', '\tbody', '\tmore'],
+        start: 2,
+        limit: 0,
+        label: 'the limit boundary line is not scanned',
+      },
+      {
+        lines: ['{', '\tbody', '\tmore', 'fn z()'],
+        start: 0,
+        limit: 3,
+        label: 'the limit boundary stops the scan before reaching it',
+      },
+      {
+        lines: ['{', '\tbody', '\tmore'],
+        start: 0,
+        limit: 99,
+        label: 'the upper bound stops the scan at the last line',
+      },
+      {
+        lines: ['\tbody', '\tmore'],
+        start: 1,
+        limit: -5,
+        label: 'the lower bound stops the scan at the first line',
+      },
+    ])('Then $label', ({ lines, start, limit }) => {
       // Arrange
       const sut = findFuncLine;
-      const lines = ['{', '\tx', '\ty'].map(line);
+      const encoded = lines.map(line);
 
       // Act
-      const result = sut(lines, 2, -1);
-
-      // Assert
-      expect(result).toBeUndefined();
-    });
-  });
-
-  describe('Given a limit that excludes the only function line, When searched', () => {
-    it('Then the limit boundary line is not scanned', () => {
-      // Arrange
-      const sut = findFuncLine;
-      const lines = ['fn a()', '\tbody', '\tmore'].map(line);
-
-      // Act — limit 0 means index 0 (the function line) is excluded
-      const result = sut(lines, 2, 0);
+      const result = sut(encoded, start, limit);
 
       // Assert
       expect(result).toBeUndefined();
@@ -161,48 +166,6 @@ describe('findFuncLine', () => {
 
       // Assert
       expect(result).toEqual({ index: 2, heading: 'int g(void)' });
-    });
-  });
-
-  describe('Given a forward scan whose only function line sits at or past the limit, When searched', () => {
-    it('Then the limit boundary stops the scan before reaching it', () => {
-      // Arrange — function line at index 3, limit 3 excludes it
-      const sut = findFuncLine;
-      const lines = ['{', '\tbody', '\tmore', 'fn z()'].map(line);
-
-      // Act
-      const result = sut(lines, 0, 3);
-
-      // Assert
-      expect(result).toBeUndefined();
-    });
-  });
-
-  describe('Given a forward limit past the end of the file, When searched', () => {
-    it('Then the upper bound stops the scan at the last line', () => {
-      // Arrange — no function line; limit exceeds the array length
-      const sut = findFuncLine;
-      const lines = ['{', '\tbody', '\tmore'].map(line);
-
-      // Act
-      const result = sut(lines, 0, 99);
-
-      // Assert
-      expect(result).toBeUndefined();
-    });
-  });
-
-  describe('Given a backward limit below the start of the file, When searched', () => {
-    it('Then the lower bound stops the scan at the first line', () => {
-      // Arrange — no function line; limit is below -1
-      const sut = findFuncLine;
-      const lines = ['\tbody', '\tmore'].map(line);
-
-      // Act
-      const result = sut(lines, 1, -5);
-
-      // Assert
-      expect(result).toBeUndefined();
     });
   });
 });

@@ -14,244 +14,174 @@ const level = (basedir: '' | string, source: string): IgnoreLevel => ({
 const path = (s: string): FilePath => s as FilePath;
 
 describe('matchInStack', () => {
-  describe('Given an empty stack', () => {
+  describe('Given a stack of ignore levels, a path, and an isDir flag', () => {
     describe('When matched', () => {
-      it('Then returns "unset"', () => {
-        // Arrange
-        const sut = matchInStack([], path('foo.log'), false);
+      // The "no level matches" rows kill initialiser mutants: a mutant
+      // changing the initial `result = "unset"` to `"ignored"` would survive
+      // single-level tests because every level could return "unset" without
+      // changing the result.
+      it.each([
+        {
+          stack: [],
+          filePath: 'foo.log',
+          isDir: false,
+          expected: 'unset',
+          label: 'an empty stack returns "unset"',
+        },
+        {
+          stack: [level('', '*.tmp'), level('sub', '*.cache')],
+          filePath: 'keep.ts',
+          isDir: false,
+          expected: 'unset',
+          label:
+            'a multi-level stack where no level matches returns "unset" (kills initialiser mutants)',
+        },
+        {
+          stack: [level('', '*.log')],
+          filePath: 'foo.log',
+          isDir: false,
+          expected: 'ignored',
+          label: 'a single root level with a matching rule returns "ignored"',
+        },
+        {
+          // Global excludes `*.log`; repo-root `.gitignore` re-includes `keep.log`.
+          stack: [level('', '*.log'), level('', '!keep.log')],
+          filePath: 'keep.log',
+          isDir: false,
+          expected: 'unignored',
+          label: 'a later root level negating an earlier ignore returns "unignored"',
+        },
+        {
+          // The matcher relativizes the path before evaluating.
+          stack: [level('sub', '*.log')],
+          filePath: 'sub/foo.log',
+          isDir: false,
+          expected: 'ignored',
+          label: 'a level at basedir "sub" applies to a path under that basedir',
+        },
+        {
+          stack: [level('sub', '*.log')],
+          filePath: 'other/foo.log',
+          isDir: false,
+          expected: 'unset',
+          label: 'a level at basedir "sub" does NOT apply outside that basedir',
+        },
+        {
+          stack: [level('', '*.log'), level('sub', '!keep.log')],
+          filePath: 'sub/keep.log',
+          isDir: false,
+          expected: 'unignored',
+          label: 'a nested negation wins over a root ignore for the nested path',
+        },
+        {
+          stack: [level('', '*.log'), level('sub', '!keep.log')],
+          filePath: 'other/keep.log',
+          isDir: false,
+          expected: 'ignored',
+          label: 'the root rule still wins for a sibling outside the nested basedir',
+        },
+        {
+          // `build/` only applies when `isDir` is true.
+          stack: [level('', 'build/')],
+          filePath: 'build',
+          isDir: false,
+          expected: 'unset',
+          label: 'a directory-only rule does NOT apply to a non-directory path',
+        },
+        {
+          stack: [level('', 'build/')],
+          filePath: 'build',
+          isDir: true,
+          expected: 'ignored',
+          label: 'a directory-only rule applies to a matching directory path',
+        },
+      ])('Then $label', ({ stack, filePath, isDir, expected }) => {
+        // Arrange + Act
+        const sut = matchInStack(stack, path(filePath), isDir);
 
         // Assert
-        expect(sut).toBe('unset');
-      });
-    });
-  });
-
-  describe('Given a multi-level stack where NO level matches', () => {
-    describe('When matched', () => {
-      it('Then returns "unset" (kills initialiser mutants)', () => {
-        // Arrange — two levels, each with a rule that does NOT match the
-        // query path. A mutant changing the initial `result = "unset"` to
-        // `"ignored"` would survive single-level tests because every level
-        // could return "unset" without changing the result.
-        const stack = [level('', '*.tmp'), level('sub', '*.cache')];
-
-        // Act
-        const sut = matchInStack(stack, path('keep.ts'), false);
-
-        // Assert
-        expect(sut).toBe('unset');
-      });
-    });
-  });
-
-  describe('Given a single root level with `*.log`', () => {
-    describe('When matched against `foo.log`', () => {
-      it('Then returns "ignored"', () => {
-        // Arrange
-        const stack = [level('', '*.log')];
-
-        // Assert
-        expect(matchInStack(stack, path('foo.log'), false)).toBe('ignored');
-      });
-    });
-  });
-
-  describe('Given two root levels where the later level negates an earlier ignore', () => {
-    describe('When matched', () => {
-      it('Then returns "unignored"', () => {
-        // Arrange — global excludes `*.log`; repo-root `.gitignore` re-includes `keep.log`.
-        const stack = [level('', '*.log'), level('', '!keep.log')];
-
-        // Act
-        const sut = matchInStack(stack, path('keep.log'), false);
-
-        // Assert
-        expect(sut).toBe('unignored');
-      });
-    });
-  });
-
-  describe('Given a level at basedir "sub"', () => {
-    describe('When matched against `sub/foo.log`', () => {
-      it('Then the rule applies', () => {
-        // Arrange — rule is `*.log` relative to `sub/`.
-        const stack = [level('sub', '*.log')];
-
-        // Act
-        const sut = matchInStack(stack, path('sub/foo.log'), false);
-
-        // Assert — the matcher relativizes the path before evaluating.
-        expect(sut).toBe('ignored');
-      });
-    });
-    describe('When matched against `other/foo.log`', () => {
-      it('Then the rule does NOT apply', () => {
-        // Arrange
-        const stack = [level('sub', '*.log')];
-
-        // Act
-        const sut = matchInStack(stack, path('other/foo.log'), false);
-
-        // Assert
-        expect(sut).toBe('unset');
-      });
-    });
-  });
-
-  describe('Given a root ignore + a nested negation', () => {
-    describe('When matched against the nested path', () => {
-      it('Then the negation wins', () => {
-        // Arrange
-        const stack = [level('', '*.log'), level('sub', '!keep.log')];
-
-        // Act
-        const sut = matchInStack(stack, path('sub/keep.log'), false);
-
-        // Assert
-        expect(sut).toBe('unignored');
-      });
-    });
-    describe('When matched against a sibling outside the nested basedir', () => {
-      it('Then the root rule still wins', () => {
-        // Arrange
-        const stack = [level('', '*.log'), level('sub', '!keep.log')];
-
-        // Act
-        const sut = matchInStack(stack, path('other/keep.log'), false);
-
-        // Assert
-        expect(sut).toBe('ignored');
-      });
-    });
-  });
-
-  describe('Given a directory-only rule and a non-directory path', () => {
-    describe('When matched', () => {
-      it('Then returns "unset"', () => {
-        // Arrange
-        const stack = [level('', 'build/')];
-
-        // Act
-        const sut = matchInStack(stack, path('build'), false);
-
-        // Assert — `build/` only applies when `isDir` is true.
-        expect(sut).toBe('unset');
-      });
-    });
-  });
-
-  describe('Given a directory-only rule and a matching directory path', () => {
-    describe('When matched', () => {
-      it('Then returns "ignored"', () => {
-        // Arrange
-        const stack = [level('', 'build/')];
-
-        // Assert
-        expect(matchInStack(stack, path('build'), true)).toBe('ignored');
+        expect(sut).toBe(expected);
       });
     });
   });
 });
 
 describe('matchInStackVerbose', () => {
-  describe('Given an empty stack', () => {
-    describe('When called', () => {
-      it('Then verdict is "unset" with no level or ruleIndex', () => {
-        // Arrange + Act — the empty stack literal is itself the arrangement.
-        const sut = matchInStackVerbose([], path('foo.log'), false);
-
-        // Assert
-        expect(sut.verdict).toBe('unset');
-        expect(sut.level).toBeUndefined();
-        expect(sut.ruleIndex).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a single root level with `*.log`', () => {
-    describe('When matched against `foo.log`', () => {
-      it('Then verdict is "ignored" with level + ruleIndex 0', () => {
-        // Arrange
-        const root = level('', '*.log');
-        const stack = [root];
-
-        // Act
-        const sut = matchInStackVerbose(stack, path('foo.log'), false);
-
-        // Assert
-        expect(sut.verdict).toBe('ignored');
-        expect(sut.level).toBe(root);
-        expect(sut.ruleIndex).toBe(0);
-      });
-    });
-  });
-
-  describe('Given two root levels where the later level negates an earlier ignore', () => {
+  describe('Given a stack of ignore levels, a path, and an isDir flag', () => {
     describe('When matched', () => {
-      it('Then verdict "unignored" with the later level + ruleIndex 0', () => {
-        // Arrange — global excludes `*.log`; repo-root `.gitignore` re-includes `keep.log`.
-        const globalLevel = level('', '*.log');
-        const repoLevel = level('', '!keep.log');
-        const stack = [globalLevel, repoLevel];
+      const rootLevel = level('', '*.log');
+      const globalLevel = level('', '*.log');
+      const repoLevel = level('', '!keep.log');
+      const nestedLevel = level('sub', '*.log');
 
-        // Act
-        const sut = matchInStackVerbose(stack, path('keep.log'), false);
+      // Non-matching rows assert both `level` and `ruleIndex` stay undefined
+      // (kills initialiser mutants that would otherwise survive).
+      it.each([
+        {
+          stack: [],
+          filePath: 'foo.log',
+          isDir: false,
+          verdict: 'unset',
+          expectedLevel: undefined,
+          ruleIndex: undefined,
+          label: 'an empty stack yields "unset" with no level or ruleIndex',
+        },
+        {
+          stack: [rootLevel],
+          filePath: 'foo.log',
+          isDir: false,
+          verdict: 'ignored',
+          expectedLevel: rootLevel,
+          ruleIndex: 0,
+          label: 'a single root level yields "ignored" with level + ruleIndex 0',
+        },
+        {
+          // Global excludes `*.log`; repo-root `.gitignore` re-includes `keep.log`.
+          stack: [globalLevel, repoLevel],
+          filePath: 'keep.log',
+          isDir: false,
+          verdict: 'unignored',
+          expectedLevel: repoLevel,
+          ruleIndex: 0,
+          label:
+            'a later level negating an earlier ignore yields "unignored" with the later level + ruleIndex 0',
+        },
+        {
+          stack: [nestedLevel],
+          filePath: 'sub/foo.log',
+          isDir: false,
+          verdict: 'ignored',
+          expectedLevel: nestedLevel,
+          ruleIndex: 0,
+          label: 'a level at basedir "sub" applies and `level` is the nested level',
+        },
+        {
+          stack: [nestedLevel],
+          filePath: 'other/foo.log',
+          isDir: false,
+          verdict: 'unset',
+          expectedLevel: undefined,
+          ruleIndex: undefined,
+          label: 'a level at basedir "sub" does NOT apply outside that basedir',
+        },
+        {
+          stack: [level('', '*.tmp'), level('sub', '*.cache')],
+          filePath: 'keep.ts',
+          isDir: false,
+          verdict: 'unset',
+          expectedLevel: undefined,
+          ruleIndex: undefined,
+          label:
+            'a multi-level stack where no level matches is fully empty (kills initialiser mutants)',
+        },
+      ])('Then $label', ({ stack, filePath, isDir, verdict, expectedLevel, ruleIndex }) => {
+        // Arrange + Act
+        const sut = matchInStackVerbose(stack, path(filePath), isDir);
 
         // Assert
-        expect(sut.verdict).toBe('unignored');
-        expect(sut.level).toBe(repoLevel);
-        expect(sut.ruleIndex).toBe(0);
-      });
-    });
-  });
-
-  describe('Given a level at basedir "sub"', () => {
-    describe('When matched against `sub/foo.log`', () => {
-      it('Then the rule applies and `level` is the nested level', () => {
-        // Arrange — rule is `*.log` relative to `sub/`.
-        const nested = level('sub', '*.log');
-        const stack = [nested];
-
-        // Act
-        const sut = matchInStackVerbose(stack, path('sub/foo.log'), false);
-
-        // Assert
-        expect(sut.verdict).toBe('ignored');
-        expect(sut.level).toBe(nested);
-        expect(sut.ruleIndex).toBe(0);
-      });
-    });
-    describe('When matched against `other/foo.log`', () => {
-      it('Then the rule does NOT apply and the result is "unset"', () => {
-        // Arrange
-        const nested = level('sub', '*.log');
-        const stack = [nested];
-
-        // Act
-        const sut = matchInStackVerbose(stack, path('other/foo.log'), false);
-
-        // Assert
-        expect(sut.verdict).toBe('unset');
-        expect(sut.level).toBeUndefined();
-        expect(sut.ruleIndex).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a multi-level stack where NO level matches', () => {
-    describe('When called', () => {
-      it('Then result is fully empty (kills initialiser mutants)', () => {
-        // Arrange — two non-matching levels; both `level` and `ruleIndex`
-        // must remain undefined.
-        const stack = [level('', '*.tmp'), level('sub', '*.cache')];
-
-        // Act
-        const sut = matchInStackVerbose(stack, path('keep.ts'), false);
-
-        // Assert
-        expect(sut.verdict).toBe('unset');
-        expect(sut.level).toBeUndefined();
-        expect(sut.ruleIndex).toBeUndefined();
+        expect(sut.verdict).toBe(verdict);
+        expect(sut.level).toBe(expectedLevel);
+        expect(sut.ruleIndex).toBe(ruleIndex);
       });
     });
   });

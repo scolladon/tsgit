@@ -114,23 +114,6 @@ describe('tag', () => {
     });
   });
 
-  describe('Given two tags', () => {
-    describe('When tag list', () => {
-      it('Then returns them sorted', async () => {
-        // Arrange
-        const { ctx } = await seedWithCommit();
-        await tagCreate(ctx, { name: 'v2.0' });
-        await tagCreate(ctx, { name: 'v1.0' });
-
-        // Act
-        const sut = await tagList(ctx);
-
-        // Assert
-        expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0', 'refs/tags/v2.0']);
-      });
-    });
-  });
-
   describe('Given an explicit target oid', () => {
     describe('When tag create', () => {
       it('Then the tag points at that oid (not HEAD)', async () => {
@@ -180,58 +163,62 @@ describe('tag', () => {
     });
   });
 
-  describe('Given a fresh repo with no tags', () => {
-    describe('When tag list', () => {
-      it('Then returns an empty array', async () => {
+  describe('Given a repo with tags to list', () => {
+    describe('When tag list runs', () => {
+      // Each row isolates one facet of listing: basic sort, the empty case, a
+      // directory entry sharing the refs/tags namespace, and — with 3 unsorted
+      // tags — a comparator boundary that 2 tags cannot rule out (an
+      // always-(-1)/always-(1) comparator could still pass with only 2 items).
+      it.each([
+        {
+          label: 'two tags created out of insertion order are returned sorted',
+          build: async (): Promise<Context> => {
+            const { ctx } = await seedWithCommit();
+            await tagCreate(ctx, { name: 'v2.0' });
+            await tagCreate(ctx, { name: 'v1.0' });
+            return ctx;
+          },
+          expectedNames: ['refs/tags/v1.0', 'refs/tags/v2.0'],
+        },
+        {
+          label: 'a fresh repo with no tags returns an empty array',
+          build: async (): Promise<Context> => {
+            const ctx = createMemoryContext();
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+            return ctx;
+          },
+          expectedNames: [],
+        },
+        {
+          label: 'a directory entry inside refs/tags is skipped, not resolved as a ref',
+          build: async (): Promise<Context> => {
+            const { ctx } = await seedWithCommit();
+            await tagCreate(ctx, { name: 'v1.0' });
+            await ctx.fs.mkdir(`${ctx.layout.gitDir}/refs/tags/group`);
+            return ctx;
+          },
+          expectedNames: ['refs/tags/v1.0'],
+        },
+        {
+          label: 'three tags created out of order are returned in strict ascending order',
+          build: async (): Promise<Context> => {
+            const { ctx } = await seedWithCommit();
+            await tagCreate(ctx, { name: 'v3.0' });
+            await tagCreate(ctx, { name: 'v1.0' });
+            await tagCreate(ctx, { name: 'v2.0' });
+            return ctx;
+          },
+          expectedNames: ['refs/tags/v1.0', 'refs/tags/v2.0', 'refs/tags/v3.0'],
+        },
+      ])('Then $label', async ({ build, expectedNames }) => {
         // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const ctx = await build();
 
         // Act
         const sut = await tagList(ctx);
 
         // Assert
-        expect(sut.tags).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a subdirectory inside refs/tags', () => {
-    describe('When tag list', () => {
-      it('Then non-file entries are skipped', async () => {
-        // Arrange — a file tag plus a directory entry sharing the refs/tags namespace
-        const { ctx } = await seedWithCommit();
-        await tagCreate(ctx, { name: 'v1.0' });
-        await ctx.fs.mkdir(`${ctx.layout.gitDir}/refs/tags/group`);
-
-        // Act — must not throw: the directory entry is filtered out before resolveRef
-        const sut = await tagList(ctx);
-
-        // Assert — only the file tag is listed; the directory is not resolved as a ref
-        expect(sut.tags.map((t) => t.name)).toEqual(['refs/tags/v1.0']);
-      });
-    });
-  });
-
-  describe('Given three tags created out of order', () => {
-    describe('When tag list', () => {
-      it('Then returns them in strict ascending order', async () => {
-        // Arrange — insertion order v3, v1, v2 so readdir yields an unsorted array
-        const { ctx } = await seedWithCommit();
-        await tagCreate(ctx, { name: 'v3.0' });
-        await tagCreate(ctx, { name: 'v1.0' });
-        await tagCreate(ctx, { name: 'v2.0' });
-
-        // Act
-        const sut = await tagList(ctx);
-
-        // Assert — comparator must order ascending; an always-(-1)/always-(1) comparator
-        // would leave [v3,v1,v2] or reverse it to [v2,v1,v3], neither matching this.
-        expect(sut.tags.map((t) => t.name)).toEqual([
-          'refs/tags/v1.0',
-          'refs/tags/v2.0',
-          'refs/tags/v3.0',
-        ]);
+        expect(sut.tags.map((t) => t.name)).toEqual(expectedNames);
       });
     });
   });

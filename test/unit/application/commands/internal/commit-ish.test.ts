@@ -86,29 +86,31 @@ describe('resolveCommitIsh', () => {
     });
   });
 
-  describe('Given an unknown commit-ish', () => {
+  describe('Given a commit-ish that cannot be resolved', () => {
     describe('When resolved', () => {
-      it('Then throws REF_NOT_FOUND', async () => {
+      it.each([
+        { commitIsh: 'nope', label: 'an unknown commit-ish throws REF_NOT_FOUND' },
+        {
+          commitIsh: `${'a'.repeat(40)}0`,
+          label:
+            'a 41-char string of 40 hex plus an extra char: the anchored oid regex rejects it and it falls through to REF_NOT_FOUND',
+        },
+        {
+          commitIsh: 'a',
+          label:
+            'a single hex character below the abbreviated-oid floor: the 40-length oid regex rejects it and it falls through to REF_NOT_FOUND',
+        },
+        {
+          commitIsh: 'z'.repeat(40),
+          label:
+            'a 40-character string of non-hex characters: the hex-only oid regex rejects it and it falls through to REF_NOT_FOUND',
+        },
+      ])('Then $label', async ({ commitIsh }) => {
         // Arrange
         const { ctx } = await seedCommit();
 
         // Act
-        const code = await codeOf(() => resolveCommitIsh(ctx, 'nope'));
-
-        // Assert
-        expect(code).toBe('REF_NOT_FOUND');
-      });
-    });
-  });
-
-  describe('Given a 41-char string of 40 hex plus an extra char', () => {
-    describe('When resolved', () => {
-      it('Then the anchored oid regex rejects it and it falls through to REF_NOT_FOUND', async () => {
-        // Arrange
-        const { ctx } = await seedCommit();
-
-        // Act
-        const code = await codeOf(() => resolveCommitIsh(ctx, `${'a'.repeat(40)}0`));
+        const code = await codeOf(() => resolveCommitIsh(ctx, commitIsh));
 
         // Assert
         expect(code).toBe('REF_NOT_FOUND');
@@ -178,36 +180,6 @@ describe('resolveCommitIsh', () => {
         // Assert — resolved as an object id, not DWIM'd to the same-named branch
         expect(sut).toBe(hexName);
         expect(sut).not.toBe(head);
-      });
-    });
-  });
-
-  describe('Given a single hex character below the abbreviated-oid floor', () => {
-    describe('When resolved', () => {
-      it('Then the 40-length oid regex rejects it and it falls through to REF_NOT_FOUND', async () => {
-        // Arrange
-        const { ctx } = await seedCommit();
-
-        // Act
-        const code = await codeOf(() => resolveCommitIsh(ctx, 'a'));
-
-        // Assert
-        expect(code).toBe('REF_NOT_FOUND');
-      });
-    });
-  });
-
-  describe('Given a 40-character string of non-hex characters', () => {
-    describe('When resolved', () => {
-      it('Then the hex-only oid regex rejects it and it falls through to REF_NOT_FOUND', async () => {
-        // Arrange
-        const { ctx } = await seedCommit();
-
-        // Act
-        const code = await codeOf(() => resolveCommitIsh(ctx, 'z'.repeat(40)));
-
-        // Assert
-        expect(code).toBe('REF_NOT_FOUND');
       });
     });
   });

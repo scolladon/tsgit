@@ -6,32 +6,25 @@ import { arbObjectId } from '../objects/arbitraries.js';
 
 describe('loose-path', () => {
   describe('computeLooseObjectPath', () => {
-    describe("Given a SHA-1 ObjectId 'aabb...'", () => {
+    describe('Given an ObjectId of a known hex width', () => {
       describe('When computing path', () => {
-        it("Then returns 'aa/bb...'", () => {
-          // Arrange
-          const sut = ('aa' + 'bb'.repeat(19)) as ObjectId;
-
-          // Act
-          const result = computeLooseObjectPath(sut);
+        it.each([
+          {
+            id: ('aa' + 'bb'.repeat(19)) as ObjectId,
+            expected: 'aa/' + 'bb'.repeat(19),
+            label: 'a SHA-1 (40-char) id',
+          },
+          {
+            id: ('cc' + 'dd'.repeat(31)) as ObjectId,
+            expected: 'cc/' + 'dd'.repeat(31),
+            label: 'a SHA-256 (64-char) id',
+          },
+        ])('Then returns the split path for $label', ({ id, expected }) => {
+          // Arrange & Act
+          const result = computeLooseObjectPath(id);
 
           // Assert
-          expect(result).toBe('aa/' + 'bb'.repeat(19));
-        });
-      });
-    });
-
-    describe('Given a SHA-256 ObjectId (64 chars)', () => {
-      describe('When computing path', () => {
-        it("Then returns 'xx/yy...'", () => {
-          // Arrange
-          const sut = ('cc' + 'dd'.repeat(31)) as ObjectId;
-
-          // Act
-          const result = computeLooseObjectPath(sut);
-
-          // Assert
-          expect(result).toBe('cc/' + 'dd'.repeat(31));
+          expect(result).toBe(expected);
         });
       });
     });

@@ -635,161 +635,69 @@ describe('domain error — AdapterError', () => {
   });
 
   describe('basename helper', () => {
-    describe('Given empty string', () => {
+    describe('Given a path', () => {
       describe('When basename', () => {
-        it('Then returns empty string', () => {
+        it.each([
+          { path: '', expected: '', label: 'an empty string returns empty string' },
+          { path: '/', expected: '/', label: "'/' returns '/' (fallback)" },
+          { path: '//', expected: '//', label: "'//' returns '//' (multi-root fallback)" },
+          { path: 'foo', expected: 'foo', label: "'foo' returns 'foo'" },
+          { path: '/a/b/c.txt', expected: 'c.txt', label: "'/a/b/c.txt' returns 'c.txt'" },
+          {
+            path: 'C:\\a\\b\\c.txt',
+            expected: 'c.txt',
+            label: 'a Windows path returns the trailing segment',
+          },
+          {
+            path: '/a\\b/c.txt',
+            expected: 'c.txt',
+            label: 'mixed separators return the trailing segment',
+          },
+          { path: '/a/b/', expected: 'b', label: "a trailing slash returns 'b'" },
+          { path: 'C:\\a\\b\\', expected: 'b', label: "a trailing backslash returns 'b'" },
+          {
+            path: 'foo/',
+            expected: 'foo',
+            label:
+              "a single-segment trailing slash returns 'foo' (no separator; kills the `i > 0` mutant where segment[0] is the last valid one)",
+          },
+        ])('Then $label', ({ path, expected }) => {
           // Arrange
-          const sut = basename('');
+          const sut = basename(path);
 
           // Assert
-          expect(sut).toBe('');
-        });
-      });
-    });
-
-    describe("Given '/'", () => {
-      describe('When basename', () => {
-        it("Then returns '/' (fallback)", () => {
-          // Arrange
-          const sut = basename('/');
-
-          // Assert
-          expect(sut).toBe('/');
-        });
-      });
-    });
-
-    describe("Given '//'", () => {
-      describe('When basename', () => {
-        it("Then returns '//' (multi-root fallback)", () => {
-          // Arrange
-          const sut = basename('//');
-
-          // Assert
-          expect(sut).toBe('//');
-        });
-      });
-    });
-
-    describe("Given 'foo'", () => {
-      describe('When basename', () => {
-        it("Then returns 'foo'", () => {
-          // Arrange
-          const sut = basename('foo');
-
-          // Assert
-          expect(sut).toBe('foo');
-        });
-      });
-    });
-
-    describe("Given '/a/b/c.txt'", () => {
-      describe('When basename', () => {
-        it("Then returns 'c.txt'", () => {
-          // Arrange
-          const sut = basename('/a/b/c.txt');
-
-          // Assert
-          expect(sut).toBe('c.txt');
-        });
-      });
-    });
-
-    describe("Given Windows path 'C:\\\\\\\\a\\\\\\\\b\\\\\\\\c.txt'", () => {
-      describe('When basename', () => {
-        it("Then returns 'c.txt'", () => {
-          // Arrange
-          const sut = basename('C:\\a\\b\\c.txt');
-
-          // Assert
-          expect(sut).toBe('c.txt');
-        });
-      });
-    });
-
-    describe("Given mixed separators '/a\\\\\\\\b/c.txt'", () => {
-      describe('When basename', () => {
-        it("Then returns 'c.txt'", () => {
-          // Arrange
-          const sut = basename('/a\\b/c.txt');
-
-          // Assert
-          expect(sut).toBe('c.txt');
-        });
-      });
-    });
-
-    describe("Given trailing slash '/a/b/'", () => {
-      describe('When basename', () => {
-        it("Then returns 'b'", () => {
-          // Arrange
-          const sut = basename('/a/b/');
-
-          // Assert
-          expect(sut).toBe('b');
-        });
-      });
-    });
-
-    describe("Given trailing backslash 'C:\\\\\\\\a\\\\\\\\b\\\\\\\\'", () => {
-      describe('When basename', () => {
-        it("Then returns 'b'", () => {
-          // Arrange
-          const sut = basename('C:\\a\\b\\');
-
-          // Assert
-          expect(sut).toBe('b');
-        });
-      });
-    });
-
-    describe("Given single-segment path with trailing slash 'foo/'", () => {
-      describe('When basename', () => {
-        it("Then returns 'foo' (no separator)", () => {
-          // Arrange — proves loop walks to segments[0] (kills `i > 0` mutant where segment[0] is the last valid one)
-          const sut = basename('foo/');
-
-          // Assert
-          expect(sut).toBe('foo');
+          expect(sut).toBe(expected);
         });
       });
     });
   });
 
   describe('dirname helper', () => {
-    describe("Given a slash-less path 'abc'", () => {
+    describe('Given a path', () => {
       describe('When dirname', () => {
-        it("Then returns '' (no parent)", () => {
-          // Arrange & Act — multi-char so the `=== -1` and `-1` mutants (which
-          // would slice off the last char → 'ab') are distinguishable from ''.
-          const sut = dirname('abc');
-
-          // Assert
-          expect(sut).toBe('');
-        });
-      });
-    });
-
-    describe("Given a nested path 'a/b/c'", () => {
-      describe('When dirname', () => {
-        it("Then returns the parent 'a/b'", () => {
+        it.each([
+          {
+            path: 'abc',
+            expected: '',
+            label:
+              "a slash-less path 'abc' returns '' (no parent; multi-char so the `=== -1` and `-1` mutants, which would slice off the last char to give 'ab', are distinguishable from '')",
+          },
+          {
+            path: 'a/b/c',
+            expected: 'a/b',
+            label: "a nested path 'a/b/c' returns the parent 'a/b'",
+          },
+          {
+            path: '/leaf',
+            expected: '',
+            label: "a root-level absolute leaf '/leaf' returns '' (slash at index 0)",
+          },
+        ])('Then $label', ({ path, expected }) => {
           // Arrange & Act
-          const sut = dirname('a/b/c');
+          const sut = dirname(path);
 
           // Assert
-          expect(sut).toBe('a/b');
-        });
-      });
-    });
-
-    describe("Given a root-level absolute leaf '/leaf'", () => {
-      describe('When dirname', () => {
-        it("Then returns '' (slash at index 0)", () => {
-          // Arrange & Act
-          const sut = dirname('/leaf');
-
-          // Assert
-          expect(sut).toBe('');
+          expect(sut).toBe(expected);
         });
       });
     });

@@ -621,22 +621,15 @@ describe('domain commands error — factory data', () => {
   });
 
   describe('Given the noOperationInProgress error helper', () => {
-    describe('When called with operation=merge', () => {
-      it('Then data matches expected shape', () => {
-        // Arrange + Assert
-        expect(noOperationInProgress('merge').data).toEqual({
-          code: 'NO_OPERATION_IN_PROGRESS',
-          operation: 'merge',
-        });
-      });
-    });
+    describe('When called', () => {
+      it.each([['merge'], ['rebase']] as const)('Then data carries operation=%s', (operation) => {
+        // Arrange + Act
+        const sut = noOperationInProgress(operation);
 
-    describe('When called with operation=rebase', () => {
-      it('Then operation discriminator is preserved', () => {
-        // Arrange + Assert
-        expect(noOperationInProgress('rebase').data).toEqual({
+        // Assert
+        expect(sut.data).toEqual({
           code: 'NO_OPERATION_IN_PROGRESS',
-          operation: 'rebase',
+          operation,
         });
       });
     });
@@ -692,27 +685,28 @@ describe('domain commands error — factory data', () => {
     });
   });
 
-  describe('Given a printable reason', () => {
-    describe('When invalidOption', () => {
-      it('Then data carries the verbatim option name and sanitized reason', () => {
-        // Arrange + Assert
-        expect(invalidOption('cwd', 'must be absolute').data).toEqual({
-          code: 'INVALID_OPTION',
-          option: 'cwd',
+  describe('Given a reason for invalidOption', () => {
+    describe('When invalidOption is called with option="cwd"', () => {
+      it.each([
+        {
           reason: 'must be absolute',
-        });
-      });
-    });
-  });
+          expected: 'must be absolute',
+          label: 'a printable reason carries verbatim, alongside the verbatim option name',
+        },
+        {
+          reason: 'bad\rvalue',
+          expected: 'bad\\x0Dvalue',
+          label: 'a reason with a CR byte is sanitized via \\xNN',
+        },
+      ])('Then $label', ({ reason, expected }) => {
+        // Arrange + Act
+        const sut = invalidOption('cwd', reason);
 
-  describe('Given a reason with a CR byte', () => {
-    describe('When invalidOption', () => {
-      it('Then reason is sanitized via \\xNN', () => {
-        // Arrange + Assert
-        expect(invalidOption('cwd', 'bad\rvalue').data).toEqual({
+        // Assert
+        expect(sut.data).toEqual({
           code: 'INVALID_OPTION',
           option: 'cwd',
-          reason: 'bad\\x0Dvalue',
+          reason: expected,
         });
       });
     });
@@ -839,85 +833,55 @@ describe('domain commands error — factory data', () => {
 });
 
 describe('sanitize helper', () => {
-  describe('Given printable ASCII', () => {
+  describe('Given a value sanitize keeps verbatim', () => {
     describe('When sanitize', () => {
-      it('Then returns input unchanged', () => {
+      it.each([
+        {
+          input: 'hello world 123',
+          expected: 'hello world 123',
+          label: 'printable ASCII is returned unchanged',
+        },
+        {
+          input: 'a\tb\nc',
+          expected: 'a\tb\nc',
+          label: 'a tab and newline are preserved verbatim',
+        },
+        {
+          input: 'a~b',
+          expected: 'a~b',
+          label: 'a tilde (0x7e, the printable-range upper bound) is kept verbatim',
+        },
+      ])('Then $label', ({ input, expected }) => {
         // Arrange
-        const sut = sanitize('hello world 123');
+        const sut = sanitize(input);
 
         // Assert
-        expect(sut).toBe('hello world 123');
+        expect(sut).toBe(expected);
       });
     });
   });
 
-  describe('Given a tab and newline', () => {
+  describe('Given a value sanitize escapes as \\xNN', () => {
     describe('When sanitize', () => {
-      it('Then preserves them verbatim', () => {
+      it.each([
+        { input: 'a\rb', expected: 'a\\x0Db', label: 'CR and other control bytes are escaped' },
+        { input: 'a\0b', expected: 'a\\x00b', label: 'a NUL byte is escaped as \\x00' },
+        {
+          input: 'a\x80b',
+          expected: 'a\\x80b',
+          label: 'a high-byte non-ASCII character is escaped',
+        },
+        {
+          input: 'a\x7Fb',
+          expected: 'a\\x7Fb',
+          label: 'DEL (0x7f, just past the printable upper bound) is escaped',
+        },
+      ])('Then $label', ({ input, expected }) => {
         // Arrange
-        const sut = sanitize('a\tb\nc');
+        const sut = sanitize(input);
 
         // Assert
-        expect(sut).toBe('a\tb\nc');
-      });
-    });
-  });
-
-  describe('Given CR and other control bytes', () => {
-    describe('When sanitize', () => {
-      it('Then escapes them as \\xNN', () => {
-        // Arrange
-        const sut = sanitize('a\rb');
-
-        // Assert
-        expect(sut).toBe('a\\x0Db');
-      });
-    });
-  });
-
-  describe('Given a NUL byte', () => {
-    describe('When sanitize', () => {
-      it('Then escapes as \\x00', () => {
-        // Arrange
-        const sut = sanitize('a\0b');
-
-        // Assert
-        expect(sut).toBe('a\\x00b');
-      });
-    });
-  });
-
-  describe('Given a high-byte non-ASCII character', () => {
-    describe('When sanitize', () => {
-      it('Then escapes', () => {
-        // Arrange
-        const sut = sanitize('ab');
-
-        // Assert
-        expect(sut).toBe('a\\x80b');
-      });
-    });
-  });
-
-  describe('Given a tilde (0x7e, the printable-range upper bound)', () => {
-    describe('When sanitize', () => {
-      it('Then keeps it verbatim', () => {
-        // Arrange + Assert
-        // 0x7e is the inclusive upper bound of the printable ASCII range; it must
-        // be preserved, not escaped.
-        expect(sanitize('a~b')).toBe('a~b');
-      });
-    });
-  });
-
-  describe('Given DEL (0x7f, just past the printable upper bound)', () => {
-    describe('When sanitize', () => {
-      it('Then escapes it', () => {
-        // Arrange
-        const sut = sanitize('ab');
-
-        // Assert
-        expect(sut).toBe('a\\x7Fb');
+        expect(sut).toBe(expected);
       });
     });
   });
@@ -1190,38 +1154,16 @@ describe('domain commands error — config factory data', () => {
   });
 
   describe('Given the configBadZlibLevel helper', () => {
-    describe('When called with level=99', () => {
-      it('Then data.code is CONFIG_BAD_ZLIB_LEVEL', () => {
+    describe('When called', () => {
+      it.each([[99], [-2]] as const)('Then data carries code and level=%i', (level) => {
         // Arrange + Act
-        const sut = configBadZlibLevel(99);
-
-        // Assert
-        const data = sut.data;
-        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
-      });
-
-      it('Then data.level is 99', () => {
-        // Arrange + Act
-        const sut = configBadZlibLevel(99);
+        const sut = configBadZlibLevel(level);
 
         // Assert
         const data = sut.data;
         expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
         if (data.code !== 'CONFIG_BAD_ZLIB_LEVEL') return;
-        expect(data.level).toBe(99);
-      });
-    });
-
-    describe('When called with a negative level=-2', () => {
-      it('Then data.level is -2', () => {
-        // Arrange + Act
-        const sut = configBadZlibLevel(-2);
-
-        // Assert
-        const data = sut.data;
-        expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
-        if (data.code !== 'CONFIG_BAD_ZLIB_LEVEL') return;
-        expect(data.level).toBe(-2);
+        expect(data.level).toBe(level);
       });
     });
   });
@@ -1537,22 +1479,15 @@ describe('domain commands error — extractDetail message formatting', () => {
   });
 
   describe('Given the bundleEmpty error helper', () => {
-    describe('When called with reason no-refs', () => {
-      it('Then data matches expected shape', () => {
-        // Arrange + Assert
-        expect(bundleEmpty('no-refs').data).toEqual({
-          code: 'BUNDLE_EMPTY',
-          reason: 'no-refs',
-        });
-      });
-    });
+    describe('When called', () => {
+      it.each([['no-refs'], ['no-objects']] as const)('Then data carries reason=%s', (reason) => {
+        // Arrange + Act
+        const sut = bundleEmpty(reason);
 
-    describe('When called with reason no-objects', () => {
-      it('Then data matches expected shape', () => {
-        // Arrange + Assert
-        expect(bundleEmpty('no-objects').data).toEqual({
+        // Assert
+        expect(sut.data).toEqual({
           code: 'BUNDLE_EMPTY',
-          reason: 'no-objects',
+          reason,
         });
       });
     });
@@ -1571,26 +1506,21 @@ describe('domain commands error — extractDetail message formatting', () => {
   });
 
   describe('Given the bundleBadHeader error helper', () => {
-    describe('When called with path and not-a-bundle reason', () => {
-      it('Then data contains the path and reason', () => {
-        // Arrange + Assert
-        expect(bundleBadHeader('/bad.bundle', 'not-a-bundle').data).toEqual({
-          code: 'BUNDLE_BAD_HEADER',
-          path: '/bad.bundle',
-          reason: 'not-a-bundle',
-        });
-      });
-    });
+    describe('When called with path /bad.bundle', () => {
+      it.each([['not-a-bundle'], ['malformed-header']] as const)(
+        'Then data carries reason=%s',
+        (reason) => {
+          // Arrange + Act
+          const sut = bundleBadHeader('/bad.bundle', reason);
 
-    describe('When called with malformed-header reason', () => {
-      it('Then data contains the malformed-header reason', () => {
-        // Arrange + Assert
-        expect(bundleBadHeader('/bad.bundle', 'malformed-header').data).toEqual({
-          code: 'BUNDLE_BAD_HEADER',
-          path: '/bad.bundle',
-          reason: 'malformed-header',
-        });
-      });
+          // Assert
+          expect(sut.data).toEqual({
+            code: 'BUNDLE_BAD_HEADER',
+            path: '/bad.bundle',
+            reason,
+          });
+        },
+      );
     });
   });
 

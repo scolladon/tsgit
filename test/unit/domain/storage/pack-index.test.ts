@@ -20,6 +20,12 @@ function makeEntry(id: string, offset: number, crc32 = 0): TestIndexEntry {
   return { id: id as ObjectId, offset, crc32 };
 }
 
+function corruptTestIndex(patch: (view: DataView) => void): Uint8Array {
+  const bytes = buildTestIndex([]);
+  patch(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  return bytes;
+}
+
 function dedupeEntries(
   tuples: ReadonlyArray<readonly [ObjectId, number, number]>,
 ): TestIndexEntry[] {
@@ -68,52 +74,63 @@ function buildRawIndex(byteLength: number, fanoutValue: number): Uint8Array {
 
 describe('pack-index', () => {
   describe('parsePackIndex', () => {
-    describe('Given a valid .idx v2 with 0 objects', () => {
+    describe('Given a valid .idx v2', () => {
       describe('When parsing', () => {
-        it('Then objectCount=0', () => {
+        it.each([
+          { entries: [] as TestIndexEntry[], expectedCount: 0, label: '0 objects' },
+          {
+            entries: [
+              makeEntry('aa' + '00'.repeat(19), 100),
+              makeEntry('bb' + '00'.repeat(19), 200),
+              makeEntry('cc' + '00'.repeat(19), 300),
+            ],
+            expectedCount: 3,
+            label: '3 objects',
+          },
+        ])('Then objectCount=$expectedCount for $label', ({ entries, expectedCount }) => {
           // Arrange
-          const sut = buildTestIndex([]);
-
-          // Act
-          const result = parsePackIndex(sut);
-
-          // Assert
-          expect(result.objectCount).toBe(0);
-        });
-      });
-    });
-
-    describe('Given a valid .idx v2 with 3 objects', () => {
-      describe('When parsing', () => {
-        it('Then objectCount=3', () => {
-          // Arrange
-          const entries: TestIndexEntry[] = [
-            makeEntry('aa' + '00'.repeat(19), 100),
-            makeEntry('bb' + '00'.repeat(19), 200),
-            makeEntry('cc' + '00'.repeat(19), 300),
-          ];
           const sut = buildTestIndex(entries);
 
           // Act
           const result = parsePackIndex(sut);
 
           // Assert
-          expect(result.objectCount).toBe(3);
+          expect(result.objectCount).toBe(expectedCount);
         });
       });
     });
 
-    describe('Given wrong magic bytes', () => {
+    describe('Given malformed index bytes', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange
-          const sut = buildTestIndex([]);
-          const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
-          view.setUint32(0, 0xdeadbeef);
-
-          // Act & Assert
+        it.each([
+          {
+            bytes: corruptTestIndex((v) => v.setUint32(0, 0xdeadbeef)),
+            reasonContains: 'magic',
+            label: 'wrong magic bytes',
+          },
+          {
+            bytes: corruptTestIndex((v) => v.setUint32(4, 3)),
+            reasonContains: 'version',
+            label: 'version != 2',
+          },
+          {
+            // Make fanout[1] < fanout[0]
+            bytes: corruptTestIndex((v) => {
+              v.setUint32(8 + 0 * 4, 5);
+              v.setUint32(8 + 1 * 4, 3);
+            }),
+            reasonContains: 'non-monotonic',
+            label: 'non-monotonic fanout',
+          },
+          {
+            bytes: new Uint8Array(100),
+            reasonContains: 'truncated',
+            label: 'a truncated file (too short)',
+          },
+        ])('Then throws INVALID_PACK_INDEX for $label', ({ bytes, reasonContains }) => {
+          // Arrange + Act & Assert
           try {
-            parsePackIndex(sut);
+            parsePackIndex(bytes);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -121,85 +138,7 @@ describe('pack-index', () => {
             expect(err.data).toEqual(
               expect.objectContaining({
                 code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('magic'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given version != 2', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange
-          const sut = buildTestIndex([]);
-          const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
-          view.setUint32(4, 3);
-
-          // Act & Assert
-          try {
-            parsePackIndex(sut);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('version'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given non-monotonic fanout', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange
-          const sut = buildTestIndex([]);
-          const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
-          // Make fanout[1] < fanout[0]
-          view.setUint32(8 + 0 * 4, 5);
-          view.setUint32(8 + 1 * 4, 3);
-
-          // Act & Assert
-          try {
-            parsePackIndex(sut);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('non-monotonic'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given truncated file (too short)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange
-          const sut = new Uint8Array(100);
-
-          // Act & Assert
-          try {
-            parsePackIndex(sut);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('truncated'),
+                reason: expect.stringContaining(reasonContains),
               }),
             );
           }
@@ -209,22 +148,46 @@ describe('pack-index', () => {
   });
 
   describe('lookupPackIndex', () => {
-    describe('Given an index with 3 known objects', () => {
+    describe('Given an index with a known-offset entry', () => {
       describe('When looking up existing id', () => {
-        it('Then returns correct offset', () => {
+        it.each([
+          {
+            entries: [
+              makeEntry('aa' + '00'.repeat(19), 100),
+              makeEntry('bb' + '00'.repeat(19), 200),
+              makeEntry('cc' + '00'.repeat(19), 300),
+            ],
+            lookupId: 'bb' + '00'.repeat(19),
+            expected: 200,
+            label: 'an existing id among 3 known objects',
+          },
+          {
+            entries: [makeEntry('00' + 'aa'.repeat(19), 42)],
+            lookupId: '00' + 'aa'.repeat(19),
+            expected: 42,
+            label: 'an object starting with byte 0x00 (fanout edge)',
+          },
+          {
+            entries: [makeEntry('ff' + '00'.repeat(19), 99)],
+            lookupId: 'ff' + '00'.repeat(19),
+            expected: 99,
+            label: 'an object starting with byte 0xFF (fanout edge)',
+          },
+          {
+            entries: [makeEntry('aa' + '00'.repeat(19), 0x80000001)],
+            lookupId: 'aa' + '00'.repeat(19),
+            expected: 0x80000001,
+            label: 'a large offset (MSB set, 64-bit offset table)',
+          },
+        ])('Then returns $expected for $label', ({ entries, lookupId, expected }) => {
           // Arrange
-          const entries: TestIndexEntry[] = [
-            makeEntry('aa' + '00'.repeat(19), 100),
-            makeEntry('bb' + '00'.repeat(19), 200),
-            makeEntry('cc' + '00'.repeat(19), 300),
-          ];
           const idx = parsePackIndex(buildTestIndex(entries));
 
           // Act
-          const sut = lookupPackIndex(idx, ('bb' + '00'.repeat(19)) as ObjectId);
+          const sut = lookupPackIndex(idx, lookupId as ObjectId);
 
           // Assert
-          expect(sut).toBe(200);
+          expect(sut).toBe(expected);
         });
       });
       describe('When looking up non-existent id', () => {
@@ -245,55 +208,6 @@ describe('pack-index', () => {
         });
       });
     });
-
-    describe('Given an index with objects starting with byte 0x00', () => {
-      describe('When looking up', () => {
-        it('Then fanout edge case works', () => {
-          // Arrange
-          const entries: TestIndexEntry[] = [makeEntry('00' + 'aa'.repeat(19), 42)];
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = lookupPackIndex(idx, ('00' + 'aa'.repeat(19)) as ObjectId);
-
-          // Assert
-          expect(sut).toBe(42);
-        });
-      });
-    });
-
-    describe('Given an index with objects starting with byte 0xFF', () => {
-      describe('When looking up', () => {
-        it('Then fanout edge case works', () => {
-          // Arrange
-          const entries: TestIndexEntry[] = [makeEntry('ff' + '00'.repeat(19), 99)];
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = lookupPackIndex(idx, ('ff' + '00'.repeat(19)) as ObjectId);
-
-          // Assert
-          expect(sut).toBe(99);
-        });
-      });
-    });
-
-    describe('Given an index with large offsets (MSB set)', () => {
-      describe('When looking up', () => {
-        it('Then reads from 64-bit offset table', () => {
-          // Arrange
-          const largeOffset = 0x80000001;
-          const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), largeOffset)];
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId);
-
-          // Assert
-          expect(sut).toBe(largeOffset);
-        });
-      });
-    });
   });
 
   describe('findByPrefix', () => {
@@ -303,63 +217,90 @@ describe('pack-index', () => {
       makeEntry('bbdd' + '00'.repeat(18), 300),
     ];
 
-    describe('Given 3 objects', () => {
-      describe('When searching prefix matching exactly 1', () => {
-        it('Then returns array of 1', () => {
+    describe('Given a prefix matching exactly 1 object', () => {
+      describe('When searching', () => {
+        it.each([
+          { prefix: 'bbdd', expected: 'bbdd' + '00'.repeat(18), label: 'a 4-char prefix' },
+          { prefix: 'aabb0', expected: 'aabb' + '00'.repeat(18), label: 'an odd-length prefix' },
+          {
+            prefix: 'aabb' + '00'.repeat(18),
+            expected: 'aabb' + '00'.repeat(18),
+            label: 'a full 40-char id',
+          },
+        ])('Then returns 1 match for $label', ({ prefix, expected }) => {
           // Arrange
           const idx = parsePackIndex(buildTestIndex(entries));
 
           // Act
-          const sut = findByPrefix(idx, 'bbdd');
+          const sut = findByPrefix(idx, prefix);
 
           // Assert
           expect(sut).toHaveLength(1);
-          expect(sut[0]).toBe('bbdd' + '00'.repeat(18));
-        });
-      });
-      describe('When searching prefix matching 0', () => {
-        it('Then returns empty array', () => {
-          // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = findByPrefix(idx, 'ccee');
-
-          // Assert
-          expect(sut).toHaveLength(0);
+          expect(sut[0]).toBe(expected);
         });
       });
     });
 
-    describe('Given objects sharing a 4-char prefix', () => {
-      describe('When searching with that prefix', () => {
-        it('Then returns all matches', () => {
-          // Arrange
-          const sharedEntries: TestIndexEntry[] = [
-            makeEntry('aabb' + '00'.repeat(18), 100),
-            makeEntry('aabb' + 'ff'.repeat(18), 200),
-            makeEntry('bbdd' + '00'.repeat(18), 300),
-          ];
-          const idx = parsePackIndex(buildTestIndex(sharedEntries));
-
-          // Act
-          const sut = findByPrefix(idx, 'aabb');
-
-          // Assert
-          expect(sut).toHaveLength(2);
-        });
-      });
-    });
-
-    describe('Given prefix shorter than 4 chars', () => {
+    describe('Given a prefix matching a known count of objects', () => {
       describe('When searching', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
+        it.each([
+          { prefix: 'ccee', entries, expectedLength: 0, label: 'no matches' },
+          {
+            prefix: 'aabb',
+            entries: [
+              makeEntry('aabb' + '00'.repeat(18), 100),
+              makeEntry('aabb' + 'ff'.repeat(18), 200),
+              makeEntry('bbdd' + '00'.repeat(18), 300),
+            ],
+            expectedLength: 2,
+            label: 'objects sharing a 4-char prefix',
+          },
+          { prefix: 'aabb00', entries, expectedLength: 1, label: 'an even-length (6-char) prefix' },
+        ])(
+          'Then returns $expectedLength match(es) for $label',
+          ({ prefix, entries: rowEntries, expectedLength }) => {
+            // Arrange
+            const idx = parsePackIndex(buildTestIndex(rowEntries));
+
+            // Act
+            const sut = findByPrefix(idx, prefix);
+
+            // Assert
+            expect(sut).toHaveLength(expectedLength);
+          },
+        );
+      });
+    });
+
+    describe('Given a malformed prefix', () => {
+      describe('When searching', () => {
+        it.each([
+          { prefix: 'abc', reasonContains: 'too short', label: 'shorter than 4 chars' },
+          { prefix: 'a'.repeat(41), reasonContains: 'too long', label: 'longer than 40 chars' },
+          { prefix: 'gggg', reasonContains: 'non-hex', label: 'non-hex chars' },
+          {
+            // 'aabb' is valid hex but the trailing 'g' is not; the HEX_RE test
+            // must anchor at both ends, or a leading-hex-run match would
+            // wrongly accept this prefix.
+            prefix: 'aabbg',
+            reasonContains: 'non-hex',
+            label: 'a hex prefix followed by a non-hex character',
+          },
+          {
+            // 'aabb' is valid hex but the leading 'g' is not; the HEX_RE test
+            // must anchor at both ends, or a trailing-hex-run match would
+            // wrongly accept this prefix.
+            prefix: 'gaabb',
+            reasonContains: 'non-hex',
+            label: 'a non-hex character followed by a hex prefix',
+          },
+        ])('Then throws INVALID_PACK_INDEX for $label', ({ prefix, reasonContains }) => {
           // Arrange
           const idx = parsePackIndex(buildTestIndex(entries));
 
           // Act & Assert
           try {
-            findByPrefix(idx, 'abc');
+            findByPrefix(idx, prefix);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -367,158 +308,10 @@ describe('pack-index', () => {
             expect(err.data).toEqual(
               expect.objectContaining({
                 code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('too short'),
+                reason: expect.stringContaining(reasonContains),
               }),
             );
           }
-        });
-      });
-    });
-
-    describe('Given prefix longer than 40 chars', () => {
-      describe('When searching', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act & Assert
-          try {
-            findByPrefix(idx, 'a'.repeat(41));
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('too long'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given prefix with non-hex chars', () => {
-      describe('When searching', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act & Assert
-          try {
-            findByPrefix(idx, 'gggg');
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('non-hex'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given a hex prefix followed by a non-hex character', () => {
-      describe('When searching', () => {
-        it('Then throws INVALID_PACK_INDEX (the whole prefix must be hex, not just a leading run)', () => {
-          // Arrange — 'aabb' is valid hex but the trailing 'g' is not; the
-          // HEX_RE test must anchor at both ends, or a leading-hex-run match
-          // would wrongly accept this prefix.
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act & Assert
-          try {
-            findByPrefix(idx, 'aabbg');
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('non-hex'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given a non-hex character followed by a hex prefix', () => {
-      describe('When searching', () => {
-        it('Then throws INVALID_PACK_INDEX (the whole prefix must be hex, not just a trailing run)', () => {
-          // Arrange — 'aabb' is valid hex but the leading 'g' is not; the
-          // HEX_RE test must anchor at both ends, or a trailing-hex-run match
-          // would wrongly accept this prefix.
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act & Assert
-          try {
-            findByPrefix(idx, 'gaabb');
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('non-hex'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given odd-length prefix 'aabb0'", () => {
-      describe('When searching', () => {
-        it('Then correctly handles odd length', () => {
-          // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = findByPrefix(idx, 'aabb0');
-
-          // Assert
-          expect(sut).toHaveLength(1);
-          expect(sut[0]).toBe('aabb' + '00'.repeat(18));
-        });
-      });
-    });
-
-    describe('Given even-length prefix (6 chars) matching 1 object', () => {
-      describe('When searching', () => {
-        it('Then returns that object', () => {
-          // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = findByPrefix(idx, 'aabb00');
-
-          // Assert
-          expect(sut).toHaveLength(1);
-        });
-      });
-    });
-
-    describe('Given full 40-char id', () => {
-      describe('When searching', () => {
-        it('Then returns 0 or 1 match', () => {
-          // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
-          const fullId = 'aabb' + '00'.repeat(18);
-
-          // Act
-          const sut = findByPrefix(idx, fullId);
-
-          // Assert
-          expect(sut).toHaveLength(1);
-          expect(sut[0]).toBe(fullId);
         });
       });
     });
@@ -588,44 +381,28 @@ describe('pack-index', () => {
   });
 
   describe('parsePackIndex — truncated with valid header', () => {
-    describe('Given valid header but objectCount too large for file', () => {
+    describe('Given a validly-headered index truncated below its declared size', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange — build an index for 3 objects, then truncate it
-          const entries: TestIndexEntry[] = [
-            makeEntry('aa' + '00'.repeat(19), 100),
-            makeEntry('bb' + '00'.repeat(19), 200),
-            makeEntry('cc' + '00'.repeat(19), 300),
-          ];
+        it.each([
+          {
+            entries: [
+              makeEntry('aa' + '00'.repeat(19), 100),
+              makeEntry('bb' + '00'.repeat(19), 200),
+              makeEntry('cc' + '00'.repeat(19), 300),
+            ],
+            // keep header(8) + fanout(1024) + 1 SHA (too few)
+            truncateTo: () => 1032 + 20,
+            label: 'objectCount too large for file',
+          },
+          {
+            entries: [makeEntry('aa' + '00'.repeat(19), 100)],
+            truncateTo: (fullLength: number) => fullLength - 1,
+            label: 'exactly 1 byte too short for the declared objectCount',
+          },
+        ])('Then throws INVALID_PACK_INDEX for $label', ({ entries, truncateTo }) => {
+          // Arrange
           const fullIndex = buildTestIndex(entries);
-          // Truncate: keep header + fanout + partial SHA table
-          const sut = fullIndex.subarray(0, 1032 + 20); // header(8) + fanout(1024) + 1 SHA (too few)
-
-          // Act & Assert
-          try {
-            parsePackIndex(sut);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('truncated'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given file exactly 1 byte too short for declared objectCount', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_PACK_INDEX', () => {
-          // Arrange — build valid index then shorten by 1 byte
-          const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), 100)];
-          const fullIndex = buildTestIndex(entries);
-          const sut = fullIndex.subarray(0, fullIndex.length - 1);
+          const sut = fullIndex.subarray(0, truncateTo(fullIndex.length));
 
           // Act & Assert
           try {
@@ -647,38 +424,30 @@ describe('pack-index', () => {
   });
 
   describe('lookupPackIndex — large offset table', () => {
-    describe('Given multiple large offsets', () => {
+    describe('Given entries with large 64-bit offsets', () => {
       describe('When looking up each', () => {
-        it('Then reads correct 64-bit offsets', () => {
-          // Arrange — 3 large offsets
-          const entries: TestIndexEntry[] = [
-            makeEntry('aa' + '00'.repeat(19), 0x80000001),
-            makeEntry('bb' + '00'.repeat(19), 0x80000002),
-            makeEntry('cc' + '00'.repeat(19), 0x90000000),
-          ];
+        it.each([
+          {
+            entries: [
+              makeEntry('aa' + '00'.repeat(19), 0x80000001),
+              makeEntry('bb' + '00'.repeat(19), 0x80000002),
+              makeEntry('cc' + '00'.repeat(19), 0x90000000),
+            ],
+            label: 'multiple large offsets',
+          },
+          {
+            // offset = 0x1_00000001 (high=1, low=1)
+            entries: [makeEntry('aa' + '00'.repeat(19), 0x100000001)],
+            label: 'an offset > 2^32 (needs both high and low words)',
+          },
+        ])('Then reads correct 64-bit offsets for $label', ({ entries }) => {
+          // Arrange
           const idx = parsePackIndex(buildTestIndex(entries));
 
           // Act & Assert
-          expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(0x80000001);
-          expect(lookupPackIndex(idx, ('bb' + '00'.repeat(19)) as ObjectId)).toBe(0x80000002);
-          expect(lookupPackIndex(idx, ('cc' + '00'.repeat(19)) as ObjectId)).toBe(0x90000000);
-        });
-      });
-    });
-
-    describe('Given offset > 2^32 (needs both high and low words)', () => {
-      describe('When looking up', () => {
-        it('Then reads correct 64-bit value', () => {
-          // Arrange — offset = 0x1_00000001 (high=1, low=1)
-          const largeOffset = 0x100000001;
-          const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), largeOffset)];
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId);
-
-          // Assert
-          expect(sut).toBe(largeOffset);
+          for (const entry of entries) {
+            expect(lookupPackIndex(idx, entry.id)).toBe(entry.offset);
+          }
         });
       });
     });
@@ -813,28 +582,6 @@ describe('pack-index', () => {
     });
   });
 
-  describe('findByPrefix — minimum 4-char prefix with shared prefix objects', () => {
-    describe('Given objects sharing a 4-char prefix', () => {
-      describe('When searching with that prefix', () => {
-        it('Then returns all matches', () => {
-          // Arrange
-          const entries: TestIndexEntry[] = [
-            makeEntry('aabb' + '00'.repeat(18), 100),
-            makeEntry('aabb' + 'ff'.repeat(18), 200),
-            makeEntry('bbdd' + '00'.repeat(18), 300),
-          ];
-          const idx = parsePackIndex(buildTestIndex(entries));
-
-          // Act
-          const sut = findByPrefix(idx, 'aabb');
-
-          // Assert
-          expect(sut).toHaveLength(2);
-        });
-      });
-    });
-  });
-
   describe('parsePackIndex — size-guard boundary mutants', () => {
     describe('Given a file of exactly minSize (1032) bytes', () => {
       describe('When parsing', () => {
@@ -914,50 +661,33 @@ describe('pack-index', () => {
   });
 
   describe('readOffset — large-offset arithmetic mutants', () => {
-    describe('Given a large offset whose entry sits one slot past the table', () => {
+    describe('Given a large offset entry at or past the trailer boundary', () => {
       describe('When looking up', () => {
-        it('Then trailerOffset (length - 40) rejects it as out of range', () => {
+        it.each([
+          {
+            id: 'aa' + '00'.repeat(19),
+            label:
+              'one slot past the table — trailerOffset (length - 40) rejects it as out of range',
+          },
+          {
+            id: 'bb' + '00'.repeat(19),
+            label: 'exactly at the trailer boundary — the `largeOffset + 8` bound check rejects it',
+          },
+        ])('Then throws INVALID_PACK_INDEX for $label', ({ id }) => {
           // Arrange — 1 entry, 1 large-offset slot. trailerOffset === 1068.
           // Corrupt the small offset to largeIdx=1 → largeOffset === 1068, so
           // largeOffset + 8 === 1076 > 1068 must throw. The `length - 40` arithmetic
-          // is load-bearing: a `length + 40` mutant raises trailerOffset to 1148
-          // and the guard would wrongly pass.
-          const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), 0x80000001)];
+          // is load-bearing (a `length + 40` mutant raises trailerOffset to 1148
+          // and the guard would wrongly pass), as is `largeOffset + 8` (a
+          // `largeOffset - 8` mutant computes 1060 > 1068 = false and would
+          // wrongly proceed).
+          const entries: TestIndexEntry[] = [makeEntry(id, 0x80000001)];
           const idx = parsePackIndex(buildTestIndex(entries));
           idx._view.setUint32(idx.smallOffsetsTableOffset, 0x80000000 | 1);
 
           // Act & Assert
           try {
-            lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId);
-            // Assert
-            expect.fail('Should have thrown');
-          } catch (e) {
-            const err = e as TsgitError;
-            expect(err.data).toEqual(
-              expect.objectContaining({
-                code: 'INVALID_PACK_INDEX',
-                reason: expect.stringContaining('out of range'),
-              }),
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given a large offset entry exactly at the trailer boundary', () => {
-      describe('When looking up', () => {
-        it('Then the `largeOffset + 8` bound check rejects it', () => {
-          // Arrange — corrupt small offset to largeIdx=1 so largeOffset === 1068
-          // and trailerOffset === 1068. The guard `largeOffset + 8 > trailerOffset`
-          // (1076 > 1068) must throw; a `largeOffset - 8` mutant computes
-          // 1060 > 1068 (false) and would wrongly proceed.
-          const entries: TestIndexEntry[] = [makeEntry('bb' + '00'.repeat(19), 0x80000001)];
-          const idx = parsePackIndex(buildTestIndex(entries));
-          idx._view.setUint32(idx.smallOffsetsTableOffset, 0x80000000 | 1);
-
-          // Act & Assert
-          try {
-            lookupPackIndex(idx, ('bb' + '00'.repeat(19)) as ObjectId);
+            lookupPackIndex(idx, id as ObjectId);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {

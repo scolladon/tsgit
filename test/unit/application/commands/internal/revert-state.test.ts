@@ -32,63 +32,59 @@ const commitWith = (message: string): CommitData => ({
 
 describe('revert-state', () => {
   describe('Given quoteSubject', () => {
-    describe('When the subject has no special characters', () => {
-      it('Then wraps it in double quotes', () => {
+    describe('When the subject is quoted', () => {
+      it.each([
+        {
+          input: 'add feature',
+          expected: '"add feature"',
+          label: 'a subject with no special characters is wrapped in double quotes',
+        },
+        {
+          input: 'a"b',
+          expected: '"a\\"b"',
+          label: 'a subject containing a double quote is backslash-escaped',
+        },
+        {
+          input: 'a\\b',
+          expected: '"a\\\\b"',
+          label: 'a subject containing a backslash is backslash-escaped',
+        },
+        {
+          input: 'a\\b"c',
+          expected: '"a\\\\b\\"c"',
+          label: 'a subject containing both a backslash and a quote has each escaped independently',
+        },
+      ])('Then $label', ({ input, expected }) => {
         // Arrange + Act + Assert
-        expect(quoteSubject('add feature')).toBe('"add feature"');
-      });
-    });
-
-    describe('When the subject contains a double quote', () => {
-      it('Then backslash-escapes the quote', () => {
-        // Arrange + Act + Assert
-        expect(quoteSubject('a"b')).toBe('"a\\"b"');
-      });
-    });
-
-    describe('When the subject contains a backslash', () => {
-      it('Then backslash-escapes the backslash', () => {
-        // Arrange + Act + Assert
-        expect(quoteSubject('a\\b')).toBe('"a\\\\b"');
-      });
-    });
-
-    describe('When the subject contains both a backslash and a quote', () => {
-      it('Then escapes each independently', () => {
-        // Arrange + Act + Assert
-        expect(quoteSubject('a\\b"c')).toBe('"a\\\\b\\"c"');
+        expect(quoteSubject(input)).toBe(expected);
       });
     });
   });
 
   describe('Given revertMessage', () => {
-    describe('When the source has a single-line message', () => {
-      it('Then builds the git-faithful Revert message', () => {
+    describe('When the revert message is built', () => {
+      it.each([
+        {
+          message: 'second commit',
+          expected: `Revert "second commit"\n\nThis reverts commit ${OID}.\n`,
+          label: 'a single-line source message builds the git-faithful Revert message',
+        },
+        {
+          message: 'subject line\n\nbody paragraph',
+          expected: `Revert "subject line"\n\nThis reverts commit ${OID}.\n`,
+          label: 'a source message with a body uses only the subject (first line)',
+        },
+        {
+          message: 'Revert "x"',
+          expected: `Revert "Revert \\"x\\""\n\nThis reverts commit ${OID}.\n`,
+          label: 'a source that is itself a revert nests the quoted subject',
+        },
+      ])('Then $label', ({ message, expected }) => {
         // Arrange + Act
-        const sut = revertMessage(commitWith('second commit'), OID);
+        const sut = revertMessage(commitWith(message), OID);
 
         // Assert
-        expect(sut).toBe(`Revert "second commit"\n\nThis reverts commit ${OID}.\n`);
-      });
-    });
-
-    describe('When the source message has a body', () => {
-      it('Then uses only the subject (first line)', () => {
-        // Arrange + Act
-        const sut = revertMessage(commitWith('subject line\n\nbody paragraph'), OID);
-
-        // Assert
-        expect(sut).toBe(`Revert "subject line"\n\nThis reverts commit ${OID}.\n`);
-      });
-    });
-
-    describe('When the source is itself a revert', () => {
-      it('Then nests the quoted subject', () => {
-        // Arrange + Act
-        const sut = revertMessage(commitWith('Revert "x"'), OID);
-
-        // Assert
-        expect(sut).toBe(`Revert "Revert \\"x\\""\n\nThis reverts commit ${OID}.\n`);
+        expect(sut).toBe(expected);
       });
     });
   });

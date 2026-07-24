@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/objects/error.js';
 import {
   deriveWorkingMode,
+  type FileMode,
   isDirectory,
   normalizeFileMode,
   validateFileMode,
@@ -10,146 +11,72 @@ import {
 
 describe('file-mode', () => {
   describe('validateFileMode', () => {
-    describe("Given '100644'", () => {
+    describe('Given a recognized git file mode', () => {
       describe('When validating', () => {
-        it("Then returns '100644' (REGULAR)", () => {
+        it.each([
+          ['100644', 'REGULAR'],
+          ['100755', 'EXECUTABLE'],
+          ['120000', 'SYMLINK'],
+          ['40000', 'DIRECTORY'],
+          ['160000', 'GITLINK'],
+        ])("Then returns '%s' (%s)", (mode) => {
           // Arrange & Act
-          const sut = validateFileMode('100644');
+          const sut = validateFileMode(mode);
 
           // Assert
-          expect(sut).toBe('100644');
+          expect(sut).toBe(mode);
         });
       });
     });
 
-    describe("Given '100755'", () => {
+    describe('Given an unrecognized file mode', () => {
       describe('When validating', () => {
-        it("Then returns '100755' (EXECUTABLE)", () => {
-          // Arrange & Act
-          const sut = validateFileMode('100755');
+        it.each(['999999', ''])(
+          "Then throws INVALID_FILE_MODE with the invalid value '%s'",
+          (value) => {
+            // Arrange
+            let caught: unknown;
 
-          // Assert
-          expect(sut).toBe('100755');
-        });
-      });
-    });
+            // Act
+            try {
+              validateFileMode(value);
+            } catch (error) {
+              caught = error;
+            }
 
-    describe("Given '120000'", () => {
-      describe('When validating', () => {
-        it("Then returns '120000' (SYMLINK)", () => {
-          // Arrange & Act
-          const sut = validateFileMode('120000');
-
-          // Assert
-          expect(sut).toBe('120000');
-        });
-      });
-    });
-
-    describe("Given '40000'", () => {
-      describe('When validating', () => {
-        it("Then returns '40000' (DIRECTORY)", () => {
-          // Arrange & Act
-          const sut = validateFileMode('40000');
-
-          // Assert
-          expect(sut).toBe('40000');
-        });
-      });
-    });
-
-    describe("Given '160000'", () => {
-      describe('When validating', () => {
-        it("Then returns '160000' (GITLINK)", () => {
-          // Arrange & Act
-          const sut = validateFileMode('160000');
-
-          // Assert
-          expect(sut).toBe('160000');
-        });
-      });
-    });
-
-    describe("Given '999999'", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_FILE_MODE with the invalid value', () => {
-          // Arrange
-          let caught: unknown;
-
-          // Act
-          try {
-            validateFileMode('999999');
-          } catch (error) {
-            caught = error;
-          }
-
-          // Assert — both `code` and `value` are pinned to kill nested-property mutants.
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'INVALID_FILE_MODE',
-            value: '999999',
-          });
-        });
-      });
-    });
-
-    describe("Given ''", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_FILE_MODE with the invalid value', () => {
-          // Arrange
-          let caught: unknown;
-
-          // Act
-          try {
-            validateFileMode('');
-          } catch (error) {
-            caught = error;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'INVALID_FILE_MODE',
-            value: '',
-          });
-        });
+            // Assert — both `code` and `value` are pinned to kill nested-property mutants.
+            expect(caught).toBeInstanceOf(TsgitError);
+            expect((caught as TsgitError).data).toEqual({
+              code: 'INVALID_FILE_MODE',
+              value,
+            });
+          },
+        );
       });
     });
   });
 
   describe('normalizeFileMode', () => {
-    describe("Given '040000'", () => {
+    describe('Given a file mode with or without a leading-zero prefix', () => {
       describe('When normalizing', () => {
-        it("Then returns '40000'", () => {
+        it.each([
+          { input: '040000', expected: '40000', label: "'040000' becomes '40000'" },
+          {
+            input: '100644',
+            expected: '100644',
+            label: "'100644' is already normalized, idempotent",
+          },
+          {
+            input: '40000',
+            expected: '40000',
+            label: "'40000' is already normalized, idempotent",
+          },
+        ])('Then $label', ({ input, expected }) => {
           // Arrange & Act
-          const sut = normalizeFileMode('040000');
+          const sut = normalizeFileMode(input);
 
           // Assert
-          expect(sut).toBe('40000');
-        });
-      });
-    });
-
-    describe("Given '100644'", () => {
-      describe('When normalizing', () => {
-        it("Then returns '100644' (already normalized, idempotent)", () => {
-          // Arrange & Act
-          const sut = normalizeFileMode('100644');
-
-          // Assert
-          expect(sut).toBe('100644');
-        });
-      });
-    });
-
-    describe("Given '40000'", () => {
-      describe('When normalizing', () => {
-        it("Then returns '40000' (already normalized, idempotent)", () => {
-          // Arrange & Act
-          const sut = normalizeFileMode('40000');
-
-          // Assert
-          expect(sut).toBe('40000');
+          expect(sut).toBe(expected);
         });
       });
     });
@@ -179,38 +106,18 @@ describe('file-mode', () => {
   });
 
   describe('isDirectory', () => {
-    describe("Given '40000'", () => {
+    describe('Given a file mode', () => {
       describe('When checking isDirectory', () => {
-        it('Then returns true', () => {
+        it.each<[FileMode, boolean]>([
+          ['40000', true],
+          ['100644', false],
+          ['100755', false],
+        ])('Then %s returns %s', (mode, expected) => {
           // Arrange & Act
-          const sut = isDirectory('40000');
+          const sut = isDirectory(mode);
 
           // Assert
-          expect(sut).toBe(true);
-        });
-      });
-    });
-
-    describe("Given '100644'", () => {
-      describe('When checking isDirectory', () => {
-        it('Then returns false', () => {
-          // Arrange & Act
-          const sut = isDirectory('100644');
-
-          // Assert
-          expect(sut).toBe(false);
-        });
-      });
-    });
-
-    describe("Given '100755'", () => {
-      describe('When checking isDirectory', () => {
-        it('Then returns false', () => {
-          // Arrange & Act
-          const sut = isDirectory('100755');
-
-          // Assert
-          expect(sut).toBe(false);
+          expect(sut).toBe(expected);
         });
       });
     });

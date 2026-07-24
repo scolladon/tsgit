@@ -22,6 +22,28 @@ const merge = async (ctx: Context, path: string) => {
   return resolveAttribute(sources, path as FilePath, 'merge', macros);
 };
 
+// Wraps `lstat` so every probe reports a symbolic link, forcing the
+// attributes-file reader to skip the (otherwise valid) root .gitattributes.
+const withSymlinkLstat = (ctx: Context): Context => {
+  const hostileFs = new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop === 'lstat') {
+        return async () => ({
+          isFile: true,
+          isDirectory: false,
+          isSymbolicLink: true,
+          size: 10,
+          mtimeMs: 0,
+          ctimeMs: 0,
+          mode: 0o120000,
+        });
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  return { ...ctx, fs: hostileFs } as Context;
+};
+
 describe('buildAttributeProvider', () => {
   describe('Given no attribute files', () => {
     describe('When resolving an attribute', () => {
@@ -41,171 +63,170 @@ describe('buildAttributeProvider', () => {
     });
   });
 
-  describe('Given only a root .gitattributes', () => {
+  describe('Given a gitattributes configuration that yields a set merge attribute', () => {
     describe('When resolving', () => {
-      it('Then the rule applies', async () => {
+      it.each<{
+        label: string;
+        path: string;
+        homeDir?: string;
+        arrange: (ctx: Context) => Promise<void>;
+        expected: { set: string };
+      }>([
+        {
+          label: 'only a root .gitattributes: the rule applies',
+          path: 'a.txt',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.gitattributes', '*.txt merge=root\n');
+          },
+          expected: { set: 'root' },
+        },
+        {
+          label:
+            'info/attributes and a root .gitattributes both assigning merge: info/attributes wins (highest precedence)',
+          path: 'a.txt',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.gitattributes', '*.txt merge=root\n');
+            await seed(ctx, '/repo/.git/info/attributes', '*.txt merge=info\n');
+          },
+          expected: { set: 'info' },
+        },
+        {
+          label: 'a subdirectory and a root .gitattributes: the deeper directory wins',
+          path: 'sub/a.txt',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
+            await seed(ctx, '/repo/sub/.gitattributes', '*.txt merge=sub\n');
+          },
+          expected: { set: 'sub' },
+        },
+        {
+          label:
+            'a global core.attributesFile (absolute) and a root .gitattributes: the root wins (global has lowest precedence)',
+          path: 'a.txt',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = /repo/global-attrs\n');
+            await seed(ctx, '/repo/global-attrs', '* merge=global\n');
+            await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
+          },
+          expected: { set: 'root' },
+        },
+        {
+          label: 'only a global core.attributesFile: the global rule applies',
+          path: 'a.txt',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = /repo/global-attrs\n');
+            await seed(ctx, '/repo/global-attrs', '* merge=global\n');
+          },
+          expected: { set: 'global' },
+        },
+        {
+          label:
+            'core.attributesFile starting with `~/` and homeDir set: resolves under the home directory',
+          path: 'a.txt',
+          homeDir: '/repo/home',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = ~/.gitattributes\n');
+            await seed(ctx, '/repo/home/.gitattributes', '* merge=home\n');
+          },
+          expected: { set: 'home' },
+        },
+        {
+          label:
+            'core.attributesFile = `~` alone and homeDir set: resolves to the home directory itself',
+          path: 'a.txt',
+          homeDir: '/repo/home-attrs',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = ~\n');
+            await seed(ctx, '/repo/home-attrs', '* merge=tilde\n');
+          },
+          expected: { set: 'tilde' },
+        },
+        {
+          label:
+            'core.attributesFile pointing at a directory: the global source is skipped (non-regular file)',
+          path: 'a.txt',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = /repo\n');
+            await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
+          },
+          expected: { set: 'root' },
+        },
+        {
+          label: 'a user macro defined in the root .gitattributes: the macro expansion applies',
+          path: 'a.md',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.gitattributes', '[attr]docs merge=union\n*.md docs\n');
+          },
+          expected: { set: 'union' },
+        },
+      ])('Then $label', async ({ path, homeDir, arrange, expected }) => {
         // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.gitattributes', '*.txt merge=root\n');
+        const sut = merge;
+        const ctx = createMemoryContext(homeDir === undefined ? {} : { homeDir });
+        await arrange(ctx);
 
         // Act
-        const sut = await merge(ctx, 'a.txt');
+        const result = await sut(ctx, path);
 
         // Assert
-        expect(sut).toEqual({ set: 'root' });
+        expect(result).toEqual(expected);
       });
     });
   });
 
-  describe('Given info/attributes and a root .gitattributes both assigning merge', () => {
+  describe('Given a gitattributes configuration with no applicable global rule', () => {
     describe('When resolving', () => {
-      it('Then info/attributes wins (highest precedence)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.gitattributes', '*.txt merge=root\n');
-        await seed(ctx, '/repo/.git/info/attributes', '*.txt merge=info\n');
+      it.each<{
+        label: string;
+        arrange: (ctx: Context) => Promise<void>;
+        hostile?: boolean;
+      }>([
+        {
+          label: 'core.attributesFile starting with `~/` but homeDir undefined',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = ~/.gitattributes\n');
+          },
+        },
+        {
+          label: 'no core.attributesFile is set',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  bare = false\n');
+          },
+        },
+        {
+          label: 'core.attributesFile = "" (empty, feature-off)',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = \n');
+          },
+        },
+        {
+          label: 'lstat reports the root .gitattributes as a symbolic link',
+          arrange: async (ctx: Context): Promise<void> => {
+            await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
+          },
+          hostile: true,
+        },
+      ])(
+        "Then the global source is skipped (yields 'unspecified') ($label)",
+        async ({ arrange, hostile }) => {
+          // Arrange
+          const sut = merge;
+          const ctx = createMemoryContext();
+          await arrange(ctx);
+          const target = hostile === true ? withSymlinkLstat(ctx) : ctx;
 
-        // Act
-        const sut = await merge(ctx, 'a.txt');
+          // Act
+          const result = await sut(target, 'a.txt');
 
-        // Assert
-        expect(sut).toEqual({ set: 'info' });
-      });
-    });
-  });
-
-  describe('Given a subdirectory and a root .gitattributes', () => {
-    describe('When resolving a path in the subdirectory', () => {
-      it('Then the deeper directory wins', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
-        await seed(ctx, '/repo/sub/.gitattributes', '*.txt merge=sub\n');
-
-        // Act
-        const sut = await merge(ctx, 'sub/a.txt');
-
-        // Assert
-        expect(sut).toEqual({ set: 'sub' });
-      });
-    });
-  });
-
-  describe('Given a global core.attributesFile (absolute) and a root .gitattributes', () => {
-    describe('When resolving', () => {
-      it('Then the root wins (global has lowest precedence)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = /repo/global-attrs\n');
-        await seed(ctx, '/repo/global-attrs', '* merge=global\n');
-        await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ set: 'root' });
-      });
-    });
-  });
-
-  describe('Given only a global core.attributesFile', () => {
-    describe('When resolving', () => {
-      it('Then the global rule applies', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = /repo/global-attrs\n');
-        await seed(ctx, '/repo/global-attrs', '* merge=global\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ set: 'global' });
-      });
-    });
-  });
-
-  describe('Given core.attributesFile starting with `~/` and homeDir set', () => {
-    describe('When resolving', () => {
-      it('Then it resolves under the home directory', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ homeDir: '/repo/home' });
-        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = ~/.gitattributes\n');
-        await seed(ctx, '/repo/home/.gitattributes', '* merge=home\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ set: 'home' });
-      });
-    });
-  });
-
-  describe('Given core.attributesFile = `~` alone and homeDir set', () => {
-    describe('When resolving', () => {
-      it('Then it resolves to the home directory itself', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ homeDir: '/repo/home-attrs' });
-        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = ~\n');
-        await seed(ctx, '/repo/home-attrs', '* merge=tilde\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ set: 'tilde' });
-      });
-    });
-  });
-
-  describe('Given core.attributesFile starting with `~/` but homeDir undefined', () => {
-    describe('When resolving', () => {
-      it("Then the global source is skipped (yields 'unspecified')", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = ~/.gitattributes\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toBe('unspecified');
-      });
-    });
-  });
-
-  describe('Given no core.attributesFile', () => {
-    describe('When resolving', () => {
-      it("Then there is no global source ('unspecified')", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.git/config', '[core]\n  bare = false\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toBe('unspecified');
-      });
+          // Assert
+          expect(result).toBe('unspecified');
+        },
+      );
     });
   });
 
   describe('Given core.attributesFile = "" (empty, feature-off)', () => {
     describe('When buildAttributeProvider resolves a path', () => {
-      it('Then no global source is yielded', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = \n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert — empty attributesFile is feature-off: no global rule applies
-        expect(sut).toBe('unspecified');
-      });
-
       it('Then it never lstats the empty path', async () => {
         // Arrange — the memory adapter resolves lstat('') to the rootDir
         // directory, masking a bare unspecified assertion. The behavioral kill
@@ -219,22 +240,6 @@ describe('buildAttributeProvider', () => {
 
         // Assert
         expect(lstatSpy).not.toHaveBeenCalledWith('');
-      });
-    });
-  });
-
-  describe('Given a user macro defined in the root .gitattributes', () => {
-    describe('When resolving a path the macro matches', () => {
-      it('Then the macro expansion applies', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.gitattributes', '[attr]docs merge=union\n*.md docs\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.md');
-
-        // Assert
-        expect(sut).toEqual({ set: 'union' });
       });
     });
   });
@@ -311,56 +316,6 @@ describe('buildAttributeProvider', () => {
           size: MAX_GITATTRIBUTES_BYTES + 1,
           limit: MAX_GITATTRIBUTES_BYTES,
         });
-      });
-    });
-  });
-
-  describe('Given core.attributesFile pointing at a directory', () => {
-    describe('When building the provider', () => {
-      it('Then the global source is skipped (non-regular file)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.git/config', '[core]\n  attributesFile = /repo\n');
-        await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
-
-        // Act
-        const sut = await merge(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ set: 'root' });
-      });
-    });
-  });
-
-  describe('Given lstat reports a symbolic link', () => {
-    describe('When building the provider', () => {
-      it('Then the attributes file is skipped', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '/repo/.gitattributes', '* merge=root\n');
-        const hostileFs = new Proxy(ctx.fs, {
-          get(target, prop, receiver) {
-            if (prop === 'lstat') {
-              return async () => ({
-                isFile: true,
-                isDirectory: false,
-                isSymbolicLink: true,
-                size: 10,
-                mtimeMs: 0,
-                ctimeMs: 0,
-                mode: 0o120000,
-              });
-            }
-            return Reflect.get(target, prop, receiver);
-          },
-        });
-        const hostileCtx = { ...ctx, fs: hostileFs } as Context;
-
-        // Act
-        const sut = await merge(hostileCtx, 'a.txt');
-
-        // Assert
-        expect(sut).toBe('unspecified');
       });
     });
   });

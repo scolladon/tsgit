@@ -580,139 +580,99 @@ describe('NodeFileSystem', () => {
     });
 
     describe('mapErrno', () => {
-      describe('Given ENOENT', () => {
+      describe('Given an errno code on the underlying error', () => {
         describe('When mapping', () => {
-          it('Then returns FILE_NOT_FOUND', () => {
+          it.each([
+            {
+              code: 'ENOENT',
+              path: '/missing',
+              expectedCode: 'FILE_NOT_FOUND',
+              label: 'ENOENT returns FILE_NOT_FOUND',
+            },
+            {
+              code: 'EEXIST',
+              path: '/existing',
+              expectedCode: 'FILE_EXISTS',
+              label: 'EEXIST returns FILE_EXISTS',
+            },
+            {
+              code: 'ENOTDIR',
+              path: '/not-dir',
+              expectedCode: 'NOT_A_DIRECTORY',
+              label: 'ENOTDIR returns NOT_A_DIRECTORY',
+            },
+            {
+              code: 'EACCES',
+              path: '/locked',
+              expectedCode: 'PERMISSION_DENIED',
+              label: 'EACCES returns PERMISSION_DENIED',
+            },
+            {
+              code: 'EPERM',
+              path: '/locked',
+              expectedCode: 'PERMISSION_DENIED',
+              label: 'EPERM returns PERMISSION_DENIED',
+            },
+            {
+              code: 'ELOOP',
+              path: '/looping',
+              expectedCode: 'PERMISSION_DENIED',
+              label: 'ELOOP returns PERMISSION_DENIED (symlink-refusal contract)',
+            },
+            {
+              code: 'EISDIR',
+              path: '/some-dir',
+              expectedCode: 'PERMISSION_DENIED',
+              extra: (data: TsgitError['data']) => {
+                if (data.code === 'PERMISSION_DENIED') expect(data.path).toBe('/some-dir');
+              },
+              label: 'EISDIR returns PERMISSION_DENIED (open-directory refusal, cross-platform)',
+            },
+            {
+              code: 'EOTHER',
+              path: '/weird',
+              expectedCode: 'UNSUPPORTED_OPERATION',
+              extra: (data: TsgitError['data']) => {
+                if (data.code === 'UNSUPPORTED_OPERATION') {
+                  expect(data.operation).toBe('filesystem');
+                  expect(data.reason).toBe('EOTHER');
+                }
+              },
+              label:
+                'an unknown errno code returns UNSUPPORTED_OPERATION with operation="filesystem" and the code as reason',
+            },
+            {
+              code: undefined,
+              path: '/weird',
+              expectedCode: 'UNSUPPORTED_OPERATION',
+              extra: (data: TsgitError['data']) => {
+                if (data.code === 'UNSUPPORTED_OPERATION') {
+                  expect(data.operation).toBe('filesystem');
+                  expect(data.reason).toBe('UNKNOWN');
+                }
+              },
+              label: 'an undefined code: operation="filesystem" and reason falls back to "UNKNOWN"',
+            },
+            {
+              code: 'ENOTEMPTY',
+              path: '/non-empty-dir',
+              expectedCode: 'DIRECTORY_NOT_EMPTY',
+              extra: (data: TsgitError['data']) => {
+                if (data.code === 'DIRECTORY_NOT_EMPTY') expect(data.path).toBe('/non-empty-dir');
+              },
+              label:
+                'ENOTEMPTY returns DIRECTORY_NOT_EMPTY (non-empty rmdir is distinct from a wrong-shape path)',
+            },
+          ])('Then $label', ({ code, path, expectedCode, extra }) => {
             // Arrange
-            const sut = mapErrno(makeErrnoError('ENOENT'), '/missing');
-
-            // Assert
-            expect(sut.data.code).toBe('FILE_NOT_FOUND');
-          });
-        });
-      });
-
-      describe('Given EEXIST', () => {
-        describe('When mapping', () => {
-          it('Then returns FILE_EXISTS', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('EEXIST'), '/existing');
-
-            // Assert
-            expect(sut.data.code).toBe('FILE_EXISTS');
-          });
-        });
-      });
-
-      describe('Given ENOTDIR', () => {
-        describe('When mapping', () => {
-          it('Then returns NOT_A_DIRECTORY', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('ENOTDIR'), '/not-dir');
-
-            // Assert
-            expect(sut.data.code).toBe('NOT_A_DIRECTORY');
-          });
-        });
-      });
-
-      describe('Given EACCES', () => {
-        describe('When mapping', () => {
-          it('Then returns PERMISSION_DENIED', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('EACCES'), '/locked');
-
-            // Assert
-            expect(sut.data.code).toBe('PERMISSION_DENIED');
-          });
-        });
-      });
-
-      describe('Given EPERM', () => {
-        describe('When mapping', () => {
-          it('Then returns PERMISSION_DENIED', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('EPERM'), '/locked');
-
-            // Assert
-            expect(sut.data.code).toBe('PERMISSION_DENIED');
-          });
-        });
-      });
-
-      describe('Given ELOOP', () => {
-        describe('When mapping', () => {
-          it('Then returns PERMISSION_DENIED (symlink-refusal contract)', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('ELOOP'), '/looping');
-
-            // Assert
-            expect(sut.data.code).toBe('PERMISSION_DENIED');
-          });
-        });
-      });
-
-      describe('Given EISDIR', () => {
-        describe('When mapping', () => {
-          it('Then returns PERMISSION_DENIED (open-directory refusal, cross-platform)', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('EISDIR'), '/some-dir');
-
-            // Assert
-            expect(sut.data.code).toBe('PERMISSION_DENIED');
-            if (sut.data.code === 'PERMISSION_DENIED') {
-              expect(sut.data.path).toBe('/some-dir');
-            }
-          });
-        });
-      });
-
-      describe('Given an unknown errno code', () => {
-        describe('When mapping', () => {
-          it('Then returns UNSUPPORTED_OPERATION with operation="filesystem" and the code as reason', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('EOTHER'), '/weird');
-
-            // Assert
-            expect(sut.data.code).toBe('UNSUPPORTED_OPERATION');
-            if (sut.data.code === 'UNSUPPORTED_OPERATION') {
-              expect(sut.data.operation).toBe('filesystem');
-              expect(sut.data.reason).toBe('EOTHER');
-            }
-          });
-        });
-      });
-
-      describe('Given errno error with undefined code', () => {
-        describe('When mapping', () => {
-          it('Then operation="filesystem" and reason falls back to "UNKNOWN"', () => {
-            // Arrange
-            const err = new Error('no code') as NodeJS.ErrnoException;
+            const err = makeErrnoError(code);
 
             // Act
-            const sut = mapErrno(err, '/weird');
+            const sut = mapErrno(err, path);
 
             // Assert
-            expect(sut.data.code).toBe('UNSUPPORTED_OPERATION');
-            if (sut.data.code === 'UNSUPPORTED_OPERATION') {
-              expect(sut.data.operation).toBe('filesystem');
-              expect(sut.data.reason).toBe('UNKNOWN');
-            }
-          });
-        });
-      });
-
-      describe('Given ENOTEMPTY', () => {
-        describe('When mapping', () => {
-          it('Then returns DIRECTORY_NOT_EMPTY (non-empty rmdir is distinct from a wrong-shape path)', () => {
-            // Arrange
-            const sut = mapErrno(makeErrnoError('ENOTEMPTY'), '/non-empty-dir');
-
-            // Assert
-            expect(sut.data.code).toBe('DIRECTORY_NOT_EMPTY');
-            if (sut.data.code === 'DIRECTORY_NOT_EMPTY') {
-              expect(sut.data.path).toBe('/non-empty-dir');
-            }
+            expect(sut.data.code).toBe(expectedCode);
+            extra?.(sut.data);
           });
         });
       });
@@ -1008,85 +968,53 @@ describe('NodeFileSystem', () => {
     const posix = posixPolicy;
     const windows = windowsPolicy;
 
-    describe('Given POSIX host', () => {
-      describe('When isWindowsSymlinkRefusal is called with a PERMISSION_DENIED error', () => {
-        it('Then returns false (POSIX never uses the discriminator)', () => {
-          // Arrange
-          const sut = isWindowsSymlinkRefusal;
-          const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
-
-          // Act
-          const result = sut(err, posix);
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given Windows host and a PERMISSION_DENIED error', () => {
+    describe('Given an error and a host policy', () => {
       describe('When isWindowsSymlinkRefusal is called', () => {
-        it('Then returns true', () => {
+        it.each([
+          {
+            err: new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never }),
+            policy: posix,
+            expected: false,
+            label:
+              'a POSIX host with a PERMISSION_DENIED error returns false (never uses the discriminator)',
+          },
+          {
+            err: new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never }),
+            policy: windows,
+            expected: true,
+            label: 'a Windows host with a PERMISSION_DENIED error returns true',
+          },
+          {
+            err: new TsgitError({
+              code: 'UNSUPPORTED_OPERATION',
+              operation: 'filesystem',
+              reason: 'EISDIR',
+            }),
+            policy: windows,
+            expected: true,
+            label: 'a Windows host with an UNSUPPORTED_OPERATION error returns true',
+          },
+          {
+            err: new Error('raw'),
+            policy: windows,
+            expected: false,
+            label: 'a Windows host with a non-TsgitError returns false',
+          },
+          {
+            err: new TsgitError({ code: 'FILE_NOT_FOUND', path: 'p' as never }),
+            policy: windows,
+            expected: false,
+            label: 'a Windows host with a TsgitError of unrelated kind returns false',
+          },
+        ])('Then $label', ({ err, policy, expected }) => {
           // Arrange
           const sut = isWindowsSymlinkRefusal;
-          const err = new TsgitError({ code: 'PERMISSION_DENIED', path: 'p' as never });
 
           // Act
-          const result = sut(err, windows);
+          const result = sut(err, policy);
 
           // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given Windows host and an UNSUPPORTED_OPERATION error', () => {
-      describe('When isWindowsSymlinkRefusal is called', () => {
-        it('Then returns true', () => {
-          // Arrange
-          const sut = isWindowsSymlinkRefusal;
-          const err = new TsgitError({
-            code: 'UNSUPPORTED_OPERATION',
-            operation: 'filesystem',
-            reason: 'EISDIR',
-          });
-
-          // Act
-          const result = sut(err, windows);
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given Windows host and a non-TsgitError', () => {
-      describe('When isWindowsSymlinkRefusal is called', () => {
-        it('Then returns false', () => {
-          // Arrange
-          const sut = isWindowsSymlinkRefusal;
-
-          // Act
-          const result = sut(new Error('raw'), windows);
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given Windows host and a TsgitError of unrelated kind', () => {
-      describe('When isWindowsSymlinkRefusal is called', () => {
-        it('Then returns false', () => {
-          // Arrange
-          const sut = isWindowsSymlinkRefusal;
-          const err = new TsgitError({ code: 'FILE_NOT_FOUND', path: 'p' as never });
-
-          // Act
-          const result = sut(err, windows);
-
-          // Assert
-          expect(result).toBe(false);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -1095,126 +1023,83 @@ describe('NodeFileSystem', () => {
   describe('pathContains', () => {
     const posix = posixPolicy;
     const windows = windowsPolicy;
+    const hostPath = nodePath.resolve('/some/dir');
 
-    describe('Given parent === child', () => {
-      describe('When pathContains', () => {
-        it('Then returns true', () => {
-          // Arrange
-          const sut = pathContains;
-
-          // Act
-          const result = sut('/tmp/foo', '/tmp/foo', posix);
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given child strictly inside parent (POSIX)', () => {
-      describe('When pathContains', () => {
-        it('Then returns true', () => {
-          // Arrange
-          const sut = pathContains;
-
-          // Act
-          const result = sut('/tmp/foo', '/tmp/foo/bar/baz.bin', posix);
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given child outside parent', () => {
-      describe('When pathContains', () => {
-        it('Then returns false', () => {
-          // Arrange
-          const sut = pathContains;
-
-          // Act
-          const result = sut('/tmp/foo', '/etc/passwd', posix);
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe("Given prefix-only match (parent='/tmp/foo', child='/tmp/foobar')", () => {
+    describe('Given a parent and a child path', () => {
       describe('When pathContains is called', () => {
-        it('Then returns false (kills missing-separator mutant)', () => {
+        it.each([
+          {
+            parent: '/tmp/foo',
+            child: '/tmp/foo',
+            policy: posix,
+            expected: true,
+            label: 'parent === child returns true',
+          },
+          {
+            parent: '/tmp/foo',
+            child: '/tmp/foo/bar/baz.bin',
+            policy: posix,
+            expected: true,
+            label: 'a child strictly inside parent (POSIX) returns true',
+          },
+          {
+            parent: '/tmp/foo',
+            child: '/etc/passwd',
+            policy: posix,
+            expected: false,
+            label: 'a child outside parent returns false',
+          },
+          {
+            parent: '/tmp/foo',
+            child: '/tmp/foobar',
+            policy: posix,
+            expected: false,
+            label:
+              "a prefix-only match (parent='/tmp/foo', child='/tmp/foobar') returns false (kills missing-separator mutant)",
+          },
+          {
+            // Windows-shaped paths to match the platform separator.
+            parent: 'C:\\Users\\Foo',
+            child: 'c:\\users\\foo\\bar.bin',
+            policy: windows,
+            expected: true,
+            label:
+              'a Windows host with case-different prefix paths returns true (case-insensitive)',
+          },
+          {
+            parent: 'C:\\Users\\Foo',
+            child: 'c:\\users\\FOO',
+            policy: windows,
+            expected: true,
+            label:
+              'a Windows host with child equal to parent in different case returns true (identity arm)',
+          },
+          {
+            parent: '/Users/Foo',
+            child: '/users/foo/bar',
+            policy: posix,
+            expected: false,
+            label:
+              'a POSIX host with the same path in different case returns false (case-sensitive)',
+          },
+          {
+            // Exercises the `policy = nativePolicy` default binding.
+            parent: hostPath,
+            child: hostPath,
+            policy: undefined,
+            expected: true,
+            label:
+              'no policy argument defaults to nativePolicy; parent === child on the host platform returns true',
+          },
+        ])('Then $label', ({ parent, child, policy, expected }) => {
           // Arrange
           const sut = pathContains;
 
           // Act
-          const result = sut('/tmp/foo', '/tmp/foobar', posix);
+          const result = sut(parent, child, policy);
 
           // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given Windows host and case-different prefix paths', () => {
-      describe('When invoked', () => {
-        it('Then returns true (case-insensitive prefix)', () => {
-          // Arrange — Windows-shaped paths to match the platform separator.
-          const sut = pathContains;
-          const parent = 'C:\\Users\\Foo';
-          const child = 'c:\\users\\foo\\bar.bin';
-
-          // Act
-          const result = sut(parent, child, windows);
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given Windows host and child equal to parent in different case', () => {
-      describe('When invoked', () => {
-        it('Then returns true (identity arm)', () => {
-          // Arrange
-          const sut = pathContains;
-
-          // Act
-          const result = sut('C:\\Users\\Foo', 'c:\\users\\FOO', windows);
-
-          // Assert
-          expect(result).toBe(true);
-        });
-      });
-    });
-
-    describe('Given POSIX host and same path with different case', () => {
-      describe('When invoked', () => {
-        it('Then returns false (case-sensitive)', () => {
-          // Arrange
-          const sut = pathContains;
-
-          // Act
-          const result = sut('/Users/Foo', '/users/foo/bar', posix);
-
-          // Assert
-          expect(result).toBe(false);
-        });
-      });
-    });
-
-    describe('Given no policy argument', () => {
-      describe('When parent === child on the host platform', () => {
-        it('Then returns true', () => {
-          // Arrange — exercises the `policy = nativePolicy` default binding.
-          const sut = pathContains;
-          const path = nodePath.resolve('/some/dir');
-
-          // Act
-          const result = sut(path, path);
-
-          // Assert
-          expect(result).toBe(true);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -1243,63 +1128,38 @@ describe('NodeFileSystem config-path capabilities', () => {
   });
 
   describe('Given the xdgConfigHome() method', () => {
-    describe('When $XDG_CONFIG_HOME is set to "/custom/cfg"', () => {
-      it('Then returns "/custom/cfg"', async () => {
+    describe('When $XDG_CONFIG_HOME is read', () => {
+      it.each([
+        {
+          envValue: '/custom/cfg',
+          expected: '/custom/cfg',
+          label: 'set to "/custom/cfg" returns "/custom/cfg"',
+        },
+        {
+          envValue: undefined,
+          expected: nodePath.join(os.homedir(), '.config'),
+          label: 'unset returns "<homedir>/.config"',
+        },
+        {
+          envValue: '',
+          expected: nodePath.join(os.homedir(), '.config'),
+          label:
+            'set to the empty string falls back to "<homedir>/.config" (treats empty as unset)',
+        },
+      ])('Then $label', async ({ envValue, expected }) => {
         // Arrange
         const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
         const prior = process.env['XDG_CONFIG_HOME'];
         try {
-          process.env['XDG_CONFIG_HOME'] = '/custom/cfg';
+          if (envValue === undefined) delete process.env['XDG_CONFIG_HOME'];
+          else process.env['XDG_CONFIG_HOME'] = envValue;
           const fs = new NodeFileSystem(tmp, posixPolicy);
 
           // Act
           const sut = fs.xdgConfigHome();
 
           // Assert
-          expect(sut).toBe('/custom/cfg');
-        } finally {
-          if (prior === undefined) delete process.env['XDG_CONFIG_HOME'];
-          else process.env['XDG_CONFIG_HOME'] = prior;
-          await fsPromises.rm(tmp, { recursive: true, force: true });
-        }
-      });
-    });
-
-    describe('When $XDG_CONFIG_HOME is unset', () => {
-      it('Then returns "<homedir>/.config"', async () => {
-        // Arrange
-        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
-        const prior = process.env['XDG_CONFIG_HOME'];
-        try {
-          delete process.env['XDG_CONFIG_HOME'];
-          const fs = new NodeFileSystem(tmp, posixPolicy);
-
-          // Act
-          const sut = fs.xdgConfigHome();
-
-          // Assert
-          expect(sut).toBe(nodePath.join(os.homedir(), '.config'));
-        } finally {
-          if (prior !== undefined) process.env['XDG_CONFIG_HOME'] = prior;
-          await fsPromises.rm(tmp, { recursive: true, force: true });
-        }
-      });
-    });
-
-    describe('When $XDG_CONFIG_HOME is set to the empty string', () => {
-      it('Then falls back to "<homedir>/.config" (treats empty as unset)', async () => {
-        // Arrange
-        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
-        const prior = process.env['XDG_CONFIG_HOME'];
-        try {
-          process.env['XDG_CONFIG_HOME'] = '';
-          const fs = new NodeFileSystem(tmp, posixPolicy);
-
-          // Act
-          const sut = fs.xdgConfigHome();
-
-          // Assert
-          expect(sut).toBe(nodePath.join(os.homedir(), '.config'));
+          expect(sut).toBe(expected);
         } finally {
           if (prior === undefined) delete process.env['XDG_CONFIG_HOME'];
           else process.env['XDG_CONFIG_HOME'] = prior;
@@ -1310,46 +1170,45 @@ describe('NodeFileSystem config-path capabilities', () => {
   });
 
   describe('Given the systemConfigPath() method', () => {
-    describe('When process.platform is a POSIX value (linux/darwin)', () => {
-      it('Then returns "/etc/gitconfig"', async () => {
-        // Arrange
-        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
-        const priorPlatform = process.platform;
-        try {
-          Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-          const fs = new NodeFileSystem(tmp, posixPolicy);
-
-          // Act
-          const sut = fs.systemConfigPath();
-
-          // Assert
-          expect(sut).toBe('/etc/gitconfig');
-        } finally {
-          Object.defineProperty(process, 'platform', {
-            value: priorPlatform,
-            configurable: true,
-          });
-          await fsPromises.rm(tmp, { recursive: true, force: true });
-        }
-      });
-    });
-
-    describe('When process.platform is "win32" and $ProgramData is set', () => {
-      it('Then returns "<ProgramData>\\Git\\config"', async () => {
+    describe('When process.platform and $ProgramData vary', () => {
+      it.each([
+        {
+          platform: 'linux' as const,
+          policy: posixPolicy,
+          programData: undefined,
+          expected: '/etc/gitconfig',
+          label: 'a POSIX platform (linux/darwin) returns "/etc/gitconfig"',
+        },
+        {
+          platform: 'win32' as const,
+          policy: windowsPolicy,
+          programData: 'D:\\PD',
+          expected: 'D:\\PD\\Git\\config',
+          label: '"win32" with $ProgramData set returns "<ProgramData>\\Git\\config"',
+        },
+        {
+          platform: 'win32' as const,
+          policy: windowsPolicy,
+          programData: undefined,
+          expected: 'C:\\ProgramData\\Git\\config',
+          label: '"win32" with $ProgramData unset falls back to "C:\\ProgramData\\Git\\config"',
+        },
+      ])('Then $label', async ({ platform, policy, programData, expected }) => {
         // Arrange
         const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
         const priorPlatform = process.platform;
         const priorProgramData = process.env['ProgramData'];
         try {
-          Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-          process.env['ProgramData'] = 'D:\\PD';
-          const fs = new NodeFileSystem(tmp, windowsPolicy);
+          Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+          if (programData === undefined) delete process.env['ProgramData'];
+          else process.env['ProgramData'] = programData;
+          const fs = new NodeFileSystem(tmp, policy);
 
           // Act
           const sut = fs.systemConfigPath();
 
           // Assert
-          expect(sut).toBe('D:\\PD\\Git\\config');
+          expect(sut).toBe(expected);
         } finally {
           Object.defineProperty(process, 'platform', {
             value: priorPlatform,
@@ -1357,33 +1216,6 @@ describe('NodeFileSystem config-path capabilities', () => {
           });
           if (priorProgramData === undefined) delete process.env['ProgramData'];
           else process.env['ProgramData'] = priorProgramData;
-          await fsPromises.rm(tmp, { recursive: true, force: true });
-        }
-      });
-    });
-
-    describe('When process.platform is "win32" and $ProgramData is unset', () => {
-      it('Then falls back to "C:\\ProgramData\\Git\\config"', async () => {
-        // Arrange
-        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
-        const priorPlatform = process.platform;
-        const priorProgramData = process.env['ProgramData'];
-        try {
-          Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-          delete process.env['ProgramData'];
-          const fs = new NodeFileSystem(tmp, windowsPolicy);
-
-          // Act
-          const sut = fs.systemConfigPath();
-
-          // Assert
-          expect(sut).toBe('C:\\ProgramData\\Git\\config');
-        } finally {
-          Object.defineProperty(process, 'platform', {
-            value: priorPlatform,
-            configurable: true,
-          });
-          if (priorProgramData !== undefined) process.env['ProgramData'] = priorProgramData;
           await fsPromises.rm(tmp, { recursive: true, force: true });
         }
       });

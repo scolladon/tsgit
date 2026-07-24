@@ -36,12 +36,28 @@ async function collectChunks(it: AsyncIterable<Uint8Array>): Promise<Uint8Array[
 }
 
 describe('streamBlob', () => {
-  describe('Given a loose blob, When streamBlob is drained', () => {
-    it('Then concatenated bytes are byte-equal to readBlob content', async () => {
+  describe('Given a loose blob, When drained', () => {
+    it.each([
+      { content: () => ENC.encode('hello streaming world'), label: 'a loose blob' },
+      {
+        content: () => ENC.encode('single chunk content that fits in one inflate output'),
+        label: 'a loose blob whose content is exactly one inflate chunk',
+      },
+      {
+        content: () => {
+          const large = new Uint8Array(200 * 1024);
+          for (let i = 0; i < large.length; i += 1) {
+            large[i] = i % 251;
+          }
+          return large;
+        },
+        label: 'a large loose blob (multi-chunk inflate)',
+      },
+    ])('Then $label yields bytes byte-equal to readBlob content', async ({ content }) => {
       // Arrange
       const blob: Blob = {
         type: 'blob',
-        content: ENC.encode('hello streaming world'),
+        content: content(),
         id: '' as ObjectId,
       };
       const ctx = await buildSeededContext({ objects: [blob] });
@@ -98,45 +114,6 @@ describe('streamBlob', () => {
     });
   });
 
-  describe('Given a loose blob whose content is exactly one inflate chunk, When drained', () => {
-    it('Then yields bytes byte-equal to readBlob content', async () => {
-      // Arrange
-      const content = ENC.encode('single chunk content that fits in one inflate output');
-      const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
-      const ctx = await buildSeededContext({ objects: [blob] });
-      const id = await writeObject(ctx, blob);
-
-      // Act
-      const sut = await streamBlob(ctx, id);
-      const result = await collect(sut);
-
-      // Assert
-      const oracle = await readBlob(ctx, id);
-      expect(result).toEqual(oracle.content);
-    });
-  });
-
-  describe('Given a large loose blob (multi-chunk inflate), When drained', () => {
-    it('Then yields bytes byte-equal to readBlob content', async () => {
-      // Arrange
-      const large = new Uint8Array(200 * 1024);
-      for (let i = 0; i < large.length; i += 1) {
-        large[i] = i % 251;
-      }
-      const blob: Blob = { type: 'blob', content: large, id: '' as ObjectId };
-      const ctx = await buildSeededContext({ objects: [blob] });
-      const id = await writeObject(ctx, blob);
-
-      // Act
-      const sut = await streamBlob(ctx, id);
-      const result = await collect(sut);
-
-      // Assert
-      const oracle = await readBlob(ctx, id);
-      expect(result).toEqual(oracle.content);
-    });
-  });
-
   describe('Given a large loose blob (~200 KB), When drained chunk-by-chunk', () => {
     it('Then yields more than one chunk (genuine streaming, not a single buffered yield)', async () => {
       // Arrange
@@ -157,46 +134,107 @@ describe('streamBlob', () => {
     });
   });
 
-  describe('Given a loose non-blob object id (a commit), When streamBlob is called', () => {
-    it('Then throws unexpectedObjectType with correct data', async () => {
-      // Arrange
-      const identity = {
-        name: 'A',
-        email: 'a@a.com',
-        timestamp: 1,
-        timezoneOffset: '+0000' as const,
-      };
-      const commit: Commit = {
-        type: 'commit',
-        id: '' as ObjectId,
-        data: {
-          tree: ZERO_ID,
-          parents: [],
-          author: identity,
-          committer: identity,
-          message: 'msg',
-          extraHeaders: [],
+  describe('Given a non-blob object id, When streamBlob is drained', () => {
+    it.each([
+      {
+        actualType: 'commit',
+        label: 'a loose non-blob (commit) id',
+        build: async () => {
+          const identity = {
+            name: 'A',
+            email: 'a@a.com',
+            timestamp: 1,
+            timezoneOffset: '+0000' as const,
+          };
+          const commit: Commit = {
+            type: 'commit',
+            id: '' as ObjectId,
+            data: {
+              tree: ZERO_ID,
+              parents: [],
+              author: identity,
+              committer: identity,
+              message: 'msg',
+              extraHeaders: [],
+            },
+          };
+          const ctx = await buildSeededContext({ objects: [commit] });
+          const id = await writeObject(ctx, commit);
+          return { ctx, id };
         },
-      };
-      const ctx = await buildSeededContext({ objects: [commit] });
-      const id = await writeObject(ctx, commit);
+      },
+      {
+        actualType: 'tree',
+        label: 'a packed non-blob (tree) id',
+        build: async () => {
+          const content = ENC.encode('tree-like content');
+          const ctx = await buildSeededContext();
+          const ids = await writeSyntheticPack(ctx, 'non-blob-test', [
+            { kind: 'base', type: 'tree', content },
+          ]);
+          return { ctx, id: ids[0] as ObjectId };
+        },
+      },
+      {
+        actualType: 'commit',
+        label: 'a packed non-blob (commit) id (kills COMMIT case NoCoverage)',
+        build: async () => {
+          const content = ENC.encode('fake commit content');
+          const ctx = await buildSeededContext();
+          const ids = await writeSyntheticPack(ctx, 'non-blob-commit', [
+            { kind: 'base', type: 'commit', content },
+          ]);
+          return { ctx, id: ids[0] as ObjectId };
+        },
+      },
+      {
+        actualType: 'tag',
+        label: 'a packed non-blob (tag) id (kills TAG case NoCoverage)',
+        build: async () => {
+          const content = ENC.encode('fake tag content');
+          const ctx = await buildSeededContext();
+          const ids = await writeSyntheticPack(ctx, 'non-blob-tag', [
+            { kind: 'base', type: 'tag', content },
+          ]);
+          return { ctx, id: ids[0] as ObjectId };
+        },
+      },
+      {
+        actualType: 'tree',
+        label: 'a deltified non-blob (tree) id (kills streamFromBuffer type guard)',
+        build: async () => {
+          const treeContent = ENC.encode('fake tree content');
+          const ctx = await buildSeededContext();
+          const ids = await writeSyntheticPack(ctx, 'delta-non-blob', [
+            { kind: 'base', type: 'tree', content: treeContent },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('delta tree content') },
+          ]);
+          return { ctx, id: ids[1] as ObjectId };
+        },
+      },
+    ])(
+      'Then $label throws unexpectedObjectType with correct data',
+      async ({ actualType, build }) => {
+        // Arrange
+        const { ctx, id } = await build();
 
-      // Act / Assert
-      try {
-        const sut = await streamBlob(ctx, id);
-        await collect(sut);
-        expect.unreachable();
-      } catch (error) {
-        expect(error).toBeInstanceOf(TsgitError);
-        const data = (error as TsgitError).data;
-        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
-        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-          expect(data.expected).toBe('blob');
-          expect(data.actual).toBe('commit');
-          expect(data.id).toBe(id);
+        // Act / Assert
+        try {
+          const sut = await streamBlob(ctx, id);
+          await collect(sut);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+          if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+            expect(data.expected).toBe('blob');
+            expect(data.actual).toBe(actualType);
+            expect(data.id).toBe(id);
+          }
         }
-      }
-    });
+      },
+    );
   });
 
   describe('Given a loose blob with default options, When drained', () => {
@@ -419,34 +457,6 @@ describe('streamBlob', () => {
       const oracle = await readBlob(ctx, id);
       expect(result).toEqual(oracle.content);
       expect(sut.materialised).toBe(true);
-    });
-  });
-
-  describe('Given a packed non-blob (tree) id, When streamBlob is drained', () => {
-    it('Then throws unexpectedObjectType with correct data', async () => {
-      // Arrange
-      const content = ENC.encode('tree-like content');
-      const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'non-blob-test', [
-        { kind: 'base', type: 'tree', content },
-      ]);
-      const id = ids[0] as ObjectId;
-
-      // Act / Assert
-      try {
-        const sut = await streamBlob(ctx, id);
-        await collect(sut);
-        expect.unreachable();
-      } catch (error) {
-        expect(error).toBeInstanceOf(TsgitError);
-        const data = (error as TsgitError).data;
-        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
-        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-          expect(data.expected).toBe('blob');
-          expect(data.actual).toBe('tree');
-          expect(data.id).toBe(id);
-        }
-      }
     });
   });
 
@@ -840,36 +850,6 @@ describe('streamBlob', () => {
     });
   });
 
-  // Group A — delta-path non-blob type check (streamFromBuffer line 139)
-  describe('Given a deltified non-blob (tree) id, When streamBlob is drained', () => {
-    it('Then throws unexpectedObjectType with correct data (kills streamFromBuffer type guard)', async () => {
-      // Arrange — tree base entry + ofs-delta that reconstructs it; resolvedType is tree
-      const treeContent = ENC.encode('fake tree content');
-      const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'delta-non-blob', [
-        { kind: 'base', type: 'tree', content: treeContent },
-        { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('delta tree content') },
-      ]);
-      const id = ids[1] as ObjectId;
-
-      // Act / Assert
-      try {
-        const sut = await streamBlob(ctx, id);
-        await collect(sut);
-        expect.unreachable();
-      } catch (error) {
-        expect(error).toBeInstanceOf(TsgitError);
-        const data = (error as TsgitError).data;
-        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
-        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-          expect(data.expected).toBe('blob');
-          expect(data.actual).toBe('tree');
-          expect(data.id).toBe(id);
-        }
-      }
-    });
-  });
-
   // Group A — empty deltified blob content check (streamFromBuffer line 148)
   describe('Given a deltified blob with empty content, When streamBlob is drained', () => {
     it('Then yields zero content chunks and materialised is true (kills >= 0 and true mutants)', async () => {
@@ -964,64 +944,6 @@ describe('streamBlob', () => {
         expect(data.code).toBe('INVALID_OBJECT_HEADER');
         if (data.code === 'INVALID_OBJECT_HEADER') {
           expect(data.reason).toContain(id);
-        }
-      }
-    });
-  });
-
-  // Group C — packTypeName COMMIT case (line 71 NoCoverage)
-  describe('Given a packed non-blob (commit) id, When streamBlob is drained', () => {
-    it('Then throws unexpectedObjectType with actual commit (kills COMMIT case NoCoverage)', async () => {
-      // Arrange
-      const content = ENC.encode('fake commit content');
-      const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'non-blob-commit', [
-        { kind: 'base', type: 'commit', content },
-      ]);
-      const id = ids[0] as ObjectId;
-
-      // Act / Assert
-      try {
-        const sut = await streamBlob(ctx, id);
-        await collect(sut);
-        expect.unreachable();
-      } catch (error) {
-        expect(error).toBeInstanceOf(TsgitError);
-        const data = (error as TsgitError).data;
-        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
-        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-          expect(data.expected).toBe('blob');
-          expect(data.actual).toBe('commit');
-          expect(data.id).toBe(id);
-        }
-      }
-    });
-  });
-
-  // Group C — packTypeName TAG case (line 75 NoCoverage — BLOB removed)
-  describe('Given a packed non-blob (tag) id, When streamBlob is drained', () => {
-    it('Then throws unexpectedObjectType with actual tag (kills TAG case NoCoverage)', async () => {
-      // Arrange
-      const content = ENC.encode('fake tag content');
-      const ctx = await buildSeededContext();
-      const ids = await writeSyntheticPack(ctx, 'non-blob-tag', [
-        { kind: 'base', type: 'tag', content },
-      ]);
-      const id = ids[0] as ObjectId;
-
-      // Act / Assert
-      try {
-        const sut = await streamBlob(ctx, id);
-        await collect(sut);
-        expect.unreachable();
-      } catch (error) {
-        expect(error).toBeInstanceOf(TsgitError);
-        const data = (error as TsgitError).data;
-        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
-        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-          expect(data.expected).toBe('blob');
-          expect(data.actual).toBe('tag');
-          expect(data.id).toBe(id);
         }
       }
     });

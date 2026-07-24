@@ -197,63 +197,51 @@ describe('pack-writer', () => {
       });
     });
 
-    describe('Given entry with offset > 2^31', () => {
-      describe('When serializing', () => {
-        it('Then small offset has MSB set and large offset table present', () => {
-          // Arrange
-          const largeOffset = 0x80000001;
-          const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: largeOffset }];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          // Append self-checksum placeholder for parsing
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
-
-          // Assert — roundtrip parse finds the correct offset
-          const idx = parsePackIndex(withTrailer);
-          const result = lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId);
-          expect(result).toBe(largeOffset);
-        });
-      });
-    });
-
-    describe('Given multiple entries with offsets > 2^31 including > 2^32', () => {
+    describe('Given entries spanning small, large, and boundary offsets', () => {
       describe('When serializing then parsing', () => {
-        it('Then all large offsets correct', () => {
-          // Arrange — 3 large offset entries, one with high word > 0 to kill largeIdx math mutants
-          const entries = [
-            { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x80000001 },
-            { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x100000002 },
-            { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 0x200000003 },
-          ];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
-          const idx = parsePackIndex(withTrailer);
-
-          // Assert — each entry has a distinct large offset
-          expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(0x80000001);
-          expect(lookupPackIndex(idx, ('bb' + '00'.repeat(19)) as ObjectId)).toBe(0x100000002);
-          expect(lookupPackIndex(idx, ('cc' + '00'.repeat(19)) as ObjectId)).toBe(0x200000003);
-        });
-      });
-    });
-
-    describe('Given mix of small and large offsets', () => {
-      describe('When serializing then parsing', () => {
-        it('Then all offsets correct', () => {
+        it.each([
+          {
+            entries: [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x80000001 }],
+            label: 'a single offset just above 2^31',
+          },
+          {
+            // 3 large offset entries, one with high word > 0, to kill largeIdx math mutants
+            entries: [
+              { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x80000001 },
+              { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x100000002 },
+              { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 0x200000003 },
+            ],
+            label: 'offsets above 2^31, including one above 2^32',
+          },
+          {
+            entries: [
+              { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 42 },
+              { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x80000001 },
+              { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 99 },
+              { id: 'dd' + '00'.repeat(19), crc32: 0, offset: 0x90000002 },
+            ],
+            label: 'a mix of small and large offsets',
+          },
+          {
+            // 0x7fffffff is the max small offset (MSB not set)
+            entries: [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x7fffffff }],
+            label: 'the exact-boundary small offset (0x7fffffff)',
+          },
+          {
+            // offset = 0x100000001 (high=1, low=1)
+            entries: [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x100000001 }],
+            label: 'an offset above 2^32',
+          },
+          {
+            entries: [
+              { id: 'aa' + '00'.repeat(19), crc32: 111, offset: 12 },
+              { id: 'bb' + '00'.repeat(19), crc32: 222, offset: 100 },
+              { id: 'cc' + '00'.repeat(19), crc32: 333, offset: 200 },
+            ],
+            label: '3 small, known entries',
+          },
+        ])('Then lookupPackIndex finds every entry for $label', ({ entries }) => {
           // Arrange
-          const entries = [
-            { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 42 },
-            { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x80000001 },
-            { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 99 },
-            { id: 'dd' + '00'.repeat(19), crc32: 0, offset: 0x90000002 },
-          ];
           const packChecksum = new Uint8Array(20);
 
           // Act
@@ -263,107 +251,66 @@ describe('pack-writer', () => {
           const idx = parsePackIndex(withTrailer);
 
           // Assert
-          expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(42);
-          expect(lookupPackIndex(idx, ('bb' + '00'.repeat(19)) as ObjectId)).toBe(0x80000001);
-          expect(lookupPackIndex(idx, ('cc' + '00'.repeat(19)) as ObjectId)).toBe(99);
-          expect(lookupPackIndex(idx, ('dd' + '00'.repeat(19)) as ObjectId)).toBe(0x90000002);
+          for (const entry of entries) {
+            expect(lookupPackIndex(idx, entry.id as ObjectId)).toBe(entry.offset);
+          }
         });
       });
     });
 
-    describe('Given offset exactly 0x7fffffff', () => {
-      describe('When serializing then parsing', () => {
-        it('Then treated as small offset', () => {
-          // Arrange — 0x7fffffff is the max small offset (MSB not set)
-          const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x7fffffff }];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
-          const idx = parsePackIndex(withTrailer);
-
-          // Assert
-          expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(0x7fffffff);
-        });
-      });
-    });
-
-    describe('Given 1 entry with offset exactly 0x7fffffff', () => {
+    describe('Given entries whose offsets do or do not require a large-offset slot', () => {
       describe('When serializing', () => {
-        it('Then NO large-offset table is reserved (total length excludes 8 large-offset bytes)', () => {
-          // Arrange — 0x7fffffff must NOT count as large; `> 0x7fffffff` boundary.
-          // Kills the L78 `>=` EqualityOperator mutant (which would reserve 8 extra
-          // large-offset bytes for this exact-boundary offset).
-          const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x7fffffff }];
-          const packChecksum = new Uint8Array(20);
+        it.each([
+          {
+            // 0x7fffffff must NOT count as large; `> 0x7fffffff` boundary. Kills the
+            // L78 `>=` EqualityOperator mutant (would reserve 8 extra large-offset bytes).
+            entries: [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x7fffffff }],
+            expectedLength: 8 + 1024 + 20 + 4 + 4 + 0 + 20,
+            label: '1 entry at the exact-boundary small offset (0x7fffffff)',
+          },
+          {
+            // Both offsets well below 0x7fffffff; kills the L78 ConditionalExpression
+            // `true` mutant (which counts every entry as large → 16 extra bytes).
+            entries: [
+              { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
+              { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 99 },
+            ],
+            expectedLength: 8 + 1024 + 40 + 8 + 8 + 0 + 20,
+            label: '2 small-offset entries',
+          },
+          {
+            // Offset strictly above 0x7fffffff: exactly one large slot. Pins L78
+            // against ConditionalExpression `true` (would count extra) — here n===1
+            // so true≡correct, but combined with the small-offset row this anchors
+            // the exact count.
+            entries: [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x80000000 }],
+            expectedLength: 8 + 1024 + 20 + 4 + 4 + 8 + 20,
+            label: '1 large-offset entry',
+          },
+          {
+            // Only the middle entry is large. Kills L78 ConditionalExpression `true`
+            // (would reserve 3 slots = 24 bytes) and L78 `>=` is irrelevant here.
+            entries: [
+              { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
+              { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x90000000 },
+              { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 200 },
+            ],
+            expectedLength: 8 + 1024 + 60 + 12 + 12 + 8 + 20,
+            label: '3 entries, only the middle one large',
+          },
+        ])(
+          'Then the total length reserves the correct large-offset bytes for $label',
+          ({ entries, expectedLength }) => {
+            // Arrange
+            const packChecksum = new Uint8Array(20);
 
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
+            // Act
+            const sut = serializePackIndex(entries, packChecksum);
 
-          // Assert — header 8 + fanout 1024 + sha 20 + crc 4 + offset 4 + large 0 + checksum 20
-          expect(sut.length).toBe(8 + 1024 + 20 + 4 + 4 + 0 + 20);
-        });
-      });
-    });
-
-    describe('Given 2 small-offset entries', () => {
-      describe('When serializing', () => {
-        it('Then total length reserves zero large-offset bytes', () => {
-          // Arrange — both offsets well below 0x7fffffff; kills the L78 ConditionalExpression
-          // `true` mutant (which counts every entry as large → 16 extra bytes).
-          const entries = [
-            { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
-            { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 99 },
-          ];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-
-          // Assert — header 8 + fanout 1024 + sha 40 + crc 8 + offset 8 + large 0 + checksum 20
-          expect(sut.length).toBe(8 + 1024 + 40 + 8 + 8 + 0 + 20);
-        });
-      });
-    });
-
-    describe('Given 1 large-offset entry', () => {
-      describe('When serializing', () => {
-        it('Then total length reserves exactly one 8-byte large-offset slot', () => {
-          // Arrange — offset strictly above 0x7fffffff: exactly one large slot.
-          // Pins L78 against ConditionalExpression `true` (which would count extra) — here n===1 so true≡correct,
-          // but combined with the small-offset tests this anchors the exact count.
-          const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x80000000 }];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-
-          // Assert — header 8 + fanout 1024 + sha 20 + crc 4 + offset 4 + large 8 + checksum 20
-          expect(sut.length).toBe(8 + 1024 + 20 + 4 + 4 + 8 + 20);
-        });
-      });
-    });
-
-    describe('Given 3 entries one large', () => {
-      describe('When serializing', () => {
-        it('Then total length reserves exactly one large-offset slot (not three)', () => {
-          // Arrange — only the middle entry is large. Kills L78 ConditionalExpression `true`
-          // (would reserve 3 slots = 24 bytes) and L78 `>=` is irrelevant here.
-          const entries = [
-            { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
-            { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x90000000 },
-            { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 200 },
-          ];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-
-          // Assert — header 8 + fanout 1024 + sha 60 + crc 12 + offset 12 + large 8 + checksum 20
-          expect(sut.length).toBe(8 + 1024 + 60 + 12 + 12 + 8 + 20);
-        });
+            // Assert
+            expect(sut.length).toBe(expectedLength);
+          },
+        );
       });
     });
 
@@ -388,26 +335,6 @@ describe('pack-writer', () => {
           const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
           // shaStart = 8 + 1024 = 1032; first 4 bytes must equal 0xaabbccdd
           expect(view.getUint32(1032)).toBe(0xaabbccdd);
-        });
-      });
-    });
-
-    describe('Given offset > 2^32', () => {
-      describe('When serializing then parsing', () => {
-        it('Then reads correct 64-bit value', () => {
-          // Arrange — offset = 0x100000001 (high=1, low=1)
-          const largeOffset = 0x100000001;
-          const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: largeOffset }];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
-          const idx = parsePackIndex(withTrailer);
-
-          // Assert
-          expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(largeOffset);
         });
       });
     });
@@ -496,31 +423,6 @@ describe('pack-writer', () => {
           // Assert
           const idx = parsePackIndex(withTrailer);
           expect(idx.objectCount).toBe(0);
-        });
-      });
-    });
-
-    describe('Given 3 known entries', () => {
-      describe('When serializing then parsing', () => {
-        it('Then lookupPackIndex finds each at correct offset', () => {
-          // Arrange
-          const entries = [
-            { id: 'aa' + '00'.repeat(19), crc32: 111, offset: 12 },
-            { id: 'bb' + '00'.repeat(19), crc32: 222, offset: 100 },
-            { id: 'cc' + '00'.repeat(19), crc32: 333, offset: 200 },
-          ];
-          const packChecksum = new Uint8Array(20);
-
-          // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
-          const idx = parsePackIndex(withTrailer);
-
-          // Assert
-          for (const entry of entries) {
-            expect(lookupPackIndex(idx, entry.id as ObjectId)).toBe(entry.offset);
-          }
         });
       });
     });

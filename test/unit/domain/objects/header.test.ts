@@ -9,66 +9,23 @@ function headerBytes(str: string): Uint8Array {
 
 describe('header', () => {
   describe('parseHeader', () => {
-    describe("Given 'blob 12\\\\0' as bytes", () => {
+    describe('Given `<type> <size>\\0` as bytes', () => {
       describe('When parsing', () => {
-        it("Then type='blob', size=12", () => {
+        it.each([
+          { raw: 'blob 12\0', type: 'blob', size: 12 },
+          { raw: 'tree 0\0', type: 'tree', size: 0 },
+          { raw: 'commit 1234\0', type: 'commit', size: 1234 },
+          { raw: 'tag 56\0', type: 'tag', size: 56 },
+        ])("Then type='$type', size=$size", ({ raw, type, size }) => {
           // Arrange
-          const raw = headerBytes('blob 12\0');
+          const bytes = headerBytes(raw);
 
           // Act
-          const sut = parseHeader(raw);
+          const sut = parseHeader(bytes);
 
           // Assert
-          expect(sut.type).toBe('blob');
-          expect(sut.size).toBe(12);
-        });
-      });
-    });
-
-    describe("Given 'tree 0\\\\0' as bytes", () => {
-      describe('When parsing', () => {
-        it("Then type='tree', size=0", () => {
-          // Arrange
-          const raw = headerBytes('tree 0\0');
-
-          // Act
-          const sut = parseHeader(raw);
-
-          // Assert
-          expect(sut.type).toBe('tree');
-          expect(sut.size).toBe(0);
-        });
-      });
-    });
-
-    describe("Given 'commit 1234\\\\0' as bytes", () => {
-      describe('When parsing', () => {
-        it("Then type='commit', size=1234", () => {
-          // Arrange
-          const raw = headerBytes('commit 1234\0');
-
-          // Act
-          const sut = parseHeader(raw);
-
-          // Assert
-          expect(sut.type).toBe('commit');
-          expect(sut.size).toBe(1234);
-        });
-      });
-    });
-
-    describe("Given 'tag 56\\\\0' as bytes", () => {
-      describe('When parsing', () => {
-        it("Then type='tag', size=56", () => {
-          // Arrange
-          const raw = headerBytes('tag 56\0');
-
-          // Act
-          const sut = parseHeader(raw);
-
-          // Assert
-          expect(sut.type).toBe('tag');
-          expect(sut.size).toBe(56);
+          expect(sut.type).toBe(type);
+          expect(sut.size).toBe(size);
         });
       });
     });
@@ -88,94 +45,32 @@ describe('header', () => {
       });
     });
 
-    describe("Given 'invalid 12\\\\0' as bytes", () => {
+    describe('Given bytes that fail one header-validation guard', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_OBJECT_HEADER with unknown type reason', () => {
+        it.each([
+          {
+            raw: 'invalid 12\0',
+            reason: 'unknown object type: invalid',
+            label: 'an unknown type',
+          },
+          { raw: 'blob 12', reason: 'missing null terminator', label: 'no null terminator' },
+          {
+            raw: 'blob12\0',
+            reason: 'missing space between type and size',
+            label: 'no space between type and size',
+          },
+          { raw: 'blob abc\0', reason: 'invalid size: abc', label: 'a non-numeric size' },
+          { raw: 'blob -1\0', reason: 'invalid size: -1', label: 'a negative size' },
+        ])('Then throws INVALID_OBJECT_HEADER with $label reason', ({ raw, reason }) => {
           // Arrange
-          const raw = headerBytes('invalid 12\0');
+          const bytes = headerBytes(raw);
 
           // Act + Assert
-          expect(() => parseHeader(raw)).toThrow(
+          expect(() => parseHeader(bytes)).toThrow(
             expect.objectContaining({
               data: expect.objectContaining({
                 code: 'INVALID_OBJECT_HEADER',
-                reason: 'unknown object type: invalid',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given bytes with no null terminator', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_OBJECT_HEADER with missing null reason', () => {
-          // Arrange
-          const raw = headerBytes('blob 12');
-
-          // Act + Assert
-          expect(() => parseHeader(raw)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_OBJECT_HEADER',
-                reason: 'missing null terminator',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given bytes with no space', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_OBJECT_HEADER with missing space reason', () => {
-          // Arrange
-          const raw = headerBytes('blob12\0');
-
-          // Act + Assert
-          expect(() => parseHeader(raw)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_OBJECT_HEADER',
-                reason: 'missing space between type and size',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe("Given 'blob abc\\\\0' (non-numeric size)", () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_OBJECT_HEADER with invalid size reason', () => {
-          // Arrange
-          const raw = headerBytes('blob abc\0');
-
-          // Act + Assert
-          expect(() => parseHeader(raw)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_OBJECT_HEADER',
-                reason: 'invalid size: abc',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe("Given 'blob -1\\\\0' (negative size)", () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_OBJECT_HEADER with invalid size reason', () => {
-          // Arrange
-          const raw = headerBytes('blob -1\0');
-
-          // Act + Assert
-          expect(() => parseHeader(raw)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_OBJECT_HEADER',
-                reason: 'invalid size: -1',
+                reason,
               }),
             }),
           );

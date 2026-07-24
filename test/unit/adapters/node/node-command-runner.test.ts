@@ -85,53 +85,35 @@ describe('NodeCommandRunner', () => {
     });
   });
 
-  describe('Given a command that exits non-zero', () => {
+  describe('Given a command whose outcome is reported via exitCode', () => {
     describe('When run', () => {
-      it('Then resolves with that exit code', async () => {
+      it.each([
+        {
+          emit: (c: FakeChild) => c.emit('close', 2),
+          expectedExitCode: 2,
+          label: 'a non-zero close code resolves with that exit code',
+        },
+        {
+          emit: (c: FakeChild) => c.emit('close', null),
+          expectedExitCode: 128,
+          label: 'a null close code (signal-killed) resolves with exit code 128',
+        },
+        {
+          emit: (c: FakeChild) => c.emit('error', new Error('ENOENT')),
+          expectedExitCode: 127,
+          label: 'a spawn error resolves with exit code 127',
+        },
+      ])('Then $label', async ({ emit, expectedExitCode }) => {
         // Arrange
         const { runner, child } = makeHarness();
 
         // Act
         const promise = runner.run(baseRequest());
-        child.emit('close', 2);
+        emit(child);
         const sut = await promise;
 
         // Assert
-        expect(sut.exitCode).toBe(2);
-      });
-    });
-  });
-
-  describe('Given a command killed by a signal (close code null)', () => {
-    describe('When run', () => {
-      it('Then resolves with the signal-killed exit code 128', async () => {
-        // Arrange
-        const { runner, child } = makeHarness();
-
-        // Act
-        const promise = runner.run(baseRequest());
-        child.emit('close', null);
-        const sut = await promise;
-
-        // Assert
-        expect(sut.exitCode).toBe(128);
-      });
-    });
-  });
-
-  describe('Given a spawn that errors', () => {
-    describe('When run', () => {
-      it('Then resolves with the spawn-error exit code 127', async () => {
-        // Arrange
-        const { runner, child } = makeHarness();
-
-        // Act
-        const promise = runner.run(baseRequest());
-        child.emit('error', new Error('ENOENT'));
-        const sut = await promise;
-
-        // Assert
-        expect(sut.exitCode).toBe(127);
+        expect(sut.exitCode).toBe(expectedExitCode);
       });
     });
   });

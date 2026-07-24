@@ -39,13 +39,29 @@ describe('Given push.default=current and an attached branch', () => {
   });
 });
 
-describe('Given push.default=current and a detached HEAD', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws PUSH_DETACHED_NO_REFSPEC', async () => {
+describe('Given a detached HEAD with no explicit refspec', () => {
+  describe('When planPushRefspecs runs under a push.default that requires an attached branch', () => {
+    it.each([
+      {
+        pushDefault: 'current' as const,
+        head: '1111111111111111111111111111111111111111',
+        label: 'push.default=current throws PUSH_DETACHED_NO_REFSPEC',
+      },
+      {
+        pushDefault: 'upstream' as const,
+        head: '5555555555555555555555555555555555555555',
+        label: 'push.default=upstream throws PUSH_DETACHED_NO_REFSPEC',
+      },
+      {
+        pushDefault: 'simple' as const,
+        head: '6666666666666666666666666666666666666666',
+        label: 'push.default=simple throws PUSH_DETACHED_NO_REFSPEC',
+      },
+    ])('Then $label', async ({ pushDefault, head: detachedHead }) => {
       // Arrange
       const ctx = createMemoryContext();
-      await seedRepo(ctx, { head: '1111111111111111111111111111111111111111' });
-      const config: ParsedConfig = { push: { default: 'current' } };
+      await seedRepo(ctx, { head: detachedHead });
+      const config: ParsedConfig = { push: { default: pushDefault } };
       const head = await readHeadRaw(ctx);
 
       // Act
@@ -97,12 +113,31 @@ describe('Given explicit refspecs and push.default=current with a detached HEAD'
 });
 
 describe('Given an attached branch, a central remote, and no branch.merge configured', () => {
-  describe('When planPushRefspecs runs with an unset push.default (simple is the default mode)', () => {
-    it('Then it throws NO_UPSTREAM_CONFIGURED, not the old unconditional current-branch push', async () => {
+  describe('When planPushRefspecs runs with no explicit refspec', () => {
+    it.each([
+      {
+        config: {} as ParsedConfig,
+        label:
+          'an unset push.default (simple is the default mode) throws NO_UPSTREAM_CONFIGURED, not the old unconditional current-branch push',
+      },
+      {
+        config: {
+          push: { default: 'upstream' },
+          branch: new Map([['main', { remote: 'origin' }]]),
+        } as ParsedConfig,
+        label: 'push.default=upstream throws NO_UPSTREAM_CONFIGURED',
+      },
+      {
+        config: {
+          push: { default: 'simple' },
+          branch: new Map([['main', { remote: 'origin' }]]),
+        } as ParsedConfig,
+        label: 'push.default=simple throws NO_UPSTREAM_CONFIGURED',
+      },
+    ])('Then $label', async ({ config }) => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});
-      const config: ParsedConfig = {};
       const head = await readHeadRaw(ctx);
 
       // Act
@@ -158,44 +193,36 @@ describe('Given push.default=matching and a detached HEAD', () => {
   });
 });
 
-describe('Given push.default=nothing and an attached branch', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws PUSH_DEFAULT_NOTHING', async () => {
+describe('Given push.default=nothing', () => {
+  describe('When planPushRefspecs runs with no usable explicit refspec', () => {
+    it.each([
+      {
+        head: undefined,
+        opts: {},
+        label: 'an attached branch with no explicit refspec throws PUSH_DEFAULT_NOTHING',
+      },
+      {
+        head: '4444444444444444444444444444444444444444',
+        opts: {},
+        label: 'a detached HEAD with no explicit refspec throws PUSH_DEFAULT_NOTHING',
+      },
+      {
+        head: undefined,
+        opts: { refspecs: [] },
+        label:
+          'an empty explicit refspecs array falls through to push.default and throws PUSH_DEFAULT_NOTHING (opts.refspecs.length > 0 is load-bearing)',
+      },
+    ])('Then $label', async ({ head: detachedHead, opts }) => {
       // Arrange
       const ctx = createMemoryContext();
-      await seedRepo(ctx, {});
+      await seedRepo(ctx, detachedHead === undefined ? {} : { head: detachedHead });
       const config: ParsedConfig = { push: { default: 'nothing' } };
       const head = await readHeadRaw(ctx);
 
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(config, {}, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('PUSH_DEFAULT_NOTHING');
-    });
-  });
-});
-
-describe('Given push.default=nothing and a detached HEAD', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws PUSH_DEFAULT_NOTHING', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, { head: '4444444444444444444444444444444444444444' });
-      const config: ParsedConfig = { push: { default: 'nothing' } };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, {}, head);
+        await planPushRefspecs(config, opts, head);
       } catch (error) {
         caught = error;
       }
@@ -240,74 +267,51 @@ describe('Given explicit refspecs and push.default=nothing', () => {
   });
 });
 
-describe('Given an empty explicit refspecs array and push.default=nothing', () => {
-  describe('When planPushRefspecs runs', () => {
-    it('Then the empty array falls through to push.default and throws PUSH_DEFAULT_NOTHING', async () => {
-      // Arrange — proves `opts.refspecs.length > 0` is load-bearing: an
-      // empty array must NOT be treated as an explicit refspec selection.
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, {});
-      const config: ParsedConfig = { push: { default: 'nothing' } };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, { refspecs: [] }, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('PUSH_DEFAULT_NOTHING');
-    });
-  });
-});
-
-describe('Given push.default=upstream and a detached HEAD', () => {
+describe('Given push.default=upstream with a triangular remote', () => {
   describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws PUSH_DETACHED_NO_REFSPEC', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, { head: '5555555555555555555555555555555555555555' });
-      const config: ParsedConfig = { push: { default: 'upstream' } };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, {}, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('PUSH_DETACHED_NO_REFSPEC');
-    });
-  });
-});
-
-describe('Given push.default=upstream with a triangular remote and branch.merge set', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws PUSH_REMOTE_NOT_UPSTREAM even though an upstream is configured', async () => {
+    it.each([
+      {
+        config: {
+          push: { default: 'upstream' },
+          remotePushDefault: 'pushdef',
+          branch: new Map([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
+        } as ParsedConfig,
+        opts: {},
+        expectedRemote: 'pushdef',
+        label:
+          'branch.merge set: throws PUSH_REMOTE_NOT_UPSTREAM even though an upstream is configured',
+      },
+      {
+        config: {
+          push: { default: 'upstream' },
+          remotePushDefault: 'pushdef',
+          branch: new Map([['main', { remote: 'origin' }]]),
+        } as ParsedConfig,
+        opts: {},
+        expectedRemote: 'pushdef',
+        label:
+          'no branch.merge configured: throws PUSH_REMOTE_NOT_UPSTREAM, not NO_UPSTREAM_CONFIGURED (triangular dominates)',
+      },
+      {
+        config: {
+          push: { default: 'upstream' },
+          branch: new Map([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
+        } as ParsedConfig,
+        opts: { remote: 'other-remote' },
+        expectedRemote: 'other-remote',
+        label:
+          'an explicit opts.remote overriding a central branch.remote is treated as the push remote for the triangular check',
+      },
+    ])('Then $label', async ({ config, opts, expectedRemote }) => {
       // Arrange
       const ctx = createMemoryContext();
       await seedRepo(ctx, {});
-      const config: ParsedConfig = {
-        push: { default: 'upstream' },
-        remotePushDefault: 'pushdef',
-        branch: new Map([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
-      };
       const head = await readHeadRaw(ctx);
 
       // Act
       let caught: unknown;
       try {
-        await planPushRefspecs(config, {}, head);
+        await planPushRefspecs(config, opts, head);
       } catch (error) {
         caught = error;
       }
@@ -316,95 +320,7 @@ describe('Given push.default=upstream with a triangular remote and branch.merge 
       expect(caught).toBeInstanceOf(TsgitError);
       const data = (caught as TsgitError).data;
       expect(data.code).toBe('PUSH_REMOTE_NOT_UPSTREAM');
-      expect(data).toMatchObject({ remote: 'pushdef', branch: 'refs/heads/main' });
-    });
-  });
-});
-
-describe('Given push.default=upstream with a triangular remote and no branch.merge configured', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws PUSH_REMOTE_NOT_UPSTREAM, not NO_UPSTREAM_CONFIGURED (triangular dominates)', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, {});
-      const config: ParsedConfig = {
-        push: { default: 'upstream' },
-        remotePushDefault: 'pushdef',
-        branch: new Map([['main', { remote: 'origin' }]]),
-      };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, {}, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('PUSH_REMOTE_NOT_UPSTREAM');
-      expect(data).toMatchObject({ remote: 'pushdef', branch: 'refs/heads/main' });
-    });
-  });
-});
-
-describe('Given push.default=upstream and an explicit opts.remote overriding a central branch.remote', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then the explicit remote is treated as the push remote for the triangular check', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, {});
-      const config: ParsedConfig = {
-        push: { default: 'upstream' },
-        branch: new Map([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
-      };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, { remote: 'other-remote' }, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('PUSH_REMOTE_NOT_UPSTREAM');
-      expect(data).toMatchObject({ remote: 'other-remote', branch: 'refs/heads/main' });
-    });
-  });
-});
-
-describe('Given push.default=upstream with a central remote and no branch.merge configured', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws NO_UPSTREAM_CONFIGURED', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, {});
-      const config: ParsedConfig = {
-        push: { default: 'upstream' },
-        branch: new Map([['main', { remote: 'origin' }]]),
-      };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, {}, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
-      expect(data).toMatchObject({ branch: 'refs/heads/main' });
+      expect(data).toMatchObject({ remote: expectedRemote, branch: 'refs/heads/main' });
     });
   });
 });
@@ -435,31 +351,6 @@ describe('Given push.default=upstream with a central remote and branch.merge set
   });
 });
 
-describe('Given push.default=simple and a detached HEAD', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws PUSH_DETACHED_NO_REFSPEC', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, { head: '6666666666666666666666666666666666666666' });
-      const config: ParsedConfig = { push: { default: 'simple' } };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, {}, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('PUSH_DETACHED_NO_REFSPEC');
-    });
-  });
-});
-
 describe('Given push.default=simple with a triangular remote and branch.merge set to a different name', () => {
   describe('When planPushRefspecs runs with no explicit refspec', () => {
     it('Then the plan pushes the current branch to the same-named ref, bypassing the name-mismatch check', async () => {
@@ -483,35 +374,6 @@ describe('Given push.default=simple with a triangular remote and branch.merge se
           { force: 'normal', src: 'refs/heads/main', dst: 'refs/heads/main', isDelete: false },
         ],
       });
-    });
-  });
-});
-
-describe('Given push.default=simple with a central remote and no branch.merge configured', () => {
-  describe('When planPushRefspecs runs with no explicit refspec', () => {
-    it('Then it throws NO_UPSTREAM_CONFIGURED', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedRepo(ctx, {});
-      const config: ParsedConfig = {
-        push: { default: 'simple' },
-        branch: new Map([['main', { remote: 'origin' }]]),
-      };
-      const head = await readHeadRaw(ctx);
-
-      // Act
-      let caught: unknown;
-      try {
-        await planPushRefspecs(config, {}, head);
-      } catch (error) {
-        caught = error;
-      }
-
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
-      expect(data).toMatchObject({ branch: 'refs/heads/main' });
     });
   });
 });

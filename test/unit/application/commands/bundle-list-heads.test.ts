@@ -152,48 +152,24 @@ describe('bundleListHeads', () => {
 
   // ── near-miss filters: no match ───────────────────────────────────────────
 
-  describe("Given a bundle with refs/tags/v1.0, When bundleListHeads is called with names ['v1.0']", () => {
-    it('Then returns empty (short name does not match)', async () => {
-      // Arrange
-      const { ctx } = await buildRepoWithTagAndBranch();
-      const createResult = await bundleCreate(ctx, { all: true });
-      await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
+  describe('Given a bundle with refs/heads/main and refs/tags/v1.0', () => {
+    describe('When bundleListHeads is called with a near-miss name filter', () => {
+      it.each([
+        { label: "the tag's short name 'v1.0'", names: ['v1.0' as RefName] },
+        { label: "the tag's partial path 'tags/v1.0'", names: ['tags/v1.0' as RefName] },
+        { label: "the branch's short name 'main'", names: ['main' as RefName] },
+      ])('Then returns empty ($label)', async ({ names }) => {
+        // Arrange
+        const { ctx } = await buildRepoWithTagAndBranch();
+        const createResult = await bundleCreate(ctx, { all: true });
+        await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
 
-      // Act
-      const result = await sut(ctx, { path: BUNDLE_PATH, names: ['v1.0' as RefName] });
+        // Act
+        const result = await sut(ctx, { path: BUNDLE_PATH, names });
 
-      // Assert
-      expect(result.refs).toHaveLength(0);
-    });
-  });
-
-  describe("Given a bundle with refs/tags/v1.0, When bundleListHeads is called with names ['tags/v1.0']", () => {
-    it('Then returns empty (partial path does not match)', async () => {
-      // Arrange
-      const { ctx } = await buildRepoWithTagAndBranch();
-      const createResult = await bundleCreate(ctx, { all: true });
-      await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
-
-      // Act
-      const result = await sut(ctx, { path: BUNDLE_PATH, names: ['tags/v1.0' as RefName] });
-
-      // Assert
-      expect(result.refs).toHaveLength(0);
-    });
-  });
-
-  describe("Given a bundle with refs/heads/main, When bundleListHeads is called with names ['main']", () => {
-    it('Then returns empty (branch short name does not match)', async () => {
-      // Arrange
-      const { ctx } = await buildRepoWithTagAndBranch();
-      const createResult = await bundleCreate(ctx, { all: true });
-      await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
-
-      // Act
-      const result = await sut(ctx, { path: BUNDLE_PATH, names: ['main' as RefName] });
-
-      // Assert
-      expect(result.refs).toHaveLength(0);
+        // Assert
+        expect(result.refs).toHaveLength(0);
+      });
     });
   });
 

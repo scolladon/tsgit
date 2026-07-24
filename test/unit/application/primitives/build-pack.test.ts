@@ -96,101 +96,76 @@ describe('buildPack', () => {
     });
   });
 
-  describe('Given a tree oid', () => {
+  describe('Given an oid for a tree, commit, or annotated tag object', () => {
     describe('When buildPack runs', () => {
-      it('Then the entry header decodes as TREE', async () => {
-        // Arrange — kills the `packEntryTypeFor("tree")` mutant: dropping the
-        // `case 'tree'` body falls through to `'blob'`, mislabeling the entry.
+      const AUTHOR = { name: 'A', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+
+      it.each([
+        {
+          label: 'TREE',
+          expectedType: PACK_ENTRY_TYPE.TREE,
+          // Kills the `packEntryTypeFor("tree")` mutant: dropping the `case
+          // 'tree'` body falls through to `'blob'`, mislabeling the entry.
+          buildOid: async (ctx: Awaited<ReturnType<typeof buildSeededContext>>, blobId: ObjectId) =>
+            writeTree(ctx, [{ name: 'a.bin', mode: '100644' as FileMode, id: blobId }]),
+        },
+        {
+          label: 'COMMIT',
+          expectedType: PACK_ENTRY_TYPE.COMMIT,
+          // Kills the `packEntryTypeFor("commit")` mutant by exercising the
+          // commit branch in isolation.
+          buildOid: async (
+            ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+            blobId: ObjectId,
+          ) => {
+            const treeId = await writeTree(ctx, [
+              { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
+            ]);
+            return writeObject(ctx, {
+              type: 'commit' as const,
+              id: '' as ObjectId,
+              data: {
+                tree: treeId,
+                parents: [],
+                author: AUTHOR,
+                committer: AUTHOR,
+                message: 'first',
+                extraHeaders: [],
+              },
+            });
+          },
+        },
+        {
+          label: 'TAG',
+          expectedType: PACK_ENTRY_TYPE.TAG,
+          // Kills the `packEntryTypeFor("tag")` mutant.
+          buildOid: async (ctx: Awaited<ReturnType<typeof buildSeededContext>>, blobId: ObjectId) =>
+            writeObject(ctx, {
+              type: 'tag' as const,
+              id: '' as ObjectId,
+              data: {
+                object: blobId,
+                objectType: 'blob' as const,
+                tagName: 'v1',
+                tagger: AUTHOR,
+                message: 'tagged\n',
+                extraHeaders: [],
+              },
+            }),
+        },
+      ])('Then the entry header decodes as $label', async ({ expectedType, buildOid }) => {
+        // Arrange — pack the object alone so its entry sits first in the pack.
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([7]), id: '' as ObjectId };
         const blobId = await writeObject(ctx, blob);
-        const treeId = await writeTree(ctx, [
-          { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
-        ]);
-
-        // Act — pack the tree alone so its entry sits first in the pack.
-        const sut = await buildPack(ctx, { oids: [treeId] });
-
-        // Assert
-        const header = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
-        expect(header.type).toBe(PACK_ENTRY_TYPE.TREE);
-      });
-    });
-  });
-
-  describe('Given a commit oid', () => {
-    describe('When buildPack runs', () => {
-      it('Then the entry header decodes as COMMIT', async () => {
-        // Arrange — kills the `packEntryTypeFor("commit")` mutant by exercising
-        // the commit branch in isolation.
-        const ctx = await buildSeededContext();
-        const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
-        const blobId = await writeObject(ctx, blob);
-        const treeId = await writeTree(ctx, [
-          { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
-        ]);
-        const author = {
-          name: 'A',
-          email: 'a@a',
-          timestamp: 0,
-          timezoneOffset: '+0000',
-        };
-        const commit = {
-          type: 'commit' as const,
-          id: '' as ObjectId,
-          data: {
-            tree: treeId,
-            parents: [],
-            author,
-            committer: author,
-            message: 'first',
-            extraHeaders: [],
-          },
-        };
-        const commitId = await writeObject(ctx, commit);
+        const oid = await buildOid(ctx, blobId);
 
         // Act
-        const sut = await buildPack(ctx, { oids: [commitId] });
+        const sut = await buildPack(ctx, { oids: [oid] });
 
         // Assert
         const header = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
-        expect(header.type).toBe(PACK_ENTRY_TYPE.COMMIT);
-      });
-    });
-  });
-
-  describe('Given an annotated tag oid', () => {
-    describe('When buildPack runs', () => {
-      it('Then the entry header decodes as TAG', async () => {
-        // Arrange — kills the `packEntryTypeFor("tag")` mutant.
-        const ctx = await buildSeededContext();
-        const blob: Blob = { type: 'blob', content: new Uint8Array([2]), id: '' as ObjectId };
-        const blobId = await writeObject(ctx, blob);
-        const tag = {
-          type: 'tag' as const,
-          id: '' as ObjectId,
-          data: {
-            object: blobId,
-            objectType: 'blob' as const,
-            tagName: 'v1',
-            tagger: {
-              name: 'A',
-              email: 'a@a',
-              timestamp: 0,
-              timezoneOffset: '+0000',
-            },
-            message: 'tagged\n',
-            extraHeaders: [],
-          },
-        };
-        const tagId = await writeObject(ctx, tag);
-
-        // Act
-        const sut = await buildPack(ctx, { oids: [tagId] });
-
-        // Assert
-        const header = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
-        expect(header.type).toBe(PACK_ENTRY_TYPE.TAG);
+        expect(header.type).toBe(expectedType);
       });
     });
   });

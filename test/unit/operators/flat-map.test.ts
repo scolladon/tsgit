@@ -3,93 +3,67 @@ import { flatMap } from '../../../src/operators/flat-map.js';
 import { toArray } from '../../../src/operators/to-array.js';
 import { abortableRange, fromArray, throwingAt, trackedRange } from './fixtures.js';
 
+type FlatMapRowReturn =
+  | Iterable<unknown>
+  | AsyncIterable<unknown>
+  | Promise<Iterable<unknown> | AsyncIterable<unknown>>;
+
+interface FlatMapRow {
+  readonly input: readonly number[];
+  readonly mapper: (n: number) => FlatMapRowReturn;
+  readonly expected: readonly unknown[];
+  readonly label: string;
+}
+
 describe('flatMap', () => {
-  describe('Given a mapper returning Iterable<U> (array)', () => {
+  describe('Given a source array and a mapper', () => {
     describe('When iterated', () => {
-      it('Then values are flattened in order', async () => {
+      it.each<FlatMapRow>([
+        {
+          input: [1, 2, 3],
+          mapper: (n: number) => [n, n + 10],
+          expected: [1, 11, 2, 12, 3, 13],
+          label: 'flattens an Iterable<U> mapper result in order',
+        },
+        {
+          input: [1, 2],
+          mapper: (n: number) => fromArray([n, n + 100]),
+          expected: [1, 101, 2, 102],
+          label: 'flattens an AsyncIterable<U> mapper result in order',
+        },
+        {
+          input: [1, 2],
+          mapper: async (n: number) => [n, n * 2],
+          expected: [1, 2, 2, 4],
+          label: 'resolves a Promise<Iterable<U>> before inner iteration begins',
+        },
+        {
+          input: [10, 20],
+          mapper: async (n: number) => fromArray([n, n + 1]),
+          expected: [10, 11, 20, 21],
+          label: 'resolves a Promise<AsyncIterable<U>> the same way',
+        },
+        {
+          input: [1, 2, 3, 4],
+          mapper: (n: number) => (n % 2 === 0 ? [n] : []),
+          expected: [2, 4],
+          label: 'an empty inner iterable contributes 0 outputs',
+        },
+        {
+          input: [1, 2],
+          mapper: (n: number) => [`${n}a`, `${n}b`, `${n}c`],
+          expected: ['1a', '1b', '1c', '2a', '2b', '2c'],
+          label: 'all A inner items appear before any B inner items',
+        },
+      ])('Then $label', async ({ input, mapper, expected }) => {
         // Arrange
-        const sut = flatMap((n: number) => [n, n + 10]);
+        const sut = flatMap(mapper);
 
         // Act
-        const result = await toArray(sut(fromArray([1, 2, 3])));
+        const result = await toArray(sut(fromArray(input)));
 
         // Assert
-        expect(result).toEqual([1, 11, 2, 12, 3, 13]);
-      });
-    });
-  });
-
-  describe('Given a mapper returning AsyncIterable<U>', () => {
-    describe('When iterated', () => {
-      it('Then values are flattened in order', async () => {
-        // Arrange
-        const sut = flatMap((n: number) => fromArray([n, n + 100]));
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2])));
-
-        // Assert
-        expect(result).toEqual([1, 101, 2, 102]);
-      });
-    });
-  });
-
-  describe('Given a mapper returning Promise<Iterable<U>>', () => {
-    describe('When iterated', () => {
-      it('Then resolves before inner iteration begins', async () => {
-        // Arrange
-        const sut = flatMap(async (n: number) => [n, n * 2]);
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2])));
-
-        // Assert
-        expect(result).toEqual([1, 2, 2, 4]);
-      });
-    });
-  });
-
-  describe('Given a mapper returning Promise<AsyncIterable<U>>', () => {
-    describe('When iterated', () => {
-      it('Then same flattening', async () => {
-        // Arrange
-        const sut = flatMap(async (n: number) => fromArray([n, n + 1]));
-
-        // Act
-        const result = await toArray(sut(fromArray([10, 20])));
-
-        // Assert
-        expect(result).toEqual([10, 11, 20, 21]);
-      });
-    });
-  });
-
-  describe('Given a mapper returning empty iterable for a source item', () => {
-    describe('When iterated', () => {
-      it('Then that item contributes 0 outputs', async () => {
-        // Arrange
-        const sut = flatMap((n: number) => (n % 2 === 0 ? [n] : []));
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2, 3, 4])));
-
-        // Assert
-        expect(result).toEqual([2, 4]);
-      });
-    });
-  });
-
-  describe('Given a two-item source [A, B]', () => {
-    describe('When iterated', () => {
-      it('Then all A inner items appear before any B inner items', async () => {
-        // Arrange
-        const sut = flatMap((n: number) => [`${n}a`, `${n}b`, `${n}c`]);
-
-        // Act
-        const result = await toArray(sut(fromArray([1, 2])));
-
-        // Assert
-        expect(result).toEqual(['1a', '1b', '1c', '2a', '2b', '2c']);
+        expect(result).toEqual(expected);
       });
     });
   });

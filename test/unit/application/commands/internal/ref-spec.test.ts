@@ -39,18 +39,6 @@ describe('internal/ref-spec', () => {
       });
     });
 
-    describe('Given a non-force refspec with no NUL byte', () => {
-      describe('When parseRefspec', () => {
-        it('Then does not throw the NUL-byte error', () => {
-          // Arrange
-          const sut = parseRefspec('refs/heads/main:refs/remotes/origin/main');
-
-          // Assert
-          expect(sut.force).toBe(false);
-        });
-      });
-    });
-
     describe("Given 'refs/heads/*:refs/remotes/origin/*'", () => {
       describe('When parseRefspec', () => {
         it('Then hasWildcard is true', () => {
@@ -63,145 +51,49 @@ describe('internal/ref-spec', () => {
       });
     });
 
-    describe('Given mismatched wildcards (src wild, dst not)', () => {
+    describe('Given a refspec that fails a parse guard', () => {
       describe('When parseRefspec', () => {
-        it('Then throws REFSPEC_INVALID with wildcard-mismatch reason', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            parseRefspec('refs/heads/*:refs/remotes/origin/main');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFSPEC_INVALID',
+        it.each([
+          {
             raw: 'refs/heads/*:refs/remotes/origin/main',
             reason: 'wildcard mismatch between src and dst',
-          });
-        });
-      });
-    });
-
-    describe('Given a refspec with no colon', () => {
-      describe('When parseRefspec', () => {
-        it('Then throws REFSPEC_INVALID with missing-separator reason', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            parseRefspec('refs/heads/main');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFSPEC_INVALID',
+            label: 'mismatched wildcards (src wild, dst not)',
+          },
+          {
             raw: 'refs/heads/main',
             reason: 'missing ":" separator',
-          });
-        });
-      });
-    });
-
-    describe('Given a refspec with NUL byte', () => {
-      describe('When parseRefspec', () => {
-        it('Then throws REFSPEC_INVALID with NUL-byte reason', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            parseRefspec('refs/heads/main:refs/remotes\0origin/main');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFSPEC_INVALID',
+            label: 'a refspec with no colon',
+          },
+          {
             raw: 'refs/heads/main:refs/remotes\0origin/main',
             reason: 'contains NUL byte',
-          });
-        });
-      });
-    });
-
-    describe('Given an empty src', () => {
-      describe('When parseRefspec', () => {
-        it('Then throws REFSPEC_INVALID with non-empty reason', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            parseRefspec(':refs/heads/main');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFSPEC_INVALID',
+            label: 'a refspec with NUL byte',
+          },
+          {
             raw: ':refs/heads/main',
             reason: 'src and dst must be non-empty',
-          });
-        });
-      });
-    });
-
-    describe('Given an empty dst', () => {
-      describe('When parseRefspec', () => {
-        it('Then throws REFSPEC_INVALID with non-empty reason', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            parseRefspec('refs/heads/main:');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFSPEC_INVALID',
+            label: 'an empty src',
+          },
+          {
             raw: 'refs/heads/main:',
             reason: 'src and dst must be non-empty',
-          });
-        });
-      });
-    });
-
-    describe('Given a refspec whose src has two "*"', () => {
-      describe('When parseRefspec', () => {
-        it('Then throws REFSPEC_INVALID with at-most-one-star reason', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            parseRefspec('refs/*/heads/*:refs/remotes/origin/*');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFSPEC_INVALID',
+            label: 'an empty dst',
+          },
+          {
             raw: 'refs/*/heads/*:refs/remotes/origin/*',
             reason: 'each side may contain at most one "*"',
-          });
-        });
-      });
-    });
-
-    describe('Given a refspec whose dst has two "*"', () => {
-      describe('When parseRefspec', () => {
-        it('Then throws REFSPEC_INVALID with at-most-one-star reason', () => {
+            label: 'a refspec whose src has two "*"',
+          },
+          {
+            raw: 'refs/heads/*:refs/*/origin/*',
+            reason: 'each side may contain at most one "*"',
+            label: 'a refspec whose dst has two "*"',
+          },
+        ])('Then $label throws REFSPEC_INVALID', ({ raw, reason }) => {
           // Arrange
           let caught: unknown;
           try {
-            parseRefspec('refs/heads/*:refs/*/origin/*');
+            parseRefspec(raw);
           } catch (err) {
             caught = err;
           }
@@ -210,113 +102,78 @@ describe('internal/ref-spec', () => {
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toEqual({
             code: 'REFSPEC_INVALID',
-            raw: 'refs/heads/*:refs/*/origin/*',
-            reason: 'each side may contain at most one "*"',
+            raw,
+            reason,
           });
-        });
-      });
-    });
-
-    describe('Given a single-wildcard refspec on both sides', () => {
-      describe('When parseRefspec', () => {
-        it('Then accepts it without throwing the at-most-one-star error', () => {
-          // Arrange
-          const sut = parseRefspec('refs/heads/*:refs/remotes/origin/*');
-
-          // Assert
-          expect(sut.hasWildcard).toBe(true);
         });
       });
     });
   });
 
   describe('applyRefspec', () => {
-    describe("Given wildcard spec and 'refs/heads/main'", () => {
-      describe('When applyRefspec', () => {
-        it("Then returns mapped 'refs/remotes/origin/main'", () => {
+    describe('Given a refspec and a matching ref', () => {
+      describe('When applyRefspec runs', () => {
+        it.each([
+          {
+            specSource: 'refs/heads/*:refs/remotes/origin/*',
+            ref: 'refs/heads/main' as RefName,
+            expected: 'refs/remotes/origin/main',
+            label: 'a wildcard spec maps the ref to refs/remotes/origin/main',
+          },
+          {
+            specSource: 'refs/heads/main:refs/remotes/origin/main',
+            ref: 'refs/heads/main' as RefName,
+            expected: 'refs/remotes/origin/main',
+            label: 'an exact (non-wildcard) spec returns dst',
+          },
+          {
+            specSource: 'refs/heads/*/head:refs/remotes/*/head',
+            ref: 'refs/heads/main/head' as RefName,
+            expected: 'refs/remotes/main/head',
+            label:
+              'a wildcard spec with a non-empty suffix captures only the segment between prefix and suffix',
+          },
+        ])('Then $label', ({ specSource, ref, expected }) => {
           // Arrange
-          const spec = parseRefspec('refs/heads/*:refs/remotes/origin/*');
+          const spec = parseRefspec(specSource);
 
           // Act
-          const sut = applyRefspec(spec, 'refs/heads/main' as RefName);
+          const sut = applyRefspec(spec, ref);
 
           // Assert
-          expect(sut).toBe('refs/remotes/origin/main');
+          expect(sut).toBe(expected);
         });
       });
     });
 
-    describe("Given wildcard spec and a non-matching ref ('refs/tags/v1')", () => {
-      describe('When applyRefspec', () => {
-        it('Then returns undefined', () => {
+    describe('Given a refspec and a non-matching ref', () => {
+      describe('When applyRefspec runs', () => {
+        it.each([
+          {
+            specSource: 'refs/heads/*:refs/remotes/origin/*',
+            ref: 'refs/tags/v1' as RefName,
+            label: 'a wildcard spec',
+          },
+          {
+            specSource: 'refs/heads/main:refs/remotes/origin/main',
+            ref: 'refs/heads/dev' as RefName,
+            label: 'an exact spec',
+          },
+          {
+            specSource: 'refs/heads/*/head:refs/remotes/*/head',
+            ref: 'refs/heads/main/tail' as RefName,
+            label:
+              'a wildcard spec with a non-empty suffix and a ref matching prefix but not suffix',
+          },
+        ])('Then $label returns undefined', ({ specSource, ref }) => {
           // Arrange
-          const spec = parseRefspec('refs/heads/*:refs/remotes/origin/*');
+          const spec = parseRefspec(specSource);
 
           // Act
-          const sut = applyRefspec(spec, 'refs/tags/v1' as RefName);
+          const sut = applyRefspec(spec, ref);
 
           // Assert
           expect(sut).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given an exact (non-wildcard) spec and the matching ref', () => {
-      describe('When applyRefspec', () => {
-        it('Then returns dst', () => {
-          // Arrange
-          const spec = parseRefspec('refs/heads/main:refs/remotes/origin/main');
-
-          // Act
-          const sut = applyRefspec(spec, 'refs/heads/main' as RefName);
-
-          // Assert
-          expect(sut).toBe('refs/remotes/origin/main');
-        });
-      });
-    });
-
-    describe('Given an exact spec and a non-matching ref', () => {
-      describe('When applyRefspec', () => {
-        it('Then returns undefined', () => {
-          // Arrange
-          const spec = parseRefspec('refs/heads/main:refs/remotes/origin/main');
-
-          // Act
-          const sut = applyRefspec(spec, 'refs/heads/dev' as RefName);
-
-          // Assert
-          expect(sut).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given a wildcard spec with a non-empty suffix and a ref matching prefix but not suffix', () => {
-      describe('When applyRefspec', () => {
-        it('Then returns undefined', () => {
-          // Arrange
-          const spec = parseRefspec('refs/heads/*/head:refs/remotes/*/head');
-
-          // Act
-          const sut = applyRefspec(spec, 'refs/heads/main/tail' as RefName);
-
-          // Assert
-          expect(sut).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given a wildcard spec with a non-empty suffix and a fully matching ref', () => {
-      describe('When applyRefspec', () => {
-        it('Then captures only the segment between prefix and suffix', () => {
-          // Arrange
-          const spec = parseRefspec('refs/heads/*/head:refs/remotes/*/head');
-
-          // Act
-          const sut = applyRefspec(spec, 'refs/heads/main/head' as RefName);
-
-          // Assert
-          expect(sut).toBe('refs/remotes/main/head');
         });
       });
     });

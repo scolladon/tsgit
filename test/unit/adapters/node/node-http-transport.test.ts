@@ -306,39 +306,34 @@ describe('NodeHttpTransport', () => {
     });
 
     describe('normalizeHeaders — pure header-coercion helper', () => {
-      describe('Given string value', () => {
+      describe('Given a raw header record', () => {
         describe('When normalizing', () => {
-          it('Then key is lowercased and value preserved', () => {
-            // Arrange
-            const sut = normalizeHeaders({ 'Content-Type': 'text/plain' });
+          it.each([
+            {
+              input: { 'Content-Type': 'text/plain' },
+              expected: { 'content-type': 'text/plain' },
+              label: 'a string value is lowercased and the value preserved',
+            },
+            {
+              input: { 'Set-Cookie': ['a=1', 'b=2'] },
+              expected: { 'set-cookie': 'a=1, b=2' },
+              label: 'an array value is joined with comma space',
+            },
+            {
+              input: { 'x-skip': undefined, 'x-keep': 'yes' },
+              expected: { 'x-keep': 'yes' },
+              omittedKey: 'x-skip',
+              label: 'an undefined value entry is omitted',
+            },
+          ])('Then $label', ({ input, expected, omittedKey }) => {
+            // Arrange / Act
+            const sut = normalizeHeaders(input);
 
             // Assert
-            expect(sut).toEqual({ 'content-type': 'text/plain' });
-          });
-        });
-      });
-
-      describe('Given array value', () => {
-        describe('When normalizing', () => {
-          it('Then values are joined with comma space', () => {
-            // Arrange
-            const sut = normalizeHeaders({ 'Set-Cookie': ['a=1', 'b=2'] });
-
-            // Assert
-            expect(sut).toEqual({ 'set-cookie': 'a=1, b=2' });
-          });
-        });
-      });
-
-      describe('Given undefined value', () => {
-        describe('When normalizing', () => {
-          it('Then the entry is omitted', () => {
-            // Arrange
-            const sut = normalizeHeaders({ 'x-skip': undefined, 'x-keep': 'yes' });
-
-            // Assert
-            expect(sut).toEqual({ 'x-keep': 'yes' });
-            expect(sut['x-skip']).toBeUndefined();
+            expect(sut).toEqual(expected);
+            if (omittedKey !== undefined) {
+              expect(sut[omittedKey]).toBeUndefined();
+            }
           });
         });
       });
@@ -351,78 +346,47 @@ describe('NodeHttpTransport', () => {
         return err;
       };
 
-      describe('Given ENOTFOUND errno', () => {
+      describe('Given an errno on the underlying error', () => {
         describe('When sanitizing', () => {
-          it('Then returns "DNS resolution failed"', () => {
+          it.each([
+            {
+              code: 'ENOTFOUND',
+              expected: 'DNS resolution failed',
+              label: 'ENOTFOUND returns "DNS resolution failed"',
+            },
+            {
+              code: 'ECONNREFUSED',
+              expected: 'Connection refused',
+              label: 'ECONNREFUSED returns "Connection refused"',
+            },
+            {
+              code: 'ETIMEDOUT',
+              expected: 'Connection timed out',
+              label: 'ETIMEDOUT returns "Connection timed out"',
+            },
+            {
+              code: 'ESOMETHINGELSE',
+              expected: 'network error',
+              forbidden: 'ESOMETHINGELSE',
+              label: 'an unknown errno code returns static "network error" (no errno leak)',
+            },
+            {
+              code: undefined,
+              expected: 'network error',
+              label: 'no code returns the fallback "network error"',
+            },
+          ])('Then $label', ({ code, expected, forbidden }) => {
             // Arrange
-            const sut = makeErrnoError('ENOTFOUND');
+            const sut = makeErrnoError(code);
 
             // Act
             const reason = sanitizeErrorReason(sut);
 
             // Assert
-            expect(reason).toBe('DNS resolution failed');
-          });
-        });
-      });
-
-      describe('Given ECONNREFUSED errno', () => {
-        describe('When sanitizing', () => {
-          it('Then returns "Connection refused"', () => {
-            // Arrange
-            const sut = makeErrnoError('ECONNREFUSED');
-
-            // Act
-            const reason = sanitizeErrorReason(sut);
-
-            // Assert
-            expect(reason).toBe('Connection refused');
-          });
-        });
-      });
-
-      describe('Given ETIMEDOUT errno', () => {
-        describe('When sanitizing', () => {
-          it('Then returns "Connection timed out"', () => {
-            // Arrange
-            const sut = makeErrnoError('ETIMEDOUT');
-
-            // Act
-            const reason = sanitizeErrorReason(sut);
-
-            // Assert
-            expect(reason).toBe('Connection timed out');
-          });
-        });
-      });
-
-      describe('Given unknown errno code', () => {
-        describe('When sanitizing', () => {
-          it('Then returns static "network error" (no errno leak)', () => {
-            // Arrange — unknown codes like EPROTO / ECONNRESET must not leak into the message.
-            const sut = makeErrnoError('ESOMETHINGELSE');
-
-            // Act
-            const reason = sanitizeErrorReason(sut);
-
-            // Assert
-            expect(reason).toBe('network error');
-            expect(reason).not.toContain('ESOMETHINGELSE');
-          });
-        });
-      });
-
-      describe('Given error with no code', () => {
-        describe('When sanitizing', () => {
-          it('Then returns fallback "network error"', () => {
-            // Arrange
-            const sut = makeErrnoError(undefined);
-
-            // Act
-            const reason = sanitizeErrorReason(sut);
-
-            // Assert
-            expect(reason).toBe('network error');
+            expect(reason).toBe(expected);
+            if (forbidden !== undefined) {
+              expect(reason).not.toContain(forbidden);
+            }
           });
         });
       });

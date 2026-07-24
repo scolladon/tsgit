@@ -72,95 +72,70 @@ describe('consoleProgress — start', () => {
 
 describe('consoleProgress — update', () => {
   describe('Given consoleProgress(sink)', () => {
-    describe("When update('op', 100, 250)", () => {
-      it("Then sink receives 'op: 100/250'", () => {
+    describe('When update is called', () => {
+      it.each([
+        {
+          current: 100,
+          total: 250,
+          text: undefined,
+          expected: 'op: 100/250',
+          label: "update('op', 100, 250) → sink receives 'op: 100/250'",
+        },
+        {
+          current: 50,
+          total: undefined,
+          text: 'progress text',
+          expected: 'op: 50 progress text',
+          label:
+            "update('op', 50, undefined, 'progress text') → sink receives 'op: 50 progress text'",
+        },
+        {
+          current: 50,
+          total: undefined,
+          text: undefined,
+          expected: 'op: 50',
+          label: "update('op', 50) → sink receives 'op: 50' (no total, no text)",
+        },
+        {
+          current: 1,
+          total: 1,
+          text: 'evil\x1b[31mtext',
+          expected: 'op: 1/1 eviltext',
+          label: 'text containing an ANSI escape → sink receives the line WITHOUT the ANSI escape',
+        },
+        {
+          current: 1,
+          total: 1,
+          text: '<script>alert(1)</script>',
+          expected: 'op: 1/1 &#60;script&#62;alert(1)&#60;/script&#62;',
+          label: 'text containing HTML special chars → sink receives HTML-entity-escaped output',
+        },
+        {
+          current: 1,
+          total: 1,
+          text: 'hello\x07world',
+          expected: 'op: 1/1 hello\\x07world',
+          label:
+            'text containing a BEL byte (0x07) → sink receives the line with BEL hex-escaped via sanitize',
+        },
+        {
+          current: 5,
+          total: 10,
+          text: '',
+          expected: 'op: 5/10',
+          label:
+            'update text is the empty string → sink receives the line WITHOUT the trailing space-text segment',
+        },
+      ])('Then $label', ({ current, total, text, expected }) => {
         // Arrange
         const sink = vi.fn<(line: string) => void>();
         const sut = consoleProgress(sink);
 
         // Act
-        sut.update('op', 100, 250);
+        sut.update('op', current, total, text);
 
         // Assert
-        expect(sink).toHaveBeenCalledWith('op: 100/250');
-      });
-    });
-    describe("When update('op', 50, undefined, 'progress text')", () => {
-      it("Then sink receives 'op: 50 progress text'", () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>();
-        const sut = consoleProgress(sink);
-
-        // Act
-        sut.update('op', 50, undefined, 'progress text');
-
-        // Assert
-        expect(sink).toHaveBeenCalledWith('op: 50 progress text');
-      });
-    });
-    describe("When update('op', 50)", () => {
-      it("Then sink receives 'op: 50' (no total, no text)", () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>();
-        const sut = consoleProgress(sink);
-
-        // Act
-        sut.update('op', 50);
-
-        // Assert
-        expect(sink).toHaveBeenCalledWith('op: 50');
-      });
-    });
-    describe('When update with text containing an ANSI escape', () => {
-      it('Then sink receives the line WITHOUT the ANSI escape', () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>();
-        const sut = consoleProgress(sink);
-
-        // Act
-        sut.update('op', 1, 1, 'evil\x1b[31mtext');
-
-        // Assert
-        expect(sink).toHaveBeenCalledWith('op: 1/1 eviltext');
-      });
-    });
-    describe('When update with text containing HTML special chars', () => {
-      it('Then sink receives HTML-entity-escaped output', () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>();
-        const sut = consoleProgress(sink);
-
-        // Act
-        sut.update('op', 1, 1, '<script>alert(1)</script>');
-
-        // Assert
-        expect(sink).toHaveBeenCalledWith('op: 1/1 &#60;script&#62;alert(1)&#60;/script&#62;');
-      });
-    });
-    describe('When update with text containing a BEL byte (0x07)', () => {
-      it('Then sink receives the line with BEL hex-escaped via sanitize', () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>();
-        const sut = consoleProgress(sink);
-
-        // Act
-        sut.update('op', 1, 1, 'hello\x07world');
-
-        // Assert
-        expect(sink).toHaveBeenCalledWith('op: 1/1 hello\\x07world');
-      });
-    });
-    describe('When update text is the empty string', () => {
-      it('Then sink receives the line WITHOUT the trailing space-text segment', () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>();
-        const sut = consoleProgress(sink);
-
-        // Act
-        sut.update('op', 5, 10, '');
-
-        // Assert — empty text is treated as absent (no trailing space).
-        expect(sink).toHaveBeenCalledWith('op: 5/10');
+        expect(sink).toHaveBeenCalledWith(expected);
       });
     });
   });

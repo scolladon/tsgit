@@ -1841,78 +1841,47 @@ describe('merge — internal reflog action', () => {
     return ctx;
   };
 
-  describe('Given no reflog action override and a fast-forward', () => {
-    describe('When merge', () => {
-      it('Then the branch reflog records the default "merge <rev>" prefix', async () => {
+  describe('Given a merge, with or without an internal reflogAction override', () => {
+    describe('When merge runs', () => {
+      it.each([
+        {
+          label: 'the default "merge <rev>" prefix is recorded for a fast-forward',
+          mergeOptions: { rev: 'feature' } as const,
+          internalOptions: undefined,
+          expected: 'merge feature: Fast-forward',
+        },
+        {
+          label:
+            'the default "merge <rev>" merge-commit prefix is recorded for a forced merge commit',
+          mergeOptions: { rev: 'feature', fastForward: 'never', message: 'merge', author } as const,
+          internalOptions: undefined,
+          expected: "merge feature: Merge made by the 'tsgit' strategy.",
+        },
+        {
+          label: '"pull: Fast-forward" is recorded when reflogAction is "pull"',
+          mergeOptions: { rev: 'feature' } as const,
+          internalOptions: { reflogAction: 'pull' } as const,
+          expected: 'pull: Fast-forward',
+        },
+        {
+          label:
+            '"pull: Merge made by the \'tsgit\' strategy." is recorded for a forced merge with reflogAction "pull"',
+          mergeOptions: { rev: 'feature', fastForward: 'never', message: 'merge', author } as const,
+          internalOptions: { reflogAction: 'pull' } as const,
+          expected: "pull: Merge made by the 'tsgit' strategy.",
+        },
+      ])('Then $label', async ({ mergeOptions, internalOptions, expected }) => {
         // Arrange
         const ctx = await seedFastForward();
 
         // Act
-        await mergeRun(ctx, { rev: 'feature' });
+        await mergeRun(ctx, mergeOptions, internalOptions);
 
         // Assert
         const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
           (e) => e.message,
         );
-        expect(messages).toContain('merge feature: Fast-forward');
-      });
-    });
-  });
-
-  describe('Given no reflog action override and a forced merge commit', () => {
-    describe('When merge', () => {
-      it('Then the branch reflog records the default "merge <rev>" merge-commit prefix', async () => {
-        // Arrange
-        const ctx = await seedFastForward();
-
-        // Act
-        await mergeRun(ctx, { rev: 'feature', fastForward: 'never', message: 'merge', author });
-
-        // Assert
-        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
-          (e) => e.message,
-        );
-        expect(messages).toContain("merge feature: Merge made by the 'tsgit' strategy.");
-      });
-    });
-  });
-
-  describe('Given an internal reflogAction "pull" and a fast-forward', () => {
-    describe('When merge', () => {
-      it('Then the branch reflog records "pull: Fast-forward"', async () => {
-        // Arrange
-        const ctx = await seedFastForward();
-
-        // Act
-        await mergeRun(ctx, { rev: 'feature' }, { reflogAction: 'pull' });
-
-        // Assert
-        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
-          (e) => e.message,
-        );
-        expect(messages).toContain('pull: Fast-forward');
-      });
-    });
-  });
-
-  describe('Given an internal reflogAction "pull" and a forced merge commit', () => {
-    describe('When merge', () => {
-      it('Then the branch reflog records "pull: Merge made by the \'tsgit\' strategy."', async () => {
-        // Arrange
-        const ctx = await seedFastForward();
-
-        // Act
-        await mergeRun(
-          ctx,
-          { rev: 'feature', fastForward: 'never', message: 'merge', author },
-          { reflogAction: 'pull' },
-        );
-
-        // Assert
-        const messages = (await readReflog(ctx, 'refs/heads/main' as RefName)).map(
-          (e) => e.message,
-        );
-        expect(messages).toContain("pull: Merge made by the 'tsgit' strategy.");
+        expect(messages).toContain(expected);
       });
     });
   });
@@ -2065,70 +2034,41 @@ describe('writeOutcomeToTree (direct)', () => {
       id: '' as ObjectId,
     });
 
-  describe('Given an unchanged outcome', () => {
+  describe('Given an outcome carrying resolvable bytes (unchanged / resolved-known / resolved-merged)', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then the blob content is written to the working tree', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const id = await seedBlob(ctx, 'UNCHANGED-BYTES');
-        const outcome: MergeOutcome = {
+      it.each([
+        {
           status: 'unchanged',
           path: 'u.txt' as FilePath,
-          id,
-          mode: FILE_MODE.REGULAR,
-        };
-
-        // Act
-        await writeOutcomeToTree(ctx, outcome, undefined);
-
-        // Assert
-        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/u.txt`)).toBe('UNCHANGED-BYTES');
-      });
-    });
-  });
-
-  describe('Given a resolved-known outcome', () => {
-    describe('When writeOutcomeToTree runs', () => {
-      it('Then the blob content is written to the working tree', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const id = await seedBlob(ctx, 'KNOWN-BYTES');
-        const outcome: MergeOutcome = {
+          content: 'UNCHANGED-BYTES',
+          label: 'the blob content is written to the working tree',
+        },
+        {
           status: 'resolved-known',
           path: 'k.txt' as FilePath,
-          id,
-          mode: FILE_MODE.REGULAR,
-        };
-
-        // Act
-        await writeOutcomeToTree(ctx, outcome, undefined);
-
-        // Assert
-        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/k.txt`)).toBe('KNOWN-BYTES');
-      });
-    });
-  });
-
-  describe('Given a resolved-merged outcome', () => {
-    describe('When writeOutcomeToTree runs', () => {
-      it('Then the outcome bytes are written verbatim', async () => {
+          content: 'KNOWN-BYTES',
+          label: 'the blob content is written to the working tree',
+        },
+        {
+          status: 'resolved-merged',
+          path: 'm.txt' as FilePath,
+          content: 'MERGED-BYTES',
+          label: 'the outcome bytes are written verbatim',
+        },
+      ] as const)('Then $label', async ({ status, path, content }) => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
-        const outcome: MergeOutcome = {
-          status: 'resolved-merged',
-          path: 'm.txt' as FilePath,
-          bytes: new TextEncoder().encode('MERGED-BYTES'),
-          mode: FILE_MODE.REGULAR,
-        };
+        const outcome: MergeOutcome =
+          status === 'resolved-merged'
+            ? { status, path, bytes: new TextEncoder().encode(content), mode: FILE_MODE.REGULAR }
+            : { status, path, id: await seedBlob(ctx, content), mode: FILE_MODE.REGULAR };
 
         // Act
         await writeOutcomeToTree(ctx, outcome, undefined);
 
         // Assert
-        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m.txt`)).toBe('MERGED-BYTES');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe(content);
       });
     });
   });
@@ -2326,234 +2266,132 @@ describe('materialiseConflictBytes (direct)', () => {
   const decode = (b: Uint8Array | undefined): string =>
     b === undefined ? '<undefined>' : new TextDecoder().decode(b);
 
-  describe('Given a content conflict carrying conflictContent', () => {
+  describe('Given a conflict with resolvable bytes (conflictContent, ours, or theirs)', () => {
     describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns that conflictContent verbatim', async () => {
+      it.each([
+        {
+          label: 'it returns that conflictContent verbatim',
+          expected: 'PRECOMPUTED-CONFLICT-CONTENT',
+          build: async (_ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({
+              type: 'content',
+              conflictContent: new TextEncoder().encode('PRECOMPUTED-CONFLICT-CONTENT'),
+            }),
+        },
+        {
+          label: 'conflictContent is NOT used (the type===content operand matters)',
+          expected: 'OURS-TYPECHANGE',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({
+              type: 'type-change',
+              conflictContent: new TextEncoder().encode('SHOULD-NOT-BE-USED'),
+              ourId: await seedBlob(ctx, 'OURS-TYPECHANGE'),
+            }),
+        },
+        {
+          label: 'a binary conflict returns the ours blob bytes',
+          expected: 'OURS-BINARY',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'binary', ourId: await seedBlob(ctx, 'OURS-BINARY') }),
+        },
+        {
+          label: 'an add-add conflict returns the ours blob bytes',
+          expected: 'OURS-ADDADD',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'add-add', ourId: await seedBlob(ctx, 'OURS-ADDADD') }),
+        },
+        {
+          label: 'a type-change conflict returns the ours blob bytes',
+          expected: 'OURS-TYPE-CHANGE',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'type-change', ourId: await seedBlob(ctx, 'OURS-TYPE-CHANGE') }),
+        },
+        {
+          label: 'a modify-delete conflict with only ourId returns the ours blob bytes',
+          expected: 'OURS-MODDEL',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'modify-delete', ourId: await seedBlob(ctx, 'OURS-MODDEL') }),
+        },
+        {
+          label:
+            'a modify-delete conflict with only theirId returns the theirs blob bytes (?? falls through)',
+          expected: 'THEIRS-MODDEL',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'modify-delete', theirId: await seedBlob(ctx, 'THEIRS-MODDEL') }),
+        },
+        {
+          label: 'a bare content conflict with both ids returns the ours blob bytes (R5 take-ours)',
+          expected: 'OURS-LINE',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({
+              type: 'content',
+              ourId: await seedBlob(ctx, 'OURS-LINE'),
+              theirId: await seedBlob(ctx, 'THEIRS-LINE'),
+            }),
+        },
+        {
+          label:
+            'a bare content conflict with only ourId returns the ours blob bytes (take-ours for R5)',
+          expected: 'OURS-ONLY',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'content', ourId: await seedBlob(ctx, 'OURS-ONLY') }),
+        },
+      ])('Then $label', async ({ expected, build }) => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
-        const marker = new TextEncoder().encode('PRECOMPUTED-CONFLICT-CONTENT');
-        const conflict = conflictOf({ type: 'content', conflictContent: marker });
+        const conflict = await build(ctx);
 
         // Act
         const sut = await materialiseConflictBytes(ctx, conflict);
 
         // Assert
-        expect(decode(sut)).toBe('PRECOMPUTED-CONFLICT-CONTENT');
+        expect(decode(sut)).toBe(expected);
       });
     });
   });
 
-  describe('Given a non-content conflict that also carries conflictContent', () => {
+  describe('Given a conflict with no resolvable bytes', () => {
     describe('When materialiseConflictBytes runs', () => {
-      it('Then conflictContent is NOT used (the type===content operand matters)', async () => {
-        // Arrange — a type-change conflict with BOTH conflictContent and ourId.
-        // The `type === 'content'` operand must gate the early return; otherwise
-        // a mutant forcing it true would return conflictContent instead of ours.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-TYPECHANGE');
-        const conflict = conflictOf({
-          type: 'type-change',
-          conflictContent: new TextEncoder().encode('SHOULD-NOT-BE-USED'),
-          ourId: oursId,
-        });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert — ours blob wins, conflictContent ignored.
-        expect(decode(sut)).toBe('OURS-TYPECHANGE');
-      });
-    });
-  });
-
-  describe('Given a binary conflict with ourId', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns the ours blob bytes', async () => {
+      it.each([
+        {
+          label: 'a binary conflict with no ourId returns undefined',
+          build: async (_ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'binary' }),
+        },
+        {
+          label: 'an add-add conflict with no ourId returns undefined',
+          build: async (_ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'add-add' }),
+        },
+        {
+          label: 'a modify-delete conflict with neither id returns undefined',
+          build: async (_ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({ type: 'modify-delete' }),
+        },
+        {
+          // A gitlink conflict reaches the final `if` block; the `type === 'content'`
+          // operand must keep it out, returning undefined even with both ids present.
+          label:
+            'an unhandled conflict type carrying both ids returns undefined (the second type===content guard matters)',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({
+              type: 'gitlink',
+              ourId: await seedBlob(ctx, 'OURS-GITLINK'),
+              theirId: await seedBlob(ctx, 'THEIRS-GITLINK'),
+            }),
+        },
+      ])('Then $label', async ({ build }) => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-BINARY');
-        const conflict = conflictOf({ type: 'binary', ourId: oursId });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert
-        expect(decode(sut)).toBe('OURS-BINARY');
-      });
-    });
-  });
-
-  describe('Given a binary conflict with no ourId', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const conflict = conflictOf({ type: 'binary' });
+        const conflict = await build(ctx);
 
         // Act
         const sut = await materialiseConflictBytes(ctx, conflict);
 
         // Assert
         expect(sut).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given an add-add conflict with ourId', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns the ours blob bytes', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-ADDADD');
-        const conflict = conflictOf({ type: 'add-add', ourId: oursId });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert
-        expect(decode(sut)).toBe('OURS-ADDADD');
-      });
-    });
-  });
-
-  describe('Given an add-add conflict with no ourId', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const conflict = conflictOf({ type: 'add-add' });
-
-        // Act / Assert
-        expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a type-change conflict with ourId', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns the ours blob bytes', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-TYPE-CHANGE');
-        const conflict = conflictOf({ type: 'type-change', ourId: oursId });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert
-        expect(decode(sut)).toBe('OURS-TYPE-CHANGE');
-      });
-    });
-  });
-
-  describe('Given a modify-delete conflict with ourId only', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns the ours blob bytes', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-MODDEL');
-        const conflict = conflictOf({ type: 'modify-delete', ourId: oursId });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert
-        expect(decode(sut)).toBe('OURS-MODDEL');
-      });
-    });
-  });
-
-  describe('Given a modify-delete conflict with theirId only', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns the theirs blob bytes (?? falls through)', async () => {
-        // Arrange — no ourId; the `ourId ?? theirId` must yield theirId.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const theirsId = await seedBlob(ctx, 'THEIRS-MODDEL');
-        const conflict = conflictOf({ type: 'modify-delete', theirId: theirsId });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert
-        expect(decode(sut)).toBe('THEIRS-MODDEL');
-      });
-    });
-  });
-
-  describe('Given a modify-delete conflict with neither id', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const conflict = conflictOf({ type: 'modify-delete' });
-
-        // Act / Assert
-        expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a bare content conflict (no conflictContent) with ours+theirs ids', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns the ours blob bytes (R5 take-ours)', async () => {
-        // Arrange — bare content: a symlink-pair R5 conflict where the domain
-        // emits no markers; both ids present but no conflictContent.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-LINE');
-        const theirsId = await seedBlob(ctx, 'THEIRS-LINE');
-        const conflict = conflictOf({ type: 'content', ourId: oursId, theirId: theirsId });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert — ours bytes returned, no marker block.
-        expect(decode(sut)).toBe('OURS-LINE');
-      });
-    });
-  });
-
-  describe('Given a bare content conflict with only ourId and no conflictContent', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns the ours blob bytes (take-ours for R5)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-ONLY');
-        const conflict = conflictOf({ type: 'content', ourId: oursId });
-
-        // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
-
-        // Assert
-        expect(decode(sut)).toBe('OURS-ONLY');
-      });
-    });
-  });
-
-  describe('Given an unhandled conflict type carrying ours+theirs ids', () => {
-    describe('When materialiseConflictBytes runs', () => {
-      it('Then it returns undefined (the second type===content guard matters)', async () => {
-        // Arrange — a gitlink conflict reaches the final `if` block; the
-        // `type === 'content'` operand must keep it out, returning undefined.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'OURS-GITLINK');
-        const theirsId = await seedBlob(ctx, 'THEIRS-GITLINK');
-        const conflict = conflictOf({ type: 'gitlink', ourId: oursId, theirId: theirsId });
-
-        // Act / Assert
-        expect(await materialiseConflictBytes(ctx, conflict)).toBeUndefined();
       });
     });
   });
@@ -3517,34 +3355,64 @@ describe('writeConflictToTree (direct)', () => {
   const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
     ({ path: 'p' as FilePath, ...over }) as MergeConflict;
 
-  // Bare content symlink-pair — ours symlink re-created, not a regular file
-  describe('Given a bare content conflict with symlink modes on both sides', () => {
+  // Symlink survivor — writeConflictToTree recreates the symlink rather than writing bytes
+  describe('Given a conflict whose winning side is a symlink', () => {
     describe('When writeConflictToTree runs', () => {
-      it('Then ours symlink is re-created at the path (not target bytes as a regular file)', async () => {
+      it.each([
+        {
+          label: 'ours symlink is re-created at the path (not target bytes as a regular file)',
+          expectedTarget: 'ours-target',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) => {
+            const oursId = await seedBlob(ctx, 'ours-target');
+            const theirsId = await seedBlob(ctx, 'theirs-target');
+            const baseId = await seedBlob(ctx, 'base-file-content');
+            return conflictOf({
+              type: 'content',
+              ourId: oursId,
+              theirId: theirsId,
+              baseId,
+              ourMode: FILE_MODE.SYMLINK,
+              theirMode: FILE_MODE.SYMLINK,
+              baseMode: FILE_MODE.REGULAR,
+            });
+          },
+        },
+        {
+          label: 'the survivor symlink is re-created at the path (modify-delete)',
+          expectedTarget: 'survivor-target',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({
+              type: 'modify-delete',
+              theirId: await seedBlob(ctx, 'survivor-target'),
+              theirMode: FILE_MODE.SYMLINK,
+              // ourId/ourMode are undefined: ours deleted the path
+            }),
+        },
+        {
+          label:
+            'ours symlink is re-created at the path (useMode generalised beyond add-add, bare type-change)',
+          expectedTarget: 'symlink-target',
+          build: async (ctx: ReturnType<typeof createMemoryContext>) =>
+            conflictOf({
+              type: 'type-change',
+              ourId: await seedBlob(ctx, 'symlink-target'),
+              ourMode: FILE_MODE.SYMLINK,
+            }),
+        },
+      ])('Then $label', async ({ expectedTarget, build }) => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
-        const oursId = await seedBlob(ctx, 'ours-target');
-        const theirsId = await seedBlob(ctx, 'theirs-target');
-        const baseId = await seedBlob(ctx, 'base-file-content');
-        const conflict = conflictOf({
-          type: 'content',
-          ourId: oursId,
-          theirId: theirsId,
-          baseId,
-          ourMode: FILE_MODE.SYMLINK,
-          theirMode: FILE_MODE.SYMLINK,
-          baseMode: FILE_MODE.REGULAR,
-        });
+        const conflict = await build(ctx);
 
         // Act
         await writeConflictToTree(ctx, conflict);
 
-        // Assert — lstat reveals a symlink; readlink returns ours' target
+        // Assert — lstat reveals a symlink pointing at the expected target
         const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
         expect(stat.isSymbolicLink).toBe(true);
         const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
-        expect(target).toBe('ours-target');
+        expect(target).toBe(expectedTarget);
       });
     });
   });
@@ -3642,59 +3510,6 @@ describe('writeConflictToTree (direct)', () => {
 
         // Assert — no file materialised
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
-      });
-    });
-  });
-
-  // Modify-delete with ours deleted: the survivor keeps its kind on disk
-  describe('Given a modify-delete conflict whose surviving theirs side is a symlink', () => {
-    describe('When writeConflictToTree runs', () => {
-      it('Then the survivor symlink is re-created at the path', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const theirsId = await seedBlob(ctx, 'survivor-target');
-        const conflict = conflictOf({
-          type: 'modify-delete',
-          theirId: theirsId,
-          theirMode: FILE_MODE.SYMLINK,
-          // ourId/ourMode are undefined: ours deleted the path
-        });
-
-        // Act
-        await writeConflictToTree(ctx, conflict);
-
-        // Assert — lstat reveals a symlink pointing at theirs' target
-        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
-        expect(stat.isSymbolicLink).toBe(true);
-        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
-        expect(target).toBe('survivor-target');
-      });
-    });
-  });
-
-  // Bare type-change with ourMode symlink — ours' symlink re-created at path
-  describe('Given a bare type-change conflict with symlink ourMode', () => {
-    describe('When writeConflictToTree runs', () => {
-      it('Then ours symlink is re-created at the path (useMode generalised beyond add-add)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const oursId = await seedBlob(ctx, 'symlink-target');
-        const conflict = conflictOf({
-          type: 'type-change',
-          ourId: oursId,
-          ourMode: FILE_MODE.SYMLINK,
-        });
-
-        // Act
-        await writeConflictToTree(ctx, conflict);
-
-        // Assert — symlink re-created, not bytes written as a regular file
-        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
-        expect(stat.isSymbolicLink).toBe(true);
-        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
-        expect(target).toBe('symlink-target');
       });
     });
   });

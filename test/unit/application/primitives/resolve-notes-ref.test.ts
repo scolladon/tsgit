@@ -166,53 +166,40 @@ describe('Given resolveNotesRef', () => {
     });
   });
 
-  describe('When an explicit ref expands to a malformed name', () => {
-    it('Then validateRefName rejects it with INVALID_REF', async () => {
+  describe('When the resolved notes ref is malformed', () => {
+    it.each([
+      {
+        label: 'an explicit ref expands to a malformed name',
+        arg: '..',
+        buildCtx: (): Context => createMemoryContext(),
+      },
+      {
+        label: 'core.notesRef is inside refs/notes/ but malformed',
+        arg: undefined,
+        buildCtx: async (): Promise<Context> => {
+          const ctx = createMemoryContext();
+          await seedConfig(ctx, '[core]\n  notesRef = refs/notes/bad..ref\n');
+          return ctx;
+        },
+      },
+      {
+        label: 'the env ref is inside refs/notes/ but malformed',
+        arg: undefined,
+        buildCtx: (): Context =>
+          createMemoryContext({
+            env: {
+              get: (name: string) => (name === 'GIT_NOTES_REF' ? 'refs/notes//bad' : undefined),
+            },
+          }),
+      },
+    ])('Then validateRefName rejects it with INVALID_REF ($label)', async ({ arg, buildCtx }) => {
       // Arrange
-      const ctx = createMemoryContext();
+      const ctx = await buildCtx();
       const sut = resolveNotesRef;
 
       // Act + Assert
       try {
-        await sut(ctx, '..');
-        expect.fail('should have thrown');
-      } catch (err) {
-        expect(err).toBeInstanceOf(TsgitError);
-        expect((err as TsgitError).data.code).toBe('INVALID_REF');
-      }
-    });
-  });
-
-  describe('When core.notesRef is inside refs/notes/ but malformed', () => {
-    it('Then validateRefName rejects it with INVALID_REF', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedConfig(ctx, '[core]\n  notesRef = refs/notes/bad..ref\n');
-      const sut = resolveNotesRef;
-
-      // Act + Assert
-      try {
-        await sut(ctx);
-        expect.fail('should have thrown');
-      } catch (err) {
-        expect(err).toBeInstanceOf(TsgitError);
-        expect((err as TsgitError).data.code).toBe('INVALID_REF');
-      }
-    });
-  });
-
-  describe('When the env ref is inside refs/notes/ but malformed', () => {
-    it('Then throws TsgitError with INVALID_REF code', async () => {
-      // Arrange
-      const env = {
-        get: (name: string) => (name === 'GIT_NOTES_REF' ? 'refs/notes//bad' : undefined),
-      };
-      const ctx = createMemoryContext({ env });
-      const sut = resolveNotesRef;
-
-      // Act + Assert
-      try {
-        await sut(ctx);
+        await sut(ctx, arg);
         expect.fail('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(TsgitError);

@@ -26,66 +26,48 @@ function assertConflict(
 }
 
 describe('mergeContent', () => {
-  describe('Given identical bytes on all three sides', () => {
+  describe('Given at most two distinct byte sequences among base, ours, and theirs', () => {
     describe('When mergeContent called', () => {
-      it('Then clean with base bytes', () => {
+      it.each([
+        {
+          base: 'a\nb\n',
+          ours: 'a\nb\n',
+          theirs: 'a\nb\n',
+          expected: 'a\nb\n',
+          label: 'clean with base bytes (all three sides identical)',
+        },
+        {
+          base: 'a\nb\n',
+          ours: 'a\nX\n',
+          theirs: 'a\nb\n',
+          expected: 'a\nX\n',
+          label: 'clean with ours (theirs unchanged from base)',
+        },
+        {
+          base: 'a\nb\n',
+          ours: 'a\nb\n',
+          theirs: 'a\nY\n',
+          expected: 'a\nY\n',
+          label: 'clean with theirs (ours unchanged from base)',
+        },
+        {
+          base: 'a\nb\n',
+          ours: 'a\nZ\n',
+          theirs: 'a\nZ\n',
+          expected: 'a\nZ\n',
+          label: 'clean with ours (both sides made the identical modification)',
+        },
+      ])('Then $label', ({ base, ours, theirs, expected }) => {
         // Arrange
-        const bytes = enc('a\nb\n');
+        const baseBytes = enc(base);
+        const oursBytes = enc(ours);
+        const theirsBytes = enc(theirs);
 
         // Act
-        const sut = mergeContent(bytes, bytes, bytes);
+        const sut = mergeContent(baseBytes, oursBytes, theirsBytes);
 
         // Assert
-        assertClean(sut, 'a\nb\n');
-      });
-    });
-  });
-
-  describe('Given base + ours modified + theirs unchanged from base', () => {
-    describe('When mergeContent called', () => {
-      it('Then clean with ours', () => {
-        // Arrange
-        const base = enc('a\nb\n');
-        const ours = enc('a\nX\n');
-        const theirs = base;
-
-        // Act
-        const sut = mergeContent(base, ours, theirs);
-
-        // Assert
-        assertClean(sut, 'a\nX\n');
-      });
-    });
-  });
-
-  describe('Given base + theirs modified + ours unchanged from base', () => {
-    describe('When mergeContent called', () => {
-      it('Then clean with theirs', () => {
-        // Arrange
-        const base = enc('a\nb\n');
-        const theirs = enc('a\nY\n');
-
-        // Act
-        const sut = mergeContent(base, base, theirs);
-
-        // Assert
-        assertClean(sut, 'a\nY\n');
-      });
-    });
-  });
-
-  describe('Given base + both sides make identical modification', () => {
-    describe('When mergeContent called', () => {
-      it('Then clean with ours', () => {
-        // Arrange
-        const base = enc('a\nb\n');
-        const same = enc('a\nZ\n');
-
-        // Act
-        const sut = mergeContent(base, same, same);
-
-        // Assert
-        assertClean(sut, 'a\nZ\n');
+        assertClean(sut, expected);
       });
     });
   });

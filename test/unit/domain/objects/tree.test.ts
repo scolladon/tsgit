@@ -97,34 +97,25 @@ describe('tree', () => {
       });
     });
 
-    describe('Given entry with non-ASCII UTF-8 name', () => {
+    describe('Given an entry name with a distinguishing character class', () => {
       describe('When parsing', () => {
-        it('Then name is correctly decoded', () => {
+        it.each([
+          { name: '日本語.txt', label: 'non-ASCII UTF-8 is correctly decoded' },
+          { name: 'my file.txt', label: 'an internal space is included' },
+          {
+            name: 'x',
+            label: 'a single char is correctly extracted (the null search starts after the space)',
+          },
+        ])('Then $label', ({ name }) => {
           // Arrange
           const sha = new Uint8Array(20).fill(0xdd);
-          const content = buildTreeEntry('100644', '日本語.txt', sha);
+          const content = buildTreeEntry('100644', name, sha);
 
           // Act
           const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Assert
-          expect(sut.entries[0]!.name).toBe('日本語.txt');
-        });
-      });
-    });
-
-    describe('Given entry with name containing a space', () => {
-      describe('When parsing', () => {
-        it('Then name includes the space', () => {
-          // Arrange
-          const sha = new Uint8Array(20).fill(0xee);
-          const content = buildTreeEntry('100644', 'my file.txt', sha);
-
-          // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
-
-          // Assert
-          expect(sut.entries[0]!.name).toBe('my file.txt');
+          expect(sut.entries[0]!.name).toBe(name);
         });
       });
     });
@@ -145,182 +136,73 @@ describe('tree', () => {
       });
     });
 
-    describe('Given entry with single-char name', () => {
+    // Each row isolates one distinct parseTreeContent validation guard — the
+    // structural parse guards (space/hash/null), the four `invalid entry name`
+    // conditions, and the post-parse duplicate-name check.
+    describe('Given content that fails a parseTreeContent validation guard', () => {
       describe('When parsing', () => {
-        it('Then name is correctly extracted', () => {
-          // Arrange — mode + space + 'x' + null + hash; ensures null search starts after space
-          const sha = new Uint8Array(20).fill(0x01);
-          const content = buildTreeEntry('100644', 'x', sha);
-
-          // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
-
-          // Assert
-          expect(sut.entries[0]!.name).toBe('x');
-        });
-      });
-    });
-
-    describe('Given content with no space after mode', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with missing space reason', () => {
-          // Arrange - a byte array with no space byte (0x20) at all
-          const content = new Uint8Array([49, 48, 48, 54, 52, 52]); // "100644" without space
-
-          // Act + Assert
-          expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TREE_ENTRY',
-                reason: 'missing space after mode',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given truncated content (cuts off mid-hash)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with truncated hash reason', () => {
+        it.each([
+          {
+            label: 'no space after mode',
+            reason: 'missing space after mode',
+            buildContent: () => new Uint8Array([49, 48, 48, 54, 52, 52]), // "100644" without space
+          },
+          {
+            label: 'content truncated mid-hash',
+            reason: 'truncated hash',
+            buildContent: () =>
+              concatBytes(
+                encode('100644'),
+                new Uint8Array([0x20]),
+                encode('file'),
+                new Uint8Array([0x00]),
+                new Uint8Array(10), // only 10 bytes, need 20
+              ),
+          },
+          {
+            label: 'no null after name',
+            reason: 'missing null after name',
+            buildContent: () => encode('100644 filename'),
+          },
+          {
+            label: 'an empty entry name',
+            reason: 'invalid entry name: ',
+            buildContent: () => buildTreeEntry('100644', '', new Uint8Array(20).fill(0xab)),
+          },
+          {
+            label: "an entry name of '.'",
+            reason: 'invalid entry name: .',
+            buildContent: () => buildTreeEntry('100644', '.', new Uint8Array(20).fill(0xab)),
+          },
+          {
+            label: "an entry name of '..'",
+            reason: 'invalid entry name: ..',
+            buildContent: () => buildTreeEntry('100644', '..', new Uint8Array(20).fill(0xab)),
+          },
+          {
+            label: "an entry name containing '/'",
+            reason: 'invalid entry name: sub/dir',
+            buildContent: () => buildTreeEntry('100644', 'sub/dir', new Uint8Array(20).fill(0xab)),
+          },
+          {
+            label: 'duplicate entry names',
+            reason: 'duplicate entry name: same.txt',
+            buildContent: () =>
+              concatBytes(
+                buildTreeEntry('100644', 'same.txt', new Uint8Array(20).fill(0x01)),
+                buildTreeEntry('100644', 'same.txt', new Uint8Array(20).fill(0x02)),
+              ),
+          },
+        ])('Then throws INVALID_TREE_ENTRY for $label', ({ buildContent, reason }) => {
           // Arrange
-          const content = concatBytes(
-            encode('100644'),
-            new Uint8Array([0x20]),
-            encode('file'),
-            new Uint8Array([0x00]),
-            new Uint8Array(10), // only 10 bytes, need 20
-          );
+          const content = buildContent();
 
           // Act + Assert
           expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
             expect.objectContaining({
               data: expect.objectContaining({
                 code: 'INVALID_TREE_ENTRY',
-                reason: 'truncated hash',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given truncated content (no null after name)', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with missing null reason', () => {
-          // Arrange
-          const content = encode('100644 filename');
-
-          // Act + Assert
-          expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TREE_ENTRY',
-                reason: 'missing null after name',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given entry with empty name', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with invalid entry name reason', () => {
-          // Arrange
-          const sha = new Uint8Array(20).fill(0xab);
-          const content = buildTreeEntry('100644', '', sha);
-
-          // Act + Assert
-          expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TREE_ENTRY',
-                reason: 'invalid entry name: ',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe("Given entry with name '.'", () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with invalid entry name reason', () => {
-          // Arrange
-          const sha = new Uint8Array(20).fill(0xab);
-          const content = buildTreeEntry('100644', '.', sha);
-
-          // Act + Assert
-          expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TREE_ENTRY',
-                reason: 'invalid entry name: .',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe("Given entry with name '..'", () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with invalid entry name reason', () => {
-          // Arrange
-          const sha = new Uint8Array(20).fill(0xab);
-          const content = buildTreeEntry('100644', '..', sha);
-
-          // Act + Assert
-          expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TREE_ENTRY',
-                reason: 'invalid entry name: ..',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe("Given entry with name containing '/'", () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with invalid entry name reason', () => {
-          // Arrange
-          const sha = new Uint8Array(20).fill(0xab);
-          const content = buildTreeEntry('100644', 'sub/dir', sha);
-
-          // Act + Assert
-          expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TREE_ENTRY',
-                reason: 'invalid entry name: sub/dir',
-              }),
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given tree with duplicate entry names', () => {
-      describe('When parsing', () => {
-        it('Then throws INVALID_TREE_ENTRY with duplicate name reason', () => {
-          // Arrange
-          const sha1 = new Uint8Array(20).fill(0x01);
-          const sha2 = new Uint8Array(20).fill(0x02);
-          const content = concatBytes(
-            buildTreeEntry('100644', 'same.txt', sha1),
-            buildTreeEntry('100644', 'same.txt', sha2),
-          );
-
-          // Act + Assert
-          expect(() => parseTreeContent(DUMMY_ID, content, SHA1_CONFIG)).toThrow(
-            expect.objectContaining({
-              data: expect.objectContaining({
-                code: 'INVALID_TREE_ENTRY',
-                reason: 'duplicate entry name: same.txt',
+                reason,
               }),
             }),
           );
@@ -453,59 +335,48 @@ describe('tree', () => {
   });
 
   describe('treeEntryCompare / sortTreeEntries', () => {
-    describe("Given entries 'foo' (file) and 'foo.c' (file)", () => {
+    describe('Given entries to sort', () => {
       describe('When sorting', () => {
-        it("Then 'foo' comes before 'foo.c'", () => {
-          // Arrange
-          const entries: TreeEntry[] = [
-            { mode: '100644', name: 'foo.c', id: DUMMY_ID },
-            { mode: '100644', name: 'foo', id: DUMMY_ID },
-          ];
-
-          // Act
+        it.each([
+          {
+            entries: [
+              { mode: '100644' as const, name: 'foo.c', id: DUMMY_ID },
+              { mode: '100644' as const, name: 'foo', id: DUMMY_ID },
+            ],
+            expected: ['foo', 'foo.c'],
+            label: "'foo' (file) comes before 'foo.c' (file)",
+          },
+          {
+            entries: [
+              { mode: '40000' as const, name: 'foo', id: DUMMY_ID },
+              { mode: '100644' as const, name: 'foo.c', id: DUMMY_ID },
+            ],
+            expected: ['foo.c', 'foo'],
+            label: "'foo.c' (file) comes before 'foo' (dir gets virtual '/')",
+          },
+          {
+            entries: [
+              { mode: '40000' as const, name: 'foo', id: DUMMY_ID },
+              { mode: '100644' as const, name: 'foo-bar', id: DUMMY_ID },
+            ],
+            expected: ['foo-bar', 'foo'],
+            label: "'foo-bar' (file) comes before 'foo' (dir)",
+          },
+          {
+            entries: [
+              { mode: '40000' as const, name: 'lib', id: DUMMY_ID },
+              { mode: '40000' as const, name: 'doc', id: DUMMY_ID },
+              { mode: '40000' as const, name: 'bin', id: DUMMY_ID },
+            ],
+            expected: ['bin', 'doc', 'lib'],
+            label: 'multiple directories sort by byte-level comparison with trailing "/"',
+          },
+        ])('Then $label', ({ entries, expected }) => {
+          // Arrange + Act
           const sut = sortTreeEntries(entries);
 
           // Assert
-          expect(sut[0]!.name).toBe('foo');
-          expect(sut[1]!.name).toBe('foo.c');
-        });
-      });
-    });
-
-    describe("Given entries 'foo' (dir) and 'foo.c' (file)", () => {
-      describe('When sorting', () => {
-        it("Then 'foo.c' comes before 'foo' (dir gets virtual '/')", () => {
-          // Arrange
-          const entries: TreeEntry[] = [
-            { mode: '40000', name: 'foo', id: DUMMY_ID },
-            { mode: '100644', name: 'foo.c', id: DUMMY_ID },
-          ];
-
-          // Act
-          const sut = sortTreeEntries(entries);
-
-          // Assert
-          expect(sut[0]!.name).toBe('foo.c');
-          expect(sut[1]!.name).toBe('foo');
-        });
-      });
-    });
-
-    describe("Given entries 'foo' (dir) and 'foo-bar' (file)", () => {
-      describe('When sorting', () => {
-        it("Then 'foo-bar' comes before 'foo' (dir)", () => {
-          // Arrange
-          const entries: TreeEntry[] = [
-            { mode: '40000', name: 'foo', id: DUMMY_ID },
-            { mode: '100644', name: 'foo-bar', id: DUMMY_ID },
-          ];
-
-          // Act
-          const sut = sortTreeEntries(entries);
-
-          // Assert
-          expect(sut[0]!.name).toBe('foo-bar');
-          expect(sut[1]!.name).toBe('foo');
+          expect(sut.map((e) => e.name)).toEqual(expected);
         });
       });
     });
@@ -567,25 +438,6 @@ describe('tree', () => {
 
           // Assert
           expect(sut).toBeGreaterThan(0);
-        });
-      });
-    });
-
-    describe('Given multiple directories', () => {
-      describe('When sorting', () => {
-        it('Then sorted by byte-level comparison with trailing "/"', () => {
-          // Arrange
-          const entries: TreeEntry[] = [
-            { mode: '40000', name: 'lib', id: DUMMY_ID },
-            { mode: '40000', name: 'doc', id: DUMMY_ID },
-            { mode: '40000', name: 'bin', id: DUMMY_ID },
-          ];
-
-          // Act
-          const sut = sortTreeEntries(entries);
-
-          // Assert
-          expect(sut.map((e) => e.name)).toEqual(['bin', 'doc', 'lib']);
         });
       });
     });

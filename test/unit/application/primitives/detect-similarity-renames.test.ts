@@ -3710,55 +3710,42 @@ const renameTriple = (score: number): ScoredTriple => ({
 });
 
 describe('Given the per-destination candidate matrix helper recordIfBetter', () => {
-  describe('When the slot array is not yet full', () => {
-    it('Then the candidate is appended without eviction', () => {
+  describe('When recordIfBetter is called with a candidate', () => {
+    it.each([
+      {
+        slots: [renameTriple(50), renameTriple(40)],
+        candidate: renameTriple(10),
+        expected: [50, 40, 10],
+        label: 'the slot array is not yet full: the candidate is appended without eviction',
+      },
+      {
+        slots: [renameTriple(50), renameTriple(10), renameTriple(30), renameTriple(20)],
+        candidate: renameTriple(25),
+        expected: [50, 25, 30, 20],
+        label:
+          'the slot array is full and the candidate beats the minimum: it replaces exactly the minimum-scored slot',
+      },
+      {
+        slots: [renameTriple(10), renameTriple(30), renameTriple(10), renameTriple(20)],
+        candidate: renameTriple(25),
+        expected: [25, 30, 10, 20],
+        label: 'two slots tie for the minimum: the first minimum (lowest index) is the one evicted',
+      },
+      {
+        slots: [renameTriple(50), renameTriple(10), renameTriple(30), renameTriple(20)],
+        candidate: renameTriple(5),
+        expected: [50, 10, 30, 20],
+        label: 'the candidate is below the minimum: no slot is replaced',
+      },
+    ])('Then $label', ({ slots, candidate, expected }) => {
       // Arrange
       const sut = recordIfBetter;
-      const slots: ScoredTriple[] = [renameTriple(50), renameTriple(40)];
 
       // Act
-      sut(slots, renameTriple(10));
+      sut(slots, candidate);
 
-      // Assert — below the cap every candidate is kept regardless of score
-      expect(slots.map((s) => s.score)).toEqual([50, 40, 10]);
-    });
-  });
-
-  describe('When the slot array is full and the candidate beats the minimum', () => {
-    it('Then it replaces exactly the minimum-scored slot', () => {
-      // Arrange — the minimum (10) sits at index 1 of four full slots
-      const sut = recordIfBetter;
-      const slots: ScoredTriple[] = [
-        renameTriple(50),
-        renameTriple(10),
-        renameTriple(30),
-        renameTriple(20),
-      ];
-
-      // Act
-      sut(slots, renameTriple(25));
-
-      // Assert — only the true minimum (index 1) is evicted
-      expect(slots.map((s) => s.score)).toEqual([50, 25, 30, 20]);
-    });
-  });
-
-  describe('When two slots tie for the minimum', () => {
-    it('Then the first minimum (lowest index) is the one evicted', () => {
-      // Arrange — two 10s at indices 0 and 2
-      const sut = recordIfBetter;
-      const slots: ScoredTriple[] = [
-        renameTriple(10),
-        renameTriple(30),
-        renameTriple(10),
-        renameTriple(20),
-      ];
-
-      // Act
-      sut(slots, renameTriple(25));
-
-      // Assert — strict `<` min-finding keeps the lower index, evicting index 0
-      expect(slots.map((s) => s.score)).toEqual([25, 30, 10, 20]);
+      // Assert
+      expect(slots.map((s) => s.score)).toEqual(expected);
     });
   });
 
@@ -3782,25 +3769,6 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
     });
   });
 
-  describe('When the candidate is below the minimum', () => {
-    it('Then no slot is replaced', () => {
-      // Arrange — the minimum is 10
-      const sut = recordIfBetter;
-      const slots: ScoredTriple[] = [
-        renameTriple(50),
-        renameTriple(10),
-        renameTriple(30),
-        renameTriple(20),
-      ];
-
-      // Act
-      sut(slots, renameTriple(5));
-
-      // Assert
-      expect(slots.map((s) => s.score)).toEqual([50, 10, 30, 20]);
-    });
-  });
-
   describe('When the cap constant is read', () => {
     it('Then it is git NUM_CANDIDATE_PER_DST of 4', () => {
       // Arrange / Act
@@ -3813,42 +3781,38 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
 });
 
 describe('Given the size prefilter isSizeRejected', () => {
-  describe('When the two sizes are too far apart to reach the threshold', () => {
-    it('Then the pair is rejected', () => {
-      // Arrange — a 10-byte vs 100-byte pair cannot be 50% similar
+  describe('When isSizeRejected is called with two sizes', () => {
+    it.each([
+      {
+        sfSize: 10,
+        dfSize: 100,
+        expected: true,
+        label:
+          'the two sizes are too far apart to reach the threshold (10 vs 100 bytes cannot be 50% similar): the pair is rejected',
+      },
+      {
+        sfSize: 90,
+        dfSize: 100,
+        expected: false,
+        label:
+          'the two sizes are close enough to possibly reach the threshold (90 vs 100 bytes can exceed 50% similarity): the pair is not rejected',
+      },
+      {
+        sfSize: 1,
+        dfSize: 2,
+        expected: false,
+        label:
+          'the size delta sits exactly on the reachability boundary (max*(MAX-thr) equals (max-min)*MAX exactly: 2*30000 === 1*60000): the pair is not rejected (strict inequality, inclusive boundary survives)',
+      },
+    ])('Then $label', ({ sfSize, dfSize, expected }) => {
+      // Arrange
       const sut = isSizeRejected;
 
       // Act
-      const result = sut(10, 100, DEFAULT_RENAME_THRESHOLD);
+      const result = sut(sfSize, dfSize, DEFAULT_RENAME_THRESHOLD);
 
       // Assert
-      expect(result).toBe(true);
-    });
-  });
-
-  describe('When the two sizes are close enough to possibly reach the threshold', () => {
-    it('Then the pair is not rejected', () => {
-      // Arrange — 90 vs 100 bytes can exceed 50% similarity
-      const sut = isSizeRejected;
-
-      // Act
-      const result = sut(90, 100, DEFAULT_RENAME_THRESHOLD);
-
-      // Assert
-      expect(result).toBe(false);
-    });
-  });
-
-  describe('When the size delta sits exactly on the reachability boundary', () => {
-    it('Then the pair is not rejected (strict inequality, inclusive boundary survives)', () => {
-      // Arrange — max*(MAX-thr) equals (max-min)*MAX exactly: 2*30000 === 1*60000
-      const sut = isSizeRejected;
-
-      // Act
-      const result = sut(1, 2, DEFAULT_RENAME_THRESHOLD);
-
-      // Assert — the boundary is reachable, so the pair must be scored, not dropped
-      expect(result).toBe(false);
+      expect(result).toBe(expected);
     });
   });
 });

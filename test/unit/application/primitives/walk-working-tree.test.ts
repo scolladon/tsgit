@@ -86,12 +86,32 @@ describe('walkWorkingTree', () => {
     });
   });
 
-  describe('Given a.git directory at the root', () => {
+  describe('Given a `.git` marker at the root (directory, case, trailing-space, or plain-file variant)', () => {
     describe('When walked', () => {
-      it('Then it is skipped', async () => {
+      it.each([
+        {
+          path: '.git/HEAD',
+          content: 'ref: refs/heads/main\n',
+          label: 'a `.git` directory is skipped',
+        },
+        {
+          path: '.GIT/HEAD',
+          content: 'x',
+          label: 'a `.GIT` directory is skipped (case-insensitive)',
+        },
+        {
+          path: '.git /HEAD',
+          content: 'x',
+          label: 'a `.git ` (trailing space) directory is skipped (NTFS hardening)',
+        },
+        {
+          path: '.git',
+          content: 'gitdir: /elsewhere',
+          label: 'a regular file literally named `.git` is skipped but its siblings are yielded',
+        },
+      ])('Then $label', async ({ path, content }) => {
         // Arrange
-        const ctx = await seedFs({ 'a.txt': '1' });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.git/HEAD`, 'ref: refs/heads/main\n');
+        const ctx = await seedFs({ 'a.txt': '1', [path]: content });
 
         // Act
         const sut = await collect(walkWorkingTree(ctx));
@@ -116,36 +136,6 @@ describe('walkWorkingTree', () => {
         const sut = await collect(walkWorkingTree(ctx));
 
         // Assert — only the top-level file is yielded; nothing under vendor/lib.
-        expect(sut).toEqual(['a.txt']);
-      });
-    });
-  });
-
-  describe('Given a.GIT directory (uppercase)', () => {
-    describe('When walked', () => {
-      it('Then it is skipped (case-insensitive)', async () => {
-        // Arrange
-        const ctx = await seedFs({ 'a.txt': '1', '.GIT/HEAD': 'x' });
-
-        // Act
-        const sut = await collect(walkWorkingTree(ctx));
-
-        // Assert
-        expect(sut).toEqual(['a.txt']);
-      });
-    });
-  });
-
-  describe('Given a `.git ` (trailing space) directory', () => {
-    describe('When walked', () => {
-      it('Then it is skipped (NTFS hardening)', async () => {
-        // Arrange
-        const ctx = await seedFs({ 'a.txt': '1', '.git /HEAD': 'x' });
-
-        // Act
-        const sut = await collect(walkWorkingTree(ctx));
-
-        // Assert
         expect(sut).toEqual(['a.txt']);
       });
     });
@@ -205,25 +195,6 @@ describe('walkWorkingTree', () => {
         // the loop).
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
-      });
-    });
-  });
-
-  describe('Given a regular file literally named.git (not a directory)', () => {
-    describe('When walked', () => {
-      it('Then it is skipped but its siblings are yielded', async () => {
-        // Arrange — a `.git` REGULAR FILE inside a subdir means git-worktree
-        // pointer (treated as embedded). A `.git` regular file at the root
-        // is the host's worktree pointer — also treated as a marker. Either
-        // way, the file is filtered. This test ensures a stray `.git` plain
-        // file at the root does NOT collapse siblings.
-        const ctx = await seedFs({ 'a.txt': '1', '.git': 'gitdir: /elsewhere' });
-
-        // Act
-        const sut = await collect(walkWorkingTree(ctx));
-
-        // Assert — `.git` skipped, sibling yielded.
-        expect(sut).toEqual(['a.txt']);
       });
     });
   });

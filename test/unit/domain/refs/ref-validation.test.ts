@@ -6,520 +6,158 @@ import { arbRefName } from './arbitraries.js';
 
 describe('validateRefName', () => {
   describe('valid ref names', () => {
-    describe("Given 'refs/heads/main'", () => {
+    describe('Given a well-formed ref name', () => {
       describe('When validating', () => {
-        it('Then returns RefName', () => {
+        it.each([
+          { name: 'refs/heads/main', label: 'returns RefName' },
+          { name: 'refs/tags/v1.0.0', label: 'returns RefName' },
+          { name: 'HEAD', label: 'returns RefName (one-level accepted)' },
+          { name: 'refs/remotes/origin/main', label: 'returns RefName' },
+          { name: 'refs/heads/feature/my-branch', label: 'returns RefName' },
+        ])('Then `$name` $label', ({ name }) => {
           // Arrange & Act
-          const sut = validateRefName('refs/heads/main');
+          const sut = validateRefName(name);
 
           // Assert
-          expect(sut).toBe('refs/heads/main');
-        });
-      });
-    });
-
-    describe("Given 'refs/tags/v1.0.0'", () => {
-      describe('When validating', () => {
-        it('Then returns RefName', () => {
-          // Arrange & Act
-          const sut = validateRefName('refs/tags/v1.0.0');
-
-          // Assert
-          expect(sut).toBe('refs/tags/v1.0.0');
-        });
-      });
-    });
-
-    describe("Given 'HEAD'", () => {
-      describe('When validating', () => {
-        it('Then returns RefName (one-level accepted)', () => {
-          // Arrange & Act
-          const sut = validateRefName('HEAD');
-
-          // Assert
-          expect(sut).toBe('HEAD');
-        });
-      });
-    });
-
-    describe("Given 'refs/remotes/origin/main'", () => {
-      describe('When validating', () => {
-        it('Then returns RefName', () => {
-          // Arrange & Act
-          const sut = validateRefName('refs/remotes/origin/main');
-
-          // Assert
-          expect(sut).toBe('refs/remotes/origin/main');
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/feature/my-branch'", () => {
-      describe('When validating', () => {
-        it('Then returns RefName', () => {
-          // Arrange & Act
-          const sut = validateRefName('refs/heads/feature/my-branch');
-
-          // Assert
-          expect(sut).toBe('refs/heads/feature/my-branch');
+          expect(sut).toBe(name);
         });
       });
     });
   });
 
   describe('invalid ref names', () => {
-    describe("Given 'refs/heads/..main' (double dots)", () => {
+    describe('Given an invalid ref name', () => {
       describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
+        it.each([
+          {
+            name: 'refs/heads/..main',
+            label: 'double dots',
+            reason: 'ref name must not contain ..',
+          },
+          {
+            name: 'refs/heads/main.lock',
+            label: 'component ends with .lock',
+            reason: 'ref name component must not end with .lock',
+          },
+          {
+            name: 'refs/foo.lock/bar',
+            label: 'interior component ends with .lock',
+            reason: 'ref name component must not end with .lock',
+          },
+          {
+            name: 'refs//heads',
+            label: 'consecutive slashes',
+            reason: 'ref name must not contain consecutive slashes',
+          },
+          {
+            name: 'refs/heads/',
+            label: 'trailing slash',
+            reason: 'ref name must not start or end with /',
+          },
+          {
+            name: '/refs/heads/main',
+            label: 'leading slash',
+            reason: 'ref name must not start or end with /',
+          },
+          {
+            name: '-refs',
+            label: 'starts with dash',
+            reason: 'ref name must not start with -',
+          },
+          {
+            name: '@',
+            label: 'single @',
+            reason: 'ref name must not be single @',
+          },
+          {
+            name: 'refs/heads/@{main}',
+            label: 'contains @{',
+            reason: 'ref name must not contain @{',
+          },
+          {
+            name: 'refs/.hidden/main',
+            label: 'component starts with dot',
+            reason: 'ref name component must not start with .',
+          },
+          {
+            name: 'refs/heads/trail.',
+            label: 'ends with dot',
+            reason: 'ref name must not end with .',
+          },
+          {
+            name: 'refs/heads/spa ce',
+            label: 'contains space',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/til~de',
+            label: 'contains ~',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/car^et',
+            label: 'contains ^',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/col:on',
+            label: 'contains :',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/quest?',
+            label: 'contains ?',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/star*',
+            label: 'contains *',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/bra[cket',
+            label: 'contains [',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/back\\slash',
+            label: 'contains \\',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: '',
+            label: 'empty string',
+            reason: 'ref name must not be empty',
+          },
+          {
+            name: 'refs/heads/ma\0in',
+            label: 'NUL byte',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/ma\x01in',
+            label: 'ASCII control char (0x01)',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/ma\x7fin',
+            label: 'DEL char (0x7F)',
+            reason: 'ref name contains forbidden character',
+          },
+          {
+            name: 'refs/heads/ma\x1fin',
+            label: 'char 0x1F (boundary)',
+            reason: 'ref name contains forbidden character',
+          },
+        ])('Then $label throws INVALID_REF', ({ name, reason }) => {
           // Arrange & Act & Assert
           try {
-            validateRefName('refs/heads/..main');
+            validateRefName(name);
             // Assert
             expect.fail('should have thrown');
           } catch (e) {
             expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty('reason', 'ref name must not contain ..');
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/main.lock' (component ends with .lock)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/main.lock');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name component must not end with .lock',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/foo.lock/bar' (interior component ends with .lock)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/foo.lock/bar');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name component must not end with .lock',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs//heads' (consecutive slashes)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs//heads');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name must not contain consecutive slashes',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/' (trailing slash)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name must not start or end with /',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given '/refs/heads/main' (leading slash)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('/refs/heads/main');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name must not start or end with /',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given '-refs' (starts with dash)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('-refs');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name must not start with -',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given '@' (single @)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('@');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name must not be single @',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/@{main}' (contains @{)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/@{main}');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty('reason', 'ref name must not contain @{');
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/.hidden/main' (component starts with dot)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/.hidden/main');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name component must not start with .',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/trail.' (ends with dot)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/trail.');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty('reason', 'ref name must not end with .');
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/spa ce' (contains space)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/spa ce');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty(
-              'reason',
-              'ref name contains forbidden character',
-            );
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/til~de' (contains ~)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/til~de');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/car^et' (contains ^)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/car^et');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/col:on' (contains :)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/col:on');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/quest?' (contains ?)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/quest?');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/star*' (contains *)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/star*');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/bra[cket' (contains [)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/bra[cket');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe("Given 'refs/heads/back\\\\slash' (contains \\\\)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/back\\slash');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe("Given '' (empty string)", () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data.code).toBe('INVALID_REF');
-            expect((e as TsgitError).data).toHaveProperty('reason', 'ref name must not be empty');
-          }
-        });
-      });
-    });
-
-    describe('Given string with NUL byte', () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/ma\0in');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe('Given string with ASCII control char (0x01)', () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/ma\x01in');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe('Given string with DEL char (0x7F)', () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/ma\x7fin');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
-          }
-        });
-      });
-    });
-
-    describe('Given string with char 0x1F (boundary)', () => {
-      describe('When validating', () => {
-        it('Then throws INVALID_REF', () => {
-          // Arrange
-          try {
-            validateRefName('refs/heads/ma\x1fin');
-            // Assert
-            expect.fail('should have thrown');
-          } catch (e) {
-            expect(e).toBeInstanceOf(TsgitError);
-            expect((e as TsgitError).data).toEqual({
-              code: 'INVALID_REF',
-              reason: 'ref name contains forbidden character',
-            });
+            expect((e as TsgitError).data).toEqual({ code: 'INVALID_REF', reason });
           }
         });
       });

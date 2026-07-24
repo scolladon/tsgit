@@ -155,12 +155,36 @@ describe('parseRefspec — errors', () => {
     expect(data.reason).toContain(expectedReason);
   };
 
+  describe('Given an invalid refspec string', () => {
+    describe('When parsed', () => {
+      it.each([
+        { raw: '', reason: 'must not be empty', label: 'empty input' },
+        { raw: '+', reason: 'after force prefix', label: 'a bare "+" (force prefix only)' },
+        { raw: 'a:b:c', reason: 'at most one colon', label: 'a refspec with two colons "a:b:c"' },
+        {
+          raw: ':',
+          reason: 'destination must not be empty',
+          label: 'a refspec ":" (empty src AND empty dst)',
+        },
+        {
+          raw: 'main:',
+          reason: 'destination must not be empty',
+          label: 'a refspec "main:" (empty dst)',
+        },
+        {
+          raw: 'main:HEAD',
+          reason: 'must not be HEAD',
+          label: 'a refspec "main:HEAD" — HEAD as dst is rejected',
+        },
+      ])('Then $label throws REFSPEC_INVALID', ({ raw, reason }) => {
+        // Arrange + Assert
+        assertRefspecInvalid(() => parseRefspec(raw), reason, raw);
+      });
+    });
+  });
+
   describe('Given empty input', () => {
     describe('When parsed', () => {
-      it('Then throws REFSPEC_INVALID with "must not be empty"', () => {
-        // Arrange + Assert
-        assertRefspecInvalid(() => parseRefspec(''), 'must not be empty', '');
-      });
       it('Then the reason is EXACTLY the empty-refspec message (not the after-force-prefix variant)', () => {
         // Arrange — the empty-input guard fires on line 47 before the
         // force-prefix logic. Pinning the EXACT reason kills three same-line
@@ -180,52 +204,6 @@ describe('parseRefspec — errors', () => {
         expect(data.code).toBe('REFSPEC_INVALID');
         expect(data.raw).toBe('');
         expect(data.reason).toBe('refspec must not be empty');
-      });
-    });
-  });
-
-  describe('Given a bare "+" (force prefix only)', () => {
-    describe('When parsed', () => {
-      it('Then throws REFSPEC_INVALID', () => {
-        // Arrange + Assert
-        assertRefspecInvalid(() => parseRefspec('+'), 'after force prefix', '+');
-      });
-    });
-  });
-
-  describe('Given a refspec with two colons "a:b:c"', () => {
-    describe('When parsed', () => {
-      it('Then throws REFSPEC_INVALID', () => {
-        // Arrange + Assert
-        assertRefspecInvalid(() => parseRefspec('a:b:c'), 'at most one colon', 'a:b:c');
-      });
-    });
-  });
-
-  describe('Given a refspec ":" (empty src AND empty dst)', () => {
-    describe('When parsed', () => {
-      it('Then throws on empty dst', () => {
-        // Arrange + Assert
-        assertRefspecInvalid(() => parseRefspec(':'), 'destination must not be empty', ':');
-      });
-    });
-  });
-
-  describe('Given a refspec "main:" (empty dst)', () => {
-    describe('When parsed', () => {
-      it('Then throws REFSPEC_INVALID', () => {
-        // Arrange + Assert
-        assertRefspecInvalid(() => parseRefspec('main:'), 'destination must not be empty', 'main:');
-      });
-    });
-  });
-
-  describe('Given a refspec "main:HEAD"', () => {
-    describe('When parsed', () => {
-      it('Then throws REFSPEC_INVALID — HEAD as dst is rejected', () => {
-        // Arrange + Assert — pins the canonical-git behavior. Push to HEAD is unsupported;
-        // catching it here avoids server-side refusal with an opaque message.
-        assertRefspecInvalid(() => parseRefspec('main:HEAD'), 'must not be HEAD', 'main:HEAD');
       });
     });
   });

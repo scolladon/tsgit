@@ -6,85 +6,204 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const withNul = (): Uint8Array => new Uint8Array([0x61, 0x00, 0x62]);
 
 describe('computeStatFields', () => {
-  describe('Given a pure addition (empty old, one new line)', () => {
+  describe('Given old/new byte content and diff-stat options', () => {
     describe('When computeStatFields is called', () => {
-      it('Then it reports one added line and zero deleted', () => {
-        // Arrange
-        const old = enc('');
-        const next = enc('a\n');
-        // Act
-        const sut = computeStatFields(old, next);
-        // Assert
-        expect(sut).toEqual({ added: 1, deleted: 0, binary: false });
-      });
-    });
-  });
+      it.each([
+        {
+          label:
+            'a pure addition (empty old, one new line) reports one added line and zero deleted',
+          old: enc(''),
+          next: enc('a\n'),
+          expected: { added: 1, deleted: 0, binary: false },
+        },
+        {
+          label:
+            'a pure deletion (one old line, empty new) reports zero added and one deleted line',
+          old: enc('a\n'),
+          next: enc(''),
+          expected: { added: 0, deleted: 1, binary: false },
+        },
+        {
+          label: 'a single-line replacement reports one added and one deleted line',
+          old: enc('a\n'),
+          next: enc('b\n'),
+          expected: { added: 1, deleted: 1, binary: false },
+        },
+        {
+          label: 'identical content reports zero changes and binary false',
+          old: enc('a\nb\n'),
+          next: enc('a\nb\n'),
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+        {
+          // isolates the first guard arm
+          label: 'a binary old side only reports binary with zero counts',
+          old: withNul(),
+          next: enc('text\n'),
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          // isolates the second guard arm
+          label: 'a binary new side only reports binary with zero counts',
+          old: enc('text\n'),
+          next: withNul(),
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          label:
+            'a line-key mode all and a whitespace-only change reports zero added and zero deleted (W1/D1 at count level)',
+          old: enc('  ws\n'),
+          next: enc('    ws\n'),
+          options: { lineKey: { mode: 'all', ignoreCrAtEol: false } as LineKey },
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+        {
+          label:
+            'a line-key mode change and a whitespace-amount change reports zero added and zero deleted (B-run: amount change hidden)',
+          old: enc('a b\n'),
+          next: enc('a    b\n'),
+          options: { lineKey: { mode: 'change', ignoreCrAtEol: false } as LineKey },
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+        {
+          label:
+            'ignoreBlankLines true and a blank-only insert reports zero added and zero deleted (BL1: blank-only hunk suppressed)',
+          old: enc('a\nb\n'),
+          next: enc('a\n\nb\n'),
+          options: { ignoreBlankLines: true },
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+        {
+          // Myers produces: ours-only hunk ["c\n"] + theirs-only hunk ["\n","C\n"].
+          // The theirs-only hunk is MIXED (blank "\n" + non-blank "C\n") → not blank-only → 2 added.
+          label:
+            'ignoreBlankLines true, a blank insert, and a real change counts the mixed hunk fully and suppresses the blank-only hunk (BL2: 2 1)',
+          old: enc('c\n'),
+          next: enc('\nC\n'),
+          options: { ignoreBlankLines: true },
+          expected: { added: 2, deleted: 1, binary: false },
+        },
+        {
+          // Myers produces: ours-only hunk ["x\n"] + theirs-only hunk ["\n","Y\n"], which has
+          // ≥1 non-blank line ("Y\n") → not blank-only → all 2 lines counted.
+          label:
+            'ignoreBlankLines true, a theirs-only hunk containing a blank and a non-blank line counts all lines in that hunk because it is not blank-only',
+          old: enc('x\n'),
+          next: enc('\nY\n'),
+          options: { ignoreBlankLines: true },
+          expected: { added: 2, deleted: 1, binary: false },
+        },
+        {
+          // Without a lineKey, normalization uses {mode:'none'}, so "   \n" is non-empty → not blank.
+          label:
+            'ignoreBlankLines true and a spaces-only insert without line-key reports one added (BL-spaces: spaces-only is NOT blank without line-key)',
+          old: enc('a\n'),
+          next: enc('a\n   \n'),
+          options: { ignoreBlankLines: true },
+          expected: { added: 1, deleted: 0, binary: false },
+        },
+        {
+          // With mode:all it normalizes "   \n" to empty → blank → suppressed.
+          label:
+            'ignoreBlankLines true, a spaces-only insert, and lineKey mode all reports zero added (BL-combo: -w makes spaces-only line blank)',
+          old: enc('a\n'),
+          next: enc('a\n   \n'),
+          options: {
+            lineKey: { mode: 'all', ignoreCrAtEol: false } as LineKey,
+            ignoreBlankLines: true,
+          },
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+        {
+          // The binary short-circuit must ignore whitespace options.
+          label:
+            'a binary old side with lineKey option set still reports binary with zero counts (binary guard unaffected by lineKey)',
+          old: withNul(),
+          next: enc('text\n'),
+          options: { lineKey: { mode: 'all', ignoreCrAtEol: false } as LineKey },
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          // The binary short-circuit must ignore blank-line suppression options.
+          label:
+            'a binary new side with ignoreBlankLines set still reports binary with zero counts (binary guard unaffected by ignoreBlankLines)',
+          old: enc('text\n'),
+          next: withNul(),
+          options: { ignoreBlankLines: true },
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          label:
+            'a blank-only ours-only hunk with ignoreBlankLines true suppresses the deletion count for that blank-only hunk',
+          old: enc('a\n\nb\n'),
+          next: enc('a\nb\n'),
+          options: { ignoreBlankLines: true },
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+        {
+          label:
+            'a lineKey mode none and a spaces-only insert with ignoreBlankLines false counts the spaces-only line normally (no suppression when ignoreBlankLines absent)',
+          old: enc('a\n'),
+          next: enc('a\n   \n'),
+          options: { lineKey: { mode: 'none', ignoreCrAtEol: false } as LineKey },
+          expected: { added: 1, deleted: 0, binary: false },
+        },
+        {
+          label:
+            'an inserted unterminated last line with ignoreBlankLines true counts the non-blank unterminated line (blank check handles missing LF)',
+          old: enc('a\n'),
+          next: enc('a\nb'),
+          options: { ignoreBlankLines: true },
+          expected: { added: 1, deleted: 0, binary: false },
+        },
+        {
+          label:
+            "numstatBinaryOverride 'binary' over purely textual content short-circuits to binary shape without sniffing content",
+          old: enc('a\n'),
+          next: enc('b\n'),
+          options: { numstatBinaryOverride: 'binary' as const },
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          label:
+            "numstatBinaryOverride 'text' over NUL-bearing content skips the isBinary guard and counts lines even over NUL bytes",
+          old: new Uint8Array([0x61, 0x00, 0x0a]), // "a\0\n"
+          next: new Uint8Array([0x62, 0x00, 0x0a]), // "b\0\n"
+          options: { numstatBinaryOverride: 'text' as const },
+          expected: { added: 1, deleted: 1, binary: false },
+        },
+        {
+          label:
+            'numstatBinaryOverride absent over NUL-bearing content (regression) uses the isBinary sniff and returns binary shape',
+          old: new Uint8Array([0x61, 0x00, 0x0a]),
+          next: new Uint8Array([0x62, 0x00, 0x0a]),
+          options: {},
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          label:
+            'numstatBinaryOverride absent over purely textual content (regression) uses the isBinary sniff and returns real line counts',
+          old: enc('a\n'),
+          next: enc('b\n'),
+          options: {},
+          expected: { added: 1, deleted: 1, binary: false },
+        },
+        {
+          // NUL-bearing sides + blank insert; text override skips binary guard, and the blank
+          // line insert is still suppressed by ignoreBlankLines.
+          label:
+            "numstatBinaryOverride 'text' combined with lineKey and ignoreBlankLines applies normalization options after the isBinary guard is skipped",
+          old: new Uint8Array([0x61, 0x00, 0x0a]), // "a\0\n"
+          next: new Uint8Array([0x61, 0x00, 0x0a, 0x0a]), // "a\0\n\n" (blank appended)
+          options: { numstatBinaryOverride: 'text' as const, ignoreBlankLines: true },
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+      ])('Then $label', ({ old, next, options, expected }) => {
+        // Arrange + Act
+        const result = computeStatFields(old, next, options);
 
-  describe('Given a pure deletion (one old line, empty new)', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports zero added and one deleted line', () => {
-        // Arrange
-        const old = enc('a\n');
-        const next = enc('');
-        // Act
-        const sut = computeStatFields(old, next);
         // Assert
-        expect(sut).toEqual({ added: 0, deleted: 1, binary: false });
-      });
-    });
-  });
-
-  describe('Given a single-line replacement', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports one added and one deleted line', () => {
-        // Arrange
-        const old = enc('a\n');
-        const next = enc('b\n');
-        // Act
-        const sut = computeStatFields(old, next);
-        // Assert
-        expect(sut).toEqual({ added: 1, deleted: 1, binary: false });
-      });
-    });
-  });
-
-  describe('Given identical content', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports zero changes and binary false', () => {
-        // Arrange
-        const same = enc('a\nb\n');
-        // Act
-        const sut = computeStatFields(same, same);
-        // Assert
-        expect(sut).toEqual({ added: 0, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given a binary old side only', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports binary with zero counts', () => {
-        // Arrange — old has a NUL byte; new is text. Isolates the first guard arm.
-        const old = withNul();
-        const next = enc('text\n');
-        // Act
-        const sut = computeStatFields(old, next);
-        // Assert
-        expect(sut).toEqual({ added: 0, deleted: 0, binary: true });
-      });
-    });
-  });
-
-  describe('Given a binary new side only', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports binary with zero counts', () => {
-        // Arrange — new has a NUL byte; old is text. Isolates the second guard arm.
-        const old = enc('text\n');
-        const next = withNul();
-        // Act
-        const sut = computeStatFields(old, next);
-        // Assert
-        expect(sut).toEqual({ added: 0, deleted: 0, binary: true });
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -107,182 +226,6 @@ describe('computeStatFields', () => {
     });
   });
 
-  describe('Given a line-key mode all and a whitespace-only change', () => {
-    describe('When computeStatFields is called with lineKey mode all', () => {
-      it('Then it reports zero added and zero deleted (W1/D1 at count level)', () => {
-        // Arrange — single line with only whitespace difference: "  ws\n" vs "    ws\n"
-        const lineKey: LineKey = { mode: 'all', ignoreCrAtEol: false };
-        const old = enc('  ws\n');
-        const next = enc('    ws\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { lineKey });
-        // Assert — whitespace-only line is treated as common; no change counted
-        expect(result).toEqual({ added: 0, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given a line-key mode change and a whitespace-amount change', () => {
-    describe('When computeStatFields is called with lineKey mode change', () => {
-      it('Then it reports zero added and zero deleted (B-run: amount change hidden)', () => {
-        // Arrange — "a b\n" vs "a    b\n": same presence, different amount → equal under change
-        const lineKey: LineKey = { mode: 'change', ignoreCrAtEol: false };
-        const old = enc('a b\n');
-        const next = enc('a    b\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { lineKey });
-        // Assert — amount-only change hidden under mode:change
-        expect(result).toEqual({ added: 0, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given ignoreBlankLines true and a blank-only insert', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports zero added and zero deleted (BL1: blank-only hunk suppressed)', () => {
-        // Arrange — inserting a single blank line into otherwise identical content
-        const old = enc('a\nb\n');
-        const next = enc('a\n\nb\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { ignoreBlankLines: true });
-        // Assert — blank-only theirs-only hunk does not count
-        expect(result).toEqual({ added: 0, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given ignoreBlankLines true, a blank insert, and a real change', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it counts the mixed hunk fully and suppresses the blank-only hunk (BL2: 2 1)', () => {
-        // Arrange — old: "c\n", new: "\nC\n"
-        // Myers produces: ours-only hunk ["c\n"] + theirs-only hunk ["\n","C\n"]
-        // The theirs-only hunk is MIXED (blank "\n" + non-blank "C\n") → not blank-only → 2 added
-        // The ours-only hunk ["c\n"] is non-blank → 1 deleted
-        const old = enc('c\n');
-        const next = enc('\nC\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { ignoreBlankLines: true });
-        // Assert — mixed hunk counted fully; result is 2 added, 1 deleted (BL2)
-        expect(result).toEqual({ added: 2, deleted: 1, binary: false });
-      });
-    });
-  });
-
-  describe('Given ignoreBlankLines true, a theirs-only hunk containing a blank and a non-blank line', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it counts all lines in that hunk because it is not blank-only', () => {
-        // Arrange — old: "x\n", new: "\nY\n"
-        // Myers produces: ours-only hunk ["x\n"] + theirs-only hunk ["\n","Y\n"]
-        // The theirs-only hunk has ≥1 non-blank line ("Y\n") → not blank-only → all 2 lines counted
-        const old = enc('x\n');
-        const next = enc('\nY\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { ignoreBlankLines: true });
-        // Assert — mixed theirs-only hunk counted fully: 2 added, 1 deleted
-        expect(result).toEqual({ added: 2, deleted: 1, binary: false });
-      });
-    });
-  });
-
-  describe('Given ignoreBlankLines true and a spaces-only insert without line-key', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports one added (BL-spaces: spaces-only is NOT blank without line-key)', () => {
-        // Arrange — inserting a spaces-only line "   \n"
-        // Without a lineKey, normalization uses {mode:'none'}, so "   \n" is non-empty → not blank
-        const old = enc('a\n');
-        const next = enc('a\n   \n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { ignoreBlankLines: true });
-        // Assert — spaces-only line is not blank under no-lineKey normalization
-        expect(result).toEqual({ added: 1, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given ignoreBlankLines true, a spaces-only insert, and lineKey mode all', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it reports zero added (BL-combo: -w makes spaces-only line blank)', () => {
-        // Arrange — inserting a spaces-only line "   \n"; with mode:all it normalizes to empty → blank
-        const lineKey: LineKey = { mode: 'all', ignoreCrAtEol: false };
-        const old = enc('a\n');
-        const next = enc('a\n   \n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { lineKey, ignoreBlankLines: true });
-        // Assert — mode:all strips spaces → empty content → blank line → suppressed
-        expect(result).toEqual({ added: 0, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given a binary old side with lineKey option set', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it still reports binary with zero counts (binary guard unaffected by lineKey)', () => {
-        // Arrange — binary short-circuit must ignore whitespace options
-        const lineKey: LineKey = { mode: 'all', ignoreCrAtEol: false };
-        const old = withNul();
-        const next = enc('text\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { lineKey });
-        // Assert
-        expect(result).toEqual({ added: 0, deleted: 0, binary: true });
-      });
-    });
-  });
-
-  describe('Given a binary new side with ignoreBlankLines set', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it still reports binary with zero counts (binary guard unaffected by ignoreBlankLines)', () => {
-        // Arrange — binary short-circuit must ignore blank-line suppression options
-        const old = enc('text\n');
-        const next = withNul();
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { ignoreBlankLines: true });
-        // Assert
-        expect(result).toEqual({ added: 0, deleted: 0, binary: true });
-      });
-    });
-  });
-
-  describe('Given a blank-only ours-only hunk with ignoreBlankLines true', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it suppresses the deletion count for that blank-only hunk', () => {
-        // Arrange — deleting a blank line
-        const old = enc('a\n\nb\n');
-        const next = enc('a\nb\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { ignoreBlankLines: true });
-        // Assert — blank-only ours-only hunk is suppressed
-        expect(result).toEqual({ added: 0, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given a lineKey mode none and a spaces-only insert with ignoreBlankLines false', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then it counts the spaces-only line normally (no suppression when ignoreBlankLines absent)', () => {
-        // Arrange — spaces-only insert, no blank suppression
-        const lineKey: LineKey = { mode: 'none', ignoreCrAtEol: false };
-        const old = enc('a\n');
-        const next = enc('a\n   \n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { lineKey });
-        // Assert — no suppression active
-        expect(result).toEqual({ added: 1, deleted: 0, binary: false });
-      });
-    });
-  });
-
   describe('Given lineKey mode all and a lineKey mode none for the same spaces-only insert', () => {
     describe('When checking blank definition reads the active lineKey', () => {
       it('Then mode:none treats spaces-only as non-blank and mode:all treats it as blank', () => {
@@ -298,97 +241,6 @@ describe('computeStatFields', () => {
         // Assert — active lineKey determines blank definition
         expect(resultNone).toEqual({ added: 1, deleted: 0, binary: false });
         expect(resultAll).toEqual({ added: 0, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given an inserted unterminated last line with ignoreBlankLines true', () => {
-    describe('When computeStatFields is called', () => {
-      it('Then the non-blank unterminated line is counted (blank check handles missing LF)', () => {
-        // Arrange — the added last line "b" has no trailing newline
-        const old = enc('a\n');
-        const next = enc('a\nb');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { ignoreBlankLines: true });
-        // Assert — unterminated "b" is non-blank, so it is counted
-        expect(result).toEqual({ added: 1, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe("Given numstatBinaryOverride 'binary' over purely textual content", () => {
-    describe('When computeStatFields called with numstatBinaryOverride binary', () => {
-      it('Then it short-circuits to binary shape without sniffing content', () => {
-        // Arrange — purely textual sides; override forces binary
-        const old = enc('a\n');
-        const next = enc('b\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { numstatBinaryOverride: 'binary' });
-        // Assert — all three fields
-        expect(result).toEqual({ added: 0, deleted: 0, binary: true });
-      });
-    });
-  });
-
-  describe("Given numstatBinaryOverride 'text' over NUL-bearing content", () => {
-    describe('When computeStatFields called with numstatBinaryOverride text', () => {
-      it('Then it skips the isBinary guard and counts lines even over NUL bytes', () => {
-        // Arrange — both sides contain a NUL byte; override forces text counting
-        const old = new Uint8Array([0x61, 0x00, 0x0a]); // "a\0\n"
-        const next = new Uint8Array([0x62, 0x00, 0x0a]); // "b\0\n"
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { numstatBinaryOverride: 'text' });
-        // Assert — real line counts, not binary shape
-        expect(result).toEqual({ added: 1, deleted: 1, binary: false });
-      });
-    });
-  });
-
-  describe('Given numstatBinaryOverride absent over NUL-bearing content (regression)', () => {
-    describe('When computeStatFields called with no override option', () => {
-      it('Then it uses the isBinary sniff and returns binary shape', () => {
-        // Arrange — NUL byte triggers isBinary; override is absent (undefined path)
-        const old = new Uint8Array([0x61, 0x00, 0x0a]);
-        const next = new Uint8Array([0x62, 0x00, 0x0a]);
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, {});
-        // Assert — today's sniff fires
-        expect(result).toEqual({ added: 0, deleted: 0, binary: true });
-      });
-    });
-  });
-
-  describe('Given numstatBinaryOverride absent over purely textual content (regression)', () => {
-    describe('When computeStatFields called with no override option', () => {
-      it('Then it uses the isBinary sniff and returns real line counts', () => {
-        // Arrange — textual content; sniff returns false; counts computed normally
-        const old = enc('a\n');
-        const next = enc('b\n');
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, {});
-        // Assert — real counts, not binary
-        expect(result).toEqual({ added: 1, deleted: 1, binary: false });
-      });
-    });
-  });
-
-  describe("Given numstatBinaryOverride 'text' combined with lineKey and ignoreBlankLines", () => {
-    describe('When computeStatFields called with text override and normalization options', () => {
-      it('Then normalization options still apply after the isBinary guard is skipped', () => {
-        // Arrange — NUL-bearing sides + blank insert; text override skips binary guard
-        // The blank line insert should be suppressed by ignoreBlankLines
-        const old = new Uint8Array([0x61, 0x00, 0x0a]); // "a\0\n"
-        const next = new Uint8Array([0x61, 0x00, 0x0a, 0x0a]); // "a\0\n\n" (blank appended)
-        // Act
-        const sut = computeStatFields;
-        const result = sut(old, next, { numstatBinaryOverride: 'text', ignoreBlankLines: true });
-        // Assert — blank-only hunk suppressed; override doesn't disturb normalization
-        expect(result).toEqual({ added: 0, deleted: 0, binary: false });
       });
     });
   });

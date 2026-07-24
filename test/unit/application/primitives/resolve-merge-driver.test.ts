@@ -24,11 +24,30 @@ const seed = (ctx: Context, attrs?: string, config?: string): Promise<void[]> =>
   ]);
 
 describe('resolvePathMergeSpec — driver resolution', () => {
-  describe('Given no merge attribute', () => {
+  describe('Given a merge attribute/config combination that has no external driver', () => {
     describe('When resolving', () => {
-      it('Then the built-in text driver is chosen', async () => {
+      it.each([
+        { label: 'no merge attribute at all', attrs: undefined, config: undefined },
+        {
+          label: 'the merge attribute set without a value',
+          attrs: '* merge\n',
+          config: undefined,
+        },
+        { label: 'merge=text', attrs: '* merge=text\n', config: undefined },
+        {
+          label: 'merge=text with only an unknown-key config section (empty record)',
+          attrs: '* merge=text\n',
+          config: '[merge "text"]\n\tfoo = bar\n',
+        },
+        {
+          label: 'merge=custom with no matching config section',
+          attrs: '* merge=custom\n',
+          config: undefined,
+        },
+      ])('Then the built-in text driver is chosen ($label)', async ({ attrs, config }) => {
         // Arrange
         const ctx = createMemoryContext();
+        await seed(ctx, attrs, config);
 
         // Act
         const sut = await choose(ctx, 'a.txt');
@@ -39,76 +58,16 @@ describe('resolvePathMergeSpec — driver resolution', () => {
     });
   });
 
-  describe('Given the merge attribute set without a value', () => {
+  describe('Given a merge attribute value that resolves to the built-in binary driver', () => {
     describe('When resolving', () => {
-      it('Then the text driver is chosen', async () => {
+      it.each([
+        { label: 'the merge attribute unset (`-merge`)', attrs: '* -merge\n' },
+        { label: 'merge=binary', attrs: '* merge=binary\n' },
+        { label: 'the binary macro', attrs: '* binary\n' },
+      ])('Then the built-in binary driver is chosen ($label)', async ({ attrs }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '* merge\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'text' });
-      });
-    });
-  });
-
-  describe('Given merge=text', () => {
-    describe('When resolving', () => {
-      it('Then the text driver is chosen', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=text\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'text' });
-      });
-    });
-  });
-
-  describe('Given the merge attribute unset (`-merge`)', () => {
-    describe('When resolving', () => {
-      it('Then the binary driver is chosen', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* -merge\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'binary' });
-      });
-    });
-  });
-
-  describe('Given merge=binary', () => {
-    describe('When resolving', () => {
-      it('Then the binary driver is chosen', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=binary\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'binary' });
-      });
-    });
-  });
-
-  describe('Given the binary macro', () => {
-    describe('When resolving', () => {
-      it('Then the binary driver is chosen', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* binary\n');
+        await seed(ctx, attrs);
 
         // Act
         const sut = await choose(ctx, 'a.txt');
@@ -155,83 +114,81 @@ describe('resolvePathMergeSpec — driver resolution', () => {
     });
   });
 
-  describe('Given merge=custom with a configured driver but no name', () => {
+  describe('Given a named driver section configured with a driver command but no name', () => {
     describe('When resolving', () => {
-      it('Then the external command is chosen without a name', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=custom\n', '[merge "custom"]\n  driver = run %A\n');
+      it.each([
+        {
+          label: 'merge=custom with a configured driver but no name',
+          attrs: '* merge=custom\n',
+          config: '[merge "custom"]\n  driver = run %A\n',
+        },
+        {
+          label: 'merge=text overrides the built-in text driver',
+          attrs: '* merge=text\n',
+          config: '[merge "text"]\n\tdriver = run %A\n',
+        },
+        {
+          label: 'merge=binary overrides the built-in binary driver',
+          attrs: '* merge=binary\n',
+          config: '[merge "binary"]\n\tdriver = run %A\n',
+        },
+        {
+          label: 'merge=union overrides the built-in union driver',
+          attrs: '* merge=union\n',
+          config: '[merge "union"]\n\tdriver = run %A\n',
+        },
+      ])(
+        'Then the external command is chosen without a name ($label)',
+        async ({ attrs, config }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, attrs, config);
 
-        // Act
-        const sut = await choose(ctx, 'a.txt');
+          // Act
+          const sut = await choose(ctx, 'a.txt');
 
-        // Assert
-        expect(sut).toEqual({ kind: 'external', command: 'run %A' });
-      });
+          // Assert
+          expect(sut).toEqual({ kind: 'external', command: 'run %A' });
+        },
+      );
     });
   });
 
-  describe('Given merge=custom whose configured driver has no driver command', () => {
+  describe('Given a named driver section with no driver command', () => {
     describe('When resolving', () => {
-      it('Then the missing-command choice is returned, naming the driver', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=custom\n', '[merge "custom"]\n  name = My Driver\n');
+      it.each([
+        {
+          label: 'merge=custom whose configured driver has no driver command',
+          attrs: '* merge=custom\n',
+          config: '[merge "custom"]\n  name = My Driver\n',
+          name: 'custom',
+        },
+        {
+          label: 'merge=text registered with only a name and no driver command',
+          attrs: '* merge=text\n',
+          config: '[merge "text"]\n\tname = X\n',
+          name: 'text',
+        },
+        {
+          label: 'merge=text registered with only recursive and no driver command',
+          attrs: '* merge=text\n',
+          config: '[merge "text"]\n\trecursive = text\n',
+          name: 'text',
+        },
+      ])(
+        'Then the missing-command choice is returned, naming the driver ($label)',
+        async ({ attrs, config, name }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, attrs, config);
 
-        // Act
-        const sut = await choose(ctx, 'a.txt');
+          // Act
+          const sut = await choose(ctx, 'a.txt');
 
-        // Assert
-        expect(sut).toEqual({ kind: 'missing-command', name: 'custom' });
-      });
-    });
-  });
-
-  describe('Given merge=text with a configured driver command on the built-in name', () => {
-    describe('When resolving', () => {
-      it('Then the configured driver overrides the built-in text driver', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=text\n', '[merge "text"]\n\tdriver = run %A\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'external', command: 'run %A' });
-      });
-    });
-  });
-
-  describe('Given merge=binary with a configured driver command on the built-in name', () => {
-    describe('When resolving', () => {
-      it('Then the configured driver overrides the built-in binary driver', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=binary\n', '[merge "binary"]\n\tdriver = run %A\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'external', command: 'run %A' });
-      });
-    });
-  });
-
-  describe('Given merge=union with a configured driver command on the built-in name', () => {
-    describe('When resolving', () => {
-      it('Then the configured driver overrides the built-in union driver', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=union\n', '[merge "union"]\n\tdriver = run %A\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'external', command: 'run %A' });
-      });
+          // Assert
+          expect(sut).toEqual({ kind: 'missing-command', name });
+        },
+      );
     });
   });
 
@@ -251,54 +208,6 @@ describe('resolvePathMergeSpec — driver resolution', () => {
     });
   });
 
-  describe('Given merge=text registered with only a name and no driver command', () => {
-    describe('When resolving', () => {
-      it('Then the missing-command choice is returned, naming the driver', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=text\n', '[merge "text"]\n\tname = X\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'missing-command', name: 'text' });
-      });
-    });
-  });
-
-  describe('Given merge=text registered with only recursive and no driver command', () => {
-    describe('When resolving', () => {
-      it('Then the missing-command choice is returned, naming the driver', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=text\n', '[merge "text"]\n\trecursive = text\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'missing-command', name: 'text' });
-      });
-    });
-  });
-
-  describe('Given merge=text registered with only an unknown key', () => {
-    describe('When resolving', () => {
-      it('Then the built-in text driver is chosen — an unknown-key-only section is an empty record', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=text\n', '[merge "text"]\n\tfoo = bar\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'text' });
-      });
-    });
-  });
-
   describe('Given the merge attribute unset (`-merge`) with a configured driver on merge=binary', () => {
     describe('When resolving', () => {
       it('Then the binary driver is chosen without consulting config', async () => {
@@ -314,38 +223,43 @@ describe('resolvePathMergeSpec — driver resolution', () => {
       });
     });
   });
-
-  describe('Given merge=custom with no matching config section', () => {
-    describe('When resolving', () => {
-      it('Then it falls back to the text driver', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=custom\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'text' });
-      });
-    });
-  });
 });
 
 describe('resolvePathMergeSpec — valueless merge driver config is not guarded here', () => {
-  describe('Given merge=mydriver with no matching config section', () => {
+  describe('Given a valueless merge driver configuration', () => {
     describe('When resolving', () => {
-      it('Then it falls back to the text driver and does not throw', async () => {
-        // Arrange — driver selected but no [merge "mydriver"] section.
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=mydriver\n');
+      it.each([
+        {
+          label: 'merge=mydriver with no matching config section',
+          attrs: '* merge=mydriver\n',
+          config: undefined,
+        },
+        {
+          label:
+            'a valueless driver under a [merge "mydriver"] section (guard lives at the chokepoint)',
+          attrs: '* merge=mydriver\n',
+          config: '[merge "mydriver"]\n\tdriver\n',
+        },
+        {
+          label:
+            'merge=text built-in name with a valueless driver under a same-named section (empty record falls back by name)',
+          attrs: '* merge=text\n',
+          config: '[merge "text"]\n\tdriver\n',
+        },
+      ])(
+        'Then it falls back to the text driver and does not throw ($label)',
+        async ({ attrs, config }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, attrs, config);
 
-        // Act
-        const result = await choose(ctx, 'a.txt');
+          // Act
+          const result = await choose(ctx, 'a.txt');
 
-        // Assert
-        expect(result).toEqual({ kind: 'text' });
-      });
+          // Assert
+          expect(result).toEqual({ kind: 'text' });
+        },
+      );
     });
   });
 
@@ -365,43 +279,6 @@ describe('resolvePathMergeSpec — valueless merge driver config is not guarded 
 
         // Assert
         expect(result).toEqual({ kind: 'external', command: 'mycmd', name: 'My Driver' });
-      });
-    });
-  });
-
-  describe('Given a valueless driver under a [merge "mydriver"] section', () => {
-    describe('When resolving the spec (no chokepoint scan here)', () => {
-      it('Then resolvePathMergeSpec does not throw — the guard lives at the chokepoint', async () => {
-        // Arrange — the guard moved to buildContentMerger; resolvePathMergeSpec
-        // itself no longer scans config for valueless drivers. A valueless
-        // [merge "mydriver"] driver resolves driverless → built-in text.
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=mydriver\n', '[merge "mydriver"]\n\tdriver\n');
-
-        // Act
-        const result = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(result).toEqual({ kind: 'text' });
-      });
-    });
-  });
-
-  describe('Given merge=text built-in name with a valueless driver under a same-named section', () => {
-    describe('When resolving', () => {
-      it('Then the built-in text driver is chosen — the empty record falls back by name', async () => {
-        // Arrange — config IS consulted first, but a valueless `driver` key is
-        // null-skipped by mergeMergeDriver, leaving an empty {} record; the
-        // missing-command guard requires a non-empty record, so this falls
-        // through to the built-in-by-name fallback (text).
-        const ctx = createMemoryContext();
-        await seed(ctx, '* merge=text\n', '[merge "text"]\n\tdriver\n');
-
-        // Act
-        const result = await choose(ctx, 'a.txt');
-
-        // Assert
-        expect(result).toEqual({ kind: 'text' });
       });
     });
   });

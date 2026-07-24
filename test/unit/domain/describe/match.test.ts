@@ -2,98 +2,71 @@ import { describe, expect, it } from 'vitest';
 import { tagNameMatches } from '../../../../src/domain/describe/match.js';
 
 describe('tagNameMatches', () => {
-  describe('Given no include or exclude patterns', () => {
-    describe('When matching any name', () => {
-      it('Then the name is included (identity)', () => {
-        // Arrange + Act
-        const sut = tagNameMatches('v1.0', [], []);
-
-        // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given an include pattern the name matches', () => {
+  describe('Given a name and include/exclude patterns', () => {
     describe('When matching', () => {
-      it('Then it is included', () => {
+      it.each([
+        {
+          name: 'v1.0',
+          include: [],
+          exclude: [],
+          expected: true,
+          label: 'no patterns includes the name (identity)',
+        },
+        {
+          name: 'v1.0',
+          include: ['v*'],
+          exclude: [],
+          expected: true,
+          label: 'a matching include is included',
+        },
+        {
+          name: 'rc-1',
+          include: ['v*'],
+          exclude: [],
+          expected: false,
+          label: 'a non-matching include is excluded',
+        },
+        {
+          name: 'rc-1',
+          include: [],
+          exclude: ['rc*'],
+          expected: false,
+          label: 'a matching exclude drops it even with no include patterns',
+        },
+        {
+          name: 'v1-rc',
+          include: ['v*'],
+          exclude: ['*rc'],
+          expected: false,
+          label: 'exclusion wins when both include and exclude match',
+        },
+        {
+          name: 'release/v1',
+          include: ['release*'],
+          exclude: [],
+          expected: false,
+          label: '* does not cross the slash',
+        },
+        {
+          name: 'sub/v1.0',
+          include: ['v1.0'],
+          exclude: [],
+          expected: false,
+          label: 'the match is anchored at the start (no unanchored suffix match)',
+        },
+        {
+          name: 'v1.0',
+          include: ['v*', 'x*'],
+          exclude: [],
+          expected: true,
+          label: 'any single include match includes the name (some, not every)',
+        },
+      ])('Then $label', ({ name, include, exclude, expected }) => {
         // Arrange + Act
-        const sut = tagNameMatches('v1.0', ['v*'], []);
+        const sut = tagNameMatches(name, include, exclude);
 
         // Assert
-        expect(sut).toBe(true);
-      });
-    });
-  });
-
-  describe('Given an include pattern the name does not match', () => {
-    describe('When matching', () => {
-      it('Then it is excluded', () => {
-        // Arrange + Act
-        const sut = tagNameMatches('rc-1', ['v*'], []);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given an exclude pattern the name matches', () => {
-    describe('When matching', () => {
-      it('Then it is dropped even with no include patterns', () => {
-        // Arrange + Act
-        const sut = tagNameMatches('rc-1', [], ['rc*']);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given both include and exclude matching the name', () => {
-    describe('When matching', () => {
-      it('Then exclusion wins', () => {
-        // Arrange + Act
-        const sut = tagNameMatches('v1-rc', ['v*'], ['*rc']);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a star pattern and a slashed name', () => {
-    describe('When matching', () => {
-      it('Then * does not cross the slash', () => {
-        // Arrange + Act
-        const sut = tagNameMatches('release/v1', ['release*'], []);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given an anchored pattern and a name with a leading segment', () => {
-    describe('When matching', () => {
-      it('Then the match is anchored at the start (no unanchored suffix match)', () => {
-        // Arrange + Act — an unanchored matcher would accept the `sub/` prefix.
-        const sut = tagNameMatches('sub/v1.0', ['v1.0'], []);
-
-        // Assert
-        expect(sut).toBe(false);
-      });
-    });
-  });
-
-  describe('Given several include patterns of which only one matches', () => {
-    describe('When matching', () => {
-      it('Then any single match includes the name (some, not every)', () => {
-        // Arrange + Act
-        const sut = tagNameMatches('v1.0', ['v*', 'x*'], []);
-
-        // Assert
-        expect(sut).toBe(true);
+        expect(sut).toBe(expected);
       });
     });
   });

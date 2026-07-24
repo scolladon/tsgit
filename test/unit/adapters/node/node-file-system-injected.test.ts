@@ -3004,39 +3004,43 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
     });
   });
 
-  describe('Given a child equal to the root (posix)', () => {
-    describe('When lstat runs on the root itself', () => {
-      it('Then it is contained (=== arm)', async () => {
-        // Arrange
-        const rootDir = '/root';
-        const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => input),
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
-
-        // Act
-        const result = await sut.lstat('/root');
-
-        // Assert
-        expect(result.isFile).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a child strictly under the root (posix)', () => {
+  describe('Given a child the root contains (equal to it, or strictly nested under it)', () => {
     describe('When lstat runs', () => {
-      it('Then it is contained (startsWith arm)', async () => {
+      it.each([
+        {
+          label: 'a root-equal child is contained on posix (=== arm)',
+          rootDir: '/root',
+          policy: posixPolicy,
+          leaf: '/root',
+        },
+        {
+          label: 'a nested child is contained on posix (startsWith arm)',
+          rootDir: '/root',
+          policy: posixPolicy,
+          leaf: '/root/sub/leaf',
+        },
+        {
+          label: 'a root-equal child is contained on windows (=== arm)',
+          rootDir: 'C:\\Root',
+          policy: windowsPolicy,
+          leaf: 'C:\\Root',
+        },
+        {
+          label: 'a nested, case-folded child is contained on windows (startsWith arm)',
+          rootDir: 'C:\\Root',
+          policy: windowsPolicy,
+          leaf: 'c:\\root\\x',
+        },
+      ])('Then $label', async ({ rootDir, policy, leaf }) => {
         // Arrange
-        const rootDir = '/root';
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi.fn().mockResolvedValue(fileStat),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, policy, fsOps);
 
         // Act
-        const result = await sut.lstat('/root/sub/leaf');
+        const result = await sut.lstat(leaf);
 
         // Assert
         expect(result.isFile).toBe(true);
@@ -3066,46 +3070,6 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-      });
-    });
-  });
-
-  describe('Given a child equal to the root (windows)', () => {
-    describe('When lstat runs on the root itself', () => {
-      it('Then it is contained (=== arm)', async () => {
-        // Arrange
-        const rootDir = 'C:\\Root';
-        const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => input),
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
-
-        // Act
-        const result = await sut.lstat('C:\\Root');
-
-        // Assert
-        expect(result.isFile).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a child strictly under the root (windows, case-folded)', () => {
-    describe('When lstat runs', () => {
-      it('Then it is contained (startsWith arm)', async () => {
-        // Arrange
-        const rootDir = 'C:\\Root';
-        const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => input),
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
-
-        // Act
-        const result = await sut.lstat('c:\\root\\x');
-
-        // Assert
-        expect(result.isFile).toBe(true);
       });
     });
   });
