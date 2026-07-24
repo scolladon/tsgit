@@ -9,7 +9,7 @@ import {
   runInformationalHook,
 } from '../../../../src/application/primitives/run-hook.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { RepositoryLayout } from '../../../../src/ports/context.js';
+import type { Context, RepositoryLayout } from '../../../../src/ports/context.js';
 
 const layout = (over: Partial<RepositoryLayout> = {}): RepositoryLayout => ({
   workDir: '/repo',
@@ -134,38 +134,26 @@ describe('primitives/run-hook runHook', () => {
     __resetConfigCacheForTests();
   });
 
-  describe('Given a Context with no HookRunner', () => {
+  describe('Given a hook invocation that does not fail', () => {
     describe('When runHook', () => {
-      it('Then it resolves without error', async () => {
+      it.each([
+        { label: 'no HookRunner is configured', buildCtx: () => createMemoryContext() },
+        {
+          label: 'the runner skips the hook',
+          buildCtx: () => createMemoryContext({ hooks: new MemoryHookRunner() }),
+        },
+        {
+          label: 'the hook exits 0',
+          buildCtx: () =>
+            createMemoryContext({
+              hooks: new MemoryHookRunner({
+                'pre-commit': { kind: 'ran', exitCode: 0, stdout: '', stderr: '' },
+              }),
+            }),
+        },
+      ])('Then it resolves without error ($label)', async ({ buildCtx }) => {
         // Arrange
-        const ctx = createMemoryContext();
-
-        // Act & Assert
-        await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a runner that skips the hook', () => {
-    describe('When runHook', () => {
-      it('Then it resolves without throwing', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ hooks: new MemoryHookRunner() });
-
-        // Act & Assert
-        await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a hook that exits 0', () => {
-    describe('When runHook', () => {
-      it('Then it resolves without throwing', async () => {
-        // Arrange
-        const runner = new MemoryHookRunner({
-          'pre-commit': { kind: 'ran', exitCode: 0, stdout: '', stderr: '' },
-        });
-        const ctx = createMemoryContext({ hooks: runner });
+        const ctx = buildCtx();
 
         // Act & Assert
         await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
@@ -267,23 +255,6 @@ describe('primitives/run-hook runHook', () => {
     });
   });
 
-  describe('Given core.hooksPath is configured', () => {
-    describe('When runHook', () => {
-      it('Then the request hooksDir reflects it', async () => {
-        // Arrange
-        const runner = new MemoryHookRunner();
-        const ctx = createMemoryContext({ hooks: runner });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  hooksPath = /opt/gh\n');
-
-        // Act
-        await runHook(ctx, 'pre-commit');
-
-        // Assert
-        expect(runner.calls[0]?.hooksDir).toBe('/opt/gh');
-      });
-    });
-  });
-
   describe('Given a Context with an abort signal', () => {
     describe('When runHook', () => {
       it('Then the request carries that signal', async () => {
@@ -347,35 +318,37 @@ describe('primitives/run-hook runHook', () => {
     });
   });
 
-  describe('Given a valued core.hooksPath', () => {
+  describe('Given a core.hooksPath state that resolves without throwing', () => {
     describe('When runHook resolves the hooks dir', () => {
-      it('Then it resolves to that directory without throwing', async () => {
+      it.each([
+        {
+          label: 'configured with a 2-space-indented config',
+          config: '[core]\n  hooksPath = /opt/gh\n',
+          expected: (): string => '/opt/gh',
+        },
+        {
+          label: 'a valued core.hooksPath (tab-indented config)',
+          config: '[core]\n\thooksPath = /opt/gh\n',
+          expected: (): string => '/opt/gh',
+        },
+        {
+          label: 'an absent core.hooksPath resolves to the <gitDir>/hooks default',
+          config: undefined,
+          expected: (ctx: Context): string => `${ctx.layout.gitDir}/hooks`,
+        },
+      ])('Then the request hooksDir reflects it ($label)', async ({ config, expected }) => {
         // Arrange
         const runner = new MemoryHookRunner();
         const ctx = createMemoryContext({ hooks: runner });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\thooksPath = /opt/gh\n');
+        if (config !== undefined) {
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        }
 
         // Act
         await runHook(ctx, 'pre-commit');
 
         // Assert
-        expect(runner.calls[0]?.hooksDir).toBe('/opt/gh');
-      });
-    });
-  });
-
-  describe('Given an absent core.hooksPath', () => {
-    describe('When runHook resolves the hooks dir', () => {
-      it('Then it resolves to the <gitDir>/hooks default without throwing', async () => {
-        // Arrange
-        const runner = new MemoryHookRunner();
-        const ctx = createMemoryContext({ hooks: runner });
-
-        // Act
-        await runHook(ctx, 'pre-commit');
-
-        // Assert
-        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/hooks`);
+        expect(runner.calls[0]?.hooksDir).toBe(expected(ctx));
       });
     });
   });

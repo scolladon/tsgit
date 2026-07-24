@@ -1,66 +1,97 @@
 import { describe, expect, it } from 'vitest';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import type { ResolveRefOptions } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName, Tag, Tree } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
 const MAIN_ID = 'a'.repeat(40) as ObjectId;
 const OTHER_ID = 'b'.repeat(40) as ObjectId;
 
+interface ResolvedRefCase {
+  readonly ctx: Context;
+  readonly ref: RefName | 'HEAD';
+  readonly options?: ResolveRefOptions;
+}
+
 describe('resolveRef', () => {
-  describe('Given a loose ref', () => {
+  describe('Given a ref that resolves to a concrete id', () => {
     describe('When resolveRef is called', () => {
-      it('Then returns the id', async () => {
+      it.each([
+        {
+          label: 'a loose ref',
+          arrange: async (): Promise<ResolvedRefCase> => {
+            const ctx = await buildSeededContext({
+              refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+            });
+            return { ctx, ref: 'refs/heads/main' as RefName };
+          },
+        },
+        {
+          label: 'a packed-only ref',
+          arrange: async (): Promise<ResolvedRefCase> => {
+            const ctx = await buildSeededContext({
+              packedRefs: [{ name: 'refs/tags/v1' as RefName, id: MAIN_ID }],
+            });
+            return { ctx, ref: 'refs/tags/v1' as RefName };
+          },
+        },
+        {
+          label: 'loose shadowing packed (loose wins)',
+          arrange: async (): Promise<ResolvedRefCase> => {
+            const ctx = await buildSeededContext({
+              refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+              packedRefs: [{ name: 'refs/heads/main' as RefName, id: OTHER_ID }],
+            });
+            return { ctx, ref: 'refs/heads/main' as RefName };
+          },
+        },
+        {
+          label: 'a symbolic chain HEAD→refs/heads/main',
+          arrange: async (): Promise<ResolvedRefCase> => {
+            const ctx = await buildSeededContext({
+              refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+            });
+            await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+            return { ctx, ref: 'HEAD' };
+          },
+        },
+        {
+          label: 'symbolic depth 4 with maxSymbolicDepth 5 (just-under)',
+          arrange: async (): Promise<ResolvedRefCase> => {
+            const ctx = await buildSeededContext({
+              refs: [{ name: 'refs/heads/final' as RefName, id: MAIN_ID }],
+            });
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/a', 'ref: refs/heads/b\n');
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/b', 'ref: refs/heads/c\n');
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/c', 'ref: refs/heads/d\n');
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/d', 'ref: refs/heads/final\n');
+            return { ctx, ref: 'refs/heads/a' as RefName, options: { maxSymbolicDepth: 5 } };
+          },
+        },
+        {
+          label: 'symbolic depth exactly 5 with maxSymbolicDepth 5 (at cap)',
+          arrange: async (): Promise<ResolvedRefCase> => {
+            const ctx = await buildSeededContext({
+              refs: [{ name: 'refs/heads/final' as RefName, id: MAIN_ID }],
+            });
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/a', 'ref: refs/heads/b\n');
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/b', 'ref: refs/heads/c\n');
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/c', 'ref: refs/heads/d\n');
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/d', 'ref: refs/heads/e\n');
+            await ctx.fs.writeUtf8('/repo/.git/refs/heads/e', 'ref: refs/heads/final\n');
+            return { ctx, ref: 'refs/heads/a' as RefName, options: { maxSymbolicDepth: 5 } };
+          },
+        },
+      ])('Then returns the id ($label)', async ({ arrange }) => {
         // Arrange
-        const ctx = await buildSeededContext({
-          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
-        });
-        const sut = await resolveRef(ctx, 'refs/heads/main' as RefName);
-        // Assert
-        expect(sut).toBe(MAIN_ID);
-      });
-    });
-  });
+        const { ctx, ref, options } = await arrange();
 
-  describe('Given a packed-only ref', () => {
-    describe('When resolveRef is called', () => {
-      it('Then returns the id', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
-          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: MAIN_ID }],
-        });
-        const sut = await resolveRef(ctx, 'refs/tags/v1' as RefName);
-        // Assert
-        expect(sut).toBe(MAIN_ID);
-      });
-    });
-  });
+        // Act
+        const sut = await resolveRef(ctx, ref, options);
 
-  describe('Given loose shadowing packed', () => {
-    describe('When resolveRef is called', () => {
-      it('Then loose wins', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
-          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
-          packedRefs: [{ name: 'refs/heads/main' as RefName, id: OTHER_ID }],
-        });
-        const sut = await resolveRef(ctx, 'refs/heads/main' as RefName);
-        // Assert
-        expect(sut).toBe(MAIN_ID);
-      });
-    });
-  });
-
-  describe('Given a symbolic chain HEAD→refs/heads/main', () => {
-    describe('When resolveRef HEAD', () => {
-      it('Then returns main.id', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
-          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
-        });
-        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
-        const sut = await resolveRef(ctx, 'HEAD');
         // Assert
         expect(sut).toBe(MAIN_ID);
       });
@@ -97,43 +128,6 @@ describe('resolveRef', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_NOT_FOUND');
         }
-      });
-    });
-  });
-
-  describe('Given symbolic depth 4 with maxSymbolicDepth 5', () => {
-    describe('When resolveRef is called', () => {
-      it('Then succeeds (just-under)', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
-          refs: [{ name: 'refs/heads/final' as RefName, id: MAIN_ID }],
-        });
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a', 'ref: refs/heads/b\n');
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/b', 'ref: refs/heads/c\n');
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/c', 'ref: refs/heads/d\n');
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/d', 'ref: refs/heads/final\n');
-        const sut = await resolveRef(ctx, 'refs/heads/a' as RefName, { maxSymbolicDepth: 5 });
-        // Assert
-        expect(sut).toBe(MAIN_ID);
-      });
-    });
-  });
-
-  describe('Given symbolic depth exactly 5 with maxSymbolicDepth 5 (at cap)', () => {
-    describe('When resolveRef is called', () => {
-      it('Then succeeds', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
-          refs: [{ name: 'refs/heads/final' as RefName, id: MAIN_ID }],
-        });
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a', 'ref: refs/heads/b\n');
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/b', 'ref: refs/heads/c\n');
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/c', 'ref: refs/heads/d\n');
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/d', 'ref: refs/heads/e\n');
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/e', 'ref: refs/heads/final\n');
-        const sut = await resolveRef(ctx, 'refs/heads/a' as RefName, { maxSymbolicDepth: 5 });
-        // Assert
-        expect(sut).toBe(MAIN_ID);
       });
     });
   });
@@ -190,52 +184,40 @@ describe('resolveRef', () => {
     });
   });
 
-  describe('Given an invalid ref name', () => {
+  describe('Given a ref that resolves to an invalid ref name', () => {
     describe('When resolveRef is called', () => {
-      it('Then throws INVALID_REF', async () => {
+      it.each([
+        {
+          label: 'the input ref name itself is invalid',
+          arrange: async (_ctx: Context): Promise<RefName | 'HEAD'> => '..' as RefName,
+        },
+        {
+          label: 'a symbolic ref target is an absolute path',
+          arrange: async (ctx: Context): Promise<RefName | 'HEAD'> => {
+            await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: /etc/passwd\n');
+            return 'HEAD';
+          },
+        },
+        {
+          label: 'a symbolic ref target contains `..`',
+          arrange: async (ctx: Context): Promise<RefName | 'HEAD'> => {
+            await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/../escape\n');
+            return 'HEAD';
+          },
+        },
+      ])('Then throws INVALID_REF ($label)', async ({ arrange }) => {
         // Arrange
         const ctx = await buildSeededContext();
+        const ref = await arrange(ctx);
+
+        // Act
         try {
-          await resolveRef(ctx, '..' as RefName);
+          await resolveRef(ctx, ref);
           // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_REF');
         }
-      });
-    });
-  });
-
-  describe('Given a symbolic ref whose target is an absolute path', () => {
-    describe('When resolveRef is called', () => {
-      it('Then throws INVALID_REF', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: /etc/passwd\n');
-        try {
-          await resolveRef(ctx, 'HEAD');
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect((error as TsgitError).data.code).toBe('INVALID_REF');
-        }
-      });
-    });
-  });
-
-  describe('Given HEAD as the direct input', () => {
-    describe('When resolveRef is called', () => {
-      it('Then bypasses validateRefName (HEAD is never rejected as invalid)', async () => {
-        // Arrange
-        // Kills ConditionalExpression `false` on the `current !== 'HEAD'` guard:
-        // under `false`, validateRefName would be called on 'HEAD' and throw.
-        const ctx = await buildSeededContext({
-          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
-        });
-        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
-        const sut = await resolveRef(ctx, 'HEAD');
-        // Assert
-        expect(sut).toBe(MAIN_ID);
       });
     });
   });
@@ -338,23 +320,6 @@ describe('resolveRef', () => {
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');
-        }
-      });
-    });
-  });
-
-  describe('Given a symbolic ref whose target contains `..`', () => {
-    describe('When resolveRef is called', () => {
-      it('Then throws INVALID_REF', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/../escape\n');
-        try {
-          await resolveRef(ctx, 'HEAD');
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect((error as TsgitError).data.code).toBe('INVALID_REF');
         }
       });
     });

@@ -22,43 +22,16 @@ const seed = (ctx: Context, attrs?: string, config?: string) =>
   ]);
 
 describe('resolveFilterDriver', () => {
-  describe('Given no filter attribute', () => {
+  describe('Given a filter attribute value that is false, true, or unspecified', () => {
     describe('When resolving the filter driver', () => {
-      it('Then identity is chosen', async () => {
+      it.each([
+        { label: 'no attribute at all (unspecified) maps to identity', attrs: undefined },
+        { label: '-filter (false) maps to identity', attrs: 'a.y -filter\n' },
+        { label: 'filter (bare true) maps to identity', attrs: 'a.y filter\n' },
+      ])('Then $label', async ({ attrs }) => {
         // Arrange
         const ctx = createMemoryContext();
-
-        // Act
-        const sut = await choose(ctx, 'a.y');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'identity' });
-      });
-    });
-  });
-
-  describe('Given a.y -filter (filter attribute unset)', () => {
-    describe('When resolving the filter driver', () => {
-      it('Then identity is chosen (false maps to identity)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, 'a.y -filter\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.y');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'identity' });
-      });
-    });
-  });
-
-  describe('Given a.y filter (bare true, unspecified)', () => {
-    describe('When resolving the filter driver', () => {
-      it('Then identity is chosen (true maps to identity)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, 'a.y filter\n');
+        await seed(ctx, attrs);
 
         // Act
         const sut = await choose(ctx, 'a.y');
@@ -87,38 +60,6 @@ describe('resolveFilterDriver', () => {
           smudge: 'down',
           required: false,
         });
-      });
-    });
-  });
-
-  describe('Given [filter "c"] clean only (no smudge)', () => {
-    describe('When resolving the filter driver', () => {
-      it('Then external driver with only clean and required=false is chosen (smudge identity)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, 'a.y filter=c\n', '[filter "c"]\n\tclean = up\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.y');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'external', name: 'c', clean: 'up', required: false });
-      });
-    });
-  });
-
-  describe('Given [filter "f"] with required=true', () => {
-    describe('When resolving the filter driver', () => {
-      it('Then external driver with required=true is chosen', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, 'a.y filter=f\n', '[filter "f"]\n\tclean = false\n\trequired = true\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.y');
-
-        // Assert
-        expect(sut).toEqual({ kind: 'external', name: 'f', clean: 'false', required: true });
       });
     });
   });
@@ -165,34 +106,38 @@ describe('resolveFilterDriver', () => {
     });
   });
 
-  describe('Given *.y filter=myf with [filter "myf"] clean configured', () => {
+  describe('Given a [filter "<name>"] section configured with clean (no smudge)', () => {
     describe('When resolving the filter driver', () => {
-      it('Then external driver carries name="myf" on the external arm', async () => {
+      it.each([
+        {
+          label: 'clean only is chosen with required=false (smudge identity)',
+          attrs: 'a.y filter=c\n',
+          config: '[filter "c"]\n\tclean = up\n',
+          expected: { kind: 'external', name: 'c', clean: 'up', required: false },
+        },
+        {
+          label: 'required=true is carried on the external arm',
+          attrs: 'a.y filter=f\n',
+          config: '[filter "f"]\n\tclean = false\n\trequired = true\n',
+          expected: { kind: 'external', name: 'f', clean: 'false', required: true },
+        },
+        {
+          // name must be present so CLEAN_FILTER_FAILED can carry it.
+          label: 'the driver name is carried on the external arm',
+          attrs: '*.y filter=myf\n',
+          config: '[filter "myf"]\n\tclean = up\n',
+          expected: { kind: 'external', name: 'myf', clean: 'up', required: false },
+        },
+      ])('Then $label', async ({ attrs, config, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '*.y filter=myf\n', '[filter "myf"]\n\tclean = up\n');
-
-        // Act
-        const sut = await choose(ctx, 'a.y');
-
-        // Assert — name must be present so CLEAN_FILTER_FAILED can carry it
-        expect(sut).toEqual({ kind: 'external', clean: 'up', required: false, name: 'myf' });
-      });
-    });
-  });
-
-  describe('Given *.y filter=f with required=true', () => {
-    describe('When resolving the filter driver', () => {
-      it('Then external driver carries name="f" on the external arm', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, 'a.y filter=f\n', '[filter "f"]\n\tclean = false\n\trequired = true\n');
+        await seed(ctx, attrs, config);
 
         // Act
         const sut = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', clean: 'false', required: true, name: 'f' });
+        expect(sut).toEqual(expected);
       });
     });
   });

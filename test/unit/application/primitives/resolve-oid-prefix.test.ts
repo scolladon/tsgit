@@ -39,55 +39,52 @@ describe('resolveOidPrefix', () => {
     });
   });
 
-  describe('Given a unique loose object matching the prefix', () => {
-    describe('When resolveOidPrefix is called with a 7-char prefix', () => {
-      it('Then returns the full object id', async () => {
+  describe('Given a unique object matching the queried prefix', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it.each([
+        {
+          label: 'a loose object (7-char prefix) resolves to the full id',
+          arrange: async (
+            ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+          ): Promise<{ prefix: string; expected: string }> => {
+            const id = await writeObject(ctx, blobOf(new Uint8Array([0xca, 0xfe])));
+            return { prefix: id.slice(0, 7), expected: id };
+          },
+        },
+        {
+          label: 'a packed object resolves to the full id from the pack index',
+          arrange: async (
+            ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+          ): Promise<{ prefix: string; expected: string }> => {
+            const [id] = await writeSyntheticPack(ctx, 'p1', [
+              { kind: 'base', type: 'blob', content: new Uint8Array([7, 7, 7]) },
+            ]);
+            return { prefix: (id as string).slice(0, 8), expected: id as string };
+          },
+        },
+        {
+          // Pack a blob, then also drop it loose under the same id.
+          label: 'an object present both loose and packed de-duplicates to one id',
+          arrange: async (
+            ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+          ): Promise<{ prefix: string; expected: string }> => {
+            const [id] = await writeSyntheticPack(ctx, 'p1', [
+              { kind: 'base', type: 'blob', content: new Uint8Array([9, 9]) },
+            ]);
+            await writeLooseNamed(ctx, id as string);
+            return { prefix: (id as string).slice(0, 10), expected: id as string };
+          },
+        },
+      ])('Then $label', async ({ arrange }) => {
         // Arrange
         const ctx = await buildSeededContext();
-        const id = await writeObject(ctx, blobOf(new Uint8Array([0xca, 0xfe])));
+        const { prefix, expected } = await arrange(ctx);
 
         // Act
-        const sut = await resolveOidPrefix(ctx, id.slice(0, 7));
+        const sut = await resolveOidPrefix(ctx, prefix);
 
         // Assert
-        expect(sut).toBe(id);
-      });
-    });
-  });
-
-  describe('Given a unique packed object matching the prefix', () => {
-    describe('When resolveOidPrefix is called', () => {
-      it('Then returns the full object id from the pack index', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const [id] = await writeSyntheticPack(ctx, 'p1', [
-          { kind: 'base', type: 'blob', content: new Uint8Array([7, 7, 7]) },
-        ]);
-
-        // Act
-        const sut = await resolveOidPrefix(ctx, (id as string).slice(0, 8));
-
-        // Assert
-        expect(sut).toBe(id);
-      });
-    });
-  });
-
-  describe('Given the same oid present both loose and packed', () => {
-    describe('When resolveOidPrefix is called', () => {
-      it('Then de-duplicates and resolves uniquely', async () => {
-        // Arrange — pack a blob, then also drop it loose under the same id
-        const ctx = await buildSeededContext();
-        const [id] = await writeSyntheticPack(ctx, 'p1', [
-          { kind: 'base', type: 'blob', content: new Uint8Array([9, 9]) },
-        ]);
-        await writeLooseNamed(ctx, id as string);
-
-        // Act
-        const sut = await resolveOidPrefix(ctx, (id as string).slice(0, 10));
-
-        // Assert
-        expect(sut).toBe(id);
+        expect(sut).toBe(expected);
       });
     });
   });

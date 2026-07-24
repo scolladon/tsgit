@@ -4,73 +4,43 @@ import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js'
 import { buildSeededContext } from './fixtures.js';
 
 describe('ref-store', () => {
-  describe('Given a loose ref', () => {
+  describe('Given refs that resolve to a direct id', () => {
     describe('When resolveDirect', () => {
-      it('Then returns direct id', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
-          refs: [
-            {
-              name: 'refs/heads/main' as RefName,
-              id: 'a'.repeat(40) as ObjectId,
-            },
-          ],
-        });
-        const sut = createRefStore(ctx);
-
-        // Act
-        const result = await sut.resolveDirect('refs/heads/main' as RefName);
-
-        // Assert
-        expect(result.kind).toBe('direct');
-        if (result.kind === 'direct') {
-          expect(result.id).toBe('a'.repeat(40));
-        }
-      });
-    });
-  });
-
-  describe('Given a ref only in packed-refs', () => {
-    describe('When resolveDirect', () => {
-      it('Then returns direct id', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
-          packedRefs: [
-            {
-              name: 'refs/tags/v1' as RefName,
-              id: 'b'.repeat(40) as ObjectId,
-            },
-          ],
-        });
-        const sut = createRefStore(ctx);
-
-        // Act
-        const result = await sut.resolveDirect('refs/tags/v1' as RefName);
-
-        // Assert
-        expect(result.kind).toBe('direct');
-        if (result.kind === 'direct') {
-          expect(result.id).toBe('b'.repeat(40));
-        }
-      });
-    });
-  });
-
-  describe('Given both a loose and packed ref with different ids', () => {
-    describe('When resolveDirect', () => {
-      it('Then loose wins', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({
+      it.each([
+        {
+          label: 'returns the direct id of a loose ref',
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [],
+          name: 'refs/heads/main' as RefName,
+          expected: 'a'.repeat(40),
+        },
+        {
+          label: 'returns the direct id of a packed-only ref',
+          refs: [],
+          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
+          name: 'refs/tags/v1' as RefName,
+          expected: 'b'.repeat(40),
+        },
+        {
+          label: 'returns the loose id when both a loose and packed ref exist (loose wins)',
           refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
           packedRefs: [{ name: 'refs/heads/main' as RefName, id: 'c'.repeat(40) as ObjectId }],
-        });
+          name: 'refs/heads/main' as RefName,
+          expected: 'a'.repeat(40),
+        },
+      ])('Then $label', async ({ refs, packedRefs, name, expected }) => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs, packedRefs });
         const sut = createRefStore(ctx);
 
         // Act
-        const result = await sut.resolveDirect('refs/heads/main' as RefName);
+        const result = await sut.resolveDirect(name);
 
         // Assert
-        if (result.kind === 'direct') expect(result.id).toBe('a'.repeat(40));
+        expect(result.kind).toBe('direct');
+        if (result.kind === 'direct') {
+          expect(result.id).toBe(expected);
+        }
       });
     });
   });

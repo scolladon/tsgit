@@ -20,96 +20,65 @@ describe('readBlob', () => {
     });
   });
 
-  describe('Given a tree id', () => {
+  describe('Given a non-blob object id', () => {
     describe('When readBlob is called', () => {
-      it('Then throws UNEXPECTED_OBJECT_TYPE with expected="blob", actual="tree"', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
-        const id = await writeObject(ctx, tree);
-        try {
-          await readBlob(ctx, id);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(TsgitError);
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
-          if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-            expect(data.expected).toBe('blob');
-            expect(data.actual).toBe('tree');
-          }
-        }
-      });
-    });
-  });
+      it.each([
+        ['tree', (_treeId: ObjectId): Tree => ({ type: 'tree', entries: [], id: '' as ObjectId })],
+        [
+          'commit',
+          (treeId: ObjectId): Commit => ({
+            type: 'commit',
+            id: '' as ObjectId,
+            data: {
+              tree: treeId,
+              parents: [],
+              author: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
+              committer: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
+              message: 'm',
+              extraHeaders: [],
+            },
+          }),
+        ],
+        [
+          'tag',
+          (treeId: ObjectId): Tag => ({
+            type: 'tag',
+            id: '' as ObjectId,
+            data: {
+              object: treeId,
+              objectType: 'tree',
+              tagName: 'v1',
+              tagger: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
+              message: 'm',
+              extraHeaders: [],
+            },
+          }),
+        ],
+      ] as ReadonlyArray<[string, (treeId: ObjectId) => Tree | Commit | Tag]>)(
+        'Then throws UNEXPECTED_OBJECT_TYPE with expected="blob", actual="%s"',
+        async (actual, build) => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const id = await writeObject(ctx, build(treeId));
 
-  describe('Given a commit id', () => {
-    describe('When readBlob is called', () => {
-      it('Then throws UNEXPECTED_OBJECT_TYPE actual="commit"', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        // Build a small commit pointing at an empty tree
-        const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
-        const treeId = await writeObject(ctx, tree);
-        const commit: Commit = {
-          type: 'commit',
-          id: '' as ObjectId,
-          data: {
-            tree: treeId,
-            parents: [],
-            author: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
-            committer: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
-            message: 'm',
-            extraHeaders: [],
-          },
-        };
-        const id = await writeObject(ctx, commit);
-        try {
-          await readBlob(ctx, id);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          const data = (error as TsgitError).data;
-          if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-            expect(data.actual).toBe('commit');
+          // Act
+          try {
+            await readBlob(ctx, id);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+            if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+              expect(data.expected).toBe('blob');
+              expect(data.actual).toBe(actual);
+            }
           }
-        }
-      });
-    });
-  });
-
-  describe('Given a tag id', () => {
-    describe('When readBlob is called', () => {
-      it('Then throws UNEXPECTED_OBJECT_TYPE actual="tag"', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
-        const treeId = await writeObject(ctx, tree);
-        const tag: Tag = {
-          type: 'tag',
-          id: '' as ObjectId,
-          data: {
-            object: treeId,
-            objectType: 'tree',
-            tagName: 'v1',
-            tagger: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
-            message: 'm',
-            extraHeaders: [],
-          },
-        };
-        const id = await writeObject(ctx, tag);
-        try {
-          await readBlob(ctx, id);
-          // Assert
-          expect.unreachable();
-        } catch (error) {
-          const data = (error as TsgitError).data;
-          if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-            expect(data.actual).toBe('tag');
-          }
-        }
-      });
+        },
+      );
     });
   });
 
