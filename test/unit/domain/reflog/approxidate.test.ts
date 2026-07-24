@@ -39,10 +39,10 @@ describe('parseApproxidate', () => {
           { input: 'NOW', expected: NOW, label: 'matching is case-insensitive' },
         ])('Then $label', ({ input, expected }) => {
           // Arrange
-          const sut = input;
+          const sut = parseApproxidate;
 
           // Act
-          const result = parseApproxidate(sut, NOW);
+          const result = sut(input, NOW);
 
           // Assert
           expect(result).toBe(expected);
@@ -130,10 +130,10 @@ describe('parseApproxidate', () => {
           },
         ])('Then $label', ({ input, expected }) => {
           // Arrange
-          const sut = input;
+          const sut = parseApproxidate;
 
           // Act
-          const result = parseApproxidate(sut, NOW);
+          const result = sut(input, NOW);
 
           // Assert
           expect(result).toBe(expected);
@@ -181,10 +181,10 @@ describe('parseApproxidate', () => {
           },
         ])('Then $label', ({ input }) => {
           // Arrange
-          const sut = input;
+          const sut = parseApproxidate;
 
           // Act
-          const result = parseApproxidate(sut, NOW);
+          const result = sut(input, NOW);
 
           // Assert
           expect(result).toBeUndefined();
@@ -210,10 +210,10 @@ describe('parseApproxidate', () => {
           },
         ])('Then $label', ({ input, expected }) => {
           // Arrange
-          const sut = input;
+          const sut = parseApproxidate;
 
           // Act
-          const result = parseApproxidate(sut, NOW);
+          const result = sut(input, NOW);
 
           // Assert
           expect(result).toBe(expected);
