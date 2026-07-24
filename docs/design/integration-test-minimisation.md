@@ -36,14 +36,14 @@ each addressed below:
    integration-tier's replacement for "no mutant resurrects".
 
 **Scope (user decision, non-negotiable): the whole integration tier in ONE PR**
-(platform-gated `posix-only/`/`win-only/` subdirs per Decision 6). The exact
-globs, from `vitest.config.ts`:
+(both platform-gated `posix-only/`/`win-only/` subdirs in scope — Decision 6,
+resolved to (A)). The exact globs, from `vitest.config.ts`:
 
 | vitest project | glob | files | in 27.2 scope? |
 |---|---|---:|---|
 | `integration` | `test/integration/**/*.test.ts` minus `posix-only/**`, `win-only/**` | 85 root + 10 `network/` | **yes** |
 | `posix-integration` | `test/integration/posix-only/**/*.test.ts` | 5 | **yes** (verifiable on this darwin host) |
-| `win-integration` | `test/integration/win-only/**/*.test.ts` | 2 | Decision 6 (can't verify locally) |
+| `win-integration` | `test/integration/win-only/**/*.test.ts` | 2 | **yes** (Decision 6 → (A); win-only green is the CI `win-integration` authority — not verifiable on this darwin host) |
 | `parity` | `test/parity/**/*.test.ts` | 2 | **NO — carve-out (§4)** |
 | (runtime runners) | `test/runtime-parity/**` (deno/bun/workers) | 5 | **NO — carve-out (§4)** |
 | `e2e` | `test/browser/**/*.spec.ts` | 0 present | out (27.3) |
@@ -538,8 +538,10 @@ meaningfully sized.
 so the ordering rationale is *risk/payoff* not *backstop strength*. Recommended:
 **giants first** (largest overlap, richest worked examples, highest payoff —
 prove the collapse+cross-tool discipline where it matters most), then themed tail,
-`network/` and `posix-only/` late (heavier spawn/async, platform-gated). Themed
-grouping keeps related git behaviours reviewable together.
+`network/` and the platform subdirs (`posix-only/` **and** `win-only/`) late
+(heavier spawn/async, platform-gated; `win-only/` verified via the Decision 6 CI
+path in the part gate below). Themed grouping keeps related git behaviours
+reviewable together.
 
 **Gates:**
 
@@ -547,8 +549,13 @@ grouping keeps related git behaviours reviewable together.
   `npx vitest run <touched test files> && npm run check:types && biome check <touched files>`.
   Proves the collapsed/kept rows pass, typecheck, and lint (incl. the
   `noThenProperty` gate). For a `posix-only/` file, the vitest invocation runs it
-  under the `posix-integration` project (verifiable on this darwin host); a
-  `win-only/` file cannot be green-verified locally (Decision 6).
+  under the `posix-integration` project (verifiable on this darwin host). A
+  `win-only/` file (its own part, or folded into a platform-subdir themed part)
+  **cannot** be vitest-green-verified on this darwin host: its part gate runs
+  `npm run check:types` + `biome check <touched>` locally, backed by
+  construction-proof (§3.1) + reviewer diff-reading, and its **vitest-green is a CI
+  obligation discharged by the `win-integration` job** — the implementer must NOT
+  claim a local vitest green proves a `win-only` collapse (Decision 6 → (A)).
 - **Partition-boundary checkpoint** (after a themed group of parts lands, and
   once at the end via `npm run validate`): `npm run test:integration` — the full
   integration project, catching any cross-file interaction; plus `validate`'s
@@ -622,15 +629,26 @@ GWT/AAA heuristics are unit-scoped/report-only:
   siblings, COLLAPSE only when the tests are mechanically identical modulo one
   fixture literal (e.g. the earlier-by-line tie-break pair), else KEEP.
 
-### Decision 6 — are `posix-only/` and `win-only/` integration subdirs in scope?
+### Decision 6 — are `posix-only/` and `win-only/` integration subdirs in scope? — RESOLVED to (A)
 
-- **(A) Both in scope; verify `posix-only/` locally (darwin host runs the
-  `posix-integration` project) and rely on CI for `win-only/` (can't run
-  locally).** Cons: a `win-only` part commits on a locally-unverifiable green.
+**Ratified: (A) — both `posix-only/` (5 files) and `win-only/` (2 files) are in
+scope.** This is the one decision that **deviated** from the design's
+recommendation: the design recommended (B) (defer `win-only/`); the user chose
+(A). The trade-off is recorded honestly below — (A) accepts a
+locally-unverifiable `win-only` green in exchange for not stranding the 2 files.
+
+- **(A) Both in scope (chosen).** `posix-only/` is verified locally on this darwin
+  host under the `posix-integration` project. `win-only/` **cannot** run on this
+  host, so its minimisation is verified by **construction-proof (§3.1) +
+  `npm run check:types` + `biome check` + reviewer diff-reading**, with the **CI
+  `win-integration` job as the green authority** — an implementer must NOT claim a
+  local vitest green proves a `win-only` collapse. Accepted cost: a `win-only`
+  part commits on a locally-unverifiable green.
 - **(B) `posix-only/` in scope, `win-only/` deferred** to whoever can run
-  `win-integration` (CI/Windows). Cons: leaves 2 files un-minimised. **←
-  recommended** — do not commit a `win-only` collapse on faith; the 2 files are a
-  negligible tail.
+  `win-integration` (CI/Windows) — *the design's original recommendation, not
+  chosen*. Cons: leaves 2 files un-minimised. The deferral was judged not worth
+  stranding the 2 files, given construction-proof + the CI job is sufficient
+  assurance for a tests-only regrouping that changes no production behaviour.
 - **(C) Both out of scope** (mainline `test/integration/**` only). Cons: excludes
   5 verifiable `posix-only/` files for no reason.
 
