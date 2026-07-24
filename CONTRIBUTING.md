@@ -191,8 +191,11 @@ CI job, so a local green is a strong signal for CI.
 
 Bench scenarios are declared with the `benchScenario` wrapper
 (`test/bench/support/bench-dsl.ts`) so they read with the same
-Given/When/Then discipline as unit tests. Scaled scenarios
-(`*-scale.bench.ts`) run against a cached fixture — see RUNBOOK.md.
+Given/When/Then discipline as unit tests. Hot-path operations (`log`,
+`status`, `pack-read`, `blame`, `describe`, `name-rev`) each get a single
+`<op>.bench.ts` that runs at every size tier — small + medium always, large
+under `TSGIT_BENCH_LARGE` — via the shared `tieredScenario` helper
+(`test/bench/support/tiered-bench.ts`) — see RUNBOOK.md.
 
 ### Contract Test Pattern
 
