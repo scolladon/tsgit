@@ -959,33 +959,65 @@ describe('writeMarkedConflict (direct)', () => {
   const conflictOf = (over: Partial<MergeConflict>): MergeConflict =>
     ({ path: 'p' as FilePath, ...over }) as MergeConflict;
 
-  // Bare content symlink-pair — ours symlink re-created
-  describe('Given a bare content conflict with symlink modes on both sides', () => {
+  // Bare content symlink-pair / modify-delete survivor / bare type-change —
+  // whichever side survives, its symlink is re-created verbatim at the path.
+  describe('Given a conflict whose surviving side is a symlink', () => {
     describe('When writeMarkedConflict runs', () => {
-      it('Then ours symlink is re-created at the path (not target bytes as a regular file)', async () => {
+      it.each([
+        {
+          label:
+            'a bare content conflict with symlink modes on both sides re-creates ours (not target bytes as a regular file)',
+          build: async (ctx: Context): Promise<MergeConflict> => {
+            const oursId = await seedBlob(ctx, 'ours-target');
+            const theirsId = await seedBlob(ctx, 'theirs-target');
+            const baseId = await seedBlob(ctx, 'base-file-content');
+            return conflictOf({
+              type: 'content',
+              ourId: oursId,
+              theirId: theirsId,
+              baseId,
+              ourMode: FILE_MODE.SYMLINK,
+              theirMode: FILE_MODE.SYMLINK,
+              baseMode: FILE_MODE.REGULAR,
+            });
+          },
+          expectedTarget: 'ours-target',
+        },
+        {
+          label:
+            'a modify-delete conflict whose surviving theirs side is a symlink re-creates theirs',
+          build: async (ctx: Context): Promise<MergeConflict> => {
+            const theirsId = await seedBlob(ctx, 'survivor-target');
+            // ourId/ourMode are absent: ours deleted the path
+            return conflictOf({
+              type: 'modify-delete',
+              theirId: theirsId,
+              theirMode: FILE_MODE.SYMLINK,
+            });
+          },
+          expectedTarget: 'survivor-target',
+        },
+        {
+          label: 'a bare type-change conflict with symlink ourMode re-creates ours',
+          build: async (ctx: Context): Promise<MergeConflict> => {
+            const oursId = await seedBlob(ctx, 'symlink-target');
+            return conflictOf({ type: 'type-change', ourId: oursId, ourMode: FILE_MODE.SYMLINK });
+          },
+          expectedTarget: 'symlink-target',
+        },
+      ])('Then $label', async ({ build, expectedTarget }) => {
         // Arrange
         const ctx = await buildSeededContext();
-        const oursId = await seedBlob(ctx, 'ours-target');
-        const theirsId = await seedBlob(ctx, 'theirs-target');
-        const baseId = await seedBlob(ctx, 'base-file-content');
-        const conflict = conflictOf({
-          type: 'content',
-          ourId: oursId,
-          theirId: theirsId,
-          baseId,
-          ourMode: FILE_MODE.SYMLINK,
-          theirMode: FILE_MODE.SYMLINK,
-          baseMode: FILE_MODE.REGULAR,
-        });
+        const conflict = await build(ctx);
 
         // Act
         await writeMarkedConflict(ctx, conflict);
 
-        // Assert — lstat reveals a symlink; readlink returns ours' target
+        // Assert — lstat reveals a symlink; readlink returns the survivor's target
         const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
         expect(stat.isSymbolicLink).toBe(true);
         const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
-        expect(target).toBe('ours-target');
+        expect(target).toBe(expectedTarget);
       });
     });
   });
@@ -1079,57 +1111,6 @@ describe('writeMarkedConflict (direct)', () => {
 
         // Assert — no file materialised
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
-      });
-    });
-  });
-
-  // Modify-delete with ours deleted: the survivor keeps its kind on disk
-  describe('Given a modify-delete conflict whose surviving theirs side is a symlink', () => {
-    describe('When writeMarkedConflict runs', () => {
-      it('Then the survivor symlink is re-created at the path', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const theirsId = await seedBlob(ctx, 'survivor-target');
-        const conflict = conflictOf({
-          type: 'modify-delete',
-          theirId: theirsId,
-          theirMode: FILE_MODE.SYMLINK,
-          // ourId/ourMode are absent: ours deleted the path
-        });
-
-        // Act
-        await writeMarkedConflict(ctx, conflict);
-
-        // Assert — lstat reveals a symlink pointing at theirs' target
-        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
-        expect(stat.isSymbolicLink).toBe(true);
-        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
-        expect(target).toBe('survivor-target');
-      });
-    });
-  });
-
-  // Bare type-change with symlink ourMode
-  describe('Given a bare type-change conflict with symlink ourMode', () => {
-    describe('When writeMarkedConflict runs', () => {
-      it('Then ours symlink is re-created at the path', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const oursId = await seedBlob(ctx, 'symlink-target');
-        const conflict = conflictOf({
-          type: 'type-change',
-          ourId: oursId,
-          ourMode: FILE_MODE.SYMLINK,
-        });
-
-        // Act
-        await writeMarkedConflict(ctx, conflict);
-
-        // Assert
-        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/p`);
-        expect(stat.isSymbolicLink).toBe(true);
-        const target = await ctx.fs.readlink(`${ctx.layout.workDir}/p`);
-        expect(target).toBe('symlink-target');
       });
     });
   });

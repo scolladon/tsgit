@@ -392,22 +392,6 @@ describe('compareWorkingTreeDelta', () => {
     });
   });
 
-  describe('Given the enum projection over the delta', () => {
-    describe('When comparing a modified entry through compareWorkingTreeEntry', () => {
-      it('Then it returns the delta status verbatim', async () => {
-        // Arrange
-        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
-        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
-
-        // Act
-        const sut = await compareWorkingTreeEntry(ctx, entry);
-
-        // Assert
-        expect(sut).toBe('modified');
-      });
-    });
-  });
-
   // ── Filter-aware clean re-application ─────────────────────────────────────
 
   /**

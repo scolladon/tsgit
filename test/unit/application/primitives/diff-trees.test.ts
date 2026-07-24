@@ -415,73 +415,57 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given withStat=true and a one-line blob added', () => {
+  describe('Given withStat=true and a one-line blob added, modified, or deleted', () => {
     describe('When diffTrees is called', () => {
-      it('Then the change carries its line counts', async () => {
+      it.each([
+        {
+          label: 'added',
+          build: async (ctx: Ctx): Promise<{ before: ObjectId; after: ObjectId }> => {
+            const blobId = await blob(ctx, 'only line\n');
+            const empty = await writeTree(ctx, []);
+            const withEntry = await writeTree(ctx, [
+              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+            ]);
+            return { before: empty, after: withEntry };
+          },
+          expected: { type: 'add', added: 1, deleted: 0, binary: false },
+        },
+        {
+          label: 'modified',
+          build: async (ctx: Ctx): Promise<{ before: ObjectId; after: ObjectId }> => {
+            const before = await writeTree(ctx, [
+              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'a\n') },
+            ]);
+            const after = await writeTree(ctx, [
+              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'b\n') },
+            ]);
+            return { before, after };
+          },
+          expected: { type: 'modify', added: 1, deleted: 1, binary: false },
+        },
+        {
+          // exercises the new-content-absent branch of stat hydration.
+          label: 'deleted',
+          build: async (ctx: Ctx): Promise<{ before: ObjectId; after: ObjectId }> => {
+            const blobId = await blob(ctx, 'gone\n');
+            const withEntry = await writeTree(ctx, [
+              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+            ]);
+            const empty = await writeTree(ctx, []);
+            return { before: withEntry, after: empty };
+          },
+          expected: { type: 'delete', added: 0, deleted: 1, binary: false },
+        },
+      ])('Then the change carries $label line counts', async ({ build, expected }) => {
         // Arrange
         const ctx = await buildSeededContext();
-        const blobId = await blob(ctx, 'only line\n');
-        const empty = await writeTree(ctx, []);
-        const withEntry = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
-
-        // Act
-        const sut = await diffTrees(ctx, empty, withEntry, { withStat: true });
-
-        // Assert
-        expect(sut.changes[0]).toMatchObject({ type: 'add', added: 1, deleted: 0, binary: false });
-      });
-    });
-  });
-
-  describe('Given withStat=true and a one-line blob modified', () => {
-    describe('When diffTrees is called', () => {
-      it('Then the change carries one added and one deleted line', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const before = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'a\n') },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'b\n') },
-        ]);
+        const { before, after } = await build(ctx);
 
         // Act
         const sut = await diffTrees(ctx, before, after, { withStat: true });
 
         // Assert
-        expect(sut.changes[0]).toMatchObject({
-          type: 'modify',
-          added: 1,
-          deleted: 1,
-          binary: false,
-        });
-      });
-    });
-  });
-
-  describe('Given withStat=true and a one-line blob deleted', () => {
-    describe('When diffTrees is called', () => {
-      it('Then the change carries one deleted line', async () => {
-        // Arrange — exercises the new-content-absent branch of stat hydration.
-        const ctx = await buildSeededContext();
-        const blobId = await blob(ctx, 'gone\n');
-        const withEntry = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
-        const empty = await writeTree(ctx, []);
-
-        // Act
-        const sut = await diffTrees(ctx, withEntry, empty, { withStat: true });
-
-        // Assert
-        expect(sut.changes[0]).toMatchObject({
-          type: 'delete',
-          added: 0,
-          deleted: 1,
-          binary: false,
-        });
+        expect(sut.changes[0]).toMatchObject(expected);
       });
     });
   });
@@ -631,20 +615,66 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given a whitespace-only modify and no mode', () => {
+  describe('Given a modify change that must survive the ignoreWhitespace drop pass', () => {
     describe('When diffTrees is called', () => {
-      it('Then the modify is kept (no drop without a mode)', async () => {
+      const enc = new TextEncoder();
+
+      it.each([
+        {
+          // no drop without a mode
+          label: 'no whitespace mode is set at all',
+          oldBytes: enc.encode('hello world\n'),
+          newBytes: enc.encode('hello  world\n'),
+          options: {},
+        },
+        {
+          // only added>0 → shouldDrop must be false
+          label: 'only added>0 (pure insert) under ignoreWhitespace:all',
+          oldBytes: enc.encode('a\n'),
+          newBytes: enc.encode('a\nXYZ\n'),
+          options: { ignoreWhitespace: 'all' as const },
+        },
+        {
+          // only deleted>0 → shouldDrop must be false
+          label: 'only deleted>0 (pure delete) under ignoreWhitespace:all',
+          oldBytes: enc.encode('a\nXYZ\n'),
+          newBytes: enc.encode('a\n'),
+          options: { ignoreWhitespace: 'all' as const },
+        },
+        {
+          // ignoreBlankLines alone must NOT trigger the drop pass (lineKeyActive is false)
+          label: 'ignoreBlankLines alone with no line-key mode (#BL1)',
+          oldBytes: enc.encode('line\n'),
+          newBytes: enc.encode('line\n\n'),
+          options: { ignoreBlankLines: true },
+        },
+        {
+          // NUL byte triggers binary detection; a binary modify is never dropped
+          label: 'a binary modify under ignoreWhitespace:all (isolated binary guard)',
+          oldBytes: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 119, 111, 114, 108, 100]),
+          newBytes: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 32, 119, 111, 114, 108, 100]),
+          options: { ignoreWhitespace: 'all' as const },
+        },
+      ])('Then the modify is kept ($label)', async ({ oldBytes, newBytes, options }) => {
         // Arrange
         const ctx = await buildSeededContext();
-        const oldId = await blob(ctx, 'hello world\n');
-        const newId = await blob(ctx, 'hello  world\n');
+        const oldId = await writeObject(ctx, {
+          type: 'blob',
+          content: oldBytes,
+          id: '' as ObjectId,
+        });
+        const newId = await writeObject(ctx, {
+          type: 'blob',
+          content: newBytes,
+          id: '' as ObjectId,
+        });
         const before = await writeTree(ctx, [
           { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
         ]);
         const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after);
+        const sut = await diffTrees(ctx, before, after, options);
 
         // Assert
         expect(sut.changes).toHaveLength(1);
@@ -685,74 +715,6 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given a pure-insert modify under ignoreWhitespace:all', () => {
-    describe('When diffTrees is called', () => {
-      it('Then the modify is KEPT (added>0, deleted=0 must not drop)', async () => {
-        // Arrange — a real non-whitespace line is inserted; under mode:all the
-        // change still has added=1, deleted=0 and must survive the drop pass.
-        const ctx = await buildSeededContext();
-        const oldId = await blob(ctx, 'a\n');
-        const newId = await blob(ctx, 'a\nXYZ\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
-
-        // Act
-        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
-
-        // Assert — kept (only added>0 → shouldDrop must be false)
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('modify');
-      });
-    });
-  });
-
-  describe('Given a pure-delete modify under ignoreWhitespace:all', () => {
-    describe('When diffTrees is called', () => {
-      it('Then the modify is KEPT (deleted>0, added=0 must not drop)', async () => {
-        // Arrange — a real non-whitespace line is removed; under mode:all the
-        // change still has deleted=1, added=0 and must survive the drop pass.
-        const ctx = await buildSeededContext();
-        const oldId = await blob(ctx, 'a\nXYZ\n');
-        const newId = await blob(ctx, 'a\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
-
-        // Act
-        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
-
-        // Assert — kept (only deleted>0 → shouldDrop must be false)
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('modify');
-      });
-    });
-  });
-
-  describe('Given a blank-only modify and ignoreBlankLines alone (no line-key mode)', () => {
-    describe('When diffTrees is called', () => {
-      it('Then the blank-only modify is KEPT in changes (#BL1 — lineKeyActive is false)', async () => {
-        // Arrange — ignoreBlankLines alone must NOT trigger the drop pass
-        const ctx = await buildSeededContext();
-        const oldId = await blob(ctx, 'line\n');
-        const newId = await blob(ctx, 'line\n\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
-
-        // Act
-        const sut = await diffTrees(ctx, before, after, { ignoreBlankLines: true });
-
-        // Assert — file must still appear in changes (#BL1)
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('modify');
-      });
-    });
-  });
-
   describe('Given a spaces-only insert with ignoreWhitespace:all and ignoreBlankLines:true', () => {
     describe('When diffTrees is called', () => {
       it('Then the modify is dropped (#BL-combo — line-key makes it whitespace-only)', async () => {
@@ -773,38 +735,6 @@ describe('diffTrees', () => {
 
         // Assert — dropped (#BL-combo)
         expect(sut.changes).toHaveLength(0);
-      });
-    });
-  });
-
-  describe('Given a binary modify and ignoreWhitespace:all', () => {
-    describe('When diffTrees is called', () => {
-      it('Then the binary modify is never dropped (isolated binary guard)', async () => {
-        // Arrange — NUL byte triggers binary detection
-        const ctx = await buildSeededContext();
-        const binaryOld = await writeObject(ctx, {
-          type: 'blob',
-          content: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 119, 111, 114, 108, 100]),
-          id: '' as ObjectId,
-        });
-        const binaryNew = await writeObject(ctx, {
-          type: 'blob',
-          content: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 32, 119, 111, 114, 108, 100]),
-          id: '' as ObjectId,
-        });
-        const before = await writeTree(ctx, [
-          { name: 'bin.bin', mode: FILE_MODE.REGULAR, id: binaryOld },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'bin.bin', mode: FILE_MODE.REGULAR, id: binaryNew },
-        ]);
-
-        // Act
-        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
-
-        // Assert — binary is never dropped
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('modify');
       });
     });
   });

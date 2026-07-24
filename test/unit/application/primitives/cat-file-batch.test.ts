@@ -113,95 +113,78 @@ describe('catFileBatch', () => {
   });
 
   describe('size per object type', () => {
-    describe('Given a stored tree id', () => {
+    describe('Given a stored tree, commit, or tag id', () => {
       describe('When iterated', () => {
-        it('Then size equals serialized tree body length', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const blobId = await writeBlobBytes(ctx, new Uint8Array([0xa]));
-          const treeEntries: ReadonlyArray<TreeEntry> = [
-            { mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId },
-          ];
-          const treeId = await writeTree(ctx, treeEntries);
-          const tree = await readObject(ctx, treeId);
-          const expected = payloadByteLength(tree, ctx.hashConfig);
-          const sut = catFileBatch(ctx, [treeId]);
-
-          // Act
-          const [entry] = await collect(sut);
-
-          // Assert
-          if (entry?.ok !== true) throw new Error('expected ok');
-          expect(entry.type).toBe('tree');
-          expect(entry.size).toBe(expected);
-        });
-      });
-    });
-
-    describe('Given a stored commit id', () => {
-      describe('When iterated', () => {
-        it('Then size equals serialized commit body length', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const blobId = await writeBlobBytes(ctx, new Uint8Array([1]));
-          const treeId = await writeTree(ctx, [{ mode: FILE_MODE.REGULAR, name: 'f', id: blobId }]);
-          const commitId = await writeObject(ctx, {
-            type: 'commit',
-            id: '' as ObjectId,
-            data: {
-              tree: treeId,
-              parents: [],
-              author: IDENTITY,
-              committer: IDENTITY,
-              message: 'initial',
-              extraHeaders: [],
+        it.each([
+          {
+            label: 'tree',
+            build: async (ctx: Context): Promise<{ id: ObjectId; expected: number }> => {
+              const blobId = await writeBlobBytes(ctx, new Uint8Array([0xa]));
+              const treeEntries: ReadonlyArray<TreeEntry> = [
+                { mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId },
+              ];
+              const treeId = await writeTree(ctx, treeEntries);
+              const tree = await readObject(ctx, treeId);
+              return { id: treeId, expected: payloadByteLength(tree, ctx.hashConfig) };
             },
-          });
-          const commit = await readObject(ctx, commitId);
-          if (commit.type !== 'commit') throw new Error('expected commit');
-          const expected = serializeCommitContent(commit).byteLength;
-          const sut = catFileBatch(ctx, [commitId]);
-
-          // Act
-          const [entry] = await collect(sut);
-
-          // Assert
-          if (entry?.ok !== true) throw new Error('expected ok');
-          expect(entry.type).toBe('commit');
-          expect(entry.size).toBe(expected);
-        });
-      });
-    });
-
-    describe('Given a stored tag id', () => {
-      describe('When iterated', () => {
-        it('Then size equals serialized tag body length', async () => {
+          },
+          {
+            label: 'commit',
+            build: async (ctx: Context): Promise<{ id: ObjectId; expected: number }> => {
+              const blobId = await writeBlobBytes(ctx, new Uint8Array([1]));
+              const treeId = await writeTree(ctx, [
+                { mode: FILE_MODE.REGULAR, name: 'f', id: blobId },
+              ]);
+              const commitId = await writeObject(ctx, {
+                type: 'commit',
+                id: '' as ObjectId,
+                data: {
+                  tree: treeId,
+                  parents: [],
+                  author: IDENTITY,
+                  committer: IDENTITY,
+                  message: 'initial',
+                  extraHeaders: [],
+                },
+              });
+              const commit = await readObject(ctx, commitId);
+              if (commit.type !== 'commit') throw new Error('expected commit');
+              return { id: commitId, expected: serializeCommitContent(commit).byteLength };
+            },
+          },
+          {
+            label: 'tag',
+            build: async (ctx: Context): Promise<{ id: ObjectId; expected: number }> => {
+              const blobId = await writeBlobBytes(ctx, new Uint8Array([1]));
+              const tagId = await writeObject(ctx, {
+                type: 'tag',
+                id: '' as ObjectId,
+                data: {
+                  object: blobId,
+                  objectType: 'blob',
+                  tagName: 'v0',
+                  tagger: IDENTITY,
+                  message: 'release',
+                  extraHeaders: [],
+                },
+              });
+              const tag = await readObject(ctx, tagId);
+              if (tag.type !== 'tag') throw new Error('expected tag');
+              return { id: tagId, expected: serializeTagContent(tag).byteLength };
+            },
+          },
+        ])('Then size equals serialized $label body length', async ({ label, build }) => {
           // Arrange
           const ctx = await buildSeededContext();
-          const blobId = await writeBlobBytes(ctx, new Uint8Array([1]));
-          const tagId = await writeObject(ctx, {
-            type: 'tag',
-            id: '' as ObjectId,
-            data: {
-              object: blobId,
-              objectType: 'blob',
-              tagName: 'v0',
-              tagger: IDENTITY,
-              message: 'release',
-              extraHeaders: [],
-            },
-          });
-          const tag = await readObject(ctx, tagId);
-          if (tag.type !== 'tag') throw new Error('expected tag');
-          const expected = serializeTagContent(tag).byteLength;
-          const sut = catFileBatch(ctx, [tagId]);
+          const { id, expected } = await build(ctx);
+          const sut = catFileBatch(ctx, [id]);
 
           // Act
           const [entry] = await collect(sut);
 
           // Assert
           if (entry?.ok !== true) throw new Error('expected ok');
-          expect(entry.type).toBe('tag');
+          expect(entry.type).toBe(label);
           expect(entry.size).toBe(expected);
         });
       });

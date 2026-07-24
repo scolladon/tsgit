@@ -272,50 +272,77 @@ describe('buildContentMerger', () => {
       return {};
     };
 
-    describe('When a path enters content merge with a valueless merge.custom.driver and NO attribute', () => {
-      it('Then it throws CONFIG_MISSING_VALUE for merge.custom.driver at its line', async () => {
-        // Arrange — driver valueless at line 2; no `.gitattributes` selects custom.
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "custom"]\n\tdriver\n');
-        const sut = buildContentMerger(ctx);
-        const mergeCtx = await mergeCtxFor(ctx, {
-          base: 'L1\n',
-          ours: 'L1\nOURS\n',
-          theirs: 'THEIRS\nL1\n',
-        });
+    describe('When a path enters content merge with a registered merge.* subsection valueless key', () => {
+      it.each([
+        {
+          label: 'a valueless merge.custom.driver with no attribute selecting it',
+          config: '[merge "custom"]\n\tdriver\n',
+          expectedKey: 'merge.custom.driver',
+          expectedLine: 2,
+        },
+        {
+          label: 'a valueless merge.custom.recursive with no attribute selecting it',
+          config: '[merge "custom"]\n\trecursive\n',
+          expectedKey: 'merge.custom.recursive',
+          expectedLine: 2,
+        },
+        {
+          label: 'a valued driver but a valueless name',
+          config: '[merge "custom"]\n\tdriver = mycmd\n\tname\n',
+          expectedKey: 'merge.custom.name',
+          expectedLine: 3,
+        },
+        {
+          label: 'two [merge *] subsections each valueless (earlier-by-line across subsections)',
+          config: '[merge "zzz"]\n\tname\n[merge "aaa"]\n\tdriver\n',
+          expectedKey: 'merge.zzz.name',
+          expectedLine: 2,
+        },
+        {
+          label: 'driver and name both valueless, driver earlier in the subsection',
+          config: '[merge "custom"]\n\tdriver\n\tname\n',
+          expectedKey: 'merge.custom.driver',
+          expectedLine: 2,
+        },
+        {
+          label: 'driver and name both valueless, name earlier in the subsection',
+          config: '[merge "custom"]\n\tname\n\tdriver\n',
+          expectedKey: 'merge.custom.name',
+          expectedLine: 2,
+        },
+        {
+          label: 'the path resolves merge=custom via attribute and that driver is valueless',
+          config: '[merge "custom"]\n\tdriver\n',
+          attributes: '* merge=custom\n',
+          expectedKey: 'merge.custom.driver',
+          expectedLine: 2,
+        },
+      ])(
+        'Then it throws CONFIG_MISSING_VALUE for $expectedKey ($label)',
+        async ({ config, attributes, expectedKey, expectedLine }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          if (attributes !== undefined) {
+            await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, attributes);
+          }
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+          const sut = buildContentMerger(ctx);
+          const mergeCtx = await mergeCtxFor(ctx, {
+            base: 'L1\n',
+            ours: 'L1\nOURS\n',
+            theirs: 'THEIRS\nL1\n',
+          });
 
-        // Act
-        const result = await mergeData(sut, mergeCtx);
+          // Act
+          const result = await mergeData(sut, mergeCtx);
 
-        // Assert
-        expect(result.code).toBe('CONFIG_MISSING_VALUE');
-        expect(result.key).toBe('merge.custom.driver');
-        expect(result.line).toBe(2);
-        expect(result.source).toMatch(/\/config$/);
-      });
-    });
-
-    describe('When a path enters content merge with a valueless merge.custom.recursive and NO attribute', () => {
-      it('Then it throws CONFIG_MISSING_VALUE for merge.custom.recursive at its line', async () => {
-        // Arrange — recursive valueless at line 2; no `.gitattributes` selects custom.
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "custom"]\n\trecursive\n');
-        const sut = buildContentMerger(ctx);
-        const mergeCtx = await mergeCtxFor(ctx, {
-          base: 'L1\n',
-          ours: 'L1\nOURS\n',
-          theirs: 'THEIRS\nL1\n',
-        });
-
-        // Act
-        const result = await mergeData(sut, mergeCtx);
-
-        // Assert
-        expect(result.code).toBe('CONFIG_MISSING_VALUE');
-        expect(result.key).toBe('merge.custom.recursive');
-        expect(result.line).toBe(2);
-        expect(result.source).toMatch(/\/config$/);
-      });
+          // Assert
+          expect(result.code).toBe('CONFIG_MISSING_VALUE');
+          expect(result.key).toBe(expectedKey);
+          expect(result.line).toBe(expectedLine);
+          expect(result.source).toMatch(/\/config$/);
+        },
+      );
     });
 
     describe('When a path enters content merge with a subsectionless valueless [merge] recursive', () => {
@@ -336,126 +363,6 @@ describe('buildContentMerger', () => {
 
         // Assert — no CONFIG_MISSING_VALUE; the merge proceeds
         expect(result.code).toBeUndefined();
-      });
-    });
-
-    describe('When a path enters content merge with a valued driver but a valueless name', () => {
-      it('Then it throws CONFIG_MISSING_VALUE for merge.custom.name at its line', async () => {
-        // Arrange — driver valued at line 2, name valueless at line 3.
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[merge "custom"]\n\tdriver = mycmd\n\tname\n',
-        );
-        const sut = buildContentMerger(ctx);
-        const mergeCtx = await mergeCtxFor(ctx, {
-          base: 'L1\n',
-          ours: 'L1\nOURS\n',
-          theirs: 'THEIRS\nL1\n',
-        });
-
-        // Act
-        const result = await mergeData(sut, mergeCtx);
-
-        // Assert
-        expect(result.code).toBe('CONFIG_MISSING_VALUE');
-        expect(result.key).toBe('merge.custom.name');
-        expect(result.line).toBe(3);
-      });
-    });
-
-    describe('When two [merge *] subsections are each valueless', () => {
-      it('Then it reports the earlier-by-line key across subsections', async () => {
-        // Arrange — name valueless at line 2 (zzz), driver valueless at line 4 (aaa).
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[merge "zzz"]\n\tname\n[merge "aaa"]\n\tdriver\n',
-        );
-        const sut = buildContentMerger(ctx);
-        const mergeCtx = await mergeCtxFor(ctx, {
-          base: 'L1\n',
-          ours: 'L1\nOURS\n',
-          theirs: 'THEIRS\nL1\n',
-        });
-
-        // Act
-        const result = await mergeData(sut, mergeCtx);
-
-        // Assert
-        expect(result.code).toBe('CONFIG_MISSING_VALUE');
-        expect(result.key).toBe('merge.zzz.name');
-        expect(result.line).toBe(2);
-      });
-    });
-
-    describe('When driver and name are both valueless with driver earlier in one subsection', () => {
-      it('Then it reports the earlier-by-line key merge.custom.driver', async () => {
-        // Arrange — driver valueless at line 2, name valueless at line 3.
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[merge "custom"]\n\tdriver\n\tname\n',
-        );
-        const sut = buildContentMerger(ctx);
-        const mergeCtx = await mergeCtxFor(ctx, {
-          base: 'L1\n',
-          ours: 'L1\nOURS\n',
-          theirs: 'THEIRS\nL1\n',
-        });
-
-        // Act
-        const result = await mergeData(sut, mergeCtx);
-
-        // Assert
-        expect(result.code).toBe('CONFIG_MISSING_VALUE');
-        expect(result.key).toBe('merge.custom.driver');
-        expect(result.line).toBe(2);
-      });
-    });
-
-    describe('When driver and name are both valueless with name earlier in one subsection', () => {
-      it('Then it reports the earlier-by-line key merge.custom.name', async () => {
-        // Arrange — name valueless at line 2, driver valueless at line 3.
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[merge "custom"]\n\tname\n\tdriver\n',
-        );
-        const sut = buildContentMerger(ctx);
-        const mergeCtx = await mergeCtxFor(ctx, {
-          base: 'L1\n',
-          ours: 'L1\nOURS\n',
-          theirs: 'THEIRS\nL1\n',
-        });
-
-        // Act
-        const result = await mergeData(sut, mergeCtx);
-
-        // Assert
-        expect(result.code).toBe('CONFIG_MISSING_VALUE');
-        expect(result.key).toBe('merge.custom.name');
-        expect(result.line).toBe(2);
-      });
-    });
-
-    describe('When the path resolves merge=custom via attribute and that driver is valueless', () => {
-      it('Then the chokepoint still refuses with CONFIG_MISSING_VALUE', async () => {
-        // Arrange — the attribute-selected case still refuses now the guard moved
-        // from namedChoice to the chokepoint.
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge "custom"]\n\tdriver\n');
-        const sut = buildContentMerger(ctx);
-        const mergeCtx = await mergeCtxFor(ctx, { base: 'b', ours: 'OURS', theirs: 'THEIRS' });
-
-        // Act
-        const result = await mergeData(sut, mergeCtx);
-
-        // Assert
-        expect(result.code).toBe('CONFIG_MISSING_VALUE');
-        expect(result.key).toBe('merge.custom.driver');
-        expect(result.line).toBe(2);
       });
     });
 
