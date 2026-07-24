@@ -1873,7 +1873,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     },
   ];
 
-  describe('Given twin repos seeded with both a plain and an empty-subsection block', () => {
+  describe('Given twin repos seeded with plain and/or empty-subsection blocks', () => {
     describe('When git and tsgit each set the targeted key to v', () => {
       it.each(SET_SUBSECTION_TARGET_MATRIX)(
         'Then only the targeted block is written, the other survives untouched, for "$label"',

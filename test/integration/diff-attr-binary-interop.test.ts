@@ -294,7 +294,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
       changeCheck: {
         find: findByPath('new.forced'),
         requireDefined: true,
-        expected: { added: 0, deleted: 0, binary: true },
+        expected: { type: 'add', added: 0, deleted: 0, binary: true },
       },
     },
     {
@@ -304,7 +304,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
       changeCheck: {
         find: findByPath('new.forced'),
         requireDefined: true,
-        expected: { added: 0, deleted: 0, binary: true },
+        expected: { type: 'delete', added: 0, deleted: 0, binary: true },
       },
     },
     {
@@ -329,7 +329,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
       changeCheck: {
         find: findByPath('file.ghost'),
         requireDefined: true,
-        expected: { binary: true, added: 0, deleted: 0 },
+        expected: { type: 'modify', binary: true, added: 0, deleted: 0 },
       },
     },
     {
@@ -348,7 +348,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
       changeCheck: {
         find: findByPath('plain.up'),
         requireDefined: true,
-        expected: { binary: false },
+        expected: { type: 'modify', binary: false },
       },
     },
     {
@@ -358,7 +358,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
       changeCheck: {
         find: findByPath('nul.up'),
         requireDefined: true,
-        expected: { binary: true, added: 0, deleted: 0 },
+        expected: { type: 'modify', binary: true, added: 0, deleted: 0 },
       },
     },
     {
@@ -368,7 +368,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
       changeCheck: {
         find: findByPath('other.up'),
         requireDefined: true,
-        expected: { binary: false },
+        expected: { type: 'modify', binary: false },
       },
     },
   ];
