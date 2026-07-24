@@ -29,41 +29,41 @@ import { describe, expect, it } from 'vitest';
 
 import { openRepository } from '../../../src/index.node.js';
 
+// Windows drive-letter path forms `validateOptions` accepts: the raw
+// mkdtemp path (backslash-separated) and a forward-slash variant some
+// tooling produces (`C:/…`); both must resolve to the same realpath'd cwd.
+const WINDOWS_PATH_FORM_MATRIX: ReadonlyArray<{
+  label: string;
+  toCwd: (raw: string) => string;
+}> = [
+  { label: 'a drive-letter cwd produced by nodePath.resolve', toCwd: (raw) => raw },
+  {
+    label: 'a forward-slash variant of a Windows drive-letter path',
+    toCwd: (raw) => raw.replace(/\\/g, '/'),
+  },
+];
+
 describe('openRepository — Windows path handling', () => {
-  it('Given a drive-letter cwd produced by nodePath.resolve, When openRepository runs, Then it does NOT throw INVALID_OPTION', async () => {
-    // Arrange — mkdtemp on Windows returns a `C:\Users\…\tsgit-it-xxxx` path.
-    const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-it-'));
-    const expectedCwd = await realpath(cwd);
-    try {
-      // Act
-      const sut = await openRepository({ cwd });
+  it.each(WINDOWS_PATH_FORM_MATRIX)(
+    'Given $label, When openRepository runs, Then it does NOT throw INVALID_OPTION',
+    async ({ toCwd }) => {
+      // Arrange — mkdtemp on Windows returns a `C:\Users\…\tsgit-it-xxxx` path.
+      const tmp = await mkdtemp(path.join(os.tmpdir(), 'tsgit-it-'));
+      const cwd = toCwd(tmp);
+      const expectedCwd = await realpath(cwd);
+      try {
+        // Act
+        const sut = await openRepository({ cwd });
 
-      // Assert — Node shim realpaths the cwd, so ctx.cwd is the
-      // canonical form (8.3 short names expanded).
-      expect(sut.ctx.cwd).toBe(expectedCwd);
-      expect(sut.ctx.layout.workDir).toBe(expectedCwd);
-      await sut.dispose();
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it('Given a forward-slash variant of a Windows drive-letter path, When openRepository runs, Then it is also accepted (some tooling normalizes to /)', async () => {
-    // Arrange
-    const tmp = await mkdtemp(path.join(os.tmpdir(), 'tsgit-it-'));
-    const cwd = tmp.replace(/\\/g, '/');
-    const expectedCwd = await realpath(cwd);
-    try {
-      // Act
-      const sut = await openRepository({ cwd });
-
-      // Assert — `validateOptions` accepts both backslash and
-      // forward-slash drive-letter forms (`C:\…` and `C:/…`); the Node
-      // shim realpaths whatever form was passed.
-      expect(sut.ctx.cwd).toBe(expectedCwd);
-      await sut.dispose();
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
-    }
-  });
+        // Assert — Node shim realpaths the cwd, so ctx.cwd is the
+        // canonical form (8.3 short names expanded); layout.workDir
+        // mirrors it regardless of the input path-form literal.
+        expect(sut.ctx.cwd).toBe(expectedCwd);
+        expect(sut.ctx.layout.workDir).toBe(expectedCwd);
+        await sut.dispose();
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    },
+  );
 });
