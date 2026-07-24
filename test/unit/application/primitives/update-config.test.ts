@@ -952,330 +952,193 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a value containing #', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted', () => {
-          // Arrange & Act — `#` would start an inline comment unquoted, so the writer must quote.
+    describe('Given a value with an escaping-relevant characteristic', () => {
+      describe('When setConfigEntryInText renders it', () => {
+        it.each([
+          {
+            section: 'pager',
+            key: 'log',
+            value: 'less # paginate',
+            expected: '[pager]\n\tlog = "less # paginate"\n',
+            label: 'a # triggers quoting',
+          },
+          {
+            section: 'pager',
+            key: 'log',
+            value: 'less ; paginate',
+            expected: '[pager]\n\tlog = "less ; paginate"\n',
+            label: 'a ; triggers quoting',
+          },
+          {
+            section: 'user',
+            key: 'name',
+            value: ' Ada',
+            expected: '[user]\n\tname = " Ada"\n',
+            label: 'a leading space triggers quoting',
+          },
+          {
+            section: 'user',
+            key: 'name',
+            value: '\tAda',
+            expected: '[user]\n\tname = \\tAda\n',
+            label: 'a leading TAB is escaped and NOT quoted',
+          },
+          {
+            section: 'user',
+            key: 'name',
+            value: 'Ada ',
+            expected: '[user]\n\tname = "Ada "\n',
+            label: 'a trailing space triggers quoting',
+          },
+          {
+            section: 'user',
+            key: 'name',
+            value: 'Ada\t',
+            expected: '[user]\n\tname = Ada\\t\n',
+            label: 'a trailing TAB is escaped and NOT quoted',
+          },
+          {
+            section: 'user',
+            key: 'name',
+            value: 'Ada "Lovelace"',
+            expected: '[user]\n\tname = Ada \\"Lovelace\\"\n',
+            label: 'an embedded " is escaped unconditionally, unquoted',
+          },
+          {
+            section: 'core',
+            key: 'editor',
+            value: 'C:\\bin\\vim',
+            expected: '[core]\n\teditor = C:\\\\bin\\\\vim\n',
+            label: 'an embedded \\ is escaped unconditionally, unquoted',
+          },
+          {
+            section: 'alias',
+            key: 'lg',
+            value: 'log\nshort',
+            expected: '[alias]\n\tlg = log\\nshort\n',
+            label: 'an embedded newline is escaped to \\n, unquoted',
+          },
+          {
+            section: 'user',
+            key: 'name',
+            value: 'Ada',
+            expected: '[user]\n\tname = Ada\n',
+            label: 'a plain alphanumeric value is not quoted',
+          },
+          {
+            section: 'user',
+            key: 'name',
+            value: 'A\tB',
+            expected: '[user]\n\tname = A\\tB\n',
+            label: 'an embedded TAB is escaped and NOT quoted',
+          },
+          {
+            section: 'alias',
+            key: 'lg',
+            value: 'a\\b\nc',
+            expected: '[alias]\n\tlg = a\\\\b\\nc\n',
+            label: 'embedded \\ and \\n are both escaped (backslash first), unquoted',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a;b',
+            expected: '[test]\n\tk = "a;b"\n',
+            label: 'a semicolon triggers quoting',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a#b',
+            expected: '[test]\n\tk = "a#b"\n',
+            label: 'a hash triggers quoting',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: ' a',
+            expected: '[test]\n\tk = " a"\n',
+            label: 'a leading space triggers quoting (short value)',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a ',
+            expected: '[test]\n\tk = "a "\n',
+            label: 'a trailing space triggers quoting (short value)',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a\rb',
+            expected: '[test]\n\tk = "a\rb"\n',
+            label: 'a CR triggers quoting, with the raw CR inside the quotes',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a"b',
+            expected: '[test]\n\tk = a\\"b\n',
+            label: 'an embedded " is escaped but does NOT trigger quoting',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a\\b',
+            expected: '[test]\n\tk = a\\\\b\n',
+            label: 'an embedded \\ is escaped but does NOT trigger quoting',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a\nb',
+            expected: '[test]\n\tk = a\\nb\n',
+            label: 'an embedded LF is escaped to \\n but does NOT trigger quoting',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a\tb',
+            expected: '[test]\n\tk = a\\tb\n',
+            label: 'an embedded TAB is escaped to \\t but does NOT trigger quoting',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: '\ta',
+            expected: '[test]\n\tk = \\ta\n',
+            label: 'a leading TAB is escaped but does NOT trigger quoting',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a; b"c\\d ',
+            expected: '[test]\n\tk = "a; b\\"c\\\\d "\n',
+            label: 'a trailing space triggers quoting, with " and \\ escaped inside',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a\x01b',
+            expected: '[test]\n\tk = a\x01b\n',
+            label: 'a C0 control byte (\\x01) passes through verbatim, unquoted',
+          },
+          {
+            section: 'test',
+            key: 'k',
+            value: 'a\x7fb',
+            expected: '[test]\n\tk = a\x7fb\n',
+            label: 'a DEL byte (\\x7f) passes through verbatim, unquoted',
+          },
+        ])('Then $label', ({ section, key, value, expected }) => {
+          // Arrange
           const sut = setConfigEntryInText;
-          const result = sut('', 'pager', undefined, 'log', 'less # paginate');
+
+          // Act
+          const result = sut('', section, undefined, key, value);
 
           // Assert
-          expect(result).toBe('[pager]\n\tlog = "less # paginate"\n');
-        });
-      });
-    });
-
-    describe('Given a value containing ;', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted', () => {
-          // Arrange & Act — `;` is the second comment delimiter.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'pager', undefined, 'log', 'less ; paginate');
-
-          // Assert
-          expect(result).toBe('[pager]\n\tlog = "less ; paginate"\n');
-        });
-      });
-    });
-
-    describe('Given a value with a leading space', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted', () => {
-          // Arrange & Act — leading whitespace would be trimmed by the parser without quotes.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'user', undefined, 'name', ' Ada');
-
-          // Assert
-          expect(result).toBe('[user]\n\tname = " Ada"\n');
-        });
-      });
-    });
-
-    describe('Given a value with a leading tab', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the TAB is escaped to \\t and the value is NOT quoted (tab is not a quote trigger)', () => {
-          // Arrange & Act — leading TAB is escaped unconditionally; it does not trigger quoting.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'user', undefined, 'name', '\tAda');
-
-          // Assert — unquoted; leading TAB escaped to \t so no trimming risk.
-          expect(result).toBe('[user]\n\tname = \\tAda\n');
-        });
-      });
-    });
-
-    describe('Given a value with a trailing space', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted', () => {
-          // Arrange & Act
-          const sut = setConfigEntryInText;
-          const result = sut('', 'user', undefined, 'name', 'Ada ');
-
-          // Assert
-          expect(result).toBe('[user]\n\tname = "Ada "\n');
-        });
-      });
-    });
-
-    describe('Given a value with a trailing tab', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the TAB is escaped to \\t and the value is NOT quoted (tab is not a quote trigger)', () => {
-          // Arrange & Act — trailing TAB is escaped unconditionally; it does not trigger quoting.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'user', undefined, 'name', 'Ada\t');
-
-          // Assert — unquoted; trailing TAB escaped to \t.
-          expect(result).toBe('[user]\n\tname = Ada\\t\n');
-        });
-      });
-    });
-
-    describe('Given a value containing an embedded "', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the quote is escaped unconditionally but the value is NOT wrapped in quotes', () => {
-          // Arrange & Act — embedded " does not trigger quoting; it is always escaped.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'user', undefined, 'name', 'Ada "Lovelace"');
-
-          // Assert — unquoted; each " → \".
-          expect(result).toBe('[user]\n\tname = Ada \\"Lovelace\\"\n');
-        });
-      });
-    });
-
-    describe('Given a value containing an embedded \\', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the backslash is escaped unconditionally but the value is NOT wrapped in quotes', () => {
-          // Arrange & Act — embedded \ does not trigger quoting; it is always escaped.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'core', undefined, 'editor', 'C:\\bin\\vim');
-
-          // Assert — unquoted; each \ → \\.
-          expect(result).toBe('[core]\n\teditor = C:\\\\bin\\\\vim\n');
-        });
-      });
-    });
-
-    describe('Given a value containing an embedded newline', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the newline is escaped as \\n and the value is NOT wrapped in quotes', () => {
-          // Arrange & Act — LF does not trigger quoting; it is escaped unconditionally to \n.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'alias', undefined, 'lg', 'log\nshort');
-
-          // Assert — unquoted; LF → \n.
-          expect(result).toBe('[alias]\n\tlg = log\\nshort\n');
-        });
-      });
-    });
-
-    describe('Given a plain alphanumeric value', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then no quotes are added (backward-compatible)', () => {
-          // Arrange & Act — values that do not trigger any quoting rule must render verbatim.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'user', undefined, 'name', 'Ada');
-
-          // Assert
-          expect(result).toBe('[user]\n\tname = Ada\n');
-        });
-      });
-    });
-
-    describe('Given a value containing only an embedded tab (no other trigger)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the TAB is escaped to \\t and the value is NOT quoted', () => {
-          // Arrange & Act — embedded TAB is escaped unconditionally to \t; no quoting trigger.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'user', undefined, 'name', 'A\tB');
-
-          // Assert — unquoted; TAB → \t.
-          expect(result).toBe('[user]\n\tname = A\\tB\n');
-        });
-      });
-    });
-
-    describe('Given a value with both embedded \\n and embedded \\', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then both are escaped (backslashes first, then newlines), unquoted', () => {
-          // Arrange & Act — escape order matters: backslashes escaped first, then LF;
-          // neither triggers quoting, so the result is unquoted.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'alias', undefined, 'lg', 'a\\b\nc');
-
-          // Assert
-          expect(result).toBe('[alias]\n\tlg = a\\\\b\\nc\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a semicolon (a;b)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted (semicolon triggers quoting)', () => {
-          // Arrange & Act
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a;b');
-
-          // Assert
-          expect(result).toBe('[test]\n\tk = "a;b"\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a hash (a#b)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted (hash triggers quoting)', () => {
-          // Arrange & Act
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a#b');
-
-          // Assert
-          expect(result).toBe('[test]\n\tk = "a#b"\n');
-        });
-      });
-    });
-
-    describe('Given a value with a leading space ( a)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted (leading space triggers quoting)', () => {
-          // Arrange & Act
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', ' a');
-
-          // Assert
-          expect(result).toBe('[test]\n\tk = " a"\n');
-        });
-      });
-    });
-
-    describe('Given a value with a trailing space (a )', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted (trailing space triggers quoting)', () => {
-          // Arrange & Act
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a ');
-
-          // Assert
-          expect(result).toBe('[test]\n\tk = "a "\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a CR (a\\rb)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the rendered line is double-quoted with raw CR inside the quotes', () => {
-          // Arrange & Act — CR triggers quoting; CR itself passes through raw (not escaped).
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a\rb');
-
-          // Assert — the actual CR byte is inside the quotes, verbatim.
-          expect(result).toBe('[test]\n\tk = "a\rb"\n');
-        });
-      });
-    });
-
-    describe('Given a value containing an embedded " (a"b)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the quote is escaped but the value is NOT quoted (new grammar)', () => {
-          // Arrange & Act — quote does not trigger quoting; it is escaped unconditionally.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a"b');
-
-          // Assert — unquoted, with \" escape.
-          expect(result).toBe('[test]\n\tk = a\\"b\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a single backslash (a\\b)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the backslash is escaped to \\\\ but the value is NOT quoted (new grammar)', () => {
-          // Arrange & Act — backslash does not trigger quoting; escaped unconditionally.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a\\b');
-
-          // Assert — unquoted, with \\ escape.
-          expect(result).toBe('[test]\n\tk = a\\\\b\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a LF (a\\nb)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then LF is escaped to \\n and the value is NOT quoted (new grammar)', () => {
-          // Arrange & Act — LF does not trigger quoting; escaped unconditionally.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a\nb');
-
-          // Assert — unquoted, with \n escape.
-          expect(result).toBe('[test]\n\tk = a\\nb\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a TAB (a\\tb)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then TAB is escaped to \\t and the value is NOT quoted (new grammar)', () => {
-          // Arrange & Act — TAB does not trigger quoting; escaped unconditionally.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a\tb');
-
-          // Assert — unquoted, with \t escape.
-          expect(result).toBe('[test]\n\tk = a\\tb\n');
-        });
-      });
-    });
-
-    describe('Given a value with a leading TAB (\\ta)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the TAB is escaped to \\t and the value is NOT quoted (new grammar)', () => {
-          // Arrange & Act — leading TAB is escaped (not raw), so no trimming risk;
-          // escape does not trigger quoting.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', '\ta');
-
-          // Assert — unquoted, TAB escaped.
-          expect(result).toBe('[test]\n\tk = \\ta\n');
-        });
-      });
-    });
-
-    describe('Given a combo value (a; b"c\\d ) with trailing space', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then it is quoted (trailing space) with both " and \\ escaped inside', () => {
-          // Arrange & Act — trailing space triggers quoting; " and \ are escaped inside.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a; b"c\\d ');
-
-          // Assert — quoted because of trailing space; semicolon is safe inside quotes;
-          // " → \", \ → \\ applied unconditionally before wrapping.
-          expect(result).toBe('[test]\n\tk = "a; b\\"c\\\\d "\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a C0 control byte (\\x01)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the byte passes through verbatim and the value is NOT quoted', () => {
-          // Arrange & Act — C0 controls (except NUL) are accepted and written raw.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a\x01b');
-
-          // Assert — verbatim, unquoted.
-          expect(result).toBe('[test]\n\tk = a\x01b\n');
-        });
-      });
-    });
-
-    describe('Given a value containing a DEL byte (\\x7f)', () => {
-      describe('When setConfigEntryInText', () => {
-        it('Then the byte passes through verbatim and the value is NOT quoted', () => {
-          // Arrange & Act — DEL is accepted and written raw.
-          const sut = setConfigEntryInText;
-          const result = sut('', 'test', undefined, 'k', 'a\x7fb');
-
-          // Assert — verbatim, unquoted.
-          expect(result).toBe('[test]\n\tk = a\x7fb\n');
+          expect(result).toBe(expected);
         });
       });
     });
@@ -1617,220 +1480,153 @@ describe('primitives/update-config', () => {
     // Identity matrix — [s] vs [s ""] are distinct targets
     // ---------------------------------------------------------------------------
 
-    describe('Given both.conf ([s] and [s ""]) and target subsection=undefined', () => {
-      describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then only [s] is updated, [s ""] is untouched', () => {
+    describe('Given a config text with [s]/[s ""]/[ ""] identity-matrix blocks', () => {
+      describe('When setConfigEntryInText sets or inserts an entry', () => {
+        it.each([
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            section: 's',
+            subsection: undefined,
+            key: 'k',
+            expected: '[s]\n\tk = v\n[s ""]\n\tk = b\n',
+            label:
+              'both.conf, target subsection=undefined: only [s] is updated, [s ""] is untouched',
+          },
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            section: 's',
+            subsection: '',
+            key: 'k',
+            expected: '[s]\n\tk = a\n[s ""]\n\tk = v\n',
+            label:
+              'both.conf, target subsection="": only [s ""] is updated, [s] is untouched (direction pin)',
+          },
+          {
+            text: '[s ""]\n\tk = b\n[s]\n\tk = a\n',
+            section: 's',
+            subsection: undefined,
+            key: 'k',
+            expected: '[s ""]\n\tk = b\n[s]\n\tk = v\n',
+            label:
+              'rev.conf, target subsection=undefined: only [s] is updated (even appearing second)',
+          },
+          {
+            text: '[s ""]\n\tk = b\n[s]\n\tk = a\n',
+            section: 's',
+            subsection: '',
+            key: 'k',
+            expected: '[s ""]\n\tk = v\n[s]\n\tk = a\n',
+            label:
+              'rev.conf, target subsection="": only [s ""] is updated, [s] is untouched (direction pin)',
+          },
+          {
+            text: '[s ""]\n\tk = b\n',
+            section: 's',
+            subsection: undefined,
+            key: 'k',
+            expected: '[s ""]\n\tk = b\n[s]\n\tk = v\n',
+            label:
+              'empty-only.conf, target subsection=undefined: [s ""] is NOT matched, [s] is appended',
+          },
+          {
+            text: '[s]\n\tk = a\n',
+            section: 's',
+            subsection: '',
+            key: 'k',
+            expected: '[s]\n\tk = a\n[s ""]\n\tk = v\n',
+            label:
+              'plain-only.conf, target subsection="": [s] is NOT matched, [s ""] is appended (mirror pin)',
+          },
+          {
+            text: '[ ""]\n\tk = e\n',
+            section: 's',
+            subsection: undefined,
+            key: 'k',
+            expected: '[ ""]\n\tk = e\n[s]\n\tk = v\n',
+            label: '[ ""] only: [ ""] is NOT matched and a new [s] is appended',
+          },
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            section: 's',
+            subsection: undefined,
+            key: 'n',
+            expected: '[s]\n\tk = a\n\tn = v\n[s ""]\n\tk = b\n',
+            label: 'both.conf, new key n: it lands at end of [s] block, not inside [s ""]',
+          },
+          {
+            text: '[S]\n\tk = a\n',
+            section: 's',
+            subsection: undefined,
+            key: 'k',
+            expected: '[S]\n\tk = v\n',
+            label:
+              '[S] uppercase, target s lowercase: matched case-insensitively, rewritten in place',
+          },
+        ])('Then $label', ({ text, section, subsection, key, expected }) => {
           // Arrange
           const sut = setConfigEntryInText;
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
 
           // Act
-          const result = sut(text, 's', undefined, 'k', 'v');
+          const result = sut(text, section, subsection, key, 'v');
 
-          // Assert — [s] updated in place; [s ""] byte-identical
-          expect(result).toBe('[s]\n\tk = v\n[s ""]\n\tk = b\n');
-        });
-      });
-    });
-
-    describe('Given both.conf ([s] and [s ""]) and target subsection=""', () => {
-      describe('When setConfigEntryInText sets s..k to v', () => {
-        it('Then only [s ""] is updated, [s] is untouched (direction pin)', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
-
-          // Act
-          const result = sut(text, 's', '', 'k', 'v');
-
-          // Assert — [s ""] updated in place; [s] byte-identical
-          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given rev.conf ([s ""] first then [s]) and target subsection=undefined', () => {
-      describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then only [s] is updated, [s ""] is untouched', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
-
-          // Act
-          const result = sut(text, 's', undefined, 'k', 'v');
-
-          // Assert — [s] updated in place (even though [s ""] appears first); [s ""] unchanged
-          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given rev.conf ([s ""] first then [s]) and target subsection=""', () => {
-      describe('When setConfigEntryInText sets s..k to v', () => {
-        it('Then only [s ""] is updated, [s] is untouched (direction pin)', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[s ""]\n\tk = b\n[s]\n\tk = a\n';
-
-          // Act
-          const result = sut(text, 's', '', 'k', 'v');
-
-          // Assert — [s ""] updated in place; [s] byte-identical
-          expect(result).toBe('[s ""]\n\tk = v\n[s]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given empty-only.conf ([s ""] only) and target subsection=undefined', () => {
-      describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then [s ""] is NOT matched and a new [s] is appended', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[s ""]\n\tk = b\n';
-
-          // Act
-          const result = sut(text, 's', undefined, 'k', 'v');
-
-          // Assert — [s ""] untouched; new [s] appended at end
-          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given plain-only.conf ([s] only) and target subsection=""', () => {
-      describe('When setConfigEntryInText sets s..k to v', () => {
-        it('Then [s] is NOT matched and a new [s ""] is appended (mirror pin)', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[s]\n\tk = a\n';
-
-          // Act
-          const result = sut(text, 's', '', 'k', 'v');
-
-          // Assert — [s] untouched; new [s ""] appended at end
-          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given a file holding only [ ""] and target section=s subsection=undefined', () => {
-      describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then [ ""] is NOT matched and a new [s] is appended', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[ ""]\n\tk = e\n';
-
-          // Act
-          const result = sut(text, 's', undefined, 'k', 'v');
-
-          // Assert — [ ""] untouched; new [s] appended at end
-          expect(result).toBe('[ ""]\n\tk = e\n[s]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given both.conf and a new key n, target subsection=undefined', () => {
-      describe('When setConfigEntryInText inserts s.n', () => {
-        it('Then new key n lands at end of [s] block, not inside [s ""]', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
-
-          // Act
-          const result = sut(text, 's', undefined, 'n', 'v');
-
-          // Assert — n inserted at end of [s]; [s ""] untouched
-          expect(result).toBe('[s]\n\tk = a\n\tn = v\n[s ""]\n\tk = b\n');
-        });
-      });
-    });
-
-    describe('Given a [S] section (uppercase) and target s (lowercase, no subsection)', () => {
-      describe('When setConfigEntryInText sets s.k to v', () => {
-        it('Then [S] is matched case-insensitively and rewritten in place', () => {
-          // Arrange
-          const sut = setConfigEntryInText;
-          const text = '[S]\n\tk = a\n';
-
-          // Act
-          const result = sut(text, 's', undefined, 'k', 'v');
-
-          // Assert — [S] rewritten in place; original header casing preserved
-          expect(result).toBe('[S]\n\tk = v\n');
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });
 
     describe('Given a same-line header+entry block', () => {
-      describe('When setConfigEntryInText replaces the same-line key', () => {
-        it('Then the header is split onto its own line above the rewritten entry', () => {
-          // Arrange — git rewrites the matched same-line entry as a canonical
-          // `\tkey = value` line and drops `[a]` onto its own line.
+      describe('When setConfigEntryInText is applied', () => {
+        it.each([
+          {
+            text: '[a] key = v\n',
+            key: 'key',
+            value: 'x2',
+            expected: '[a]\n\tkey = x2\n',
+            label:
+              'replacing the same-line key splits the header onto its own line above the rewritten entry',
+          },
+          {
+            text: '[a] key\n',
+            key: 'key',
+            value: 'x2',
+            expected: '[a]\n\tkey = x2\n',
+            label:
+              'replacing a valueless same-line key splits the header and the entry gains the value',
+          },
+          {
+            text: '[a] key = v\n',
+            key: 'other',
+            value: 'y',
+            expected: '[a] key = v\n\tother = y\n',
+            label:
+              'setting a NEW key in a same-line block leaves the header verbatim and appends below',
+          },
+          {
+            text: '[a] key = v\n\tk2 = w\n',
+            key: 'key',
+            value: 'x2',
+            expected: '[a]\n\tkey = x2\n\tk2 = w\n',
+            label:
+              'replacing the same-line key with a following body entry splits the header and keeps the body verbatim',
+          },
+          {
+            text: 'o = 1\n[a]\n\tk = v\n',
+            key: 'k',
+            value: 'x2',
+            expected: 'o = 1\n[a]\n\tk = x2\n',
+            label:
+              'replacing an entry under a section below an orphan line preserves the orphan line',
+          },
+        ])('Then $label', ({ text, key, value, expected }) => {
+          // Arrange
           const sut = setConfigEntryInText;
-          const text = '[a] key = v\n';
 
           // Act
-          const result = sut(text, 'a', undefined, 'key', 'x2');
+          const result = sut(text, 'a', undefined, key, value);
 
           // Assert
-          expect(result).toBe('[a]\n\tkey = x2\n');
-        });
-      });
-
-      describe('When setConfigEntryInText replaces a valueless same-line key', () => {
-        it('Then the header is split and the rewritten entry gains the value', () => {
-          // Arrange — a valueless same-line entry splits identically on replace.
-          const sut = setConfigEntryInText;
-          const text = '[a] key\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key', 'x2');
-
-          // Assert
-          expect(result).toBe('[a]\n\tkey = x2\n');
-        });
-      });
-
-      describe('When setConfigEntryInText sets a NEW key in a same-line block', () => {
-        it('Then the same-line header line is left verbatim and the new entry appends below', () => {
-          // Arrange — a new key does NOT split; the header line stays byte-exact
-          // and the fresh entry lands at the section end.
-          const sut = setConfigEntryInText;
-          const text = '[a] key = v\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'other', 'y');
-
-          // Assert
-          expect(result).toBe('[a] key = v\n\tother = y\n');
-        });
-      });
-
-      describe('When setConfigEntryInText replaces the same-line key with a following body entry', () => {
-        it('Then the header splits above the rewritten entry and the body survives verbatim', () => {
-          // Arrange — replace splits the head; the trailing normal entry is kept.
-          const sut = setConfigEntryInText;
-          const text = '[a] key = v\n\tk2 = w\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key', 'x2');
-
-          // Assert
-          expect(result).toBe('[a]\n\tkey = x2\n\tk2 = w\n');
-        });
-      });
-
-      describe('When setConfigEntryInText replaces an entry under a section below an orphan line', () => {
-        it('Then the orphan line is preserved and the entry surgery still applies', () => {
-          // Arrange — an orphan key above the section must not break entry surgery.
-          const sut = setConfigEntryInText;
-          const text = 'o = 1\n[a]\n\tk = v\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'k', 'x2');
-
-          // Assert
-          expect(result).toBe('o = 1\n[a]\n\tk = x2\n');
+          expect(result).toBe(expected);
         });
       });
     });
@@ -2284,203 +2080,126 @@ describe('primitives/update-config', () => {
     // Unset identity rows from the pinned table
     // ---------------------------------------------------------------------------
 
-    describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=undefined', () => {
-      describe('When removeConfigEntry removes s.k', () => {
-        it('Then only the [s] entry is removed; [s ""] k=b is preserved', () => {
+    describe('Given a config text with [s]/[s ""]/[ "x"] identity-matrix blocks', () => {
+      describe('When removeConfigEntry removes a targeted key', () => {
+        it.each([
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            section: 's',
+            subsection: undefined,
+            expected: '[s ""]\n\tk = b\n',
+            label:
+              'both.conf, target subsection=undefined: only the [s] entry is removed; [s ""] k=b is preserved',
+          },
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            section: 's',
+            subsection: '',
+            expected: '[s]\n\tk = a\n',
+            label:
+              'both.conf, target subsection="": only the [s ""] entry is removed; [s] k=a is preserved',
+          },
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n',
+            section: 's',
+            subsection: undefined,
+            expected: '[s ""]\n\tk = b\n',
+            label:
+              'three blocks, target subsection=undefined: both [s] entries are removed (unset-all), [s ""] k=b is preserved',
+          },
+          {
+            text: '[s ""]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n',
+            section: 's',
+            subsection: '',
+            expected: '[s]\n\tk = c\n',
+            label:
+              'three blocks, target subsection="": both [s ""] entries are removed (unset-all), [s] k=c is preserved',
+          },
+          {
+            text: '[ "x"]\n\tk = a\n[ ""]\n\tk = e\n',
+            section: '',
+            subsection: 'x',
+            expected: '[ ""]\n\tk = e\n',
+            label: 'empty-name family: only [ "x"] is removed and pruned; [ ""] k=e is preserved',
+          },
+        ])('Then $label', ({ text, section, subsection, expected }) => {
           // Arrange
           const sut = removeConfigEntry;
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
 
           // Act
-          const result = sut(text, 's', undefined, 'k');
+          const result = sut(text, section, subsection, 'k');
 
-          // Assert — [s] block pruned (was its only entry); [s ""] untouched
-          expect(result).toBe('[s ""]\n\tk = b\n');
-        });
-      });
-    });
-
-    describe('Given both.conf ([s] k=a and [s ""] k=b), target subsection=""', () => {
-      describe('When removeConfigEntry removes s..k', () => {
-        it('Then only the [s ""] entry is removed; [s] k=a is preserved', () => {
-          // Arrange
-          const sut = removeConfigEntry;
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
-
-          // Act
-          const result = sut(text, 's', '', 'k');
-
-          // Assert — [s ""] block pruned (was its only entry); [s] untouched
-          expect(result).toBe('[s]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given three blocks [s] k=a · [s ""] k=b · [s] k=c, target subsection=undefined', () => {
-      describe('When removeConfigEntry removes s.k (unset-all semantics)', () => {
-        it('Then both [s] entries are removed and [s ""] k=b is preserved', () => {
-          // Arrange
-          const sut = removeConfigEntry;
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
-
-          // Act
-          const result = sut(text, 's', undefined, 'k');
-
-          // Assert — both [s] blocks pruned; [s ""] preserved
-          expect(result).toBe('[s ""]\n\tk = b\n');
-        });
-      });
-    });
-
-    describe('Given three blocks [s ""] k=a · [s ""] k=b · [s] k=c, target subsection=""', () => {
-      describe('When removeConfigEntry removes s..k (unset-all semantics)', () => {
-        it('Then both [s ""] entries are removed and [s] k=c is preserved', () => {
-          // Arrange
-          const sut = removeConfigEntry;
-          const text = '[s ""]\n\tk = a\n[s ""]\n\tk = b\n[s]\n\tk = c\n';
-
-          // Act
-          const result = sut(text, 's', '', 'k');
-
-          // Assert — both [s ""] blocks pruned; [s] preserved
-          expect(result).toBe('[s]\n\tk = c\n');
-        });
-      });
-    });
-
-    describe('Given [ "x"] k=a · [ ""] k=e, target section="" subsection="x"', () => {
-      describe('When removeConfigEntry removes .x.k', () => {
-        it('Then only [ "x"] is removed and pruned; [ ""] k=e is preserved', () => {
-          // Arrange — subsection identity holds inside the empty-name family
-          const sut = removeConfigEntry;
-          const text = '[ "x"]\n\tk = a\n[ ""]\n\tk = e\n';
-
-          // Act
-          const result = sut(text, '', 'x', 'k');
-
-          // Assert — [ "x"] pruned; [ ""] preserved byte-identically
-          expect(result).toBe('[ ""]\n\tk = e\n');
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });
 
     describe('Given a same-line header+entry block', () => {
-      describe('When removeConfigEntry unsets the only same-line key', () => {
-        it('Then the whole physical line (header and entry) is pruned', () => {
-          // Arrange — nothing protects the block, so header + entry both go.
+      describe('When removeConfigEntry unsets a key', () => {
+        it.each([
+          {
+            text: '[a] key = v\n',
+            key: 'key',
+            expected: '',
+            label:
+              'unsetting the only same-line key prunes the whole physical line (header and entry)',
+          },
+          {
+            text: '[a] key\n',
+            key: 'key',
+            expected: '',
+            label: 'unsetting the only valueless same-line key prunes the whole physical line',
+          },
+          {
+            text: '[a] key = v\n\tk2 = w\n',
+            key: 'k2',
+            expected: '[a] key = v\n',
+            label: 'unsetting a NON-matching key leaves the same-line header line verbatim',
+          },
+          {
+            text: '[a] key = v\n\t# keep\n',
+            key: 'key',
+            expected: '[a]\n\t# keep\n',
+            label:
+              'unsetting the same-line key with a surviving comment splits the header and keeps the comment',
+          },
+          {
+            text: '[a] key = v\n\tk2 = w\n',
+            key: 'key',
+            expected: '[a]\n\tk2 = w\n',
+            label:
+              'unsetting the same-line key with a surviving entry splits the header and keeps the entry',
+          },
+          {
+            text: '[a] key = 1\n[a] key = 2\n',
+            key: 'key',
+            expected: '',
+            label: 'unset-all spanning two same-line blocks of the same key prunes every block',
+          },
+          {
+            text: '[a] key = v\n\tkey = w\n\tk2 = keep\n',
+            key: 'key',
+            expected: '[a]\n\tk2 = keep\n',
+            label:
+              'unsetting a key matched both same-line and below re-emits the header alone and drops every occurrence',
+          },
+          {
+            text: '[a] key = one\\\n  two\n\t# keep\n',
+            key: 'key',
+            expected: '[a]\n\t# keep\n',
+            label:
+              'unsetting a same-line key with a continuation tail re-emits the header alone and drops the tail lines',
+          },
+        ])('Then $label', ({ text, key, expected }) => {
+          // Arrange
           const sut = removeConfigEntry;
-          const text = '[a] key = v\n';
 
           // Act
-          const result = sut(text, 'a', undefined, 'key');
+          const result = sut(text, 'a', undefined, key);
 
           // Assert
-          expect(result).toBe('');
-        });
-      });
-
-      describe('When removeConfigEntry unsets the only valueless same-line key', () => {
-        it('Then the whole physical line is pruned', () => {
-          // Arrange — valueless same-line block prunes identically.
-          const sut = removeConfigEntry;
-          const text = '[a] key\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert
-          expect(result).toBe('');
-        });
-      });
-
-      describe('When removeConfigEntry unsets a NON-matching key in a same-line block', () => {
-        it('Then the same-line header line is left verbatim', () => {
-          // Arrange — unsetting the body key leaves the same-line head untouched;
-          // the head is still an entry so the block is not pruned.
-          const sut = removeConfigEntry;
-          const text = '[a] key = v\n\tk2 = w\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'k2');
-
-          // Assert
-          expect(result).toBe('[a] key = v\n');
-        });
-      });
-
-      describe('When removeConfigEntry unsets the same-line key with a surviving comment', () => {
-        it('Then the header is split onto its own line and the comment is kept', () => {
-          // Arrange — the comment protects the block, so the header re-emits alone
-          // and the same-line entry is dropped.
-          const sut = removeConfigEntry;
-          const text = '[a] key = v\n\t# keep\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert
-          expect(result).toBe('[a]\n\t# keep\n');
-        });
-      });
-
-      describe('When removeConfigEntry unsets the same-line key with a surviving entry', () => {
-        it('Then the header is split onto its own line and the entry is kept', () => {
-          // Arrange — a surviving normal entry protects the block; the header
-          // re-emits alone above it.
-          const sut = removeConfigEntry;
-          const text = '[a] key = v\n\tk2 = w\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert
-          expect(result).toBe('[a]\n\tk2 = w\n');
-        });
-      });
-
-      describe('When removeConfigEntry unset-all spans two same-line blocks of the same key', () => {
-        it('Then every same-line block is pruned', () => {
-          // Arrange — each same-line occurrence and its block are removed.
-          const sut = removeConfigEntry;
-          const text = '[a] key = 1\n[a] key = 2\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert
-          expect(result).toBe('');
-        });
-      });
-
-      describe('When removeConfigEntry unsets a key matched both same-line and below, block surviving', () => {
-        it('Then the header re-emits alone and every matched occurrence is dropped', () => {
-          // Arrange — same-line `key` (shares the header line) plus a body `key`
-          // (does not); a third `k2` protects the block. The shares-header branch
-          // must fire because at least one span sits on the header line.
-          const sut = removeConfigEntry;
-          const text = '[a] key = v\n\tkey = w\n\tk2 = keep\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert — git: header alone, both `key` lines gone, `k2` kept.
-          expect(result).toBe('[a]\n\tk2 = keep\n');
-        });
-      });
-
-      describe('When removeConfigEntry unsets a same-line key with a continuation tail, block surviving', () => {
-        it('Then the header re-emits alone and the entry continuation tail lines are dropped', () => {
-          // Arrange — the same-line entry spans two physical lines (backslash
-          // continuation); a comment protects the block. The header keeps its
-          // line (rewritten), and the entry's tail lines below it are excluded.
-          const sut = removeConfigEntry;
-          const text = '[a] key = one\\\n  two\n\t# keep\n';
-
-          // Act
-          const result = sut(text, 'a', undefined, 'key');
-
-          // Assert — git: header alone, `key = one\` and its `  two` tail gone, comment kept.
-          expect(result).toBe('[a]\n\t# keep\n');
+          expect(result).toBe(expected);
         });
       });
     });
@@ -2491,92 +2210,54 @@ describe('primitives/update-config', () => {
   // ---------------------------------------------------------------------------
 
   describe('rawSectionName', () => {
-    describe('Given a plain header [s]', () => {
+    describe('Given various section/subsection combinations', () => {
       describe('When rawSectionName is called', () => {
-        it('Then it returns "s"', () => {
+        it.each([
+          {
+            section: 's',
+            subsection: undefined,
+            expected: 's',
+            label: 'a plain header returns "s"',
+          },
+          {
+            section: 's',
+            subsection: 'x',
+            expected: 's.x',
+            label: 'a subsectioned header returns "s.x"',
+          },
+          {
+            section: 's',
+            subsection: '',
+            expected: 's.',
+            label: 'an explicitly empty subsection returns "s." (trailing dot)',
+          },
+          {
+            section: '',
+            subsection: '',
+            expected: '.',
+            label: 'the empty-name family [ ""] returns "." (leading dot)',
+          },
+          {
+            section: '',
+            subsection: 'x',
+            expected: '.x',
+            label: 'the empty-name family [ "x"] returns ".x"',
+          },
+          {
+            section: 's.X',
+            subsection: undefined,
+            expected: 's.X',
+            label: 'a deprecated dotted header [s.X] returns "s.X" (raw header bytes)',
+          },
+        ])('Then $label', ({ section, subsection, expected }) => {
           // Arrange
           const sut = rawSectionName;
 
           // Act
-          const result = sut({ section: 's', subsection: undefined });
+          const result = sut({ section, subsection });
 
           // Assert
-          expect(result).toBe('s');
-        });
-      });
-    });
-
-    describe('Given a subsectioned header [s "x"]', () => {
-      describe('When rawSectionName is called', () => {
-        it('Then it returns "s.x"', () => {
-          // Arrange
-          const sut = rawSectionName;
-
-          // Act
-          const result = sut({ section: 's', subsection: 'x' });
-
-          // Assert
-          expect(result).toBe('s.x');
-        });
-      });
-    });
-
-    describe('Given an explicitly empty subsection [s ""]', () => {
-      describe('When rawSectionName is called', () => {
-        it('Then it returns "s." (trailing dot)', () => {
-          // Arrange
-          const sut = rawSectionName;
-
-          // Act
-          const result = sut({ section: 's', subsection: '' });
-
-          // Assert
-          expect(result).toBe('s.');
-        });
-      });
-    });
-
-    describe('Given the empty-name family [ ""]', () => {
-      describe('When rawSectionName is called', () => {
-        it('Then it returns "." (leading dot)', () => {
-          // Arrange
-          const sut = rawSectionName;
-
-          // Act
-          const result = sut({ section: '', subsection: '' });
-
-          // Assert
-          expect(result).toBe('.');
-        });
-      });
-    });
-
-    describe('Given the empty-name family [ "x"]', () => {
-      describe('When rawSectionName is called', () => {
-        it('Then it returns ".x"', () => {
-          // Arrange
-          const sut = rawSectionName;
-
-          // Act
-          const result = sut({ section: '', subsection: 'x' });
-
-          // Assert
-          expect(result).toBe('.x');
-        });
-      });
-    });
-
-    describe('Given a deprecated dotted header [s.X] (section="s.X", subsection=undefined)', () => {
-      describe('When rawSectionName is called', () => {
-        it('Then it returns "s.X" (raw header bytes)', () => {
-          // Arrange — the header scan parses [s.X] as section="s.X", subsection=undefined
-          const sut = rawSectionName;
-
-          // Act
-          const result = sut({ section: 's.X', subsection: undefined });
-
-          // Assert
-          expect(result).toBe('s.X');
+          expect(result).toBe(expected);
         });
       });
     });
@@ -2587,318 +2268,167 @@ describe('primitives/update-config', () => {
   // ---------------------------------------------------------------------------
 
   describe('removeConfigSectionInText (pinned raw-name rows)', () => {
-    describe('Given [s]k=a and [s ""]k=b (both.conf)', () => {
-      describe('When removeConfigSectionInText removes "s"', () => {
-        it('Then only [s] is removed, [s ""] is preserved', () => {
+    describe('Given a config text and a raw section name to remove', () => {
+      describe('When removeConfigSectionInText is called', () => {
+        it.each([
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            name: 's',
+            expected: '[s ""]\n\tk = b\n',
+            label: 'only [s] is removed, [s ""] is preserved',
+          },
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            name: 's.',
+            expected: '[s]\n\tk = a\n',
+            label: 'only [s ""] is removed (trailing-dot name), [s] is preserved',
+          },
+          {
+            text: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            name: 's.""',
+            expected: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            label: 'nothing is removed (two-quote-char subsection is a distinct name)',
+          },
+          {
+            text: '[S]\n\tk = a\n',
+            name: 's',
+            expected: '[S]\n\tk = a\n',
+            label:
+              'nothing is removed for a lower-case name against an upper-case header (byte-exact case-sensitive matching)',
+          },
+          {
+            text: '[s.X]\n\tk = a\n',
+            name: 's.X',
+            expected: '',
+            label: 'a deprecated header is removed (raw byte match)',
+          },
+          {
+            text: '[s.X]\n\tk = a\n',
+            name: 's.x',
+            expected: '[s.X]\n\tk = a\n',
+            label:
+              'nothing is removed for a lower-case deprecated name (case-sensitive; s.x ≠ s.X)',
+          },
+          {
+            text: '[a.b]\n\tk = p\n[a "b"]\n\tk = q\n',
+            name: 'a.b',
+            expected: '',
+            label: 'both blocks are removed (a.b is the raw name of both — documented ambiguity)',
+          },
+          {
+            text: '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n',
+            name: 's',
+            expected: '[s "x"]\n\tk = b\n',
+            label: 'both [s] blocks are removed, [s "x"] is preserved (multi-block plain)',
+          },
+          {
+            text: '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            name: '.',
+            expected: '[s]\n\tk = a\n[s ""]\n\tk = b\n',
+            label: 'only [ ""] is removed, [s] and [s ""] are preserved',
+          },
+          {
+            text: '[ "x"]\n\tk = e\n[s]\n\tk = a\n',
+            name: '.x',
+            expected: '[s]\n\tk = a\n',
+            label: 'only [ "x"] is removed',
+          },
+          {
+            text: '[s     ""]\n\tk = a\n',
+            name: 's.',
+            expected: '',
+            label: 'the block is removed (pre-quote whitespace is not part of the raw name)',
+          },
+          {
+            text: '[s "a\\"b"]\n\tk = a\n',
+            name: 's.a"b',
+            expected: '',
+            label: 'the block is removed (subsection unescaped before joining)',
+          },
+        ])('Then $label', ({ text, name, expected }) => {
           // Arrange
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
           const sut = removeConfigSectionInText;
 
           // Act
-          const result = sut(text, 's');
+          const result = sut(text, name);
 
-          // Assert — s matches only [s], not [s ""]
-          expect(result).toBe('[s ""]\n\tk = b\n');
-        });
-      });
-
-      describe('When removeConfigSectionInText removes "s."', () => {
-        it('Then only [s ""] is removed, [s] is preserved', () => {
-          // Arrange
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.');
-
-          // Assert — trailing-dot name s. matches [s ""] only
-          expect(result).toBe('[s]\n\tk = a\n');
-        });
-      });
-
-      describe('When removeConfigSectionInText removes \'s.""\'', () => {
-        it('Then nothing is removed (two-quote-char subsection is a distinct name)', () => {
-          // Arrange
-          const text = '[s]\n\tk = a\n[s ""]\n\tk = b\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.""');
-
-          // Assert — s."" does not match s. or s; text unchanged
-          expect(result).toBe(text);
-        });
-      });
-    });
-
-    describe('Given [S]k=a (upper-case section)', () => {
-      describe('When removeConfigSectionInText removes "s" (lower-case)', () => {
-        it('Then nothing is removed (byte-exact case-sensitive matching)', () => {
-          // Arrange
-          const text = '[S]\n\tk = a\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's');
-
-          // Assert — s does not match [S]; text unchanged
-          expect(result).toBe(text);
-        });
-      });
-    });
-
-    describe('Given deprecated [s.X]k=a', () => {
-      describe('When removeConfigSectionInText removes "s.X"', () => {
-        it('Then the deprecated header is removed (raw byte match)', () => {
-          // Arrange
-          const text = '[s.X]\n\tk = a\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.X');
-
-          // Assert — s.X matches deprecated [s.X]
-          expect(result).toBe('');
-        });
-      });
-
-      describe('When removeConfigSectionInText removes "s.x" (lower-case)', () => {
-        it('Then nothing is removed (case-sensitive; s.x ≠ s.X)', () => {
-          // Arrange
-          const text = '[s.X]\n\tk = a\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.x');
-
-          // Assert — s.x does not match [s.X]; text unchanged
-          expect(result).toBe(text);
-        });
-      });
-    });
-
-    describe('Given [a.b]k=p and [a "b"]k=q (ambiguity)', () => {
-      describe('When removeConfigSectionInText removes "a.b"', () => {
-        it('Then both blocks are removed (a.b is the raw name of both)', () => {
-          // Arrange
-          const text = '[a.b]\n\tk = p\n[a "b"]\n\tk = q\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 'a.b');
-
-          // Assert — documented a.b ambiguity; both blocks removed
-          expect(result).toBe('');
-        });
-      });
-    });
-
-    describe('Given [s]k=a, [s "x"]k=b, and [s]k=c (multi-block plain)', () => {
-      describe('When removeConfigSectionInText removes "s"', () => {
-        it('Then both [s] blocks are removed, [s "x"] is preserved', () => {
-          // Arrange
-          const text = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's');
-
-          // Assert — multi-block plain removal
-          expect(result).toBe('[s "x"]\n\tk = b\n');
-        });
-      });
-    });
-
-    describe('Given [ ""] in name-mix.conf', () => {
-      describe('When removeConfigSectionInText removes "."', () => {
-        it('Then only [ ""] is removed, [s] and [s ""] are preserved', () => {
-          // Arrange
-          const text = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, '.');
-
-          // Assert — . matches [ ""] only
-          expect(result).toBe('[s]\n\tk = a\n[s ""]\n\tk = b\n');
-        });
-      });
-    });
-
-    describe('Given [ "x"]k=e in the file', () => {
-      describe('When removeConfigSectionInText removes ".x"', () => {
-        it('Then only [ "x"] is removed', () => {
-          // Arrange
-          const text = '[ "x"]\n\tk = e\n[s]\n\tk = a\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, '.x');
-
-          // Assert — .x matches [ "x"] only
-          expect(result).toBe('[s]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given [s     ""] (pre-quote whitespace, whitespace not identity)', () => {
-      describe('When removeConfigSectionInText removes "s."', () => {
-        it('Then the block is removed (pre-quote whitespace is not part of the raw name)', () => {
-          // Arrange — the header scan strips pre-quote whitespace; raw name is still s.
-          const text = '[s     ""]\n\tk = a\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.');
-
-          // Assert — whitespace before quote is not identity
-          expect(result).toBe('');
-        });
-      });
-    });
-
-    describe('Given [s "a\\"b"] (escaped quote in subsection)', () => {
-      describe("When removeConfigSectionInText removes 's.a\"b'", () => {
-        it('Then the block is removed (subsection unescaped before joining)', () => {
-          // Arrange — the header scan unescapes \\\" → "; rawSectionName joins s + . + a"b
-          const text = '[s "a\\"b"]\n\tk = a\n';
-          const sut = removeConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.a"b');
-
-          // Assert — subsection is unescaped before raw-name comparison
-          expect(result).toBe('');
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });
   });
 
   describe('renameConfigSectionInText (pinned raw-name rows)', () => {
-    describe('Given [a "b."]k=p and [a.b ""]k=q', () => {
-      describe('When renameConfigSectionInText renames "a.b." to { section: "t", subsection: undefined }', () => {
-        it('Then both ambiguous headers become [t] (raw a.b. matches both)', () => {
+    describe('Given a config text, a raw old name, and a new identity', () => {
+      describe('When renameConfigSectionInText is called', () => {
+        it.each([
+          {
+            text: '[a "b."]\n\tk = p\n[a.b ""]\n\tk = q\n',
+            oldName: 'a.b.',
+            newIdentity: { section: 't' },
+            expected: '[t]\n\tk = p\n[t]\n\tk = q\n',
+            label: 'both ambiguous headers become [t] (raw a.b. matches both)',
+          },
+          {
+            text: '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n',
+            oldName: 's',
+            newIdentity: { section: 't' },
+            expected: '[t]\n\tk = a\n[s "x"]\n\tk = b\n[t]\n\tk = c\n',
+            label: 'both [s] blocks become [t], [s "x"] is preserved (multi-block plain rename)',
+          },
+          {
+            text: '[s]\n\tk = a\n',
+            oldName: 's',
+            newIdentity: { section: 's', subsection: '' },
+            expected: '[s ""]\n\tk = a\n',
+            label: 'the header becomes [s ""] (duplicate-with-empty allowed at primitive level)',
+          },
+          {
+            text: '[s "x"]\n\tk = a\n',
+            oldName: 's.x',
+            newIdentity: { section: 't' },
+            expected: '[t]\n\tk = a\n',
+            label: 'the header becomes [t] (cross-family at the primitive level)',
+          },
+          {
+            text: '[s "x"]\n\tk = a\n',
+            oldName: 's.x',
+            newIdentity: { section: 's', subsection: '' },
+            expected: '[s ""]\n\tk = a\n',
+            label: 'the header becomes [s ""] (named subsection collapses to the empty form)',
+          },
+          {
+            text: '[s "x"]\n\tk = a\n',
+            oldName: 's.x',
+            newIdentity: { section: '', subsection: '' },
+            expected: '[ ""]\n\tk = a\n',
+            label: 'the header becomes [ ""] (named form moves into the empty-name family)',
+          },
+          {
+            text: '[S]\n\tk = a\n',
+            oldName: 'S',
+            newIdentity: { section: 't' },
+            expected: '[t]\n\tk = a\n',
+            label: 'the byte-exact "S" old name matches [S] (case sensitivity success direction)',
+          },
+          {
+            text: '[s "X"]\n\tk = a\n',
+            oldName: 's.X',
+            newIdentity: { section: 't' },
+            expected: '[t]\n\tk = a\n',
+            label:
+              'the byte-exact "s.X" old name matches [s "X"] (subsection case success direction)',
+          },
+        ])('Then $label', ({ text, oldName, newIdentity, expected }) => {
           // Arrange
-          const text = '[a "b."]\n\tk = p\n[a.b ""]\n\tk = q\n';
           const sut = renameConfigSectionInText;
 
           // Act
-          const result = sut(text, 'a.b.', { section: 't' });
-
-          // Assert — a.b. is the raw name of both [a "b."] and [a.b ""]
-          expect(result).toBe('[t]\n\tk = p\n[t]\n\tk = q\n');
-        });
-      });
-    });
-
-    describe('Given [s]k=a, [s "x"]k=b, and [s]k=c', () => {
-      describe('When renameConfigSectionInText renames "s" to { section: "t" }', () => {
-        it('Then both [s] blocks become [t], [s "x"] is preserved', () => {
-          // Arrange
-          const text = '[s]\n\tk = a\n[s "x"]\n\tk = b\n[s]\n\tk = c\n';
-          const sut = renameConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's', { section: 't' });
-
-          // Assert — multi-block plain rename
-          expect(result).toBe('[t]\n\tk = a\n[s "x"]\n\tk = b\n[t]\n\tk = c\n');
-        });
-      });
-    });
-
-    describe('Given [s]k=a (plain header)', () => {
-      describe('When renameConfigSectionInText renames "s" to { section: "s", subsection: "" }', () => {
-        it('Then the header becomes [s ""] (duplicate-with-empty allowed at primitive level)', () => {
-          // Arrange
-          const text = '[s]\n\tk = a\n';
-          const sut = renameConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's', { section: 's', subsection: '' });
-
-          // Assert — rename plain → empty-subsection form
-          expect(result).toBe('[s ""]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given [s "x"]k=a', () => {
-      describe('When renameConfigSectionInText renames "s.x" to { section: "t" } (cross-family)', () => {
-        it('Then the header becomes [t] (cross-family at the primitive level)', () => {
-          // Arrange
-          const text = '[s "x"]\n\tk = a\n';
-          const sut = renameConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.x', { section: 't' });
-
-          // Assert — cross-family rename at primitive level
-          expect(result).toBe('[t]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given [s "x"]k=a', () => {
-      describe('When renameConfigSectionInText renames "s.x" to { section: "s", subsection: "" }', () => {
-        it('Then the header becomes [s ""] (named subsection collapses to the empty form)', () => {
-          // Arrange
-          const text = '[s "x"]\n\tk = a\n';
-          const sut = renameConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.x', { section: 's', subsection: '' });
+          const result = sut(text, oldName, newIdentity);
 
           // Assert
-          expect(result).toBe('[s ""]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given [s "x"]k=a', () => {
-      describe('When renameConfigSectionInText renames "s.x" to { section: "", subsection: "" }', () => {
-        it('Then the header becomes [ ""] (named form moves into the empty-name family)', () => {
-          // Arrange
-          const text = '[s "x"]\n\tk = a\n';
-          const sut = renameConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.x', { section: '', subsection: '' });
-
-          // Assert
-          expect(result).toBe('[ ""]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given [S]k=a (upper-case header)', () => {
-      describe('When renameConfigSectionInText renames the byte-exact "S" to { section: "t" }', () => {
-        it('Then the header becomes [t] (matching success direction of case sensitivity)', () => {
-          // Arrange
-          const text = '[S]\n\tk = a\n';
-          const sut = renameConfigSectionInText;
-
-          // Act
-          const result = sut(text, 'S', { section: 't' });
-
-          // Assert
-          expect(result).toBe('[t]\n\tk = a\n');
-        });
-      });
-    });
-
-    describe('Given [s "X"]k=a (upper-case subsection)', () => {
-      describe('When renameConfigSectionInText renames the byte-exact "s.X" to { section: "t" }', () => {
-        it('Then the header becomes [t] (matching success direction of subsection case)', () => {
-          // Arrange
-          const text = '[s "X"]\n\tk = a\n';
-          const sut = renameConfigSectionInText;
-
-          // Act
-          const result = sut(text, 's.X', { section: 't' });
-
-          // Assert
-          expect(result).toBe('[t]\n\tk = a\n');
+          expect(result).toBe(expected);
         });
       });
     });
@@ -3363,86 +2893,50 @@ describe('primitives/update-config', () => {
       });
     });
 
-    describe('Given a new subsection containing a newline', () => {
-      describe('When renameConfigSectionInText is called with to.subsection "ne\\nw"', () => {
-        it('Then it throws INVALID_OPTION (LF divergence guard)', () => {
-          // Arrange — rejectSubsection fires on the to.subsection before any I/O
-          let caught: unknown;
-          try {
-            renameConfigSectionInText('', 'remote.old', { section: 'remote', subsection: 'ne\nw' });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('INVALID_OPTION');
-          if (data.code === 'INVALID_OPTION') {
-            expect(data.option).toBe('config');
-            expect(data.reason).toBe('subsection must not contain a newline or NUL');
-          }
-        });
-      });
-    });
-
-    describe('Given a new section name containing a bracket', () => {
-      describe('When renameConfigSectionInText is called with to.section "bad]name"', () => {
-        it('Then it throws INVALID_OPTION (section guard)', () => {
-          // Arrange — rejectSection fires on to.section before any I/O
-          let caught: unknown;
-          try {
-            renameConfigSectionInText('', 'remote.old', { section: 'bad]name' });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('INVALID_OPTION');
-          if (data.code === 'INVALID_OPTION') {
-            expect(data.option).toBe('config');
-            expect(data.reason).toBe(
-              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given a new section name containing a space', () => {
-      describe('When renameConfigSectionInText is called with to.section "a b"', () => {
-        it('Then it throws INVALID_OPTION (unparseable-header guard)', () => {
-          // Arrange — a space would render "[a b]", which git refuses to re-read
-          let caught: unknown;
-          try {
-            renameConfigSectionInText('', 'remote.old', { section: 'a b' });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('INVALID_OPTION');
-          if (data.code === 'INVALID_OPTION') {
-            expect(data.option).toBe('config');
-            expect(data.reason).toBe(
-              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
-            );
-          }
-        });
-      });
-    });
-
-    describe('Given a new name with an empty section and no subsection', () => {
-      describe('When renameConfigSectionInText is called with to.section ""', () => {
-        it('Then it throws INVALID_OPTION instead of writing an unparseable [] header', () => {
+    describe('Given various invalid new-identity inputs', () => {
+      describe('When renameConfigSectionInText validates the new identity', () => {
+        it.each([
+          {
+            oldName: 'remote.old',
+            newIdentity: { section: 'remote', subsection: 'ne\nw' },
+            reason: 'subsection must not contain a newline or NUL',
+            label:
+              'a new subsection containing a newline throws INVALID_OPTION (LF divergence guard)',
+          },
+          {
+            oldName: 'remote.old',
+            newIdentity: { section: 'bad]name' },
+            reason: 'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            label: 'a new section name containing a bracket throws INVALID_OPTION (section guard)',
+          },
+          {
+            oldName: 'remote.old',
+            newIdentity: { section: 'a b' },
+            reason: 'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            label:
+              'a new section name containing a space throws INVALID_OPTION (unparseable-header guard)',
+          },
+          {
+            oldName: 'x',
+            newIdentity: { section: '' },
+            reason: 'section name must not be empty without a subsection',
+            label:
+              'a new name with an empty section and no subsection throws INVALID_OPTION instead of writing an unparseable [] header',
+          },
+          {
+            oldName: 'remote.old',
+            newIdentity: { section: 'a[b' },
+            reason: 'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
+            label:
+              'a new section name containing an opening bracket throws INVALID_OPTION (unparseable-header guard)',
+          },
+        ])('Then $label', ({ oldName, newIdentity, reason }) => {
           // Arrange
           let caught: unknown;
+
+          // Act
           try {
-            renameConfigSectionInText('', 'x', { section: '' });
+            renameConfigSectionInText('', oldName, newIdentity);
           } catch (err) {
             caught = err;
           }
@@ -3453,32 +2947,7 @@ describe('primitives/update-config', () => {
           expect(data.code).toBe('INVALID_OPTION');
           if (data.code === 'INVALID_OPTION') {
             expect(data.option).toBe('config');
-            expect(data.reason).toBe('section name must not be empty without a subsection');
-          }
-        });
-      });
-    });
-
-    describe('Given a new section name containing an opening bracket', () => {
-      describe('When renameConfigSectionInText is called with to.section "a[b"', () => {
-        it('Then it throws INVALID_OPTION (unparseable-header guard)', () => {
-          // Arrange
-          let caught: unknown;
-          try {
-            renameConfigSectionInText('', 'remote.old', { section: 'a[b' });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('INVALID_OPTION');
-          if (data.code === 'INVALID_OPTION') {
-            expect(data.option).toBe('config');
-            expect(data.reason).toBe(
-              'section must not contain whitespace, NUL, brackets, quotes, or backslashes',
-            );
+            expect(data.reason).toBe(reason);
           }
         });
       });
@@ -4116,66 +3585,54 @@ describe('primitives/update-config', () => {
     // Append identity rows 7–9 from the pinned table
     // ---------------------------------------------------------------------------
 
-    describe('Given an empty file, target subsection=""', () => {
-      describe('When appendConfigEntry adds s..k with value v', () => {
-        it('Then a new [s ""] section is created with k = v', () => {
+    describe('Given various pinned identity fixtures', () => {
+      describe('When appendConfigEntry appends a new entry', () => {
+        it.each([
+          {
+            text: '',
+            section: 's',
+            subsection: '',
+            value: 'v',
+            expected: '[s ""]\n\tk = v\n',
+            label:
+              'an empty file, target subsection="": a new [s ""] section is created with k = v',
+          },
+          {
+            text: '[s ""]\n\tk = v\n',
+            section: 's',
+            subsection: '',
+            value: 'v2',
+            expected: '[s ""]\n\tk = v\n\tk = v2\n',
+            label:
+              '[s ""] with k=v already, target subsection="": a second k entry is appended inside [s ""]',
+          },
+          {
+            text: '[s ""]\n\tk = b\n',
+            section: 's',
+            subsection: undefined,
+            value: 'x',
+            expected: '[s ""]\n\tk = b\n[s]\n\tk = x\n',
+            label:
+              'empty-only.conf, target subsection=undefined: a new [s] section is appended with k = x',
+          },
+          {
+            text: '[ ""]\n\tk = v\n',
+            section: '',
+            subsection: '',
+            value: 'v2',
+            expected: '[ ""]\n\tk = v\n\tk = v2\n',
+            label:
+              '[ ""] with k=v already, target section="" subsection="": the second entry is appended inside [ ""]',
+          },
+        ])('Then $label', ({ text, section, subsection, value, expected }) => {
           // Arrange
           const sut = appendConfigEntry;
-          const text = '';
 
           // Act
-          const result = sut(text, 's', '', 'k', 'v');
+          const result = sut(text, section, subsection, 'k', value);
 
           // Assert
-          expect(result).toBe('[s ""]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given [s ""] with k=v already (from the prior append), target subsection=""', () => {
-      describe('When appendConfigEntry adds another s..k with value v2', () => {
-        it('Then a second k entry is appended inside [s ""]', () => {
-          // Arrange
-          const sut = appendConfigEntry;
-          const text = '[s ""]\n\tk = v\n';
-
-          // Act
-          const result = sut(text, 's', '', 'k', 'v2');
-
-          // Assert — second entry appended inside the same [s ""] block
-          expect(result).toBe('[s ""]\n\tk = v\n\tk = v2\n');
-        });
-      });
-    });
-
-    describe('Given empty-only.conf ([s ""] with k=b), target subsection=undefined', () => {
-      describe('When appendConfigEntry adds s.k with value x', () => {
-        it('Then a new [s] section is appended with k = x', () => {
-          // Arrange
-          const sut = appendConfigEntry;
-          const text = '[s ""]\n\tk = b\n';
-
-          // Act
-          const result = sut(text, 's', undefined, 'k', 'x');
-
-          // Assert — [s ""] untouched; new [s] appended
-          expect(result).toBe('[s ""]\n\tk = b\n[s]\n\tk = x\n');
-        });
-      });
-    });
-
-    describe('Given [ ""] with k=v already, target section="" subsection=""', () => {
-      describe('When appendConfigEntry adds another ..k with value v2', () => {
-        it('Then the second entry is appended inside [ ""]', () => {
-          // Arrange
-          const sut = appendConfigEntry;
-          const text = '[ ""]\n\tk = v\n';
-
-          // Act
-          const result = sut(text, '', '', 'k', 'v2');
-
-          // Assert — appended inside the same [ ""] block
-          expect(result).toBe('[ ""]\n\tk = v\n\tk = v2\n');
+          expect(result).toBe(expected);
         });
       });
     });
@@ -4417,39 +3874,18 @@ describe('setConfigEntry (I/O)', () => {
     });
   });
 
-  describe('Given a value containing a CR byte, When setConfigEntry runs', () => {
-    it('Then the call succeeds (CR is accepted and written quoted with raw CR)', async () => {
+  describe('Given a value with a byte that setConfigEntry accepts, When setConfigEntry runs', () => {
+    it.each([
+      { value: 'x\ry', label: 'a CR byte: accepted, written quoted with raw CR' },
+      { value: 'a\nb', label: 'a newline: accepted, the writer quotes and escapes \\n' },
+      { value: 'a\tb', label: 'a tab: accepted, written verbatim' },
+      { value: 'a\x01b', label: 'a C0 control byte (\\x01): accepted, written verbatim' },
+    ])('Then $label — setConfigEntry succeeds', async ({ value }) => {
       // Arrange
       const ctx = createMemoryContext();
 
       // Act + Assert (no throw)
-      await expect(
-        setConfigEntry({ ctx, key: 'user.name', value: 'x\ry' }),
-      ).resolves.toBeUndefined();
-    });
-  });
-
-  describe('Given a value containing a newline, When setConfigEntry runs', () => {
-    it('Then the call succeeds (writer quotes and escapes \\n)', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-
-      // Act + Assert (no throw)
-      await expect(
-        setConfigEntry({ ctx, key: 'user.name', value: 'a\nb' }),
-      ).resolves.toBeUndefined();
-    });
-  });
-
-  describe('Given a value containing a tab, When setConfigEntry runs', () => {
-    it('Then the call succeeds verbatim', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-
-      // Act + Assert (no throw)
-      await expect(
-        setConfigEntry({ ctx, key: 'user.name', value: 'a\tb' }),
-      ).resolves.toBeUndefined();
+      await expect(setConfigEntry({ ctx, key: 'user.name', value })).resolves.toBeUndefined();
     });
   });
 
@@ -4476,208 +3912,30 @@ describe('setConfigEntry (I/O)', () => {
       expect(writeSpy).toHaveBeenCalledTimes(0);
     });
   });
-
-  describe('Given a value containing a C0 control byte (\\x01), When setConfigEntry runs', () => {
-    it('Then the call succeeds (C0 controls are accepted and written verbatim)', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-
-      // Act + Assert (no throw)
-      await expect(
-        setConfigEntry({ ctx, key: 'user.name', value: 'a\x01b' }),
-      ).resolves.toBeUndefined();
-    });
-  });
 });
 
 describe('setConfigEntry round-trip', () => {
-  describe('Given a value containing ;, When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
+  describe('Given a value with a special character, When written and re-parsed via parseIniSections', () => {
+    it.each([
+      { value: 'a;b', label: 'containing ;' },
+      { value: 'a#b', label: 'containing #' },
+      { value: ' a', label: 'with a leading space' },
+      { value: 'a ', label: 'with a trailing space' },
+      { value: 'a\rb', label: 'containing CR (a\\rb)' },
+      { value: 'a"b', label: 'containing " (a"b)' },
+      { value: 'a\\b', label: 'containing \\ (a\\b)' },
+      { value: 'a\nb', label: 'containing LF (a\\nb)' },
+      { value: 'a\tb', label: 'containing TAB (a\\tb)' },
+      { value: '\ta', label: 'with a leading TAB (\\ta)' },
+      { value: 'a; b"c\\d ', label: 'a combo (a; b"c\\d )' },
+      { value: 'a\x01b', label: 'containing \\x01 (C0 control)' },
+      { value: 'a\x7fb', label: 'containing \\x7f (DEL)' },
+    ])('Then the parsed value equals the original for a value $label', ({ value }) => {
       // Arrange
-      const value = 'a;b';
+      const sut = setConfigEntryInText;
 
       // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing #, When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a#b';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value with a leading space, When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = ' a';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value with a trailing space, When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a ';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing CR (a\\rb), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a\rb';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing " (a"b), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a"b';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing \\ (a\\b), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a\\b';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing LF (a\\nb), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a\nb';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing TAB (a\\tb), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a\tb';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value with a leading TAB (\\ta), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = '\ta';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a combo value (a; b"c\\d ), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a; b"c\\d ';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing \\x01 (C0 control), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a\x01b';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
-      const sections = parseIniSections(text);
-      const result = sections[0]?.entries[0]?.value;
-
-      // Assert
-      expect(result).toBe(value);
-    });
-  });
-
-  describe('Given a value containing \\x7f (DEL), When written and re-parsed via parseIniSections', () => {
-    it('Then the parsed value equals the original', () => {
-      // Arrange
-      const value = 'a\x7fb';
-
-      // Act
-      const text = setConfigEntryInText('', 'test', undefined, 'v', value);
+      const text = sut('', 'test', undefined, 'v', value);
       const sections = parseIniSections(text);
       const result = sections[0]?.entries[0]?.value;
 
@@ -4977,189 +4235,76 @@ describe('parseNewSectionName', () => {
   const sut = parseNewSectionName;
 
   describe('Given accepted new-name inputs', () => {
-    describe('When parseNewSectionName parses "t.a.b"', () => {
-      it('Then returns { section: "t", subsection: "a.b" } (first-dot split)', () => {
+    describe('When parseNewSectionName parses the input', () => {
+      it.each([
+        { input: 't.a.b', expected: { section: 't', subsection: 'a.b' }, label: 'first-dot split' },
+        { input: '1num', expected: { section: '1num' }, label: 'digit-leading accepted' },
+        {
+          input: 't-x',
+          expected: { section: 't-x' },
+          label: 'a hyphen in the section is accepted',
+        },
+        {
+          input: 't.bad!sub',
+          expected: { section: 't', subsection: 'bad!sub' },
+          label: 'the subsection is free after the first dot',
+        },
+        {
+          input: 't.with"quote',
+          expected: { section: 't', subsection: 'with"quote' },
+          label: 'a quote in the subsection is accepted',
+        },
+        { input: 'T.Y', expected: { section: 'T', subsection: 'Y' }, label: 'case is preserved' },
+        {
+          input: 't.',
+          expected: { section: 't', subsection: '' },
+          label: 'a trailing dot means an empty subsection',
+        },
+        { input: '.', expected: { section: '', subsection: '' }, label: 'a lone dot' },
+        { input: '.x', expected: { section: '', subsection: 'x' }, label: 'a leading dot' },
+        { input: 'a', expected: { section: 'a' }, label: 'a single alnum char' },
+        {
+          input: 'tz.y',
+          expected: { section: 'tz', subsection: 'y' },
+          label: 'a letter-only section',
+        },
+      ])('Then returns $expected for $label', ({ input, expected }) => {
         // Arrange + Act
-        const result = sut('t.a.b');
+        const result = sut(input);
         // Assert
-        expect(result).toEqual({ section: 't', subsection: 'a.b' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "1num"', () => {
-      it('Then returns { section: "1num" } (digit-leading accepted)', () => {
-        // Arrange + Act
-        const result = sut('1num');
-        // Assert
-        expect(result).toEqual({ section: '1num' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "t-x"', () => {
-      it('Then returns { section: "t-x" }', () => {
-        // Arrange + Act
-        const result = sut('t-x');
-        // Assert
-        expect(result).toEqual({ section: 't-x' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "t.bad!sub"', () => {
-      it('Then returns { section: "t", subsection: "bad!sub" } (subsection free after first dot)', () => {
-        // Arrange + Act
-        const result = sut('t.bad!sub');
-        // Assert
-        expect(result).toEqual({ section: 't', subsection: 'bad!sub' });
-      });
-    });
-
-    describe("When parseNewSectionName parses 't.with\"quote'", () => {
-      it('Then returns { section: "t", subsection: \'with"quote\' } (quote in subsection accepted)', () => {
-        // Arrange + Act
-        const result = sut('t.with"quote');
-        // Assert
-        expect(result).toEqual({ section: 't', subsection: 'with"quote' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "T.Y"', () => {
-      it('Then returns { section: "T", subsection: "Y" } (case preserved)', () => {
-        // Arrange + Act
-        const result = sut('T.Y');
-        // Assert
-        expect(result).toEqual({ section: 'T', subsection: 'Y' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "t."', () => {
-      it('Then returns { section: "t", subsection: "" } (trailing dot = empty subsection)', () => {
-        // Arrange + Act
-        const result = sut('t.');
-        // Assert
-        expect(result).toEqual({ section: 't', subsection: '' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "."', () => {
-      it('Then returns { section: "", subsection: "" }', () => {
-        // Arrange + Act
-        const result = sut('.');
-        // Assert
-        expect(result).toEqual({ section: '', subsection: '' });
-      });
-    });
-
-    describe('When parseNewSectionName parses ".x"', () => {
-      it('Then returns { section: "", subsection: "x" }', () => {
-        // Arrange + Act
-        const result = sut('.x');
-        // Assert
-        expect(result).toEqual({ section: '', subsection: 'x' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "a" (single alnum char)', () => {
-      it('Then returns { section: "a" }', () => {
-        // Arrange + Act
-        const result = sut('a');
-        // Assert
-        expect(result).toEqual({ section: 'a' });
-      });
-    });
-
-    describe('When parseNewSectionName parses "tz.y" (letter-only section)', () => {
-      it('Then returns { section: "tz", subsection: "y" }', () => {
-        // Arrange + Act
-        const result = sut('tz.y');
-        // Assert
-        expect(result).toEqual({ section: 'tz', subsection: 'y' });
+        expect(result).toEqual(expected);
       });
     });
   });
 
   describe('Given refused new-name inputs', () => {
-    describe('When parseNewSectionName parses "" (empty)', () => {
-      it('Then throws INVALID_OPTION with reason "invalid section name: "', () => {
-        // Arrange
-        let caught: TsgitError | undefined;
+    describe('When parseNewSectionName parses the input', () => {
+      it.each([
+        { input: '', label: 'an empty string' },
+        { input: 't_x', label: 'an underscore in the section' },
+        { input: 'bad!name', label: 'a bang in the section' },
+        { input: 't!x.y', label: 'a bad char before the first dot' },
+      ])(
+        'Then throws INVALID_OPTION with reason "invalid section name: $input" for $label',
+        ({ input }) => {
+          // Arrange
+          let caught: TsgitError | undefined;
 
-        // Act
-        try {
-          sut('');
-        } catch (err) {
-          caught = err as TsgitError;
-        }
+          // Act
+          try {
+            sut(input);
+          } catch (err) {
+            caught = err as TsgitError;
+          }
 
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'INVALID_OPTION',
-          option: 'config',
-          reason: 'invalid section name: ',
-        });
-      });
-    });
-
-    describe('When parseNewSectionName parses "t_x" (underscore in section)', () => {
-      it('Then throws INVALID_OPTION with reason "invalid section name: t_x"', () => {
-        // Arrange
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          sut('t_x');
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'INVALID_OPTION',
-          option: 'config',
-          reason: 'invalid section name: t_x',
-        });
-      });
-    });
-
-    describe('When parseNewSectionName parses "bad!name" (bang in section)', () => {
-      it('Then throws INVALID_OPTION with reason "invalid section name: bad!name"', () => {
-        // Arrange
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          sut('bad!name');
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'INVALID_OPTION',
-          option: 'config',
-          reason: 'invalid section name: bad!name',
-        });
-      });
-    });
-
-    describe('When parseNewSectionName parses "t!x.y" (bad char before first dot)', () => {
-      it('Then throws INVALID_OPTION with reason "invalid section name: t!x.y"', () => {
-        // Arrange
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          sut('t!x.y');
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'INVALID_OPTION',
-          option: 'config',
-          reason: 'invalid section name: t!x.y',
-        });
-      });
+          // Assert
+          expect(caught?.data).toEqual({
+            code: 'INVALID_OPTION',
+            option: 'config',
+            reason: `invalid section name: ${input}`,
+          });
+        },
+      );
     });
   });
 });
@@ -5170,272 +4315,173 @@ describe('renameConfigSection — extended porcelain I/O', () => {
   const nameMixConf = '[ ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n';
 
   describe('Given both.conf seeded ([s] k=a · [s ""] k=b)', () => {
-    describe('When renameConfigSection renames "s" (plain) to "t"', () => {
-      it('Then only [s] becomes [t], [s ""] is unchanged', async () => {
+    describe('When renameConfigSection renames a raw old name to a new name', () => {
+      it.each([
+        {
+          oldName: 's',
+          newName: 't',
+          expected: '[t]\n\tk = a\n[s ""]\n\tk = b\n',
+          label: '"s" (plain) to "t": only [s] becomes [t], [s ""] is unchanged',
+        },
+        {
+          oldName: 's.',
+          newName: 't.',
+          expected: '[s]\n\tk = a\n[t ""]\n\tk = b\n',
+          label: '"s." (trailing-dot) to "t.": only [s ""] becomes [t ""], [s] is unchanged',
+        },
+        {
+          oldName: 's.',
+          newName: 't',
+          expected: '[s]\n\tk = a\n[t]\n\tk = b\n',
+          label: '"s." to "t" (trailing-dot to plain): [s ""] becomes [t], [s] unchanged',
+        },
+        {
+          oldName: 's',
+          newName: 's.',
+          expected: '[s ""]\n\tk = a\n[s ""]\n\tk = b\n',
+          label:
+            '"s" to "s." (plain to trailing-dot): [s] becomes a second [s ""] (duplicate headers allowed)',
+        },
+      ])('Then $label', async ({ oldName, newName, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
 
         // Act
-        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+        await renameConfigSection({ ctx, oldName, newName });
 
         // Assert
         const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[t]\n\tk = a\n[s ""]\n\tk = b\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "s." (trailing-dot) to "t."', () => {
-      it('Then only [s ""] becomes [t ""], [s] is unchanged', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: 's.', newName: 't.' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[s]\n\tk = a\n[t ""]\n\tk = b\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "s." to "t" (trailing-dot to plain)', () => {
-      it('Then [s ""] becomes [t], [s] unchanged', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: 's.', newName: 't' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[s]\n\tk = a\n[t]\n\tk = b\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "s" to "s." (plain to trailing-dot)', () => {
-      it('Then [s] becomes a second [s ""] (duplicate headers allowed)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, bothConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: 's', newName: 's.' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[s ""]\n\tk = a\n[s ""]\n\tk = b\n');
+        expect(text).toBe(expected);
       });
     });
   });
 
   describe('Given mix.conf seeded ([s] k=a · [s "x"] k=b · [s ""] k=c)', () => {
-    describe('When renameConfigSection renames "s" to "t"', () => {
-      it('Then only [s] becomes [t], [s "x"] and [s ""] are unchanged', async () => {
+    describe('When renameConfigSection renames a raw old name to a new name', () => {
+      it.each([
+        {
+          oldName: 's',
+          newName: 't',
+          expected: '[t]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n',
+          label: '"s" to "t": only [s] becomes [t], [s "x"] and [s ""] are unchanged',
+        },
+        {
+          oldName: 's.x',
+          newName: 't.y',
+          expected: '[s]\n\tk = a\n[t "y"]\n\tk = b\n[s ""]\n\tk = c\n',
+          label: '"s.x" to "t.y": only [s "x"] becomes [t "y"]',
+        },
+        {
+          oldName: 's.x',
+          newName: 't',
+          expected: '[s]\n\tk = a\n[t]\n\tk = b\n[s ""]\n\tk = c\n',
+          label: '"s.x" to "t" (subsection to plain): [s "x"] becomes [t]',
+        },
+        {
+          oldName: 's',
+          newName: 't.y',
+          expected: '[t "y"]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n',
+          label: '"s" to "t.y" (plain to subsectioned): [s] becomes [t "y"]',
+        },
+      ])('Then $label', async ({ oldName, newName, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
 
         // Act
-        await renameConfigSection({ ctx, oldName: 's', newName: 't' });
+        await renameConfigSection({ ctx, oldName, newName });
 
         // Assert
         const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[t]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "s.x" to "t.y"', () => {
-      it('Then only [s "x"] becomes [t "y"]', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: 's.x', newName: 't.y' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[s]\n\tk = a\n[t "y"]\n\tk = b\n[s ""]\n\tk = c\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "s.x" to "t" (subsection to plain)', () => {
-      it('Then [s "x"] becomes [t]', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: 's.x', newName: 't' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[s]\n\tk = a\n[t]\n\tk = b\n[s ""]\n\tk = c\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "s" to "t.y" (plain to subsectioned)', () => {
-      it('Then [s] becomes [t "y"]', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, mixConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: 's', newName: 't.y' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[t "y"]\n\tk = a\n[s "x"]\n\tk = b\n[s ""]\n\tk = c\n');
+        expect(text).toBe(expected);
       });
     });
   });
 
   describe('Given name-mix.conf seeded ([ ""] k=e · [s] k=a · [s ""] k=b)', () => {
-    describe('When renameConfigSection renames "." to "t"', () => {
-      it('Then [ ""] becomes [t]', async () => {
+    describe('When renameConfigSection renames a raw old name to a new name', () => {
+      it.each([
+        {
+          oldName: '.',
+          newName: 't',
+          expected: '[t]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n',
+          label: '"." to "t": [ ""] becomes [t]',
+        },
+        {
+          oldName: '.',
+          newName: 't.',
+          expected: '[t ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n',
+          label: '"." to "t.": [ ""] becomes [t ""]',
+        },
+        {
+          oldName: '.',
+          newName: '.x',
+          expected: '[ "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n',
+          label: '"." to ".x": [ ""] becomes [ "x"]',
+        },
+        {
+          oldName: '.',
+          newName: 's.x',
+          expected: '[s "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n',
+          label: '"." to "s.x": [ ""] becomes [s "x"]',
+        },
+        {
+          oldName: 's',
+          newName: '.',
+          expected: '[ ""]\n\tk = e\n[ ""]\n\tk = a\n[s ""]\n\tk = b\n',
+          label: '"s" to "." on name-mix.conf: [s] becomes a second [ ""] block',
+        },
+      ])('Then $label', async ({ oldName, newName, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
 
         // Act
-        await renameConfigSection({ ctx, oldName: '.', newName: 't' });
+        await renameConfigSection({ ctx, oldName, newName });
 
         // Assert
         const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[t]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "." to "t."', () => {
-      it('Then [ ""] becomes [t ""]', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: '.', newName: 't.' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[t ""]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "." to ".x"', () => {
-      it('Then [ ""] becomes [ "x"]', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: '.', newName: '.x' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[ "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "." to "s.x"', () => {
-      it('Then [ ""] becomes [s "x"]', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: '.', newName: 's.x' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[s "x"]\n\tk = e\n[s]\n\tk = a\n[s ""]\n\tk = b\n');
-      });
-    });
-
-    describe('When renameConfigSection renames "s" to "." on name-mix.conf', () => {
-      it('Then [s] becomes a second [ ""] block', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, nameMixConf);
-
-        // Act
-        await renameConfigSection({ ctx, oldName: 's', newName: '.' });
-
-        // Assert
-        const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-        expect(text).toBe('[ ""]\n\tk = e\n[ ""]\n\tk = a\n[s ""]\n\tk = b\n');
+        expect(text).toBe(expected);
       });
     });
   });
 
   describe('Given CONFIG_SECTION_NOT_FOUND scenarios', () => {
-    describe('When renameConfigSection is called with case-mismatched old name ("s" vs [S])', () => {
-      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s"', async () => {
-        // Arrange — file has [S] but we search for s (case-sensitive raw match)
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[S]\n\tk = a\n');
-        let caught: TsgitError | undefined;
+    describe('When renameConfigSection is called with a name that matches nothing', () => {
+      it.each([
+        {
+          seed: '[S]\n\tk = a\n',
+          oldName: 's',
+          label: 'a case-mismatched old name ("s" vs [S])',
+        },
+        { seed: undefined, oldName: 'bad!name', label: 'old name "bad!name" (never validated)' },
+        { seed: undefined, oldName: '', label: 'old name "" (empty, never validated)' },
+      ])(
+        'Then throws CONFIG_SECTION_NOT_FOUND with name "$oldName" for $label',
+        async ({ seed, oldName }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          if (seed !== undefined) {
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, seed);
+          }
+          let caught: TsgitError | undefined;
 
-        // Act
-        try {
-          await renameConfigSection({ ctx, oldName: 's', newName: 't' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
+          // Act
+          try {
+            await renameConfigSection({ ctx, oldName, newName: 't' });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
 
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: 's',
-          scope: 'local',
-        });
-      });
-    });
-
-    describe('When renameConfigSection is called with old name "bad!name"', () => {
-      it('Then throws CONFIG_SECTION_NOT_FOUND with name "bad!name" (old name never validated)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          await renameConfigSection({ ctx, oldName: 'bad!name', newName: 't' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: 'bad!name',
-          scope: 'local',
-        });
-      });
-    });
-
-    describe('When renameConfigSection is called with old name "" (empty)', () => {
-      it('Then throws CONFIG_SECTION_NOT_FOUND with name "" (old name never validated)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          await renameConfigSection({ ctx, oldName: '', newName: 't' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: '',
-          scope: 'local',
-        });
-      });
+          // Assert
+          expect(caught?.data).toEqual({
+            code: 'CONFIG_SECTION_NOT_FOUND',
+            name: oldName,
+            scope: 'local',
+          });
+        },
+      );
     });
   });
 
@@ -5562,95 +4608,49 @@ describe('removeConfigSection — extended porcelain I/O', () => {
   });
 
   describe('Given CONFIG_SECTION_NOT_FOUND scenarios', () => {
-    describe('When removeConfigSection is called with "s." on a plain-only config', () => {
-      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s."', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
-        let caught: TsgitError | undefined;
+    describe('When removeConfigSection is called with a name that matches nothing', () => {
+      it.each([
+        {
+          seed: '[s]\n\tk = a\n',
+          sectionName: 's.',
+          label: '"s." on a plain-only config',
+        },
+        {
+          seed: '[s ""]\n\tk = b\n',
+          sectionName: 's',
+          label: '"s" on an empty-only config',
+        },
+        { seed: undefined, sectionName: '', label: '"" (empty string, never validated)' },
+        {
+          seed: '[s]\n\tk = a\n',
+          sectionName: '.',
+          label: '"." when [ ""] is absent',
+        },
+      ])(
+        'Then throws CONFIG_SECTION_NOT_FOUND with name "$sectionName" for $label',
+        async ({ seed, sectionName }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          if (seed !== undefined) {
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, seed);
+          }
+          let caught: TsgitError | undefined;
 
-        // Act
-        try {
-          await removeConfigSection({ ctx, sectionName: 's.' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
+          // Act
+          try {
+            await removeConfigSection({ ctx, sectionName });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
 
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: 's.',
-          scope: 'local',
-        });
-      });
-    });
-
-    describe('When removeConfigSection is called with "s" on an empty-only config', () => {
-      it('Then throws CONFIG_SECTION_NOT_FOUND with name "s"', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s ""]\n\tk = b\n');
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          await removeConfigSection({ ctx, sectionName: 's' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: 's',
-          scope: 'local',
-        });
-      });
-    });
-
-    describe('When removeConfigSection is called with "" (empty string)', () => {
-      it('Then throws CONFIG_SECTION_NOT_FOUND with name "" (old name never validated)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          await removeConfigSection({ ctx, sectionName: '' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: '',
-          scope: 'local',
-        });
-      });
-    });
-
-    describe('When removeConfigSection is called with "." when [ ""] is absent', () => {
-      it('Then throws CONFIG_SECTION_NOT_FOUND with name "."', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[s]\n\tk = a\n');
-        let caught: TsgitError | undefined;
-
-        // Act
-        try {
-          await removeConfigSection({ ctx, sectionName: '.' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toEqual({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: '.',
-          scope: 'local',
-        });
-      });
+          // Assert
+          expect(caught?.data).toEqual({
+            code: 'CONFIG_SECTION_NOT_FOUND',
+            name: sectionName,
+            scope: 'local',
+          });
+        },
+      );
     });
   });
 });
@@ -6009,52 +5009,42 @@ describe('write-path refusal on malformed config files', () => {
   // ---------------------------------------------------------------------------
 
   describe('setConfigEntry with empty-section-name keys', () => {
-    describe('Given an empty .git/config and key "..k"', () => {
-      describe('When setConfigEntry writes ..k = v', () => {
-        it('Then the file is [ ""]\\n\\tk = v\\n', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-
-          // Act
-          await setConfigEntry({ ctx, key: '..k', value: 'v' });
-
-          // Assert
-          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-          expect(result).toBe('[ ""]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given an empty .git/config and key ".x.k"', () => {
-      describe('When setConfigEntry writes .x.k = v', () => {
-        it('Then the file is [ "x"]\\n\\tk = v\\n', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-
-          // Act
-          await setConfigEntry({ ctx, key: '.x.k', value: 'v' });
-
-          // Assert
-          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-          expect(result).toBe('[ "x"]\n\tk = v\n');
-        });
-      });
-    });
-
-    describe('Given plain-only.conf ([s] k=a) seeded, key "..k"', () => {
-      describe('When setConfigEntry writes ..k = v', () => {
-        it('Then [s] is untouched and a new [ ""] section is appended', async () => {
+    describe('Given a config seed and an empty-section-name key', () => {
+      describe('When setConfigEntry writes it', () => {
+        it.each([
+          {
+            seed: undefined,
+            key: '..k',
+            expected: '[ ""]\n\tk = v\n',
+            label: 'an empty .git/config and key "..k": the file is [ ""]\\n\\tk = v\\n',
+          },
+          {
+            seed: undefined,
+            key: '.x.k',
+            expected: '[ "x"]\n\tk = v\n',
+            label: 'an empty .git/config and key ".x.k": the file is [ "x"]\\n\\tk = v\\n',
+          },
+          {
+            seed: '[s]\n\tk = a\n',
+            key: '..k',
+            expected: '[s]\n\tk = a\n[ ""]\n\tk = v\n',
+            label:
+              'plain-only.conf ([s] k=a) seeded, key "..k": [s] is untouched and a new [ ""] section is appended',
+          },
+        ])('Then $label', async ({ seed, key, expected }) => {
           // Arrange
           const ctx = createMemoryContext();
           const path = `${ctx.layout.gitDir}/config`;
-          await ctx.fs.writeUtf8(path, '[s]\n\tk = a\n');
+          if (seed !== undefined) {
+            await ctx.fs.writeUtf8(path, seed);
+          }
 
           // Act
-          await setConfigEntry({ ctx, key: '..k', value: 'v' });
+          await setConfigEntry({ ctx, key, value: 'v' });
 
           // Assert
           const result = await ctx.fs.readUtf8(path);
-          expect(result).toBe('[s]\n\tk = a\n[ ""]\n\tk = v\n');
+          expect(result).toBe(expected);
         });
       });
     });
