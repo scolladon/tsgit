@@ -489,212 +489,253 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
     });
   });
 
-  it('Given branch.main.pushRemote set alongside remote.pushDefault and branch.main.remote, When push runs with no explicit remote, Then it resolves the same remote real git does', async () => {
-    // Arrange — real-git twin: three candidate remotes; pushRemote should
-    // win over both remote.pushDefault and the tracking remote.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'remote', 'add', 'origin', bareUrl('origin', 'real'));
-    git(gitDir, 'remote', 'add', 'upstream', bareUrl('upstream', 'real'));
-    git(gitDir, 'remote', 'add', 'pushremotecfg', bareUrl('pushremotecfg', 'real'));
-    git(gitDir, 'remote', 'add', 'pushdefaultcfg', bareUrl('pushdefaultcfg', 'real'));
-    git(gitDir, 'config', 'remote.pushDefault', 'pushdefaultcfg');
-    git(gitDir, 'config', 'branch.main.remote', 'upstream');
-    git(gitDir, 'config', 'branch.main.pushRemote', 'pushremotecfg');
-    await gitAsync(gitDir, 'push', '-q');
-    const gitChose = resolvedBareReal(['origin', 'upstream', 'pushremotecfg', 'pushdefaultcfg']);
-
-    // Arrange — tsgit twin: identical remotes + branch/push config.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "origin"]',
-        `  url = ${bareUrl('origin', 'ts')}`,
-        '[remote "upstream"]',
-        `  url = ${bareUrl('upstream', 'ts')}`,
-        '[remote "pushremotecfg"]',
-        `  url = ${bareUrl('pushremotecfg', 'ts')}`,
-        '[remote "pushdefaultcfg"]',
-        `  url = ${bareUrl('pushdefaultcfg', 'ts')}`,
+  const REMOTE_RESOLUTION_MATRIX: ReadonlyArray<{
+    readonly label: string;
+    readonly candidates: readonly string[];
+    readonly realConfig: ReadonlyArray<readonly [string, string]>;
+    readonly tsgitConfigBlock: string;
+    readonly expectedRemote: string;
+  }> = [
+    {
+      label: 'branch.main.pushRemote set alongside remote.pushDefault and branch.main.remote',
+      candidates: ['origin', 'upstream', 'pushremotecfg', 'pushdefaultcfg'],
+      realConfig: [
+        ['remote.pushDefault', 'pushdefaultcfg'],
+        ['branch.main.remote', 'upstream'],
+        ['branch.main.pushRemote', 'pushremotecfg'],
+      ],
+      tsgitConfigBlock: [
         '[remote]',
         '  pushDefault = pushdefaultcfg',
         '[branch "main"]',
         '  remote = upstream',
         '  pushRemote = pushremotecfg',
       ].join('\n'),
-    );
-
-    // Act
-    const sut = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
-
-    // Assert — tsgit resolves the exact remote real git resolved to, and
-    // the winning bare received the push.
-    expect(sut.remote).toBe(gitChose);
-    expect(sut.remote).toBe('pushremotecfg');
-    expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok' });
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, `${sut.remote}-ts.git`),
-      'rev-parse',
-      'main',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
-
-    await repo.dispose();
-  }, 30_000);
-
-  it('Given remote.pushDefault set alongside branch.main.remote (no pushRemote), When push runs with no explicit remote, Then it resolves the same remote real git does', async () => {
-    // Arrange — real-git twin: remote.pushDefault should win over tracking.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'remote', 'add', 'upstream', bareUrl('upstream', 'real'));
-    git(gitDir, 'remote', 'add', 'pushdefaultcfg', bareUrl('pushdefaultcfg', 'real'));
-    git(gitDir, 'config', 'remote.pushDefault', 'pushdefaultcfg');
-    git(gitDir, 'config', 'branch.main.remote', 'upstream');
-    await gitAsync(gitDir, 'push', '-q');
-    const gitChose = resolvedBareReal(['upstream', 'pushdefaultcfg']);
-
-    // Arrange — tsgit twin: identical remotes + config, no pushRemote.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "upstream"]',
-        `  url = ${bareUrl('upstream', 'ts')}`,
-        '[remote "pushdefaultcfg"]',
-        `  url = ${bareUrl('pushdefaultcfg', 'ts')}`,
+      expectedRemote: 'pushremotecfg',
+    },
+    {
+      label: 'remote.pushDefault set alongside branch.main.remote (no pushRemote)',
+      candidates: ['upstream', 'pushdefaultcfg'],
+      realConfig: [
+        ['remote.pushDefault', 'pushdefaultcfg'],
+        ['branch.main.remote', 'upstream'],
+      ],
+      tsgitConfigBlock: [
         '[remote]',
         '  pushDefault = pushdefaultcfg',
         '[branch "main"]',
         '  remote = upstream',
       ].join('\n'),
-    );
+      expectedRemote: 'pushdefaultcfg',
+    },
+    {
+      label:
+        'branch.main.remote set with no pushRemote or remote.pushDefault, and two remotes configured',
+      candidates: ['origin', 'upstream'],
+      realConfig: [['branch.main.remote', 'upstream']],
+      tsgitConfigBlock: ['[branch "main"]', '  remote = upstream'].join('\n'),
+      expectedRemote: 'upstream',
+    },
+    {
+      label: 'exactly one remote configured and no branch tracking or push defaults',
+      candidates: ['solo'],
+      realConfig: [],
+      tsgitConfigBlock: '',
+      expectedRemote: 'solo',
+    },
+  ];
 
-    // Act
-    const sut = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
+  it.each(REMOTE_RESOLUTION_MATRIX)(
+    'Given $label, When push runs with no explicit remote, Then it resolves the same remote real git does',
+    async ({ candidates, realConfig, tsgitConfigBlock, expectedRemote }) => {
+      // Arrange — real-git twin: add every candidate remote, then apply the
+      // row's precedence config on top.
+      const gitDir = await initGitRepo();
+      for (const name of candidates) {
+        git(gitDir, 'remote', 'add', name, bareUrl(name, 'real'));
+      }
+      for (const [key, value] of realConfig) {
+        git(gitDir, 'config', key, value);
+      }
+      await gitAsync(gitDir, 'push', '-q');
+      const gitChose = resolvedBareReal(candidates);
 
-    // Assert
-    expect(sut.remote).toBe(gitChose);
-    expect(sut.remote).toBe('pushdefaultcfg');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, `${sut.remote}-ts.git`),
-      'rev-parse',
-      'main',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
+      // Arrange — tsgit twin: identical remotes + precedence config.
+      const { repo, dir } = await initTsgitRepo();
+      const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
+      const remoteBlocks = candidates
+        .map((name) => `[remote "${name}"]\n  url = ${bareUrl(name, 'ts')}`)
+        .join('\n');
+      await appendConfig(repo, [remoteBlocks, tsgitConfigBlock].filter(Boolean).join('\n'));
 
-    await repo.dispose();
-  }, 30_000);
+      // Act
+      const sut = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
 
-  it('Given branch.main.remote set with no pushRemote or remotePushDefault, and two remotes configured, When push runs with no explicit remote, Then it resolves the same remote real git does', async () => {
-    // Arrange — real-git twin: branch tracking should win over the
-    // ambiguous-remote-count default ('origin' fallback). `branch.main.merge`
-    // is set so real git's `push.default=current` (see initGitRepo) still
-    // treats this as a plain same-name push — resolving to the SAME remote
-    // it would under `simple`/`upstream` too, just without the extra
-    // "no upstream configured" refusal that's orthogonal to remote selection.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'remote', 'add', 'origin', bareUrl('origin', 'real'));
-    git(gitDir, 'remote', 'add', 'upstream', bareUrl('upstream', 'real'));
-    git(gitDir, 'config', 'branch.main.remote', 'upstream');
-    await gitAsync(gitDir, 'push', '-q');
-    const gitChose = resolvedBareReal(['origin', 'upstream']);
+      // Assert — tsgit resolves the exact remote real git resolved to, and
+      // the winning bare received the push.
+      expect(sut.remote).toBe(gitChose);
+      expect(sut.remote).toBe(expectedRemote);
+      expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok' });
+      const bareTip = runGit([
+        '--git-dir',
+        path.join(projectRoot, `${sut.remote}-ts.git`),
+        'rev-parse',
+        'main',
+      ]).trim();
+      expect(bareTip).toBe(tsgitOid);
 
-    // Arrange — tsgit twin: identical remotes + branch tracking.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "origin"]',
-        `  url = ${bareUrl('origin', 'ts')}`,
-        '[remote "upstream"]',
-        `  url = ${bareUrl('upstream', 'ts')}`,
-        '[branch "main"]',
-        '  remote = upstream',
-      ].join('\n'),
-    );
+      await repo.dispose();
+    },
+    30_000,
+  );
 
-    // Act
-    const sut = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
-
-    // Assert
-    expect(sut.remote).toBe(gitChose);
-    expect(sut.remote).toBe('upstream');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, `${sut.remote}-ts.git`),
-      'rev-parse',
-      'main',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
-
-    await repo.dispose();
-  }, 30_000);
-
-  it('Given exactly one remote configured and no branch tracking or push defaults, When push runs with no explicit remote, Then it resolves the sole remote the same way real git does', async () => {
-    // Arrange — real-git twin: only "solo" is configured.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'remote', 'add', 'solo', bareUrl('solo', 'real'));
-    await gitAsync(gitDir, 'push', '-q');
-
-    // Arrange — tsgit twin: identical sole-remote config.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(repo, ['[remote "solo"]', `  url = ${bareUrl('solo', 'ts')}`].join('\n'));
-
-    // Act
-    const sut = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
-
-    // Assert
-    expect(sut.remote).toBe('solo');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, 'solo-ts.git'),
-      'rev-parse',
-      'main',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
-
-    await repo.dispose();
-  }, 30_000);
-
-  it('Given push.default=current and a sole remote, When push runs with no explicit refspec, Then it pushes the current branch to the same-named ref, matching real git', async () => {
-    // Arrange — real-git twin: push.default=current is already set by initGitRepo.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'remote', 'add', 'currentmode', bareUrl('currentmode', 'real'));
-    await gitAsync(gitDir, 'push', '-q');
-
-    // Arrange — tsgit twin: same sole remote, push.default=current, no explicit refspec.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "currentmode"]',
-        `  url = ${bareUrl('currentmode', 'ts')}`,
+  const REFSPEC_PUSH_MATRIX: ReadonlyArray<{
+    readonly label: string;
+    readonly remotes: readonly string[];
+    readonly unsetPushDefault: boolean;
+    readonly realConfig: ReadonlyArray<readonly [string, string]>;
+    readonly tsgitConfigBlock: string;
+    readonly expectedRemote: string;
+    readonly expectedRef: string;
+  }> = [
+    {
+      label: 'push.default=current and a sole remote',
+      remotes: ['currentmode'],
+      unsetPushDefault: false,
+      realConfig: [],
+      tsgitConfigBlock: ['[push]', '  default = current'].join('\n'),
+      expectedRemote: 'currentmode',
+      expectedRef: 'main',
+    },
+    {
+      label:
+        'push.default=upstream with a central remote and branch.main.merge set to a different name',
+      remotes: ['upstreammode'],
+      unsetPushDefault: false,
+      realConfig: [
+        ['push.default', 'upstream'],
+        ['branch.main.remote', 'upstreammode'],
+        ['branch.main.merge', 'refs/heads/other'],
+      ],
+      tsgitConfigBlock: [
         '[push]',
-        '  default = current',
+        '  default = upstream',
+        '[branch "main"]',
+        '  remote = upstreammode',
+        '  merge = refs/heads/other',
       ].join('\n'),
-    );
+      expectedRemote: 'upstreammode',
+      expectedRef: 'other',
+    },
+    {
+      label:
+        'push.default=tracking (the deprecated upstream alias) with branch.main.merge set to a different name',
+      remotes: ['trackingalias'],
+      unsetPushDefault: false,
+      realConfig: [
+        ['push.default', 'tracking'],
+        ['branch.main.remote', 'trackingalias'],
+        ['branch.main.merge', 'refs/heads/other'],
+      ],
+      tsgitConfigBlock: [
+        '[push]',
+        '  default = tracking',
+        '[branch "main"]',
+        '  remote = trackingalias',
+        '  merge = refs/heads/other',
+      ].join('\n'),
+      expectedRemote: 'trackingalias',
+      expectedRef: 'other',
+    },
+    {
+      label: 'push.default=simple with a central remote and branch.main.merge set to the same name',
+      remotes: ['simplemode'],
+      unsetPushDefault: true,
+      realConfig: [
+        ['branch.main.remote', 'simplemode'],
+        ['branch.main.merge', 'refs/heads/main'],
+      ],
+      tsgitConfigBlock: [
+        '[branch "main"]',
+        '  remote = simplemode',
+        '  merge = refs/heads/main',
+      ].join('\n'),
+      expectedRemote: 'simplemode',
+      expectedRef: 'main',
+    },
+    {
+      label:
+        'push.default=simple with a triangular push remote and branch.main.merge set to a different name',
+      remotes: ['simplefetch', 'simplepush'],
+      unsetPushDefault: true,
+      realConfig: [
+        ['branch.main.remote', 'simplefetch'],
+        ['branch.main.merge', 'refs/heads/other'],
+        ['remote.pushDefault', 'simplepush'],
+      ],
+      tsgitConfigBlock: [
+        '[branch "main"]',
+        '  remote = simplefetch',
+        '  merge = refs/heads/other',
+        '[remote]',
+        '  pushDefault = simplepush',
+      ].join('\n'),
+      expectedRemote: 'simplepush',
+      expectedRef: 'main',
+    },
+  ];
 
-    // Act
-    const sut = await repo.push({});
+  it.each(REFSPEC_PUSH_MATRIX)(
+    'Given $label, When push runs with no explicit refspec, Then it pushes the current branch to the configured ref, matching real git',
+    async ({
+      remotes,
+      unsetPushDefault,
+      realConfig,
+      tsgitConfigBlock,
+      expectedRemote,
+      expectedRef,
+    }) => {
+      // Arrange — real-git twin: apply the row's push.default/branch config,
+      // then push — a successful (non-throwing) push proves real git does
+      // NOT refuse this configuration.
+      const gitDir = await initGitRepo();
+      if (unsetPushDefault) {
+        git(gitDir, 'config', '--unset', 'push.default');
+      }
+      for (const name of remotes) {
+        git(gitDir, 'remote', 'add', name, bareUrl(name, 'real'));
+      }
+      for (const [key, value] of realConfig) {
+        git(gitDir, 'config', key, value);
+      }
+      await gitAsync(gitDir, 'push', '-q');
 
-    // Assert
-    expect(sut.remote).toBe('currentmode');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, 'currentmode-ts.git'),
-      'rev-parse',
-      'main',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
+      // Arrange — tsgit twin: identical remotes + config.
+      const { repo, dir } = await initTsgitRepo();
+      const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
+      const remoteBlocks = remotes
+        .map((name) => `[remote "${name}"]\n  url = ${bareUrl(name, 'ts')}`)
+        .join('\n');
+      await appendConfig(repo, [remoteBlocks, tsgitConfigBlock].filter(Boolean).join('\n'));
 
-    await repo.dispose();
-  }, 30_000);
+      // Act
+      const sut = await repo.push({});
+
+      // Assert — tsgit pushes to the configured ref on the configured
+      // remote, matching real git's own non-refusal above.
+      expect(sut.remote).toBe(expectedRemote);
+      const bareTip = runGit([
+        '--git-dir',
+        path.join(projectRoot, `${sut.remote}-ts.git`),
+        'rev-parse',
+        expectedRef,
+      ]).trim();
+      expect(bareTip).toBe(tsgitOid);
+
+      await repo.dispose();
+    },
+    30_000,
+  );
 
   it('Given push.default=current and a detached HEAD, When push runs with no explicit refspec, Then both real git and tsgit refuse before contacting the remote', async () => {
     // Arrange — real-git twin: detach HEAD after the seed commit, same as tsgit twin below.
@@ -940,50 +981,6 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
     await repo.dispose();
   }, 30_000);
 
-  it('Given push.default=upstream with a central remote and branch.main.merge set to a different name, When push runs with no explicit refspec, Then it pushes the current branch to the configured upstream ref, matching real git', async () => {
-    // Arrange — real-git twin: branch.main.merge points at a differently-named ref.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'remote', 'add', 'upstreammode', bareUrl('upstreammode', 'real'));
-    git(gitDir, 'config', 'push.default', 'upstream');
-    git(gitDir, 'config', 'branch.main.remote', 'upstreammode');
-    git(gitDir, 'config', 'branch.main.merge', 'refs/heads/other');
-    // A successful (non-throwing) push proves real git does NOT refuse this
-    // central (non-triangular) configuration under push.default=upstream.
-    await gitAsync(gitDir, 'push', '-q');
-
-    // Arrange — tsgit twin: same central remote, push.default=upstream, merge=refs/heads/other.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "upstreammode"]',
-        `  url = ${bareUrl('upstreammode', 'ts')}`,
-        '[push]',
-        '  default = upstream',
-        '[branch "main"]',
-        '  remote = upstreammode',
-        '  merge = refs/heads/other',
-      ].join('\n'),
-    );
-
-    // Act
-    const sut = await repo.push({});
-
-    // Assert — tsgit pushes to the configured upstream ref (no name check,
-    // matching real git's own non-refusal above).
-    expect(sut.remote).toBe('upstreammode');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, 'upstreammode-ts.git'),
-      'rev-parse',
-      'other',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
-
-    await repo.dispose();
-  }, 30_000);
-
   it('Given push.default=upstream with a triangular push remote and branch.main.merge set, When push runs with no explicit refspec, Then both real git and tsgit refuse before contacting the remote', async () => {
     // Arrange — real-git twin: fetch remote 'upstreamfetch', but the resolved
     // push remote is the DIFFERENT 'upstreampush' (remote.pushDefault) — a
@@ -1156,92 +1153,6 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
     await repo.dispose();
   }, 30_000);
 
-  it('Given push.default=tracking (the deprecated upstream alias) with branch.main.merge set to a different name, When push runs with no explicit refspec, Then it behaves exactly like push.default=upstream, matching real git', async () => {
-    // Arrange — real-git twin: 'tracking' is real git's legacy alias for 'upstream'.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'remote', 'add', 'trackingalias', bareUrl('trackingalias', 'real'));
-    git(gitDir, 'config', 'push.default', 'tracking');
-    git(gitDir, 'config', 'branch.main.remote', 'trackingalias');
-    git(gitDir, 'config', 'branch.main.merge', 'refs/heads/other');
-    // A successful (non-throwing) push proves real git's 'tracking' alias
-    // does NOT refuse this central configuration, just like 'upstream'.
-    await gitAsync(gitDir, 'push', '-q');
-
-    // Arrange — tsgit twin: same central remote, push.default=tracking, merge=refs/heads/other.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "trackingalias"]',
-        `  url = ${bareUrl('trackingalias', 'ts')}`,
-        '[push]',
-        '  default = tracking',
-        '[branch "main"]',
-        '  remote = trackingalias',
-        '  merge = refs/heads/other',
-      ].join('\n'),
-    );
-
-    // Act
-    const sut = await repo.push({});
-
-    // Assert — the deprecated alias resolves and behaves exactly like `upstream`.
-    expect(sut.remote).toBe('trackingalias');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, 'trackingalias-ts.git'),
-      'rev-parse',
-      'other',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
-
-    await repo.dispose();
-  }, 30_000);
-
-  it('Given push.default=simple with a central remote and branch.main.merge set to the same name, When push runs with no explicit refspec, Then it pushes the current branch to the configured upstream ref, matching real git', async () => {
-    // Arrange — real-git twin: simple is git's own default; unset the
-    // `push.default=current` override `initGitRepo` sets so real git falls
-    // through to its actual built-in default.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'config', '--unset', 'push.default');
-    git(gitDir, 'remote', 'add', 'simplemode', bareUrl('simplemode', 'real'));
-    git(gitDir, 'config', 'branch.main.remote', 'simplemode');
-    git(gitDir, 'config', 'branch.main.merge', 'refs/heads/main');
-    // A successful (non-throwing) push proves real git does NOT refuse a
-    // central workflow whose upstream shares the current branch's name.
-    await gitAsync(gitDir, 'push', '-q');
-
-    // Arrange — tsgit twin: same central remote, unset push.default (simple is the default).
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "simplemode"]',
-        `  url = ${bareUrl('simplemode', 'ts')}`,
-        '[branch "main"]',
-        '  remote = simplemode',
-        '  merge = refs/heads/main',
-      ].join('\n'),
-    );
-
-    // Act
-    const sut = await repo.push({});
-
-    // Assert
-    expect(sut.remote).toBe('simplemode');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, 'simplemode-ts.git'),
-      'rev-parse',
-      'main',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
-
-    await repo.dispose();
-  }, 30_000);
-
   it('Given push.default=simple with a central remote and branch.main.merge set to a different name, When push runs with no explicit refspec, Then both real git and tsgit refuse before contacting the remote', async () => {
     // Arrange — real-git twin: branch.main.merge names a DIFFERENT ref than
     // the current branch — `simple` refuses this (unlike `upstream`, which
@@ -1348,57 +1259,6 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       tryRunGit(['--git-dir', path.join(projectRoot, 'simplenomerge-ts.git'), 'rev-parse', 'main'])
         .ok,
     ).toBe(false);
-
-    await repo.dispose();
-  }, 30_000);
-
-  it('Given push.default=simple with a triangular push remote and branch.main.merge set to a different name, When push runs with no explicit refspec, Then it pushes the current branch to the same-named ref on the push remote, bypassing the name-mismatch check, matching real git', async () => {
-    // Arrange — real-git twin: fetch remote 'simplefetch', resolved push
-    // remote is the DIFFERENT 'simplepush' (remote.pushDefault) — a
-    // triangular workflow. `simple` treats this like `current`: same-named
-    // ref, no upstream-name check at all, even though branch.main.merge
-    // names a DIFFERENT ref.
-    const gitDir = await initGitRepo();
-    git(gitDir, 'config', '--unset', 'push.default');
-    git(gitDir, 'remote', 'add', 'simplefetch', bareUrl('simplefetch', 'real'));
-    git(gitDir, 'remote', 'add', 'simplepush', bareUrl('simplepush', 'real'));
-    git(gitDir, 'config', 'branch.main.remote', 'simplefetch');
-    git(gitDir, 'config', 'branch.main.merge', 'refs/heads/other');
-    git(gitDir, 'config', 'remote.pushDefault', 'simplepush');
-    // A successful (non-throwing) push proves real git does NOT refuse this
-    // triangular configuration under push.default=simple.
-    await gitAsync(gitDir, 'push', '-q');
-
-    // Arrange — tsgit twin: identical triangular setup.
-    const { repo, dir } = await initTsgitRepo();
-    const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-    await appendConfig(
-      repo,
-      [
-        '[remote "simplefetch"]',
-        `  url = ${bareUrl('simplefetch', 'ts')}`,
-        '[remote "simplepush"]',
-        `  url = ${bareUrl('simplepush', 'ts')}`,
-        '[branch "main"]',
-        '  remote = simplefetch',
-        '  merge = refs/heads/other',
-        '[remote]',
-        '  pushDefault = simplepush',
-      ].join('\n'),
-    );
-
-    // Act
-    const sut = await repo.push({});
-
-    // Assert — pushed to the same-named ref on the push remote, not `other`.
-    expect(sut.remote).toBe('simplepush');
-    const bareTip = runGit([
-      '--git-dir',
-      path.join(projectRoot, 'simplepush-ts.git'),
-      'rev-parse',
-      'main',
-    ]).trim();
-    expect(bareTip).toBe(tsgitOid);
 
     await repo.dispose();
   }, 30_000);
