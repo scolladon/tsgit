@@ -53,8 +53,11 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
   describe('Given the small multi-file fixture spec', () => {
     describe('When ensureScaledFixture builds it', () => {
       it('Then it returns 40-hex ids backed by a packed cache dir', async () => {
+        // Arrange
+        const sut = ensureScaledFixture;
+
         // Act
-        const result = await ensureScaledFixture(SMALL_FIXTURE);
+        const result = await sut(SMALL_FIXTURE);
 
         // Assert
         expect(result.headCommitId).toMatch(HEX40);
@@ -69,8 +72,11 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
   describe('Given the small deep-ancestry fixture spec', () => {
     describe('When ensureScaledFixture builds it', () => {
       it('Then stable.txt resolves at HEAD alongside 40-hex ids', async () => {
+        // Arrange
+        const sut = ensureScaledFixture;
+
         // Act
-        const result = await ensureScaledFixture(DEEP_ANCESTRY_SMALL);
+        const result = await sut(DEEP_ANCESTRY_SMALL);
 
         // Assert
         expect(result.headCommitId).toMatch(HEX40);
