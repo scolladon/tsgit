@@ -19,11 +19,78 @@ const expectError = (fn: () => unknown, code: string): TsgitError => {
 
 describe('internal/rev-parse-grammar', () => {
   describe('parseExpression', () => {
-    describe("Given ''", () => {
+    describe('Given a rejected rev-parse expression', () => {
       describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
+        it.each([
+          { raw: '', label: "'' (empty string)" },
+          { raw: ':4:f.txt', label: "':4:f.txt' (out-of-range stage)" },
+          { raw: 'HEAD^{garbage}', label: "'HEAD^{garbage}' (unknown peel type)" },
+          { raw: 'HEAD~~', label: "'HEAD~~' (~ with no number after)" },
+          {
+            raw: 'HEAD@{}',
+            // an empty body is neither an index nor a date.
+            label: "'HEAD@{}' (an empty selector body)",
+          },
+          { raw: 'HEAD@{2', label: "'HEAD@{2' (an unbalanced '@{' with no closing brace)" },
+          {
+            raw: 'HEAD@{12',
+            // isolates the missing-`}` guard from the empty-body guard: the
+            // body here ('12') is non-empty, so only the `close === -1` check
+            // can reject it.
+            label: "'HEAD@{12' (a multi-character body with no closing brace)",
+          },
+          { raw: 'abc', label: "'abc' (3 hex chars, shorter than git's min abbreviation)" },
+          { raw: ':0:', label: "':0:' (empty path)" },
+          { raw: ':', label: "':' alone" },
+          { raw: 'HEAD^{', label: "'HEAD^{' (peel with no closing brace)" },
+          { raw: ':0', label: "':0' (stage with no path separator)" },
+          { raw: 'HEAD^x', label: "'HEAD^x' (non-operator char inside the operation chain)" },
+          { raw: '^1', label: "'^1' (empty base before an operator)" },
+          { raw: ':5:f.txt', label: "':5:f.txt' (single-digit out-of-range stage)" },
+          {
+            raw: 'HEAD~',
+            // `~` must be followed by a digit; with none, the digit loop
+            // never advances (`j === i + 1`) and parseTilde fails.
+            label: "'HEAD~' (a '~' with no digit)",
+          },
+          {
+            raw: 'HEAD~2z',
+            // `isDigit` must reject 'z' (0x7a): the digit-consuming loop stops
+            // after '2', leaving the cursor on 'z', which is neither '~' nor
+            // '^' — the else branch fails. A mutant that over-accepts
+            // non-digits would pull 'z' into the number and the parse would
+            // succeed instead of throwing.
+            label: "'HEAD~2z' (a digit then a letter after '~')",
+          },
+          {
+            raw: 'HEAD^3z',
+            // Same guard for `parseCaret`'s digit loop: 'z' must not count as
+            // a digit, so the cursor lands on 'z' and the else branch fails.
+            label: "'HEAD^3z' (a digit then a letter after '^')",
+          },
+          {
+            raw: 'HEAD~1.',
+            // `isDigit` checks BOTH bounds: `code >= 0x30 && code <= 0x39`.
+            // '.' is 0x2E — below the lower bound. The digit loop must stop
+            // after '1', leaving the cursor on '.', which is neither '~' nor
+            // '^', so the else branch in `parseOperations` fails. A mutant
+            // dropping the lower-bound check (`code >= 0x30` -> true) would
+            // over-accept '.' (≤ 0x39), pull it into the ancestor count, and
+            // the parse would succeed instead.
+            label: "'HEAD~1.' (a digit then a '.' (0x2E) after '~')",
+          },
+          {
+            raw: 'HEAD^2/',
+            // Same lower-bound guard for `parseCaret`'s digit loop: '/' is
+            // 0x2F, below 0x30. It must stop the digit run after '2',
+            // stranding the cursor on '/' so the else branch fails. A mutant
+            // dropping `code >= 0x30` would accept '/' as a digit and the
+            // parse would succeed.
+            label: "'HEAD^2/' (a digit then a '/' (0x2F) after '^')",
+          },
+        ])('Then $label throws REVPARSE_UNRESOLVED', ({ raw }) => {
           // Arrange + Assert
-          expectError(() => parseExpression(''), 'REVPARSE_UNRESOLVED');
+          expectError(() => parseExpression(raw), 'REVPARSE_UNRESOLVED');
         });
       });
     });
@@ -103,15 +170,6 @@ describe('internal/rev-parse-grammar', () => {
             stage: 3,
             path: 'f.txt',
           });
-        });
-      });
-    });
-
-    describe("Given ':4:path' (out-of-range stage)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression(':4:f.txt'), 'REVPARSE_UNRESOLVED');
         });
       });
     });
@@ -221,24 +279,6 @@ describe('internal/rev-parse-grammar', () => {
             (parseExpression('HEAD^{tag}') as { operations: ReadonlyArray<{ target: string }> })
               .operations[0]?.target,
           ).toBe('tag');
-        });
-      });
-    });
-
-    describe("Given 'HEAD^{garbage}' (unknown type)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression('HEAD^{garbage}'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given 'HEAD~~' (~ with no number after)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression('HEAD~~'), 'REVPARSE_UNRESOLVED');
         });
       });
     });
@@ -371,24 +411,6 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
-    describe("Given 'HEAD@{}' (an empty selector body)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert — an empty body is neither an index nor a date.
-          expectError(() => parseExpression('HEAD@{}'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given 'HEAD@{2' (an unbalanced '@{' with no closing brace)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          expectError(() => parseExpression('HEAD@{2'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
     describe("Given 'HEAD@{1x}' (a body that is digits then a letter)", () => {
       describe('When parseExpression', () => {
         it('Then it is a date selector, not an index', () => {
@@ -399,17 +421,6 @@ describe('internal/rev-parse-grammar', () => {
           // Assert
           const reflog = (sut as { reflog?: { kind: string; raw: string } }).reflog;
           expect(reflog).toEqual({ kind: 'date', raw: '1x' });
-        });
-      });
-    });
-
-    describe("Given 'HEAD@{12' (a multi-character body with no closing brace)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert — isolates the missing-`}` guard from the
-          // empty-body guard: the body here ('12') is non-empty, so only the
-          // `close === -1` check can reject it.
-          expectError(() => parseExpression('HEAD@{12'), 'REVPARSE_UNRESOLVED');
         });
       });
     });
@@ -428,15 +439,6 @@ describe('internal/rev-parse-grammar', () => {
             reflog: { kind: 'index', n: 0 },
             operations: [],
           } satisfies RevExpression);
-        });
-      });
-    });
-
-    describe("Given 'abc' (3 hex chars, shorter than git's min abbreviation)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression('abc'), 'REVPARSE_UNRESOLVED');
         });
       });
     });
@@ -492,24 +494,6 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
-    describe("Given ':0:' (empty path)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression(':0:'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given ':' alone", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression(':'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
     describe("Given 'HEAD~9' (boundary digit 9)", () => {
       describe('When parseExpression', () => {
         it('Then ancestor n=9', () => {
@@ -552,24 +536,6 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
-    describe("Given 'HEAD^{' (peel with no closing brace)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression('HEAD^{'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given ':0' (stage with no path separator)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange + Assert
-          expectError(() => parseExpression(':0'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
     describe("Given 'HEAD<garbage' (no operator after base, just an unknown char)", () => {
       describe('When parseExpression', () => {
         it('Then base contains the full text', () => {
@@ -601,34 +567,6 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
-    describe("Given 'HEAD^x' (non-operator char inside the operation chain)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          // After parsing `^`, the cursor lands on `x`, which is neither `~` nor `^`.
-          expectError(() => parseExpression('HEAD^x'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given '^1' (empty base before an operator)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          expectError(() => parseExpression('^1'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given ':5:f.txt' (single-digit out-of-range stage)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          expectError(() => parseExpression(':5:f.txt'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
     describe("Given 'HEAD^{tag}^{tree}' (chained peels)", () => {
       describe('When parseExpression', () => {
         it('Then operations=[peel tag, peel tree]', () => {
@@ -646,17 +584,6 @@ describe('internal/rev-parse-grammar', () => {
               { kind: 'peel', target: 'tree' },
             ],
           } satisfies RevExpression);
-        });
-      });
-    });
-
-    describe("Given 'HEAD~' (a '~' with no digit)", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          // `~` must be followed by a digit; with none, the digit loop never
-          // advances (`j === i + 1`) and parseTilde fails.
-          expectError(() => parseExpression('HEAD~'), 'REVPARSE_UNRESOLVED');
         });
       });
     });
@@ -689,58 +616,6 @@ describe('internal/rev-parse-grammar', () => {
             base: 'HEAD',
             operations: [{ kind: 'parent', n: 23 }],
           } satisfies RevExpression);
-        });
-      });
-    });
-
-    describe("Given 'HEAD~2z' (a digit then a letter after '~')", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          // `isDigit` must reject 'z' (0x7a): the digit-consuming loop stops after
-          // '2', leaving the cursor on 'z', which is neither '~' nor '^' — the
-          // else branch fails. A mutant that over-accepts non-digits would pull
-          // 'z' into the number and the parse would succeed instead of throwing.
-          expectError(() => parseExpression('HEAD~2z'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given 'HEAD^3z' (a digit then a letter after '^')", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          // Same guard for `parseCaret`'s digit loop: 'z' must not count as a
-          // digit, so the cursor lands on 'z' and the else branch fails.
-          expectError(() => parseExpression('HEAD^3z'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given 'HEAD~1.' (a digit then a '.' (0x2E) after '~')", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          // `isDigit` checks BOTH bounds: `code >= 0x30 && code <= 0x39`. '.' is
-          // 0x2E — below the lower bound. The digit loop must stop after '1',
-          // leaving the cursor on '.', which is neither '~' nor '^', so the else
-          // branch in `parseOperations` fails. A mutant dropping the lower-bound
-          // check (`code >= 0x30` -> true) would over-accept '.' (≤ 0x39), pull it
-          // into the ancestor count, and the parse would succeed instead.
-          expectError(() => parseExpression('HEAD~1.'), 'REVPARSE_UNRESOLVED');
-        });
-      });
-    });
-
-    describe("Given 'HEAD^2/' (a digit then a '/' (0x2F) after '^')", () => {
-      describe('When parseExpression', () => {
-        it('Then throws REVPARSE_UNRESOLVED', () => {
-          // Arrange / Act / Assert
-          // Same lower-bound guard for `parseCaret`'s digit loop: '/' is 0x2F,
-          // below 0x30. It must stop the digit run after '2', stranding the cursor
-          // on '/' so the else branch fails. A mutant dropping `code >= 0x30`
-          // would accept '/' as a digit and the parse would succeed.
-          expectError(() => parseExpression('HEAD^2/'), 'REVPARSE_UNRESOLVED');
         });
       });
     });

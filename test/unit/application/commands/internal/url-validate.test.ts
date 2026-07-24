@@ -45,11 +45,17 @@ describe('internal/url-validate', () => {
       });
     });
 
-    describe('Given http URL with allowInsecure=false (default)', () => {
+    describe('Given a URL with an outright-unsupported scheme', () => {
       describe('When validateUrl', () => {
-        it('Then throws UNSUPPORTED_SCHEME', async () => {
+        it.each([
+          { url: 'http://example.com/x', label: 'http, with allowInsecure=false (default)' },
+          { url: 'ftp://example.com/x', label: 'ftp' },
+          { url: 'file:///etc/passwd', label: 'file' },
+          { url: 'data:text/plain,hi', label: 'data' },
+          { url: 'javascript:alert(1)', label: 'javascript' },
+        ])('Then $label throws UNSUPPORTED_SCHEME', async ({ url }) => {
           // Arrange + Assert
-          await expectError(validateUrl('http://example.com/x', opts()), 'UNSUPPORTED_SCHEME');
+          await expectError(validateUrl(url, opts()), 'UNSUPPORTED_SCHEME');
         });
       });
     });
@@ -80,42 +86,6 @@ describe('internal/url-validate', () => {
 
           // Assert
           expect(sut.url).toBe('http://example.com/x');
-        });
-      });
-    });
-
-    describe('Given ftp URL', () => {
-      describe('When validateUrl', () => {
-        it('Then throws UNSUPPORTED_SCHEME', async () => {
-          // Arrange + Assert
-          await expectError(validateUrl('ftp://example.com/x', opts()), 'UNSUPPORTED_SCHEME');
-        });
-      });
-    });
-
-    describe('Given file URL', () => {
-      describe('When validateUrl', () => {
-        it('Then throws UNSUPPORTED_SCHEME', async () => {
-          // Arrange + Assert
-          await expectError(validateUrl('file:///etc/passwd', opts()), 'UNSUPPORTED_SCHEME');
-        });
-      });
-    });
-
-    describe('Given data URL', () => {
-      describe('When validateUrl', () => {
-        it('Then throws UNSUPPORTED_SCHEME', async () => {
-          // Arrange + Assert
-          await expectError(validateUrl('data:text/plain,hi', opts()), 'UNSUPPORTED_SCHEME');
-        });
-      });
-    });
-
-    describe('Given javascript URL', () => {
-      describe('When validateUrl', () => {
-        it('Then throws UNSUPPORTED_SCHEME', async () => {
-          // Arrange + Assert
-          await expectError(validateUrl('javascript:alert(1)', opts()), 'UNSUPPORTED_SCHEME');
         });
       });
     });

@@ -15,259 +15,120 @@ const envOf = (
 });
 
 describe('resolveSshCommand', () => {
-  describe('Given only GIT_SSH_COMMAND is set', () => {
+  describe('Given an environment and/or core.sshCommand configuration', () => {
     describe('When resolving the ssh command', () => {
-      it('Then it shell-splits the value into program and baseArgs', async () => {
+      it.each([
+        {
+          env: { GIT_SSH_COMMAND: 'ssh -v' },
+          configContent: undefined as string | undefined,
+          expected: { program: 'ssh', baseArgs: ['-v'] },
+          label: 'only GIT_SSH_COMMAND is set shell-splits the value into program and baseArgs',
+        },
+        {
+          env: {},
+          configContent: '[core]\n  sshCommand = ssh -v\n',
+          expected: { program: 'ssh', baseArgs: ['-v'] },
+          label: 'only core.sshCommand is set reads the config value and shell-splits it',
+        },
+        {
+          env: { GIT_SSH: '/usr/bin/ssh' },
+          configContent: undefined,
+          expected: { program: '/usr/bin/ssh', baseArgs: [] },
+          label: 'only GIT_SSH is set uses the program verbatim with no argument split',
+        },
+        {
+          env: {},
+          configContent: undefined,
+          expected: { program: 'ssh', baseArgs: [] },
+          label:
+            'none of GIT_SSH_COMMAND, core.sshCommand, or GIT_SSH are set defaults to plain ssh with no baseArgs',
+        },
+        {
+          env: { GIT_SSH_COMMAND: '/env/ssh' },
+          configContent: '[core]\n  sshCommand = /config/ssh\n',
+          expected: { program: '/env/ssh', baseArgs: [] },
+          label: 'GIT_SSH_COMMAND wins over core.sshCommand when both are set',
+        },
+        {
+          env: { GIT_SSH: '/env/ssh' },
+          configContent: '[core]\n  sshCommand = /config/ssh\n',
+          expected: { program: '/config/ssh', baseArgs: [] },
+          label: 'core.sshCommand wins over GIT_SSH when both are set (no GIT_SSH_COMMAND)',
+        },
+        {
+          env: { GIT_SSH_COMMAND: 'ssh -o "ProxyCommand=nc %h %p"' },
+          configContent: undefined,
+          expected: { program: 'ssh', baseArgs: ['-o', 'ProxyCommand=nc %h %p'] },
+          label:
+            'a GIT_SSH_COMMAND value with a double-quoted argument containing a space keeps the quoted segment as a single argument',
+        },
+        {
+          env: { GIT_SSH_COMMAND: "ssh -o 'a\\b'" },
+          configContent: undefined,
+          expected: { program: 'ssh', baseArgs: ['-o', 'a\\b'] },
+          label:
+            'a GIT_SSH_COMMAND value with a single-quoted argument keeps the quoted segment literal with no escape processing',
+        },
+        {
+          env: { GIT_SSH_COMMAND: 'my\\ ssh -v' },
+          configContent: undefined,
+          expected: { program: 'my ssh', baseArgs: ['-v'] },
+          label:
+            'a GIT_SSH_COMMAND value with a backslash-escaped space outside quotes keeps the escaped space inside a single argument',
+        },
+        {
+          env: { GIT_SSH_COMMAND: '"' },
+          configContent: undefined,
+          expected: { program: '"', baseArgs: [] },
+          label:
+            'GIT_SSH_COMMAND set to an unparseable shell string (a stray quote) falls back to the raw string as the program with no baseArgs',
+        },
+        {
+          env: { GIT_SSH_COMMAND: '', GIT_SSH: '/env/ssh' },
+          configContent: undefined,
+          expected: { program: '/env/ssh', baseArgs: [] },
+          label:
+            'GIT_SSH_COMMAND set to an empty string is treated as unset and the next source is consulted',
+        },
+        {
+          env: { GIT_SSH_COMMAND: 'foo"bar"baz -v' },
+          configContent: undefined,
+          expected: { program: 'foobarbaz', baseArgs: ['-v'] },
+          label:
+            'GIT_SSH_COMMAND with adjacent quoted and bare segments in one word concatenates contiguous segments into a single word, as POSIX splits them',
+        },
+        {
+          env: { GIT_SSH_COMMAND: `ssh "x"y'z'` },
+          configContent: undefined,
+          expected: { program: 'ssh', baseArgs: ['xyz'] },
+          label:
+            'GIT_SSH_COMMAND mixing quote styles inside one argument collapses "x"y\'z\' to one argument, not three',
+        },
+        {
+          env: { GIT_SSH_COMMAND: 'ssh "a\\"b"' },
+          configContent: undefined,
+          expected: { program: 'ssh', baseArgs: ['a"b'] },
+          label:
+            'GIT_SSH_COMMAND with an escaped double quote inside double quotes consumes the backslash and keeps the quote',
+        },
+        {
+          env: { GIT_SSH_COMMAND: 'ssh "x\\\\y"' },
+          configContent: undefined,
+          expected: { program: 'ssh', baseArgs: ['x\\y'] },
+          label:
+            'GIT_SSH_COMMAND with an escaped backslash inside double quotes collapses the pair to a single backslash',
+        },
+      ])('Then $label', async ({ env, configContent, expected }) => {
         // Arrange
-        const ctx = createMemoryContext({ env: envOf({ GIT_SSH_COMMAND: 'ssh -v' }) });
+        const ctx = createMemoryContext({ env: envOf(env) });
+        if (configContent !== undefined) await seedConfig(ctx, configContent);
         const sut = resolveSshCommand;
 
         // Act
         const result = await sut(ctx);
 
         // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: ['-v'] });
-      });
-    });
-  });
-
-  describe('Given only core.sshCommand is set', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then it reads the config value and shell-splits it', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedConfig(ctx, '[core]\n  sshCommand = ssh -v\n');
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: ['-v'] });
-      });
-    });
-  });
-
-  describe('Given only GIT_SSH is set', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then the program is used verbatim with no argument split', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ env: envOf({ GIT_SSH: '/usr/bin/ssh' }) });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: '/usr/bin/ssh', baseArgs: [] });
-      });
-    });
-  });
-
-  describe('Given none of GIT_SSH_COMMAND, core.sshCommand, or GIT_SSH are set', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then it defaults to plain ssh with no baseArgs', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: [] });
-      });
-    });
-  });
-
-  describe('Given both GIT_SSH_COMMAND and core.sshCommand are set', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then GIT_SSH_COMMAND wins over core.sshCommand', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ env: envOf({ GIT_SSH_COMMAND: '/env/ssh' }) });
-        await seedConfig(ctx, '[core]\n  sshCommand = /config/ssh\n');
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: '/env/ssh', baseArgs: [] });
-      });
-    });
-  });
-
-  describe('Given core.sshCommand and GIT_SSH are both set (no GIT_SSH_COMMAND)', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then core.sshCommand wins over GIT_SSH', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ env: envOf({ GIT_SSH: '/env/ssh' }) });
-        await seedConfig(ctx, '[core]\n  sshCommand = /config/ssh\n');
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: '/config/ssh', baseArgs: [] });
-      });
-    });
-  });
-
-  describe('Given a GIT_SSH_COMMAND value with a double-quoted argument containing a space', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then the quoted segment is kept as a single argument', async () => {
-        // Arrange
-        const ctx = createMemoryContext({
-          env: envOf({ GIT_SSH_COMMAND: 'ssh -o "ProxyCommand=nc %h %p"' }),
-        });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: ['-o', 'ProxyCommand=nc %h %p'] });
-      });
-    });
-  });
-
-  describe('Given a GIT_SSH_COMMAND value with a single-quoted argument', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then the quoted segment is kept literal with no escape processing', async () => {
-        // Arrange
-        const ctx = createMemoryContext({
-          env: envOf({ GIT_SSH_COMMAND: "ssh -o 'a\\b'" }),
-        });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: ['-o', 'a\\b'] });
-      });
-    });
-  });
-
-  describe('Given a GIT_SSH_COMMAND value with a backslash-escaped space outside quotes', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then the escaped space stays inside a single argument', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ env: envOf({ GIT_SSH_COMMAND: 'my\\ ssh -v' }) });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'my ssh', baseArgs: ['-v'] });
-      });
-    });
-  });
-
-  describe('Given GIT_SSH_COMMAND is set to an unparseable shell string (a stray quote)', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then it falls back to the raw string as the program with no baseArgs', async () => {
-        // Arrange
-        const ctx = createMemoryContext({ env: envOf({ GIT_SSH_COMMAND: '"' }) });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: '"', baseArgs: [] });
-      });
-    });
-  });
-
-  describe('Given GIT_SSH_COMMAND is set to an empty string', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then it is treated as unset and the next source is consulted', async () => {
-        // Arrange
-        const ctx = createMemoryContext({
-          env: envOf({ GIT_SSH_COMMAND: '', GIT_SSH: '/env/ssh' }),
-        });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: '/env/ssh', baseArgs: [] });
-      });
-    });
-  });
-
-  describe('Given GIT_SSH_COMMAND with adjacent quoted and bare segments in one word', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then contiguous segments concatenate into a single word, as POSIX splits them', async () => {
-        // Arrange
-        const ctx = createMemoryContext({
-          env: envOf({ GIT_SSH_COMMAND: 'foo"bar"baz -v' }),
-        });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'foobarbaz', baseArgs: ['-v'] });
-      });
-    });
-  });
-
-  describe('Given GIT_SSH_COMMAND mixing quote styles inside one argument', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then "x"y\'z\' collapses to one argument, not three', async () => {
-        // Arrange
-        const ctx = createMemoryContext({
-          env: envOf({ GIT_SSH_COMMAND: `ssh "x"y'z'` }),
-        });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: ['xyz'] });
-      });
-    });
-  });
-
-  describe('Given GIT_SSH_COMMAND with an escaped double quote inside double quotes', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then the backslash is consumed and the quote kept', async () => {
-        // Arrange
-        const ctx = createMemoryContext({
-          env: envOf({ GIT_SSH_COMMAND: 'ssh "a\\"b"' }),
-        });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: ['a"b'] });
-      });
-    });
-  });
-
-  describe('Given GIT_SSH_COMMAND with an escaped backslash inside double quotes', () => {
-    describe('When resolving the ssh command', () => {
-      it('Then the pair collapses to a single backslash', async () => {
-        // Arrange
-        const ctx = createMemoryContext({
-          env: envOf({ GIT_SSH_COMMAND: 'ssh "x\\\\y"' }),
-        });
-        const sut = resolveSshCommand;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toEqual({ program: 'ssh', baseArgs: ['x\\y'] });
+        expect(result).toEqual(expected);
       });
     });
   });

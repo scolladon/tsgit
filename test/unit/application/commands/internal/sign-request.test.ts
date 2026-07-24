@@ -44,86 +44,58 @@ describe('resolveSignRequest', () => {
     });
   });
 
-  describe('Given format ssh with an override signKey', () => {
+  describe('Given a gpg.format and a combination of override key / user.signingKey', () => {
     describe('When the sign request resolves', () => {
-      it('Then the selector is the override key, not the identity', () => {
-        // Arrange
-        const config: ParsedConfig = { gpg: { format: 'ssh' } };
-
-        // Act
-        const result = sut(config, identity, '/keys/id_ed25519.pub');
+      it.each([
+        {
+          config: { gpg: { format: 'ssh' } } as ParsedConfig,
+          override: '/keys/id_ed25519.pub',
+          expectedSelector: '/keys/id_ed25519.pub',
+          label: 'format ssh with an override signKey uses it, not the identity',
+        },
+        {
+          config: {
+            gpg: { format: 'ssh' },
+            user: { signingKey: '/keys/config.pub' },
+          } as ParsedConfig,
+          override: undefined,
+          expectedSelector: '/keys/config.pub',
+          label:
+            'format ssh with user.signingKey and no override uses it with no identity fallback',
+        },
+        {
+          config: { gpg: { format: 'openpgp' } } as ParsedConfig,
+          override: undefined,
+          expectedSelector: identLine,
+          label:
+            'format openpgp with neither an override key nor user.signingKey falls back to the "name <email>" identity string',
+        },
+        {
+          config: {
+            gpg: { format: 'openpgp' },
+            user: { signingKey: 'DEADBEEF' },
+          } as ParsedConfig,
+          override: undefined,
+          expectedSelector: 'DEADBEEF',
+          label:
+            'format openpgp with user.signingKey and no override takes precedence over the identity fallback',
+        },
+        {
+          config: {
+            gpg: { format: 'openpgp' },
+            user: { signingKey: 'DEADBEEF' },
+          } as ParsedConfig,
+          override: 'OVERRIDE1',
+          expectedSelector: 'OVERRIDE1',
+          label:
+            'format openpgp with both an override signKey and user.signingKey has the override win over both',
+        },
+      ])('Then $label', ({ config, override, expectedSelector }) => {
+        // Arrange + Act
+        const result = sut(config, identity, override);
 
         // Assert
-        expect(result.selector).toBe('/keys/id_ed25519.pub');
-      });
-    });
-  });
-
-  describe('Given format ssh with user.signingKey and no override', () => {
-    describe('When the sign request resolves', () => {
-      it('Then the selector is user.signingKey with no identity fallback', () => {
-        // Arrange
-        const config: ParsedConfig = {
-          gpg: { format: 'ssh' },
-          user: { signingKey: '/keys/config.pub' },
-        };
-
-        // Act
-        const result = sut(config, identity, undefined);
-
-        // Assert
-        expect(result.selector).toBe('/keys/config.pub');
-      });
-    });
-  });
-
-  describe('Given format openpgp with neither an override key nor user.signingKey', () => {
-    describe('When the sign request resolves', () => {
-      it('Then the selector falls back to the "name <email>" identity string', () => {
-        // Arrange
-        const config: ParsedConfig = { gpg: { format: 'openpgp' } };
-
-        // Act
-        const result = sut(config, identity, undefined);
-
-        // Assert
-        expect(result.selector).toBe(identLine);
-      });
-    });
-  });
-
-  describe('Given format openpgp with user.signingKey and no override', () => {
-    describe('When the sign request resolves', () => {
-      it('Then the selector is user.signingKey, taking precedence over the identity fallback', () => {
-        // Arrange
-        const config: ParsedConfig = {
-          gpg: { format: 'openpgp' },
-          user: { signingKey: 'DEADBEEF' },
-        };
-
-        // Act
-        const result = sut(config, identity, undefined);
-
-        // Assert
-        expect(result.selector).toBe('DEADBEEF');
-      });
-    });
-  });
-
-  describe('Given format openpgp with both an override signKey and user.signingKey', () => {
-    describe('When the sign request resolves', () => {
-      it('Then the override signKey wins over user.signingKey and the identity', () => {
-        // Arrange
-        const config: ParsedConfig = {
-          gpg: { format: 'openpgp' },
-          user: { signingKey: 'DEADBEEF' },
-        };
-
-        // Act
-        const result = sut(config, identity, 'OVERRIDE1');
-
-        // Assert
-        expect(result.selector).toBe('OVERRIDE1');
+        expect(result.selector).toBe(expectedSelector);
       });
     });
   });
