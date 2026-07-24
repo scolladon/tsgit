@@ -50,36 +50,49 @@ describe('Given a superproject Context and a submodule name', () => {
     });
   });
 
-  describe('When the submodule is not checked out', () => {
-    it('Then no child Context is returned', async () => {
+  describe('When no child Context can be derived', () => {
+    it.each([
+      {
+        label: 'the submodule is not checked out',
+        arrange: async (): Promise<{
+          name: string | undefined;
+          path: FilePath;
+          visited: ReadonlySet<string> | undefined;
+        }> => ({ name: 'absent', path: 'absent' as FilePath, visited: undefined }),
+      },
+      {
+        label: 'the name is undefined',
+        arrange: async (): Promise<{
+          name: string | undefined;
+          path: FilePath;
+          visited: ReadonlySet<string> | undefined;
+        }> => ({ name: undefined, path: 'x' as FilePath, visited: undefined }),
+      },
+      {
+        label: 'the child gitdir is already visited (cycle)',
+        arrange: async (
+          ctx: ReturnType<typeof createMemoryContext>,
+        ): Promise<{
+          name: string | undefined;
+          path: FilePath;
+          visited: ReadonlySet<string> | undefined;
+        }> => {
+          await seedHead(ctx, 'm');
+          return {
+            name: 'm',
+            path: 'm' as FilePath,
+            visited: new Set([`${ctx.layout.gitDir}/modules/m`]),
+          };
+        },
+      },
+    ])('Then no child Context is returned ($label)', async ({ arrange }) => {
       // Arrange
       const ctx = createMemoryContext();
-      // Act
-      const sut = await deriveSubmoduleContext(ctx, 'absent', 'absent' as FilePath);
-      // Assert
-      expect(sut).toBeUndefined();
-    });
-  });
+      const { name, path, visited } = await arrange(ctx);
 
-  describe('When the name is undefined', () => {
-    it('Then no child Context is returned', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
       // Act
-      const sut = await deriveSubmoduleContext(ctx, undefined, 'x' as FilePath);
-      // Assert
-      expect(sut).toBeUndefined();
-    });
-  });
+      const sut = await deriveSubmoduleContext(ctx, name, path, visited);
 
-  describe('When the child gitdir is already visited (cycle)', () => {
-    it('Then no child Context is returned', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      await seedHead(ctx, 'm');
-      const visited = new Set([`${ctx.layout.gitDir}/modules/m`]);
-      // Act
-      const sut = await deriveSubmoduleContext(ctx, 'm', 'm' as FilePath, visited);
       // Assert
       expect(sut).toBeUndefined();
     });

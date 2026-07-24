@@ -39,168 +39,108 @@ describe('qualifyKey', () => {
 });
 
 describe('collectValues', () => {
-  describe('Given a sections array with two matches under [user]', () => {
-    describe('When collectValues runs for user.email', () => {
-      it('Then returns both values in physical order', () => {
-        // Arrange
-        const sections = [
-          section('user', undefined, [
-            { key: 'email', value: 'a@x' },
-            { key: 'other', value: 'ignored' },
-            { key: 'email', value: 'b@y' },
-          ]),
-        ];
-
-        // Act
-        const sut = collectValues(sections, {
-          section: 'user',
-          subsection: undefined,
-          name: 'email',
-        });
-
-        // Assert
-        expect(sut).toEqual([{ value: 'a@x' }, { value: 'b@y' }]);
-      });
-    });
-  });
-
-  describe('Given a case-mismatched section header [USER]', () => {
-    describe('When collectValues runs for user.email', () => {
-      it('Then still matches (case-insensitive section lookup)', () => {
-        // Arrange
-        const sections = [section('USER', undefined, [{ key: 'email', value: 'x' }])];
-
-        // Act
-        const sut = collectValues(sections, {
-          section: 'user',
-          subsection: undefined,
-          name: 'email',
-        });
-
-        // Assert
-        expect(sut).toEqual([{ value: 'x' }]);
-      });
-    });
-  });
-
-  describe('Given a subsection mismatch', () => {
+  describe('Given a sections array and a qualified key to look up', () => {
     describe('When collectValues runs', () => {
-      it('Then returns empty', () => {
+      it.each([
+        {
+          label: 'two matches under [user]: returns both values in physical order',
+          sections: [
+            section('user', undefined, [
+              { key: 'email', value: 'a@x' },
+              { key: 'other', value: 'ignored' },
+              { key: 'email', value: 'b@y' },
+            ]),
+          ],
+          parsed: { section: 'user', subsection: undefined, name: 'email' },
+          expected: [{ value: 'a@x' }, { value: 'b@y' }],
+        },
+        {
+          label: 'a case-mismatched section header [USER]: still matches',
+          sections: [section('USER', undefined, [{ key: 'email', value: 'x' }])],
+          parsed: { section: 'user', subsection: undefined, name: 'email' },
+          expected: [{ value: 'x' }],
+        },
+        {
+          label: 'a subsection mismatch: returns empty',
+          sections: [section('remote', 'origin', [{ key: 'url', value: 'x' }])],
+          parsed: { section: 'remote', subsection: 'upstream', name: 'url' },
+          expected: [],
+        },
+        {
+          label: 'a section-name mismatch, both without subsection: returns empty',
+          sections: [section('foo', undefined, [{ key: 'name', value: 'leak' }])],
+          parsed: { section: 'bar', subsection: undefined, name: 'name' },
+          expected: [],
+        },
+      ])('Then $label', ({ sections, parsed, expected }) => {
         // Arrange
-        const sections = [section('remote', 'origin', [{ key: 'url', value: 'x' }])];
+        const sut = collectValues;
 
         // Act
-        const sut = collectValues(sections, {
-          section: 'remote',
-          subsection: 'upstream',
-          name: 'url',
-        });
+        const result = sut(sections, parsed);
 
         // Assert
-        expect(sut).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a section-name mismatch, both without subsection', () => {
-    describe('When collectValues runs', () => {
-      it('Then returns empty because the section names differ', () => {
-        // Arrange
-        const sections = [section('foo', undefined, [{ key: 'name', value: 'leak' }])];
-
-        // Act
-        const sut = collectValues(sections, {
-          section: 'bar',
-          subsection: undefined,
-          name: 'name',
-        });
-
-        // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual(expected);
       });
     });
   });
 });
 
 describe('collectScopedValues', () => {
-  describe('Given matches in two scopes', () => {
+  describe('Given a scope-tagged sections array and a qualified key to look up', () => {
     describe('When collectScopedValues runs', () => {
-      it('Then returns matches tagged with their scope in caller order', () => {
+      it.each([
+        {
+          label: 'matches in two scopes: returns matches tagged with their scope in caller order',
+          input: [
+            {
+              scope: 'global' as const,
+              section: section('user', undefined, [{ key: 'name', value: 'g' }]),
+            },
+            {
+              scope: 'local' as const,
+              section: section('user', undefined, [{ key: 'name', value: 'l' }]),
+            },
+          ],
+          expected: [
+            { value: 'g', scope: 'global' },
+            { value: 'l', scope: 'local' },
+          ],
+        },
+        {
+          label: 'a scoped section whose header does not match: skips the section, returns empty',
+          input: [
+            {
+              scope: 'local' as const,
+              section: section('other', undefined, [{ key: 'name', value: 'leak' }]),
+            },
+          ],
+          expected: [],
+        },
+        {
+          label:
+            'a matching scoped section with an extra non-matching entry: returns only the matching key',
+          input: [
+            {
+              scope: 'local' as const,
+              section: section('user', undefined, [
+                { key: 'name', value: 'n' },
+                { key: 'email', value: 'e' },
+              ]),
+            },
+          ],
+          expected: [{ value: 'n', scope: 'local' }],
+        },
+      ])('Then $label', ({ input, expected }) => {
         // Arrange
-        const input = [
-          {
-            scope: 'global' as const,
-            section: section('user', undefined, [{ key: 'name', value: 'g' }]),
-          },
-          {
-            scope: 'local' as const,
-            section: section('user', undefined, [{ key: 'name', value: 'l' }]),
-          },
-        ];
+        const sut = collectScopedValues;
+        const parsed = { section: 'user', subsection: undefined, name: 'name' };
 
         // Act
-        const sut = collectScopedValues(input, {
-          section: 'user',
-          subsection: undefined,
-          name: 'name',
-        });
+        const result = sut(input, parsed);
 
         // Assert
-        expect(sut).toEqual([
-          { value: 'g', scope: 'global' },
-          { value: 'l', scope: 'local' },
-        ]);
-      });
-    });
-  });
-
-  describe('Given a scoped section whose header does not match', () => {
-    describe('When collectScopedValues runs', () => {
-      it('Then skips the section and returns empty', () => {
-        // Arrange
-        const input = [
-          {
-            scope: 'local' as const,
-            section: section('other', undefined, [{ key: 'name', value: 'leak' }]),
-          },
-        ];
-
-        // Act
-        const sut = collectScopedValues(input, {
-          section: 'user',
-          subsection: undefined,
-          name: 'name',
-        });
-
-        // Assert
-        expect(sut).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a matching scoped section with an extra non-matching entry', () => {
-    describe('When collectScopedValues runs', () => {
-      it('Then returns only the entry whose key matches', () => {
-        // Arrange
-        const input = [
-          {
-            scope: 'local' as const,
-            section: section('user', undefined, [
-              { key: 'name', value: 'n' },
-              { key: 'email', value: 'e' },
-            ]),
-          },
-        ];
-
-        // Act
-        const sut = collectScopedValues(input, {
-          section: 'user',
-          subsection: undefined,
-          name: 'name',
-        });
-
-        // Assert
-        expect(sut).toEqual([{ value: 'n', scope: 'local' }]);
+        expect(result).toEqual(expected);
       });
     });
   });
