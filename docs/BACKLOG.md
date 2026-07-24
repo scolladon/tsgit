@@ -472,12 +472,13 @@ needs to define hot paths.
   flow asserts a user journey no other E2E flow asserts. Parity
   cross-products excluded from the overlap audit.
   · ADR-500 · design/e2e-test-minimisation.md
-- [ ] **27.4 Perf — rebuild bench suite around hot paths.** Hot-path
+- [x] **27.4 Perf — rebuild bench suite around hot paths.** Hot-path
   list is NOT pre-frozen here; it's derived from the Phase 26 perf
   pass output (the perf pass produces measurements that pick the
   hottest operations). Once that list lands as an ADR, hot paths get
   small / medium / large fixtures; non-hot paths keep medium only.
-  Bench gating only on hot paths.
+  Bench gating only on hot paths. · ADRs 501–505 ·
+  design/bench-hot-path-rework.md
 - [ ] **27.5 Mutation runner — Stryker × vitest-4 test/mutant mis-pairing.**
   Stryker 9.6.1's vitest-runner with vitest 4.1.8 (both latest) under-reports
   killed mutants: for some source files it runs a *subset* of the covering
