@@ -6,7 +6,6 @@ import {
   groupByDir,
   hashSlot,
   hashWorkdir,
-  loadBlob,
   toArray,
   verifyWorkdir,
 } from '../../../../../src/application/primitives/snapshot-operators/index.js';
@@ -93,45 +92,6 @@ describe('hashSlot / hashWorkdir', () => {
         await expect(iterate()).rejects.toMatchObject({
           data: { code: 'ORDER_INVARIANT_VIOLATION', previous: 'z', current: 'a' },
         });
-      });
-    });
-  });
-});
-
-describe('loadBlob', () => {
-  describe('Given a maxInflightBytes cap below the cumulative row size', () => {
-    describe('When loadBlob runs', () => {
-      it('Then it drains oldest reads before issuing new ones (bounded memory)', async () => {
-        // Arrange
-        const maxConcurrent = 2;
-        let inflight = 0;
-        let peak = 0;
-        const makeEntry = (size: number) => ({
-          stat: { size },
-          read: async () => {
-            inflight += 1;
-            if (inflight > peak) peak = inflight;
-            await Promise.resolve();
-            inflight -= 1;
-            return new Uint8Array(size);
-          },
-        });
-        const rows: Row[] = [
-          { path: 'a' as FilePath, workdir: makeEntry(100) },
-          { path: 'b' as FilePath, workdir: makeEntry(100) },
-          { path: 'c' as FilePath, workdir: makeEntry(100) },
-          { path: 'd' as FilePath, workdir: makeEntry(100) },
-        ];
-        const sut = loadBlob<Row>('workdir', {
-          concurrency: maxConcurrent,
-          maxInflightBytes: 1024 * 1024,
-        })(stream(rows));
-
-        // Act
-        await collect(sut);
-
-        // Assert
-        expect(peak).toBeLessThanOrEqual(maxConcurrent);
       });
     });
   });
@@ -386,34 +346,6 @@ describe('Given a pre-aborted signal forwarded to hashSlot', () => {
       controller.abort();
       const sut = hashSlot<Row>('workdir', { signal: controller.signal })(
         stream([{ path: 'a' as FilePath, workdir: { hash: async () => 'a' as ObjectId } }]),
-      );
-
-      // Act + Assert
-      const iterate = async (): Promise<void> => {
-        for await (const _ of sut) {
-          // consume
-        }
-      };
-      await expect(iterate()).rejects.toMatchObject({
-        data: { code: 'OPERATION_ABORTED' },
-      });
-    });
-  });
-});
-
-describe('Given a pre-aborted signal forwarded to loadBlob', () => {
-  describe('When iterated', () => {
-    it('Then it throws OPERATION_ABORTED', async () => {
-      // Arrange
-      const controller = new AbortController();
-      controller.abort();
-      const sut = loadBlob<Row>('workdir', { signal: controller.signal })(
-        stream([
-          {
-            path: 'a' as FilePath,
-            workdir: { stat: { size: 0 }, read: async () => new Uint8Array() },
-          },
-        ]),
       );
 
       // Act + Assert
