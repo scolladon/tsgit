@@ -1100,7 +1100,9 @@
     "penalise",
     "pkgs",
     "uncitable",
-    "undercounts"
+    "undercounts",
+    "comparand",
+    "localisation"
   ],
   "ignorePaths": [
     "node_modules",
