@@ -7,256 +7,210 @@ import type { ParsedConfig } from '../../../../../src/application/primitives/con
 
 describe('Given a parsed config, an explicit remote, and a branch', () => {
   describe('When defaultRemoteName resolves the fallback chain', () => {
-    it('Then an explicit remote wins over tracking, sole-remote, and the default', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote' }]]),
-        remote: new Map([['solermt', {}]]),
-      };
-
-      // Act
-      const result = sut(config, 'explicitRemote', 'main');
-
-      // Assert
-      expect(result).toBe('explicitRemote');
-    });
-
-    it('Then the tracking remote wins when there is no explicit remote', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote' }]]),
-        remote: new Map([
-          ['a', {}],
-          ['b', {}],
-        ]),
-      };
-
-      // Act
-      const result = sut(config, undefined, 'main');
-
-      // Assert
-      expect(result).toBe('trackingRemote');
-    });
-
-    it('Then the sole configured remote wins when there is no explicit or tracking remote', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', {}]]),
-        remote: new Map([['upstreamonly', {}]]),
-      };
-
-      // Act
-      const result = sut(config, undefined, 'main');
-
-      // Assert
-      expect(result).toBe('upstreamonly');
-    });
-
-    it('Then more than one configured remote falls through to DEFAULT_REMOTE', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        remote: new Map([
-          ['a', {}],
-          ['b', {}],
-        ]),
-      };
-
-      // Act
-      const result = sut(config, undefined, undefined);
-
-      // Assert
-      expect(result).toBe('origin');
-    });
-
-    it('Then an undefined branch short-circuits the tracking lookup yet still applies the sole-remote fallback', () => {
-      // Arrange — config.branch is populated (a different branch), proving the
-      // resolution does not attempt `config.branch.get(undefined)`.
-      const config: ParsedConfig = {
-        branch: new Map([['other', { remote: 'otherTrackingRemote' }]]),
-        remote: new Map([['upstreamonly', {}]]),
-      };
-
-      // Act
-      const result = sut(config, undefined, undefined);
+    it.each([
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote' }]]),
+          remote: new Map([['solermt', {}]]),
+        } as ParsedConfig,
+        explicit: 'explicitRemote',
+        branch: 'main',
+        expected: 'explicitRemote',
+        label: 'an explicit remote wins over tracking, sole-remote, and the default',
+      },
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote' }]]),
+          remote: new Map([
+            ['a', {}],
+            ['b', {}],
+          ]),
+        } as ParsedConfig,
+        explicit: undefined,
+        branch: 'main',
+        expected: 'trackingRemote',
+        label: 'the tracking remote wins when there is no explicit remote',
+      },
+      {
+        config: {
+          branch: new Map([['main', {}]]),
+          remote: new Map([['upstreamonly', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        branch: 'main',
+        expected: 'upstreamonly',
+        label: 'the sole configured remote wins when there is no explicit or tracking remote',
+      },
+      {
+        config: {
+          remote: new Map([
+            ['a', {}],
+            ['b', {}],
+          ]),
+        } as ParsedConfig,
+        explicit: undefined,
+        branch: undefined,
+        expected: 'origin',
+        label: 'more than one configured remote falls through to DEFAULT_REMOTE',
+      },
+      {
+        config: {
+          branch: new Map([['other', { remote: 'otherTrackingRemote' }]]),
+          remote: new Map([['upstreamonly', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        branch: undefined,
+        expected: 'upstreamonly',
+        label:
+          'an undefined branch short-circuits the tracking lookup yet still applies the sole-remote fallback (config.branch is populated for a different branch, proving no config.branch.get(undefined) attempt)',
+      },
+      {
+        config: {} as ParsedConfig,
+        explicit: undefined,
+        branch: undefined,
+        expected: 'origin',
+        label: 'an empty/absent config.remote falls through to DEFAULT_REMOTE',
+      },
+    ])('Then $label', ({ config, explicit, branch, expected }) => {
+      // Arrange + Act
+      const result = sut(config, explicit, branch);
 
       // Assert
-      expect(result).toBe('upstreamonly');
-    });
-
-    it('Then an empty/absent config.remote falls through to DEFAULT_REMOTE', () => {
-      // Arrange
-      const config: ParsedConfig = {};
-
-      // Act
-      const result = sut(config, undefined, undefined);
-
-      // Assert
-      expect(result).toBe('origin');
+      expect(result).toBe(expected);
     });
   });
 });
 
 describe('Given a parsed config, an explicit remote, and the current branch', () => {
   describe('When resolvePushRemote resolves the push-remote fallback chain', () => {
-    it('Then an explicit remote wins over pushRemote, remotePushDefault, branch.remote, and sole', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
-        remotePushDefault: 'pushDefaultCfg',
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, 'explicitRemote', 'main');
-
-      // Assert
-      expect(result).toBe('explicitRemote');
-    });
-
-    it('Then branch.<current>.pushRemote wins when there is no explicit remote', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
-        remotePushDefault: 'pushDefaultCfg',
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, 'main');
-
-      // Assert
-      expect(result).toBe('pushRemoteCfg');
-    });
-
-    it('Then remote.pushDefault wins over branch.<current>.remote when there is no explicit remote or pushRemote', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote' }]]),
-        remotePushDefault: 'pushDefaultCfg',
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, 'main');
-
-      // Assert
-      expect(result).toBe('pushDefaultCfg');
-    });
-
-    it('Then branch.<current>.remote wins over the sole-remote fallback when there is no explicit remote, pushRemote, or remotePushDefault', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote' }]]),
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, 'main');
-
-      // Assert
-      expect(result).toBe('trackingRemote');
-    });
-
-    it('Then the sole configured remote wins when there is no explicit remote, pushRemote, remotePushDefault, or branch.remote', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', {}]]),
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, 'main');
-
-      // Assert
-      expect(result).toBe('soleRemote');
-    });
-
-    it('Then more than one configured remote falls through to DEFAULT_REMOTE', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        remote: new Map([
-          ['a', {}],
-          ['b', {}],
-        ]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, 'main');
+    it.each([
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
+          remotePushDefault: 'pushDefaultCfg',
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: 'explicitRemote',
+        expected: 'explicitRemote',
+        label:
+          'an explicit remote wins over pushRemote, remotePushDefault, branch.remote, and sole',
+      },
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
+          remotePushDefault: 'pushDefaultCfg',
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'pushRemoteCfg',
+        label: 'branch.<current>.pushRemote wins when there is no explicit remote',
+      },
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote' }]]),
+          remotePushDefault: 'pushDefaultCfg',
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'pushDefaultCfg',
+        label:
+          'remote.pushDefault wins over branch.<current>.remote when there is no explicit remote or pushRemote',
+      },
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote' }]]),
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'trackingRemote',
+        label:
+          'branch.<current>.remote wins over the sole-remote fallback when there is no explicit remote, pushRemote, or remotePushDefault',
+      },
+      {
+        config: {
+          branch: new Map([['main', {}]]),
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'soleRemote',
+        label:
+          'the sole configured remote wins when there is no explicit remote, pushRemote, remotePushDefault, or branch.remote',
+      },
+      {
+        config: {
+          remote: new Map([
+            ['a', {}],
+            ['b', {}],
+          ]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'origin',
+        label: 'more than one configured remote falls through to DEFAULT_REMOTE',
+      },
+      {
+        config: {} as ParsedConfig,
+        explicit: undefined,
+        expected: 'origin',
+        label: 'an empty/absent config.remote falls through to DEFAULT_REMOTE',
+      },
+    ])('Then $label', ({ config, explicit, expected }) => {
+      // Arrange + Act
+      const result = resolvePushRemote(config, explicit, 'main');
 
       // Assert
-      expect(result).toBe('origin');
-    });
-
-    it('Then an empty/absent config.remote falls through to DEFAULT_REMOTE', () => {
-      // Arrange
-      const config: ParsedConfig = {};
-
-      // Act
-      const result = resolvePushRemote(config, undefined, 'main');
-
-      // Assert
-      expect(result).toBe('origin');
+      expect(result).toBe(expected);
     });
   });
 
   describe('When resolvePushRemote resolves with a detached HEAD (branch is undefined)', () => {
-    it('Then an explicit remote still wins', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        remotePushDefault: 'pushDefaultCfg',
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, 'explicitRemote', undefined);
-
-      // Assert
-      expect(result).toBe('explicitRemote');
-    });
-
-    it('Then remote.pushDefault wins over the sole-remote fallback, and branch.<name>.pushRemote/remote configured under a different key are never consulted', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
-        remotePushDefault: 'pushDefaultCfg',
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, undefined);
-
-      // Assert
-      expect(result).toBe('pushDefaultCfg');
-    });
-
-    it('Then the sole configured remote wins when there is no explicit remote or remotePushDefault', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
-        remote: new Map([['soleRemote', {}]]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, undefined);
-
-      // Assert
-      expect(result).toBe('soleRemote');
-    });
-
-    it('Then more than one configured remote falls through to DEFAULT_REMOTE', () => {
-      // Arrange
-      const config: ParsedConfig = {
-        remote: new Map([
-          ['a', {}],
-          ['b', {}],
-        ]),
-      };
-
-      // Act
-      const result = resolvePushRemote(config, undefined, undefined);
+    it.each([
+      {
+        config: {
+          remotePushDefault: 'pushDefaultCfg',
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: 'explicitRemote',
+        expected: 'explicitRemote',
+        label: 'an explicit remote still wins',
+      },
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
+          remotePushDefault: 'pushDefaultCfg',
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'pushDefaultCfg',
+        label:
+          'remote.pushDefault wins over the sole-remote fallback, and branch.<name>.pushRemote/remote configured under a different key are never consulted',
+      },
+      {
+        config: {
+          branch: new Map([['main', { remote: 'trackingRemote', pushRemote: 'pushRemoteCfg' }]]),
+          remote: new Map([['soleRemote', {}]]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'soleRemote',
+        label:
+          'the sole configured remote wins when there is no explicit remote or remotePushDefault',
+      },
+      {
+        config: {
+          remote: new Map([
+            ['a', {}],
+            ['b', {}],
+          ]),
+        } as ParsedConfig,
+        explicit: undefined,
+        expected: 'origin',
+        label: 'more than one configured remote falls through to DEFAULT_REMOTE',
+      },
+    ])('Then $label', ({ config, explicit, expected }) => {
+      // Arrange + Act
+      const result = resolvePushRemote(config, explicit, undefined);
 
       // Assert
-      expect(result).toBe('origin');
+      expect(result).toBe(expected);
     });
   });
 });

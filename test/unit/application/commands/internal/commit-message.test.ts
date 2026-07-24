@@ -67,62 +67,47 @@ describe('internal/commit-message', () => {
   });
 
   describe('resolveCommitter', () => {
-    describe('Given an explicit committer', () => {
+    describe('Given inputs at different priority levels', () => {
       describe('When resolveCommitter', () => {
-        it('Then returns it', () => {
-          // Arrange
-          const explicit = author({ name: 'Committer' });
-
-          // Act
-          const sut = resolveCommitter({ explicit });
-
-          // Assert
-          expect(sut.name).toBe('Committer');
-        });
-      });
-    });
-
-    describe('Given no explicit committer + author given', () => {
-      describe('When resolveCommitter', () => {
-        it('Then returns author', () => {
-          // Arrange
-          const auth = author({ name: 'Auth' });
-
-          // Act
-          const sut = resolveCommitter({ author: auth });
-
-          // Assert
-          expect(sut.name).toBe('Auth');
-        });
-      });
-    });
-
-    describe('Given explicit committer AND author given', () => {
-      describe('When resolveCommitter', () => {
-        it('Then explicit wins (priority order)', () => {
-          // Arrange
-          const explicit = author({ name: 'Explicit' });
-          const auth = author({ name: 'Auth' });
-
-          // Act
-          const sut = resolveCommitter({ explicit, author: auth });
-
-          // Assert
-          expect(sut.name).toBe('Explicit');
-        });
-      });
-    });
-
-    describe('Given no explicit + no author + configUser', () => {
-      describe('When resolveCommitter', () => {
-        it('Then returns config user', () => {
-          // Arrange
-          const sut = resolveCommitter({
+        it.each([
+          {
+            explicit: author({ name: 'Committer' }),
+            authorArg: undefined,
+            configUser: undefined,
+            expected: 'Committer',
+            label: 'an explicit committer is returned',
+          },
+          {
+            explicit: undefined,
+            authorArg: author({ name: 'Auth' }),
+            configUser: undefined,
+            expected: 'Auth',
+            label: 'falls back to the author when no explicit committer is given',
+          },
+          {
+            explicit: author({ name: 'Explicit' }),
+            authorArg: author({ name: 'Auth' }),
+            configUser: undefined,
+            expected: 'Explicit',
+            label: 'an explicit committer wins over an author (priority order)',
+          },
+          {
+            explicit: undefined,
+            authorArg: undefined,
             configUser: author({ name: 'Cfg', email: 'cfg@example.com' }),
+            expected: 'Cfg',
+            label: 'falls back to the config user when no explicit committer or author is given',
+          },
+        ])('Then $label', ({ explicit, authorArg, configUser, expected }) => {
+          // Arrange + Act
+          const sut = resolveCommitter({
+            ...(explicit !== undefined && { explicit }),
+            ...(authorArg !== undefined && { author: authorArg }),
+            configUser,
           });
 
           // Assert
-          expect(sut.name).toBe('Cfg');
+          expect(sut.name).toBe(expected);
         });
       });
     });
@@ -212,26 +197,51 @@ describe('internal/commit-message', () => {
   });
 
   describe('sanitizeMarkerLabel', () => {
-    describe("Given 'main'", () => {
+    describe('Given a label whose characters must each be escaped or kept per the printable-ASCII guard', () => {
       describe('When sanitizeMarkerLabel', () => {
-        it("Then returns 'main'", () => {
-          // Arrange
-          const sut = sanitizeMarkerLabel('main');
+        it.each([
+          { input: 'main', expected: 'main', label: "'main' is returned unchanged" },
+          {
+            input: 'main\nfoo',
+            expected: 'main\\x0Afoo',
+            label: 'LF is escaped (label must be single-line for marker safety)',
+          },
+          {
+            input: 'a\0b',
+            expected: 'a\\x00b',
+            label: 'NUL is escaped',
+          },
+          {
+            input: '<<<<<feature>>>>>',
+            expected: '<<<<<feature>>>>>',
+            label: 'embedded marker chars (<<<<) remain printable (not escaped)',
+          },
+          {
+            input: 'a b',
+            expected: 'a b',
+            label: 'a SPACE (0x20, low boundary) is kept verbatim (not escaped)',
+          },
+          {
+            input: 'a\x1Fb',
+            expected: 'a\\x1Fb',
+            label: 'char 0x1F (just below low boundary) is escaped',
+          },
+          {
+            input: 'a~b',
+            expected: 'a~b',
+            label: 'a TILDE (0x7E, high boundary) is kept verbatim (not escaped)',
+          },
+          {
+            input: 'a\x7Fb',
+            expected: 'a\\x7Fb',
+            label: 'char 0x7F (DEL, just above high boundary) is escaped',
+          },
+        ])('Then $label', ({ input, expected }) => {
+          // Arrange + Act
+          const sut = sanitizeMarkerLabel(input);
 
           // Assert
-          expect(sut).toBe('main');
-        });
-      });
-    });
-
-    describe("Given 'main\\\\nfoo'", () => {
-      describe('When sanitizeMarkerLabel', () => {
-        it('Then CR/LF/control chars escaped', () => {
-          // Arrange
-          const sut = sanitizeMarkerLabel('main\nfoo');
-
-          // Assert — LF escaped (label must be single-line for marker safety).
-          expect(sut).toBe('main\\x0Afoo');
+          expect(sut).toBe(expected);
         });
       });
     });
@@ -247,78 +257,6 @@ describe('internal/commit-message', () => {
 
           // Assert
           expect(sut.length).toBe(200);
-        });
-      });
-    });
-
-    describe('Given a label with NUL byte', () => {
-      describe('When sanitizeMarkerLabel', () => {
-        it('Then NUL is escaped', () => {
-          // Arrange
-          const sut = sanitizeMarkerLabel('a\0b');
-
-          // Assert
-          expect(sut).toBe('a\\x00b');
-        });
-      });
-    });
-
-    describe('Given a label with embedded marker chars (<<<<)', () => {
-      describe('When sanitizeMarkerLabel', () => {
-        it('Then they remain printable (not escaped)', () => {
-          // Arrange — the label itself can contain `<` chars; they're printable ASCII.
-          const sut = sanitizeMarkerLabel('<<<<<feature>>>>>');
-
-          // Assert
-          expect(sut).toBe('<<<<<feature>>>>>');
-        });
-      });
-    });
-
-    describe('Given a SPACE (0x20, low boundary)', () => {
-      describe('When sanitizeMarkerLabel', () => {
-        it('Then it is kept verbatim (not escaped)', () => {
-          // Arrange — 0x20 is the inclusive lower bound; `code > 0x20` would escape it.
-          const sut = sanitizeMarkerLabel('a b');
-
-          // Assert
-          expect(sut).toBe('a b');
-        });
-      });
-    });
-
-    describe('Given char 0x1F (just below low boundary)', () => {
-      describe('When sanitizeMarkerLabel', () => {
-        it('Then it is escaped', () => {
-          // Arrange — 0x1F is just under 0x20; `code >= 0x20` must reject it.
-          const sut = sanitizeMarkerLabel('a\x1Fb');
-
-          // Assert
-          expect(sut).toBe('a\\x1Fb');
-        });
-      });
-    });
-
-    describe('Given a TILDE (0x7E, high boundary)', () => {
-      describe('When sanitizeMarkerLabel', () => {
-        it('Then it is kept verbatim (not escaped)', () => {
-          // Arrange — 0x7E is the inclusive upper bound; `code < 0x7e` would escape it.
-          const sut = sanitizeMarkerLabel('a~b');
-
-          // Assert
-          expect(sut).toBe('a~b');
-        });
-      });
-    });
-
-    describe('Given char 0x7F (DEL, just above high boundary)', () => {
-      describe('When sanitizeMarkerLabel', () => {
-        it('Then it is escaped', () => {
-          // Arrange — 0x7F is just over 0x7E; `code <= 0x7e` (and the `true` mutant) must reject it.
-          const sut = sanitizeMarkerLabel('a\x7Fb');
-
-          // Assert
-          expect(sut).toBe('a\\x7Fb');
         });
       });
     });

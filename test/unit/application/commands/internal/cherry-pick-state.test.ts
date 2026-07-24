@@ -119,43 +119,40 @@ describe('cherry-pick-state', () => {
   });
 
   describe('Given conflictMergeMsg', () => {
-    describe('When one path conflicts', () => {
-      it('Then appends a tab-indented Conflicts block to the draft', () => {
+    describe('When the message and conflicting paths are formatted', () => {
+      it.each([
+        {
+          draft: 'pick-A subject',
+          paths: ['f.txt' as FilePath],
+          expected: 'pick-A subject\n\n# Conflicts:\n#\tf.txt\n',
+          label: 'appends a tab-indented Conflicts block to the draft',
+        },
+        {
+          draft: 'msg',
+          paths: ['a.txt' as FilePath, 'b/c.txt' as FilePath],
+          expected: 'msg\n\n# Conflicts:\n#\ta.txt\n#\tb/c.txt\n',
+          label: 'lists every path on its own tab-indented line',
+        },
+        {
+          draft: 'subject\n',
+          paths: ['f.txt' as FilePath],
+          expected: 'subject\n\n# Conflicts:\n#\tf.txt\n',
+          label:
+            'collapses to exactly one blank line before the block when the draft already ends with a trailing newline (git bytes)',
+        },
+        {
+          draft: 'subject  \n\n',
+          paths: ['f.txt' as FilePath],
+          expected: 'subject\n\n# Conflicts:\n#\tf.txt\n',
+          label:
+            'strips the whole trailing whitespace run, not just one character (proves the strip is greedy — `\\s+$`, not `\\s$`)',
+        },
+      ])('Then $label', ({ draft, paths, expected }) => {
         // Arrange + Act
-        const sut = conflictMergeMsg('pick-A subject', ['f.txt' as FilePath]);
+        const sut = conflictMergeMsg(draft, paths);
 
         // Assert
-        expect(sut).toBe('pick-A subject\n\n# Conflicts:\n#\tf.txt\n');
-      });
-    });
-
-    describe('When multiple paths conflict', () => {
-      it('Then lists every path on its own tab-indented line', () => {
-        // Arrange + Act
-        const sut = conflictMergeMsg('msg', ['a.txt' as FilePath, 'b/c.txt' as FilePath]);
-
-        // Assert
-        expect(sut).toBe('msg\n\n# Conflicts:\n#\ta.txt\n#\tb/c.txt\n');
-      });
-    });
-
-    describe('When the draft already ends with a trailing newline', () => {
-      it('Then collapses to exactly one blank line before the block (git bytes)', () => {
-        // Arrange + Act — a stripspace'd message ends in a single LF
-        const sut = conflictMergeMsg('subject\n', ['f.txt' as FilePath]);
-
-        // Assert
-        expect(sut).toBe('subject\n\n# Conflicts:\n#\tf.txt\n');
-      });
-    });
-
-    describe('When the draft ends with several whitespace characters', () => {
-      it('Then strips the whole trailing run, not just one character', () => {
-        // Arrange + Act — proves the strip is greedy (`\s+$`, not `\s$`).
-        const sut = conflictMergeMsg('subject  \n\n', ['f.txt' as FilePath]);
-
-        // Assert
-        expect(sut).toBe('subject\n\n# Conflicts:\n#\tf.txt\n');
+        expect(sut).toBe(expected);
       });
     });
   });
