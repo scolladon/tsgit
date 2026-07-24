@@ -50,114 +50,43 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given a config with [core] bare=true', () => {
+  describe('Given a config with a [core] bare value', () => {
     describe('When readConfig', () => {
-      it('Then parsed.core.bare is true', async () => {
+      it.each([
+        { value: 'true', expected: true, label: 'parsed.core.bare is true' },
+        { value: 'false', expected: false, label: 'parsed.core.bare is false' },
+        { value: 'nope', expected: false, label: 'an unparseable boolean defaults to false' },
+      ])('Then $label', async ({ value, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  bare = true\n');
+        await seed(ctx, `[core]\nbare = ${value}\n`);
 
         // Act
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(true);
+        expect(sut.core?.bare).toBe(expected);
       });
     });
   });
 
-  describe('Given a config with [core] bare=false', () => {
+  describe('Given a config with a [core] logallrefupdates value', () => {
     describe('When readConfig', () => {
-      it('Then parsed.core.bare is false', async () => {
+      it.each([
+        { value: 'true', expected: true, label: 'logAllRefUpdates is true' },
+        { value: 'false', expected: false, label: 'logAllRefUpdates is false' },
+        { value: 'always', expected: 'always', label: "logAllRefUpdates is 'always'" },
+        { value: 'ALWAYS', expected: 'always', label: 'matching is case-insensitive' },
+      ])('Then $label', async ({ value, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\nbare = false\n');
+        await seed(ctx, `[core]\n  logallrefupdates = ${value}\n`);
 
         // Act
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a config with [core] bare=invalid (unparseable boolean)', () => {
-    describe('When readConfig', () => {
-      it('Then defaults to false', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\nbare = nope\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.bare).toBe(false);
-      });
-    });
-  });
-
-  describe('Given [core] logallrefupdates=true', () => {
-    describe('When readConfig', () => {
-      it('Then logAllRefUpdates is true', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  logallrefupdates = true\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.logAllRefUpdates).toBe(true);
-      });
-    });
-  });
-
-  describe('Given [core] logallrefupdates=false', () => {
-    describe('When readConfig', () => {
-      it('Then logAllRefUpdates is false', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  logallrefupdates = false\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.logAllRefUpdates).toBe(false);
-      });
-    });
-  });
-
-  describe('Given [core] logallrefupdates=always', () => {
-    describe('When readConfig', () => {
-      it("Then logAllRefUpdates is 'always'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  logallrefupdates = always\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.logAllRefUpdates).toBe('always');
-      });
-    });
-  });
-
-  describe('Given [core] logallrefupdates=ALWAYS (mixed case)', () => {
-    describe('When readConfig', () => {
-      it('Then matching is case-insensitive', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  logallrefupdates = ALWAYS\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.logAllRefUpdates).toBe('always');
+        expect(sut.core?.logAllRefUpdates).toBe(expected);
       });
     });
   });
@@ -345,19 +274,6 @@ describe('primitives/config-read', () => {
 
   describe('Given [user] signingKey with no name/email', () => {
     describe('When readConfig', () => {
-      it('Then user is { signingKey } and name/email are undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[user]\n  signingKey = ABCD1234\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.user).toEqual({ signingKey: 'ABCD1234' });
-        expect(sut.user?.name).toBeUndefined();
-      });
-
       it('Then user has exactly the signingKey key with no name/email keys', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -374,19 +290,6 @@ describe('primitives/config-read', () => {
 
   describe('Given [user] name and email but no signingKey', () => {
     describe('When readConfig', () => {
-      it('Then user is { name, email } and signingKey is undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.user).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
-        expect(sut.user?.signingKey).toBeUndefined();
-      });
-
       it('Then user has exactly the name and email keys with no signingKey key', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -1966,115 +1869,71 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given [core] sparseCheckout=true', () => {
+  describe('Given a config with a [core] sparseCheckout value', () => {
     describe('When readConfig', () => {
-      it('Then parsed.core.sparseCheckout is true', async () => {
+      it.each([
+        {
+          config: '[core]\n  sparseCheckout = true\n',
+          expected: true,
+          label: 'parsed.core.sparseCheckout is true',
+        },
+        {
+          config: '[core]\n  sparseCheckout = false\n',
+          expected: false,
+          label: 'parsed.core.sparseCheckout is false',
+        },
+        {
+          config: '[core]\n  SPARSECHECKOUT = true\n',
+          expected: true,
+          label: 'the key match is case-insensitive',
+        },
+        {
+          config: '[core]\n  sparseCheckout = yes\n',
+          expected: true,
+          label: 'parsed.core.sparseCheckout is true (truthy alias)',
+        },
+      ])('Then $label', async ({ config, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  sparseCheckout = true\n');
+        await seed(ctx, config);
 
         // Act
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.sparseCheckout).toBe(true);
+        expect(sut.core?.sparseCheckout).toBe(expected);
       });
     });
   });
 
-  describe('Given [core] sparseCheckout=false', () => {
+  describe('Given a config with a [core] sparseCheckoutCone value', () => {
     describe('When readConfig', () => {
-      it('Then parsed.core.sparseCheckout is false', async () => {
+      it.each([
+        {
+          config: '[core]\n  sparseCheckoutCone = true\n',
+          expected: true,
+          label: 'parsed.core.sparseCheckoutCone is true',
+        },
+        {
+          config: '[core]\n  sparseCheckoutCone = false\n',
+          expected: false,
+          label: 'parsed.core.sparseCheckoutCone is false',
+        },
+        {
+          config: '[core]\n  SparseCheckoutCone = on\n',
+          expected: true,
+          label: 'the key match is case-insensitive',
+        },
+      ])('Then $label', async ({ config, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  sparseCheckout = false\n');
+        await seed(ctx, config);
 
         // Act
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.sparseCheckout).toBe(false);
-      });
-    });
-  });
-
-  describe('Given [core] SPARSECHECKOUT in upper case', () => {
-    describe('When readConfig', () => {
-      it('Then the key match is case-insensitive', async () => {
-        // Arrange — git config keys are case-insensitive; the lowercased compare
-        // in mergeCore must still match an upper-cased key.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  SPARSECHECKOUT = true\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.sparseCheckout).toBe(true);
-      });
-    });
-  });
-
-  describe('Given [core] sparseCheckout=yes (truthy alias)', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.sparseCheckout is true', async () => {
-        // Arrange — parseGitBoolean accepts yes/on/1 as true.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  sparseCheckout = yes\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.sparseCheckout).toBe(true);
-      });
-    });
-  });
-
-  describe('Given [core] sparseCheckoutCone=true', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.sparseCheckoutCone is true', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  sparseCheckoutCone = true\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.sparseCheckoutCone).toBe(true);
-      });
-    });
-  });
-
-  describe('Given [core] sparseCheckoutCone=false', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.sparseCheckoutCone is false', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  sparseCheckoutCone = false\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.sparseCheckoutCone).toBe(false);
-      });
-    });
-  });
-
-  describe('Given [core] SparseCheckoutCone in mixed case', () => {
-    describe('When readConfig', () => {
-      it('Then the key match is case-insensitive', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  SparseCheckoutCone = on\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.sparseCheckoutCone).toBe(true);
+        expect(sut.core?.sparseCheckoutCone).toBe(expected);
       });
     });
   });
@@ -2146,129 +2005,72 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given [core] loosecompression = 9', () => {
+  describe('Given a config with a [core] compression value', () => {
     describe('When readConfig', () => {
-      it('Then parsed.core.looseCompression is 9', async () => {
+      it.each([
+        {
+          config: '[core]\n  loosecompression = 9\n',
+          expected: 9,
+          label: 'parsed.core.looseCompression is 9',
+        },
+        {
+          config: '[core]\n  loosecompression = 1k\n',
+          expected: 1024,
+          label: 'parsed.core.looseCompression is 1024 (unit multiplier wired)',
+        },
+        {
+          config: '[core]\n  loosecompression = 1\n  compression = 9\n',
+          expected: 1,
+          label: 'looseCompression is 1 (loosecompression wins when it appears before compression)',
+        },
+        {
+          config: '[core]\n  compression = 9\n  loosecompression = 1\n',
+          expected: 1,
+          label: 'looseCompression is 1 (loosecompression wins when it appears after compression)',
+        },
+        {
+          config: '[core]\n  compression = 9\n',
+          expected: 9,
+          label: 'looseCompression is 9 (compression fallback)',
+        },
+      ])('Then $label', async ({ config, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  loosecompression = 9\n');
+        await seed(ctx, config);
 
         // Act
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.looseCompression).toBe(9);
+        expect(sut.core?.looseCompression).toBe(expected);
       });
     });
   });
 
-  describe('Given [core] loosecompression = 1k', () => {
+  describe('Given a [core] section with no valid compression value', () => {
     describe('When readConfig', () => {
-      it('Then parsed.core.looseCompression is 1024 (unit multiplier wired)', async () => {
-        // Arrange — proves parseGitInt is wired, not a raw parseInt
+      it.each([
+        {
+          config: '[core]\n  bare = true\n',
+          label: 'parsed.core.looseCompression is absent (no int compression key)',
+        },
+        {
+          config: '[core]\n\tloosecompression\n',
+          label: 'looseCompression is absent and no exception is thrown (valueless)',
+        },
+        {
+          config: '[core]\n  loosecompression = abc\n',
+          label: 'looseCompression is absent and no exception is thrown (invalid int, lenient)',
+        },
+      ])('Then $label', async ({ config }) => {
+        // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  loosecompression = 1k\n');
+        await seed(ctx, config);
 
         // Act
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.looseCompression).toBe(1024);
-      });
-    });
-  });
-
-  describe('Given [core] with loosecompression=1 before compression=9', () => {
-    describe('When readConfig', () => {
-      it('Then looseCompression is 1 (loosecompression wins regardless of order)', async () => {
-        // Arrange — loosecompression appears first; compression must not override
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  loosecompression = 1\n  compression = 9\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.looseCompression).toBe(1);
-      });
-    });
-  });
-
-  describe('Given [core] with compression=9 before loosecompression=1', () => {
-    describe('When readConfig', () => {
-      it('Then looseCompression is 1 (loosecompression wins regardless of order)', async () => {
-        // Arrange — compression appears first; loosecompression must still win
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  compression = 9\n  loosecompression = 1\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.looseCompression).toBe(1);
-      });
-    });
-  });
-
-  describe('Given [core] compression = 9 with no loosecompression', () => {
-    describe('When readConfig', () => {
-      it('Then looseCompression is 9 (compression fallback)', async () => {
-        // Arrange — only compression key present; it is the fallback
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  compression = 9\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.looseCompression).toBe(9);
-      });
-    });
-  });
-
-  describe('Given [core] with no int compression key', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.looseCompression is absent', async () => {
-        // Arrange — no loosecompression or compression key
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  bare = true\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.looseCompression).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given [core] with valueless loosecompression (loosecompression with no =)', () => {
-    describe('When readConfig', () => {
-      it('Then looseCompression is absent and no exception is thrown', async () => {
-        // Arrange — valueless merges as absent; porcelain survival (refusal is Slice 3)
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n\tloosecompression\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — field absent, no throw
-        expect(sut.core?.looseCompression).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given [core] loosecompression = abc (invalid int value)', () => {
-    describe('When readConfig', () => {
-      it('Then looseCompression is absent and no exception is thrown (lenient)', async () => {
-        // Arrange — valued-but-invalid merges as absent (lenient, out of scope)
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  loosecompression = abc\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — field absent, no throw
         expect(sut.core?.looseCompression).toBeUndefined();
       });
     });
@@ -2999,355 +2801,166 @@ describe('primitives/config-read value grammar', () => {
   });
 
   describe('Given a quoted subsection with escape sequences, When parseIniSections', () => {
-    it('Then `\\"` in the subsection is decoded to `"`', () => {
+    it.each([
+      {
+        text: '[s "a\\"b"]\n\tk = v\n',
+        subsection: 'a"b',
+        label: '`\\"` in the subsection is decoded to `"`',
+      },
+      {
+        text: '[s "a\\\\b"]\n\tk = v\n',
+        subsection: 'a\\b',
+        label: '`\\\\` in the subsection is decoded to `\\`',
+      },
+      {
+        text: '[s "a\\tb"]\n\tk = v\n',
+        subsection: 'atb',
+        label: '`\\t` (backslash + letter t) is decoded to `t` — no named escapes',
+      },
+      {
+        text: '[s "a]b"]\n\tk = v\n',
+        subsection: 'a]b',
+        label: 'a literal `]` inside the quoted subsection is content, not the header close',
+      },
+      {
+        text: '[s "a#b"]\n\tk = v\n',
+        subsection: 'a#b',
+        label: '`#` inside the quoted subsection is content, not a comment',
+      },
+      {
+        text: '[s "a;b"]\n\tk = v\n',
+        subsection: 'a;b',
+        label: '`;` inside the quoted subsection is content, not a comment',
+      },
+      {
+        text: '[s "a\rb"]\n\tk = v\n',
+        subsection: 'a\rb',
+        label: 'a raw CR inside the quoted subsection is content',
+      },
+      {
+        text: '[s\t"a"]\n\tk = v\n',
+        subsection: 'a',
+        label: 'a TAB between the section name and the opening quote is accepted (GIT_SPACE)',
+      },
+      {
+        text: '[s "a"] # trailing comment\n\tk = v\n',
+        subsection: 'a',
+        label: 'a trailing comment after the closing `]` is stripped',
+      },
+      {
+        text: '[s ""]\n\tk = v\n',
+        subsection: '',
+        label: 'an empty quoted subsection `""` yields an empty string (not undefined)',
+      },
+    ])('Then $label', ({ text, subsection }) => {
       // Arrange
       const sut = parseIniSections;
-      const text = '[s "a\\"b"]\n\tk = v\n';
 
       // Act
       const result = sut(text);
 
       // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a"b', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then `\\\\` in the subsection is decoded to `\\`', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s "a\\\\b"]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a\\b', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then `\\t` (backslash + letter t) is decoded to `t` — no named escapes', () => {
-      // Arrange — subsection grammar has NO named escapes; `\c` → `c` for any `c`
-      const sut = parseIniSections;
-      const text = '[s "a\\tb"]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'atb', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then a literal `]` inside the quoted subsection is content, not the header close', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s "a]b"]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a]b', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then `#` inside the quoted subsection is content, not a comment', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s "a#b"]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a#b', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then `;` inside the quoted subsection is content, not a comment', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s "a;b"]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a;b', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then a raw CR inside the quoted subsection is content', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s "a\rb"]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a\rb', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then a TAB between the section name and the opening quote is accepted (GIT_SPACE)', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s\t"a"]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then a trailing comment after the closing `]` is stripped', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s "a"] # trailing comment\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: 'a', entries: [{ key: 'k', value: 'v' }] },
-      ]);
-    });
-
-    it('Then an empty quoted subsection `""` yields an empty string (not undefined)', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[s ""]\n\tk = v\n';
-
-      // Act
-      const result = sut(text);
-
-      // Assert
-      expect(result).toEqual([
-        { section: 's', subsection: '', entries: [{ key: 'k', value: 'v' }] },
-      ]);
+      expect(result).toEqual([{ section: 's', subsection, entries: [{ key: 'k', value: 'v' }] }]);
     });
   });
 
   describe('Given a malformed quoted subsection header, When parseIniSections', () => {
-    it('Then `[s "a" x]` — junk after the closing quote — throws CONFIG_PARSE_ERROR with partial `s.a`', () => {
+    it.each([
+      {
+        text: '[s "a" x]\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: 's.a' },
+        label:
+          '`[s "a" x]` — junk after the closing quote — throws CONFIG_PARSE_ERROR with partial `s.a`',
+      },
+      {
+        text: '[s "a" ]\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: 's.a' },
+        label:
+          '`[s "a" ]` — space before closing `]` — throws CONFIG_PARSE_ERROR with partial `s.a`',
+      },
+      {
+        text: '[s"a"]\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: 's' },
+        label: '`[s"a"]` — no space before the quote — throws CONFIG_PARSE_ERROR with partial `s`',
+      },
+      {
+        text: '["a"]\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: '' },
+        label:
+          '`["a"]` — no section, quote directly after `[` — throws CONFIG_PARSE_ERROR with partial `"` empty',
+      },
+      {
+        text: '[s "a]\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: 's.a]' },
+        label: '`[s "a]` — unclosed quote — throws CONFIG_PARSE_ERROR with partial `s.a]`',
+      },
+      {
+        text: '[s "a\\"b]\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: 's.a"b]' },
+        label:
+          '`[s "a\\"b]` — escaped quote then unclosed — throws CONFIG_PARSE_ERROR with partial `s.a"b]`',
+      },
+      {
+        text: '[s "ab\\\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: 's.ab' },
+        label:
+          '`[s "ab\\` — dangling backslash at end of line — throws CONFIG_PARSE_ERROR with partial `s.ab`',
+      },
+      {
+        text: '[S "a" x]\n\tk = v\n',
+        expectedData: { line: 1, source: 'test-source', partialSectionName: 's.a' },
+        label: '`[S "a" x]` — uppercase section — throws with partial `s.a` (section lowercased)',
+      },
+      {
+        text: '[a]\n\tk = v\n[s "bad" x]\n\tw = ok\n',
+        expectedData: { line: 3 },
+        label: 'a malformed header on line 3 of a multi-line file reports `line: 3`',
+      },
+    ])('Then $label', ({ text, expectedData }) => {
       // Arrange
       const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('[s "a" x]\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw on junk after closing quote');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({
-          line: 1,
-          source: 'test-source',
-          partialSectionName: 's.a',
-        });
-      }
-    });
-
-    it('Then `[s "a" ]` — space before closing `]` — throws CONFIG_PARSE_ERROR with partial `s.a`', () => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('[s "a" ]\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw on space before closing bracket');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({
-          line: 1,
-          source: 'test-source',
-          partialSectionName: 's.a',
-        });
-      }
-    });
-
-    it('Then `[s"a"]` — no space before the quote — throws CONFIG_PARSE_ERROR with partial `s`', () => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('[s"a"]\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw when quote is not preceded by whitespace');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({ line: 1, source: 'test-source', partialSectionName: 's' });
-      }
-    });
-
-    it('Then `["a"]` — no section, quote directly after `[` — throws CONFIG_PARSE_ERROR with partial `"` empty', () => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('["a"]\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw when no section precedes the quote');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({ line: 1, source: 'test-source', partialSectionName: '' });
-      }
-    });
-
-    it('Then `[s "a]` — unclosed quote — throws CONFIG_PARSE_ERROR with partial `s.a]`', () => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('[s "a]\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw on unclosed subsection quote');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({
-          line: 1,
-          source: 'test-source',
-          partialSectionName: 's.a]',
-        });
-      }
-    });
-
-    it('Then `[s "a\\"b]` — escaped quote then unclosed — throws CONFIG_PARSE_ERROR with partial `s.a"b]`', () => {
-      // Arrange — `\"` inside the span decodes to `"`, then the span is never closed
-      const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('[s "a\\"b]\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw on unclosed span after escaped quote');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({
-          line: 1,
-          source: 'test-source',
-          partialSectionName: 's.a"b]',
-        });
-      }
-    });
-
-    it('Then `[s "ab\\` — dangling backslash at end of line — throws CONFIG_PARSE_ERROR with partial `s.ab`', () => {
-      // Arrange — `\` at end of inner span (after stripping `]`) is fatal
-      const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('[s "ab\\\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw on dangling backslash in subsection');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({
-          line: 1,
-          source: 'test-source',
-          partialSectionName: 's.ab',
-        });
-      }
-    });
-
-    it('Then `[S "a" x]` — uppercase section — throws with partial `s.a` (section lowercased)', () => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act + Assert
-      try {
-        sut('[S "a" x]\n\tk = v\n', 'test-source');
-        expect.unreachable('parseIniSections must throw on junk after closing quote');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({
-          line: 1,
-          source: 'test-source',
-          partialSectionName: 's.a',
-        });
-      }
-    });
-
-    it('Then a malformed header on line 3 of a multi-line file reports `line: 3`', () => {
-      // Arrange — two well-formed lines precede the malformed header
-      const sut = parseIniSections;
-      const text = '[a]\n\tk = v\n[s "bad" x]\n\tw = ok\n';
 
       // Act + Assert
       try {
         sut(text, 'test-source');
-        expect.unreachable('parseIniSections must throw on the malformed header');
+        expect.unreachable('parseIniSections must throw on a malformed quoted subsection header');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
         expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({ line: 3 });
+        expect(err.data).toMatchObject(expectedData);
       }
     });
   });
 
   describe('Given a malformed value, When parseIniSections', () => {
-    it('Then an unknown escape throws CONFIG_PARSE_ERROR with the physical line', () => {
+    it.each([
+      {
+        text: '[test]\n\tv = a\\xb\n',
+        line: 2,
+        label: 'an unknown escape throws CONFIG_PARSE_ERROR with the physical line',
+      },
+      {
+        text: '[a]\nk = ok\n[test]\nv = "good"\nw = "bad\n',
+        line: 5,
+        label: 'an unclosed quote throws CONFIG_PARSE_ERROR with the physical line',
+      },
+      {
+        text: '[test]\n\tv = a\\\nb\\q\n',
+        line: 3,
+        label: 'a failure on a continuation line reports the continuation physical line',
+      },
+    ])('Then $label', ({ text, line }) => {
       // Arrange
       const sut = parseIniSections;
-      const text = '[test]\n\tv = a\\xb\n';
 
       // Act + Assert
       try {
         sut(text);
-        expect.unreachable('parseIniSections must throw on an unknown escape');
+        expect.unreachable('parseIniSections must throw on a malformed value');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
         expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({ line: 2 });
-      }
-    });
-
-    it('Then an unclosed quote throws CONFIG_PARSE_ERROR with the physical line', () => {
-      // Arrange
-      const sut = parseIniSections;
-      const text = '[a]\nk = ok\n[test]\nv = "good"\nw = "bad\n';
-
-      // Act + Assert
-      try {
-        sut(text);
-        expect.unreachable('parseIniSections must throw on an unclosed quote');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({ line: 5 });
-      }
-    });
-
-    it('Then a failure on a continuation line reports the continuation physical line', () => {
-      // Arrange — value starts on line 2; the bad escape sits on line 3.
-      const sut = parseIniSections;
-      const text = '[test]\n\tv = a\\\nb\\q\n';
-
-      // Act + Assert
-      try {
-        sut(text);
-        expect.unreachable('parseIniSections must throw on an unknown escape');
-      } catch (err) {
-        if (!(err instanceof TsgitError)) throw err;
-        expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-        expect(err.data).toMatchObject({ line: 3 });
+        expect(err.data).toMatchObject({ line });
       }
     });
 
@@ -3742,214 +3355,54 @@ describe('primitives/config-read valueless keys', () => {
       });
     });
 
-    describe('Given valueless key with trailing spaces, When parseIniSections', () => {
-      it('Then value is null (trailing spaces accepted)', () => {
+    describe('Given a valueless key with trailing or leading whitespace variations, When parseIniSections', () => {
+      it.each([
+        { input: '[a]\n\tkey   \n', key: 'key', label: 'value is null (trailing spaces accepted)' },
+        { input: '[a]\n\tkey\t\n', key: 'key', label: 'value is null (trailing tab accepted)' },
+        { input: '[a]\n\tkey\r\n', key: 'key', label: 'value is null (CR at EOL accepted)' },
+        {
+          input: '[a]\n   key\n',
+          key: 'key',
+          label: 'value is null (leading whitespace accepted)',
+        },
+        {
+          input: '[a]\n\tWith-CAPS\n',
+          key: 'With-CAPS',
+          label: 'key case is preserved and value is null',
+        },
+        { input: '[a]\nkey', key: 'key', label: 'value is null (no trailing newline accepted)' },
+      ])('Then $label', ({ input, key }) => {
         // Arrange
         const sut = parseIniSections;
 
         // Act
-        const result = sut('[a]\n\tkey   \n');
+        const result = sut(input);
 
         // Assert
-        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
-      });
-    });
-
-    describe('Given valueless key with trailing tab, When parseIniSections', () => {
-      it('Then value is null (trailing tab accepted)', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tkey\t\n');
-
-        // Assert
-        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
-      });
-    });
-
-    describe('Given valueless key with trailing CR (CRLF line), When parseIniSections', () => {
-      it('Then value is null (CR at EOL accepted)', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tkey\r\n');
-
-        // Assert
-        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
-      });
-    });
-
-    describe('Given valueless key with leading whitespace, When parseIniSections', () => {
-      it('Then value is null (leading whitespace accepted)', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n   key\n');
-
-        // Assert
-        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
-      });
-    });
-
-    describe('Given valueless key With-CAPS, When parseIniSections', () => {
-      it('Then key case is preserved and value is null', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tWith-CAPS\n');
-
-        // Assert
-        expect(result[0]?.entries).toEqual([{ key: 'With-CAPS', value: null }]);
-      });
-    });
-
-    describe('Given valueless key at EOF with no trailing newline, When parseIniSections', () => {
-      it('Then value is null (no trailing newline accepted)', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\nkey');
-
-        // Assert
-        expect(result[0]?.entries).toEqual([{ key: 'key', value: null }]);
+        expect(result[0]?.entries).toEqual([{ key, value: null }]);
       });
     });
   });
 
   describe('parseIniSections — refusal matrix', () => {
-    describe('Given key with inline semicolon comment (key ; c), When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR with line 2 and the source', () => {
+    describe('Given a key line that violates the key grammar, When parseIniSections', () => {
+      it.each([
+        { text: '[a]\nkey ; c\n', label: 'inline semicolon comment (key ; c)' },
+        { text: '[a]\nkey # c\n', label: 'inline hash comment (key # c)' },
+        { text: '[a]\nbad!key\n', label: 'exclamation (bad!key)' },
+        { text: '[a]\n9key\n', label: 'digit-first key (9key)' },
+        { text: '[a]\n-key\n', label: 'dash-first key (-key)' },
+        { text: '[a]\nunder_score\n', label: 'underscore (under_score)' },
+        { text: '[a]\nkey\r \n', label: 'lone CR before trailing space (key\\r )' },
+        { text: '[a]\n\tab#cd = x\n', label: 'a comment swallowing the = (ab#cd = x)' },
+      ])('Then throws CONFIG_PARSE_ERROR with line 2 and the source ($label)', ({ text }) => {
         // Arrange
         const sut = parseIniSections;
 
         // Act + Assert
         try {
-          sut('[a]\nkey ; c\n', 'test.cfg');
-          expect.unreachable('must throw on key with inline comment');
-        } catch (err) {
-          if (!(err instanceof TsgitError)) throw err;
-          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
-        }
-      });
-    });
-
-    describe('Given key with inline hash comment (key # c), When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR with line 2 and the source', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
-        try {
-          sut('[a]\nkey # c\n', 'test.cfg');
-          expect.unreachable('must throw on key with inline hash comment');
-        } catch (err) {
-          if (!(err instanceof TsgitError)) throw err;
-          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
-        }
-      });
-    });
-
-    describe('Given key with exclamation (bad!key), When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
-        try {
-          sut('[a]\nbad!key\n', 'test.cfg');
-          expect.unreachable('must throw on bad!key');
-        } catch (err) {
-          if (!(err instanceof TsgitError)) throw err;
-          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
-        }
-      });
-    });
-
-    describe('Given key starting with digit (9key), When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
-        try {
-          sut('[a]\n9key\n', 'test.cfg');
-          expect.unreachable('must throw on 9key');
-        } catch (err) {
-          if (!(err instanceof TsgitError)) throw err;
-          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
-        }
-      });
-    });
-
-    describe('Given key starting with dash (-key), When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
-        try {
-          sut('[a]\n-key\n', 'test.cfg');
-          expect.unreachable('must throw on -key');
-        } catch (err) {
-          if (!(err instanceof TsgitError)) throw err;
-          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
-        }
-      });
-    });
-
-    describe('Given key with underscore (under_score), When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
-        try {
-          sut('[a]\nunder_score\n', 'test.cfg');
-          expect.unreachable('must throw on under_score');
-        } catch (err) {
-          if (!(err instanceof TsgitError)) throw err;
-          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
-        }
-      });
-    });
-
-    describe('Given key with lone CR before trailing space (key\\r ), When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR with line 2', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
-        try {
-          sut('[a]\nkey\r \n', 'test.cfg');
-          expect.unreachable('must throw on key with CR not at EOL');
-        } catch (err) {
-          if (!(err instanceof TsgitError)) throw err;
-          expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
-          expect(err.data).toMatchObject({ line: 2, source: 'test.cfg' });
-        }
-      });
-    });
-
-    describe('Given ab#cd = x where comment swallows the =, When parseIniSections', () => {
-      it('Then throws CONFIG_PARSE_ERROR (refused like git)', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
-        try {
-          sut('[a]\n\tab#cd = x\n', 'test.cfg');
-          expect.unreachable('must throw when comment swallows =');
+          sut(text, 'test.cfg');
+          expect.unreachable('must throw on a key that violates the grammar');
         } catch (err) {
           if (!(err instanceof TsgitError)) throw err;
           expect(err.data.code).toBe('CONFIG_PARSE_ERROR');
@@ -6073,46 +5526,23 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('findFirstInvalidCompression', () => {
-    describe('Given no [core] section', () => {
+    describe('Given a config with no invalid compression value', () => {
       describe('When findFirstInvalidCompression', () => {
-        it('Then returns undefined', async () => {
+        it.each([
+          { config: '[user]\n\tname = Bob\n', label: 'no [core] section' },
+          { config: '[core]\n\tbare = false\n', label: 'core.loosecompression is absent' },
+          {
+            config: '[core]\n\tloosecompression = 5\n',
+            label: 'core.loosecompression = 5 (valid)',
+          },
+          {
+            config: '[core]\n\tcompression = 9\n',
+            label: 'core.compression = 9 (zlib maximum, valid)',
+          },
+        ])('Then returns undefined ($label)', async ({ config }) => {
           // Arrange
           const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Bob\n');
-          const sut = findFirstInvalidCompression;
-
-          // Act
-          const result = await sut(ctx);
-
-          // Assert
-          expect(result).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given core.loosecompression is absent', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns undefined', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n');
-          const sut = findFirstInvalidCompression;
-
-          // Act
-          const result = await sut(ctx);
-
-          // Assert
-          expect(result).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given core.loosecompression = 5 (valid)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns undefined', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression = 5\n');
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
           const sut = findFirstInvalidCompression;
 
           // Act
@@ -6241,23 +5671,6 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           if (result?.failure.kind === 'zlib') {
             expect(result.failure.level).toBe(-2);
           }
-        });
-      });
-    });
-
-    describe('Given core.compression = 9 (zlib maximum, valid)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns undefined (level 9 is accepted)', async () => {
-          // Arrange — 9 is the highest valid zlib level; git accepts it.
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = 9\n');
-          const sut = findFirstInvalidCompression;
-
-          // Act
-          const result = await sut(ctx);
-
-          // Assert
-          expect(result).toBeUndefined();
         });
       });
     });
@@ -6427,297 +5840,129 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('Given [push] gpgSign = true', () => {
+  describe('Given a config with a [push] gpgSign value', () => {
     describe('When readConfig', () => {
-      it("Then push.gpgSign is 'true'", async () => {
+      it.each([
+        { value: 'true', label: "push.gpgSign is 'true'" },
+        { value: 'false', label: "push.gpgSign is 'false'" },
+        { value: 'if-asked', label: "push.gpgSign is 'if-asked'" },
+      ])('Then $label', async ({ value }) => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  gpgSign = true\n');
+        await seed(ctx, `[push]\n  gpgSign = ${value}\n`);
 
         // Act
         const sut = await readConfig(ctx);
 
         // Assert
-        expect(sut.push?.gpgSign).toBe('true');
+        expect(sut.push?.gpgSign).toBe(value);
       });
     });
   });
 
-  describe('Given [push] gpgSign = false', () => {
-    describe('When readConfig', () => {
-      it("Then push.gpgSign is 'false'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  gpgSign = false\n');
+  describe('Given a config with a [push] default value, When readConfig', () => {
+    it.each([
+      {
+        config: '[push]\n  default = nothing\n',
+        expected: 'nothing',
+        label: "push.default is 'nothing'",
+      },
+      {
+        config: '[push]\n  default = current\n',
+        expected: 'current',
+        label: "push.default is 'current'",
+      },
+      {
+        config: '[push]\n  default = upstream\n',
+        expected: 'upstream',
+        label: "push.default is 'upstream'",
+      },
+      {
+        config: '[push]\n  default = simple\n',
+        expected: 'simple',
+        label: "push.default is 'simple'",
+      },
+      {
+        config: '[push]\n  default = matching\n',
+        expected: 'matching',
+        label: "push.default is 'matching'",
+      },
+      {
+        config: '[push]\n  default = tracking\n',
+        expected: 'upstream',
+        label: "push.default is canonicalized to 'upstream' (deprecated alias)",
+      },
+      {
+        config: '[push]\n  Default = simple\n',
+        expected: 'simple',
+        label: 'the Default key is matched case-insensitively',
+      },
+    ])('Then $label', async ({ config, expected }) => {
+      // Arrange — git config keys are case-insensitive, so `Default` folds to `default`;
+      // value matching stays case-sensitive (see the `Simple` (wrong case) test below).
+      const ctx = createMemoryContext();
+      await seed(ctx, config);
 
-        // Act
-        const sut = await readConfig(ctx);
+      // Act
+      const sut = await readConfig(ctx);
 
-        // Assert
-        expect(sut.push?.gpgSign).toBe('false');
-      });
+      // Assert
+      expect(sut.push?.default).toBe(expected);
     });
   });
 
-  describe('Given [push] gpgSign = if-asked', () => {
-    describe('When readConfig', () => {
-      it("Then push.gpgSign is 'if-asked'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  gpgSign = if-asked\n');
+  describe('Given a config with a [push] section that does not set a valid default, When readConfig', () => {
+    it.each([
+      {
+        config: '[push]\n  default = Simple\n',
+        label: 'push.default stays undefined (case-sensitive match)',
+      },
+      {
+        config: '[push]\n  default = bogus\n',
+        label: 'push.default stays undefined (lenient parse)',
+      },
+      {
+        config: '[push]\n  foo = simple\n',
+        label: 'push.default stays undefined (only the `default` key is read)',
+      },
+      { config: '[push]\n  gpgSign = true\n', label: 'push.default is undefined' },
+    ])('Then $label', async ({ config }) => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, config);
 
-        // Act
-        const sut = await readConfig(ctx);
+      // Act
+      const sut = await readConfig(ctx);
 
-        // Assert
-        expect(sut.push?.gpgSign).toBe('if-asked');
-      });
+      // Assert
+      expect(sut.push?.default).toBeUndefined();
     });
   });
 
-  describe('Given [push] default = nothing', () => {
-    describe('When readConfig', () => {
-      it("Then push.default is 'nothing'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = nothing\n');
+  describe('Given a config that findInvalidPushDefault accepts, When findInvalidPushDefault', () => {
+    it.each([
+      { config: '[user]\n  name = Bob\n', label: 'no [push] section' },
+      { config: '[push]\n  default = simple\n', label: 'default = simple (valid)' },
+      {
+        config: '[push]\n  default = tracking\n',
+        label: 'default = tracking (legacy alias for upstream)',
+      },
+      { config: '[push]\n  default\n', label: 'default is valueless (treated as absent)' },
+      {
+        config: '  default = bogus\n[push]\n  default = simple\n',
+        label: 'a bogus default entry before any section header (not inside [push])',
+      },
+    ])('Then returns undefined ($label)', async ({ config }) => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, config);
+      const sut = findInvalidPushDefault;
 
-        // Act
-        const sut = await readConfig(ctx);
+      // Act
+      const result = await sut(ctx);
 
-        // Assert
-        expect(sut.push?.default).toBe('nothing');
-      });
-    });
-  });
-
-  describe('Given [push] default = current', () => {
-    describe('When readConfig', () => {
-      it("Then push.default is 'current'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = current\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBe('current');
-      });
-    });
-  });
-
-  describe('Given [push] default = upstream', () => {
-    describe('When readConfig', () => {
-      it("Then push.default is 'upstream'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = upstream\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBe('upstream');
-      });
-    });
-  });
-
-  describe('Given [push] default = simple', () => {
-    describe('When readConfig', () => {
-      it("Then push.default is 'simple'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = simple\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBe('simple');
-      });
-    });
-  });
-
-  describe('Given [push] default = matching', () => {
-    describe('When readConfig', () => {
-      it("Then push.default is 'matching'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = matching\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBe('matching');
-      });
-    });
-  });
-
-  describe('Given [push] default = tracking', () => {
-    describe('When readConfig', () => {
-      it("Then push.default is canonicalized to 'upstream' (deprecated alias)", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = tracking\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBe('upstream');
-      });
-    });
-  });
-
-  describe('Given a `[push]` section with the Default key in a different case', () => {
-    describe('When readConfig', () => {
-      it('Then the Default key is matched case-insensitively', async () => {
-        // Arrange — git config keys are case-insensitive; `Default` must fold to `default`.
-        // (Distinct from value matching, which is case-sensitive — see the `Simple` test below.)
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  Default = simple\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBe('simple');
-      });
-    });
-  });
-
-  describe('Given [push] default = Simple (wrong case)', () => {
-    describe('When readConfig', () => {
-      it('Then push.default stays undefined (case-sensitive match)', async () => {
-        // Arrange — push.default value matching is case-sensitive; `Simple` != `simple`.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = Simple\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given [push] default = bogus (unrecognized value)', () => {
-    describe('When readConfig', () => {
-      it('Then push.default stays undefined (lenient parse)', async () => {
-        // Arrange — parsing is lenient here; refusal on an invalid value is a push-time concern.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = bogus\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a `[push]` section with an unrelated key whose value parses as a valid mode', () => {
-    describe('When readConfig', () => {
-      it('Then push.default stays undefined (only the `default` key is read)', async () => {
-        // Arrange — `foo`'s value happens to be a recognized push.default mode, but the
-        // key itself is not `default`, so it must never set push.default.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  foo = simple\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a `[push]` section without a default key', () => {
-    describe('When readConfig', () => {
-      it('Then push.default is undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  gpgSign = true\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.push?.default).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given no [push] section', () => {
-    describe('When findInvalidPushDefault', () => {
-      it('Then returns undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[user]\n  name = Bob\n');
-        const sut = findInvalidPushDefault;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given [push] default = simple (valid)', () => {
-    describe('When findInvalidPushDefault', () => {
-      it('Then returns undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = simple\n');
-        const sut = findInvalidPushDefault;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given [push] default = tracking (legacy alias for upstream)', () => {
-    describe('When findInvalidPushDefault', () => {
-      it('Then returns undefined', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default = tracking\n');
-        const sut = findInvalidPushDefault;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given [push] default is valueless', () => {
-    describe('When findInvalidPushDefault', () => {
-      it('Then returns undefined (a valueless key is treated as absent)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[push]\n  default\n');
-        const sut = findInvalidPushDefault;
-
-        // Act
-        const result = await sut(ctx);
-
-        // Assert
-        expect(result).toBeUndefined();
-      });
+      // Assert
+      expect(result).toBeUndefined();
     });
   });
 
@@ -6776,84 +6021,21 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('Given a bogus default entry BEFORE any section header', () => {
-    describe('When findInvalidPushDefault', () => {
-      it('Then returns undefined (the entry is not inside [push])', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '  default = bogus\n[push]\n  default = simple\n');
-        const sut = findInvalidPushDefault;
+  describe('Given a config with a [gpg] format value, When readConfig', () => {
+    it.each([
+      { value: 'openpgp', label: "gpg.format is 'openpgp'" },
+      { value: 'ssh', label: "gpg.format is 'ssh'" },
+      { value: 'x509', label: "gpg.format is 'x509'" },
+    ])('Then $label', async ({ value }) => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, `[gpg]\n  format = ${value}\n`);
 
-        // Act
-        const result = await sut(ctx);
+      // Act
+      const sut = await readConfig(ctx);
 
-        // Assert
-        expect(result).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given an unrecognized top-level section holding a gpg-shaped key', () => {
-    describe('When readConfig', () => {
-      it('Then gpg stays undefined (only the [gpg] section feeds gpg)', async () => {
-        // Arrange — `format = ssh` under [unknown] must not populate gpg; only [gpg] does.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[unknown]\n  format = ssh\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.gpg).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given [gpg] format = openpgp', () => {
-    describe('When readConfig', () => {
-      it("Then gpg.format is 'openpgp'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[gpg]\n  format = openpgp\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.gpg?.format).toBe('openpgp');
-      });
-    });
-  });
-
-  describe('Given [gpg] format = ssh', () => {
-    describe('When readConfig', () => {
-      it("Then gpg.format is 'ssh'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[gpg]\n  format = ssh\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.gpg?.format).toBe('ssh');
-      });
-    });
-  });
-
-  describe('Given [gpg] format = x509', () => {
-    describe('When readConfig', () => {
-      it("Then gpg.format is 'x509'", async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[gpg]\n  format = x509\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.gpg?.format).toBe('x509');
-      });
+      // Assert
+      expect(sut.gpg?.format).toBe(value);
     });
   });
 
@@ -6869,22 +6051,6 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(sut.gpg?.program).toBe('/usr/bin/gpg2');
-      });
-    });
-  });
-
-  describe('Given [gpg] with only an unrelated key (neither format nor program)', () => {
-    describe('When readConfig', () => {
-      it('Then gpg is undefined (an unrelated key sets neither format nor program)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[gpg]\n  minTrustLevel = marginal\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — the program branch must not fire for a non-'program' key
-        expect(sut.gpg).toBeUndefined();
       });
     });
   });
@@ -6905,67 +6071,42 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('Given [gpg] format = <unrecognised value>', () => {
-    describe('When readConfig', () => {
-      it('Then gpg is undefined (an unrecognised format value is not stored)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[gpg]\n  format = bogus\n');
+  describe('Given a config that does not populate [gpg], When readConfig', () => {
+    it.each([
+      {
+        config: '[unknown]\n  format = ssh\n',
+        label: 'gpg stays undefined (only the [gpg] section feeds gpg)',
+      },
+      {
+        config: '[gpg]\n  minTrustLevel = marginal\n',
+        label: 'gpg is undefined (an unrelated key sets neither format nor program)',
+      },
+      {
+        config: '[gpg]\n  format = bogus\n',
+        label: 'gpg is undefined (an unrecognised format value is not stored)',
+      },
+      {
+        config: '[foo "ssh"]\n  program = /usr/bin/ssh-keygen\n',
+        label: 'gpg is undefined (a non-gpg "ssh" subsection is not routed to gpg.ssh)',
+      },
+      {
+        config: '[gpg "not-ssh"]\n  program = /usr/bin/ssh-keygen\n',
+        label: 'gpg is undefined (only the "ssh" gpg subsection is recognised)',
+      },
+      {
+        config: '[gpg "ssh"]\n  unrelated = /usr/bin/ssh-keygen\n',
+        label: 'gpg is undefined (a non-program key under gpg.ssh is not stored)',
+      },
+    ])('Then $label', async ({ config }) => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, config);
 
-        // Act
-        const sut = await readConfig(ctx);
+      // Act
+      const sut = await readConfig(ctx);
 
-        // Assert — only openpgp/ssh/x509 are accepted formats.
-        expect(sut.gpg).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a [foo "ssh"] subsection whose section is not gpg', () => {
-    describe('When readConfig', () => {
-      it('Then gpg is undefined (a non-gpg "ssh" subsection is not routed to gpg.ssh)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[foo "ssh"]\n  program = /usr/bin/ssh-keygen\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — only the gpg subsection dispatches to the ssh signer config.
-        expect(sut.gpg).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a [gpg "not-ssh"] subsection whose name is not ssh', () => {
-    describe('When readConfig', () => {
-      it('Then gpg is undefined (only the "ssh" gpg subsection is recognised)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[gpg "not-ssh"]\n  program = /usr/bin/ssh-keygen\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — a gpg subsection named other than "ssh" is a silent no-op.
-        expect(sut.gpg).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a [gpg "ssh"] subsection with an unrelated key', () => {
-    describe('When readConfig', () => {
-      it('Then gpg is undefined (a non-program key under gpg.ssh is not stored)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[gpg "ssh"]\n  unrelated = /usr/bin/ssh-keygen\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — only the `program` key under gpg.ssh is recognised.
-        expect(sut.gpg).toBeUndefined();
-      });
+      // Assert
+      expect(sut.gpg).toBeUndefined();
     });
   });
 
