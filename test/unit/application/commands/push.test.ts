@@ -269,13 +269,32 @@ describe('push — config + refspec guards', () => {
     });
   });
 
-  describe('Given a remote with a valueless url entry', () => {
+  describe('Given a remote config with a valueless url or pushurl entry', () => {
     describe('When push runs', () => {
-      it('Then throws CONFIG_MISSING_VALUE with key remote.origin.url at line 2', async () => {
-        // Arrange
+      it.each([
+        {
+          configText: '[remote "origin"]\n\turl\n',
+          expectedKey: 'remote.origin.url',
+          label: 'a valueless url entry reports remote.origin.url at line 2',
+        },
+        {
+          configText: '[remote "origin"]\n\turl\n\tpushurl = https://push.example.com/r.git\n',
+          expectedKey: 'remote.origin.url',
+          label:
+            'a valueless url with a valued pushurl still reports remote.origin.url at line 2 (pushurl does not rescue it)',
+        },
+        {
+          configText: '[remote "origin"]\n\tpushurl\n\turl = https://example.com/r.git\n',
+          expectedKey: 'remote.origin.pushurl',
+          label:
+            'a valueless pushurl with a valued url reports remote.origin.pushurl at line 2 (url does not rescue it)',
+        },
+      ])('Then throws CONFIG_MISSING_VALUE — $label', async ({ configText, expectedKey }) => {
+        // Arrange — git validates each config entry eagerly, before the
+        // `pushurl ?? url` fallback can substitute the other.
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "origin"]\n\turl\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, configText);
         __resetConfigCacheForTests();
 
         // Act
@@ -295,82 +314,7 @@ describe('push — config + refspec guards', () => {
           source: string;
         };
         expect(data.code).toBe('CONFIG_MISSING_VALUE');
-        expect(data.key).toBe('remote.origin.url');
-        expect(data.line).toBe(2);
-        expect(data.source).toMatch(/\/config$/);
-      });
-    });
-  });
-
-  describe('Given a remote with a valueless url but a valued pushurl', () => {
-    describe('When push runs', () => {
-      it('Then throws CONFIG_MISSING_VALUE with key remote.origin.url at line 2', async () => {
-        // Arrange — git validates each config entry eagerly: a valueless `url`
-        // dies even when `pushurl` would otherwise satisfy the push, and it
-        // reports `url` as the earlier-by-line entry.
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n\turl\n\tpushurl = https://push.example.com/r.git\n',
-        );
-        __resetConfigCacheForTests();
-
-        // Act
-        let caught: unknown;
-        try {
-          await push(ctx);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          key: string;
-          line: number;
-          source: string;
-        };
-        expect(data.code).toBe('CONFIG_MISSING_VALUE');
-        expect(data.key).toBe('remote.origin.url');
-        expect(data.line).toBe(2);
-        expect(data.source).toMatch(/\/config$/);
-      });
-    });
-  });
-
-  describe('Given a remote with a valueless pushurl but a valued url', () => {
-    describe('When push runs', () => {
-      it('Then throws CONFIG_MISSING_VALUE with key remote.origin.pushurl at line 2', async () => {
-        // Arrange — a valueless `pushurl` dies even when `url` is valued; the
-        // `pushurl ?? url` fallback does not rescue it (pre-resolution guard).
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
-        await ctx.fs.writeUtf8(
-          `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n\tpushurl\n\turl = https://example.com/r.git\n',
-        );
-        __resetConfigCacheForTests();
-
-        // Act
-        let caught: unknown;
-        try {
-          await push(ctx);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          key: string;
-          line: number;
-          source: string;
-        };
-        expect(data.code).toBe('CONFIG_MISSING_VALUE');
-        expect(data.key).toBe('remote.origin.pushurl');
+        expect(data.key).toBe(expectedKey);
         expect(data.line).toBe(2);
         expect(data.source).toMatch(/\/config$/);
       });
@@ -1605,11 +1549,15 @@ describe('push — matching mode', () => {
 });
 
 describe('push — pack contents', () => {
-  describe('Given a non-empty want set', () => {
+  describe('Given a non-empty want set with an advertised parent', () => {
     describe('When push runs', () => {
-      it('Then the request pack carries the tip object closure', async () => {
-        // Arrange — kills the `wants.length === 0 → true` short-circuit and the
-        // empty `for await` block: both would yield a zero-object pack. The tip
+      it('Then the request pack carries the tip object closure, excluding the parent via haves filtering', async () => {
+        // Arrange — kills the `wants.length === 0 → true` short-circuit and
+        // the empty `for await` block (both would yield a zero-object pack),
+        // AND the haves ArrowFunction / EqualityOperator mutants (an empty
+        // `haves` set — from `() => undefined` map, a falsy filter, or an
+        // inverted `id === ZERO_OID` — would let the advertised parent's
+        // commit+tree+blob ship too, doubling the pack to 6 objects). The tip
         // closure is exactly commit + tree + blob = 3 objects.
         const ctx = createMemoryContext();
         const parent = await seedCommit(ctx, [], 'p');
@@ -1625,37 +1573,8 @@ describe('push — pack contents', () => {
         // Act
         await push({ ...ctx, transport });
 
-        // Assert — the parent is advertised (a `have`), so only the tip's three
-        // objects ship.
-        const body = requestBodies[0];
-        expect(body).toBeDefined();
-        expect(packObjectCount(body as Uint8Array)).toBe(3);
-      });
-    });
-  });
-
-  describe('Given an advertised parent', () => {
-    describe('When push runs', () => {
-      it('Then the parent closure is excluded via haves filtering', async () => {
-        // Arrange — kills the haves ArrowFunction / EqualityOperator mutants. If
-        // `haves` were empty (`() => undefined` map, falsy filter, or inverted
-        // `id === ZERO_OID`), the parent's commit+tree+blob would also ship,
-        // doubling the pack to 6 objects.
-        const ctx = createMemoryContext();
-        const parent = await seedCommit(ctx, [], 'parent-gen');
-        const tip = await seedCommit(ctx, [parent.id], 'tip-gen');
-        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
-        await writeOriginConfig(ctx);
-        const { transport, requestBodies } = fakeServer({
-          url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
-          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
-        });
-
-        // Act
-        await push({ ...ctx, transport });
-
-        // Assert — exactly the tip's 3 objects, parent pruned by the haves boundary.
+        // Assert — the parent is advertised (a `have`), so only the tip's
+        // three objects ship.
         const body = requestBodies[0];
         expect(body).toBeDefined();
         expect(packObjectCount(body as Uint8Array)).toBe(3);
