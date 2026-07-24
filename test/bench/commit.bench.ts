@@ -20,7 +20,7 @@ benchScenario(
     });
 
     const sut = async (): Promise<void> => {
-      const scratch = await buildCommitScratch(process.env);
+      const scratch = await buildCommitScratch();
       scratches.push(scratch);
       await scratch.repo.commit({
         message: 'bench',

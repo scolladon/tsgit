@@ -21,7 +21,7 @@ benchScenario(
     });
 
     const sut = async (): Promise<void> => {
-      const scratch = await buildMergeScratch(process.env);
+      const scratch = await buildMergeScratch();
       scratches.push(scratch);
       await scratch.repo.merge.run({
         rev: 'side',

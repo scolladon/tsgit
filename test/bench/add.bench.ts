@@ -20,7 +20,7 @@ benchScenario(
     });
 
     const sut = async (): Promise<void> => {
-      const scratch = await buildAddScratch(process.env);
+      const scratch = await buildAddScratch();
       scratches.push(scratch);
       await scratch.repo.add([], { all: true });
     };

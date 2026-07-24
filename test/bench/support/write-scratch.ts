@@ -35,7 +35,7 @@ const disposeScratch = (cwd: string, repo: Repository) => async (): Promise<void
 };
 
 /** `mkdtemp → openRepository → repo.init()` — the shared preamble every builder needs. */
-const newScratch = async (_env: NodeJS.ProcessEnv): Promise<ScratchRepo> => {
+const newScratch = async (): Promise<ScratchRepo> => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-scratch-'));
   const repo = await openRepository({ cwd });
   await repo.init();
@@ -43,16 +43,16 @@ const newScratch = async (_env: NodeJS.ProcessEnv): Promise<ScratchRepo> => {
 };
 
 /** Stages one small file, ready for the measured `commit` call. */
-export const buildCommitScratch = async (env: NodeJS.ProcessEnv): Promise<ScratchRepo> => {
-  const scratch = await newScratch(env);
+export const buildCommitScratch = async (): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
   await writeFile(path.join(scratch.cwd, 'a.txt'), 'a\n');
   await scratch.repo.add(['a.txt']);
   return scratch;
 };
 
 /** Writes unstaged working-tree files, ready for the measured `add --all` call. */
-export const buildAddScratch = async (env: NodeJS.ProcessEnv): Promise<ScratchRepo> => {
-  const scratch = await newScratch(env);
+export const buildAddScratch = async (): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
   await writeFile(path.join(scratch.cwd, 'a.txt'), 'a\n');
   await writeFile(path.join(scratch.cwd, 'b.txt'), 'b\n');
   return scratch;
@@ -63,8 +63,8 @@ export const buildAddScratch = async (env: NodeJS.ProcessEnv): Promise<ScratchRe
  * `b.txt`, main edits `a.txt`), HEAD left on `main` — ready for the measured
  * `merge.run({ rev: 'side' })` call to produce a true (non-fast-forward) merge.
  */
-export const buildMergeScratch = async (env: NodeJS.ProcessEnv): Promise<ScratchRepo> => {
-  const scratch = await newScratch(env);
+export const buildMergeScratch = async (): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
   const { cwd, repo } = scratch;
 
   await writeFile(path.join(cwd, 'a.txt'), 'a\n');
