@@ -413,22 +413,21 @@ const generateEvolving = async (repoDir: string, spec: FixtureSpec): Promise<voi
   ]);
 };
 
-const generateMulti = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
-  await runFastImport(repoDir, spec, streamFastImport);
-  await runGit(repoDir, ['checkout', '-f', 'main']);
-  await runGit(repoDir, ['repack', '-ad', '--quiet']);
-};
-
-const generateDeepAncestry = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
-  await runFastImport(repoDir, spec, streamDeepAncestryFastImport);
+const generatePacked = async (
+  repoDir: string,
+  spec: FixtureSpec,
+  stream: (stdin: Writable, spec: FixtureSpec) => Promise<void>,
+): Promise<void> => {
+  await runFastImport(repoDir, spec, stream);
   await runGit(repoDir, ['checkout', '-f', 'main']);
   await runGit(repoDir, ['repack', '-ad', '--quiet']);
 };
 
 const runGenerateStrategy = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
   if (spec.strategy === 'evolving') return generateEvolving(repoDir, spec);
-  if (spec.strategy === 'deep-ancestry') return generateDeepAncestry(repoDir, spec);
-  return generateMulti(repoDir, spec);
+  if (spec.strategy === 'deep-ancestry')
+    return generatePacked(repoDir, spec, streamDeepAncestryFastImport);
+  return generatePacked(repoDir, spec, streamFastImport);
 };
 
 /** `stable.txt` (deep-ancestry) is present at HEAD throughout the ancestry, unlike the deepest-chain object (evolving), which git stores as an OLDER version. */
