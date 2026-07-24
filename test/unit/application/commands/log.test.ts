@@ -484,123 +484,56 @@ describe('log', () => {
   });
 
   describe('Given diamond root, single-parent commits, merge', () => {
-    describe('When log runs with maxParents:0', () => {
-      it('Then only the root commit is yielded', async () => {
-        // Arrange — diamond: A(root) ← B, A ← C, merge D(parents=[B,C])
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx, { maxParents: 0 });
-
-        // Assert — only A has 0 parents; kills option-ignored mutant (returns all four)
-        expect(sut.map((e) => e.message)).toEqual(['A']);
-      });
-    });
-
-    describe('When log runs with minParents:2', () => {
-      it('Then only the merge commit is yielded', async () => {
+    describe('When log filters by parent count', () => {
+      // Diamond: A(root, 0 parents) ← B(1), A ← C(1), merge D(parents=[B,C], 2).
+      // Each row isolates one guard/boundary: an option-ignored mutant, a
+      // flipped `>=`/`<=` at the B(1) boundary, an impossible band, filter
+      // applied before (not after) limit, and the filter left inactive.
+      it.each([
+        {
+          label: 'maxParents:0 keeps only the root commit',
+          options: { maxParents: 0 },
+          expected: ['A'],
+        },
+        {
+          label: 'minParents:2 keeps only the merge commit',
+          options: { minParents: 2 },
+          expected: ['D'],
+        },
+        {
+          label: 'maxParents:1 keeps all non-merge commits (B at the boundary IS kept)',
+          options: { maxParents: 1 },
+          expected: ['C', 'B', 'A'],
+        },
+        {
+          label: 'minParents:1 keeps all non-root commits (B at the boundary IS kept)',
+          options: { minParents: 1 },
+          expected: ['D', 'C', 'B'],
+        },
+        {
+          label: 'an impossible band (minParents:2, maxParents:1) yields nothing',
+          options: { minParents: 2, maxParents: 1 },
+          expected: [],
+        },
+        {
+          label: 'maxParents:1 with limit:1 filters before limiting',
+          options: { maxParents: 1, limit: 1 },
+          expected: ['C'],
+        },
+        {
+          label: 'neither bound set leaves the default walk unchanged',
+          options: {},
+          expected: ['D', 'C', 'B', 'A'],
+        },
+      ])('Then $label', async ({ options, expected }) => {
         // Arrange
         const { ctx } = await seedDiamond();
 
         // Act
-        const sut = await log(ctx, { minParents: 2 });
+        const sut = await log(ctx, options);
 
-        // Assert — only D has 2 parents; kills option-ignored mutant (returns all four)
-        expect(sut.map((e) => e.message)).toEqual(['D']);
-      });
-    });
-
-    describe('When log runs with maxParents:1', () => {
-      it('Then all non-merge commits are yielded', async () => {
-        // Arrange
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx, { maxParents: 1 });
-
-        // Assert — A(0), B(1), C(1) pass; D(2) is excluded
-        expect(sut.map((e) => e.message)).toEqual(['C', 'B', 'A']);
-      });
-    });
-
-    describe('When log runs with minParents:1', () => {
-      it('Then all non-root commits are yielded', async () => {
-        // Arrange
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx, { minParents: 1 });
-
-        // Assert — B(1), C(1), D(2) pass; A(0) is excluded
-        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B']);
-      });
-    });
-
-    describe('When log filters with minParents equal to a commit parent count', () => {
-      it('Then it IS kept (>= semantics)', async () => {
-        // Arrange — B has exactly 1 parent; minParents:1 must include it
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx, { minParents: 1 });
-
-        // Assert — full sequence: B (exactly 1 parent) IS kept, A (0) excluded;
-        // self-sufficient against both `>=`→`>` (B drops) and the directional flip
-        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B']);
-      });
-    });
-
-    describe('When log filters with maxParents equal to a commit parent count', () => {
-      it('Then it IS kept (<= semantics)', async () => {
-        // Arrange — B has exactly 1 parent; maxParents:1 must include it
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx, { maxParents: 1 });
-
-        // Assert — full sequence: B (exactly 1 parent) IS kept, D (2) excluded;
-        // self-sufficient against both `<=`→`<` (B drops) and the directional flip
-        expect(sut.map((e) => e.message)).toEqual(['C', 'B', 'A']);
-      });
-    });
-
-    describe('When log runs with an impossible band (minParents:2, maxParents:1)', () => {
-      it('Then result is empty', async () => {
-        // Arrange
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx, { minParents: 2, maxParents: 1 });
-
-        // Assert — no commit satisfies both conditions
-        expect(sut).toEqual([]);
-      });
-    });
-
-    describe('When log runs with maxParents:1 and limit:1', () => {
-      it('Then the newest non-merge commit is returned (filter-then-limit)', async () => {
-        // Arrange — date order: D(4000) > C(3000) > B(2000) > A(1000)
-        // After maxParents:1 filter: C, B, A remain; limit:1 picks C
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx, { maxParents: 1, limit: 1 });
-
-        // Assert — filter applied before limit; kills limit-before-filter mutant
-        expect(sut.map((e) => e.message)).toEqual(['C']);
-      });
-    });
-
-    describe('When neither minParents nor maxParents are set', () => {
-      it('Then output is unchanged from the default walk', async () => {
-        // Arrange — regression guard: undefined options must not activate the filter
-        const { ctx } = await seedDiamond();
-
-        // Act
-        const sut = await log(ctx);
-
-        // Assert — all four commits in date order; kills mutant that filters with undefined
-        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B', 'A']);
+        // Assert
+        expect(sut.map((e) => e.message)).toEqual(expected);
       });
     });
   });
