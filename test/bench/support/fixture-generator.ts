@@ -22,7 +22,7 @@ const execFileAsync = promisify(execFile);
  * `bench.yml` keys its `actions/cache` on a hash of this file, so a version
  * bump there propagates the same way.
  */
-const FIXTURE_GENERATOR_VERSION = 1;
+const FIXTURE_GENERATOR_VERSION = 2;
 
 const BLOBS_PER_COMMIT = 4;
 const SHARD_SIZE = 512;
@@ -30,10 +30,17 @@ const AUTHOR = 'tsgit bench <bench@tsgit.invalid>';
 const BASE_TIMESTAMP = 1_700_000_000;
 
 export interface FixtureSpec {
-  readonly label: 'medium' | 'large' | 'delta-chain';
-  readonly strategy: 'multi' | 'evolving';
+  readonly label:
+    | 'small'
+    | 'medium'
+    | 'large'
+    | 'delta-chain'
+    | 'deep-ancestry-small'
+    | 'deep-ancestry-medium'
+    | 'deep-ancestry-large';
+  readonly strategy: 'multi' | 'evolving' | 'deep-ancestry';
   readonly commits: number;
-  /** Led by strategy; for 'evolving' this is NOT a file count. */
+  /** Led by strategy; for 'evolving'/'deep-ancestry' this is NOT a file count. */
   readonly blobs: number;
   readonly blobBytes: number;
   /** `git repack --depth`, evolving strategy only. */
@@ -41,6 +48,14 @@ export interface FixtureSpec {
   /** `git repack --window`, evolving strategy only. */
   readonly deltaWindow?: number;
 }
+
+export const SMALL_FIXTURE: FixtureSpec = {
+  label: 'small',
+  strategy: 'multi',
+  commits: 50,
+  blobs: 200,
+  blobBytes: 2_560,
+};
 
 export const MEDIUM_FIXTURE: FixtureSpec = {
   label: 'medium',
@@ -73,6 +88,38 @@ export const DELTA_CHAIN_FIXTURE: FixtureSpec = {
   blobBytes: DELTA_CHAIN_BLOB_BYTES,
   deltaDepth: DELTA_CHAIN_DEPTH,
   deltaWindow: DELTA_CHAIN_WINDOW,
+};
+
+// Deep-ancestry commit counts are shape-calibrated, NOT the multi tiers'
+// 50/5 000/50 000 — blame walks the full ancestry (O(commit count)), so a
+// medium/large sized to the multi tiers would blow the bench testTimeout.
+const DEEP_ANCESTRY_SMALL_COMMITS = 50;
+const DEEP_ANCESTRY_MEDIUM_COMMITS = 500;
+const DEEP_ANCESTRY_LARGE_COMMITS = 2_000;
+const DEEP_ANCESTRY_BLOB_BYTES = 256;
+
+export const DEEP_ANCESTRY_SMALL: FixtureSpec = {
+  label: 'deep-ancestry-small',
+  strategy: 'deep-ancestry',
+  commits: DEEP_ANCESTRY_SMALL_COMMITS,
+  blobs: 1,
+  blobBytes: DEEP_ANCESTRY_BLOB_BYTES,
+};
+
+export const DEEP_ANCESTRY_MEDIUM: FixtureSpec = {
+  label: 'deep-ancestry-medium',
+  strategy: 'deep-ancestry',
+  commits: DEEP_ANCESTRY_MEDIUM_COMMITS,
+  blobs: 1,
+  blobBytes: DEEP_ANCESTRY_BLOB_BYTES,
+};
+
+export const DEEP_ANCESTRY_LARGE: FixtureSpec = {
+  label: 'deep-ancestry-large',
+  strategy: 'deep-ancestry',
+  commits: DEEP_ANCESTRY_LARGE_COMMITS,
+  blobs: 1,
+  blobBytes: DEEP_ANCESTRY_BLOB_BYTES,
 };
 
 export interface ScaledFixture {
@@ -130,28 +177,45 @@ const writeChunk = (stdin: Writable, chunk: string | Buffer): Promise<void> =>
     stdin.write(chunk, (err) => (err === null || err === undefined ? resolve() : reject(err)));
   });
 
+/** Streams one `blob` record (mark + data) — shared by every fast-import strategy. */
+const writeBlobEntry = async (stdin: Writable, mark: number, content: Buffer): Promise<void> => {
+  await writeChunk(stdin, `blob\nmark :${mark}\ndata ${content.byteLength}\n`);
+  await writeChunk(stdin, content);
+  await writeChunk(stdin, '\n');
+};
+
+interface CommitEntry {
+  readonly message: string;
+  readonly timestamp: number;
+  /** Pre-built `M <mode> :<mark> <path>\n` lines, one per changed path. */
+  readonly changes: string;
+}
+
+/** Streams one `commit` record on `refs/heads/main` — shared by every fast-import strategy. */
+const writeCommitEntry = async (stdin: Writable, entry: CommitEntry): Promise<void> => {
+  let header = 'commit refs/heads/main\n';
+  header += `author ${AUTHOR} ${entry.timestamp} +0000\n`;
+  header += `committer ${AUTHOR} ${entry.timestamp} +0000\n`;
+  header += `data ${Buffer.byteLength(entry.message)}\n${entry.message}`;
+  header += entry.changes;
+  await writeChunk(stdin, header);
+};
+
 /** Streams a `git fast-import` script: every commit adds BLOBS_PER_COMMIT files. */
 const streamFastImport = async (stdin: Writable, spec: FixtureSpec): Promise<void> => {
   for (let commit = 0; commit < spec.commits; commit += 1) {
     const firstBlob = commit * BLOBS_PER_COMMIT;
+    let changes = '';
     for (let n = 0; n < BLOBS_PER_COMMIT; n += 1) {
       const blobIndex = firstBlob + n;
-      const content = blobContent(blobIndex, spec.blobBytes);
-      await writeChunk(stdin, `blob\nmark :${blobIndex + 1}\ndata ${content.byteLength}\n`);
-      await writeChunk(stdin, content);
-      await writeChunk(stdin, '\n');
+      await writeBlobEntry(stdin, blobIndex + 1, blobContent(blobIndex, spec.blobBytes));
+      changes += `M 100644 :${blobIndex + 1} ${blobPath(blobIndex)}\n`;
     }
-    const message = `commit ${commit}\n`;
-    const ts = BASE_TIMESTAMP + commit;
-    let header = 'commit refs/heads/main\n';
-    header += `author ${AUTHOR} ${ts} +0000\n`;
-    header += `committer ${AUTHOR} ${ts} +0000\n`;
-    header += `data ${Buffer.byteLength(message)}\n${message}`;
-    for (let n = 0; n < BLOBS_PER_COMMIT; n += 1) {
-      const blobIndex = firstBlob + n;
-      header += `M 100644 :${blobIndex + 1} ${blobPath(blobIndex)}\n`;
-    }
-    await writeChunk(stdin, header);
+    await writeCommitEntry(stdin, {
+      message: `commit ${commit}\n`,
+      timestamp: BASE_TIMESTAMP + commit,
+      changes,
+    });
   }
 };
 
@@ -196,18 +260,41 @@ const streamEvolvingFastImport = async (stdin: Writable, spec: FixtureSpec): Pro
   for (let commit = 0; commit < spec.commits; commit += 1) {
     if (commit > 0) content = mutateEvolvingContent(content, next);
     const mark = commit + 1;
-    await writeChunk(stdin, `blob\nmark :${mark}\ndata ${content.byteLength}\n`);
-    await writeChunk(stdin, content);
-    await writeChunk(stdin, '\n');
+    await writeBlobEntry(stdin, mark, content);
+    await writeCommitEntry(stdin, {
+      message: `evolve ${commit}\n`,
+      timestamp: BASE_TIMESTAMP + commit,
+      changes: `M 100644 :${mark} ${EVOLVING_PATH}\n`,
+    });
+  }
+};
 
-    const message = `evolve ${commit}\n`;
-    const ts = BASE_TIMESTAMP + commit;
-    let header = 'commit refs/heads/main\n';
-    header += `author ${AUTHOR} ${ts} +0000\n`;
-    header += `committer ${AUTHOR} ${ts} +0000\n`;
-    header += `data ${Buffer.byteLength(message)}\n${message}`;
-    header += `M 100644 :${mark} ${EVOLVING_PATH}\n`;
-    await writeChunk(stdin, header);
+const STABLE_PATH = 'stable.txt';
+const CHURN_PATH = 'churn.txt';
+
+/**
+ * Streams a `git fast-import` script mirroring `fixtures.ts`'s
+ * `setupDeepAncestryRepo` topology: commit 0 seeds `stable.txt` once, then
+ * commits `1..spec.commits` each rewrite `churn.txt`. `stable.txt`'s history
+ * stops at the root of an otherwise-deep ancestry — the O(path-depth)
+ * unchanged-file shape `blame`'s TREESAME skip targets.
+ */
+const streamDeepAncestryFastImport = async (stdin: Writable, spec: FixtureSpec): Promise<void> => {
+  await writeBlobEntry(stdin, 1, blobContent(0, spec.blobBytes));
+  await writeCommitEntry(stdin, {
+    message: 'seed stable.txt\n',
+    timestamp: BASE_TIMESTAMP,
+    changes: `M 100644 :1 ${STABLE_PATH}\n`,
+  });
+
+  for (let commit = 1; commit <= spec.commits; commit += 1) {
+    const mark = commit + 1;
+    await writeBlobEntry(stdin, mark, blobContent(commit, spec.blobBytes));
+    await writeCommitEntry(stdin, {
+      message: `churn ${commit - 1}\n`,
+      timestamp: BASE_TIMESTAMP + commit,
+      changes: `M 100644 :${mark} ${CHURN_PATH}\n`,
+    });
   }
 };
 
@@ -332,21 +419,33 @@ const generateMulti = async (repoDir: string, spec: FixtureSpec): Promise<void> 
   await runGit(repoDir, ['repack', '-ad', '--quiet']);
 };
 
+const generateDeepAncestry = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
+  await runFastImport(repoDir, spec, streamDeepAncestryFastImport);
+  await runGit(repoDir, ['checkout', '-f', 'main']);
+  await runGit(repoDir, ['repack', '-ad', '--quiet']);
+};
+
+const runGenerateStrategy = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
+  if (spec.strategy === 'evolving') return generateEvolving(repoDir, spec);
+  if (spec.strategy === 'deep-ancestry') return generateDeepAncestry(repoDir, spec);
+  return generateMulti(repoDir, spec);
+};
+
+/** `stable.txt` (deep-ancestry) is present at HEAD throughout the ancestry, unlike the deepest-chain object (evolving), which git stores as an OLDER version. */
+const firstBlobIdFor = async (repoDir: string, spec: FixtureSpec): Promise<string> => {
+  if (spec.strategy === 'evolving') return deepestChainBlobId(repoDir);
+  if (spec.strategy === 'deep-ancestry')
+    return runGit(repoDir, ['rev-parse', `HEAD:${STABLE_PATH}`]);
+  return runGit(repoDir, ['rev-parse', `HEAD:${blobPath(0)}`]);
+};
+
 const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<FixtureMeta> => {
   await mkdir(repoDir, { recursive: true });
   await runGit(repoDir, ['init', '--initial-branch=main', '--quiet']);
-
-  if (spec.strategy === 'evolving') {
-    await generateEvolving(repoDir, spec);
-  } else {
-    await generateMulti(repoDir, spec);
-  }
+  await runGenerateStrategy(repoDir, spec);
 
   const headCommitId = await runGit(repoDir, ['rev-parse', 'HEAD']);
-  const firstBlobId =
-    spec.strategy === 'evolving'
-      ? await deepestChainBlobId(repoDir)
-      : await runGit(repoDir, ['rev-parse', `HEAD:${blobPath(0)}`]);
+  const firstBlobId = await firstBlobIdFor(repoDir, spec);
   return { version: FIXTURE_GENERATOR_VERSION, headCommitId, firstBlobId, spec };
 };
 
