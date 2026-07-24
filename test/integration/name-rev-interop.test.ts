@@ -106,16 +106,14 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       await rm(dir, { recursive: true, force: true });
     });
 
-    it('Then the annotated tip renders with `^0`', async () => {
-      expect(renderNameRev(await nameRevCmd(ctx, c2))).toBe(gitNameRev(dir, c2));
-    });
+    const REV_RENDER_MATRIX: ReadonlyArray<{ label: string; rev: () => string }> = [
+      { label: 'the annotated tip, rendering with `^0`', rev: () => c2 },
+      { label: 'a lightweight tag, rendering without `^0`', rev: () => c1 },
+      { label: 'a first-parent ancestor, rendering with `~n`', rev: () => c0 },
+    ];
 
-    it('Then a lightweight tag renders without `^0`', async () => {
-      expect(renderNameRev(await nameRevCmd(ctx, c1))).toBe(gitNameRev(dir, c1));
-    });
-
-    it('Then a first-parent ancestor renders with `~n`', async () => {
-      expect(renderNameRev(await nameRevCmd(ctx, c0))).toBe(gitNameRev(dir, c0));
+    it.each(REV_RENDER_MATRIX)('Then $label', async ({ rev }) => {
+      expect(renderNameRev(await nameRevCmd(ctx, rev()))).toBe(gitNameRev(dir, rev()));
     });
 
     it('Then a refs filter matches git name-rev --refs', async () => {
@@ -180,12 +178,13 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       expect(renderNameRev(await nameRevCmd(ctx, base))).toBe(gitNameRev(dir, base));
     });
 
-    it('Then a merged side commit threads `^2`', async () => {
-      expect(renderNameRev(await nameRevCmd(ctx, f1))).toBe(gitNameRev(dir, f1));
-    });
+    const SIDE_COMMIT_MATRIX: ReadonlyArray<{ label: string; rev: () => string }> = [
+      { label: 'a merged side commit threads `^2`', rev: () => f1 },
+      { label: 'a deeper side commit renders the full `~m^2~k` path', rev: () => f0 },
+    ];
 
-    it('Then a deeper side commit renders the full `~m^2~k` path', async () => {
-      expect(renderNameRev(await nameRevCmd(ctx, f0))).toBe(gitNameRev(dir, f0));
+    it.each(SIDE_COMMIT_MATRIX)('Then $label', async ({ rev }) => {
+      expect(renderNameRev(await nameRevCmd(ctx, rev()))).toBe(gitNameRev(dir, rev()));
     });
   });
 

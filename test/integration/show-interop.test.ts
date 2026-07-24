@@ -180,42 +180,32 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
     expect(decode(bytes)).toBe(expected);
   };
 
+  const SINGLE_REVISION_MATRIX: ReadonlyArray<{ label: string; rev: () => string }> = [
+    { label: 'a root commit', rev: () => built.root },
+    { label: 'a non-root commit', rev: () => built.modify },
+    { label: 'a rename commit', rev: () => built.rename },
+    { label: 'an annotated tag', rev: () => 'v1.0' },
+    { label: 'a lightweight tag, reconstructing as its commit', rev: () => 'light' },
+    { label: 'a tree by peel, echoing the input', rev: () => `${built.modify}^{tree}` },
+    { label: 'a tree by raw oid', rev: () => built.tree },
+    { label: 'a blob', rev: () => built.blob },
+  ];
+
   describe('Given a single revision', () => {
-    it('Then a root commit reconstructs git show', async () => {
-      await expectMatch(built.root);
-    });
-    it('Then a non-root commit reconstructs git show', async () => {
-      await expectMatch(built.modify);
-    });
-    it('Then a rename commit reconstructs git show', async () => {
-      await expectMatch(built.rename);
-    });
-    it('Then an annotated tag reconstructs git show', async () => {
-      await expectMatch('v1.0');
-    });
-    it('Then a lightweight tag reconstructs as its commit', async () => {
-      await expectMatch('light');
-    });
-    it('Then a tree by peel echoes the input and reconstructs git show', async () => {
-      await expectMatch(`${built.modify}^{tree}`);
-    });
-    it('Then a tree by raw oid reconstructs git show', async () => {
-      await expectMatch(built.tree);
-    });
-    it('Then a blob reconstructs git show', async () => {
-      await expectMatch(built.blob);
+    it.each(SINGLE_REVISION_MATRIX)('Then $label reconstructs git show', async ({ rev }) => {
+      await expectMatch(rev());
     });
   });
 
+  const MERGE_MATRIX: ReadonlyArray<{ label: string; rev: () => string }> = [
+    { label: 'a feature merge', rev: () => built.merge },
+    { label: 'a combined (both-sides-edit) merge', rev: () => built.combinedMerge },
+    { label: 'a three-parent octopus merge', rev: () => built.octopus },
+  ];
+
   describe('Given a merge commit', () => {
-    it('Then a feature merge reconstructs git show -m', async () => {
-      await expectMatchMerge(built.merge);
-    });
-    it('Then a combined (both-sides-edit) merge reconstructs git show -m', async () => {
-      await expectMatchMerge(built.combinedMerge);
-    });
-    it('Then a three-parent octopus merge reconstructs git show -m', async () => {
-      await expectMatchMerge(built.octopus);
+    it.each(MERGE_MATRIX)('Then $label reconstructs git show -m', async ({ rev }) => {
+      await expectMatchMerge(rev());
     });
   });
 

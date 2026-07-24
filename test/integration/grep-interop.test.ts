@@ -196,93 +196,6 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
         expect(gitPaths).toContain('wt_only_unstaged.txt');
       });
     });
-
-    // ---------------------------------------------------------------------------
-    // Faithful exclusion: untracked file is NOT searched
-    // ---------------------------------------------------------------------------
-    describe('When grepping for the literal with an untracked file present', () => {
-      it('Then tsgit omits the untracked file and git grep agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
-        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
-
-        // Assert
-        const tsgitPaths = result.paths.map((p) => p.path as string);
-        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
-        expect(tsgitPaths).not.toContain('untracked_with_needle.txt');
-        expect(gitPaths).not.toContain('untracked_with_needle.txt');
-      });
-    });
-
-    // ---------------------------------------------------------------------------
-    // Faithful exclusion: gitignored file is NOT searched
-    // ---------------------------------------------------------------------------
-    describe('When grepping for the literal with a gitignored file present', () => {
-      it('Then tsgit omits the gitignored file and git grep agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
-        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
-
-        // Assert
-        const tsgitPaths = result.paths.map((p) => p.path as string);
-        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
-        expect(tsgitPaths).not.toContain('ignored_needle.txt');
-        expect(gitPaths).not.toContain('ignored_needle.txt');
-      });
-    });
-
-    // ---------------------------------------------------------------------------
-    // Faithful exclusion: tracked file deleted from working tree — silent skip
-    // ---------------------------------------------------------------------------
-    describe('When grepping with a tracked file absent from the working tree', () => {
-      it('Then tsgit omits deleted_tracked.txt, does not throw, and git grep agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act — must not throw (git exits 0 when no match found due to absent files)
-        let result: GrepResult | undefined;
-        let caught: unknown;
-        try {
-          result = await sut(ctx, { patterns: [{ fixed: LIT }] });
-        } catch (e) {
-          caught = e;
-        }
-        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
-
-        // Assert
-        expect(caught).toBeUndefined();
-        const tsgitPaths = result!.paths.map((p) => p.path as string);
-        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
-        expect(tsgitPaths).not.toContain('deleted_tracked.txt');
-        expect(gitPaths).not.toContain('deleted_tracked.txt');
-      });
-    });
-
-    // ---------------------------------------------------------------------------
-    // Faithful exclusion: tracked symlink is NOT searched
-    // ---------------------------------------------------------------------------
-    describe('When grepping with a tracked symlink in the index', () => {
-      it('Then tsgit omits the symlink path and git grep agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
-        const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
-
-        // Assert
-        const tsgitPaths = result.paths.map((p) => p.path as string);
-        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
-        expect(tsgitPaths).not.toContain('tracked_symlink.txt');
-        expect(gitPaths).not.toContain('tracked_symlink.txt');
-      });
-    });
   });
 
   // ---------------------------------------------------------------------------
@@ -305,54 +218,87 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
         expect(gitPaths).toContain('staged_only.txt');
       });
     });
-
-    // #T3 — --cached does NOT see an unstaged change on a tracked file
-    describe('When grepping for the literal in the index for wt_only_unstaged.txt', () => {
-      it('Then tsgit omits wt_only_unstaged.txt and git grep --cached agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }], target: 'index' });
-        const gitOutput = git(dir, 'grep', '--cached', '-F', '-l', LIT);
-
-        // Assert
-        const tsgitPaths = result.paths.map((p) => p.path as string);
-        const gitPaths = gitOutput.trim().split('\n').filter(Boolean);
-        expect(tsgitPaths).not.toContain('wt_only_unstaged.txt');
-        expect(gitPaths).not.toContain('wt_only_unstaged.txt');
-      });
-    });
   });
 
   // ---------------------------------------------------------------------------
-  // #T4 — { treeish: 'HEAD' } sees only committed content (not staged_only)
+  // Faithful exclusion family: a path class tsgit omits from its target
+  // selection, matching git grep's silent skip — untracked, gitignored,
+  // deleted-from-worktree, symlinked, unstaged-under---cached, and
+  // staged-only-under-HEAD paths all resolve through the same omission
+  // oracle with only the target/gitArgs and excluded path varying.
   // ---------------------------------------------------------------------------
-  describe('Given the HEAD treeish target', () => {
-    describe('When grepping for the literal', () => {
-      it('Then tsgit omits staged_only.txt and git grep HEAD agrees', async () => {
-        // Arrange
-        const sut = grep;
+  const OMIT_MATRIX: ReadonlyArray<{
+    label: string;
+    path: string;
+    run: () => Promise<GrepResult>;
+    gitArgs: readonly string[];
+    stripHeadPrefix?: boolean;
+  }> = [
+    {
+      label: 'an untracked file',
+      path: 'untracked_with_needle.txt',
+      run: () => grep(ctx, { patterns: [{ fixed: LIT }] }),
+      gitArgs: ['-F', '-l', LIT],
+    },
+    {
+      label: 'a gitignored file',
+      path: 'ignored_needle.txt',
+      run: () => grep(ctx, { patterns: [{ fixed: LIT }] }),
+      gitArgs: ['-F', '-l', LIT],
+    },
+    {
+      label: 'a tracked file absent from the working tree',
+      path: 'deleted_tracked.txt',
+      run: () => grep(ctx, { patterns: [{ fixed: LIT }] }),
+      gitArgs: ['-F', '-l', LIT],
+    },
+    {
+      label: 'a tracked symlink',
+      path: 'tracked_symlink.txt',
+      run: () => grep(ctx, { patterns: [{ fixed: LIT }] }),
+      gitArgs: ['-F', '-l', LIT],
+    },
+    {
+      label: 'an unstaged change under --cached',
+      path: 'wt_only_unstaged.txt',
+      run: () => grep(ctx, { patterns: [{ fixed: LIT }], target: 'index' }),
+      gitArgs: ['--cached', '-F', '-l', LIT],
+    },
+    {
+      label: 'a staged-only file under the HEAD treeish',
+      path: 'staged_only.txt',
+      run: () => grep(ctx, { patterns: [{ fixed: LIT }], target: { treeish: 'HEAD' } }),
+      gitArgs: ['-F', '-l', LIT, 'HEAD'],
+      stripHeadPrefix: true,
+    },
+  ];
 
-        // Act
-        const result = await sut(ctx, {
-          patterns: [{ fixed: LIT }],
-          target: { treeish: 'HEAD' },
-        });
-        const gitOutput = git(dir, 'grep', '-F', '-l', LIT, 'HEAD');
+  describe('Given a path tsgit excludes from a grep target', () => {
+    it.each(OMIT_MATRIX)(
+      'Then tsgit omits $label, does not throw, and git grep agrees',
+      async ({ path: excludedPath, run, gitArgs, stripHeadPrefix }) => {
+        // Act — must not throw (git exits 0 when no match found due to absent files)
+        let result: GrepResult | undefined;
+        let caught: unknown;
+        try {
+          result = await run();
+        } catch (e) {
+          caught = e;
+        }
+        const gitOutput = git(dir, 'grep', ...gitArgs);
 
         // Assert
-        const tsgitPaths = result.paths.map((p) => p.path as string);
-        // git grep HEAD prefixes paths with "HEAD:", strip it for comparison
+        expect(caught).toBeUndefined();
+        const tsgitPaths = result!.paths.map((p) => p.path as string);
         const gitPaths = gitOutput
           .trim()
           .split('\n')
           .filter(Boolean)
-          .map((p) => p.replace(/^HEAD:/, ''));
-        expect(tsgitPaths).not.toContain('staged_only.txt');
-        expect(gitPaths).not.toContain('staged_only.txt');
-      });
-    });
+          .map((p) => (stripHeadPrefix ? p.replace(/^HEAD:/, '') : p));
+        expect(tsgitPaths).not.toContain(excludedPath);
+        expect(gitPaths).not.toContain(excludedPath);
+      },
+    );
   });
 
   // ---------------------------------------------------------------------------
@@ -382,11 +328,14 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // #M1 — multi-path enumeration: 3 text + 1 binary of 5 paths contain NEEDLE
+  // #M1 — multi-path enumeration: 3 text + 1 binary of 5 paths contain NEEDLE.
+  // The library emits no rendering mode; the caller derives both the name-only
+  // list and the per-file count from the structured fields (paths[].path,
+  // hits.length / binaryMatch) — assertTargetParity checks both derivations.
   // ---------------------------------------------------------------------------
   describe('Given 5 enumerated text paths and 1 binary path of which 3+1 contain NEEDLE', () => {
     describe('When grepping the HEAD treeish for the literal', () => {
-      it('Then tsgit returns exactly the same matching paths as git grep -l (as sets)', async () => {
+      it('Then tsgit derives the same matching paths and per-file counts as git grep -l/-c', async () => {
         // Arrange
         const sut = grep;
 
@@ -426,31 +375,6 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
 
         // Reconstruct "Binary file X matches" text from the datum; compare to git output
         expect(gitOutput.trim()).toContain('Binary file b.bin matches');
-      });
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Derivation pins: -c and -l reconstructed from structured data.
-  // The library emits no rendering mode; the caller derives counts and name-only
-  // lists from the structured fields (hits.length / binaryMatch, and paths[].path).
-  // ---------------------------------------------------------------------------
-  describe('Given a result with known hit counts', () => {
-    describe('When deriving per-file count and name-only list from structured data', () => {
-      it('Then the derivation matches git grep -c and git grep -l', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result: GrepResult = await sut(ctx, {
-          patterns: [{ fixed: LIT }],
-          target: { treeish: 'HEAD' },
-        });
-        const gitListOutput = git(dir, 'grep', '-F', '-l', LIT, 'HEAD');
-        const gitCountOutput = git(dir, 'grep', '-F', '-c', LIT, 'HEAD');
-
-        // Assert — derive -l and -c from structured data without rendering modes
-        assertTargetParity(result, gitListOutput, gitCountOutput);
       });
     });
   });
