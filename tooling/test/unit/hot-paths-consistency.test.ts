@@ -13,12 +13,19 @@ interface HotPathsRegistry {
   readonly hotOperations: readonly string[];
 }
 
+// Substring detection is a heuristic; strip whole-line comments first so a
+// disabled `// await tieredScenario(...)` cannot masquerade as a tiered bench.
+const callsTieredScenario = (source: string): boolean =>
+  source
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .join('\n')
+    .includes(TIERED_SCENARIO_MARKER);
+
 const tieredBenchBasenames = (): readonly string[] =>
   readdirSync(BENCH_DIR)
     .filter((fileName) => fileName.endsWith(BENCH_FILE_SUFFIX))
-    .filter((fileName) =>
-      readFileSync(path.join(BENCH_DIR, fileName), 'utf8').includes(TIERED_SCENARIO_MARKER),
-    )
+    .filter((fileName) => callsTieredScenario(readFileSync(path.join(BENCH_DIR, fileName), 'utf8')))
     .map((fileName) => fileName.slice(0, -BENCH_FILE_SUFFIX.length));
 
 describe('Given the hot-paths registry and the tiered bench files', () => {

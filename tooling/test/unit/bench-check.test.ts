@@ -566,4 +566,26 @@ describe('parseHotOperations', () => {
       });
     });
   });
+
+  describe('Given a null registry (a literal null JSON file)', () => {
+    describe('When parseHotOperations runs', () => {
+      it('Then it throws with the specific type message', () => {
+        // Arrange
+        const sut = parseHotOperations;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut(null);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe(
+          'hot-paths.json: "hotOperations" must be an array of operation strings',
+        );
+      });
+    });
+  });
 });

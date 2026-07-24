@@ -61,7 +61,19 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
 
         // Assert
         expect(result.headCommitId).toMatch(HEX40);
-        expect(result.firstBlobId).toMatch(HEX40);
+        // `d0/f0.dat` is the multi generator's first blob (blobPath(0)); pin the
+        // identity, not just the shape, so a wrong-but-valid oid cannot pass.
+        const firstBlobOracle = execFileSync(
+          'git',
+          ['-C', result.cwd, 'rev-parse', 'HEAD:d0/f0.dat'],
+          {
+            env: gitEnv(),
+          },
+        )
+          .toString()
+          .trim();
+        expect(firstBlobOracle).toMatch(HEX40);
+        expect(result.firstBlobId).toBe(firstBlobOracle);
         const packDir = path.join(result.cwd, '.git', 'objects', 'pack');
         const packFiles = await readdir(packDir);
         expect(packFiles.some((file) => file.endsWith('.pack'))).toBe(true);
@@ -80,7 +92,8 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
 
         // Assert
         expect(result.headCommitId).toMatch(HEX40);
-        expect(result.firstBlobId).toMatch(HEX40);
+        // Pin firstBlobId to stable.txt's blob — this verifies the deep-ancestry
+        // path-selection branch (stable.txt, not churn.txt or the head commit).
         const stableBlobId = execFileSync(
           'git',
           ['-C', result.cwd, 'rev-parse', 'HEAD:stable.txt'],
@@ -89,6 +102,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
           .toString()
           .trim();
         expect(stableBlobId).toMatch(HEX40);
+        expect(result.firstBlobId).toBe(stableBlobId);
       });
     });
   });
