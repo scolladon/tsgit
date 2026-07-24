@@ -1,5 +1,47 @@
 # Changelog
 
+## [3.1.0](https://github.com/scolladon/tsgit/compare/v3.0.0...v3.1.0) (2026-07-24)
+
+
+### Features
+
+* git-faithful branch/remote and push.default resolution ([#215](https://github.com/scolladon/tsgit/issues/215)) ([f73f9a1](https://github.com/scolladon/tsgit/commit/f73f9a100a93d0a00a285b9ebc5899e175db3f3e))
+* GPG signing — signed commits, tags, and pushes ([#209](https://github.com/scolladon/tsgit/issues/209)) ([164b2e6](https://github.com/scolladon/tsgit/commit/164b2e620ced7ce978b4945b8d847951ee1b8efa))
+* smart-HTTP protocol v2 for fetch and clone, with corrected v1 fallback ([#210](https://github.com/scolladon/tsgit/issues/210)) ([0bb9e88](https://github.com/scolladon/tsgit/commit/0bb9e8835ac9e3b58ea442755d65e9c67d2cb8a5))
+* SSH transport for clone, fetch, pull, and push ([#207](https://github.com/scolladon/tsgit/issues/207)) ([857039b](https://github.com/scolladon/tsgit/commit/857039b7153f1434229ad9f9f48ccacdc59ce013))
+* zero-dependency inflate decoder for browser/memory large-entry pack clone ([#216](https://github.com/scolladon/tsgit/issues/216)) ([7a1dd5d](https://github.com/scolladon/tsgit/commit/7a1dd5d493a3607ef3778a116a93d607aa618156))
+
+
+### Bug Fixes
+
+* **merge:** user-configured driver overrides the same-named built-in ([#243](https://github.com/scolladon/tsgit/issues/243)) ([01174e1](https://github.com/scolladon/tsgit/commit/01174e170a5ec38316b5e05ab89733fcbfc59135))
+* **repository:** drive-letter and UNC aware commonAncestor for worktree fs ([#242](https://github.com/scolladon/tsgit/issues/242)) ([e1d5208](https://github.com/scolladon/tsgit/commit/e1d52083d49fd5cbef32fbcde530ddb027535ef7))
+
+
+### Performance
+
+* **blame:** TREESAME skip + O(path-depth) tree descent ([#229](https://github.com/scolladon/tsgit/issues/229)) ([50d3a08](https://github.com/scolladon/tsgit/commit/50d3a08827a712c7ce28d81190c0fe3590d4c1c2))
+* describe early-termination traversal breaks ([#219](https://github.com/scolladon/tsgit/issues/219)) ([7320050](https://github.com/scolladon/tsgit/commit/732005096439b36ae3449776feb5c92a6f053d05))
+* migrate the commit priority-queue to an O(N log N) binary heap ([#221](https://github.com/scolladon/tsgit/issues/221)) ([4383078](https://github.com/scolladon/tsgit/commit/43830781172b67c7d236d9fd75dc14a9dd894a3e))
+* **node-fs:** amortise the status:clean containment tax ([#231](https://github.com/scolladon/tsgit/issues/231)) ([35ea4ec](https://github.com/scolladon/tsgit/commit/35ea4eca331a1956390fceec8d6f4ddabb6c7c1a))
+* optimise the node fs containment hot path (await-gate, closure hoist, lstat parent cache) ([#225](https://github.com/scolladon/tsgit/issues/225)) ([5820c78](https://github.com/scolladon/tsgit/commit/5820c789438f667a648e842e9f299e2e9af4046b))
+* prune name-rev walk at the target date cutoff ([#220](https://github.com/scolladon/tsgit/issues/220)) ([5af3f45](https://github.com/scolladon/tsgit/commit/5af3f455c2821e235149a749ffe6cd866e9e7316))
+* stop shipping source maps to shrink the npm tarball ~2× ([#222](https://github.com/scolladon/tsgit/issues/222)) ([fc0105f](https://github.com/scolladon/tsgit/commit/fc0105ff0bed1343f5ae7104ceb967763636bf35))
+
+
+### Documentation
+
+* audit the e2e test tier and confirm it is already minimal ([#246](https://github.com/scolladon/tsgit/issues/246)) ([9d84ccc](https://github.com/scolladon/tsgit/commit/9d84ccc06b3942ae1c507f0038b87abc9b9717f2))
+* drop stale workers-types filter note from manifest ([#218](https://github.com/scolladon/tsgit/issues/218)) ([b10ac0f](https://github.com/scolladon/tsgit/commit/b10ac0f725297e6158f6e17450b2a2e446f24270))
+* publish honest competitor benchmark comparison vs isomorphic-git ([#230](https://github.com/scolladon/tsgit/issues/230)) ([f5829c9](https://github.com/scolladon/tsgit/commit/f5829c96d90bf2cb2d5bddbeb2b6fce1c5935d50))
+* reorder Phase 26 backlog into execution sequence ([1656f98](https://github.com/scolladon/tsgit/commit/1656f98fd742d7dba2cc365ef4563f5695d9ae15))
+* spike streaming streamInflate output cap ([#217](https://github.com/scolladon/tsgit/issues/217)) ([c83b932](https://github.com/scolladon/tsgit/commit/c83b9326ebd3fdfb2637bee62b34375a725f82d1))
+
+
+### Refactor
+
+* centralize magic literals into named constants ([#211](https://github.com/scolladon/tsgit/issues/211)) ([69dabf5](https://github.com/scolladon/tsgit/commit/69dabf51cc2396c9d815b021fb82705c7b168871))
+
 ## [3.0.0](https://github.com/scolladon/tsgit/compare/v2.0.1...v3.0.0) (2026-07-02)
 
 
