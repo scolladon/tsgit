@@ -212,163 +212,136 @@ afterAll(async () => {
   await Promise.all(createdDirs.map((d) => rm(d, { recursive: true, force: true })));
 });
 
-describe.skipIf(!GIT_AVAILABLE)('status interop — staged column', () => {
-  it(
-    'Then a staged add reconstructs git status --porcelain',
-    async () => {
-      // Arrange — stage a new file without committing.
-      const { dir, ctx } = await baseRepo('add');
+interface StatusScenario {
+  readonly label: string;
+  readonly slug: string;
+  readonly arrange: (slug: string) => Promise<{ dir: string; ctx: Context }>;
+  readonly expectedClean?: boolean;
+}
+
+// Each scenario reconstructs `git status --porcelain` (v1) from tsgit's staged
+// column; the same journey/oracle, differing only in how the row's Arrange
+// drives the repo into its target state.
+const STATUS_PORCELAIN_V1_MATRIX: ReadonlyArray<StatusScenario> = [
+  {
+    label: 'a staged add',
+    slug: 'add',
+    // Stage a new file without committing.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       await writeFile(path.join(dir, 'c.txt'), 'c\n');
       git(dir, 'add', 'c.txt');
-
-      // Act / Assert
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a staged modify reconstructs git status --porcelain',
-    async () => {
-      // Arrange — restage a.txt with new content; working tree matches index.
-      const { dir, ctx } = await baseRepo('modify');
+  },
+  {
+    label: 'a staged modify',
+    slug: 'modify',
+    // Restage a.txt with new content; working tree matches index.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       await writeFile(path.join(dir, 'a.txt'), 'changed\n');
       git(dir, 'add', 'a.txt');
-
-      // Act / Assert
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a staged delete (removed from index and disk) reconstructs git',
-    async () => {
-      // Arrange
-      const { dir, ctx } = await baseRepo('delete');
+  },
+  {
+    label: 'a staged delete (removed from index and disk)',
+    slug: 'delete',
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       git(dir, 'rm', '-q', 'a.txt');
-
-      // Act / Assert
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a cached delete (kept on disk) reconstructs git D + ??',
-    async () => {
-      // Arrange — `rm --cached` leaves the file on disk → staged delete + untracked.
-      const { dir, ctx } = await baseRepo('cached');
+  },
+  {
+    label: 'a cached delete (kept on disk, git D + ??)',
+    slug: 'cached',
+    // `rm --cached` leaves the file on disk → staged delete + untracked.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       git(dir, 'rm', '-q', '--cached', 'a.txt');
-
-      // Act / Assert
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a staged-then-worktree modify reconstructs git MM',
-    async () => {
-      // Arrange — stage one change, then edit on disk again.
-      const { dir, ctx } = await baseRepo('mm');
+  },
+  {
+    label: 'a staged-then-worktree modify (MM)',
+    slug: 'mm',
+    // Stage one change, then edit on disk again.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       await writeFile(path.join(dir, 'a.txt'), 'staged\n');
       git(dir, 'add', 'a.txt');
       await writeFile(path.join(dir, 'a.txt'), 'worktree\n');
-
-      // Act / Assert
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then an unborn HEAD with staged files reconstructs git (all A)',
-    async () => {
-      // Arrange — stage files with no commit yet.
-      const { dir, ctx } = await initOnly('unborn');
+  },
+  {
+    label: 'an unborn HEAD with staged files (all A)',
+    slug: 'unborn',
+    // Stage files with no commit yet.
+    arrange: async (slug) => {
+      const { dir, ctx } = await initOnly(slug);
       await writeFile(path.join(dir, 'a.txt'), 'a\n');
       await writeFile(path.join(dir, 'z.txt'), 'z\n');
       git(dir, 'add', '-A');
-
-      // Act / Assert
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a clean tree reconstructs git (empty)',
-    async () => {
-      // Arrange
-      const { dir, ctx } = await baseRepo('clean');
-
-      // Act / Assert
-      const sut = await statusCmd(ctx);
-      expect(sut.clean).toBe(true);
-      expect(reconstruct(sut)).toBe(gitPorcelain(dir));
-    },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a staged type change reconstructs git status --porcelain (T)',
-    async () => {
-      // Arrange — replace a regular file with a symlink and stage it; worktree
-      // then matches the index, so git reports `T ` (staged only).
-      const { dir, ctx } = await baseRepo('typechange');
+  },
+  {
+    label: 'a clean tree (empty)',
+    slug: 'clean',
+    arrange: (slug) => baseRepo(slug),
+    expectedClean: true,
+  },
+  {
+    label: 'a staged type change (T)',
+    slug: 'typechange',
+    // Replace a regular file with a symlink and stage it; worktree then
+    // matches the index, so git reports `T ` (staged only).
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       await rm(path.join(dir, 'a.txt'));
       await symlink('elsewhere', path.join(dir, 'a.txt'));
       git(dir, 'add', 'a.txt');
-
-      // Act / Assert — byte-equal, no longer a structural-only carve-out.
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a staged mode change reconstructs git status --porcelain (M)',
-    async () => {
-      // Arrange — flip the exec bit and stage it (same blob). With core.fileMode
-      // on, git reports `M ` (staged only); tsgit's staged column is `mode-changed`.
-      const { dir, ctx } = await baseRepo('mode-change');
+  },
+  {
+    label: 'a staged mode change (M)',
+    slug: 'mode-change',
+    // Flip the exec bit and stage it (same blob). With core.fileMode on, git
+    // reports `M ` (staged only); tsgit's staged column is `mode-changed`.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       git(dir, 'config', 'core.fileMode', 'true');
       await chmod(path.join(dir, 'a.txt'), 0o755);
       git(dir, 'add', 'a.txt');
-
-      // Act / Assert
-      expect(reconstruct(await statusCmd(ctx))).toBe(gitPorcelain(dir));
+      return { dir, ctx };
     },
-    SETUP_TIMEOUT,
-  );
+  },
+  {
+    label: 'a conflicted merge (UU/AA/UD/DU)',
+    slug: 'unmerged',
+    // A real git merge conflict exercising four unmerged states. git writes
+    // stages 1/2/3; tsgit reads that index and reconstructs the U-codes.
+    arrange: (slug) => conflictRepo(slug),
+    expectedClean: false,
+  },
+];
 
-  it(
-    'Then a conflicted merge reconstructs git status --porcelain (UU/AA/UD/DU)',
-    async () => {
-      // Arrange — a real git merge conflict exercising four unmerged states. git
-      // writes stages 1/2/3; tsgit reads that index and reconstructs the U-codes.
-      const { dir, ctx } = await conflictRepo('unmerged');
-
-      // Act
-      const sut = await statusCmd(ctx);
-
-      // Assert — byte-equal unmerged reporting, and the repo is not clean.
-      expect(reconstruct(sut)).toBe(gitPorcelain(dir));
-      expect(sut.clean).toBe(false);
-    },
-    SETUP_TIMEOUT,
-  );
-});
-
-describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2 endpoints', () => {
-  it(
-    'Then mixed staged/unstaged changes reconstruct git status --porcelain=v2 (modes + oids)',
-    async () => {
-      // Arrange — base has a/b/d/e; drive each into a distinct XY state so one
-      // repo exercises every endpoint shape: staged add, staged modify, unstaged
-      // modify, MM, staged delete, unstaged delete, and an untracked file.
-      const { dir, ctx } = await baseRepo('v2-mixed');
+// Each scenario reconstructs `git status --porcelain=v2` from tsgit's
+// structured fields (modes/oids for ordinary lines, m1..mW/h1..h3 for
+// unmerged lines); same journey/oracle across ordinary and unmerged rows.
+const STATUS_PORCELAIN_V2_MATRIX: ReadonlyArray<StatusScenario> = [
+  {
+    label: 'mixed staged/unstaged changes (modes + oids)',
+    slug: 'v2-mixed',
+    // base has a/b/d/e; drive each into a distinct XY state so one repo
+    // exercises every endpoint shape: staged add, staged modify, unstaged
+    // modify, MM, staged delete, unstaged delete, and an untracked file.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
       await writeFile(path.join(dir, 'd.txt'), 'd\n');
       await writeFile(path.join(dir, 'e.txt'), 'e\n');
       git(dir, 'add', '-A');
@@ -384,83 +357,85 @@ describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2 endpoints', () 
       await writeFile(path.join(dir, 'd.txt'), 'd-worktree\n');
       git(dir, 'rm', '-q', 'e.txt'); // staged delete (D )
       await writeFile(path.join(dir, 'u.txt'), 'u\n'); // untracked (?)
+      return { dir, ctx };
+    },
+  },
+  {
+    label: 'a staged symlink type change (mode 100644→120000)',
+    slug: 'v2-type',
+    // Replace a regular file with a symlink and stage it (worktree matches
+    // index → `T.`); pins mH=100644, mI=mW=120000.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
+      await rm(path.join(dir, 'a.txt'));
+      await symlink('elsewhere', path.join(dir, 'a.txt'));
+      git(dir, 'add', 'a.txt');
+      return { dir, ctx };
+    },
+  },
+  {
+    label: 'a staged exec-mode change (mode 100644→100755, same oid)',
+    slug: 'v2-mode',
+    // Flip the exec bit and stage it (same blob → `M.`); pins mH=100644,
+    // mI=mW=100755 with hH==hI.
+    arrange: async (slug) => {
+      const { dir, ctx } = await baseRepo(slug);
+      git(dir, 'config', 'core.fileMode', 'true');
+      await chmod(path.join(dir, 'a.txt'), 0o755);
+      git(dir, 'add', 'a.txt');
+      return { dir, ctx };
+    },
+  },
+  {
+    label: 'a clean tree (empty)',
+    slug: 'v2-clean',
+    arrange: (slug) => baseRepo(slug),
+  },
+  {
+    label: 'a conflicted merge (u-lines, mW present)',
+    slug: 'v2-unmerged',
+    // UU/AA/UD/DU, each conflicted file left on disk → mW = 100644.
+    arrange: (slug) => conflictRepo(slug),
+  },
+  {
+    label: 'a conflicted file removed from disk (mW=000000)',
+    slug: 'v2-unmerged-absent',
+    // Drop one conflicted file from the working tree so its mW flips to
+    // 000000 while its stage blobs (m1/m2/m3, h1/h2/h3) stay put.
+    arrange: async (slug) => {
+      const { dir, ctx } = await conflictRepo(slug);
+      await rm(path.join(dir, 'both-mod.txt'));
+      return { dir, ctx };
+    },
+  },
+];
+
+describe.skipIf(!GIT_AVAILABLE)('status interop — staged column', () => {
+  it.each(STATUS_PORCELAIN_V1_MATRIX)(
+    'Then $label reconstructs git status --porcelain',
+    async ({ slug, arrange, expectedClean }) => {
+      // Arrange
+      const { dir, ctx } = await arrange(slug);
 
       // Act
       const sut = await statusCmd(ctx);
 
-      // Assert — byte-equal ordinary + untracked v2 lines (modes mH/mI/mW, oids hH/hI).
-      expect(reconstructV2(sut)).toBe(gitPorcelainV2(dir));
-    },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a staged symlink type change reconstructs git v2 (mode 100644→120000)',
-    async () => {
-      // Arrange — replace a regular file with a symlink and stage it (worktree
-      // matches index → `T.`); pins mH=100644, mI=mW=120000.
-      const { dir, ctx } = await baseRepo('v2-type');
-      await rm(path.join(dir, 'a.txt'));
-      await symlink('elsewhere', path.join(dir, 'a.txt'));
-      git(dir, 'add', 'a.txt');
-
-      // Act / Assert
-      expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
-    },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a staged exec-mode change reconstructs git v2 (mode 100644→100755, same oid)',
-    async () => {
-      // Arrange — flip the exec bit and stage it (same blob → `M.`); pins
-      // mH=100644, mI=mW=100755 with hH==hI.
-      const { dir, ctx } = await baseRepo('v2-mode');
-      git(dir, 'config', 'core.fileMode', 'true');
-      await chmod(path.join(dir, 'a.txt'), 0o755);
-      git(dir, 'add', 'a.txt');
-
-      // Act / Assert
-      expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
-    },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a clean tree reconstructs git v2 (empty)',
-    async () => {
-      // Arrange
-      const { dir, ctx } = await baseRepo('v2-clean');
-
-      // Act / Assert
-      expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
+      // Assert
+      if (expectedClean !== undefined) expect(sut.clean).toBe(expectedClean);
+      expect(reconstruct(sut)).toBe(gitPorcelain(dir));
     },
     SETUP_TIMEOUT,
   );
 });
 
-describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2 unmerged', () => {
-  it(
-    'Then a conflicted merge reconstructs git status --porcelain=v2 (u-lines, mW present)',
-    async () => {
-      // Arrange — UU/AA/UD/DU, each conflicted file left on disk → mW = 100644.
-      const { dir, ctx } = await conflictRepo('v2-unmerged');
+describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2', () => {
+  it.each(STATUS_PORCELAIN_V2_MATRIX)(
+    'Then $label reconstructs git status --porcelain=v2',
+    async ({ slug, arrange }) => {
+      // Arrange
+      const { dir, ctx } = await arrange(slug);
 
-      // Act / Assert — byte-equal u-lines (m1 m2 m3 mW h1 h2 h3) vs real git.
-      expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
-    },
-    SETUP_TIMEOUT,
-  );
-
-  it(
-    'Then a conflicted file removed from disk reconstructs git v2 (mW=000000)',
-    async () => {
-      // Arrange — drop one conflicted file from the working tree so its mW flips
-      // to 000000 while its stage blobs (m1/m2/m3, h1/h2/h3) stay put.
-      const { dir, ctx } = await conflictRepo('v2-unmerged-absent');
-      await rm(path.join(dir, 'both-mod.txt'));
-
-      // Act / Assert — mixed present/absent mW, byte-equal vs real git.
+      // Act / Assert
       expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
     },
     SETUP_TIMEOUT,

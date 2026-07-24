@@ -27,6 +27,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import type { LogOptions } from '../../src/application/commands/log.js';
 import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
@@ -118,184 +119,88 @@ const logIds = async (
   }
 };
 
+interface LogOidSequenceScenario {
+  readonly label: string;
+  // The consuming command varies per row (log vs rev-list, distinct flags);
+  // same journey (tsgit oid sequence === real-git oid sequence), same oracle.
+  readonly gitArgs: (scenario: Scenario) => ReadonlyArray<string>;
+  readonly opts: (scenario: Scenario) => LogOptions;
+}
+
+const LOG_OID_SEQUENCE_MATRIX: ReadonlyArray<LogOidSequenceScenario> = [
+  {
+    label: 'the oid sequence equals git log (all parents, date order)',
+    gitArgs: () => ['log', '--format=%H'],
+    opts: () => ({}),
+  },
+  {
+    label: "the oid sequence equals git log --first-parent (order: 'first-parent')",
+    gitArgs: () => ['log', '--first-parent', '--format=%H'],
+    opts: () => ({ order: 'first-parent' }),
+  },
+  {
+    label: 'it peels the tag and matches git log <tag>',
+    gitArgs: (scenario) => ['log', '--format=%H', scenario.tag],
+    opts: (scenario) => ({ rev: scenario.tag }),
+  },
+  {
+    // HEAD~3 is `b on main`; excluding it leaves the top 3 commits.
+    label: 'it matches git rev-list HEAD~3..HEAD (excluding a grammar selector)',
+    gitArgs: () => ['rev-list', 'HEAD~3..HEAD'],
+    opts: () => ({ excluding: ['HEAD~3'] }),
+  },
+  {
+    // scenario has two roots (base and root2); non-trivial set
+    label: 'the oid sequence equals git rev-list --max-parents=0',
+    gitArgs: () => ['rev-list', '--max-parents=0', 'HEAD'],
+    opts: () => ({ maxParents: 0 }),
+  },
+  {
+    // merges only
+    label: 'the oid sequence equals git rev-list --min-parents=2',
+    gitArgs: () => ['rev-list', '--min-parents=2', 'HEAD'],
+    opts: () => ({ minParents: 2 }),
+  },
+  {
+    // non-merges only
+    label: 'the oid sequence equals git rev-list --max-parents=1',
+    gitArgs: () => ['rev-list', '--max-parents=1', 'HEAD'],
+    opts: () => ({ maxParents: 1 }),
+  },
+  {
+    // non-roots only
+    label: 'the oid sequence equals git rev-list --min-parents=1',
+    gitArgs: () => ['rev-list', '--min-parents=1', 'HEAD'],
+    opts: () => ({ minParents: 1 }),
+  },
+  {
+    // filter applied before limit: newest non-merge commit — proves filter
+    // precedes limit; result is a non-merge, not a merge
+    label: 'the first result equals git rev-list --max-parents=1 -n 1 (filter-then-limit)',
+    gitArgs: () => ['rev-list', '--max-parents=1', '-n', '1', 'HEAD'],
+    opts: () => ({ maxParents: 1, limit: 1 }),
+  },
+  {
+    // first-parent walk; merge commits still count >=2 parents even though
+    // only first parent is followed during traversal
+    label:
+      "the oid sequence equals git rev-list --first-parent --min-parents=2 (order: 'first-parent')",
+    gitArgs: () => ['rev-list', '--first-parent', '--min-parents=2', 'HEAD'],
+    opts: () => ({ order: 'first-parent', minParents: 2 }),
+  },
+];
+
 describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
   describe('Given a diamond with a merge and an annotated tag', () => {
-    describe('When log runs with the default order', () => {
-      it('Then the oid sequence equals git log (all parents, date order)', async () => {
+    describe('When log or rev-list runs with each oid-sequence variant', () => {
+      it.each(LOG_OID_SEQUENCE_MATRIX)('Then $label', async ({ gitArgs, opts }) => {
         // Arrange
         const scenario = await buildScenario();
         try {
-          const peer = oidLines(git(scenario.dir, 'log', '--format=%H'));
+          const peer = oidLines(git(scenario.dir, ...gitArgs(scenario)));
 
           // Act
-          const ours = await logIds(scenario.dir);
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe("When log runs with order 'first-parent'", () => {
-      it('Then the oid sequence equals git log --first-parent', async () => {
-        // Arrange
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(git(scenario.dir, 'log', '--first-parent', '--format=%H'));
-
-          // Act
-          const ours = await logIds(scenario.dir, { order: 'first-parent' });
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe('When log runs from an annotated tag', () => {
-      it('Then it peels the tag and matches git log <tag>', async () => {
-        // Arrange
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(git(scenario.dir, 'log', '--format=%H', scenario.tag));
-
-          // Act
-          const ours = await logIds(scenario.dir, { rev: scenario.tag });
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe('When log excludes a grammar selector', () => {
-      it('Then it matches git rev-list HEAD~3..HEAD', async () => {
-        // Arrange — HEAD~3 is `b on main`; excluding it leaves the top 3 commits.
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(git(scenario.dir, 'rev-list', 'HEAD~3..HEAD'));
-
-          // Act
-          const ours = await logIds(scenario.dir, { excluding: ['HEAD~3'] });
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe('When log runs with maxParents:0', () => {
-      it('Then the oid sequence equals git rev-list --max-parents=0', async () => {
-        // Arrange — scenario has two roots (base and root2); non-trivial set
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(git(scenario.dir, 'rev-list', '--max-parents=0', 'HEAD'));
-
-          // Act
-          const ours = await logIds(scenario.dir, { maxParents: 0 });
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe('When log runs with minParents:2', () => {
-      it('Then the oid sequence equals git rev-list --min-parents=2', async () => {
-        // Arrange — merges only
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(git(scenario.dir, 'rev-list', '--min-parents=2', 'HEAD'));
-
-          // Act
-          const ours = await logIds(scenario.dir, { minParents: 2 });
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe('When log runs with maxParents:1', () => {
-      it('Then the oid sequence equals git rev-list --max-parents=1', async () => {
-        // Arrange — non-merges only
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(git(scenario.dir, 'rev-list', '--max-parents=1', 'HEAD'));
-
-          // Act
-          const ours = await logIds(scenario.dir, { maxParents: 1 });
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe('When log runs with minParents:1', () => {
-      it('Then the oid sequence equals git rev-list --min-parents=1', async () => {
-        // Arrange — non-roots only
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(git(scenario.dir, 'rev-list', '--min-parents=1', 'HEAD'));
-
-          // Act
-          const ours = await logIds(scenario.dir, { minParents: 1 });
-
-          // Assert
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe('When log runs with maxParents:1 and limit:1', () => {
-      it('Then the first result equals git rev-list --max-parents=1 -n 1 (filter-then-limit)', async () => {
-        // Arrange — filter applied before limit: newest non-merge commit
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(
-            git(scenario.dir, 'rev-list', '--max-parents=1', '-n', '1', 'HEAD'),
-          );
-
-          // Act
-          const ours = await logIds(scenario.dir, { maxParents: 1, limit: 1 });
-
-          // Assert — proves filter precedes limit; result is a non-merge, not a merge
-          expect(ours).toEqual(peer);
-        } finally {
-          await scenario.dispose();
-        }
-      });
-    });
-
-    describe("When log runs with order 'first-parent' and minParents:2", () => {
-      it('Then the oid sequence equals git rev-list --first-parent --min-parents=2', async () => {
-        // Arrange — first-parent walk; merge commits still count >=2 parents even though
-        // only first parent is followed during traversal
-        const scenario = await buildScenario();
-        try {
-          const peer = oidLines(
-            git(scenario.dir, 'rev-list', '--first-parent', '--min-parents=2', 'HEAD'),
-          );
-
-          // Act
-          const ours = await logIds(scenario.dir, { order: 'first-parent', minParents: 2 });
+          const ours = await logIds(scenario.dir, opts(scenario));
 
           // Assert
           expect(ours).toEqual(peer);
