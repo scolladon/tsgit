@@ -1,6 +1,6 @@
 /**
- * Bench scenario: walk N commits from HEAD via `repo.log()` versus
- * `isomorphic-git.log()`. Both libraries see the same on-disk repo.
+ * Tiered bench: `repo.log()` walking every commit at each fixture tier
+ * (small, medium — plus large under `TSGIT_BENCH_LARGE`).
  */
 import * as fs from 'node:fs';
 
@@ -8,20 +8,15 @@ import * as git from 'isomorphic-git';
 import { afterAll } from 'vitest';
 
 import { openRepository } from '../../src/index.node.js';
-import { setupSmallRepo } from './fixtures.js';
-import { benchScenario } from './support/bench-dsl.js';
+import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
-const COMMITS = 50;
-
-benchScenario(
-  `Given a ${COMMITS}-commit repo`,
+await tieredScenario(
+  MULTI_TIERS,
   'When log() walks every commit, Then compare tsgit against isomorphic-git',
-  async () => {
-    const fixture = await setupSmallRepo({ commits: COMMITS });
+  async (fixture) => {
     const repo = await openRepository({ cwd: fixture.cwd });
     afterAll(async () => {
       await repo.dispose();
-      await fixture.cleanup();
     });
 
     const sut = async (): Promise<void> => {
@@ -30,7 +25,7 @@ benchScenario(
     return {
       sut,
       baseline: async (): Promise<void> => {
-        await git.log({ fs, dir: fixture.cwd, depth: COMMITS });
+        await git.log({ fs, dir: fixture.cwd, depth: fixture.spec.commits });
       },
     };
   },
