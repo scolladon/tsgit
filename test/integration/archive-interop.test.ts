@@ -213,67 +213,63 @@ describe.skipIf(!GIT_AVAILABLE)('archive interop', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Commit metadata: result.commit and result.commitTime
+  // Commit metadata: result.commit / result.commitTime across commit-ish,
+  // bare-tree, and annotated-tag treeish inputs
   // -------------------------------------------------------------------------
 
-  describe('Given archive(ctx, { treeish: HEAD }) on a commit-ish', () => {
-    it('Then result.commit equals git rev-parse HEAD and result.commitTime equals committer epoch', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const expectedCommit = runGit(['-C', pair.peer, 'rev-parse', 'HEAD'], {
-        env: runGitEnv(),
-      }).trim();
+  const COMMIT_METADATA_MATRIX: ReadonlyArray<{
+    readonly label: string;
+    readonly resolveTreeish: (dir: string) => string;
+    readonly resolveExpectedCommit: (dir: string) => string | undefined;
+    readonly expectedCommitTime: number | undefined;
+    readonly checkTree: boolean;
+  }> = [
+    {
+      label: 'commit-ish HEAD',
+      resolveTreeish: () => 'HEAD',
+      resolveExpectedCommit: (dir) =>
+        runGit(['-C', dir, 'rev-parse', 'HEAD'], { env: runGitEnv() }).trim(),
+      expectedCommitTime: COMMITTER_EPOCH,
+      checkTree: false,
+    },
+    {
+      label: 'bare tree',
+      resolveTreeish: (dir) =>
+        runGit(['-C', dir, 'rev-parse', 'HEAD^{tree}'], { env: runGitEnv() }).trim(),
+      resolveExpectedCommit: () => undefined,
+      expectedCommitTime: undefined,
+      checkTree: true,
+    },
+    {
+      label: 'annotated tag v1.0',
+      resolveTreeish: () => 'v1.0',
+      resolveExpectedCommit: (dir) =>
+        runGit(['-C', dir, 'rev-parse', 'v1.0^{commit}'], { env: runGitEnv() }).trim(),
+      expectedCommitTime: COMMITTER_EPOCH,
+      checkTree: false,
+    },
+  ];
 
-      // Act
-      const result = await archive(ctx, { treeish: 'HEAD' });
+  describe('Given archive(ctx, { treeish }) for a commit-ish, bare tree, and annotated tag', () => {
+    it.each(COMMIT_METADATA_MATRIX)(
+      'Then result.commit and result.commitTime match git for $label',
+      async ({ resolveTreeish, resolveExpectedCommit, expectedCommitTime, checkTree }) => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.peer });
+        const treeish = resolveTreeish(pair.peer);
+        const expectedCommit = resolveExpectedCommit(pair.peer);
 
-      // Assert
-      expect(result.commit).toBe(expectedCommit);
-      expect(result.commitTime).toBe(COMMITTER_EPOCH);
-    });
-  });
+        // Act
+        const result = await archive(ctx, { treeish });
 
-  // -------------------------------------------------------------------------
-  // Bare tree: result.commit and result.commitTime are absent
-  // -------------------------------------------------------------------------
-
-  describe('Given archive(ctx, { treeish: <tree-oid> }) (bare tree)', () => {
-    it('Then result.commit and result.commitTime are undefined', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const treeOid = runGit(['-C', pair.peer, 'rev-parse', 'HEAD^{tree}'], {
-        env: runGitEnv(),
-      }).trim();
-
-      // Act
-      const result = await archive(ctx, { treeish: treeOid });
-
-      // Assert
-      expect(result.commit).toBeUndefined();
-      expect(result.commitTime).toBeUndefined();
-      expect(result.tree).toBe(treeOid);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Annotated tag: peeled commit
-  // -------------------------------------------------------------------------
-
-  describe('Given archive(ctx, { treeish: v1.0 }) (annotated tag)', () => {
-    it('Then result.commit is the peeled commit oid, not the tag oid', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const expectedCommit = runGit(['-C', pair.peer, 'rev-parse', 'v1.0^{commit}'], {
-        env: runGitEnv(),
-      }).trim();
-
-      // Act
-      const result = await archive(ctx, { treeish: 'v1.0' });
-
-      // Assert
-      expect(result.commit).toBe(expectedCommit);
-      expect(result.commitTime).toBe(COMMITTER_EPOCH);
-    });
+        // Assert
+        expect(result.commit).toBe(expectedCommit);
+        expect(result.commitTime).toBe(expectedCommitTime);
+        if (checkTree) {
+          expect(result.tree).toBe(treeish);
+        }
+      },
+    );
   });
 });
 
@@ -374,128 +370,76 @@ describe.skipIf(!GIT_AVAILABLE)('tar byte-faithfulness', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Default: HEAD commit → byte-equal to `git archive --format=tar HEAD`
+  // git defaults, --prefix=pre/, fixed-mtime bare tree, and annotated tag:
+  // byte-equal to the matching `git archive --format=tar` invocation
   // -------------------------------------------------------------------------
 
-  describe('Given archive(ctx, HEAD) passed through tarArchive with git defaults', () => {
-    it('Then the tar bytes are byte-equal to git archive --format=tar HEAD', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: tarPair.peer });
-      const result = await archive(ctx, { treeish: 'HEAD' });
-      const gitBytes = Buffer.from(
-        runGit(['-C', tarPair.peer, 'archive', '--format=tar', 'HEAD'], {
-          env: runGitEnv(),
-        }),
-        'binary',
-      );
+  const TAR_VARIANT_MATRIX: ReadonlyArray<{
+    readonly label: string;
+    readonly resolveTreeish: () => string;
+    readonly gitArgs: (treeish: string) => readonly string[];
+    readonly prefix?: string;
+    readonly fixedMtime?: number;
+    readonly assertCommit?: (result: { commit?: string }) => void;
+  }> = [
+    {
+      label: 'HEAD with git defaults',
+      resolveTreeish: () => 'HEAD',
+      gitArgs: (treeish) => ['archive', '--format=tar', treeish],
+    },
+    {
+      label: 'HEAD with prefix=pre/',
+      resolveTreeish: () => 'HEAD',
+      gitArgs: (treeish) => ['archive', '--format=tar', '--prefix=pre/', treeish],
+      prefix: 'pre/',
+    },
+    {
+      label: 'bare tree with fixed mtime (no pax block)',
+      resolveTreeish: () => treeOid,
+      gitArgs: (treeish) => ['archive', '--format=tar', `--mtime=${COMMITTER_DATE_TAR}`, treeish],
+      fixedMtime: COMMITTER_EPOCH_TAR,
+      assertCommit: (result) => expect(result.commit).toBeUndefined(),
+    },
+    {
+      label: 'v1.0 annotated tag (pax commit oid = peeled commit)',
+      resolveTreeish: () => 'v1.0',
+      gitArgs: (treeish) => ['archive', '--format=tar', treeish],
+      assertCommit: (result) => expect(result.commit).toBe(headCommit),
+    },
+  ];
 
-      // Act
-      const sut = tarArchive(result, {
-        umask: 0o0002,
-        uname: 'root',
-        gname: 'root',
-        ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
-      });
-      const ourBytes = await collectTarBytes(sut);
+  describe('Given archive(ctx, <treeish>) passed through tarArchive', () => {
+    it.each(TAR_VARIANT_MATRIX)(
+      'Then the tar bytes are byte-equal to git archive --format=tar for $label',
+      async ({ resolveTreeish, gitArgs, prefix, fixedMtime, assertCommit }) => {
+        // Arrange
+        const treeish = resolveTreeish();
+        const ctx = createNodeContext({ workDir: tarPair.peer });
+        const result = await archive(ctx, { treeish });
+        const gitBytes = Buffer.from(
+          runGit(['-C', tarPair.peer, ...gitArgs(treeish)], { env: runGitEnv() }),
+          'binary',
+        );
 
-      // Assert
-      expect(ourBytes).toEqual(new Uint8Array(gitBytes));
-    });
-  });
+        // Act
+        const sut = tarArchive(result, {
+          umask: 0o0002,
+          uname: 'root',
+          gname: 'root',
+          ...(prefix !== undefined ? { prefix } : {}),
+          ...(fixedMtime !== undefined
+            ? { mtime: fixedMtime }
+            : result.commitTime !== undefined
+              ? { mtime: result.commitTime }
+              : {}),
+        });
+        const ourBytes = await collectTarBytes(sut);
 
-  // -------------------------------------------------------------------------
-  // --prefix=pre/: byte-equal to `git archive --format=tar --prefix=pre/ HEAD`
-  // -------------------------------------------------------------------------
-
-  describe('Given archive(ctx, HEAD) passed through tarArchive with prefix=pre/', () => {
-    it('Then the tar bytes are byte-equal to git archive --format=tar --prefix=pre/ HEAD', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: tarPair.peer });
-      const result = await archive(ctx, { treeish: 'HEAD' });
-      const gitBytes = Buffer.from(
-        runGit(['-C', tarPair.peer, 'archive', '--format=tar', '--prefix=pre/', 'HEAD'], {
-          env: runGitEnv(),
-        }),
-        'binary',
-      );
-
-      // Act
-      const sut = tarArchive(result, {
-        prefix: 'pre/',
-        umask: 0o0002,
-        uname: 'root',
-        gname: 'root',
-        ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
-      });
-      const ourBytes = await collectTarBytes(sut);
-
-      // Assert
-      expect(ourBytes).toEqual(new Uint8Array(gitBytes));
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Bare tree: byte-equal to `git archive --format=tar --mtime=<date> <tree-oid>`
-  // No pax header expected (bare tree → no commit).
-  // -------------------------------------------------------------------------
-
-  describe('Given archive(ctx, <tree-oid>) passed through tarArchive with fixed mtime', () => {
-    it('Then the tar bytes are byte-equal to git archive --format=tar --mtime=<date> <tree-oid>', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: tarPair.peer });
-      const result = await archive(ctx, { treeish: treeOid });
-      const gitBytes = Buffer.from(
-        runGit(
-          ['-C', tarPair.peer, 'archive', '--format=tar', `--mtime=${COMMITTER_DATE_TAR}`, treeOid],
-          { env: runGitEnv() },
-        ),
-        'binary',
-      );
-
-      // Act
-      const sut = tarArchive(result, {
-        umask: 0o0002,
-        uname: 'root',
-        gname: 'root',
-        mtime: COMMITTER_EPOCH_TAR,
-      });
-      const ourBytes = await collectTarBytes(sut);
-
-      // Assert — no pax block for bare tree
-      expect(result.commit).toBeUndefined();
-      expect(ourBytes).toEqual(new Uint8Array(gitBytes));
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Annotated tag: pax commit oid = peeled commit, byte-equal to git
-  // -------------------------------------------------------------------------
-
-  describe('Given archive(ctx, v1.0) (annotated tag) passed through tarArchive', () => {
-    it('Then the tar bytes are byte-equal to git archive --format=tar v1.0', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: tarPair.peer });
-      const result = await archive(ctx, { treeish: 'v1.0' });
-      const gitBytes = Buffer.from(
-        runGit(['-C', tarPair.peer, 'archive', '--format=tar', 'v1.0'], {
-          env: runGitEnv(),
-        }),
-        'binary',
-      );
-
-      // Act
-      const sut = tarArchive(result, {
-        umask: 0o0002,
-        uname: 'root',
-        gname: 'root',
-        ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
-      });
-      const ourBytes = await collectTarBytes(sut);
-
-      // Assert — pax commit oid = the peeled commit oid
-      expect(result.commit).toBe(headCommit);
-      expect(ourBytes).toEqual(new Uint8Array(gitBytes));
-    });
+        // Assert
+        assertCommit?.(result);
+        expect(ourBytes).toEqual(new Uint8Array(gitBytes));
+      },
+    );
   });
 });
 
@@ -800,94 +744,71 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
   });
 
   // -------------------------------------------------------------------------
-  // HEAD commit: structurally faithful to `git archive --format=zip HEAD` (TZ=UTC).
-  // method-0 + framing byte-exact; method-8 (big.txt, divergent .gitmodules) round-trips.
+  // tzOffsetMinutes=0 default, --prefix=pre/, and fixed-mtime bare tree:
+  // structurally faithful to the matching `git archive --format=zip` invocation
+  // (TZ=UTC). method-0 + framing byte-exact; method-8 (big.txt, divergent
+  // .gitmodules) round-trips.
   // -------------------------------------------------------------------------
 
-  describe('Given archive(ctx, HEAD) passed through zipArchive with tzOffsetMinutes=0', () => {
-    it('Then the zip is structurally faithful to git archive --format=zip HEAD (method-0 byte-exact, method-8 round-trips)', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: zipPair.peer });
-      const result = await archive(ctx, { treeish: 'HEAD' });
-      const gitBytes = runGitBinary(
-        ['-C', zipPair.peer, 'archive', '--format=zip', 'HEAD'],
-        gitZipEnv(),
-      );
+  const ZIP_VARIANT_MATRIX: ReadonlyArray<{
+    readonly label: string;
+    readonly resolveTreeish: () => string;
+    readonly gitArgs: (treeish: string) => readonly string[];
+    readonly prefix?: string;
+    readonly fixedMtime?: number;
+    readonly assertCommit?: (result: { commit?: string }) => void;
+  }> = [
+    {
+      label: 'HEAD with tzOffsetMinutes=0',
+      resolveTreeish: () => 'HEAD',
+      gitArgs: (treeish) => ['archive', '--format=zip', treeish],
+    },
+    {
+      label: 'HEAD with prefix=pre/',
+      resolveTreeish: () => 'HEAD',
+      gitArgs: (treeish) => ['archive', '--format=zip', '--prefix=pre/', treeish],
+      prefix: 'pre/',
+    },
+    {
+      label: 'bare tree with fixed mtime (empty EOCD comment)',
+      resolveTreeish: () => treeOid,
+      gitArgs: (treeish) => ['archive', '--format=zip', `--mtime=${COMMITTER_DATE_ZIP}`, treeish],
+      fixedMtime: COMMITTER_EPOCH_ZIP,
+      assertCommit: (result) => expect(result.commit).toBeUndefined(),
+    },
+  ];
 
-      // Act
-      const sut = zipArchive(
-        result,
-        { deflateRaw: ctx.compressor.deflateRaw },
-        {
-          tzOffsetMinutes: 0,
-          ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
-        },
-      );
-      const ourBytes = await collectZipBytes(sut);
+  describe('Given archive(ctx, <treeish>) passed through zipArchive', () => {
+    it.each(ZIP_VARIANT_MATRIX)(
+      'Then the zip is structurally faithful to git archive --format=zip for $label',
+      async ({ resolveTreeish, gitArgs, prefix, fixedMtime, assertCommit }) => {
+        // Arrange
+        const treeish = resolveTreeish();
+        const ctx = createNodeContext({ workDir: zipPair.peer });
+        const result = await archive(ctx, { treeish });
+        const gitBytes = runGitBinary(['-C', zipPair.peer, ...gitArgs(treeish)], gitZipEnv());
 
-      // Assert — method-0 + framing byte-exact; method-8 round-trips (not byte-pinned)
-      expectZipFaithfulToGit(ourBytes, gitBytes);
-    });
-  });
+        // Act
+        const sut = zipArchive(
+          result,
+          { deflateRaw: ctx.compressor.deflateRaw },
+          {
+            ...(prefix !== undefined ? { prefix } : {}),
+            tzOffsetMinutes: 0,
+            ...(fixedMtime !== undefined
+              ? { mtime: fixedMtime }
+              : result.commitTime !== undefined
+                ? { mtime: result.commitTime }
+                : {}),
+          },
+        );
+        const ourBytes = await collectZipBytes(sut);
 
-  // -------------------------------------------------------------------------
-  // --prefix=pre/: structurally faithful to `git archive --format=zip --prefix=pre/ HEAD`
-  // -------------------------------------------------------------------------
-
-  describe('Given archive(ctx, HEAD) passed through zipArchive with prefix=pre/', () => {
-    it('Then the zip is structurally faithful to git archive --format=zip --prefix=pre/ HEAD', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: zipPair.peer });
-      const result = await archive(ctx, { treeish: 'HEAD' });
-      const gitBytes = runGitBinary(
-        ['-C', zipPair.peer, 'archive', '--format=zip', '--prefix=pre/', 'HEAD'],
-        gitZipEnv(),
-      );
-
-      // Act
-      const sut = zipArchive(
-        result,
-        { deflateRaw: ctx.compressor.deflateRaw },
-        {
-          prefix: 'pre/',
-          tzOffsetMinutes: 0,
-          ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
-        },
-      );
-      const ourBytes = await collectZipBytes(sut);
-
-      // Assert — method-0 + framing byte-exact; method-8 round-trips (not byte-pinned)
-      expectZipFaithfulToGit(ourBytes, gitBytes);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Bare tree: structurally faithful to `git archive --format=zip --mtime=<date> <tree-oid>`
-  // No commit oid in EOCD comment for bare tree.
-  // -------------------------------------------------------------------------
-
-  describe('Given archive(ctx, <tree-oid>) passed through zipArchive with fixed mtime', () => {
-    it('Then the zip is structurally faithful to git archive --format=zip --mtime=<date> <tree-oid> with an empty EOCD comment', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: zipPair.peer });
-      const result = await archive(ctx, { treeish: treeOid });
-      const gitBytes = runGitBinary(
-        ['-C', zipPair.peer, 'archive', '--format=zip', `--mtime=${COMMITTER_DATE_ZIP}`, treeOid],
-        gitZipEnv(),
-      );
-
-      // Act
-      const sut = zipArchive(
-        result,
-        { deflateRaw: ctx.compressor.deflateRaw },
-        { mtime: COMMITTER_EPOCH_ZIP, tzOffsetMinutes: 0 },
-      );
-      const ourBytes = await collectZipBytes(sut);
-
-      // Assert — no commit oid in EOCD comment; method-0 + framing byte-exact, method-8 round-trips
-      expect(result.commit).toBeUndefined();
-      expectZipFaithfulToGit(ourBytes, gitBytes);
-    });
+        // Assert — method-0 + framing byte-exact; method-8 round-trips (not byte-pinned)
+        assertCommit?.(result);
+        expectZipFaithfulToGit(ourBytes, gitBytes);
+      },
+    );
   });
 });
 
