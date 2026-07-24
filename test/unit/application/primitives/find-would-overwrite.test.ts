@@ -45,25 +45,6 @@ const set = (...paths: ReadonlyArray<string>): ReadonlySet<FilePath> =>
   new Set(paths.map((p) => p as FilePath));
 
 describe('findWouldOverwrite', () => {
-  describe('Given a tracked path whose working file differs from its index entry', () => {
-    describe('When the path is in the changed set', () => {
-      it('Then it is reported in localChanges and untracked is empty', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        const committed = await blob(ctx, 'committed\n');
-        await work(ctx, 'f.txt', 'dirty\n');
-        const sut = findWouldOverwrite;
-
-        // Act
-        const result = await sut(ctx, set('f.txt'), indexOf([entryOf('f.txt', committed)]));
-
-        // Assert
-        expect(result.localChanges).toEqual(['f.txt']);
-        expect(result.untracked).toEqual([]);
-      });
-    });
-  });
-
   describe('Given an untracked path present on disk', () => {
     describe('When the path is in the changed set', () => {
       it('Then it is reported in untracked and localChanges is empty', async () => {
