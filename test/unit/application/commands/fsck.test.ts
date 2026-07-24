@@ -1016,36 +1016,6 @@ describe('Given a loose object whose content hash does not match its path (hash-
 });
 
 // ---------------------------------------------------------------------------
-// CORRUPT OBJECT — inflate failure → bad-object finding, exit bit 1
-// ---------------------------------------------------------------------------
-
-describe('Given a loose object whose compressed bytes are invalid (inflate failure)', () => {
-  describe('When fsck runs', () => {
-    it('Then emits bad-object finding with severity error and exit code has bit 1', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      // Write a blob to get a valid OID to corrupt
-      const blobId = await writeObject(ctx, makeBlob('to-corrupt'));
-      // Overwrite with invalid compressed bytes (not valid zlib)
-      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
-      const garbage = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-      await ctx.fs.write(blobPath, garbage);
-
-      // Act
-      const result = await sut(ctx);
-
-      // Assert — bad-object finding for the corrupt oid
-      const badObjects = result.findings.filter((f) => f.type === 'bad-object');
-      const corrupt = badObjects.find((f) => (f as { id: ObjectId }).id === blobId);
-      expect(corrupt).toBeDefined();
-      expect((corrupt as { severity: string }).severity).toBe('error');
-      // Corrupt → exit bit 1
-      expect(result.exitCode & 1).toBe(1);
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // CONNECTIVITY-ONLY — content validation skipped
 // ---------------------------------------------------------------------------
 
@@ -1568,6 +1538,7 @@ describe('Given a loose object with undecodable compressed bytes (inflate failur
       expect(corrupt).toBeDefined();
       // Inflate failure: type is unknown (we cannot read the header)
       expect((corrupt as { objectType: string }).objectType).toBe('unknown');
+      expect((corrupt as { msgId: string }).msgId).toBe('unterminatedHeader');
       expect((corrupt as { severity: string }).severity).toBe('error');
       expect(result.exitCode & 1).toBe(1);
     });
@@ -1822,66 +1793,6 @@ describe('Given missing blob referenced both as blob (tree entry) and as tag tar
       expect(missing).toHaveLength(1);
       // Type should be 'blob' (from tree entry edge — whichever is first)
       expect((missing[0] as { objectType: string }).objectType).toBe('blob');
-    });
-  });
-});
-
-// Kill: content-validation.ts line 43 (unterminatedHeader msgId after inflate failure)
-// When a loose object has corrupt compressed bytes (inflate fails), the bad-object
-// finding must report msgId = 'unterminatedHeader'.
-describe('Given loose object with corrupt compressed bytes (inflate fails)', () => {
-  describe('When fsck runs', () => {
-    it('Then bad-object finding has msgId unterminatedHeader (not empty string)', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      const blobId = await writeObject(ctx, makeBlob('to-corrupt'));
-      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
-      const garbage = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-      await ctx.fs.write(blobPath, garbage);
-
-      // Act
-      const result = await sut(ctx);
-
-      // Assert — inflate failure → unterminatedHeader msgId (not empty or generic)
-      const badObj = result.findings.find(
-        (f): f is FsckFinding & { type: 'bad-object' } =>
-          f.type === 'bad-object' && (f as { id: ObjectId }).id === blobId,
-      );
-      expect(badObj).toBeDefined();
-      expect((badObj as { msgId: string }).msgId).toBe('unterminatedHeader');
-    });
-  });
-});
-
-// Kill: content-validation.ts line 57 (instanceof TsgitError check for unknownType)
-// When a loose object inflates fine but has an unknown type header, the
-// bad-object finding must report msgId = 'unknownType' (not 'unterminatedHeader').
-describe('Given loose object with inflatable but unknown-type header', () => {
-  describe('When fsck runs', () => {
-    it('Then bad-object finding has msgId unknownType (not unterminatedHeader)', async () => {
-      // Arrange — build raw bytes 'bogus 5\0hello', compress, write under computed OID
-      const ctx = await initBareCtx();
-      const enc = new TextEncoder();
-      const body = enc.encode('hello');
-      const header = enc.encode(`bogus ${body.length}\0`);
-      const rawBytes = new Uint8Array(header.length + body.length);
-      rawBytes.set(header);
-      rawBytes.set(body, header.length);
-      const oidHex = await ctx.hash.hashHex(rawBytes);
-      const compressed = await ctx.compressor.deflate(rawBytes);
-      const objPath = looseObjectPath(ctx.layout.gitDir, oidHex as ObjectId);
-      await ctx.fs.write(objPath, compressed);
-
-      // Act
-      const result = await sut(ctx);
-
-      // Assert — unknown type: msgId must be 'unknownType' (not 'unterminatedHeader')
-      const badObj = result.findings.find(
-        (f): f is FsckFinding & { type: 'bad-object' } =>
-          f.type === 'bad-object' && (f as { id: ObjectId }).id === oidHex,
-      );
-      expect(badObj).toBeDefined();
-      expect((badObj as { msgId: string }).msgId).toBe('unknownType');
     });
   });
 });
