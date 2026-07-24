@@ -23,6 +23,11 @@ FILTER_REGEX_EXCLUDE: (dist/|coverage/|reports/|\.stryker-tmp/|node_modules/)
 
 REPOSITORY_SECRETLINT_FILTER_REGEX_EXCLUDE: test/unit/application/commands/internal/url-validate\.test\.ts
 REPOSITORY_GITLEAKS_FILTER_REGEX_EXCLUDE: test/unit/application/commands/internal/url-validate\.test\.ts
-REPOSITORY_CHECKOV_FILTER_REGEX_EXCLUDE: test/unit/application/commands/internal/url-validate\.test\.ts
+
+# The url-validate SSRF suite embeds dummy user:pass@host URLs as test inputs (already
+# excluded from secretlint + gitleaks above). checkov's CKV_SECRET_4 "Basic Auth
+# Credentials" flags them too; its FILTER_REGEX_EXCLUDE is not honoured in --file mode,
+# so disable that one check. Real basic-auth secrets stay covered by secretlint + gitleaks.
+REPOSITORY_CHECKOV_ARGUMENTS: "--skip-check CKV_SECRET_4"
 
 SPELL_CSPELL_ARGUMENTS: "--words 'RUNBOOK,tsgit,scolladon'"
