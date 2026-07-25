@@ -29,10 +29,10 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id });
+        const result = await diff(ctx, { from: c1.id, to: c2.id });
 
         // Assert — TreeDiff carries `changes`; modifying `a.txt` must produce ≥1 change.
-        expect(sut.changes.length).toBeGreaterThanOrEqual(1);
+        expect(result.changes.length).toBeGreaterThanOrEqual(1);
       });
     });
   });
@@ -51,10 +51,10 @@ describe('diff', () => {
         await commit(ctx, { message: 'second', author });
 
         // Act — diff HEAD^ (c1's tree) against HEAD (c2's tree).
-        const sut = await diff(ctx, { from: 'HEAD^', to: 'HEAD' });
+        const result = await diff(ctx, { from: 'HEAD^', to: 'HEAD' });
 
         // Assert — `a.txt` changed between the two trees.
-        expect(sut.changes.length).toBeGreaterThanOrEqual(1);
+        expect(result.changes.length).toBeGreaterThanOrEqual(1);
       });
     });
   });
@@ -91,10 +91,10 @@ describe('diff', () => {
 
         // Act — `from` defaults to 'HEAD'. With `from`=='' it would fail ref
         // resolution; with HEAD it resolves to c1, so HEAD-vs-c1 is the empty diff.
-        const sut = await diff(ctx, { to: c1.id });
+        const result = await diff(ctx, { to: c1.id });
 
         // Assert
-        expect(sut.changes).toEqual([]);
+        expect(result.changes).toEqual([]);
       });
     });
   });
@@ -110,11 +110,11 @@ describe('diff', () => {
         await commit(ctx, { message: 'first', author });
 
         // Act — `to` undefined → empty tree; every committed file shows as a delete.
-        const sut = await diff(ctx);
+        const result = await diff(ctx);
 
         // Assert
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('delete');
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('delete');
       });
     });
   });
@@ -133,10 +133,10 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, withStat: true });
+        const result = await diff(ctx, { from: c1.id, to: c2.id, withStat: true });
 
         // Assert — single-line replacement: one added, one deleted.
-        expect(sut.changes[0]).toMatchObject({ added: 1, deleted: 1, binary: false });
+        expect(result.changes[0]).toMatchObject({ added: 1, deleted: 1, binary: false });
       });
     });
   });
@@ -155,10 +155,10 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id });
+        const result = await diff(ctx, { from: c1.id, to: c2.id });
 
         // Assert
-        expect(sut.changes[0]).not.toHaveProperty('added');
+        expect(result.changes[0]).not.toHaveProperty('added');
       });
     });
   });
@@ -179,10 +179,10 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'rename', author });
 
         // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, detectRenames: true });
+        const result = await diff(ctx, { from: c1.id, to: c2.id, detectRenames: true });
 
         // Assert — rename detection emits exactly one 'rename' change.
-        expect(sut.changes.some((c) => c.type === 'rename')).toBe(true);
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(true);
       });
     });
   });
@@ -203,12 +203,12 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'rename', author });
 
         // Act — detectRenames defaults to off; passing `{}` (not `{detectRenames:true}`).
-        const sut = await diff(ctx, { from: c1.id, to: c2.id });
+        const result = await diff(ctx, { from: c1.id, to: c2.id });
 
         // Assert — no rename; the two paths show as independent add + delete.
-        expect(sut.changes.some((c) => c.type === 'rename')).toBe(false);
-        expect(sut.changes.some((c) => c.type === 'add')).toBe(true);
-        expect(sut.changes.some((c) => c.type === 'delete')).toBe(true);
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
+        expect(result.changes.some((c) => c.type === 'add')).toBe(true);
+        expect(result.changes.some((c) => c.type === 'delete')).toBe(true);
       });
     });
   });
@@ -229,10 +229,10 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'rename', author });
 
         // Act — `detectRenames: false` must take the `{}` branch, not `{detectRenames:true}`.
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, detectRenames: false });
+        const result = await diff(ctx, { from: c1.id, to: c2.id, detectRenames: false });
 
         // Assert
-        expect(sut.changes.some((c) => c.type === 'rename')).toBe(false);
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
       });
     });
   });
@@ -256,10 +256,10 @@ describe('diff', () => {
         const resolved = target === 'tree' ? c1.tree : target;
 
         // Act
-        const sut = await diff(ctx, { from: resolved, to: resolved });
+        const result = await diff(ctx, { from: resolved, to: resolved });
 
         // Assert
-        expect(sut.changes).toEqual([]);
+        expect(result.changes).toEqual([]);
       });
     });
   });
@@ -276,11 +276,11 @@ describe('diff', () => {
         const c1 = await commit(ctx, { message: 'first', author });
 
         // Act — `from` is the tree oid; `to` omitted → empty tree.
-        const sut = await diff(ctx, { from: c1.tree });
+        const result = await diff(ctx, { from: c1.tree });
 
         // Assert
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('delete');
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('delete');
       });
     });
   });
@@ -342,11 +342,11 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act — the default mirrors `git diff-tree` (non-recursive).
-        const sut = await diff(ctx, { from: c1.id, to: c2.id });
+        const result = await diff(ctx, { from: c1.id, to: c2.id });
 
         // Assert — one change, on `sub` (not `sub/b.txt`).
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]).toEqual(expect.objectContaining({ type: 'modify', path: 'sub' }));
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toEqual(expect.objectContaining({ type: 'modify', path: 'sub' }));
       });
     });
   });
@@ -365,10 +365,10 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+        const result = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
 
         // Assert — full-path change, not a tree-entry change.
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           expect.objectContaining({ type: 'modify', path: 'sub/b.txt' }),
         ]);
       });
@@ -405,14 +405,14 @@ describe('diff', () => {
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act — threshold:24000 (40% of MAX_SCORE): pair qualifies → rename
-        const sutLow = await diff(ctx, {
+        const resultLow = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           detectRenames: true,
           renameOptions: { threshold: 24000 },
         });
         // Act — threshold:60000 (100%): pair does not qualify → A/D
-        const sutHigh = await diff(ctx, {
+        const resultHigh = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           detectRenames: true,
@@ -420,11 +420,11 @@ describe('diff', () => {
         });
 
         // Assert — low threshold: rename detected
-        expect(sutLow.changes.some((c) => c.type === 'rename')).toBe(true);
+        expect(resultLow.changes.some((c) => c.type === 'rename')).toBe(true);
         // Assert — high threshold: no rename
-        expect(sutHigh.changes.some((c) => c.type === 'rename')).toBe(false);
-        expect(sutHigh.changes.some((c) => c.type === 'add')).toBe(true);
-        expect(sutHigh.changes.some((c) => c.type === 'delete')).toBe(true);
+        expect(resultHigh.changes.some((c) => c.type === 'rename')).toBe(false);
+        expect(resultHigh.changes.some((c) => c.type === 'add')).toBe(true);
+        expect(resultHigh.changes.some((c) => c.type === 'delete')).toBe(true);
       });
     });
   });

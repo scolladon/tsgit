@@ -20,12 +20,6 @@ import type {
 import type { Context } from '../../../../src/ports/context.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// System under test
-// ─────────────────────────────────────────────────────────────────────────────
-
-const sut = bundleCreate;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Shared fixture helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -162,7 +156,7 @@ describe('bundleCreate', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, opts);
+          await bundleCreate(ctx, opts);
         } catch (err) {
           caught = err;
         }
@@ -204,7 +198,7 @@ describe('bundleCreate', () => {
         const opts = buildOpts(commit1);
 
         // Act
-        const result = await catchBundleEmpty(() => sut(ctx, opts));
+        const result = await catchBundleEmpty(() => bundleCreate(ctx, opts));
 
         // Assert
         expect(result.code).toBe('BUNDLE_EMPTY');
@@ -222,7 +216,7 @@ describe('bundleCreate', () => {
         const { ctx } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
 
         // Assert
         expect(result.version).toBe(2);
@@ -233,7 +227,7 @@ describe('bundleCreate', () => {
         const { ctx, commit1 } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
 
         // Assert
         expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: commit1 }]);
@@ -244,7 +238,7 @@ describe('bundleCreate', () => {
         const { ctx } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
 
         // Assert
         expect(result.prerequisites).toEqual([]);
@@ -255,7 +249,7 @@ describe('bundleCreate', () => {
         const { ctx } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
 
         // Assert
         expect(result.objectCount).toBeGreaterThan(0);
@@ -267,7 +261,7 @@ describe('bundleCreate', () => {
         const magic = new TextEncoder().encode('# v2 git bundle\n');
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
 
         // Assert
         expect(Array.from(result.bytes.slice(0, magic.length))).toEqual(Array.from(magic));
@@ -278,7 +272,7 @@ describe('bundleCreate', () => {
         const { ctx } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
 
         // Assert
         expect(result.packSha).toMatch(/^[0-9a-f]{40}$/);
@@ -291,7 +285,7 @@ describe('bundleCreate', () => {
         const { ctx, commit1 } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'HEAD' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'HEAD' }] });
 
         // Assert
         expect(result.refs).toEqual([{ name: 'HEAD', oid: commit1 }]);
@@ -304,7 +298,7 @@ describe('bundleCreate', () => {
         const { ctx, commit1 } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'main' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'main' }] });
 
         // Assert
         expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: commit1 }]);
@@ -334,7 +328,7 @@ describe('bundleCreate', () => {
         await setRef(ctx, 'refs/tags/v1', tagOid);
 
         // Act
-        const result = await sut(ctx, { revs: [{ tip: 'refs/tags/v1' }] });
+        const result = await bundleCreate(ctx, { revs: [{ tip: 'refs/tags/v1' }] });
 
         // Assert
         expect(result.refs).toEqual([{ name: 'refs/tags/v1', oid: tagOid }]);
@@ -354,7 +348,7 @@ describe('bundleCreate', () => {
         };
 
         // Act
-        const result = await sut(ctx, opts);
+        const result = await bundleCreate(ctx, opts);
 
         // Assert
         expect(result.prerequisites).toEqual([{ oid: commit1, comment: 'first commit' }]);
@@ -364,8 +358,8 @@ describe('bundleCreate', () => {
       it('Then objectCount is less than the full closure', async () => {
         // Arrange
         const { ctx, commit1 } = await buildTwoCommitRepo();
-        const fullResult = await sut(ctx, { revs: [{ tip: 'refs/heads/main' }] });
-        const partialResult = await sut(ctx, {
+        const fullResult = await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        const partialResult = await bundleCreate(ctx, {
           revs: [{ tip: 'refs/heads/main' }, { exclude: commit1 }],
         });
 
@@ -399,7 +393,7 @@ describe('bundleCreate', () => {
         };
 
         // Act
-        const result = await sut(ctx, opts);
+        const result = await bundleCreate(ctx, opts);
 
         // Assert — the prerequisite comment must be the whole first paragraph, not just the first line
         expect(result.prerequisites).toEqual([
@@ -421,7 +415,7 @@ describe('bundleCreate', () => {
         };
 
         // Act
-        const result = await sut(ctx, opts);
+        const result = await bundleCreate(ctx, opts);
 
         // Assert
         expect(result.prerequisites).toEqual([{ oid: commit1, comment: 'first commit' }]);
@@ -442,7 +436,7 @@ describe('bundleCreate', () => {
         };
 
         // Act
-        const result = await sut(ctx, opts);
+        const result = await bundleCreate(ctx, opts);
 
         // Assert
         expect(result.prerequisites).toEqual([{ oid: base, comment: 'base commit' }]);
@@ -478,7 +472,7 @@ describe('bundleCreate', () => {
         await setRef(ctx, 'refs/heads/feature', featureCommit);
 
         // Act
-        const result = await sut(ctx, {
+        const result = await bundleCreate(ctx, {
           revs: [{ symmetricRange: ['refs/heads/main', 'refs/heads/feature'] }],
         });
 
@@ -501,7 +495,7 @@ describe('bundleCreate', () => {
         await setRef(ctx, 'refs/tags/v1', tagCommit);
 
         // Act
-        const result = await sut(ctx, { all: true });
+        const result = await bundleCreate(ctx, { all: true });
 
         // Assert: refs sorted, HEAD last
         const refNames = result.refs.map((r) => r.name);
@@ -522,7 +516,7 @@ describe('bundleCreate', () => {
         await setRef(ctx, 'refs/tags/v1', mainCommit); // add a tag (should not appear)
 
         // Act
-        const result = await sut(ctx, { branches: true });
+        const result = await bundleCreate(ctx, { branches: true });
 
         // Assert
         const refNames = result.refs.map((r) => r.name);
@@ -557,7 +551,7 @@ describe('bundleCreate', () => {
         await setRef(ctx, 'refs/tags/v1', tagOid);
 
         // Act
-        const result = await sut(ctx, { tags: true });
+        const result = await bundleCreate(ctx, { tags: true });
 
         // Assert
         const refNames = result.refs.map((r) => r.name);
@@ -584,7 +578,7 @@ describe('bundleCreate', () => {
         const { ctx } = await buildSingleCommitRepo();
 
         // Act
-        const result = await sut(ctx, { branches: true, all: true });
+        const result = await bundleCreate(ctx, { branches: true, all: true });
 
         // Assert — explicit ordered golden from real git 2.54.0
         const refNames = result.refs.map((r) => r.name as string);
@@ -611,7 +605,6 @@ describe('assertBoundaryCommit', () => {
     describe('When assertBoundaryCommit is called', () => {
       it('Then throws BUNDLE_PREREQUISITE_NOT_COMMIT with the oid and objectType', () => {
         // Arrange
-        const sut = assertBoundaryCommit;
         const blob: GitObject = {
           type: 'blob',
           id: FAKE_OID,
@@ -621,7 +614,7 @@ describe('assertBoundaryCommit', () => {
         // Act
         let thrown: unknown;
         try {
-          sut(blob, FAKE_OID);
+          assertBoundaryCommit(blob, FAKE_OID);
         } catch (err) {
           thrown = err;
         }
@@ -640,7 +633,6 @@ describe('assertBoundaryCommit', () => {
     describe('When assertBoundaryCommit is called', () => {
       it('Then returns the commit object unchanged', async () => {
         // Arrange
-        const sut = assertBoundaryCommit;
         const { ctx, commit1 } = await buildTwoCommitRepo();
         const { readObject } = await import(
           '../../../../src/application/primitives/read-object.js'
@@ -648,7 +640,7 @@ describe('assertBoundaryCommit', () => {
         const commitObj = await readObject(ctx, commit1 as ObjectId);
 
         // Act
-        const result = sut(commitObj, commit1 as ObjectId);
+        const result = assertBoundaryCommit(commitObj, commit1 as ObjectId);
 
         // Assert
         expect(result.type).toBe('commit');

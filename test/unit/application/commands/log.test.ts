@@ -108,10 +108,10 @@ describe('log', () => {
         const ctx = await seedThree();
 
         // Act
-        const sut = await log(ctx);
+        const result = await log(ctx);
 
         // Assert
-        expect(sut.map((e) => e.message)).toEqual(['third\n', 'second\n', 'first\n']);
+        expect(result.map((e) => e.message)).toEqual(['third\n', 'second\n', 'first\n']);
       });
     });
   });
@@ -123,11 +123,11 @@ describe('log', () => {
         const ctx = (await seedDiamond()).ctx;
 
         // Act
-        const sut = await log(ctx);
+        const result = await log(ctx);
 
         // Assert — all four commits, committer-date desc; a first-parent default
         // walk would drop `C` (it is off the first-parent spine).
-        expect(sut.map((e) => e.message)).toEqual(['D', 'C', 'B', 'A']);
+        expect(result.map((e) => e.message)).toEqual(['D', 'C', 'B', 'A']);
       });
     });
 
@@ -137,11 +137,11 @@ describe('log', () => {
         const ctx = (await seedDiamond()).ctx;
 
         // Act
-        const sut = await log(ctx, { order: 'first-parent' });
+        const result = await log(ctx, { order: 'first-parent' });
 
         // Assert — `D → B` (parents[0]) → `A`; `C` is off the spine. The default
         // (date) walk would re-add `C`.
-        expect(sut.map((e) => e.message)).toEqual(['D', 'B', 'A']);
+        expect(result.map((e) => e.message)).toEqual(['D', 'B', 'A']);
       });
     });
   });
@@ -153,10 +153,10 @@ describe('log', () => {
         const ctx = await seedThree();
 
         // Act
-        const sut = await log(ctx, { limit: 2 });
+        const result = await log(ctx, { limit: 2 });
 
         // Assert
-        expect(sut).toHaveLength(2);
+        expect(result).toHaveLength(2);
       });
     });
   });
@@ -171,10 +171,10 @@ describe('log', () => {
         const oldest = all[all.length - 1] as { readonly id: string };
 
         // Act
-        const sut = await log(ctx, { excluding: [oldest.id] });
+        const result = await log(ctx, { excluding: [oldest.id] });
 
         // Assert — the excluded commit is not yielded.
-        expect(sut.find((e) => e.id === oldest.id)).toBeUndefined();
+        expect(result.find((e) => e.id === oldest.id)).toBeUndefined();
       });
     });
   });
@@ -186,10 +186,10 @@ describe('log', () => {
         const ctx = await seedThree();
 
         // Act
-        const sut = await log(ctx, { rev: 'main' });
+        const result = await log(ctx, { rev: 'main' });
 
         // Assert — same shape as default HEAD-driven log; kills `rev === 'HEAD'` mutants.
-        expect(sut.length).toBeGreaterThanOrEqual(3);
+        expect(result.length).toBeGreaterThanOrEqual(3);
       });
     });
   });
@@ -203,11 +203,11 @@ describe('log', () => {
         const oldest = all[all.length - 1] as { readonly id: string };
 
         // Act — walk from the oldest commit; should yield only itself.
-        const sut = await log(ctx, { rev: oldest.id });
+        const result = await log(ctx, { rev: oldest.id });
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.id).toBe(oldest.id);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.id).toBe(oldest.id);
       });
     });
   });
@@ -244,12 +244,12 @@ describe('log', () => {
         const { ctx } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx, { before: new Date(2500 * 1000) });
+        const result = await log(ctx, { before: new Date(2500 * 1000) });
 
         // Assert — kills ConditionalExpression true/false, BlockStatement{},
         // `>=`→`<` (which would yield only `newest`), and `/`→`*` (the huge
         // millisecond threshold would never exclude anything).
-        expect(sut.map((e) => e.message)).toEqual(['middle', 'oldest']);
+        expect(result.map((e) => e.message)).toEqual(['middle', 'oldest']);
       });
     });
   });
@@ -261,10 +261,10 @@ describe('log', () => {
         const { ctx } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx, { before: new Date(2000 * 1000) });
+        const result = await log(ctx, { before: new Date(2000 * 1000) });
 
         // Assert — `>=` excludes the commit AT the boundary; `>` would keep it.
-        expect(sut.map((e) => e.message)).toEqual(['oldest']);
+        expect(result.map((e) => e.message)).toEqual(['oldest']);
       });
     });
   });
@@ -276,10 +276,10 @@ describe('log', () => {
         const { ctx } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx);
+        const result = await log(ctx);
 
         // Assert
-        expect(sut.map((e) => e.message)).toEqual(['newest', 'middle', 'oldest']);
+        expect(result.map((e) => e.message)).toEqual(['newest', 'middle', 'oldest']);
       });
     });
   });
@@ -291,10 +291,10 @@ describe('log', () => {
         const { ctx } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx);
+        const result = await log(ctx);
 
         // Assert — the default `[]` excludes nothing.
-        expect(sut).toHaveLength(3);
+        expect(result).toHaveLength(3);
       });
     });
   });
@@ -314,10 +314,10 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { rev: branchName });
+        const result = await log(ctx, { rev: branchName });
 
         // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
-        expect(sut.map((e) => e.message)).toEqual(['target']);
+        expect(result.map((e) => e.message)).toEqual(['target']);
       });
     });
   });
@@ -337,10 +337,10 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { rev: branchName });
+        const result = await log(ctx, { rev: branchName });
 
         // Assert — resolved via the branch ref; mutant would throw on a 41-char oid.
-        expect(sut.map((e) => e.message)).toEqual(['target']);
+        expect(result.map((e) => e.message)).toEqual(['target']);
       });
     });
   });
@@ -357,11 +357,11 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { rev: 'v1' });
+        const result = await log(ctx, { rev: 'v1' });
 
         // Assert — kills the `refs/tags/${rev}` → `` StringLiteral mutant, which
         // would drop the only resolvable candidate and throw.
-        expect(sut.map((e) => e.message)).toEqual(['tagged']);
+        expect(result.map((e) => e.message)).toEqual(['tagged']);
       });
     });
   });
@@ -373,10 +373,10 @@ describe('log', () => {
         const { ctx } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx, { rev: 'HEAD~2' });
+        const result = await log(ctx, { rev: 'HEAD~2' });
 
         // Assert — walks from the oldest only (the bespoke resolver had no `~` grammar).
-        expect(sut.map((e) => e.message)).toEqual(['oldest']);
+        expect(result.map((e) => e.message)).toEqual(['oldest']);
       });
     });
   });
@@ -394,11 +394,11 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { rev: 'v9' });
+        const result = await log(ctx, { rev: 'v9' });
 
         // Assert — peeled to c1; without the peel the walk reads the tag object,
         // skips it as a non-commit, and yields nothing.
-        expect(sut.map((e) => e.message)).toEqual(['oldest']);
+        expect(result.map((e) => e.message)).toEqual(['oldest']);
       });
     });
   });
@@ -410,10 +410,10 @@ describe('log', () => {
         const { ctx } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx, { excluding: ['HEAD~1'] });
+        const result = await log(ctx, { excluding: ['HEAD~1'] });
 
         // Assert — only the newest remains (middle + its ancestor are excluded).
-        expect(sut.map((e) => e.message)).toEqual(['newest']);
+        expect(result.map((e) => e.message)).toEqual(['newest']);
       });
     });
   });
@@ -473,12 +473,12 @@ describe('log', () => {
         });
 
         // Act
-        const sut = await log(ctx, { excluding: ['refs/heads/cut'] });
+        const result = await log(ctx, { excluding: ['refs/heads/cut'] });
 
         // Assert — `excluding` resolved as a ref name; mutants that treat it as a
         // raw oid (regex/ConditionalExpression) or skip the resolve (BlockStatement{})
         // would push the wrong value and yield `middle` + `oldest` too.
-        expect(sut.map((e) => e.message)).toEqual(['newest']);
+        expect(result.map((e) => e.message)).toEqual(['newest']);
       });
     });
   });
@@ -530,10 +530,10 @@ describe('log', () => {
         const { ctx } = await seedDiamond();
 
         // Act
-        const sut = await log(ctx, options);
+        const result = await log(ctx, options);
 
         // Assert
-        expect(sut.map((e) => e.message)).toEqual(expected);
+        expect(result.map((e) => e.message)).toEqual(expected);
       });
     });
   });
@@ -551,10 +551,10 @@ describe('log', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': o } });
 
         // Act
-        const sut = await log(ctx, { minParents: 3 });
+        const result = await log(ctx, { minParents: 3 });
 
         // Assert — only O(3 parents) passes; proves numeric band not boolean isMerge
-        expect(sut.map((e) => e.message)).toEqual(['O']);
+        expect(result.map((e) => e.message)).toEqual(['O']);
       });
     });
   });
@@ -569,10 +569,10 @@ describe('log', () => {
         const { ctx, c1, c2, c3 } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx, { before: new Date(2500 * 1000), minParents: 1 });
+        const result = await log(ctx, { before: new Date(2500 * 1000), minParents: 1 });
 
         // Assert
-        expect(sut.map((e) => e.message)).toEqual(['middle']);
+        expect(result.map((e) => e.message)).toEqual(['middle']);
         void c1;
         void c2;
         void c3;
@@ -589,10 +589,10 @@ describe('log', () => {
         const { ctx } = await seedTimestampChain();
 
         // Act
-        const sut = await log(ctx, { excluding: ['HEAD~1'], minParents: 1 });
+        const result = await log(ctx, { excluding: ['HEAD~1'], minParents: 1 });
 
         // Assert — HEAD~1 = middle; walk stops there; newest has 1 parent and passes
-        expect(sut.map((e) => e.message)).toEqual(['newest']);
+        expect(result.map((e) => e.message)).toEqual(['newest']);
       });
     });
   });

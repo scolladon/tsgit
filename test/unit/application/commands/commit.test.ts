@@ -65,11 +65,11 @@ describe('commit — cherry-pick resolution', () => {
         );
 
         // Act
-        const sut = await commit(ctx, { message: '', author });
+        const result = await commit(ctx, { message: '', author });
 
         // Assert
-        expect(sut.parents).toEqual([base]); // CHERRY_PICK_HEAD NOT a second parent
-        const data = await readObject(ctx, sut.id);
+        expect(result.parents).toEqual([base]); // CHERRY_PICK_HEAD NOT a second parent
+        const data = await readObject(ctx, result.id);
         if (data.type === 'commit') expect(data.data.message).toBe('picked msg\n');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
@@ -89,11 +89,11 @@ describe('commit — cherry-pick resolution', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, `${base}\n`);
 
         // Act
-        const sut = await commit(ctx, { message: 'explicit', author });
+        const result = await commit(ctx, { message: 'explicit', author });
 
         // Assert
-        expect(sut.parents).toEqual([base]);
-        const data = await readObject(ctx, sut.id);
+        expect(result.parents).toEqual([base]);
+        const data = await readObject(ctx, result.id);
         if (data.type === 'commit') expect(data.data.message).toBe('explicit\n');
         const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
         expect(reflog.some((e) => e.message === 'commit (cherry-pick): explicit')).toBe(true);
@@ -123,11 +123,11 @@ describe('commit — revert resolution', () => {
         );
 
         // Act
-        const sut = await commit(ctx, { message: '', author });
+        const result = await commit(ctx, { message: '', author });
 
         // Assert
-        expect(sut.parents).toEqual([base]); // REVERT_HEAD NOT a second parent
-        const data = await readObject(ctx, sut.id);
+        expect(result.parents).toEqual([base]); // REVERT_HEAD NOT a second parent
+        const data = await readObject(ctx, result.id);
         if (data.type === 'commit') expect(data.data.message).toBe('Revert "x"\n');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REVERT_HEAD`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
@@ -162,10 +162,10 @@ describe('commit — revert resolution', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REVERT_HEAD`, `${base}\n`);
 
         // Act
-        const sut = await commit(ctx, { message: 'Revert "x"', author, allowEmpty: true });
+        const result = await commit(ctx, { message: 'Revert "x"', author, allowEmpty: true });
 
         // Assert
-        expect(sut.parents).toEqual([base]);
+        expect(result.parents).toEqual([base]);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REVERT_HEAD`)).toBe(false);
       });
     });
@@ -180,14 +180,14 @@ describe('commit', () => {
         const ctx = await seed();
 
         // Act
-        const sut = await commit(ctx, { message: 'first', author });
+        const result = await commit(ctx, { message: 'first', author });
 
         // Assert
-        expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
-        expect(sut.parents).toEqual([]);
-        expect(sut.branch).toBe('refs/heads/main');
+        expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+        expect(result.parents).toEqual([]);
+        expect(result.branch).toBe('refs/heads/main');
         const refContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
-        expect(refContent.trim()).toBe(sut.id);
+        expect(refContent.trim()).toBe(result.id);
       });
     });
   });
@@ -241,7 +241,7 @@ describe('commit', () => {
         // Arrange
         const { ctx, opts } = await build();
 
-        // Assert
+        // Act + Assert
         await expectError(() => commit(ctx, opts), code);
       });
     });
@@ -255,12 +255,12 @@ describe('commit', () => {
         const first = await commit(ctx, { message: 'first', author });
 
         // Act — same tree, allowEmpty=true means the empty-commit guard is skipped.
-        const sut = await commit(ctx, { message: 'second', author, allowEmpty: true });
+        const result = await commit(ctx, { message: 'second', author, allowEmpty: true });
 
         // Assert — both commits share the tree but produce distinct ids (different message).
-        expect(sut.tree).toBe(first.tree);
-        expect(sut.id).not.toBe(first.id);
-        expect(sut.parents).toEqual([first.id]);
+        expect(result.tree).toBe(first.tree);
+        expect(result.id).not.toBe(first.id);
+        expect(result.parents).toEqual([first.id]);
       });
     });
   });
@@ -317,12 +317,12 @@ describe('commit', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${mergeHead}\n`);
 
         // Act — the tree-equality guard must be skipped during a merge resolution.
-        const sut = await commit(ctx, { message: 'merge resolved', author });
+        const result = await commit(ctx, { message: 'merge resolved', author });
 
         // Assert — kills the ConditionalExpression mutant flipping `mergeHead === undefined`
         // to `true` (which would re-enable the guard and throw NOTHING_TO_COMMIT).
-        expect(sut.tree).toBe(first.tree);
-        expect(sut.parents).toEqual([first.id, mergeHead]);
+        expect(result.tree).toBe(first.tree);
+        expect(result.parents).toEqual([first.id, mergeHead]);
       });
     });
   });
@@ -362,10 +362,10 @@ describe('commit', () => {
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await commit(ctx, { message: 'explicit message', author });
+        const result = await commit(ctx, { message: 'explicit message', author });
 
         // Assert — kills the LogicalOperator mutant (`||` → `&&`) in resolveCommitMessage.
-        const obj = await readObject(ctx, sut.id);
+        const obj = await readObject(ctx, result.id);
         if (obj.type !== 'commit') throw new Error('expected a commit object');
         expect(obj.data.message).toBe('explicit message\n');
       });
@@ -379,11 +379,11 @@ describe('commit', () => {
         const ctx = await seed();
 
         // Act
-        const sut = await commit(ctx, { message: 'plain message', author });
+        const result = await commit(ctx, { message: 'plain message', author });
 
         // Assert — kills the ConditionalExpression mutant flipping the
         // resolveCommitMessage guard to `false` (which would route to MERGE_MSG).
-        const obj = await readObject(ctx, sut.id);
+        const obj = await readObject(ctx, result.id);
         if (obj.type !== 'commit') throw new Error('expected a commit object');
         expect(obj.data.message).toBe('plain message\n');
       });
@@ -401,14 +401,14 @@ describe('commit', () => {
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await commit(ctx, { message: 'detached', author });
+        const result = await commit(ctx, { message: 'detached', author });
 
         // Assert — kills the BlockStatement + StringLiteral mutants on the
         // detached-HEAD write: HEAD file content must be exactly `${id}\n`.
-        expect(sut.branch).toBeUndefined();
-        expect(sut.parents).toEqual([first.id]);
+        expect(result.branch).toBeUndefined();
+        expect(result.parents).toEqual([first.id]);
         const headContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
-        expect(headContent).toBe(`${sut.id}\n`);
+        expect(headContent).toBe(`${result.id}\n`);
       });
     });
   });
@@ -426,11 +426,11 @@ describe('commit', () => {
         const before = Math.floor(Date.now() / 1000);
 
         // Act
-        const sut = await commit(ctx, { message: 'configured' });
+        const result = await commit(ctx, { message: 'configured' });
 
         // Assert — kills the ArithmeticOperator (`/` → `*`) and StringLiteral
         // (`+0000` → ``) mutants in toAuthor.
-        const obj = await readObject(ctx, sut.id);
+        const obj = await readObject(ctx, result.id);
         if (obj.type !== 'commit') throw new Error('expected a commit object');
         const after = Math.ceil(Date.now() / 1000);
         expect(obj.data.author.name).toBe('Grace');
@@ -497,12 +497,12 @@ describe('commit', () => {
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await commit(ctx, { message: 'orphan parent', author });
+        const result = await commit(ctx, { message: 'orphan parent', author });
 
         // Assert — kills the StringLiteral mutant `'0'.repeat(40)` → `''`, which
         // would make ObjectId.from throw INVALID_OBJECT_ID instead of returning.
-        expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
-        expect(sut.parents).toEqual([blobId]);
+        expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+        expect(result.parents).toEqual([blobId]);
       });
     });
   });
@@ -661,10 +661,10 @@ describe('commit — hooks', () => {
         const ctx = await seedHooked(hookedCtx({ commitMsgRewrite: 'rewritten subject' }));
 
         // Act
-        const sut = await commit(ctx, { message: 'original', author });
+        const result = await commit(ctx, { message: 'original', author });
 
         // Assert
-        const obj = await readObject(ctx, sut.id);
+        const obj = await readObject(ctx, result.id);
         expect(obj.type).toBe('commit');
         if (obj.type === 'commit') {
           expect(obj.data.message).toBe('rewritten subject\n');
@@ -685,10 +685,10 @@ describe('commit — hooks', () => {
         );
 
         // Act
-        const sut = await commit(ctx, { message: 'first', author, noVerify: true });
+        const result = await commit(ctx, { message: 'first', author, noVerify: true });
 
         // Assert
-        expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
+        expect(result.id).toMatch(/^[0-9a-f]{40}$/);
       });
     });
   });

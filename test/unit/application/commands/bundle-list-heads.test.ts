@@ -17,12 +17,6 @@ import type { RefName } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// System under test
-// ─────────────────────────────────────────────────────────────────────────────
-
-const sut = bundleListHeads;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Shared fixture helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -115,7 +109,7 @@ describe('bundleListHeads', () => {
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
 
         // Act
-        const result = await sut(ctx, { path: BUNDLE_PATH });
+        const result = await bundleListHeads(ctx, { path: BUNDLE_PATH });
 
         // Assert
         expect(result.version).toBe(2);
@@ -137,7 +131,7 @@ describe('bundleListHeads', () => {
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
 
         // Act
-        const result = await sut(ctx, {
+        const result = await bundleListHeads(ctx, {
           path: BUNDLE_PATH,
           names: ['refs/tags/v1.0' as RefName],
         });
@@ -165,7 +159,7 @@ describe('bundleListHeads', () => {
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
 
         // Act
-        const result = await sut(ctx, { path: BUNDLE_PATH, names });
+        const result = await bundleListHeads(ctx, { path: BUNDLE_PATH, names });
 
         // Assert
         expect(result.refs).toHaveLength(0);
@@ -190,7 +184,7 @@ describe('bundleListHeads', () => {
         await ctx.fs.write(BUNDLE_PATH, corruptBytes);
 
         // Act & Assert: should NOT throw
-        const result = await sut(ctx, { path: BUNDLE_PATH });
+        const result = await bundleListHeads(ctx, { path: BUNDLE_PATH });
         expect(result.refs).toBeDefined();
         expect(result.version).toBe(2);
       });
@@ -208,7 +202,7 @@ describe('bundleListHeads', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: '/repo/missing.bundle' });
+          await bundleListHeads(ctx, { path: '/repo/missing.bundle' });
         } catch (err) {
           thrown = err;
         }
@@ -234,7 +228,7 @@ describe('bundleListHeads', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: NOT_BUNDLE_PATH });
+          await bundleListHeads(ctx, { path: NOT_BUNDLE_PATH });
         } catch (err) {
           thrown = err;
         }

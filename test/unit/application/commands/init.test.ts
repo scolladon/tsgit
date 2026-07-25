@@ -11,11 +11,11 @@ describe('init', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await init(ctx);
+        const result = await init(ctx);
 
         // Assert
-        expect(sut.initialBranch).toBe('main');
-        expect(sut.bare).toBe(false);
+        expect(result.initialBranch).toBe('main');
+        expect(result.bare).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(true);
       });
     });
@@ -28,10 +28,10 @@ describe('init', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await init(ctx, { initialBranch: 'trunk' });
+        const result = await init(ctx, { initialBranch: 'trunk' });
 
         // Assert
-        expect(sut.initialBranch).toBe('trunk');
+        expect(result.initialBranch).toBe('trunk');
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe('ref: refs/heads/trunk\n');
       });
     });
@@ -44,10 +44,10 @@ describe('init', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await init(ctx, { bare: true });
+        const result = await init(ctx, { bare: true });
 
         // Assert
-        expect(sut.bare).toBe(true);
+        expect(result.bare).toBe(true);
       });
     });
   });

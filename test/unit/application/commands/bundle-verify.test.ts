@@ -17,12 +17,6 @@ import type { FileStat } from '../../../../src/ports/file-system.js';
 import { buildSyntheticPack, type EntrySpec } from '../primitives/pack-fixture.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// System under test
-// ─────────────────────────────────────────────────────────────────────────────
-
-const sut = bundleVerify;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Shared fixture helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -186,7 +180,7 @@ describe('bundleVerify', () => {
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
 
         // Act
-        const result = await sut(ctx, { path: BUNDLE_PATH });
+        const result = await bundleVerify(ctx, { path: BUNDLE_PATH });
 
         // Assert
         expect(result.version).toBe(2);
@@ -213,7 +207,7 @@ describe('bundleVerify', () => {
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
 
         // Act
-        const result: BundleVerifyResult = await sut(ctx, { path: BUNDLE_PATH });
+        const result: BundleVerifyResult = await bundleVerify(ctx, { path: BUNDLE_PATH });
 
         // Assert
         expect(result.prerequisitesPresent).toBe(true);
@@ -276,7 +270,7 @@ describe('bundleVerify', () => {
           const { ctx, missing } = await buildScenario();
 
           // Act
-          const result: BundleVerifyResult = await sut(ctx, { path: BUNDLE_PATH });
+          const result: BundleVerifyResult = await bundleVerify(ctx, { path: BUNDLE_PATH });
 
           // Assert
           expect(result.prerequisitesPresent).toBe(false);
@@ -317,7 +311,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(spyCtx, { path: BUNDLE_PATH });
+          await bundleVerify(spyCtx, { path: BUNDLE_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -348,7 +342,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: BUNDLE_PATH });
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -405,7 +399,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path });
+          await bundleVerify(ctx, { path });
         } catch (err) {
           thrown = err;
         }
@@ -432,7 +426,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: DIR_PATH });
+          await bundleVerify(ctx, { path: DIR_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -460,7 +454,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: NOT_BUNDLE_PATH });
+          await bundleVerify(ctx, { path: NOT_BUNDLE_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -490,7 +484,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: V3_PATH });
+          await bundleVerify(ctx, { path: V3_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -523,7 +517,7 @@ describe('bundleVerify', () => {
         await ctx.fs.write(BUNDLE_PATH, bundleBytes);
 
         // Act
-        const result: BundleVerifyResult = await sut(ctx, { path: BUNDLE_PATH });
+        const result: BundleVerifyResult = await bundleVerify(ctx, { path: BUNDLE_PATH });
 
         // Assert
         expect(result.prerequisitesPresent).toBe(true);
@@ -557,7 +551,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: SOME_PATH });
+          await bundleVerify(ctx, { path: SOME_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -596,7 +590,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: DIR_PATH });
+          await bundleVerify(ctx, { path: DIR_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -652,7 +646,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { path: BUNDLE_PATH });
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -729,7 +723,7 @@ describe('bundleVerify', () => {
         // Act
         let thrown: unknown;
         try {
-          await sut(spyCtx, { path: BUNDLE_PATH });
+          await bundleVerify(spyCtx, { path: BUNDLE_PATH });
         } catch (err) {
           thrown = err;
         }
@@ -808,7 +802,7 @@ describe('bundleVerify', () => {
         };
 
         // Act
-        const result = await sut(spyCtx, { path: BUNDLE_PATH });
+        const result = await bundleVerify(spyCtx, { path: BUNDLE_PATH });
 
         // Assert — verify succeeds with both prerequisites present
         expect(result.prerequisitesPresent).toBe(true);

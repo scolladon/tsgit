@@ -8,9 +8,6 @@ import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain
 import type { Context } from '../../../../src/ports/context.js';
 import { instrumentedContext } from '../primitives/fixtures.js';
 
-// System under test
-const sut = archive;
-
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
@@ -97,7 +94,7 @@ describe('Given a context without a HEAD file (not a repository)', () => {
       // Act
       let caught: unknown;
       try {
-        await sut(ctx, { treeish: 'HEAD' });
+        await archive(ctx, { treeish: 'HEAD' });
       } catch (err) {
         caught = err;
       }
@@ -122,7 +119,7 @@ describe('Given a repository with an unborn HEAD (no commits yet)', () => {
       // Act
       let caught: unknown;
       try {
-        await sut(ctx, { treeish: 'HEAD' });
+        await archive(ctx, { treeish: 'HEAD' });
       } catch (err) {
         caught = err;
       }
@@ -147,7 +144,7 @@ describe('Given a repository with a valid commit', () => {
       // Act
       let caught: unknown;
       try {
-        await sut(ctx, { treeish: 'no-such-ref-at-all' });
+        await archive(ctx, { treeish: 'no-such-ref-at-all' });
       } catch (err) {
         caught = err;
       }
@@ -173,7 +170,7 @@ describe('Given a treeish that resolves to a blob (not a tree)', () => {
       // Act
       let caught: unknown;
       try {
-        await sut(ctx, { treeish: blobId });
+        await archive(ctx, { treeish: blobId });
       } catch (err) {
         caught = err;
       }
@@ -201,7 +198,7 @@ describe('Given a repository with a single commit', () => {
       const { ctx, commitId, treeId } = await seedOneCommit();
 
       // Act
-      const result = await sut(ctx, { treeish: 'HEAD' });
+      const result = await archive(ctx, { treeish: 'HEAD' });
 
       // Assert
       expect(result.commit).toBe(commitId);
@@ -222,7 +219,7 @@ describe('Given a repository with a commit', () => {
       const { ctx, treeId } = await seedOneCommit();
 
       // Act
-      const result = await sut(ctx, { treeish: treeId });
+      const result = await archive(ctx, { treeish: treeId });
 
       // Assert
       expect(result.commit).toBeUndefined();
@@ -245,7 +242,7 @@ describe('Given a repository with an annotated tag pointing at a commit', () => 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
 
       // Act
-      const result = await sut(ctx, { treeish: 'v1.0' });
+      const result = await archive(ctx, { treeish: 'v1.0' });
 
       // Assert
       expect(result.commit).toBe(commitId);
@@ -266,7 +263,7 @@ describe('Given a commit with an empty tree', () => {
       const { ctx } = await seedOneCommit([]);
 
       // Act
-      const result = await sut(ctx, { treeish: 'HEAD' });
+      const result = await archive(ctx, { treeish: 'HEAD' });
       const entries: ArchiveEntry[] = [];
       for await (const entry of result.entries) {
         entries.push(entry);
@@ -333,7 +330,7 @@ describe('Given a commit with a mixed tree (regular, exec, symlink, dir with con
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx, { treeish: 'HEAD' });
+      const result = await archive(ctx, { treeish: 'HEAD' });
       const entries: ArchiveEntry[] = [];
       for await (const entry of result.entries) {
         entries.push(entry);
@@ -404,7 +401,7 @@ describe('Given a tree with a directory and a gitlink entry', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx, { treeish: 'HEAD' });
+      const result = await archive(ctx, { treeish: 'HEAD' });
       const entries: ArchiveEntry[] = [];
       for await (const entry of result.entries) {
         entries.push(entry);
@@ -451,7 +448,7 @@ describe('Given a commit with 3 blob entries', () => {
         calls().some((c) => c.method === 'read' && c.path.endsWith(id.slice(2)));
 
       // Act — call archive without iterating any entries
-      const result = await sut(ctx, { treeish: 'HEAD' });
+      const result = await archive(ctx, { treeish: 'HEAD' });
 
       // Assert — blob content has NOT been read at archive-call time
       expect(wasRead(blobAId)).toBe(false);
@@ -497,7 +494,7 @@ describe('Given a commit with a tree nested 1025 levels deep (beyond walkTree de
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act — drain the full entry stream
-      const result = await sut(ctx, { treeish: 'HEAD' });
+      const result = await archive(ctx, { treeish: 'HEAD' });
       const entries: ArchiveEntry[] = [];
       for await (const entry of result.entries) {
         entries.push(entry);

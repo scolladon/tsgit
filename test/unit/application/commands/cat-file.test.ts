@@ -16,12 +16,11 @@ describe('catFile', () => {
       it('Then throws NOT_A_REPOSITORY', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const sut = catFile;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { ids: [] });
+          await catFile(ctx, { ids: [] });
         } catch (err) {
           caught = err;
         }
@@ -40,12 +39,11 @@ describe('catFile', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-        const sut = catFile;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { ids: ['not-a-hash'] });
+          await catFile(ctx, { ids: ['not-a-hash'] });
         } catch (err) {
           caught = err;
         }
@@ -66,10 +64,9 @@ describe('catFile', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const idBranded = await writeBlobBytes(ctx, new Uint8Array([1, 2]));
         const idAsString: string = idBranded;
-        const sut = catFile;
 
         // Act
-        const result = await sut(ctx, { ids: [idBranded, idAsString] });
+        const result = await catFile(ctx, { ids: [idBranded, idAsString] });
 
         // Assert
         expect(result.kind).toBe('batch');
@@ -85,10 +82,9 @@ describe('catFile', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-        const sut = catFile;
 
         // Act
-        const result = await sut(ctx, { ids: [] });
+        const result = await catFile(ctx, { ids: [] });
 
         // Assert
         expect(result).toEqual({ kind: 'batch', entries: [] });
@@ -103,12 +99,11 @@ describe('catFile', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const id = await writeBlobBytes(ctx, new Uint8Array([1, 2, 3, 4]));
-        const sut = catFile;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { ids: [id], maxBytes: 2 });
+          await catFile(ctx, { ids: [id], maxBytes: 2 });
         } catch (err) {
           caught = err;
         }
@@ -129,10 +124,9 @@ describe('catFile', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const content = new Uint8Array([7, 8, 9]);
         const id = await writeBlobBytes(ctx, content);
-        const sut = catFile;
 
         // Act
-        const result = await sut(ctx, { ids: [id], maxBytes: content.byteLength });
+        const result = await catFile(ctx, { ids: [id], maxBytes: content.byteLength });
 
         // Assert
         expect(result.entries).toHaveLength(1);
@@ -151,10 +145,9 @@ describe('catFile', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const hit = await writeBlobBytes(ctx, new Uint8Array([3]));
         const miss = 'c'.repeat(40) as ObjectId;
-        const sut = catFile;
 
         // Act
-        const result = await sut(ctx, { ids: [hit, miss] });
+        const result = await catFile(ctx, { ids: [hit, miss] });
 
         // Assert
         expect(result.entries.map((e) => ({ id: e.id, ok: e.ok }))).toEqual([
