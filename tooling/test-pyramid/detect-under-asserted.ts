@@ -36,7 +36,7 @@ export const detectUnderAsserted = (
   const heuristic = manifest.heuristics.underAssertedUnit;
   const findings: UnderAssertedFinding[] = [];
   for (const file of files) {
-    if (classifyTestFile(manifest, file.path) !== heuristic.tier) continue;
+    if (!heuristic.tiers.includes(classifyTestFile(manifest, file.path))) continue;
     const blocks = scanItBlocks(file.source);
     for (const block of blocks) {
       if (block.isSkipped) continue;

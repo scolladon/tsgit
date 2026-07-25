@@ -39,139 +39,151 @@ describe('Node openRepository — git hooks end to end', () => {
     await fsPromises.chmod(path, 0o755);
   };
 
-  it('Given a failing .git/hooks/pre-commit, When commit, Then it throws HOOK_FAILED', async () => {
-    // Arrange
-    const repo = await openRepository({ cwd: root });
-    try {
-      await repo.init();
-      await writeHook(repo.ctx.layout.gitDir, 'pre-commit', '#!/bin/sh\nexit 1\n');
-      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
-      await repo.add(['a.txt']);
-
-      // Act
-      let caught: unknown;
+  describe('Given a failing .git/hooks/pre-commit, When commit', () => {
+    it('Then it throws HOOK_FAILED', async () => {
+      // Arrange
+      const repo = await openRepository({ cwd: root });
       try {
+        await repo.init();
+        await writeHook(repo.ctx.layout.gitDir, 'pre-commit', '#!/bin/sh\nexit 1\n');
+        await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+        await repo.add(['a.txt']);
+
+        // Act
+        let caught: unknown;
+        try {
+          await repo.commit({ message: 'first', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('HOOK_FAILED');
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+
+  describe('Given a passing .git/hooks/pre-commit, When commit', () => {
+    it('Then it succeeds', async () => {
+      // Arrange
+      const repo = await openRepository({ cwd: root });
+      try {
+        await repo.init();
+        await writeHook(repo.ctx.layout.gitDir, 'pre-commit', '#!/bin/sh\nexit 0\n');
+        await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+        await repo.add(['a.txt']);
+
+        // Act
+        const result = await repo.commit({ message: 'first', author });
+
+        // Assert
+        expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+
+  describe('Given a commit-msg hook that rewrites the message, When commit', () => {
+    it('Then the commit uses the rewritten message', async () => {
+      // Arrange
+      const repo = await openRepository({ cwd: root });
+      try {
+        await repo.init();
+        await writeHook(
+          repo.ctx.layout.gitDir,
+          'commit-msg',
+          '#!/bin/sh\necho "rewritten by hook" > "$1"\n',
+        );
+        await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+        await repo.add(['a.txt']);
+
+        // Act
+        const result = await repo.commit({ message: 'original', author });
+
+        // Assert
+        const obj = await repo.primitives.readObject(result.id);
+        expect(obj.type).toBe('commit');
+        if (obj.type === 'commit') {
+          expect(obj.data.message).toBe('rewritten by hook\n');
+        }
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+
+  describe('Given a prepare-commit-msg hook that rewrites the message, When commit', () => {
+    it('Then the commit uses the rewritten message', async () => {
+      // Arrange
+      const repo = await openRepository({ cwd: root });
+      try {
+        await repo.init();
+        await writeHook(
+          repo.ctx.layout.gitDir,
+          'prepare-commit-msg',
+          '#!/bin/sh\necho "from prepare" > "$1"\n',
+        );
+        await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+        await repo.add(['a.txt']);
+
+        // Act
+        const result = await repo.commit({ message: 'original', author });
+
+        // Assert
+        const obj = await repo.primitives.readObject(result.id);
+        expect(obj.type).toBe('commit');
+        if (obj.type === 'commit') {
+          expect(obj.data.message).toBe('from prepare\n');
+        }
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+
+  describe('Given a post-commit hook, When commit succeeds', () => {
+    it('Then the hook runs', async () => {
+      // Arrange
+      const repo = await openRepository({ cwd: root });
+      const sentinel = nodePath.join(root, 'post-commit-ran');
+      try {
+        await repo.init();
+        await writeHook(repo.ctx.layout.gitDir, 'post-commit', `#!/bin/sh\ntouch "${sentinel}"\n`);
+        await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+        await repo.add(['a.txt']);
+
+        // Act
         await repo.commit({ message: 'first', author });
-      } catch (err) {
-        caught = err;
+
+        // Assert
+        await expect(fsPromises.stat(sentinel)).resolves.toBeDefined();
+      } finally {
+        await repo.dispose();
       }
-
-      // Assert
-      expect((caught as TsgitError).data.code).toBe('HOOK_FAILED');
-    } finally {
-      await repo.dispose();
-    }
+    });
   });
 
-  it('Given a passing .git/hooks/pre-commit, When commit, Then it succeeds', async () => {
-    // Arrange
-    const repo = await openRepository({ cwd: root });
-    try {
-      await repo.init();
-      await writeHook(repo.ctx.layout.gitDir, 'pre-commit', '#!/bin/sh\nexit 0\n');
-      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
-      await repo.add(['a.txt']);
+  describe('Given a failing post-commit hook, When commit', () => {
+    it('Then the commit still succeeds (informational)', async () => {
+      // Arrange
+      const repo = await openRepository({ cwd: root });
+      try {
+        await repo.init();
+        await writeHook(repo.ctx.layout.gitDir, 'post-commit', '#!/bin/sh\nexit 1\n');
+        await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
+        await repo.add(['a.txt']);
 
-      // Act
-      const result = await repo.commit({ message: 'first', author });
+        // Act
+        const result = await repo.commit({ message: 'first', author });
 
-      // Assert
-      expect(result.id).toMatch(/^[0-9a-f]{40}$/);
-    } finally {
-      await repo.dispose();
-    }
-  });
-
-  it('Given a commit-msg hook that rewrites the message, When commit, Then the commit uses the rewritten message', async () => {
-    // Arrange
-    const repo = await openRepository({ cwd: root });
-    try {
-      await repo.init();
-      await writeHook(
-        repo.ctx.layout.gitDir,
-        'commit-msg',
-        '#!/bin/sh\necho "rewritten by hook" > "$1"\n',
-      );
-      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
-      await repo.add(['a.txt']);
-
-      // Act
-      const result = await repo.commit({ message: 'original', author });
-
-      // Assert
-      const obj = await repo.primitives.readObject(result.id);
-      expect(obj.type).toBe('commit');
-      if (obj.type === 'commit') {
-        expect(obj.data.message).toBe('rewritten by hook\n');
+        // Assert — a post-* hook's non-zero exit does not abort the operation.
+        expect(result.id).toMatch(/^[0-9a-f]{40}$/);
+      } finally {
+        await repo.dispose();
       }
-    } finally {
-      await repo.dispose();
-    }
-  });
-
-  it('Given a prepare-commit-msg hook that rewrites the message, When commit, Then the commit uses the rewritten message', async () => {
-    // Arrange
-    const repo = await openRepository({ cwd: root });
-    try {
-      await repo.init();
-      await writeHook(
-        repo.ctx.layout.gitDir,
-        'prepare-commit-msg',
-        '#!/bin/sh\necho "from prepare" > "$1"\n',
-      );
-      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
-      await repo.add(['a.txt']);
-
-      // Act
-      const result = await repo.commit({ message: 'original', author });
-
-      // Assert
-      const obj = await repo.primitives.readObject(result.id);
-      expect(obj.type).toBe('commit');
-      if (obj.type === 'commit') {
-        expect(obj.data.message).toBe('from prepare\n');
-      }
-    } finally {
-      await repo.dispose();
-    }
-  });
-
-  it('Given a post-commit hook, When commit succeeds, Then the hook runs', async () => {
-    // Arrange
-    const repo = await openRepository({ cwd: root });
-    const sentinel = nodePath.join(root, 'post-commit-ran');
-    try {
-      await repo.init();
-      await writeHook(repo.ctx.layout.gitDir, 'post-commit', `#!/bin/sh\ntouch "${sentinel}"\n`);
-      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
-      await repo.add(['a.txt']);
-
-      // Act
-      await repo.commit({ message: 'first', author });
-
-      // Assert
-      await expect(fsPromises.stat(sentinel)).resolves.toBeDefined();
-    } finally {
-      await repo.dispose();
-    }
-  });
-
-  it('Given a failing post-commit hook, When commit, Then the commit still succeeds (informational)', async () => {
-    // Arrange
-    const repo = await openRepository({ cwd: root });
-    try {
-      await repo.init();
-      await writeHook(repo.ctx.layout.gitDir, 'post-commit', '#!/bin/sh\nexit 1\n');
-      await fsPromises.writeFile(nodePath.join(root, 'a.txt'), 'a');
-      await repo.add(['a.txt']);
-
-      // Act
-      const result = await repo.commit({ message: 'first', author });
-
-      // Assert — a post-* hook's non-zero exit does not abort the operation.
-      expect(result.id).toMatch(/^[0-9a-f]{40}$/);
-    } finally {
-      await repo.dispose();
-    }
+    });
   });
 });

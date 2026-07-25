@@ -58,11 +58,10 @@ describe('rangeDiff', () => {
     it('Then it refuses', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = rangeDiff;
 
       // Act + Assert
       await expect(
-        sut(ctx, { old: { base: 'a', tip: 'b' }, new: { base: 'a', tip: 'c' } }),
+        rangeDiff(ctx, { old: { base: 'a', tip: 'b' }, new: { base: 'a', tip: 'c' } }),
       ).rejects.toThrow();
     });
   });
@@ -81,10 +80,9 @@ describe('rangeDiff', () => {
       await branchCreate(ctx, { name: 'v2' });
       await checkout(ctx, { rev: 'v2' });
       await commitFile(ctx, clock, 'f.txt', 'hello\n', 'new message');
-      const sut = rangeDiff;
 
       // Act
-      const result = await sut(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
+      const result = await rangeDiff(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
 
       // Assert
       expect(result).toHaveLength(1);
@@ -101,10 +99,9 @@ describe('rangeDiff', () => {
       const clock = makeClock();
       const base = await commitFile(ctx, clock, 'seed', 'seed\n', 'seed');
       const tip = await commitFile(ctx, clock, 'f.txt', 'x\n', 'add f');
-      const sut = rangeDiff;
 
       // Act
-      const result = await sut(ctx, { old: { base, tip: base }, new: { base, tip } });
+      const result = await rangeDiff(ctx, { old: { base, tip: base }, new: { base, tip } });
 
       // Assert
       expect(result.map((e) => e.status)).toEqual(['only-new']);
@@ -124,10 +121,9 @@ describe('rangeDiff', () => {
       await checkout(ctx, { rev: 'main' });
       await commitFile(ctx, clock, 'y.txt', 'y\n', 'on main');
       await mergeRun(ctx, { rev: 'feat', author: clock() });
-      const sut = rangeDiff;
 
       // Act — old has the two real commits (merge excluded); new is empty
-      const result = await sut(ctx, { old: { base, tip: 'main' }, new: { base, tip: base } });
+      const result = await rangeDiff(ctx, { old: { base, tip: 'main' }, new: { base, tip: base } });
 
       // Assert — only the two non-merge commits, both deletions
       expect(result).toHaveLength(2);
@@ -142,11 +138,10 @@ describe('rangeDiff', () => {
       await init(ctx);
       const clock = makeClock();
       const base = await commitFile(ctx, clock, 'seed', 'seed\n', 'seed');
-      const sut = rangeDiff;
 
       // Act + Assert
       await expect(
-        sut(ctx, { old: { base, tip: 'nope' }, new: { base, tip: base } }),
+        rangeDiff(ctx, { old: { base, tip: 'nope' }, new: { base, tip: base } }),
       ).rejects.toThrow();
     });
   });
@@ -158,11 +153,14 @@ describe('rangeDiff', () => {
       await init(ctx);
       const clock = makeClock();
       const base = await commitFile(ctx, clock, 'seed', 'seed\n', 'seed');
-      const sut = rangeDiff;
 
       // Act + Assert
       try {
-        await sut(ctx, { old: { base, tip: base }, new: { base, tip: base }, creationFactor: -1 });
+        await rangeDiff(ctx, {
+          old: { base, tip: base },
+          new: { base, tip: base },
+          creationFactor: -1,
+        });
         expect.unreachable('should have thrown');
       } catch (error) {
         expect(error).toBeInstanceOf(TsgitError);
@@ -189,11 +187,10 @@ describe('rangeDiff', () => {
       await branchCreate(ctx, { name: 'v2' });
       await checkout(ctx, { rev: 'v2' });
       await commitFile(ctx, clock, 'big.txt', big('line 10 changed'), 'add big');
-      const sut = rangeDiff;
 
       // Act
-      const matched = await sut(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
-      const split = await sut(ctx, {
+      const matched = await rangeDiff(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
+      const split = await rangeDiff(ctx, {
         old: { base, tip: 'v1' },
         new: { base, tip: 'v2' },
         creationFactor: 0,
@@ -215,10 +212,9 @@ describe('rangeDiff', () => {
       const base = await commitFile(ctx, clock, 'seed', 'seed\n', 'seed');
       const older = await commitFile(ctx, clock, 'a.txt', 'a\n', 'add a');
       const newer = await commitFile(ctx, clock, 'b.txt', 'b\n', 'add b');
-      const sut = rangeDiff;
 
       // Act — the same range on both sides; both commits pair as unchanged
-      const result = await sut(ctx, { old: { base, tip: newer }, new: { base, tip: newer } });
+      const result = await rangeDiff(ctx, { old: { base, tip: newer }, new: { base, tip: newer } });
 
       // Assert — oldest-first order: `older` is position 1, `newer` is position 2
       expect(result.map((e) => e.status)).toEqual(['unchanged', 'unchanged']);
@@ -245,10 +241,9 @@ describe('rangeDiff', () => {
         committer: clock(),
         message: 'orphan',
       });
-      const sut = rangeDiff;
 
       // Act — the same range on both sides; the series spans [seed (root), add a]
-      const result = await sut(ctx, {
+      const result = await rangeDiff(ctx, {
         old: { base: orphan, tip: 'main' },
         new: { base: orphan, tip: 'main' },
       });
@@ -275,10 +270,9 @@ describe('rangeDiff', () => {
       await branchCreate(ctx, { name: 'v2' });
       await checkout(ctx, { rev: 'v2' });
       await commitFile(ctx, clock, 'dir/f.txt', 'b\n', 'new message');
-      const sut = rangeDiff;
 
       // Act
-      const result = await sut(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
+      const result = await rangeDiff(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
 
       // Assert — recursion names the leaf `dir/f.txt`; without it the top-level tree entry
       // renders as `dir` (an opaque binary diff) and the nested path never appears.
@@ -306,10 +300,9 @@ describe('rangeDiff', () => {
       await mv(ctx, ['f.txt'], 'g.txt');
       const author2 = clock();
       await commit(ctx, { message: 'new message', author: author2, committer: author2 });
-      const sut = rangeDiff;
 
       // Act
-      const result = await sut(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
+      const result = await rangeDiff(ctx, { old: { base, tip: 'v1' }, new: { base, tip: 'v2' } });
 
       // Assert — rename detection collapses the pair into a `f.txt => g.txt` header;
       // without it the patch degrades to separate `(deleted)`/`(new)` headers.

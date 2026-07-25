@@ -10,13 +10,10 @@ const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 describe('region-merge properties', () => {
   describe('Given an arbitrary 3-way input, When merged with favor union', () => {
     it('Then it always resolves clean with no conflict markers', () => {
-      // Arrange
-      const sut = mergeContent;
-
-      // Act / Assert
+      // Arrange + Act + Assert
       fc.assert(
         fc.property(arbThreeWay(), ({ base, ours, theirs }) => {
-          const result = sut(enc(base), enc(ours), enc(theirs), { favor: 'union' });
+          const result = mergeContent(enc(base), enc(ours), enc(theirs), { favor: 'union' });
           expect(result.status).toBe('clean');
           if (result.status === 'clean') {
             expect(dec(result.bytes).includes('<<<<<<<')).toBe(false);
@@ -29,14 +26,11 @@ describe('region-merge properties', () => {
 
   describe('Given disjoint edit scripts, When merged', () => {
     it('Then favor union and favor none produce the same clean bytes', () => {
-      // Arrange
-      const sut = mergeContent;
-
-      // Act / Assert
+      // Arrange + Act + Assert
       fc.assert(
         fc.property(arbDisjointThreeWay(), ({ base, ours, theirs }) => {
-          const union = sut(enc(base), enc(ours), enc(theirs), { favor: 'union' });
-          const none = sut(enc(base), enc(ours), enc(theirs));
+          const union = mergeContent(enc(base), enc(ours), enc(theirs), { favor: 'union' });
+          const none = mergeContent(enc(base), enc(ours), enc(theirs));
           expect(none.status).toBe('clean');
           expect(union.status).toBe('clean');
           if (union.status === 'clean' && none.status === 'clean') {

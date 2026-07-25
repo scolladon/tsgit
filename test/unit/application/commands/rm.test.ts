@@ -131,7 +131,8 @@ describe('rm', () => {
       it('Then throws EMPTY_PATHSPEC', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
-        // Assert
+
+        // Act + Assert
         await expectError(() => rm(ctx, []), 'EMPTY_PATHSPEC');
       });
     });
@@ -144,10 +145,10 @@ describe('rm', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a' });
 
         // Act
-        const sut = await rm(ctx, ['a.txt']);
+        const result = await rm(ctx, ['a.txt']);
 
         // Assert
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(false);
       });
     });
@@ -173,7 +174,8 @@ describe('rm', () => {
       it('Then throws PATHSPEC_NO_MATCH', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'a.txt': 'a' });
-        // Assert
+
+        // Act + Assert
         await expectError(() => rm(ctx, ['ghost.txt']), 'PATHSPEC_NO_MATCH');
       });
     });
@@ -186,10 +188,10 @@ describe('rm', () => {
         const ctx = await seedAndStage({ 'a.log': 'a', 'b.log': 'b', 'keep.ts': 'k' });
 
         // Act
-        const sut = await rm(ctx, ['*.log']);
+        const result = await rm(ctx, ['*.log']);
 
         // Assert
-        expect([...sut.removed].sort()).toEqual(['a.log', 'b.log']);
+        expect([...result.removed].sort()).toEqual(['a.log', 'b.log']);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/keep.ts`)).toBe(true);
       });
     });
@@ -202,10 +204,10 @@ describe('rm', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a' });
 
         // Act
-        const sut = await rm(ctx, ['*.nope']);
+        const result = await rm(ctx, ['*.nope']);
 
         // Assert — glob no-match is a no-op, not an error (Git semantics).
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
       });
     });
   });
@@ -217,10 +219,10 @@ describe('rm', () => {
         const ctx = await seedAndStage({ 'a.log': 'a', 'keep.log': 'k', 'b.log': 'b' });
 
         // Act
-        const sut = await rm(ctx, ['*.log', '!keep.log']);
+        const result = await rm(ctx, ['*.log', '!keep.log']);
 
         // Assert
-        expect([...sut.removed].sort()).toEqual(['a.log', 'b.log']);
+        expect([...result.removed].sort()).toEqual(['a.log', 'b.log']);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/keep.log`)).toBe(true);
       });
     });
@@ -256,10 +258,10 @@ describe('rm', () => {
 
         // Act — glob never triggers PATHSPEC_NO_MATCH, so the only path to a throw
         // is rm re-throwing the parse error (which it must NOT do).
-        const sut = await rm(ctx, ['*.nope']);
+        const result = await rm(ctx, ['*.nope']);
 
         // Assert — kills `'INVALID_INDEX_HEADER'` -> `''` in INDEX_MISSING_CODES.
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
       });
     });
   });
@@ -287,10 +289,10 @@ describe('rm', () => {
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, indexBytes);
 
         // Act
-        const sut = await rm(ctx, ['*.nope']);
+        const result = await rm(ctx, ['*.nope']);
 
         // Assert — kills `'INVALID_INDEX_ENTRY'` -> `''` in INDEX_MISSING_CODES.
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
       });
     });
   });
@@ -317,10 +319,10 @@ describe('rm', () => {
         };
 
         // Act
-        const sut = await rm(racingCtx, ['*.nope']);
+        const result = await rm(racingCtx, ['*.nope']);
 
         // Assert — kills `'FILE_NOT_FOUND'` -> `''` in INDEX_MISSING_CODES.
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
       });
     });
   });
@@ -346,7 +348,7 @@ describe('rm', () => {
           },
         };
 
-        // Act / Assert — kills the L52 ConditionalExpression mutants: a `true`
+        // Act + Assert — kills the L52 ConditionalExpression mutants: a `true`
         // mutant would swallow this, a `false` mutant would swallow nothing — and
         // this branch must re-throw PERMISSION_DENIED specifically because it is
         // not an INDEX_MISSING code.
@@ -378,12 +380,12 @@ describe('rm', () => {
         };
 
         // Act — must NOT throw: the removeFile catch swallows FILE_NOT_FOUND.
-        const sut = await rm(racingCtx, ['a.txt']);
+        const result = await rm(racingCtx, ['a.txt']);
 
         // Assert — index entry still removed; kills L68 BlockStatement (an empty
         // catch would swallow everything) and L69 ConditionalExpression `-> false`
         // (which would re-throw FILE_NOT_FOUND).
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
       });
     });
   });
@@ -398,7 +400,7 @@ describe('rm', () => {
         await add(ctx, ['a.txt']);
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
 
-        // Act / Assert — the removeFile catch must re-throw any non-FILE_NOT_FOUND
+        // Act + Assert — the removeFile catch must re-throw any non-FILE_NOT_FOUND
         // error. Kills L69 EqualityOperator `=== ` -> `!==` (which would swallow
         // CHECKOUT_OVERWRITE_DIRTY) and the `-> true` ConditionalExpression mutant.
         const err = await expectError(() => rm(ctx, ['a.txt']), 'CHECKOUT_OVERWRITE_DIRTY');
@@ -433,10 +435,10 @@ describe('rm', () => {
 
         // Act — if rm stopped sourcing the window from config the lock would not
         // break and RESOURCE_LOCKED would surface instead.
-        const sut = await rm(staleCtx, ['a.txt']);
+        const result = await rm(staleCtx, ['a.txt']);
 
         // Assert — the policy reached acquireIndexLock; the stale lock was broken.
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
       });
     });
   });
@@ -448,7 +450,7 @@ describe('rm', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a' });
         await ctx.fs.writeExclusive(`${ctx.layout.gitDir}/index.lock`, new Uint8Array());
 
-        // Act / Assert — baseline: without the option a contended lock is fatal.
+        // Act + Assert — baseline: without the option a contended lock is fatal.
         const err = await expectError(() => rm(ctx, ['a.txt']), 'RESOURCE_LOCKED');
         if (err.data.code !== 'RESOURCE_LOCKED') throw new Error('unexpected error shape');
         expect(err.data.resource).toBe('index');
@@ -465,10 +467,10 @@ describe('rm', () => {
         // Act — first rm acquires the lock; commit() consumes it.
         await rm(ctx, ['a.txt']);
         // A second rm would throw RESOURCE_LOCKED if the lock were not released.
-        const sut = await rm(ctx, ['b.txt']);
+        const result = await rm(ctx, ['b.txt']);
 
         // Assert — the lock file is gone after a successful rm.
-        expect(sut.removed).toEqual(['b.txt']);
+        expect(result.removed).toEqual(['b.txt']);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
     });
@@ -491,8 +493,8 @@ describe('rm', () => {
         // follow-up rm succeeds instead of throwing RESOURCE_LOCKED. Kills L76
         // BlockStatement `-> {}` (an empty `finally` leaks the un-committed lock).
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
-        const sut = await rm(ctx, ['b.txt']);
-        expect(sut.removed).toEqual(['b.txt']);
+        const result = await rm(ctx, ['b.txt']);
+        expect(result.removed).toEqual(['b.txt']);
       });
     });
   });
@@ -522,10 +524,10 @@ describe('rm', () => {
         const ctx = await seedStaged();
 
         // Act
-        const sut = await rm(ctx, ['a.txt'], { cached: true });
+        const result = await rm(ctx, ['a.txt'], { cached: true });
 
         // Assert — index entry gone, working file kept (git rm --cached semantics).
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
       });
     });
@@ -536,10 +538,10 @@ describe('rm', () => {
         const ctx = await seedStaged();
 
         // Act
-        const sut = await rm(ctx, ['a.txt'], { force: true });
+        const result = await rm(ctx, ['a.txt'], { force: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
       });
     });
@@ -596,10 +598,10 @@ describe('rm', () => {
         const ctx = await seedLocal();
 
         // Act
-        const sut = await rm(ctx, ['a.txt'], { cached: true });
+        const result = await rm(ctx, ['a.txt'], { cached: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(true);
       });
     });
@@ -629,7 +631,7 @@ describe('rm', () => {
         // Arrange
         const ctx = await seedBoth();
 
-        // Act / Assert — unlike the staged-only and local-only cases, --cached
+        // Act + Assert — unlike the staged-only and local-only cases, --cached
         // still refuses when a path is dirty in both index and working tree.
         const err = await expectError(
           () => rm(ctx, ['a.txt'], { cached: true }),
@@ -648,10 +650,10 @@ describe('rm', () => {
         const ctx = await seedBoth();
 
         // Act
-        const sut = await rm(ctx, ['a.txt'], { force: true });
+        const result = await rm(ctx, ['a.txt'], { force: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
       });
     });
@@ -684,10 +686,10 @@ describe('rm', () => {
         await ctx.fs.rm(work(ctx, 'a.txt'));
 
         // Act
-        const sut = await rm(ctx, ['a.txt'], { cached: true });
+        const result = await rm(ctx, ['a.txt'], { cached: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
       });
     });
   });

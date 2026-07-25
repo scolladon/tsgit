@@ -33,16 +33,16 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.tree).toBe('b'.repeat(40));
-          expect(sut.data.author.name).toBe('Alice');
-          expect(sut.data.committer.name).toBe('Bob');
-          expect(sut.data.message).toBe('Initial commit');
-          expect(sut.data.parents).toEqual([]);
-          expect(sut.data.extraHeaders).toEqual([]);
-          expect(sut.data.gpgSignature).toBeUndefined();
+          expect(result.data.tree).toBe('b'.repeat(40));
+          expect(result.data.author.name).toBe('Alice');
+          expect(result.data.committer.name).toBe('Bob');
+          expect(result.data.message).toBe('Initial commit');
+          expect(result.data.parents).toEqual([]);
+          expect(result.data.extraHeaders).toEqual([]);
+          expect(result.data.gpgSignature).toBeUndefined();
         });
       });
     });
@@ -68,10 +68,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.parents).toEqual(parents);
+          expect(result.data.parents).toEqual(parents);
         });
       });
     });
@@ -93,11 +93,11 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toContain('-----BEGIN PGP SIGNATURE-----');
-          expect(sut.data.gpgSignature).toContain('-----END PGP SIGNATURE-----');
+          expect(result.data.gpgSignature).toContain('-----BEGIN PGP SIGNATURE-----');
+          expect(result.data.gpgSignature).toContain('-----END PGP SIGNATURE-----');
         });
         it('Then extraHeaders does NOT contain gpgsig', () => {
           // Arrange
@@ -112,10 +112,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.extraHeaders.some((h) => h.key === 'gpgsig')).toBe(false);
+          expect(result.data.extraHeaders.some((h) => h.key === 'gpgsig')).toBe(false);
         });
       });
     });
@@ -136,10 +136,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toBe('line1\nline2\nline3');
+          expect(result.data.gpgSignature).toBe('line1\nline2\nline3');
         });
       });
     });
@@ -160,10 +160,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toBe('start\n\nend');
+          expect(result.data.gpgSignature).toBe('start\n\nend');
         });
       });
     });
@@ -182,10 +182,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.extraHeaders).toEqual([{ key: 'encoding', value: 'ISO-8859-1' }]);
+          expect(result.data.extraHeaders).toEqual([{ key: 'encoding', value: 'ISO-8859-1' }]);
         });
       });
     });
@@ -206,11 +206,11 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toBe('sig-line1\nsig-line2');
-          expect(sut.data.extraHeaders).toEqual([{ key: 'encoding', value: 'UTF-8' }]);
+          expect(result.data.gpgSignature).toBe('sig-line1\nsig-line2');
+          expect(result.data.extraHeaders).toEqual([{ key: 'encoding', value: 'UTF-8' }]);
         });
       });
     });
@@ -233,11 +233,11 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toBe('sig-start\nsig-end');
-          expect(sut.data.extraHeaders).toEqual([
+          expect(result.data.gpgSignature).toBe('sig-start\nsig-end');
+          expect(result.data.extraHeaders).toEqual([
             { key: 'mergetag', value: 'merge-start\nmerge-end' },
           ]);
         });
@@ -260,10 +260,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.extraHeaders).toEqual([
+          expect(result.data.extraHeaders).toEqual([
             {
               key: 'mergetag',
               value: 'object abc\ntype commit\ntag v1.0',
@@ -287,10 +287,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.extraHeaders).toEqual([{ key: 'custom-header', value: 'some-value' }]);
+          expect(result.data.extraHeaders).toEqual([{ key: 'custom-header', value: 'some-value' }]);
         });
       });
     });
@@ -411,16 +411,16 @@ describe('commit', () => {
           const content = commitText(lines);
 
           // Act
-          let sut: unknown;
+          let result: unknown;
           try {
             parseCommitContent(DUMMY_ID, content);
           } catch (e) {
-            sut = e;
+            result = e;
           }
 
           // Assert
-          expect(sut).toBeInstanceOf(TsgitError);
-          expect((sut as TsgitError).data).toEqual({
+          expect(result).toBeInstanceOf(TsgitError);
+          expect((result as TsgitError).data).toEqual({
             code: 'INVALID_COMMIT',
             reason: 'missing committer',
           });
@@ -437,10 +437,10 @@ describe('commit', () => {
           );
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.message).toBe('');
+          expect(result.data.message).toBe('');
         });
       });
     });
@@ -458,10 +458,10 @@ describe('commit', () => {
           ]);
 
           // Act
-          const sut = parseCommitContent(DUMMY_ID, content);
+          const result = parseCommitContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.message).toBe('no trailing newline');
+          expect(result.data.message).toBe('no trailing newline');
         });
       });
     });
@@ -497,10 +497,10 @@ describe('commit', () => {
           };
 
           // Act
-          const sut = new TextDecoder().decode(serializeCommitContent(commit));
+          const result = new TextDecoder().decode(serializeCommitContent(commit));
 
           // Assert
-          expect(sut).toContain('gpgsig line1\n line2\n line3\n');
+          expect(result).toContain('gpgsig line1\n line2\n line3\n');
         });
         it('Then extraHeaders appear after committer, before blank line, with continuation lines', () => {
           // Arrange
@@ -533,10 +533,10 @@ describe('commit', () => {
           };
 
           // Act
-          const sut = new TextDecoder().decode(serializeCommitContent(commit));
+          const result = new TextDecoder().decode(serializeCommitContent(commit));
 
           // Assert
-          expect(sut).toContain('mergetag line1\n line2\n');
+          expect(result).toContain('mergetag line1\n line2\n');
         });
       });
     });
@@ -573,10 +573,10 @@ describe('commit', () => {
 
           // Act
           const bytes = serializeCommitContent(commit);
-          const sut = parseCommitContent(DUMMY_ID, bytes);
+          const result = parseCommitContent(DUMMY_ID, bytes);
 
           // Assert
-          expect(sut.data).toEqual(commit.data);
+          expect(result.data).toEqual(commit.data);
         });
       });
     });
@@ -601,10 +601,10 @@ describe('commit', () => {
 
           // Act
           const parsed = parseCommitContent(DUMMY_ID, content);
-          const sut = serializeCommitContent(parsed);
+          const result = serializeCommitContent(parsed);
 
           // Assert
-          expect(sut).toEqual(content);
+          expect(result).toEqual(content);
         });
       });
     });
@@ -647,17 +647,19 @@ describe('commit', () => {
             extraHeaders: fc.constant([] as { readonly key: string; readonly value: string }[]),
           });
 
-          // Assert
           fc.assert(
             fc.property(arbCommitData, (data) => {
+              // Act
               const commit: Commit = {
                 type: 'commit',
                 id: DUMMY_ID,
                 data,
               };
               const bytes = serializeCommitContent(commit);
-              const sut = parseCommitContent(DUMMY_ID, bytes);
-              expect(sut.data).toEqual(data);
+              const result = parseCommitContent(DUMMY_ID, bytes);
+
+              // Assert
+              expect(result.data).toEqual(data);
             }),
           );
         });

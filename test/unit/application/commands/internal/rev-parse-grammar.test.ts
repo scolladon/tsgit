@@ -101,10 +101,10 @@ describe('internal/rev-parse-grammar', () => {
           // Arrange — kills the StringLiteral mutant on the `raw === ''` guard:
           // if `''` were replaced by any non-empty literal, that literal would be
           // wrongly rejected as REVPARSE_UNRESOLVED instead of parsed as a ref.
-          const sut = parseExpression('Stryker was here!');
+          const result = parseExpression('Stryker was here!');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'Stryker was here!',
             operations: [],
@@ -117,10 +117,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then returns kind=ref base=HEAD with no operations', () => {
           // Arrange
-          const sut = parseExpression('HEAD');
+          const result = parseExpression('HEAD');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [],
@@ -133,9 +133,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then returns kind=ref base=main', () => {
           // Arrange
-          const sut = parseExpression('main');
+          const result = parseExpression('main');
           // Assert
-          expect(sut).toEqual({ kind: 'ref-or-hex', base: 'main', operations: [] });
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'main', operations: [] });
         });
       });
     });
@@ -144,9 +144,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then returns kind=index-stage with stage=0 and path', () => {
           // Arrange
-          const sut = parseExpression(':0:src/foo.ts');
+          const result = parseExpression(':0:src/foo.ts');
           // Assert
-          expect(sut).toEqual({ kind: 'index-stage', stage: 0, path: 'src/foo.ts' });
+          expect(result).toEqual({ kind: 'index-stage', stage: 0, path: 'src/foo.ts' });
         });
       });
     });
@@ -178,9 +178,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then operations=[ancestor 3]', () => {
           // Arrange
-          const sut = parseExpression('HEAD~3');
+          const result = parseExpression('HEAD~3');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'ancestor', n: 3 }],
@@ -193,9 +193,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then operations=[parent 1]', () => {
           // Arrange
-          const sut = parseExpression('HEAD^');
+          const result = parseExpression('HEAD^');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'parent', n: 1 }],
@@ -208,9 +208,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then operations=[parent 2]', () => {
           // Arrange
-          const sut = parseExpression('HEAD^2');
+          const result = parseExpression('HEAD^2');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'parent', n: 2 }],
@@ -223,9 +223,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then three parent ops in sequence', () => {
           // Arrange
-          const sut = parseExpression('HEAD^^^');
+          const result = parseExpression('HEAD^^^');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [
@@ -242,9 +242,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then operations=[peel tree]', () => {
           // Arrange
-          const sut = parseExpression('HEAD^{tree}');
+          const result = parseExpression('HEAD^{tree}');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'peel', target: 'tree' }],
@@ -257,9 +257,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then operations=[peel commit]', () => {
           // Arrange
-          const sut = parseExpression('HEAD^{commit}');
+          const result = parseExpression('HEAD^{commit}');
           // Assert
-          expect(sut.kind === 'ref-or-hex' && sut.operations[0]).toEqual({
+          expect(result.kind === 'ref-or-hex' && result.operations[0]).toEqual({
             kind: 'peel',
             target: 'commit',
           });
@@ -287,10 +287,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then base=HEAD with an index reflog selector', () => {
           // Arrange
-          const sut = parseExpression('HEAD@{1}');
+          const result = parseExpression('HEAD@{1}');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             reflog: { kind: 'index', n: 1 },
@@ -304,10 +304,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then the index selector carries n=0', () => {
           // Arrange
-          const sut = parseExpression('HEAD@{0}');
+          const result = parseExpression('HEAD@{0}');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             reflog: { kind: 'index', n: 0 },
@@ -321,10 +321,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then the index selector carries n=12', () => {
           // Arrange
-          const sut = parseExpression('HEAD@{12}');
+          const result = parseExpression('HEAD@{12}');
 
           // Assert
-          const reflog = (sut as { reflog?: { kind: string; n: number } }).reflog;
+          const reflog = (result as { reflog?: { kind: string; n: number } }).reflog;
           expect(reflog).toEqual({ kind: 'index', n: 12 });
         });
       });
@@ -334,10 +334,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then both the selector and the operation chain are parsed', () => {
           // Arrange
-          const sut = parseExpression('main@{0}^');
+          const result = parseExpression('main@{0}^');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'main',
             reflog: { kind: 'index', n: 0 },
@@ -351,10 +351,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then the date selector keeps its raw body and the op chain follows', () => {
           // Arrange
-          const sut = parseExpression('HEAD@{2.days.ago}~3');
+          const result = parseExpression('HEAD@{2.days.ago}~3');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             reflog: { kind: 'date', raw: '2.days.ago' },
@@ -368,10 +368,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then base is empty and the selector is a date', () => {
           // Arrange
-          const sut = parseExpression('@{yesterday}');
+          const result = parseExpression('@{yesterday}');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: '',
             reflog: { kind: 'date', raw: 'yesterday' },
@@ -385,10 +385,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then base is empty and the selector is an index', () => {
           // Arrange
-          const sut = parseExpression('@{1}');
+          const result = parseExpression('@{1}');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: '',
             reflog: { kind: 'index', n: 1 },
@@ -402,10 +402,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then the whole body is captured as the raw date', () => {
           // Arrange
-          const sut = parseExpression('main@{2026-05-01 12:30:00}');
+          const result = parseExpression('main@{2026-05-01 12:30:00}');
 
           // Assert
-          const reflog = (sut as { reflog?: { kind: string; raw: string } }).reflog;
+          const reflog = (result as { reflog?: { kind: string; raw: string } }).reflog;
           expect(reflog).toEqual({ kind: 'date', raw: '2026-05-01 12:30:00' });
         });
       });
@@ -416,10 +416,10 @@ describe('internal/rev-parse-grammar', () => {
         it('Then it is a date selector, not an index', () => {
           // Arrange / Act
           // Index discrimination is all-digits; `1x` is not, so it falls to date.
-          const sut = parseExpression('HEAD@{1x}');
+          const result = parseExpression('HEAD@{1x}');
 
           // Assert
-          const reflog = (sut as { reflog?: { kind: string; raw: string } }).reflog;
+          const reflog = (result as { reflog?: { kind: string; raw: string } }).reflog;
           expect(reflog).toEqual({ kind: 'date', raw: '1x' });
         });
       });
@@ -430,10 +430,10 @@ describe('internal/rev-parse-grammar', () => {
         it("Then the body is read from after '@{', not from the base", () => {
           // Arrange / Act — the `}` search must start after `@{`. A search anchored
           // earlier would latch onto a brace inside the base and read an empty body.
-          const sut = parseExpression('x}}@{0}');
+          const result = parseExpression('x}}@{0}');
 
           // Assert — base keeps its braces; the selector body is the digit after `@{`.
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'x}}',
             reflog: { kind: 'index', n: 0 },
@@ -447,9 +447,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then accepted as ref-or-hex (resolveBase tries ref then abbreviated oid)', () => {
           // Arrange
-          const sut = parseExpression('abcd');
+          const result = parseExpression('abcd');
           // Assert
-          expect(sut).toEqual({ kind: 'ref-or-hex', base: 'abcd', operations: [] });
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'abcd', operations: [] });
         });
       });
     });
@@ -458,9 +458,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then accepted as ref-or-hex with base=abc1234', () => {
           // Arrange
-          const sut = parseExpression('abc1234');
+          const result = parseExpression('abc1234');
           // Assert
-          expect(sut).toEqual({ kind: 'ref-or-hex', base: 'abc1234', operations: [] });
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'abc1234', operations: [] });
         });
       });
     });
@@ -469,9 +469,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then ops=[ancestor 3, parent 2]', () => {
           // Arrange
-          const sut = parseExpression('HEAD~3^2');
+          const result = parseExpression('HEAD~3^2');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [
@@ -487,9 +487,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then base preserves slash', () => {
           // Arrange
-          const sut = parseExpression('origin/main');
+          const result = parseExpression('origin/main');
           // Assert
-          expect(sut).toEqual({ kind: 'ref-or-hex', base: 'origin/main', operations: [] });
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'origin/main', operations: [] });
         });
       });
     });
@@ -498,9 +498,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then ancestor n=9', () => {
           // Arrange
-          const sut = parseExpression('HEAD~9');
+          const result = parseExpression('HEAD~9');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'ancestor', n: 9 }],
@@ -513,9 +513,9 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then ancestor n=0', () => {
           // Arrange
-          const sut = parseExpression('HEAD~0');
+          const result = parseExpression('HEAD~0');
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'ancestor', n: 0 }],
@@ -528,8 +528,8 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then ancestor n=10', () => {
           // Arrange
-          const sut = parseExpression('HEAD~10');
-          const op = (sut as { operations: ReadonlyArray<{ n: number }> }).operations[0];
+          const result = parseExpression('HEAD~10');
+          const op = (result as { operations: ReadonlyArray<{ n: number }> }).operations[0];
           // Assert
           expect(op?.n).toBe(10);
         });
@@ -542,9 +542,9 @@ describe('internal/rev-parse-grammar', () => {
           // Arrange
           // The parser only stops at `~` and `^`. Anything else is part of the base
           // and forwarded to evaluation, where ref/hex resolution will fail.
-          const sut = parseExpression('HEAD<garbage');
+          const result = parseExpression('HEAD<garbage');
           // Assert
-          expect((sut as { base: string }).base).toBe('HEAD<garbage');
+          expect((result as { base: string }).base).toBe('HEAD<garbage');
         });
       });
     });
@@ -555,10 +555,10 @@ describe('internal/rev-parse-grammar', () => {
           // Arrange / Act
           // A short hex base only fails when it stands alone (opStart === -1).
           // With an operator chain it is a valid ref-or-hex expression.
-          const sut = parseExpression('abc^');
+          const result = parseExpression('abc^');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'abc',
             operations: [{ kind: 'parent', n: 1 }],
@@ -573,10 +573,10 @@ describe('internal/rev-parse-grammar', () => {
           // Arrange / Act
           // The second `^{` must scan for its own `}` starting after `i + 2`, not
           // before — otherwise it would latch onto the first peel's closing brace.
-          const sut = parseExpression('HEAD^{tag}^{tree}');
+          const result = parseExpression('HEAD^{tag}^{tree}');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [
@@ -592,10 +592,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then ancestor n=123', () => {
           // Arrange / Act
-          const sut = parseExpression('HEAD~123');
+          const result = parseExpression('HEAD~123');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'ancestor', n: 123 }],
@@ -608,10 +608,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then parent n=23', () => {
           // Arrange / Act
-          const sut = parseExpression('HEAD^23');
+          const result = parseExpression('HEAD^23');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [{ kind: 'parent', n: 23 }],
@@ -624,51 +624,51 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then it splits into a tree-path at the first colon', () => {
           // Arrange / Act
-          const sut: RevExpression = parseExpression('HEAD:a.txt');
+          const result: RevExpression = parseExpression('HEAD:a.txt');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD', path: 'a.txt' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD', path: 'a.txt' });
         });
 
         it('Then an empty path (trailing colon) yields the tree itself', () => {
           // Arrange / Act
-          const sut: RevExpression = parseExpression('HEAD:');
+          const result: RevExpression = parseExpression('HEAD:');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD', path: '' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD', path: '' });
         });
 
         it('Then a path containing slashes is kept verbatim after the first colon', () => {
           // Arrange / Act
-          const sut: RevExpression = parseExpression('HEAD~1:sub/b.txt');
+          const result: RevExpression = parseExpression('HEAD~1:sub/b.txt');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD~1', path: 'sub/b.txt' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD~1', path: 'sub/b.txt' });
         });
 
         it('Then a path containing further colons keeps them in the path', () => {
           // Arrange / Act — only the FIRST colon splits.
-          const sut: RevExpression = parseExpression('HEAD:a:b');
+          const result: RevExpression = parseExpression('HEAD:a:b');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD', path: 'a:b' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD', path: 'a:b' });
         });
 
         it('Then a colon right after an operator char still splits the tree-path', () => {
           // Arrange / Act — the colon wins over the (incomplete) `~` op; the rev
           // half is resolved later, so the grammar simply splits here.
-          const sut: RevExpression = parseExpression('HEAD~:');
+          const result: RevExpression = parseExpression('HEAD~:');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD~', path: '' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD~', path: '' });
         });
 
         it('Then a colon inside an @{…} selector does not split', () => {
           // Arrange / Act — ISO timestamps carry colons; the selector owns them.
-          const sut: RevExpression = parseExpression('HEAD@{2020-01-01 12:30:00}');
+          const result: RevExpression = parseExpression('HEAD@{2020-01-01 12:30:00}');
 
           // Assert — falls through to the reflog branch, not a tree-path.
-          expect(sut).toEqual({
+          expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
             reflog: { kind: 'date', raw: '2020-01-01 12:30:00' },
@@ -678,29 +678,29 @@ describe('internal/rev-parse-grammar', () => {
 
         it('Then a colon after an @{…} selector splits the tree-path', () => {
           // Arrange / Act
-          const sut: RevExpression = parseExpression('HEAD@{0}:a.txt');
+          const result: RevExpression = parseExpression('HEAD@{0}:a.txt');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'HEAD@{0}', path: 'a.txt' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD@{0}', path: 'a.txt' });
         });
 
         it("Then a '{' not preceded by '@' does not open a selector, so the first colon splits", () => {
           // Arrange / Act — only `@{` opens a reflog selector; a bare `{` must
           // not, so the scanner still returns the first colon and the base keeps
           // its brace.
-          const sut: RevExpression = parseExpression('x{:y');
+          const result: RevExpression = parseExpression('x{:y');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'x{', path: 'y' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'x{', path: 'y' });
         });
 
         it("Then an '@' not followed by '{' does not open a selector, so the first colon splits", () => {
           // Arrange / Act — an `@` that is not the start of `@{` is an ordinary
           // ref-name char, so the colon after it still splits the tree-path.
-          const sut: RevExpression = parseExpression('a@b:c');
+          const result: RevExpression = parseExpression('a@b:c');
 
           // Assert
-          expect(sut).toEqual({ kind: 'tree-path', rev: 'a@b', path: 'c' });
+          expect(result).toEqual({ kind: 'tree-path', rev: 'a@b', path: 'c' });
         });
       });
     });
@@ -709,10 +709,10 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it('Then it stays an index-stage, not a tree-path', () => {
           // Arrange / Act
-          const sut: RevExpression = parseExpression(':0:a.txt');
+          const result: RevExpression = parseExpression(':0:a.txt');
 
           // Assert
-          expect(sut).toEqual({ kind: 'index-stage', stage: 0, path: 'a.txt' });
+          expect(result).toEqual({ kind: 'index-stage', stage: 0, path: 'a.txt' });
         });
       });
     });

@@ -32,18 +32,18 @@ describe('buildPack', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const sut = await buildPack(ctx, { oids: [] });
+        const result = await buildPack(ctx, { oids: [] });
 
         // Assert — header + trailer only, no entries.
-        expect(sut.bytes.length).toBe(PACK_HEADER_BYTES + TRAILER_BYTES);
-        expect(sut.objectCount).toBe(0);
-        const header = parsePackHeader(sut.bytes);
+        expect(result.bytes.length).toBe(PACK_HEADER_BYTES + TRAILER_BYTES);
+        expect(result.objectCount).toBe(0);
+        const header = parsePackHeader(result.bytes);
         expect(header.version).toBe(2);
         expect(header.objectCount).toBe(0);
         // Trailer is the SHA of the pack body (12 header bytes only when empty).
-        const expectedTrailer = await ctx.hash.hash(sut.bytes.subarray(0, PACK_HEADER_BYTES));
-        expect(sut.bytes.subarray(PACK_HEADER_BYTES)).toEqual(expectedTrailer);
-        expect(sut.sha).toBe(bytesToHex(expectedTrailer));
+        const expectedTrailer = await ctx.hash.hash(result.bytes.subarray(0, PACK_HEADER_BYTES));
+        expect(result.bytes.subarray(PACK_HEADER_BYTES)).toEqual(expectedTrailer);
+        expect(result.sha).toBe(bytesToHex(expectedTrailer));
       });
     });
   });
@@ -61,13 +61,13 @@ describe('buildPack', () => {
         const blobId = await writeObject(ctx, blob);
 
         // Act
-        const sut = await buildPack(ctx, { oids: [blobId] });
+        const result = await buildPack(ctx, { oids: [blobId] });
 
         // Assert
-        expect(sut.objectCount).toBe(1);
-        const header = parsePackHeader(sut.bytes);
+        expect(result.objectCount).toBe(1);
+        const header = parsePackHeader(result.bytes);
         expect(header.objectCount).toBe(1);
-        const firstEntry = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
+        const firstEntry = parsePackEntryHeader(result.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
         expect(firstEntry.type).toBe(PACK_ENTRY_TYPE.BLOB);
         expect(firstEntry.size).toBe(5);
       });
@@ -86,11 +86,11 @@ describe('buildPack', () => {
         ]);
 
         // Act
-        const sut = await buildPack(ctx, { oids: [blobId, treeId] });
+        const result = await buildPack(ctx, { oids: [blobId, treeId] });
 
         // Assert — two entries; the first is the BLOB, the second is the TREE.
-        expect(sut.objectCount).toBe(2);
-        const first = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
+        expect(result.objectCount).toBe(2);
+        const first = parsePackEntryHeader(result.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
         expect(first.type).toBe(PACK_ENTRY_TYPE.BLOB);
       });
     });
@@ -161,10 +161,10 @@ describe('buildPack', () => {
         const oid = await buildOid(ctx, blobId);
 
         // Act
-        const sut = await buildPack(ctx, { oids: [oid] });
+        const result = await buildPack(ctx, { oids: [oid] });
 
         // Assert
-        const header = parsePackEntryHeader(sut.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
+        const header = parsePackEntryHeader(result.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
         expect(header.type).toBe(expectedType);
       });
     });
@@ -180,14 +180,14 @@ describe('buildPack', () => {
         const blobId = await writeObject(ctx, blob);
 
         // Act
-        const sut = await buildPack(ctx, { oids: [blobId] });
+        const result = await buildPack(ctx, { oids: [blobId] });
 
         // Assert — kills the swap-the-trailer mutant: bytes must end in
         // hash(body), not hash(anything-else).
-        const body = sut.bytes.subarray(0, sut.bytes.length - TRAILER_BYTES);
+        const body = result.bytes.subarray(0, result.bytes.length - TRAILER_BYTES);
         const expectedTrailer = await ctx.hash.hash(body);
-        expect(sut.bytes.subarray(sut.bytes.length - TRAILER_BYTES)).toEqual(expectedTrailer);
-        expect(sut.sha).toBe(bytesToHex(expectedTrailer));
+        expect(result.bytes.subarray(result.bytes.length - TRAILER_BYTES)).toEqual(expectedTrailer);
+        expect(result.sha).toBe(bytesToHex(expectedTrailer));
       });
     });
   });

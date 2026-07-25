@@ -24,10 +24,9 @@ describe('flattenTree', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const treeId = await writeTree(ctx, []);
-        const sut = flattenTree;
 
         // Act
-        const result = await sut(ctx, treeId);
+        const result = await flattenTree(ctx, treeId);
 
         // Assert
         expect(result.entries.size).toBe(0);
@@ -44,10 +43,9 @@ describe('flattenTree', () => {
         const treeId = await writeTree(ctx, [
           { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
         ]);
-        const sut = flattenTree;
 
         // Act
-        const result = await sut(ctx, treeId);
+        const result = await flattenTree(ctx, treeId);
 
         // Assert
         expect(result.entries.size).toBe(1);
@@ -73,10 +71,9 @@ describe('flattenTree', () => {
           { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
           { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
         ]);
-        const sut = flattenTree;
 
         // Act
-        const result = await sut(ctx, rootId);
+        const result = await flattenTree(ctx, rootId);
 
         // Assert
         expect(result.entries.size).toBe(2);
@@ -97,10 +94,9 @@ describe('flattenTree', () => {
           { name: 'run.sh' as FilePath, id: execId, mode: FILE_MODE.EXECUTABLE },
           { name: 'link' as FilePath, id: linkId, mode: FILE_MODE.SYMLINK },
         ]);
-        const sut = flattenTree;
 
         // Act
-        const result = await sut(ctx, treeId);
+        const result = await flattenTree(ctx, treeId);
 
         // Assert
         expect(result.entries.get('run.sh' as FilePath)?.mode).toBe(FILE_MODE.EXECUTABLE);
@@ -125,10 +121,9 @@ describe('flattenTree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'dir' as FilePath, id: dirTreeId, mode: FILE_MODE.DIRECTORY },
         ]);
-        const sut = flattenTree;
 
         // Act
-        const result = await sut(ctx, rootId);
+        const result = await flattenTree(ctx, rootId);
 
         // Assert — only one leaf, with the full 2-level path.
         expect(result.entries.size).toBe(1);
@@ -152,11 +147,10 @@ describe('flattenTree', () => {
           { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
         ]);
         const rootObject = (await readObject(ctx, rootId)) as Tree;
-        const sut = flattenTree;
 
         // Act
-        const fromObject = await sut(ctx, rootObject);
-        const fromOid = await sut(ctx, rootId);
+        const fromObject = await flattenTree(ctx, rootObject);
+        const fromOid = await flattenTree(ctx, rootId);
 
         // Assert — same leaves, same keys, no redundant root read needed.
         expect([...fromObject.entries]).toEqual([...fromOid.entries]);
@@ -176,10 +170,9 @@ describe('flattenTree', () => {
         const treeId = await writeTree(ctx, [
           { name: 'submodule' as FilePath, id: submoduleOid, mode: FILE_MODE.GITLINK },
         ]);
-        const sut = flattenTree;
 
         // Act
-        const result = await sut(ctx, treeId);
+        const result = await flattenTree(ctx, treeId);
 
         // Assert
         expect(result.entries.get('submodule' as FilePath)).toEqual({

@@ -27,9 +27,12 @@ describe('diffTrees', () => {
       it('Then returns an empty TreeDiff', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = await diffTrees(ctx, undefined, undefined);
+
+        // Act
+        const result = await diffTrees(ctx, undefined, undefined);
+
         // Assert
-        expect(sut.changes).toEqual([]);
+        expect(result.changes).toEqual([]);
       });
     });
   });
@@ -45,10 +48,13 @@ describe('diffTrees', () => {
         const withEntryId = await writeTree(ctx, [
           { name: 'a.txt', mode: '100644' as FileMode, id: blobId },
         ]);
-        const sut = await diffTrees(ctx, emptyId, withEntryId);
+
+        // Act
+        const result = await diffTrees(ctx, emptyId, withEntryId);
+
         // Assert
-        expect(sut.changes.length).toBe(1);
-        expect(sut.changes[0]?.type).toBe('add');
+        expect(result.changes.length).toBe(1);
+        expect(result.changes[0]?.type).toBe('add');
       });
     });
   });
@@ -59,9 +65,12 @@ describe('diffTrees', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const emptyId = await writeTree(ctx, []);
-        const sut = await diffTrees(ctx, emptyId, emptyId);
+
+        // Act
+        const result = await diffTrees(ctx, emptyId, emptyId);
+
         // Assert
-        expect(sut.changes).toEqual([]);
+        expect(result.changes).toEqual([]);
       });
     });
   });
@@ -85,6 +94,7 @@ describe('diffTrees', () => {
           { name: 'dst.txt', mode: '100644' as FileMode, id: blobId },
         ]);
 
+        // Act
         const withDetect = await diffTrees(ctx, before, after, { detectRenames: true });
         const withoutDetect = await diffTrees(ctx, before, after);
 
@@ -110,11 +120,11 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, empty, withSub, { recursive: true });
+        const result = await diffTrees(ctx, empty, withSub, { recursive: true });
 
         // Assert — one per-file add, keyed by the full slash path (not `sub`).
-        expect(sut.changes.length).toBe(1);
-        const change = sut.changes[0];
+        expect(result.changes.length).toBe(1);
+        const change = result.changes[0];
         expect(change).toEqual({
           type: 'add',
           newPath: 'sub/inner.txt',
@@ -141,10 +151,10 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, undefined, withSub, { recursive: true });
+        const result = await diffTrees(ctx, undefined, withSub, { recursive: true });
 
         // Assert
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           {
             type: 'add',
             newPath: 'sub/inner.txt',
@@ -180,10 +190,10 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { recursive: true });
+        const result = await diffTrees(ctx, before, after, { recursive: true });
 
         // Assert
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           {
             type: 'modify',
             path: 'sub/inner.txt',
@@ -213,10 +223,10 @@ describe('diffTrees', () => {
         const empty = await writeTree(ctx, []);
 
         // Act
-        const sut = await diffTrees(ctx, withSub, empty, { recursive: true });
+        const result = await diffTrees(ctx, withSub, empty, { recursive: true });
 
         // Assert
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           {
             type: 'delete',
             oldPath: 'sub/inner.txt',
@@ -251,10 +261,10 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { recursive: true });
+        const result = await diffTrees(ctx, before, after, { recursive: true });
 
         // Assert
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           {
             type: 'type-change',
             path: 'sub/x',
@@ -291,10 +301,13 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { recursive: true, detectRenames: true });
+        const result = await diffTrees(ctx, before, after, {
+          recursive: true,
+          detectRenames: true,
+        });
 
         // Assert
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           {
             type: 'rename',
             oldPath: 'a/old.txt',
@@ -328,14 +341,14 @@ describe('diffTrees', () => {
         ]);
 
         // Act — with detectRenames and a low threshold
-        const sut = await diffTrees(ctx, before, after, {
+        const result = await diffTrees(ctx, before, after, {
           detectRenames: true,
           renameOptions: { threshold: 1 },
         });
 
         // Assert — one rename, not separate A + D
-        expect(sut.changes).toHaveLength(1);
-        const change = sut.changes[0];
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
         expect(change?.type).toBe('rename');
         if (change?.type === 'rename') {
           expect(change.oldPath).toBe('original.txt');
@@ -370,10 +383,10 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after);
+        const result = await diffTrees(ctx, before, after);
 
         // Assert — one change, on `sub`, carrying the two *tree* oids.
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           {
             type: 'modify',
             path: 'sub',
@@ -406,11 +419,13 @@ describe('diffTrees', () => {
           id: '' as ObjectId,
           entries: [{ name: 'f.txt', mode: '100644' as FileMode, id: blobId }],
         };
-        const sut = await diffTrees(ctx, treeA, treeB);
+
+        // Act
+        const result = await diffTrees(ctx, treeA, treeB);
 
         // Assert
-        expect(sut.changes.length).toBe(1);
-        expect(sut.changes[0]?.type).toBe('add');
+        expect(result.changes.length).toBe(1);
+        expect(result.changes[0]?.type).toBe('add');
       });
     });
   });
@@ -462,10 +477,10 @@ describe('diffTrees', () => {
         const { before, after } = await build(ctx);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { withStat: true });
+        const result = await diffTrees(ctx, before, after, { withStat: true });
 
         // Assert
-        expect(sut.changes[0]).toMatchObject(expected);
+        expect(result.changes[0]).toMatchObject(expected);
       });
     });
   });
@@ -496,29 +511,29 @@ describe('diffTrees', () => {
         ]);
 
         // Act — without copies:'harder': should not detect copy (unchanged excluded)
-        const sutOn = await diffTrees(ctx, treeA, treeB, {
+        const resultOn = await diffTrees(ctx, treeA, treeB, {
           detectRenames: true,
           renameOptions: { copies: 'on' },
         });
         // Act — with copies:'harder': should detect copy from unchanged source
-        const sutHarder = await diffTrees(ctx, treeA, treeB, {
+        const resultHarder = await diffTrees(ctx, treeA, treeB, {
           detectRenames: true,
           renameOptions: { copies: 'harder' },
         });
 
         // Assert — copies:'on': no copy, add stays as A
-        expect(sutOn.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
-        expect(sutOn.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        expect(resultOn.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(resultOn.changes.filter((c) => c.type === 'add')).toHaveLength(1);
 
         // Assert — copies:'harder': copy detected from unchanged source
-        const copies = sutHarder.changes.filter((c) => c.type === 'copy');
+        const copies = resultHarder.changes.filter((c) => c.type === 'copy');
         expect(copies).toHaveLength(1);
         if (copies[0]?.type === 'copy') {
           expect(copies[0].oldPath).toBe('orig.txt');
           expect(copies[0].newPath).toBe('copy.txt');
         }
         // The orig.txt itself is NOT in the diff (unchanged)
-        expect(sutHarder.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+        expect(resultHarder.changes.filter((c) => c.type === 'add')).toHaveLength(0);
       });
     });
   });
@@ -536,14 +551,14 @@ describe('diffTrees', () => {
         ]);
 
         // Act — copies:'on', treeA=undefined: buildPreimage must return undefined (guard fires)
-        const sut = await diffTrees(ctx, undefined, treeB, {
+        const result = await diffTrees(ctx, undefined, treeB, {
           detectRenames: true,
           renameOptions: { copies: 'on' },
         });
 
         // Assert — add detected, no crash
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('add');
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('add');
       });
     });
   });
@@ -560,14 +575,14 @@ describe('diffTrees', () => {
         ]);
 
         // Act — copies:'harder' but treeA=undefined → preimage=undefined → no crash
-        const sut = await diffTrees(ctx, undefined, treeB, {
+        const result = await diffTrees(ctx, undefined, treeB, {
           detectRenames: true,
           renameOptions: { copies: 'harder' },
         });
 
         // Assert — add detected without crash
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('add');
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('add');
       });
     });
   });
@@ -585,11 +600,11 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, empty, withEntry);
+        const result = await diffTrees(ctx, empty, withEntry);
 
         // Assert
-        expect(sut.changes[0]).not.toHaveProperty('added');
-        expect(sut.changes[0]).not.toHaveProperty('binary');
+        expect(result.changes[0]).not.toHaveProperty('added');
+        expect(result.changes[0]).not.toHaveProperty('binary');
       });
     });
   });
@@ -607,10 +622,10 @@ describe('diffTrees', () => {
         const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
 
         // Assert
-        expect(sut.changes).toHaveLength(0);
+        expect(result.changes).toHaveLength(0);
       });
     });
   });
@@ -674,11 +689,11 @@ describe('diffTrees', () => {
         const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, options);
+        const result = await diffTrees(ctx, before, after, options);
 
         // Assert
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('modify');
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('modify');
       });
     });
   });
@@ -702,11 +717,11 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
 
         // Assert — only g.txt remains
-        expect(sut.changes).toHaveLength(1);
-        const change = sut.changes[0];
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
         expect(change?.type).toBe('modify');
         if (change?.type === 'modify') {
           expect(change.path).toBe('g.txt');
@@ -728,13 +743,13 @@ describe('diffTrees', () => {
         const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, {
+        const result = await diffTrees(ctx, before, after, {
           ignoreWhitespace: 'all',
           ignoreBlankLines: true,
         });
 
         // Assert — dropped (#BL-combo)
-        expect(sut.changes).toHaveLength(0);
+        expect(result.changes).toHaveLength(0);
       });
     });
   });
@@ -750,11 +765,11 @@ describe('diffTrees', () => {
         const after = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.SYMLINK, id: linkId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
 
         // Assert — type-change is never dropped
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]?.type).toBe('type-change');
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('type-change');
       });
     });
   });
@@ -776,15 +791,15 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, {
+        const result = await diffTrees(ctx, before, after, {
           ignoreWhitespace: 'all',
           detectRenames: true,
         });
 
         // Assert — rename present (similarity detection is whitespace-agnostic),
         // NOT dropped (drop only targets modify changes)
-        expect(sut.changes.some((c) => c.type === 'rename')).toBe(true);
-        expect(sut.changes).toHaveLength(1);
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(true);
+        expect(result.changes).toHaveLength(1);
       });
     });
   });
@@ -812,13 +827,13 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, {
+        const result = await diffTrees(ctx, before, after, {
           recursive: true,
           ignoreWhitespace: 'all',
         });
 
         // Assert — dropped
-        expect(sut.changes).toHaveLength(0);
+        expect(result.changes).toHaveLength(0);
       });
     });
   });
@@ -836,13 +851,13 @@ describe('diffTrees', () => {
         const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, {
+        const result = await diffTrees(ctx, before, after, {
           ignoreWhitespace: 'all',
           withStat: true,
         });
 
         // Assert — dropped file absent entirely (not a 0/0 row)
-        expect(sut.changes).toHaveLength(0);
+        expect(result.changes).toHaveLength(0);
       });
     });
   });
@@ -860,14 +875,14 @@ describe('diffTrees', () => {
         const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, {
+        const result = await diffTrees(ctx, before, after, {
           ignoreWhitespace: 'all',
           withStat: true,
         });
 
         // Assert — only the real line is counted (ws line is common under mode 'all')
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]).toMatchObject({
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
           type: 'modify',
           added: 1,
           deleted: 1,
@@ -894,20 +909,20 @@ describe('diffTrees', () => {
 
         // Act — reset call log then call diffTrees with no options
         const readsBefore = calls().length;
-        const sut = await diffTrees(ctx, before, after);
+        const result = await diffTrees(ctx, before, after);
 
         // Assert — reads after diffTrees are only tree reads (objects for the
         // tree entries), never blob content reads for f.txt
         const readsAfter = calls().length;
         expect(readsAfter - readsBefore).toBeGreaterThan(0); // tree reads occurred
-        expect(sut.changes).toHaveLength(1);
+        expect(result.changes).toHaveLength(1);
 
         // The key assertion: OIDs are present without any stat/line-diff
-        expect(sut.changes[0]).not.toHaveProperty('added');
-        expect(sut.changes[0]).not.toHaveProperty('binary');
+        expect(result.changes[0]).not.toHaveProperty('added');
+        expect(result.changes[0]).not.toHaveProperty('binary');
 
         // Confirm no blob read for the blob content by checking change has oids only
-        const change = sut.changes[0];
+        const change = result.changes[0];
         if (change?.type === 'modify') {
           expect(change.oldId).toBe(oldId);
           expect(change.newId).toBe(newId);
@@ -960,13 +975,13 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { withStat: true });
+        const result = await diffTrees(ctx, before, after, { withStat: true });
 
         // Assert — textconv collapses both sides to 1 line each → added=1, deleted=1.
         // Without textconv (applyTextconv:false / {}): rawOld=3 lines, rawNew=1 line
         // → added=1, deleted=3. The textconv path uniquely produces deleted=1.
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]).toMatchObject({
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
           type: 'modify',
           added: 1,
           deleted: 1,
@@ -997,11 +1012,11 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { withStat: true });
+        const result = await diffTrees(ctx, before, after, { withStat: true });
 
         // Assert — numstatBinaryOverride=binary forces binary row
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]).toMatchObject({
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
           type: 'modify',
           added: 0,
           deleted: 0,
@@ -1027,11 +1042,11 @@ describe('diffTrees', () => {
         const after = await writeTree(ctx, [{ name: 'g', mode: FILE_MODE.REGULAR, id: newId }]);
 
         // Act
-        const sut = await diffTrees(ctx, before, after, { withStat: true });
+        const result = await diffTrees(ctx, before, after, { withStat: true });
 
         // Assert — forced-text: binary: false (override suppresses NUL detection)
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]).toMatchObject({
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
           type: 'modify',
           binary: false,
         });
@@ -1060,14 +1075,14 @@ describe('diffTrees', () => {
         ]);
 
         // Act — ignoreWhitespace:all would drop a whitespace-only text change; -diff makes it binary
-        const sut = await diffTrees(ctx, before, after, {
+        const result = await diffTrees(ctx, before, after, {
           withStat: true,
           ignoreWhitespace: 'all',
         });
 
         // Assert — forced-binary is never dropped (binary: true, added=0, deleted=0 kept)
-        expect(sut.changes).toHaveLength(1);
-        expect(sut.changes[0]).toMatchObject({
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
           added: 0,
           deleted: 0,
           binary: true,

@@ -94,7 +94,7 @@ describe('worktreeList', () => {
         // Arrange
         const ctx = await buildSeededContext();
 
-        // Act & Assert
+        // Act + Assert
         await expectError(() => worktreeList(ctx), 'NOT_A_REPOSITORY');
       });
     });
@@ -193,7 +193,7 @@ describe('worktreeAdd', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act & Assert
+        // Act + Assert
         await expectErrorData(() => worktreeAdd(ctx, { path: '/' }), {
           code: 'INVALID_OPTION',
           option: 'worktree add',
@@ -209,7 +209,7 @@ describe('worktreeAdd', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act & Assert
+        // Act + Assert
         await expectErrorData(() => worktreeAdd(ctx, { path: '' }), {
           code: 'WORKTREE_PATH_EXISTS',
           path: '',
@@ -399,7 +399,7 @@ describe('worktreeAdd', () => {
         const { ctx } = await seedWithCommit();
         await setup(ctx);
 
-        // Act & Assert
+        // Act + Assert
         await expectError(() => worktreeAdd(ctx, options), code);
       });
     });
@@ -459,7 +459,7 @@ describe('worktreeMove', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act & Assert
+        // Act + Assert
         await expectErrorData(() => worktreeMove(ctx, ctx.layout.workDir, 'x'), {
           code: 'INVALID_OPTION',
           option: 'worktree move',
@@ -504,7 +504,7 @@ describe('worktreeMove', () => {
         const { ctx } = await seedWithCommit();
         await setup(ctx);
 
-        // Act & Assert
+        // Act + Assert
         await expectError(() => worktreeMove(ctx, from, to), code);
       });
     });
@@ -557,7 +557,7 @@ describe('worktreeRemove', () => {
         await worktreeAdd(ctx, { path: 'wr2' });
         await ctx.fs.writeUtf8('/repo/wr2/extra.txt', 'untracked');
 
-        // Act & Assert
+        // Act + Assert
         await expectError(() => worktreeRemove(ctx, 'wr2'), 'WORKTREE_DIRTY');
       });
     });
@@ -584,7 +584,7 @@ describe('worktreeRemove', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act & Assert
+        // Act + Assert
         await expectErrorData(() => worktreeRemove(ctx, ctx.layout.workDir), {
           code: 'INVALID_OPTION',
           option: 'worktree remove',
@@ -602,7 +602,7 @@ describe('worktreeRemove', () => {
         const added = await worktreeAdd(ctx, { path: 'wrl' });
         await ctx.fs.writeUtf8(adminFile(ctx, added.id, 'locked'), '');
 
-        // Act & Assert
+        // Act + Assert
         await expectErrorData(() => worktreeRemove(ctx, 'wrl'), {
           code: 'WORKTREE_LOCKED',
           path: '/repo/wrl',

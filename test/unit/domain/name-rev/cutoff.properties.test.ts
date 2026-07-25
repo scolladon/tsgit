@@ -11,8 +11,8 @@ describe('Given an arbitrary safe-integer cutoff', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(safeInt(), safeInt(), (date, cutoff) => {
-          const sut = commitIsBeforeCutoff(date, cutoff);
-          expect(typeof sut).toBe('boolean');
+          const result = commitIsBeforeCutoff(date, cutoff);
+          expect(typeof result).toBe('boolean');
         }),
         { numRuns: 200 },
       );
@@ -23,8 +23,8 @@ describe('Given an arbitrary safe-integer cutoff', () => {
       fc.assert(
         fc.property(safeInt(), safeInt(), safeInt(), (d1, d2, cutoff) => {
           const [older, newer] = d1 <= d2 ? [d1, d2] : [d2, d1];
-          const sut = commitIsBeforeCutoff(newer, cutoff);
-          if (sut) expect(commitIsBeforeCutoff(older, cutoff)).toBe(true);
+          const result = commitIsBeforeCutoff(newer, cutoff);
+          if (result) expect(commitIsBeforeCutoff(older, cutoff)).toBe(true);
         }),
         { numRuns: 200 },
       );
@@ -59,9 +59,9 @@ describe('Given an arbitrary safe-integer target date above the slop floor', () 
             })
             .filter((t) => t !== 0),
           (t) => {
-            const sut = nameRevCutoff(t);
-            expect(t - sut).toBe(CUTOFF_DATE_SLOP);
-            expect(sut).toBeLessThan(t);
+            const result = nameRevCutoff(t);
+            expect(t - result).toBe(CUTOFF_DATE_SLOP);
+            expect(result).toBeLessThan(t);
           },
         ),
         { numRuns: 100 },

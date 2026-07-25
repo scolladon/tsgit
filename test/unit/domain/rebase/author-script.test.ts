@@ -18,10 +18,10 @@ describe('rebase author-script', () => {
     describe('When given a plain identity', () => {
       it('Then emits the three GIT_AUTHOR_* lines with an `@<unix> <tz>` date', () => {
         // Arrange + Act
-        const sut = serializeAuthorScript(ADA);
+        const result = serializeAuthorScript(ADA);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           "GIT_AUTHOR_NAME='Ada'\nGIT_AUTHOR_EMAIL='ada@example.com'\nGIT_AUTHOR_DATE='@1700000000 +0000'\n",
         );
       });
@@ -33,20 +33,20 @@ describe('rebase author-script', () => {
         const quotedId: AuthorIdentity = { ...ADA, name: "O'Neil" };
 
         // Act
-        const sut = serializeAuthorScript(quotedId);
+        const result = serializeAuthorScript(quotedId);
 
         // Assert
-        expect(sut).toContain("GIT_AUTHOR_NAME='O'\\''Neil'\n");
+        expect(result).toContain("GIT_AUTHOR_NAME='O'\\''Neil'\n");
       });
     });
 
     describe('When the timezone is negative', () => {
       it('Then preserves the signed offset verbatim', () => {
         // Arrange + Act
-        const sut = serializeAuthorScript({ ...ADA, timezoneOffset: '-0530' });
+        const result = serializeAuthorScript({ ...ADA, timezoneOffset: '-0530' });
 
         // Assert
-        expect(sut).toContain("GIT_AUTHOR_DATE='@1700000000 -0530'\n");
+        expect(result).toContain("GIT_AUTHOR_DATE='@1700000000 -0530'\n");
       });
     });
   });
@@ -55,10 +55,10 @@ describe('rebase author-script', () => {
     describe('When given a serialized script', () => {
       it('Then round-trips to the identity', () => {
         // Arrange + Act
-        const sut = parseAuthorScript(serializeAuthorScript(ADA));
+        const result = parseAuthorScript(serializeAuthorScript(ADA));
 
         // Assert
-        expect(sut).toEqual(ADA);
+        expect(result).toEqual(ADA);
       });
     });
 
@@ -68,10 +68,10 @@ describe('rebase author-script', () => {
         const quotedId: AuthorIdentity = { ...ADA, name: "O'Neil" };
 
         // Act
-        const sut = parseAuthorScript(serializeAuthorScript(quotedId));
+        const result = parseAuthorScript(serializeAuthorScript(quotedId));
 
         // Assert
-        expect(sut.name).toBe("O'Neil");
+        expect(result.name).toBe("O'Neil");
       });
     });
 

@@ -78,10 +78,10 @@ describe('matches', () => {
         const rules = parseGitignore(pattern);
 
         // Act
-        const sut = matches(rules, path(filePath), isDir);
+        const result = matches(rules, path(filePath), isDir);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -147,11 +147,11 @@ describe('matchesVerbose', () => {
         const rules = parseGitignore(pattern);
 
         // Act
-        const sut = matchesVerbose(rules, path(filePath), isDir);
+        const result = matchesVerbose(rules, path(filePath), isDir);
 
         // Assert
-        expect(sut.verdict).toBe(verdict);
-        expect(sut.ruleIndex).toBe(ruleIndex);
+        expect(result.verdict).toBe(verdict);
+        expect(result.ruleIndex).toBe(ruleIndex);
       });
     });
   });

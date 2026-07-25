@@ -14,11 +14,8 @@ const entry = (name: string, email: string, id: string, subject: string): Shortl
 describe('groupShortlog', () => {
   describe('Given no entries, When grouped', () => {
     it('Then it returns no groups', () => {
-      // Arrange
-      const sut = groupShortlog;
-
-      // Act
-      const result = sut([]);
+      // Arrange & Act
+      const result = groupShortlog([]);
 
       // Assert
       expect(result).toEqual([]);
@@ -28,7 +25,6 @@ describe('groupShortlog', () => {
   describe('Given one author with commits in walk order (newest first), When grouped', () => {
     it('Then the commits are reversed to oldest first', () => {
       // Arrange
-      const sut = groupShortlog;
       const entries = [
         entry('Ann', 'ann@x', 'c', 'newest'),
         entry('Ann', 'ann@x', 'b', 'middle'),
@@ -36,7 +32,7 @@ describe('groupShortlog', () => {
       ];
 
       // Act
-      const result = sut(entries);
+      const result = groupShortlog(entries);
 
       // Assert
       expect(result).toEqual([
@@ -55,11 +51,10 @@ describe('groupShortlog', () => {
   describe('Given one name with two different emails, When grouped', () => {
     it('Then they form one group, each commit keeping its own email', () => {
       // Arrange
-      const sut = groupShortlog;
       const entries = [entry('Ann', 'ann@second', 'b', 's2'), entry('Ann', 'ann@first', 'a', 's1')];
 
       // Act
-      const result = sut(entries);
+      const result = groupShortlog(entries);
 
       // Assert
       expect(result).toHaveLength(1);
@@ -98,11 +93,8 @@ describe('groupShortlog', () => {
           'names sorting differently by UTF-8 bytes than UTF-16 units are ordered by UTF-8 bytes (git strcmp), not JS default sort',
       },
     ])('Then $label', ({ entries, expectedNames }) => {
-      // Arrange
-      const sut = groupShortlog;
-
-      // Act
-      const result = sut(entries);
+      // Arrange & Act
+      const result = groupShortlog(entries);
 
       // Assert
       expect(result.map((g) => g.name)).toEqual(expectedNames);

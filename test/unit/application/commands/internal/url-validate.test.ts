@@ -36,11 +36,11 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then returns ValidatedUrl', async () => {
           // Arrange
-          const sut = await validateUrl('https://example.com/x', opts());
+          const result = await validateUrl('https://example.com/x', opts());
 
           // Assert
-          expect(sut.url).toBe('https://example.com/x');
-          expect(sut.pinnedAddress).toBe('8.8.8.8');
+          expect(result.url).toBe('https://example.com/x');
+          expect(result.pinnedAddress).toBe('8.8.8.8');
         });
       });
     });
@@ -82,10 +82,10 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then returns ValidatedUrl', async () => {
           // Arrange
-          const sut = await validateUrl('http://example.com/x', opts({ allowInsecure: true }));
+          const result = await validateUrl('http://example.com/x', opts({ allowInsecure: true }));
 
           // Assert
-          expect(sut.url).toBe('http://example.com/x');
+          expect(result.url).toBe('http://example.com/x');
         });
       });
     });
@@ -184,12 +184,12 @@ describe('internal/url-validate', () => {
         for (const { addr, label } of allowed) {
           it(`Then ${addr} (${label}) succeeds`, async () => {
             // Arrange
-            const sut = await validateUrl(
+            const result = await validateUrl(
               'https://example.com/x',
               opts({ resolver: fixedResolver(addr) }),
             );
             // Assert
-            expect(sut.pinnedAddress).toBe(addr);
+            expect(result.pinnedAddress).toBe(addr);
           });
         }
       });
@@ -225,13 +225,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then returns ValidatedUrl', async () => {
           // Arrange
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('192.168.1.1'), allowPrivateNetworks: true }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('192.168.1.1');
+          expect(result.pinnedAddress).toBe('192.168.1.1');
         });
       });
     });
@@ -242,13 +242,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then ValidatedUrl.pinnedAddress equals that IP', async () => {
           // Arrange
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('203.0.113.5') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('203.0.113.5');
+          expect(result.pinnedAddress).toBe('203.0.113.5');
         });
       });
     });
@@ -257,7 +257,7 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then pinnedAddress is the first non-blocked one', async () => {
           // Arrange — first is blocked, second is public; selected one must be public.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({
               resolver: fixedResolver('192.168.1.1', '8.8.8.8'),
@@ -266,7 +266,7 @@ describe('internal/url-validate', () => {
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('8.8.8.8');
+          expect(result.pinnedAddress).toBe('8.8.8.8');
         });
       });
     });
@@ -304,13 +304,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then returns ValidatedUrl with pinnedAddress=8.8.8.8', async () => {
           // Arrange
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/',
             opts({ resolver: fixedResolver('8.8.8.8') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('8.8.8.8');
+          expect(result.pinnedAddress).toBe('8.8.8.8');
         });
       });
     });
@@ -351,13 +351,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then resolves the host portion (not the userinfo)', async () => {
           // Arrange — the SSRF guard must run against the URL.hostname, not user/pass.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://user:secret@example.com/r.git',
             opts({ resolver: fixedResolver('203.0.113.5') }),
           );
 
           // Assert — pinned address comes from the host, not anywhere in userinfo.
-          expect(sut.pinnedAddress).toBe('203.0.113.5');
+          expect(result.pinnedAddress).toBe('203.0.113.5');
         });
       });
     });
@@ -469,12 +469,12 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('2001:db8::1') }),
           );
           // Assert
-          expect(sut.pinnedAddress).toBe('2001:db8::1');
+          expect(result.pinnedAddress).toBe('2001:db8::1');
         });
       });
     });
@@ -600,13 +600,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (not 4 octets => not an IPv4)', async () => {
           // Arrange — `parts.length !== 4` must bail; otherwise `10.0.0.0.0` is read as 10/8.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('10.0.0.0.0') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('10.0.0.0.0');
+          expect(result.pinnedAddress).toBe('10.0.0.0.0');
         });
       });
     });
@@ -615,13 +615,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (regex rejects => not an IPv4)', async () => {
           // Arrange — `/^\d{1,3}$/` must reject `0x` so `10.0.0.0x` is not read as 10/8.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('10.0.0.0x') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('10.0.0.0x');
+          expect(result.pinnedAddress).toBe('10.0.0.0x');
         });
       });
     });
@@ -630,13 +630,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (regex {1,3} rejects => not an IPv4)', async () => {
           // Arrange — `/^\d{1,3}$/` must reject `0000`.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('10.0.0.0000') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('10.0.0.0000');
+          expect(result.pinnedAddress).toBe('10.0.0.0000');
         });
       });
     });
@@ -657,13 +657,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (octet out of range => not an IPv4)', async () => {
           // Arrange — `n > 255` must be true at 256 so `10.0.0.256` is not read as 10/8.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('10.0.0.256') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('10.0.0.256');
+          expect(result.pinnedAddress).toBe('10.0.0.256');
         });
       });
     });
@@ -674,13 +674,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (octets undefined => not blocked)', async () => {
           // Arrange — exercises `isBlockedIpv4` with an addr that `parseIpv4` rejects.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('::ffff:999.0.0.1') }),
           );
 
           // Assert — `octets === undefined` must return false (not block).
-          expect(sut.pinnedAddress).toBe('::ffff:999.0.0.1');
+          expect(result.pinnedAddress).toBe('::ffff:999.0.0.1');
         });
       });
     });
@@ -691,13 +691,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — flips the `b === 168` operand; `&&` must keep this unblocked.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('192.1.1.1') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('192.1.1.1');
+          expect(result.pinnedAddress).toBe('192.1.1.1');
         });
       });
     });
@@ -706,13 +706,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — flips the `a === 192` operand; `&&` must keep this unblocked.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('8.168.1.1') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('8.168.1.1');
+          expect(result.pinnedAddress).toBe('8.168.1.1');
         });
       });
     });
@@ -738,13 +738,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (trailing $ anchor must reject the junk)', async () => {
           // Arrange — without the `$` anchor the mutant matches `10.0.0.1` and wrongly blocks it.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('::ffff:10.0.0.1.9') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('::ffff:10.0.0.1.9');
+          expect(result.pinnedAddress).toBe('::ffff:10.0.0.1.9');
         });
       });
     });
@@ -755,13 +755,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — forcing `a === 100` to `true` would block this; the `a` operand must hold.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('8.64.0.1') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('8.64.0.1');
+          expect(result.pinnedAddress).toBe('8.64.0.1');
         });
       });
     });
@@ -770,13 +770,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — forcing `a === 169` to `true` would block this; the `a` operand must hold.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('8.254.0.1') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('8.254.0.1');
+          expect(result.pinnedAddress).toBe('8.254.0.1');
         });
       });
     });
@@ -785,13 +785,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — forcing `a === 172` to `true` would block this; the `a` operand must hold.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('8.16.0.1') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('8.16.0.1');
+          expect(result.pinnedAddress).toBe('8.16.0.1');
         });
       });
     });
@@ -820,13 +820,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (leading ^ anchor must reject the prefix)', async () => {
           // Arrange — without `^` the mutant matches the embedded `::ffff:7f00:1` (127.0.0.1).
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('g::ffff:7f00:1') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('g::ffff:7f00:1');
+          expect(result.pinnedAddress).toBe('g::ffff:7f00:1');
         });
       });
     });
@@ -835,13 +835,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds (trailing $ anchor must reject the suffix)', async () => {
           // Arrange — without `$` the mutant matches the leading `::ffff:7f00:1` (127.0.0.1).
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('::ffff:7f00:1g') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('::ffff:7f00:1g');
+          expect(result.pinnedAddress).toBe('::ffff:7f00:1g');
         });
       });
     });
@@ -876,13 +876,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — neither `::1` nor `::` literal matches; the StringLiteral mutants would mis-block.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('::2') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('::2');
+          expect(result.pinnedAddress).toBe('::2');
         });
       });
     });
@@ -905,13 +905,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — kills `startsWith` -> `endsWith` mutants; endsWith would mis-block this.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('abcd::fe80:') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('abcd::fe80:');
+          expect(result.pinnedAddress).toBe('abcd::fe80:');
         });
       });
     });
@@ -920,13 +920,13 @@ describe('internal/url-validate', () => {
       describe('When validateUrl', () => {
         it('Then succeeds', async () => {
           // Arrange — kills the `startsWith('fe80::')` -> `endsWith('fe80::')` mutant.
-          const sut = await validateUrl(
+          const result = await validateUrl(
             'https://example.com/x',
             opts({ resolver: fixedResolver('abcd:fe80::') }),
           );
 
           // Assert
-          expect(sut.pinnedAddress).toBe('abcd:fe80::');
+          expect(result.pinnedAddress).toBe('abcd:fe80::');
         });
       });
     });

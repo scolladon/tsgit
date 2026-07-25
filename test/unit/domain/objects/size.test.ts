@@ -63,10 +63,10 @@ describe('payloadByteLength', () => {
         const blob = parseBlobContent(DUMMY_ID, content);
 
         // Act
-        const sut = payloadByteLength(blob, SHA1_CONFIG);
+        const result = payloadByteLength(blob, SHA1_CONFIG);
 
         // Assert
-        expect(sut).toBe(content.byteLength);
+        expect(result).toBe(content.byteLength);
       });
     });
   });
@@ -78,10 +78,10 @@ describe('payloadByteLength', () => {
         const blob = parseBlobContent(DUMMY_ID, new Uint8Array(0));
 
         // Act
-        const sut = payloadByteLength(blob, SHA1_CONFIG);
+        const result = payloadByteLength(blob, SHA1_CONFIG);
 
         // Assert
-        expect(sut).toBe(0);
+        expect(result).toBe(0);
       });
     });
   });
@@ -101,10 +101,10 @@ describe('payloadByteLength', () => {
         const expected = parseHeader(onDiskBytes).size;
 
         // Act
-        const sut = payloadByteLength(object, SHA1_CONFIG);
+        const result = payloadByteLength(object, SHA1_CONFIG);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

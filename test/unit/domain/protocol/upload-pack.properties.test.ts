@@ -24,13 +24,10 @@ const decodeAll = (bytes: Uint8Array): Promise<PktLine[]> =>
 describe('Given an arbitrary want/have/done request', () => {
   describe('When built and decoded', () => {
     it('Then the have-list is terminated by a flush iff done is false and by "done" iff done is true — never both', async () => {
-      // Arrange
-      const sut = buildUploadPackRequest;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(wantsArb(), havesArb(), doneArb(), async (wants, haves, done) => {
-          const bytes = sut({ wants, haves, capabilities: [], done });
+          const bytes = buildUploadPackRequest({ wants, haves, capabilities: [], done });
           const lines = await decodeAll(bytes);
 
           // The want-list is followed by exactly one flush.

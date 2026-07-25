@@ -28,11 +28,8 @@ describe('parseV2Capabilities', () => {
   describe('Given a version-2 capability advertisement', () => {
     describe('When parsed', () => {
       it('Then version is 2, commands include ls-refs and fetch, objectFormat is sha1', async () => {
-        // Arrange
-        const sut = parseV2Capabilities;
-
-        // Act
-        const caps = await sut(streamOf(FULL_ADVERTISEMENT));
+        // Arrange & Act
+        const caps = await parseV2Capabilities(streamOf(FULL_ADVERTISEMENT));
 
         // Assert
         expect(caps.version).toBe(2);
@@ -189,16 +186,16 @@ describe('parseV2Capabilities', () => {
         },
       ])('Then $label', async ({ advertisement, data }) => {
         // Arrange & Act
-        let sut: unknown;
+        let caught: unknown;
         try {
           await parseV2Capabilities(streamOf(advertisement));
         } catch (e) {
-          sut = e;
+          caught = e;
         }
 
         // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual(data);
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual(data);
       });
     });
   });

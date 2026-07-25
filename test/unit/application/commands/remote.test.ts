@@ -56,10 +56,10 @@ describe('application/commands/remote', () => {
           await seed(ctx);
 
           // Act
-          const sut = await remoteList(ctx);
+          const result = await remoteList(ctx);
 
           // Assert
-          expect(sut).toEqual({ remotes: [] });
+          expect(result).toEqual({ remotes: [] });
         });
       });
     });
@@ -75,10 +75,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteList(ctx);
+          const result = await remoteList(ctx);
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             remotes: [
               {
                 name: 'origin',
@@ -103,11 +103,11 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteList(ctx);
+          const result = await remoteList(ctx);
 
           // Assert — no `fetch` key, so the refspec list defaults to empty.
-          expect(sut.remotes[0]?.pushUrl).toBe('git@e.com:r.git');
-          expect(sut.remotes[0]?.fetchRefspecs).toEqual([]);
+          expect(result.remotes[0]?.pushUrl).toBe('git@e.com:r.git');
+          expect(result.remotes[0]?.fetchRefspecs).toEqual([]);
         });
       });
     });
@@ -120,10 +120,10 @@ describe('application/commands/remote', () => {
           await seed(ctx, '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n');
 
           // Act
-          const sut = await remoteList(ctx);
+          const result = await remoteList(ctx);
 
           // Assert — the missing url falls back to '' (not undefined).
-          expect(sut.remotes[0]?.url).toBe('');
+          expect(result.remotes[0]?.url).toBe('');
         });
       });
     });
@@ -139,10 +139,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteList(ctx);
+          const result = await remoteList(ctx);
 
           // Assert
-          expect(sut.remotes.map((r) => r.name)).toEqual(['alpha', 'mid', 'zeta']);
+          expect(result.remotes.map((r) => r.name)).toEqual(['alpha', 'mid', 'zeta']);
         });
       });
     });
@@ -157,15 +157,15 @@ describe('application/commands/remote', () => {
           await seed(ctx);
 
           // Act
-          const sut = await remoteAdd(ctx, {
+          const result = await remoteAdd(ctx, {
             name: 'upstream',
             url: 'https://e.com/up.git',
           });
 
           // Assert — result payload reflects what was written.
-          expect(sut.remote.name).toBe('upstream');
-          expect(sut.remote.url).toBe('https://e.com/up.git');
-          expect(sut.remote.fetchRefspecs).toEqual(['+refs/heads/*:refs/remotes/upstream/*']);
+          expect(result.remote.name).toBe('upstream');
+          expect(result.remote.url).toBe('https://e.com/up.git');
+          expect(result.remote.fetchRefspecs).toEqual(['+refs/heads/*:refs/remotes/upstream/*']);
           // On-disk config matches.
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('[remote "upstream"]');
@@ -209,14 +209,14 @@ describe('application/commands/remote', () => {
           await seed(ctx);
 
           // Act
-          const sut = await remoteAdd(ctx, {
+          const result = await remoteAdd(ctx, {
             name: 'upstream',
             url: 'https://e.com/u.git',
             fetch: '+refs/heads/release:refs/remotes/upstream/release',
           });
 
           // Assert
-          expect(sut.remote.fetchRefspecs).toEqual([
+          expect(result.remote.fetchRefspecs).toEqual([
             '+refs/heads/release:refs/remotes/upstream/release',
           ]);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
@@ -404,12 +404,12 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteRemove(ctx, { name: 'origin' });
+          const result = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.name).toBe('origin');
-          expect(sut.removedTrackingRefs).toEqual([]);
-          expect(sut.clearedBranches).toEqual([]);
+          expect(result.name).toBe('origin');
+          expect(result.removedTrackingRefs).toEqual([]);
+          expect(result.clearedBranches).toEqual([]);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).not.toContain('[remote "origin"]');
         });
@@ -432,10 +432,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteRemove(ctx, { name: 'origin' });
+          const result = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          expect([...sut.removedTrackingRefs].sort()).toEqual([
+          expect([...result.removedTrackingRefs].sort()).toEqual([
             'refs/remotes/origin/dev',
             'refs/remotes/origin/main',
           ]);
@@ -456,10 +456,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteRemove(ctx, { name: 'origin' });
+          const result = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.clearedBranches).toEqual(['refs/heads/main']);
+          expect(result.clearedBranches).toEqual(['refs/heads/main']);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).not.toContain('remote = origin');
           expect(written).not.toContain('merge = refs/heads/main');
@@ -478,10 +478,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteRemove(ctx, { name: 'origin' });
+          const result = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.clearedBranches).toEqual([]);
+          expect(result.clearedBranches).toEqual([]);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('remote = other');
         });
@@ -496,10 +496,10 @@ describe('application/commands/remote', () => {
           await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
 
           // Act
-          const sut = await remoteRemove(ctx, { name: 'origin' });
+          const result = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.clearedBranches).toEqual(['refs/heads/main']);
+          expect(result.clearedBranches).toEqual(['refs/heads/main']);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).not.toContain('remote = origin');
         });
@@ -517,10 +517,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteRemove(ctx, { name: 'origin' });
+          const result = await remoteRemove(ctx, { name: 'origin' });
 
           // Assert
-          expect([...sut.clearedBranches].sort()).toEqual(['refs/heads/dev', 'refs/heads/main']);
+          expect([...result.clearedBranches].sort()).toEqual(['refs/heads/dev', 'refs/heads/main']);
         });
       });
     });
@@ -751,10 +751,10 @@ describe('application/commands/remote', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
 
           // Act
-          const sut = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+          const result = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert
-          expect(sut.movedTrackingRefs).toEqual(['refs/remotes/upstream/main']);
+          expect(result.movedTrackingRefs).toEqual(['refs/remotes/upstream/main']);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(false);
           const moved = (
             await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)
@@ -784,10 +784,10 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          const sut = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+          const result = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert
-          expect(sut.rewrittenBranches).toEqual(['refs/heads/main']);
+          expect(result.rewrittenBranches).toEqual(['refs/heads/main']);
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('remote = upstream');
           expect(written).not.toContain('remote = origin');
@@ -882,14 +882,14 @@ describe('application/commands/remote', () => {
           await seed(ctx, '[remote "origin"]\n\turl = old\n\tpushurl = push-old\n');
 
           // Act
-          const sut = await remoteSetUrl(ctx, {
+          const result = await remoteSetUrl(ctx, {
             name: 'origin',
             url: 'new',
           });
 
           // Assert
-          expect(sut.remote.url).toBe('new');
-          expect(sut.remote.pushUrl).toBe('push-old');
+          expect(result.remote.url).toBe('new');
+          expect(result.remote.pushUrl).toBe('push-old');
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('url = new');
           expect(written).toContain('pushurl = push-old');
@@ -906,15 +906,15 @@ describe('application/commands/remote', () => {
           await seed(ctx, '[remote "origin"]\n\turl = u\n');
 
           // Act
-          const sut = await remoteSetUrl(ctx, {
+          const result = await remoteSetUrl(ctx, {
             name: 'origin',
             url: 'push-new',
             push: true,
           });
 
           // Assert
-          expect(sut.remote.pushUrl).toBe('push-new');
-          expect(sut.remote.url).toBe('u');
+          expect(result.remote.pushUrl).toBe('push-new');
+          expect(result.remote.url).toBe('u');
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).toContain('pushurl = push-new');
           expect(written).toContain('url = u');
@@ -1007,14 +1007,14 @@ describe('application/commands/remote', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
 
           // Act
-          const sut = await remoteShow(ctx, { name: 'origin' });
+          const result = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.remote.url).toBe('https://e.com/r.git');
-          expect(sut.remote.fetchRefspecs).toEqual(['+refs/heads/*:refs/remotes/origin/*']);
-          expect(sut.remote.trackingRefs.size).toBe(1);
-          expect(sut.remote.trackingRefs.get('refs/remotes/origin/main' as never)).toBe(oid);
-          expect(sut.remote.trackedBy).toEqual([
+          expect(result.remote.url).toBe('https://e.com/r.git');
+          expect(result.remote.fetchRefspecs).toEqual(['+refs/heads/*:refs/remotes/origin/*']);
+          expect(result.remote.trackingRefs.size).toBe(1);
+          expect(result.remote.trackingRefs.get('refs/remotes/origin/main' as never)).toBe(oid);
+          expect(result.remote.trackedBy).toEqual([
             { branch: 'refs/heads/main', merge: 'refs/heads/main' },
           ]);
         });
@@ -1029,10 +1029,10 @@ describe('application/commands/remote', () => {
           await seed(ctx, '[remote "origin"]\n\turl = u\n\tpushurl = p\n');
 
           // Act
-          const sut = await remoteShow(ctx, { name: 'origin' });
+          const result = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.remote.pushUrl).toBe('p');
+          expect(result.remote.pushUrl).toBe('p');
         });
       });
     });
@@ -1045,11 +1045,11 @@ describe('application/commands/remote', () => {
           await seed(ctx, '[remote "origin"]\n\turl = u\n');
 
           // Act
-          const sut = await remoteShow(ctx, { name: 'origin' });
+          const result = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.remote.trackingRefs.size).toBe(0);
-          expect(sut.remote.trackedBy).toEqual([]);
+          expect(result.remote.trackingRefs.size).toBe(0);
+          expect(result.remote.trackedBy).toEqual([]);
         });
       });
     });
@@ -1062,10 +1062,12 @@ describe('application/commands/remote', () => {
           await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
 
           // Act
-          const sut = await remoteShow(ctx, { name: 'origin' });
+          const result = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          expect(sut.remote.trackedBy).toEqual([{ branch: 'refs/heads/main', merge: undefined }]);
+          expect(result.remote.trackedBy).toEqual([
+            { branch: 'refs/heads/main', merge: undefined },
+          ]);
         });
       });
     });

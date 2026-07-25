@@ -37,10 +37,10 @@ describe('describeName', () => {
         const ref = RefName.from(raw);
 
         // Act
-        const sut = describeName(ref, all);
+        const result = describeName(ref, all);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

@@ -10,10 +10,7 @@
  */
 import { classifyTestFile } from './classify-test-file.ts';
 import type { PyramidManifest } from './parse-manifest.ts';
-import {
-  type DescribeBlock,
-  scanDescribeBlocks,
-} from './scan-describe-blocks.ts';
+import { type DescribeBlock, scanDescribeBlocks } from './scan-describe-blocks.ts';
 import { type ItBlock, scanItBlocks } from './scan-it-blocks.ts';
 import type { SourceFile } from './types.ts';
 
@@ -35,9 +32,7 @@ export interface BadTitleFinding {
   readonly reason: BadTitleReason;
 }
 
-const sortFindings = (
-  findings: ReadonlyArray<BadTitleFinding>,
-): ReadonlyArray<BadTitleFinding> =>
+const sortFindings = (findings: ReadonlyArray<BadTitleFinding>): ReadonlyArray<BadTitleFinding> =>
   [...findings].sort((a, b) => {
     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
     return a.line - b.line;
@@ -48,9 +43,7 @@ const findGwtAncestors = (
   describes: ReadonlyArray<DescribeBlock>,
   isGwtTitle: (title: string) => boolean,
 ): ReadonlyArray<string> => {
-  const enclosing = describes.filter(
-    (d) => d.openIdx < it.openIdx && it.openIdx < d.closeIdx,
-  );
+  const enclosing = describes.filter((d) => d.openIdx < it.openIdx && it.openIdx < d.closeIdx);
   enclosing.sort((a, b) => b.openIdx - a.openIdx); // closest-first
   return enclosing.filter((d) => isGwtTitle(d.title)).map((d) => d.title);
 };
@@ -79,67 +72,63 @@ const classifyAncestors = (
   return 'nested-gwt';
 };
 
+const findingForIt = (
+  file: SourceFile,
+  it: ItBlock,
+  describes: ReadonlyArray<DescribeBlock>,
+  gwt: PyramidManifest['heuristics']['gwtTitle'],
+  isGwtTitle: (title: string) => boolean,
+): BadTitleFinding | null => {
+  if (it.title.length === 0) {
+    return { path: file.path, line: it.line, title: '<missing>', ancestors: [], reason: 'missing' };
+  }
+
+  if (!gwt.itThenRe.test(it.title)) {
+    if (gwt.legacyItGwtRe.test(it.title)) {
+      return {
+        path: file.path,
+        line: it.line,
+        title: it.title,
+        ancestors: [],
+        reason: 'legacy-it-gwt',
+      };
+    }
+    return {
+      path: file.path,
+      line: it.line,
+      title: it.title,
+      ancestors: findGwtAncestors(it, describes, isGwtTitle),
+      reason: 'then-missing',
+    };
+  }
+
+  const ancestors = findGwtAncestors(it, describes, isGwtTitle);
+  const reason = classifyAncestors(ancestors, gwt);
+  return reason === null
+    ? null
+    : { path: file.path, line: it.line, title: it.title, ancestors, reason };
+};
+
 export const detectBadTitle = (
   manifest: PyramidManifest,
   files: ReadonlyArray<SourceFile>,
 ): ReadonlyArray<BadTitleFinding> => {
   const gwt = manifest.heuristics.gwtTitle;
-  const findings: BadTitleFinding[] = [];
   const isGwtTitle = (title: string): boolean =>
     gwt.describeGivenRe.test(title) ||
     gwt.describeWhenRe.test(title) ||
     gwt.describeCombinedRe.test(title);
 
+  const findings: BadTitleFinding[] = [];
   for (const file of files) {
-    if (classifyTestFile(manifest, file.path) !== gwt.tier) continue;
+    if (!gwt.tiers.includes(classifyTestFile(manifest, file.path))) continue;
     const its = scanItBlocks(file.source);
     if (its.length === 0) continue;
     const describes = scanDescribeBlocks(file.source);
 
     for (const it of its) {
-      if (it.title.length === 0) {
-        findings.push({
-          path: file.path,
-          line: it.line,
-          title: '<missing>',
-          ancestors: [],
-          reason: 'missing',
-        });
-        continue;
-      }
-
-      if (!gwt.itThenRe.test(it.title)) {
-        if (gwt.legacyItGwtRe.test(it.title)) {
-          findings.push({
-            path: file.path,
-            line: it.line,
-            title: it.title,
-            ancestors: [],
-            reason: 'legacy-it-gwt',
-          });
-        } else {
-          findings.push({
-            path: file.path,
-            line: it.line,
-            title: it.title,
-            ancestors: findGwtAncestors(it, describes, isGwtTitle),
-            reason: 'then-missing',
-          });
-        }
-        continue;
-      }
-
-      const ancestors = findGwtAncestors(it, describes, isGwtTitle);
-      const reason = classifyAncestors(ancestors, gwt);
-      if (reason !== null) {
-        findings.push({
-          path: file.path,
-          line: it.line,
-          title: it.title,
-          ancestors,
-          reason,
-        });
-      }
+      const finding = findingForIt(file, it, describes, gwt, isGwtTitle);
+      if (finding !== null) findings.push(finding);
     }
   }
   return sortFindings(findings);

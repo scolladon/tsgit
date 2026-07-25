@@ -21,10 +21,10 @@ describe('file-mode', () => {
           ['160000', 'GITLINK'],
         ])("Then returns '%s' (%s)", (mode) => {
           // Arrange & Act
-          const sut = validateFileMode(mode);
+          const result = validateFileMode(mode);
 
           // Assert
-          expect(sut).toBe(mode);
+          expect(result).toBe(mode);
         });
       });
     });
@@ -73,10 +73,10 @@ describe('file-mode', () => {
           },
         ])('Then $label', ({ input, expected }) => {
           // Arrange & Act
-          const sut = normalizeFileMode(input);
+          const result = normalizeFileMode(input);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -114,10 +114,10 @@ describe('file-mode', () => {
           ['100755', false],
         ])('Then %s returns %s', (mode, expected) => {
           // Arrange & Act
-          const sut = isDirectory(mode);
+          const result = isDirectory(mode);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -128,10 +128,10 @@ describe('file-mode', () => {
       describe('When deriving the working mode', () => {
         it("Then returns '120000' (SYMLINK), the link check taking precedence", () => {
           // Arrange & Act
-          const sut = deriveWorkingMode({ isSymbolicLink: true, mode: 0o777 });
+          const result = deriveWorkingMode({ isSymbolicLink: true, mode: 0o777 });
 
           // Assert
-          expect(sut).toBe('120000');
+          expect(result).toBe('120000');
         });
       });
     });
@@ -140,10 +140,10 @@ describe('file-mode', () => {
       describe('When deriving the working mode', () => {
         it("Then returns '100755' (EXECUTABLE)", () => {
           // Arrange & Act
-          const sut = deriveWorkingMode({ isSymbolicLink: false, mode: 0o744 });
+          const result = deriveWorkingMode({ isSymbolicLink: false, mode: 0o744 });
 
           // Assert
-          expect(sut).toBe('100755');
+          expect(result).toBe('100755');
         });
       });
     });
@@ -152,10 +152,10 @@ describe('file-mode', () => {
       describe('When deriving the working mode', () => {
         it("Then returns '100755' (any of the 0o111 bits counts)", () => {
           // Arrange & Act
-          const sut = deriveWorkingMode({ isSymbolicLink: false, mode: 0o641 });
+          const result = deriveWorkingMode({ isSymbolicLink: false, mode: 0o641 });
 
           // Assert
-          expect(sut).toBe('100755');
+          expect(result).toBe('100755');
         });
       });
     });
@@ -164,10 +164,10 @@ describe('file-mode', () => {
       describe('When deriving the working mode', () => {
         it("Then returns '100644' (REGULAR)", () => {
           // Arrange & Act
-          const sut = deriveWorkingMode({ isSymbolicLink: false, mode: 0o644 });
+          const result = deriveWorkingMode({ isSymbolicLink: false, mode: 0o644 });
 
           // Assert
-          expect(sut).toBe('100644');
+          expect(result).toBe('100644');
         });
       });
     });

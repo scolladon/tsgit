@@ -25,27 +25,27 @@ describe('Given a .gitmodules subsection name', () => {
       ['DEL control char', `a${String.fromCharCode(127)}b`],
     ])('Then %s returns true', (_label, name) => {
       // Arrange + Act
-      const sut = isUnsafeSubmoduleName(name);
+      const result = isUnsafeSubmoduleName(name);
       // Assert
-      expect(sut).toBe(true);
+      expect(result).toBe(true);
     });
   });
 
   describe('When the name is a plain name', () => {
     it('Then it is accepted', () => {
       // Arrange + Act
-      const sut = isUnsafeSubmoduleName('libfoo');
+      const result = isUnsafeSubmoduleName('libfoo');
       // Assert
-      expect(sut).toBe(false);
+      expect(result).toBe(false);
     });
   });
 
   describe('When the name carries a slash (legitimate for nested module dirs)', () => {
     it('Then it is accepted', () => {
       // Arrange + Act
-      const sut = isUnsafeSubmoduleName('libs/foo');
+      const result = isUnsafeSubmoduleName('libs/foo');
       // Assert
-      expect(sut).toBe(false);
+      expect(result).toBe(false);
     });
   });
 });

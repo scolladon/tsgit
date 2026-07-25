@@ -47,10 +47,10 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0' });
+        const result = await tagCreate(ctx, { name: 'v1.0' });
 
         // Assert
-        expect(sut.id).toBe(commitId);
+        expect(result.id).toBe(commitId);
       });
     });
   });
@@ -121,10 +121,10 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'pin', target: commitId });
+        const result = await tagCreate(ctx, { name: 'pin', target: commitId });
 
         // Assert
-        expect(sut.id).toBe(commitId);
+        expect(result.id).toBe(commitId);
       });
     });
   });
@@ -136,10 +136,10 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'pin', target: 'refs/heads/main' });
+        const result = await tagCreate(ctx, { name: 'pin', target: 'refs/heads/main' });
 
         // Assert
-        expect(sut.id).toBe(commitId);
+        expect(result.id).toBe(commitId);
       });
     });
   });
@@ -153,12 +153,12 @@ describe('tag', () => {
 
         // Act — second create with force MUST NOT throw and MUST end pointing
         // at the same commit oid (no rewrite of the underlying ref target).
-        const sut = await tagCreate(ctx, { name: 'v1.0', force: true });
+        const result = await tagCreate(ctx, { name: 'v1.0', force: true });
 
         // Assert — the fields that prove the ref was rewritten in place
         // (full name + same oid).
-        expect(sut.name).toBe('refs/tags/v1.0');
-        expect(sut.id).toBe(first.id);
+        expect(result.name).toBe('refs/tags/v1.0');
+        expect(result.id).toBe(first.id);
       });
     });
   });
@@ -215,10 +215,10 @@ describe('tag', () => {
         const ctx = await build();
 
         // Act
-        const sut = await tagList(ctx);
+        const result = await tagList(ctx);
 
         // Assert
-        expect(sut.tags.map((t) => t.name)).toEqual(expectedNames);
+        expect(result.tags.map((t) => t.name)).toEqual(expectedNames);
       });
     });
   });
@@ -351,11 +351,11 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithConfiguredUser();
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
+        const result = await tagCreate(ctx, { name: 'v1.0', annotate: true, message: 'v1' });
 
         // Assert
-        expect(sut.id).not.toBe(commitId);
-        const obj = await readObject(ctx, sut.id);
+        expect(result.id).not.toBe(commitId);
+        const obj = await readObject(ctx, result.id);
         expect(obj.type).toBe('tag');
       });
     });
@@ -368,11 +368,11 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithConfiguredUser();
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
+        const result = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
 
         // Assert
-        expect(sut.id).not.toBe(commitId);
-        const obj = await readObject(ctx, sut.id);
+        expect(result.id).not.toBe(commitId);
+        const obj = await readObject(ctx, result.id);
         expect(obj.type).toBe('tag');
       });
     });
@@ -385,12 +385,12 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithConfiguredUser();
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0', annotate: true });
+        const result = await tagCreate(ctx, { name: 'v1.0', annotate: true });
 
         // Assert — annotate alone (no message, no sign) must still peel off a tag
         // object, and its message must be empty rather than any placeholder text.
-        expect(sut.id).not.toBe(commitId);
-        const obj = await readObject(ctx, sut.id);
+        expect(result.id).not.toBe(commitId);
+        const obj = await readObject(ctx, result.id);
         expect(obj.type).toBe('tag');
         if (obj.type !== 'tag') throw new Error('expected a tag object');
         expect(obj.data.message).toBe('');
@@ -405,11 +405,11 @@ describe('tag', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0' });
+        const result = await tagCreate(ctx, { name: 'v1.0' });
 
         // Assert
-        expect(sut.id).toBe(commitId);
-        const obj = await readObject(ctx, sut.id);
+        expect(result.id).toBe(commitId);
+        const obj = await readObject(ctx, result.id);
         expect(obj.type).toBe('commit');
       });
     });
@@ -494,10 +494,10 @@ describe('tag — signing', () => {
         const ctx = await seedSigning(runner);
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: true });
+        const result = await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: true });
 
         // Assert
-        const stored = await readObject(ctx, sut.id);
+        const stored = await readObject(ctx, result.id);
         if (stored.type !== 'tag') throw new Error('expected a tag object');
         expect(stored.data.gpgSignature).toBe(armor());
       });
@@ -512,10 +512,10 @@ describe('tag — signing', () => {
         const ctx = await seedSigning(runner);
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0', sign: true });
+        const result = await tagCreate(ctx, { name: 'v1.0', sign: true });
 
         // Assert
-        const stored = await readObject(ctx, sut.id);
+        const stored = await readObject(ctx, result.id);
         expect(stored.type).toBe('tag');
         if (stored.type !== 'tag') throw new Error('expected a tag object');
         expect(stored.data.gpgSignature).toBe(armor());
@@ -550,10 +550,10 @@ describe('tag — signing', () => {
         const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
+        const result = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
 
         // Assert
-        const stored = await readObject(ctx, sut.id);
+        const stored = await readObject(ctx, result.id);
         if (stored.type !== 'tag') throw new Error('expected a tag object');
         expect(stored.data.gpgSignature).toBe(armor());
       });
@@ -568,11 +568,11 @@ describe('tag — signing', () => {
         const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: false });
+        const result = await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: false });
 
         // Assert
         expect(runner.calls).toHaveLength(0);
-        const stored = await readObject(ctx, sut.id);
+        const stored = await readObject(ctx, result.id);
         if (stored.type !== 'tag') throw new Error('expected a tag object');
         expect(stored.data.gpgSignature).toBeUndefined();
       });
@@ -587,11 +587,11 @@ describe('tag — signing', () => {
         const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v1.0' });
+        const result = await tagCreate(ctx, { name: 'v1.0' });
 
         // Assert
         expect(runner.calls).toHaveLength(0);
-        const stored = await readObject(ctx, sut.id);
+        const stored = await readObject(ctx, result.id);
         expect(stored.type).toBe('commit');
       });
     });

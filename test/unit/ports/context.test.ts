@@ -46,7 +46,7 @@ describe('Context', () => {
         },
       ])('Then $label', ({ select, expected }) => {
         // Arrange
-        const sut = createContext({
+        const options = {
           fs: sentinelFs,
           hash: sentinelHash,
           compressor: sentinelCompressor,
@@ -56,7 +56,11 @@ describe('Context', () => {
           runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
-        });
+        };
+
+        // Act
+        const sut = createContext(options);
+
         // Assert
         expect(select(sut)).toBe(expected);
       });
@@ -67,7 +71,7 @@ describe('Context', () => {
     describe('When reading ctx.config', () => {
       it('Then all fields match input', () => {
         // Arrange
-        const sut = createContext({
+        const options = {
           fs: sentinelFs,
           hash: sentinelHash,
           compressor: sentinelCompressor,
@@ -77,7 +81,11 @@ describe('Context', () => {
           runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
-        });
+        };
+
+        // Act
+        const sut = createContext(options);
+
         // Assert
         expect(sut.layout).toEqual({ workDir: '/w', gitDir: '/w/.git', bare: false });
       });
@@ -88,7 +96,7 @@ describe('Context', () => {
     describe('When attempting mutation', () => {
       it('Then throws (frozen)', () => {
         // Arrange
-        const sut = createContext({
+        const options = {
           fs: sentinelFs,
           hash: sentinelHash,
           compressor: sentinelCompressor,
@@ -98,7 +106,11 @@ describe('Context', () => {
           runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
-        });
+        };
+
+        // Act
+        const sut = createContext(options);
+
         // Assert
         expect(() => Object.assign(sut, { fs: {} })).toThrow();
       });
@@ -110,7 +122,7 @@ describe('Context', () => {
       it('Then correct AbortSignal returned', () => {
         // Arrange
         const ac = new AbortController();
-        const sut = createContext({
+        const options = {
           fs: sentinelFs,
           hash: sentinelHash,
           compressor: sentinelCompressor,
@@ -121,7 +133,11 @@ describe('Context', () => {
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
           signal: ac.signal,
-        });
+        };
+
+        // Act
+        const sut = createContext(options);
+
         // Assert
         expect(sut.signal).toBe(ac.signal);
       });
@@ -132,7 +148,7 @@ describe('Context', () => {
     describe('When reading ctx.signal', () => {
       it('Then undefined', () => {
         // Arrange
-        const sut = createContext({
+        const options = {
           fs: sentinelFs,
           hash: sentinelHash,
           compressor: sentinelCompressor,
@@ -142,7 +158,11 @@ describe('Context', () => {
           runtime: sentinelRuntime,
           hashConfig: sentinelHashConfig,
           deltaCache: sentinelDeltaCache,
-        });
+        };
+
+        // Act
+        const sut = createContext(options);
+
         // Assert
         expect(sut.signal).toBeUndefined();
       });

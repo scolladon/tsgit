@@ -65,11 +65,11 @@ describe('git-object', () => {
           const raw = rawBlob('hello world');
 
           // Act
-          const sut = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
+          const result = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
 
           // Assert
-          expect(sut.type).toBe('blob');
-          expect(new TextDecoder().decode((sut as Blob).content)).toBe('hello world');
+          expect(result.type).toBe('blob');
+          expect(new TextDecoder().decode((result as Blob).content)).toBe('hello world');
         });
       });
     });
@@ -83,12 +83,12 @@ describe('git-object', () => {
           const raw = rawTree(entry);
 
           // Act
-          const sut = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
+          const result = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
 
           // Assert
-          expect(sut.type).toBe('tree');
-          expect((sut as Tree).entries).toHaveLength(1);
-          expect((sut as Tree).entries[0]!.name).toBe('file.txt');
+          expect(result.type).toBe('tree');
+          expect((result as Tree).entries).toHaveLength(1);
+          expect((result as Tree).entries[0]!.name).toBe('file.txt');
         });
       });
     });
@@ -107,11 +107,11 @@ describe('git-object', () => {
           const raw = rawCommit(commitText);
 
           // Act
-          const sut = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
+          const result = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
 
           // Assert
-          expect(sut.type).toBe('commit');
-          expect((sut as Commit).data.message).toBe('msg');
+          expect(result.type).toBe('commit');
+          expect((result as Commit).data.message).toBe('msg');
         });
       });
     });
@@ -131,10 +131,10 @@ describe('git-object', () => {
           const raw = rawTag(tagText);
 
           // Act
-          const sut = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
+          const result = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
 
           // Assert
-          expect(sut.type).toBe('tag');
+          expect(result.type).toBe('tag');
         });
       });
     });
@@ -187,11 +187,11 @@ describe('git-object', () => {
           };
 
           // Act
-          const sut = serializeObject(blob, SHA1_CONFIG);
+          const result = serializeObject(blob, SHA1_CONFIG);
 
           // Assert
           const expected = rawBlob('hello');
-          expect(sut).toEqual(expected);
+          expect(result).toEqual(expected);
         });
       });
     });
@@ -240,10 +240,10 @@ describe('git-object', () => {
           const object = parseObject(DUMMY_ID, raw, SHA1_CONFIG);
 
           // Act
-          const sut = serializeObject(object, SHA1_CONFIG);
+          const result = serializeObject(object, SHA1_CONFIG);
 
           // Assert
-          expect(sut).toEqual(raw);
+          expect(result).toEqual(raw);
         });
       });
     });
@@ -267,10 +267,10 @@ describe('git-object', () => {
 
           // Act
           const serialized = serializeObject(commit, SHA1_CONFIG);
-          const sut = parseObject(DUMMY_ID, serialized, SHA1_CONFIG);
+          const result = parseObject(DUMMY_ID, serialized, SHA1_CONFIG);
 
           // Assert
-          expect(sut).toEqual(commit);
+          expect(result).toEqual(commit);
         });
       });
     });

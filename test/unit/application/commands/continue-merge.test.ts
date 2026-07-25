@@ -155,10 +155,10 @@ describe('mergeContinue', () => {
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await mergeContinue(ctx, { author, committer: author });
+        const result = await mergeContinue(ctx, { author, committer: author });
 
         // Assert
-        const obj = await readObject(ctx, sut.id);
+        const obj = await readObject(ctx, result.id);
         expect(obj.type).toBe('commit');
         if (obj.type === 'commit') {
           expect(obj.data.message).toBe('Merge feature into main\n');
@@ -177,14 +177,14 @@ describe('mergeContinue', () => {
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await mergeContinue(ctx, {
+        const result = await mergeContinue(ctx, {
           message: 'resolved by user',
           author,
           committer: author,
         });
 
         // Assert
-        const obj = await readObject(ctx, sut.id);
+        const obj = await readObject(ctx, result.id);
         if (obj.type === 'commit') {
           expect(obj.data.message).toBe('resolved by user\n');
         } else {
@@ -204,10 +204,10 @@ describe('mergeContinue', () => {
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await mergeContinue(ctx, { message: 'resolved', author, committer: author });
+        const result = await mergeContinue(ctx, { message: 'resolved', author, committer: author });
 
         // Assert
-        expect(sut.parents).toEqual([preMergeMain, featureTip]);
+        expect(result.parents).toEqual([preMergeMain, featureTip]);
       });
 
       it('Then MERGE_HEAD and MERGE_MSG are cleared after the commit', async () => {
@@ -254,14 +254,14 @@ describe('mergeContinue', () => {
         };
 
         // Act
-        const sut = await mergeContinue(ctx, {
+        const result = await mergeContinue(ctx, {
           message: 'resolved',
           author: explicitAuthor,
           committer: explicitCommitter,
         });
 
         // Assert — both fields distinguishable in the commit object.
-        const obj = await readObject(ctx, sut.id);
+        const obj = await readObject(ctx, result.id);
         if (obj.type !== 'commit') throw new Error('expected commit');
         expect(obj.data.author.name).toBe('Bob');
         expect(obj.data.author.email).toBe('bob@example.com');
@@ -293,7 +293,7 @@ describe('mergeContinue', () => {
         await resolveAndStage(ctx);
 
         // Act
-        const sut = await mergeContinue(ctx, {
+        const result = await mergeContinue(ctx, {
           message: 'resolved',
           author,
           committer: author,
@@ -301,7 +301,7 @@ describe('mergeContinue', () => {
         });
 
         // Assert
-        expect(sut.id).toMatch(/^[0-9a-f]{40}$/);
+        expect(result.id).toMatch(/^[0-9a-f]{40}$/);
       });
     });
   });

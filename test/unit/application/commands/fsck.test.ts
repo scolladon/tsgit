@@ -10,8 +10,6 @@ import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 import { writeSyntheticPack } from '../primitives/pack-fixture.js';
 
-const sut = fsck;
-
 const enc = new TextEncoder();
 
 const makeBlob = (content: string) => ({
@@ -92,7 +90,7 @@ describe('Given a healthy repo with reachable commits', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — no integrity faults; root finding is expected for root commits
       const faultTypes = [
@@ -124,7 +122,7 @@ describe('Given a context without a HEAD file (not a repository)', () => {
 
       // Act
       try {
-        await sut(ctx);
+        await fsck(ctx);
         expect.fail('should have thrown');
       } catch (err) {
         // Assert
@@ -148,7 +146,7 @@ describe('Given a repo with a broken [core] config (valueless key)', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesfile\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — assertRepository only, assertOperationalRepository NOT used
       expect(result.exitCode).toBe(0);
@@ -168,7 +166,7 @@ describe('Given a repo with HEAD pointing to an unborn branch', () => {
       // HEAD -> refs/heads/main, no refs/heads/main file → unborn
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       expect(result.findings).toHaveLength(0);
@@ -189,7 +187,7 @@ describe('Given a dangling blob (written but not referenced)', () => {
       const blobId = await writeObject(ctx, makeBlob('orphan'));
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -210,7 +208,7 @@ describe('Given a dangling commit (written but not referenced by any ref)', () =
       // No ref points to commitId
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -235,7 +233,7 @@ describe('Given a dangling tree (written but not referenced)', () => {
       // No commit references this tree
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -257,7 +255,7 @@ describe('Given a dangling annotated tag (written but not referenced by any ref)
       // No ref points to tagId
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -286,7 +284,7 @@ describe('Given an orphan commit subgraph (commit→tree→blob, all unreachable
       // No ref → all three are unreachable
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — all three objects are unreachable
       const unreachableIds = result.findings
@@ -328,7 +326,7 @@ describe('Given a tree entry pointing to a missing blob', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const missing = result.findings.filter((f) => f.type === 'missing');
@@ -368,7 +366,7 @@ describe('Given a commit with a missing parent', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const missing = result.findings.filter((f) => f.type === 'missing');
@@ -409,7 +407,7 @@ describe('Given a commit pointing to a missing tree', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const missing = result.findings.filter((f) => f.type === 'missing');
@@ -445,7 +443,7 @@ describe('Given a tree with a directory entry pointing to a missing subtree', ()
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — a missing directory entry is expected to be a tree, not a blob.
       const brokenLinks = result.findings.filter((f) => f.type === 'broken-link');
@@ -477,7 +475,7 @@ describe('Given a reachable root commit (no parents)', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const roots = result.findings.filter((f) => f.type === 'root');
@@ -504,7 +502,7 @@ describe('Given a ref pointing to an annotated tag (tag target reachable)', () =
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       const tagged = result.findings.filter((f) => f.type === 'tagged');
@@ -535,7 +533,7 @@ describe('Given a ref pointing to an annotated tag whose target is missing', () 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — the missing target surfaces both as a broken tag link and a missing object.
       const brokenLinks = result.findings.filter((f) => f.type === 'broken-link');
@@ -582,7 +580,7 @@ describe('Given a commit reachable only via reflog (reset --hard scenario)', () 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`, reflogLine);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — oldCommitId reachable from reflog old-oid, so NOT dangling
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -605,7 +603,7 @@ describe('Given a commit reachable only via reflog (reset --hard scenario)', () 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`, reflogLine);
 
       // Act
-      const result = await sut(ctx, { reflogRoots: false });
+      const result = await fsck(ctx, { reflogRoots: false });
 
       // Assert — oldCommitId NOT reachable (no ref, no parent edge, no reflog) → dangling
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -662,7 +660,7 @@ describe('Given a staged-only blob (in index, not yet committed)', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — blobId reachable from index
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -687,7 +685,7 @@ describe('Given a clean repo', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       expect(result.exitCode).toBe(0);
@@ -705,7 +703,7 @@ describe('Given a missing object (referenced but absent)', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert
       expect(result.exitCode & 2).toBe(2);
@@ -772,7 +770,7 @@ describe('Given a loose tree object with zeroPaddedFilemode (zero-padded mode by
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — warning in tree <sha>: zeroPaddedFilemode
       const badObjects = result.findings.filter((f) => f.type === 'bad-object');
@@ -818,7 +816,7 @@ describe('Given a loose tree object with zeroPaddedFilemode (zero-padded mode by
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx, { strict: true });
+      const result = await fsck(ctx, { strict: true });
 
       // Assert — error in tree <sha>: zeroPaddedFilemode (WARN upgraded to ERROR under strict)
       const badObjects = result.findings.filter((f) => f.type === 'bad-object');
@@ -874,7 +872,7 @@ describe('Given a loose tree object with treeNotSorted (entries in wrong order)'
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — error in tree <sha>: treeNotSorted: not properly sorted
       const badObjects = result.findings.filter((f) => f.type === 'bad-object');
@@ -914,7 +912,7 @@ describe('Given a loose commit object with missingSpaceBeforeEmail', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — error in commit <sha>: missingSpaceBeforeEmail
       const badObjects = result.findings.filter((f) => f.type === 'bad-object');
@@ -965,7 +963,7 @@ describe('Given a loose tree with treeNotSorted (ERROR, not in strict-upgrade se
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx, { strict: true });
+      const result = await fsck(ctx, { strict: true });
 
       // Assert — treeNotSorted remains 'error' even under strict
       const notSorted = result.findings.find(
@@ -1001,7 +999,7 @@ describe('Given a loose object whose content hash does not match its path (hash-
       await ctx.fs.write(blob1Path, blob2Compressed);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — hash-mismatch finding for blobId1 (path oid) with actual = blobId2
       const hashMismatch = result.findings.filter((f) => f.type === 'hash-mismatch');
@@ -1040,7 +1038,7 @@ describe('Given a loose tree with zeroPaddedFilemode and connectivityOnly:true',
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx, { connectivityOnly: true });
+      const result = await fsck(ctx, { connectivityOnly: true });
 
       // Assert — no bad-object findings (content pass skipped entirely)
       const badObjects = result.findings.filter((f) => f.type === 'bad-object');
@@ -1074,7 +1072,7 @@ describe('Given a repo with only WARN-severity content findings (zeroPaddedFilem
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — exit code 0 (WARN doesn't trigger exit bit)
       expect(result.exitCode).toBe(0);
@@ -1097,7 +1095,7 @@ describe('Given a loose ref with malformed content (not a valid OID)', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — badRefContent finding present
       const badRef = result.findings.find(
@@ -1124,7 +1122,7 @@ describe('Given a loose ref with malformed content', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
 
       // Act
-      const result = await sut(ctx, { checkReferences: false });
+      const result = await fsck(ctx, { checkReferences: false });
 
       // Assert — no badRefContent finding when refs-verify pass is skipped
       const badRefContent = result.findings.find(
@@ -1153,7 +1151,7 @@ describe('Given a loose ref pointing to a valid-format but absent OID', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — badRefOid finding for the absent OID ref
       const badRef = result.findings.find(
@@ -1179,7 +1177,7 @@ describe('Given a loose ref pointing to an absent OID', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — only bad-ref, no 'missing' finding for the absent OID
       const missingForAbsent = result.findings.filter(
@@ -1202,7 +1200,7 @@ describe('Given a loose ref with malformed content (matrix #9b)', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — badRefContent finding
       const badRefContent = result.findings.find(
@@ -1242,7 +1240,7 @@ describe('Given a packed-ref entry pointing to an absent OID', () => {
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — badRefOid finding
       const badRef = result.findings.find(
@@ -1271,7 +1269,7 @@ describe('Given a loose ref with absent OID and checkReferences:false', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
 
       // Act
-      const result = await sut(ctx, { checkReferences: false });
+      const result = await fsck(ctx, { checkReferences: false });
 
       // Assert — badRefOid still emitted (absent OID not gated by checkReferences)
       const badRefOid = result.findings.find(
@@ -1295,7 +1293,7 @@ describe('Given HEAD pointing to unborn branch (no commits)', () => {
       const ctx = await initBareCtx();
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — no bad-ref findings for unborn HEAD
       const badRefs = result.findings.filter((f) => f.type === 'bad-ref');
@@ -1325,7 +1323,7 @@ describe('Given a repo with one commit whose reflog first entry has the null-oid
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`, reflogLine);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — null-oid must never be treated as a missing object
       const missingForZeroOid = result.findings.filter(
@@ -1368,7 +1366,7 @@ describe('Given a tree containing a .gitmodules blob with a disallowed URL (--up
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — gitmodulesUrl finding on the blob
       // Pinned real git 2.54.0: stderr "error in blob <sha>: gitmodulesUrl: disallowed submodule url: --upload-pack=evil", exit 1
@@ -1409,7 +1407,7 @@ describe('Given a tree containing a .gitmodules blob that cannot be parsed (malf
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — gitmodulesParse finding on the blob
       // Pinned real git 2.54.0: "warning in blob <sha>: gitmodulesParse: could not parse gitmodules blob", exit 0
@@ -1450,7 +1448,7 @@ describe('Given a tree containing a .gitmodules blob with a submodule named "../
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — gitmodulesName finding on the blob
       // Pinned real git 2.54.0: "error in blob <sha>: gitmodulesName: disallowed submodule name: ../evil", exit 1
@@ -1496,7 +1494,7 @@ describe('Given a blob named .gitmodules in a sub-tree (not the root tree)', () 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — gitmodulesUrl fires even for .gitmodules in a subdirectory
       const gitmodulesUrl = result.findings.find(
@@ -1528,7 +1526,7 @@ describe('Given a loose object with undecodable compressed bytes (inflate failur
       await ctx.fs.write(blobPath, garbage);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — corrupt object: objectType must not be hardcoded 'blob'
       const corrupt = result.findings.find(
@@ -1564,7 +1562,7 @@ describe('Given a loose object whose raw header declares an unknown type (e.g. "
       await ctx.fs.write(objPath, compressed);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — unknown-type object: msgId should be 'unknownType', objectType 'unknown'
       // Pinned real git 2.54.0: stderr "error: unable to parse type from header 'bogus 5'", exit 1
@@ -1603,7 +1601,7 @@ describe('Given a repo where the only object is in a pack file', () => {
       // In full:false mode it is invisible (not in universe), so no finding.
 
       // Act
-      const result = await sut(ctx, { full: false });
+      const result = await fsck(ctx, { full: false });
 
       // Assert — packed blob is invisible; no dangling finding for it
       const danglingForPacked = result.findings.filter(
@@ -1630,7 +1628,7 @@ describe('Given a merge commit with two reachable parent commits', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${mergeId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — parents are reached; no dangling/missing for either
       const parentFindings = result.findings.filter(
@@ -1665,7 +1663,7 @@ describe('Given a dangling blob that exists only in a pack file', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — dangling finding for the packed blob
       const danglingPacked = result.findings.find(
@@ -1708,7 +1706,7 @@ describe('Given a repo with both a content-ERROR finding and a missing reference
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — both bits set: exitCode === 3 exactly (not just masked)
       expect(result.exitCode).toBe(3);
@@ -1746,7 +1744,7 @@ describe('Given repo .gitmodules blob with disallowed URL', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx, { connectivityOnly: true });
+      const result = await fsck(ctx, { connectivityOnly: true });
 
       // Assert — connectivity-only skips blob-filename map AND content pass
       const badObjects = result.findings.filter((f) => f.type === 'bad-object');
@@ -1784,7 +1782,7 @@ describe('Given missing blob referenced both as blob (tree entry) and as tag tar
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — one missing finding for ghostId; type is determined by first broken edge
       const missing = result.findings.filter(
@@ -1824,7 +1822,7 @@ describe('Given tree with non-special-name blob whose content looks like .gitmod
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — no gitmodulesUrl finding for this blob
       const gitmodulesFindings = result.findings.filter(
@@ -1853,7 +1851,7 @@ describe('Given dangling tag pointing to a commit (both written, no ref)', () =>
       // But commitId has an in-edge FROM tagId, so it is unreachable but NOT dangling
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — tagId is dangling (no in-edge), commitId is unreachable but NOT dangling
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -1878,7 +1876,7 @@ describe('Given two commits where child references parent (chain of length 2)', 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${childId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — no unreachable or dangling findings (parent walked via child)
       const unreachable = result.findings.filter((f) => f.type === 'unreachable');
@@ -1905,7 +1903,7 @@ describe('Given merge commit with two reachable parents', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${mergeId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — only parent1Id and parent2Id emit root findings, not mergeId
       const roots = result.findings.filter((f) => f.type === 'root');
@@ -1936,7 +1934,7 @@ describe('Given tree with gitlink (submodule) entry pointing to commit not in un
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — no missing or broken-link finding for the gitlink OID
       const missingGitlink = result.findings.filter(
@@ -1974,7 +1972,7 @@ describe('Given ref pointing to corrupt object (null in cache)', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act — must complete (no infinite loop)
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — bad-object finding for corrupt blob; no unreachable finding for it
       const badObj = result.findings.find(
@@ -2006,7 +2004,7 @@ describe('Given ref pointing to annotated tag (peel:false must be used)', () => 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — tag and commit are both reachable; no unreachable/dangling findings
       const unreachable = result.findings.filter((f) => f.type === 'unreachable');
@@ -2035,7 +2033,7 @@ describe('Given reflog with entry where newId is zero OID (branch deletion event
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`, reflogLine);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — no 'missing' finding for ZERO_OID
       const missingForZero = result.findings.filter(
@@ -2087,7 +2085,7 @@ describe('Given index with only conflict-stage entries (stage 1, 2, 3, no stage 
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — stage-1 blob is NOT reachable from index; it is dangling
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -2135,7 +2133,7 @@ describe('Given staged blob with indexRoot:false', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
       // Act
-      const result = await sut(ctx, { indexRoot: false });
+      const result = await fsck(ctx, { indexRoot: false });
 
       // Assert — blob is dangling because index is excluded
       const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -2160,7 +2158,7 @@ describe('Given loose ref with Windows CRLF line ending', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\r\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — CRLF is stripped; no badRefContent finding
       const badRefContent = result.findings.find(
@@ -2191,7 +2189,7 @@ describe('Given packed-refs with two refs: one valid, one absent OID', () => {
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — badRefOid only for refs/heads/broken, not refs/heads/main
       const badRefs = result.findings.filter(
@@ -2220,7 +2218,7 @@ describe('Given packed ref with valid OID present in object universe', () => {
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — no badRefOid for refs/heads/main (OID present in universe)
       const badRefOid = result.findings.find(
@@ -2249,7 +2247,7 @@ describe('Given a corrupt loose blob with no in-edges in the universe', () => {
       await ctx.fs.write(blobPath, garbage);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — corrupt object is treated as reached, NOT unreachable/dangling
       const unreachable = result.findings.filter(
@@ -2278,7 +2276,7 @@ describe('Given a repo with a commit reachable via a loose ref', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — commit is reached via the ref root, so NOT unreachable
       const unreachable = result.findings.filter(
@@ -2311,7 +2309,7 @@ describe('Given a loose ref whose raw content has an embedded CR between hex cha
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, malformedRef);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — embedded CR must produce badRefContent (not badRefOid or no finding)
       const badRefContent = result.findings.find(
@@ -2384,7 +2382,7 @@ describe('Given two broken edges pointing to the same missing OID with different
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/aaa`, `${badCommitId}\n`);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — missing finding for missingOid must have objectType 'tree'.
       // Walk order: refs/heads/aaa (badCommitId) inserts into seeds before
@@ -2427,7 +2425,7 @@ describe('Given a reflog entry pointing to a non-existent OID with no graph edge
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — missingIds.size > 0, brokenEdges.length === 0 → EXIT_MISSING bit must be set
       expect(result.exitCode & 2).toBe(2);
@@ -2456,7 +2454,7 @@ describe('Given loose object with inflated header missing NUL terminator', () =>
       await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, oidHex), compressed);
 
       // Act
-      const result = await sut(ctx);
+      const result = await fsck(ctx);
 
       // Assert — missing NUL → reason 'missing null terminator' → msgId 'unterminatedHeader'
       // Mutant startsWith('') → 'unknownType' (wrong)

@@ -38,11 +38,11 @@ describe('runMergeDriver', () => {
         const runner = new MemoryCommandRunner(copyBaseToOutput(ctx));
 
         // Act
-        const sut = await runMergeDriver(ctx, runner, baseInput);
+        const result = await runMergeDriver(ctx, runner, baseInput);
 
         // Assert
-        expect(sut.status).toBe('clean');
-        expect(sut.status === 'clean' && dec(sut.bytes)).toBe('BASE');
+        expect(result.status).toBe('clean');
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('BASE');
       });
     });
   });
@@ -86,12 +86,12 @@ describe('runMergeDriver', () => {
         });
 
         // Act
-        const sut = await runMergeDriver(ctx, runner, baseInput);
+        const result = await runMergeDriver(ctx, runner, baseInput);
 
         // Assert
-        expect(sut.status).toBe('conflict');
-        expect(sut.status === 'conflict' && sut.conflictType).toBe('content');
-        expect(sut.status === 'conflict' && dec(sut.markedBytes)).toBe('<<< markers');
+        expect(result.status).toBe('conflict');
+        expect(result.status === 'conflict' && result.conflictType).toBe('content');
+        expect(result.status === 'conflict' && dec(result.markedBytes)).toBe('<<< markers');
       });
     });
   });
@@ -104,10 +104,10 @@ describe('runMergeDriver', () => {
         const runner = new MemoryCommandRunner(copyBaseToOutput(ctx));
 
         // Act
-        const sut = await runMergeDriver(ctx, runner, { ...baseInput, base: undefined });
+        const result = await runMergeDriver(ctx, runner, { ...baseInput, base: undefined });
 
         // Assert — the copied `%O` content is empty
-        expect(sut.status === 'clean' && dec(sut.bytes)).toBe('');
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('');
       });
     });
   });

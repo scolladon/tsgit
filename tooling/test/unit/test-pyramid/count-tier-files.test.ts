@@ -16,12 +16,12 @@ describe('tallyTierFiles', () => {
     describe("When tallied", () => {
       it('Then all tier counts are 0 and totalClassified is 0', () => {
     // Arrange + Act
-    const sut = tallyTierFiles(MANIFEST, []);
+    const result = tallyTierFiles(MANIFEST, []);
 
     // Assert
-    expect(sut.totalClassified).toBe(0);
-    expect(sut.tiers).toHaveLength(3);
-    for (const tier of sut.tiers) {
+    expect(result.totalClassified).toBe(0);
+    expect(result.tiers).toHaveLength(3);
+    for (const tier of result.tiers) {
       expect(tier.fileCount).toBe(0);
       expect(tier.sharePct).toBe(0);
     }
@@ -36,13 +36,13 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(8), ...integrationPaths(1), ...e2ePaths(1)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.totalClassified).toBe(10);
-    expect(sut.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(80.0);
-    expect(sut.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.0);
-    expect(sut.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(10.0);
+    expect(result.totalClassified).toBe(10);
+    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(80.0);
+    expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.0);
+    expect(result.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(10.0);
   });
     });
   });
@@ -54,13 +54,13 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(207), ...integrationPaths(24), ...e2ePaths(4)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.totalClassified).toBe(235);
-    expect(sut.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(88.1);
-    expect(sut.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.2);
-    expect(sut.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(1.7);
+    expect(result.totalClassified).toBe(235);
+    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(88.1);
+    expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.2);
+    expect(result.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(1.7);
   });
     });
   });
@@ -72,12 +72,12 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(8), 'test/fixtures/data.ts', 'docs/note.md'];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.totalClassified).toBe(8);
-    expect(sut.unclassified).toEqual(['test/fixtures/data.ts', 'docs/note.md']);
-    expect(sut.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(100.0);
+    expect(result.totalClassified).toBe(8);
+    expect(result.unclassified).toEqual(['test/fixtures/data.ts', 'docs/note.md']);
+    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(100.0);
   });
     });
   });
@@ -89,10 +89,10 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(7), ...integrationPaths(2), ...e2ePaths(1)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.tiers.find((t) => t.tier === 'unit')?.status).toBe('warn-below');
+    expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('warn-below');
   });
     });
   });
@@ -104,10 +104,10 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(6), ...integrationPaths(4)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.tiers.find((t) => t.tier === 'integration')?.status).toBe('warn-above');
+    expect(result.tiers.find((t) => t.tier === 'integration')?.status).toBe('warn-above');
   });
     });
   });
@@ -119,10 +119,10 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(207), ...integrationPaths(24), ...e2ePaths(4)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.tiers.find((t) => t.tier === 'e2e')?.status).toBe('warn-below');
+    expect(result.tiers.find((t) => t.tier === 'e2e')?.status).toBe('warn-below');
   });
     });
   });
@@ -134,10 +134,10 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(80), ...integrationPaths(15), ...e2ePaths(5)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    for (const tier of sut.tiers) {
+    for (const tier of result.tiers) {
       expect(tier.status).toBe('ok');
     }
   });
@@ -151,10 +151,10 @@ describe('tallyTierFiles', () => {
     const paths = unitPaths(10);
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
+    expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
   });
     });
   });
@@ -166,11 +166,11 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(75), ...integrationPaths(20), ...e2ePaths(5)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(75.0);
-    expect(sut.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
+    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(75.0);
+    expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
   });
     });
   });
@@ -182,11 +182,11 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(65), ...integrationPaths(25), ...e2ePaths(10)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(25.0);
-    expect(sut.tiers.find((t) => t.tier === 'integration')?.status).toBe('ok');
+    expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(25.0);
+    expect(result.tiers.find((t) => t.tier === 'integration')?.status).toBe('ok');
   });
     });
   });
@@ -198,10 +198,10 @@ describe('tallyTierFiles', () => {
     const paths = [...unitPaths(8), ...integrationPaths(1), ...e2ePaths(1)];
 
     // Act
-    const sut = tallyTierFiles(MANIFEST, paths);
+    const result = tallyTierFiles(MANIFEST, paths);
 
     // Assert
-    expect(sut.tiers.map((t) => t.tier)).toEqual(['unit', 'integration', 'e2e']);
+    expect(result.tiers.map((t) => t.tier)).toEqual(['unit', 'integration', 'e2e']);
   });
     });
   });

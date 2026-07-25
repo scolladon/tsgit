@@ -28,12 +28,12 @@ describe('parseInteropSurface', () => {
         const source = sourceWith('tree');
 
         // Act
-        const sut = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
+        const result = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(true);
-        if (sut.ok) {
-          expect([...sut.surfaces]).toEqual(['tree']);
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect([...result.surfaces]).toEqual(['tree']);
         }
       });
     });
@@ -46,12 +46,12 @@ describe('parseInteropSurface', () => {
         const source = sourceWith('packfile, packIndex');
 
         // Act
-        const sut = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
+        const result = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(true);
-        if (sut.ok) {
-          expect([...sut.surfaces].sort()).toEqual(['packIndex', 'packfile']);
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect([...result.surfaces].sort()).toEqual(['packIndex', 'packfile']);
         }
       });
     });
@@ -64,11 +64,11 @@ describe('parseInteropSurface', () => {
         const source = sourceWith(null);
 
         // Act
-        const sut = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
+        const result = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) expect(sut.error.reason).toBe('missing-interop-surface');
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.reason).toBe('missing-interop-surface');
       });
     });
   });
@@ -80,13 +80,13 @@ describe('parseInteropSurface', () => {
         const source = sourceWith('tree');
 
         // Act
-        const sut = parseInteropSurface(source, 'real-fs', sutConfig());
+        const result = parseInteropSurface(source, 'real-fs', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('unexpected-interop-surface');
-          expect(sut.error.detail).toBe('real-fs');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('unexpected-interop-surface');
+          expect(result.error.detail).toBe('real-fs');
         }
       });
     });
@@ -99,11 +99,11 @@ describe('parseInteropSurface', () => {
         const source = sourceWith(null);
 
         // Act
-        const sut = parseInteropSurface(source, 'real-fs', sutConfig());
+        const result = parseInteropSurface(source, 'real-fs', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(true);
-        if (sut.ok) expect(sut.surfaces.size).toBe(0);
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.surfaces.size).toBe(0);
       });
     });
   });
@@ -122,11 +122,11 @@ describe('parseInteropSurface', () => {
 `;
 
         // Act
-        const sut = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
+        const result = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) expect(sut.error.reason).toBe('empty-interop-surface');
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.reason).toBe('empty-interop-surface');
       });
     });
   });
@@ -138,13 +138,13 @@ describe('parseInteropSurface', () => {
         const source = sourceWith('NotKebab');
 
         // Act
-        const sut = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
+        const result = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('bad-interop-surface');
-          expect(sut.error.detail).toBe('NotKebab');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('bad-interop-surface');
+          expect(result.error.detail).toBe('NotKebab');
         }
       });
     });
@@ -157,11 +157,11 @@ describe('parseInteropSurface', () => {
         const source = '// no jsdoc here\n';
 
         // Act
-        const sut = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
+        const result = parseInteropSurface(source, 'cross-tool-interop', sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) expect(sut.error.reason).toBe('missing-interop-surface');
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.reason).toBe('missing-interop-surface');
       });
     });
   });

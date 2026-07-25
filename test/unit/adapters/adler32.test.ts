@@ -22,11 +22,8 @@ describe('adler32', () => {
           label: 'the ASCII string "Wikipedia" returns 0x11E60398 (RFC 1950 reference vector)',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Arrange
-        const sut = adler32;
-
-        // Act
-        const result = sut(input);
+        // Arrange & Act
+        const result = adler32(input);
 
         // Assert
         expect(result).toBe(expected);
@@ -45,13 +42,12 @@ describe('adler32', () => {
         );
         const compressor = new MemoryCompressor();
         const payload = new Uint8Array([10, 20, 30, 40, 50]);
-        const sut = adler32;
 
         // Act
         const compressed = await compressor.deflate(payload);
         const trailerView = new DataView(compressed.buffer, compressed.byteLength - 4, 4);
         const storedChecksum = trailerView.getUint32(0);
-        const computedChecksum = sut(payload);
+        const computedChecksum = adler32(payload);
 
         // Assert
         expect(computedChecksum).toBe(storedChecksum);

@@ -22,11 +22,11 @@ describe('receive-pack integration — success', () => {
         });
 
         // Act
-        const sut = await parseReceivePackResponse(await decodeAll(body));
+        const result = await parseReceivePackResponse(await decodeAll(body));
 
         // Assert
-        expect(sut.unpackOk).toBe(true);
-        expect(sut.refUpdates).toEqual([{ name: 'refs/heads/main', accepted: true }]);
+        expect(result.unpackOk).toBe(true);
+        expect(result.refUpdates).toEqual([{ name: 'refs/heads/main', accepted: true }]);
       });
     });
   });
@@ -46,11 +46,11 @@ describe('receive-pack integration — partial rejection', () => {
         });
 
         // Act
-        const sut = await parseReceivePackResponse(await decodeAll(body));
+        const result = await parseReceivePackResponse(await decodeAll(body));
 
         // Assert
-        expect(sut.unpackOk).toBe(true);
-        expect(sut.refUpdates).toEqual([
+        expect(result.unpackOk).toBe(true);
+        expect(result.refUpdates).toEqual([
           { name: 'refs/heads/main', accepted: true },
           {
             name: 'refs/heads/feature',

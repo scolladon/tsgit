@@ -26,8 +26,8 @@ describe('merge-state', () => {
           await writeMergeHead(ctx, targetId);
 
           // Assert — exact content (not just contains), kills mutants that drop the LF.
-          const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
-          expect(sut).toBe(`${'a'.repeat(40)}\n`);
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
+          expect(result).toBe(`${'a'.repeat(40)}\n`);
         });
       });
     });
@@ -46,8 +46,8 @@ describe('merge-state', () => {
           await writeMergeHead(ctx, second);
 
           // Assert
-          const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
-          expect(sut).toBe(`${'b'.repeat(40)}\n`);
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
+          expect(result).toBe(`${'b'.repeat(40)}\n`);
         });
       });
     });
@@ -66,8 +66,8 @@ describe('merge-state', () => {
           await writeMergeMsg(ctx, 'Merge branch feature');
 
           // Assert
-          const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
-          expect(sut).toBe('Merge branch feature');
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
+          expect(result).toBe('Merge branch feature');
         });
       });
     });
@@ -84,8 +84,8 @@ describe('merge-state', () => {
           await writeMergeMsg(ctx, message);
 
           // Assert
-          const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
-          expect(sut).toBe(message);
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
+          expect(result).toBe(message);
         });
       });
     });
@@ -104,8 +104,8 @@ describe('merge-state', () => {
           await writeOrigHead(ctx, oldHead);
 
           // Assert
-          const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`);
-          expect(sut).toBe(`${'c'.repeat(40)}\n`);
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`);
+          expect(result).toBe(`${'c'.repeat(40)}\n`);
         });
       });
     });
@@ -120,10 +120,10 @@ describe('merge-state', () => {
           await init(ctx);
 
           // Act
-          const sut = await readMergeHead(ctx);
+          const result = await readMergeHead(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -138,10 +138,10 @@ describe('merge-state', () => {
           await writeMergeHead(ctx, targetId);
 
           // Act
-          const sut = await readMergeHead(ctx);
+          const result = await readMergeHead(ctx);
 
           // Assert
-          expect(sut).toBe(targetId);
+          expect(result).toBe(targetId);
         });
       });
     });
@@ -155,10 +155,10 @@ describe('merge-state', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, '   \n');
 
           // Act
-          const sut = await readMergeHead(ctx);
+          const result = await readMergeHead(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -200,10 +200,10 @@ describe('merge-state', () => {
           await init(ctx);
 
           // Act
-          const sut = await readOrigHead(ctx);
+          const result = await readOrigHead(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -218,10 +218,10 @@ describe('merge-state', () => {
           await writeOrigHead(ctx, preMergeHead);
 
           // Act
-          const sut = await readOrigHead(ctx);
+          const result = await readOrigHead(ctx);
 
           // Assert
-          expect(sut).toBe(preMergeHead);
+          expect(result).toBe(preMergeHead);
         });
       });
     });
@@ -235,10 +235,10 @@ describe('merge-state', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, '   \n');
 
           // Act
-          const sut = await readOrigHead(ctx);
+          const result = await readOrigHead(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -279,10 +279,10 @@ describe('merge-state', () => {
           await init(ctx);
 
           // Act
-          const sut = await readMergeMsg(ctx);
+          const result = await readMergeMsg(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -296,10 +296,10 @@ describe('merge-state', () => {
           await writeMergeMsg(ctx, 'Merge branch feature\nbody');
 
           // Act
-          const sut = await readMergeMsg(ctx);
+          const result = await readMergeMsg(ctx);
 
           // Assert
-          expect(sut).toBe('Merge branch feature\nbody');
+          expect(result).toBe('Merge branch feature\nbody');
         });
       });
     });

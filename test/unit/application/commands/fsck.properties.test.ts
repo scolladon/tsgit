@@ -22,8 +22,6 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 
-const sut = fsck;
-
 // ---------------------------------------------------------------------------
 // Arbitraries
 // ---------------------------------------------------------------------------
@@ -99,7 +97,7 @@ describe('Given an arbitrary healthy repo (all objects reachable)', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
           // Act
-          const result = await sut(ctx);
+          const result = await fsck(ctx);
 
           // Assert
           const dangling = result.findings.filter((f) => f.type === 'dangling');
@@ -142,7 +140,7 @@ describe('Given a healthy repo plus one orphan blob tip', () => {
             await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
             // Baseline: no orphan blobs
-            const baseResult = await sut(ctx);
+            const baseResult = await fsck(ctx);
             const baseDanglingCount = baseResult.findings.filter(
               (f) => f.type === 'dangling',
             ).length;
@@ -151,7 +149,7 @@ describe('Given a healthy repo plus one orphan blob tip', () => {
             const orphanId = await writeObject(ctx, makeBlob(orphanContent));
 
             // Act
-            const result = await sut(ctx);
+            const result = await fsck(ctx);
 
             // Assert
             const danglingIds = result.findings
@@ -196,7 +194,7 @@ describe('Given a commit pointing at a missing tree oid', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
           // Act
-          const result = await sut(ctx);
+          const result = await fsck(ctx);
 
           // Assert
           const missingCount = result.findings.filter((f) => f.type === 'missing').length;
@@ -233,7 +231,7 @@ describe('Given an arbitrary repo state', () => {
           await writeObject(ctx, makeBlob(`orphan-${content}`));
 
           // Act
-          const result = await sut(ctx);
+          const result = await fsck(ctx);
 
           // Assert: dangling ⊆ unreachable
           const unreachableSet = new Set(
@@ -259,7 +257,7 @@ describe('Given an arbitrary repo state', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
           const orphanId = await writeObject(ctx, makeBlob(content));
           // Verify precondition: orphan is dangling before adding a ref
-          const before = await sut(ctx);
+          const before = await fsck(ctx);
           const wasDangling = before.findings.some(
             (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === orphanId,
           );
@@ -267,7 +265,7 @@ describe('Given an arbitrary repo state', () => {
 
           // Act
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${orphanId}\n`);
-          const after = await sut(ctx);
+          const after = await fsck(ctx);
 
           // Assert
           const isDanglingAfter = after.findings.some(
@@ -307,7 +305,7 @@ describe('Given a repo with a mix of reachable and unreachable objects', () => {
           await writeObject(ctx, makeBlob(orphan)); // unreachable
 
           // Act
-          const result = await sut(ctx);
+          const result = await fsck(ctx);
 
           // Assert: unreachable ids do not appear in root/tagged
           const unreachableSet = new Set(

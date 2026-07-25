@@ -23,7 +23,8 @@
         "sutNaming",
         "bareClassToThrow",
         "emptyAaaSection",
-        "integrationProof"
+        "integrationProof",
+        "sutBindsResult"
       ],
       "additionalProperties": false,
       "properties": {
@@ -34,7 +35,8 @@
         "sutNaming": { "$ref": "#/$defs/sutNamingHeuristic" },
         "bareClassToThrow": { "$ref": "#/$defs/regexHeuristic" },
         "emptyAaaSection": { "$ref": "#/$defs/structuralHeuristic" },
-        "integrationProof": { "$ref": "#/$defs/integrationProofHeuristic" }
+        "integrationProof": { "$ref": "#/$defs/integrationProofHeuristic" },
+        "sutBindsResult": { "$ref": "#/$defs/sutBindsResultHeuristic" }
       }
     },
     "gating": {
@@ -48,7 +50,8 @@
         "sutNaming": { "type": "boolean" },
         "bareClassToThrow": { "type": "boolean" },
         "emptyAaaSection": { "type": "boolean" },
-        "integrationProof": { "type": "boolean" }
+        "integrationProof": { "type": "boolean" },
+        "sutBindsResult": { "type": "boolean" }
       }
     },
     "excludePaths": {
@@ -84,28 +87,33 @@
         "threshold": { "type": "number", "minimum": 0 }
       }
     },
+    "tiersProp": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
     "underAssertedHeuristic": {
       "type": "object",
-      "required": ["tier", "minAssertionsPerTest"],
+      "required": ["tiers", "minAssertionsPerTest"],
       "additionalProperties": false,
       "properties": {
-        "tier": { "type": "string", "minLength": 1 },
+        "tiers": { "$ref": "#/$defs/tiersProp" },
         "minAssertionsPerTest": { "type": "integer", "minimum": 1 }
       }
     },
     "regexHeuristic": {
       "type": "object",
-      "required": ["tier", "regex"],
+      "required": ["tiers", "regex"],
       "additionalProperties": false,
       "properties": {
-        "tier": { "type": "string", "minLength": 1 },
+        "tiers": { "$ref": "#/$defs/tiersProp" },
         "regex": { "type": "string", "minLength": 1 }
       }
     },
     "gwtTitleHeuristic": {
       "type": "object",
       "required": [
-        "tier",
+        "tiers",
         "describeGiven",
         "describeWhen",
         "describeCombined",
@@ -114,7 +122,7 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "tier": { "type": "string", "minLength": 1 },
+        "tiers": { "$ref": "#/$defs/tiersProp" },
         "describeGiven": { "type": "string", "minLength": 1 },
         "describeWhen": { "type": "string", "minLength": 1 },
         "describeCombined": { "type": "string", "minLength": 1 },
@@ -124,10 +132,10 @@
     },
     "aaaBodyHeuristic": {
       "type": "object",
-      "required": ["tier", "required"],
+      "required": ["tiers", "required"],
       "additionalProperties": false,
       "properties": {
-        "tier": { "type": "string", "minLength": 1 },
+        "tiers": { "$ref": "#/$defs/tiersProp" },
         "required": {
           "type": "array",
           "minItems": 1,
@@ -138,10 +146,10 @@
     },
     "sutNamingHeuristic": {
       "type": "object",
-      "required": ["tier", "banned"],
+      "required": ["tiers", "banned"],
       "additionalProperties": false,
       "properties": {
-        "tier": { "type": "string", "minLength": 1 },
+        "tiers": { "$ref": "#/$defs/tiersProp" },
         "banned": {
           "type": "array",
           "minItems": 1,
@@ -152,10 +160,23 @@
     },
     "structuralHeuristic": {
       "type": "object",
-      "required": ["tier"],
+      "required": ["tiers"],
       "additionalProperties": false,
       "properties": {
-        "tier": { "type": "string", "minLength": 1 }
+        "tiers": { "$ref": "#/$defs/tiersProp" }
+      }
+    },
+    "sutBindsResultHeuristic": {
+      "type": "object",
+      "required": ["tiers", "allowlist"],
+      "additionalProperties": false,
+      "properties": {
+        "tiers": { "$ref": "#/$defs/tiersProp" },
+        "allowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$" }
+        }
       }
     },
     "integrationProofHeuristic": {

@@ -184,45 +184,47 @@ describe.skipIf(SKIP_REASON !== false)(
       });
     });
 
-    it('Given a local git-http-backend, When clone with depth:1 runs, Then.git/shallow exists and walkCommits stops at the boundary', async () => {
-      // Arrange
-      workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-shallow-it-'));
-      const url = `http://127.0.0.1:${port}/source.git`;
-      const repo = await openRepository({
-        cwd: workDir,
-        allowInsecureHttp: true,
-        config: {
-          allowInsecure: true,
-          allowPrivateNetworks: true,
-          dnsResolver: async () => ['127.0.0.1'],
-        },
-      });
+    describe('Given a local git-http-backend, When clone with depth:1 runs', () => {
+      it('Then .git/shallow exists and walkCommits stops at the boundary', async () => {
+        // Arrange
+        workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-shallow-it-'));
+        const url = `http://127.0.0.1:${port}/source.git`;
+        const repo = await openRepository({
+          cwd: workDir,
+          allowInsecureHttp: true,
+          config: {
+            allowInsecure: true,
+            allowPrivateNetworks: true,
+            dnsResolver: async () => ['127.0.0.1'],
+          },
+        });
 
-      // Act
-      const result = await repo.clone({ url, depth: 1 });
+        // Act
+        const result = await repo.clone({ url, depth: 1 });
 
-      // Assert — clone result
-      expect(result.head).toBe('refs/heads/main');
+        // Assert — clone result
+        expect(result.head).toBe('refs/heads/main');
 
-      // Assert —.git/shallow contains exactly the HEAD oid
-      const expectedHead = (await readFile(HEAD_OID_FILE, 'utf8')).trim() as ObjectId;
-      const shallowPath = path.join(repo.ctx.layout.gitDir, 'shallow');
-      const shallowContent = (await readFile(shallowPath, 'utf8')).trim();
-      expect(shallowContent.split('\n')).toEqual([expectedHead]);
+        // Assert —.git/shallow contains exactly the HEAD oid
+        const expectedHead = (await readFile(HEAD_OID_FILE, 'utf8')).trim() as ObjectId;
+        const shallowPath = path.join(repo.ctx.layout.gitDir, 'shallow');
+        const shallowContent = (await readFile(shallowPath, 'utf8')).trim();
+        expect(shallowContent.split('\n')).toEqual([expectedHead]);
 
-      // Assert — walking from HEAD yields exactly one commit; no OBJECT_NOT_FOUND
-      const shallowSet = new Set<ObjectId>([expectedHead]);
-      const walker = walkCommits(repo.ctx, {
-        from: [expectedHead],
-        shallow: shallowSet,
-      });
-      const seen: ObjectId[] = [];
-      for await (const commit of walker) {
-        seen.push(commit.id);
-      }
-      expect(seen).toEqual([expectedHead]);
+        // Assert — walking from HEAD yields exactly one commit; no OBJECT_NOT_FOUND
+        const shallowSet = new Set<ObjectId>([expectedHead]);
+        const walker = walkCommits(repo.ctx, {
+          from: [expectedHead],
+          shallow: shallowSet,
+        });
+        const seen: ObjectId[] = [];
+        for await (const commit of walker) {
+          seen.push(commit.id);
+        }
+        expect(seen).toEqual([expectedHead]);
 
-      await repo.dispose();
-    }, 30_000);
+        await repo.dispose();
+      }, 30_000);
+    });
   },
 );

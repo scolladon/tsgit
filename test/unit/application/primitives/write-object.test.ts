@@ -13,6 +13,7 @@ describe('writeObject', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
+        // Act
         const id = await writeObject(ctx, blob);
         // Assert
         expect(id).toMatch(/^[0-9a-f]{40}$/);
@@ -28,6 +29,7 @@ describe('writeObject', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([2, 3]), id: '' as ObjectId };
+        // Act
         const id1 = await writeObject(ctx, blob);
         const id2 = await writeObject(ctx, blob);
         // Assert
@@ -46,9 +48,9 @@ describe('writeObject', () => {
           content: new Uint8Array([0]),
           id: 'f'.repeat(40) as ObjectId,
         };
+        // Act + Assert
         try {
           await writeObject(ctx, blob);
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect(error).toBeInstanceOf(TsgitError);
@@ -103,6 +105,7 @@ describe('writeObject', () => {
         const ctx = await buildSeededContext();
         const content = new Uint8Array([10, 20, 30, 40]);
         const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+        // Act
         const id = await writeObject(ctx, blob);
         const read = await readObject(ctx, id);
         // Assert
@@ -123,6 +126,7 @@ describe('writeObject', () => {
           content: new Uint8Array([42]),
           id: '' as ObjectId,
         };
+        // Act
         // First, compute the id by writing with no declared id.
         const computedId = await writeObject(ctx, blob);
         // Now re-write with the id pre-declared.
@@ -151,9 +155,9 @@ describe('writeObject', () => {
           },
         };
         const blob: Blob = { type: 'blob', content: new Uint8Array([9]), id: '' as ObjectId };
+        // Act + Assert
         try {
           await writeObject(wrapped, blob);
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('PERMISSION_DENIED');
@@ -177,9 +181,9 @@ describe('writeObject', () => {
           },
         };
         const blob: Blob = { type: 'blob', content: new Uint8Array([10]), id: '' as ObjectId };
+        // Act + Assert
         try {
           await writeObject(wrapped, blob);
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect(error).not.toBeInstanceOf(TsgitError);
@@ -289,9 +293,9 @@ describe('writeObject', () => {
           },
         };
         const blob: Blob = { type: 'blob', content: new Uint8Array([50]), id: '' as ObjectId };
+        // Act + Assert
         try {
           await writeObject(wrapped, blob);
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');

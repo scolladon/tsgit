@@ -54,10 +54,10 @@ describe('pack-writer', () => {
           const entry = makeEntry(PACK_ENTRY_TYPE.BLOB, new Uint8Array([1, 2, 3]));
 
           // Act
-          const sut = serializePackfile([entry]);
+          const result = serializePackfile([entry]);
 
           // Assert
-          const header = parsePackHeader(sut.data);
+          const header = parsePackHeader(result.data);
           expect(header.version).toBe(2);
           expect(header.objectCount).toBe(1);
         });
@@ -71,10 +71,10 @@ describe('pack-writer', () => {
           const entry = makeEntry(PACK_ENTRY_TYPE.BLOB, new Uint8Array([1, 2, 3]));
 
           // Act
-          const sut = serializePackfile([entry]);
+          const result = serializePackfile([entry]);
 
           // Assert
-          expect(sut.entries[0]!.offset).toBe(12);
+          expect(result.entries[0]!.offset).toBe(12);
         });
         it('Then result.entries[0].crc32 equals crc32(header + compressedData)', () => {
           // Arrange
@@ -82,14 +82,14 @@ describe('pack-writer', () => {
           const entry = makeEntry(PACK_ENTRY_TYPE.BLOB, compressedData);
 
           // Act
-          const sut = serializePackfile([entry]);
+          const result = serializePackfile([entry]);
 
           // Assert
           const entryHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, compressedData.length);
           const combined = new Uint8Array(entryHeader.length + compressedData.length);
           combined.set(entryHeader);
           combined.set(compressedData, entryHeader.length);
-          expect(sut.entries[0]!.crc32).toBe(crc32(combined));
+          expect(result.entries[0]!.crc32).toBe(crc32(combined));
         });
       });
     });
@@ -105,12 +105,12 @@ describe('pack-writer', () => {
           ];
 
           // Act
-          const sut = serializePackfile(entries);
+          const result = serializePackfile(entries);
 
           // Assert
-          expect(sut.entries[0]!.offset).toBe(12);
-          expect(sut.entries[1]!.offset).toBeGreaterThan(sut.entries[0]!.offset);
-          expect(sut.entries[2]!.offset).toBeGreaterThan(sut.entries[1]!.offset);
+          expect(result.entries[0]!.offset).toBe(12);
+          expect(result.entries[1]!.offset).toBeGreaterThan(result.entries[0]!.offset);
+          expect(result.entries[2]!.offset).toBeGreaterThan(result.entries[1]!.offset);
         });
         it('Then parsePackHeader gives count=3', () => {
           // Arrange
@@ -121,10 +121,10 @@ describe('pack-writer', () => {
           ];
 
           // Act
-          const sut = serializePackfile(entries);
+          const result = serializePackfile(entries);
 
           // Assert
-          const header = parsePackHeader(sut.data);
+          const header = parsePackHeader(result.data);
           expect(header.objectCount).toBe(3);
         });
       });
@@ -133,14 +133,14 @@ describe('pack-writer', () => {
     describe('Given 0 entries', () => {
       describe('When serializing', () => {
         it('Then result.data is just the 12-byte pack header', () => {
-          // Arrange
-          const sut = serializePackfile([]);
+          // Arrange & Act
+          const result = serializePackfile([]);
 
           // Assert
-          expect(sut.data.length).toBe(12);
-          const header = parsePackHeader(sut.data);
+          expect(result.data.length).toBe(12);
+          const header = parsePackHeader(result.data);
           expect(header.objectCount).toBe(0);
-          expect(sut.entries).toHaveLength(0);
+          expect(result.entries).toHaveLength(0);
         });
       });
     });
@@ -159,10 +159,10 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const sut = serializePackIndex(entries, packChecksum);
+          const result = serializePackIndex(entries, packChecksum);
 
           // Assert
-          const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
           expect(view.getUint32(0)).toBe(0xff744f63);
           expect(view.getUint32(4)).toBe(2);
         });
@@ -181,10 +181,10 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const sut = serializePackIndex(entries, packChecksum);
+          const result = serializePackIndex(entries, packChecksum);
 
           // Assert
-          const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
           // 0xaa = 170
           expect(view.getUint32(8 + 170 * 4)).toBe(1);
           // 0xbb = 187
@@ -245,9 +245,9 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
+          const serialized = serializePackIndex(entries, packChecksum);
+          const withTrailer = new Uint8Array(serialized.length + 20);
+          withTrailer.set(serialized);
           const idx = parsePackIndex(withTrailer);
 
           // Assert
@@ -305,10 +305,10 @@ describe('pack-writer', () => {
             const packChecksum = new Uint8Array(20);
 
             // Act
-            const sut = serializePackIndex(entries, packChecksum);
+            const result = serializePackIndex(entries, packChecksum);
 
             // Assert
-            expect(sut.length).toBe(expectedLength);
+            expect(result.length).toBe(expectedLength);
           },
         );
       });
@@ -325,14 +325,18 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
+          const serialized = serializePackIndex(entries, packChecksum);
+          const withTrailer = new Uint8Array(serialized.length + 20);
+          withTrailer.set(serialized);
           const idx = parsePackIndex(withTrailer);
 
           // Assert — first 4 SHA bytes intact: lookup succeeds with the exact id
           expect(lookupPackIndex(idx, id as ObjectId)).toBe(12);
-          const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+          const view = new DataView(
+            serialized.buffer,
+            serialized.byteOffset,
+            serialized.byteLength,
+          );
           // shaStart = 8 + 1024 = 1032; first 4 bytes must equal 0xaabbccdd
           expect(view.getUint32(1032)).toBe(0xaabbccdd);
         });
@@ -351,9 +355,9 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const sut = serializePackIndex(entries, packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
+          const serialized = serializePackIndex(entries, packChecksum);
+          const withTrailer = new Uint8Array(serialized.length + 20);
+          withTrailer.set(serialized);
           const idx = parsePackIndex(withTrailer);
 
           // Assert — lookup works regardless of input order
@@ -371,10 +375,10 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const sut = serializePackIndex(entries, packChecksum);
+          const result = serializePackIndex(entries, packChecksum);
 
           // Assert — CRC table follows sorted SHA order (aa, bb, cc)
-          const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
           const n = 3;
           const crcStart = 1032 + n * 20;
           expect(view.getUint32(crcStart + 0 * 4)).toBe(0x11223344); // aa
@@ -416,9 +420,9 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const sut = serializePackIndex([], packChecksum);
-          const withTrailer = new Uint8Array(sut.length + 20);
-          withTrailer.set(sut);
+          const serialized = serializePackIndex([], packChecksum);
+          const withTrailer = new Uint8Array(serialized.length + 20);
+          withTrailer.set(serialized);
 
           // Assert
           const idx = parsePackIndex(withTrailer);
@@ -440,10 +444,10 @@ describe('pack-writer', () => {
               );
 
               // Act
-              const sut = serializePackfile(entries);
+              const result = serializePackfile(entries);
 
               // Assert
-              const header = parsePackHeader(sut.data);
+              const header = parsePackHeader(result.data);
               expect(header.objectCount).toBe(count);
             }),
           );

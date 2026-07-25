@@ -91,7 +91,7 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
     await pair.dispose();
   });
 
-  describe('Given a feature commit picked onto main', () => {
+  describe('Given a feature commit picked onto main, When repo.cherryPick.run picks it', () => {
     it('Then tsgit matches git: resulting tree, preserved author, message, single parent', async () => {
       // Arrange — same history + same clean pick in both repos
       runGit(['init', '-q', '-b', 'main', pair.peer]);
@@ -135,7 +135,7 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
     });
   });
 
-  describe('Given a tsgit-started range conflict', () => {
+  describe('Given a tsgit-started range conflict, When git cherry-pick --continue runs', () => {
     it('Then git cherry-pick --continue finishes it (tsgit sequencer is git-readable)', async () => {
       // Arrange — git builds a conflicting range; tsgit starts the pick and stops
       const dir = pair.ours;
@@ -157,7 +157,7 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
     });
   });
 
-  describe('Given a git-started range conflict', () => {
+  describe('Given a git-started range conflict, When repo.cherryPick.continue runs', () => {
     it('Then repo.cherryPick.continue finishes it (tsgit reads git abbreviated todo)', async () => {
       // Arrange — git starts the range and stops on the first conflict
       const dir = pair.ours;
@@ -179,7 +179,7 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
     });
   });
 
-  describe('Given a merge commit picked with no mainline', () => {
+  describe('Given a merge commit picked with no mainline, When cherry-pick is attempted', () => {
     it('Then both git and tsgit refuse', async () => {
       // Arrange
       const dir = pair.ours;
@@ -202,7 +202,7 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
     });
   });
 
-  describe('Given a range cherry-pick aborted mid-sequence', () => {
+  describe('Given a range cherry-pick aborted mid-sequence, When both tools abort', () => {
     it('Then tsgit and git write the same faithful `reset: moving to` reflog', async () => {
       // Arrange — identical moving range in both repos; run each to the conflict stop.
       // The seed is git-built + date-pinned on both, so the pre-sequence oid is shared.
@@ -227,7 +227,7 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
     });
   });
 
-  describe('Given a lone cherry-pick conflict aborted (no move)', () => {
+  describe('Given a lone cherry-pick conflict aborted (no move), When both tools abort', () => {
     it('Then tsgit and git agree: branch reflog unchanged, HEAD records `reset: moving to`', async () => {
       // Arrange — pick the single conflicting commit (no prior pick, so the branch
       // never moves); the seed is git-built + date-pinned on both repos.

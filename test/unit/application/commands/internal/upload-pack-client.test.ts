@@ -53,11 +53,11 @@ describe('discoverRefs', () => {
         const session = fakeSession(successAdvertisement());
 
         // Act
-        const sut = await discoverRefs(session);
+        const result = await discoverRefs(session);
 
         // Assert
-        expect(sut.refs.length).toBe(1);
-        expect(sut.refs[0]?.name).toBe('refs/heads/main');
+        expect(result.refs.length).toBe(1);
+        expect(result.refs[0]?.name).toBe('refs/heads/main');
       });
     });
   });
@@ -68,10 +68,10 @@ describe('selectFetchCapabilities', () => {
     describe('When selectFetchCapabilities runs', () => {
       it('Then the agent string is always appended', async () => {
         // Arrange & Act
-        const sut = selectFetchCapabilities(['side-band-64k']);
+        const result = selectFetchCapabilities(['side-band-64k']);
 
         // Assert — the AGENT slot is always sent regardless of server advert.
-        expect(sut.some((c) => c.startsWith('agent='))).toBe(true);
+        expect(result.some((c) => c.startsWith('agent='))).toBe(true);
       });
     });
   });
@@ -83,10 +83,10 @@ describe('selectFetchCapabilities', () => {
         async (cap) => {
           // Arrange & Act — kills each of the `c !== '<cap>'` mutants inside
           // the filter predicate.
-          const sut = selectFetchCapabilities([cap, 'side-band-64k']);
+          const result = selectFetchCapabilities([cap, 'side-band-64k']);
 
           // Assert
-          expect(sut).not.toContain(cap);
+          expect(result).not.toContain(cap);
         },
       );
     });
@@ -96,7 +96,7 @@ describe('selectFetchCapabilities', () => {
     describe('When selecting fetch capabilities', () => {
       it('Then multi_ack_detailed is retained', async () => {
         // Arrange & Act
-        const sut = selectFetchCapabilities([
+        const result = selectFetchCapabilities([
           'multi_ack_detailed',
           'side-band-64k',
           'ofs-delta',
@@ -105,10 +105,10 @@ describe('selectFetchCapabilities', () => {
 
         // Assert — retained (single-round strategy tolerates ACK ... common),
         // while thin-pack/no-progress stay filtered and AGENT is appended last.
-        expect(sut).toContain('multi_ack_detailed');
-        expect(sut).not.toContain('thin-pack');
-        expect(sut).not.toContain('no-progress');
-        expect(sut[sut.length - 1]).toBe(AGENT);
+        expect(result).toContain('multi_ack_detailed');
+        expect(result).not.toContain('thin-pack');
+        expect(result).not.toContain('no-progress');
+        expect(result[result.length - 1]).toBe(AGENT);
       });
     });
   });
@@ -119,10 +119,10 @@ describe('selectFetchCapabilities', () => {
         // Arrange & Act — kills the `.filter` → no-filter mutant; without the
         // intersect step, capabilities the server doesn't support would still
         // be sent.
-        const sut = selectFetchCapabilities([]);
+        const result = selectFetchCapabilities([]);
 
         // Assert
-        expect(sut).not.toContain('side-band-64k');
+        expect(result).not.toContain('side-band-64k');
       });
     });
   });
@@ -131,10 +131,10 @@ describe('selectFetchCapabilities', () => {
     describe('When selectFetchCapabilities runs', () => {
       it('Then side-band-64k IS in the result', async () => {
         // Arrange & Act
-        const sut = selectFetchCapabilities(['side-band-64k']);
+        const result = selectFetchCapabilities(['side-band-64k']);
 
         // Assert
-        expect(sut).toContain('side-band-64k');
+        expect(result).toContain('side-band-64k');
       });
     });
   });
@@ -145,11 +145,11 @@ describe('selectFetchCapabilities', () => {
         // Arrange — kills the `c !== AGENT` filter mutant on the last
         // conjunct. With the mutant, AGENT would survive the intersect step
         // and then get appended a SECOND time at the end of the function.
-        const sut = selectFetchCapabilities(['agent=git/2.x', 'side-band-64k']);
+        const result = selectFetchCapabilities(['agent=git/2.x', 'side-band-64k']);
 
         // Assert — exactly one agent= entry, and it is the client's, not
         // the server's leaked echo.
-        const agentEntries = sut.filter((c) => c.startsWith('agent='));
+        const agentEntries = result.filter((c) => c.startsWith('agent='));
         expect(agentEntries).toHaveLength(1);
         expect(agentEntries[0]).not.toBe('agent=git/2.x');
       });
@@ -174,10 +174,10 @@ describe('advertisesFilter', () => {
         { capabilities: [], expected: false, label: 'an empty set returns false' },
       ])('Then $label', ({ capabilities, expected }) => {
         // Arrange & Act
-        const sut = advertisesFilter(capabilities);
+        const result = advertisesFilter(capabilities);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -208,10 +208,10 @@ describe('uniqueRefOids', () => {
         },
       ])('Then $label', ({ refs, expected }) => {
         // Arrange + Act
-        const sut = uniqueRefOids(refs);
+        const result = uniqueRefOids(refs);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });

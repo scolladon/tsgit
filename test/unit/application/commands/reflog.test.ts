@@ -89,13 +89,13 @@ describe('reflog command', () => {
           await writeReflog(ctx, HEAD, [first, second, third]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'show' });
+          const result = await reflog(ctx, { action: 'show' });
 
           // Assert
-          expect(sut.kind).toBe('show');
-          if (sut.kind !== 'show') throw new Error('unreachable');
-          expect(sut.ref).toBe(HEAD);
-          expect(sut.entries).toEqual([
+          expect(result.kind).toBe('show');
+          if (result.kind !== 'show') throw new Error('unreachable');
+          expect(result.ref).toBe(HEAD);
+          expect(result.entries).toEqual([
             { index: 0, selector: 'HEAD@{0}', entry: third },
             { index: 1, selector: 'HEAD@{1}', entry: second },
             { index: 2, selector: 'HEAD@{2}', entry: first },
@@ -113,13 +113,13 @@ describe('reflog command', () => {
           await appendReflog(ctx, HEAD, entry());
 
           // Act
-          const sut = await reflog(ctx);
+          const result = await reflog(ctx);
 
           // Assert
-          expect(sut.kind).toBe('show');
-          if (sut.kind !== 'show') throw new Error('unreachable');
-          expect(sut.ref).toBe(HEAD);
-          expect(sut.entries).toHaveLength(1);
+          expect(result.kind).toBe('show');
+          if (result.kind !== 'show') throw new Error('unreachable');
+          expect(result.ref).toBe(HEAD);
+          expect(result.entries).toHaveLength(1);
         });
       });
     });
@@ -133,11 +133,11 @@ describe('reflog command', () => {
           await appendReflog(ctx, BRANCH, entry({ message: 'branch entry' }));
 
           // Act
-          const sut = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
+          const result = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
 
           // Assert
-          expect(sut.kind === 'show' && sut.ref).toBe(BRANCH);
-          expect(sut.kind === 'show' && sut.entries[0]?.selector).toBe('refs/heads/main@{0}');
+          expect(result.kind === 'show' && result.ref).toBe(BRANCH);
+          expect(result.kind === 'show' && result.entries[0]?.selector).toBe('refs/heads/main@{0}');
         });
       });
     });
@@ -150,10 +150,10 @@ describe('reflog command', () => {
           await seedRepo(ctx, {});
 
           // Act
-          const sut = await reflog(ctx, { action: 'show', ref: 'refs/heads/missing' });
+          const result = await reflog(ctx, { action: 'show', ref: 'refs/heads/missing' });
 
           // Assert
-          expect(sut.kind === 'show' && sut.entries).toEqual([]);
+          expect(result.kind === 'show' && result.entries).toEqual([]);
         });
       });
     });
@@ -169,10 +169,10 @@ describe('reflog command', () => {
           await appendReflog(ctx, BRANCH, entry());
 
           // Act
-          const sut = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
+          const result = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'exists', exists: true });
+          expect(result).toEqual({ kind: 'exists', exists: true });
         });
       });
     });
@@ -185,10 +185,10 @@ describe('reflog command', () => {
           await seedRepo(ctx, {});
 
           // Act
-          const sut = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
+          const result = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'exists', exists: false });
+          expect(result).toEqual({ kind: 'exists', exists: false });
         });
       });
     });
@@ -207,10 +207,10 @@ describe('reflog command', () => {
           await writeReflog(ctx, HEAD, [first, second, third]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
           // Assert
-          expect(sut).toEqual({ kind: 'delete', removed: second });
+          expect(result).toEqual({ kind: 'delete', removed: second });
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
             third,
@@ -231,10 +231,10 @@ describe('reflog command', () => {
           await writeReflog(ctx, HEAD, [first, second]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
 
           // Assert
-          expect(sut.kind === 'delete' && sut.removed).toEqual(second);
+          expect(result.kind === 'delete' && result.removed).toEqual(second);
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([first]);
         });
@@ -322,10 +322,10 @@ describe('reflog command', () => {
           await writeReflog(ctx, HEAD, [first, second]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
           // Assert — the oldest entry is removed, not rejected as out of range.
-          expect(sut).toEqual({ kind: 'delete', removed: first });
+          expect(result).toEqual({ kind: 'delete', removed: first });
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([second]);
         });
@@ -590,10 +590,10 @@ describe('reflog command', () => {
           await appendReflog(ctx, HEAD, entry());
 
           // Act
-          const sut = await reflog(ctx, { action: 'show', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'show', ref: 'HEAD' });
 
           // Assert
-          expect(sut.kind === 'show' && sut.ref).toBe(HEAD);
+          expect(result.kind === 'show' && result.ref).toBe(HEAD);
         });
       });
     });
@@ -607,10 +607,10 @@ describe('reflog command', () => {
           await appendReflog(ctx, BRANCH, entry());
 
           // Act
-          const sut = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
+          const result = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
 
           // Assert
-          expect(sut.kind === 'show' && sut.ref).toBe(BRANCH);
+          expect(result.kind === 'show' && result.ref).toBe(BRANCH);
         });
       });
     });
@@ -637,10 +637,10 @@ describe('reflog command', () => {
 
           // Act — the default 90.days.ago cutoff is far newer than the 100-day-old
           // entry, so it is removed.
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
         });
       });
     });
@@ -659,10 +659,10 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
         });
       });
     });
@@ -683,10 +683,10 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
         });
       });
     });
@@ -706,10 +706,10 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
         });
       });
     });
@@ -730,10 +730,10 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
         });
       });
     });
@@ -753,7 +753,7 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, {
+          const result = await reflog(ctx, {
             action: 'expire',
             ref: 'HEAD',
             expire: '3.days.ago',
@@ -761,7 +761,7 @@ describe('reflog command', () => {
           });
 
           // Assert
-          expect(sut).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
         });
       });
     });
@@ -783,10 +783,10 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', all: true });
+          const result = await reflog(ctx, { action: 'expire', all: true });
 
           // Assert — both stale entries pruned.
-          expect(sut).toEqual({ kind: 'expire', removed: 2, kept: 0 });
+          expect(result).toEqual({ kind: 'expire', removed: 2, kept: 0 });
         });
       });
     });
@@ -809,10 +809,10 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire' });
+          const result = await reflog(ctx, { action: 'expire' });
 
           // Assert — only HEAD's single entry pruned; the branch log untouched.
-          expect(sut).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
           const branchAfter = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
           expect(branchAfter.kind === 'show' && branchAfter.entries).toHaveLength(1);
         });
@@ -835,11 +835,11 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert — kept proves the parent was walked into the reachable set; an
           // unreachable 50-day entry would be pruned on the 30-day clock.
-          expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
         });
       });
     });
@@ -903,10 +903,10 @@ describe('reflog command', () => {
           await seedRepo(ctx, {});
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', ref: 'refs/heads/missing' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'refs/heads/missing' });
 
           // Assert
-          expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
         });
       });
     });
@@ -967,10 +967,10 @@ describe('reflog command', () => {
           };
 
           // Act
-          const sut = await reflog(spiedCtx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(spiedCtx, { action: 'expire', ref: 'HEAD' });
 
           // Assert — nothing pruned, and the reflog file was never rewritten.
-          expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 2 });
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 2 });
           expect(writes).not.toContain(reflogPath);
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry.message)).toEqual([
@@ -996,10 +996,10 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: '2024-06-01' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: '2024-06-01' });
 
           // Assert — the boundary entry is kept, not pruned.
-          expect(sut).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
         });
       });
     });
@@ -1054,10 +1054,10 @@ describe('reflog command', () => {
           ]);
 
           // Act — the walk seeds from the missing tip; expire must still complete.
-          const sut = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert — the unreachable stale entry is pruned; no throw on the missing tip.
-          expect(sut).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
         });
       });
     });

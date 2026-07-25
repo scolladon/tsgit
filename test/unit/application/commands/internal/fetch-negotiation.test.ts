@@ -131,11 +131,11 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(2);
-        expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+        expect(result.version).toBe(2);
+        expect(result.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
         expect(session.exchange).toHaveBeenCalledTimes(1);
         expect(await decodeRequest(session)).toContain('command=ls-refs');
       });
@@ -175,11 +175,11 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: true, exchangeResponse });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(2);
-        expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+        expect(result.version).toBe(2);
+        expect(result.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
       });
     });
   });
@@ -196,11 +196,11 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: true, exchangeResponse });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(2);
-        expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+        expect(result.version).toBe(2);
+        expect(result.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
       });
     });
   });
@@ -213,11 +213,11 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: false });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(1);
-        expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+        expect(result.version).toBe(1);
+        expect(result.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
         expect(session.exchange).not.toHaveBeenCalled();
       });
     });
@@ -233,11 +233,11 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: true });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(1);
-        expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+        expect(result.version).toBe(1);
+        expect(result.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
       });
     });
   });
@@ -259,10 +259,10 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(2);
+        expect(result.version).toBe(2);
       });
     });
   });
@@ -286,11 +286,11 @@ describe('negotiateDiscovery', () => {
         };
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(1);
-        expect(sut.advertisement.refs).toEqual([]);
+        expect(result.version).toBe(1);
+        expect(result.advertisement.refs).toEqual([]);
       });
     });
   });
@@ -319,11 +319,11 @@ describe('negotiateDiscovery', () => {
         };
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.version).toBe(1);
-        expect(sut.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
+        expect(result.version).toBe(1);
+        expect(result.advertisement.refs).toEqual([{ name: 'refs/heads/main', id: OID_A }]);
       });
     });
   });
@@ -386,10 +386,10 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.advertisement.capabilities).toContain('filter');
+        expect(result.advertisement.capabilities).toContain('filter');
       });
     });
   });
@@ -403,10 +403,10 @@ describe('negotiateDiscovery', () => {
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
         // Act
-        const sut = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(session);
 
         // Assert
-        expect(sut.advertisement.capabilities).not.toContain('filter');
+        expect(result.advertisement.capabilities).not.toContain('filter');
       });
     });
   });
@@ -426,11 +426,11 @@ describe('negotiatePackBytes', () => {
         const session = stubSession({ discoveryBody: FLUSH, exchangeResponse });
 
         // Act
-        const sut = await negotiatePackBytes(ctx, session, 2, baseInput);
+        const result = await negotiatePackBytes(ctx, session, 2, baseInput);
 
         // Assert
         expect(await decodeRequest(session)).toContain('command=fetch');
-        expect(DECODER.decode(sut.packBytes)).toBe('PACK-DATA');
+        expect(DECODER.decode(result.packBytes)).toBe('PACK-DATA');
       });
     });
   });
@@ -536,13 +536,13 @@ describe('negotiatePackBytes', () => {
         const session = stubSession({ discoveryBody: FLUSH, exchangeResponse });
 
         // Act
-        const sut = await negotiatePackBytes(ctx, session, 1, baseInput);
+        const result = await negotiatePackBytes(ctx, session, 1, baseInput);
 
         // Assert
         const request = await decodeRequest(session);
         expect(request).toContain(`want ${OID_A}`);
         expect(request).not.toContain('command=fetch');
-        expect(DECODER.decode(sut.packBytes)).toBe('PACK-DATA');
+        expect(DECODER.decode(result.packBytes)).toBe('PACK-DATA');
       });
     });
   });

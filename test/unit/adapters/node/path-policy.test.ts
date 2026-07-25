@@ -33,10 +33,10 @@ describe('selectNativePolicy', () => {
         },
       ])('Then $label', ({ platform, expected }) => {
         // Arrange & Act
-        const sut = selectNativePolicy(platform);
+        const result = selectNativePolicy(platform);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -47,10 +47,13 @@ describe('narrowSep', () => {
     describe('When narrowed', () => {
       it('Then returns it unchanged', () => {
         // Arrange
-        const sut = narrowSep('/');
+        const separator = '/';
+
+        // Act
+        const result = narrowSep(separator);
 
         // Assert
-        expect(sut).toBe('/');
+        expect(result).toBe('/');
       });
     });
   });
@@ -59,10 +62,13 @@ describe('narrowSep', () => {
     describe('When narrowed', () => {
       it('Then returns it unchanged', () => {
         // Arrange
-        const sut = narrowSep('\\');
+        const separator = '\\';
+
+        // Act
+        const result = narrowSep(separator);
 
         // Assert
-        expect(sut).toBe('\\');
+        expect(result).toBe('\\');
       });
     });
   });
@@ -110,11 +116,11 @@ describe('nativePolicy', () => {
   describe('Given the host platform', () => {
     describe('When nativePolicy is inspected', () => {
       it('Then it matches selectNativePolicy(process.platform)', () => {
-        // Arrange
-        const sut = nativePolicy;
+        // Arrange & Act
+        const result = nativePolicy;
 
         // Assert
-        expect(sut).toBe(selectNativePolicy(process.platform));
+        expect(result).toBe(selectNativePolicy(process.platform));
       });
     });
   });
@@ -124,20 +130,20 @@ describe('posixPolicy', () => {
   describe('Given posix policy', () => {
     describe('When sep is read', () => {
       it('Then it is forward slash', () => {
-        // Arrange
-        const sut = posixPolicy.sep;
+        // Arrange & Act
+        const result = posixPolicy.sep;
 
         // Assert
-        expect(sut).toBe('/');
+        expect(result).toBe('/');
       });
     });
     describe('When caseInsensitive is read', () => {
       it('Then it is false', () => {
-        // Arrange
-        const sut = posixPolicy.caseInsensitive;
+        // Arrange & Act
+        const result = posixPolicy.caseInsensitive;
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -146,10 +152,13 @@ describe('posixPolicy', () => {
     describe('When normalizeForCompare runs', () => {
       it('Then identity is returned', () => {
         // Arrange
-        const sut = posixPolicy.normalizeForCompare('/Users/Foo');
+        const input = '/Users/Foo';
+
+        // Act
+        const result = posixPolicy.normalizeForCompare(input);
 
         // Assert
-        expect(sut).toBe('/Users/Foo');
+        expect(result).toBe(input);
       });
     });
   });
@@ -157,10 +166,15 @@ describe('posixPolicy', () => {
   describe('Given an input shaped like a Windows extended-length path', () => {
     describe('When normalizeForCompare runs', () => {
       it('Then it is returned verbatim (POSIX never strips)', () => {
-        // Arrange + Assert
-        // Pins the `caseInsensitive` guard: a ConditionalExpression mutant that
+        // Arrange
+        const input = '\\\\?\\C:\\X';
+
+        // Act
+        const result = posixPolicy.normalizeForCompare(input);
+
+        // Assert — Pins the `caseInsensitive` guard: a ConditionalExpression mutant that
         // routed POSIX through the strip would mangle this otherwise-opaque input.
-        expect(posixPolicy.normalizeForCompare('\\\\?\\C:\\X')).toBe('\\\\?\\C:\\X');
+        expect(result).toBe(input);
       });
     });
   });
@@ -169,10 +183,13 @@ describe('posixPolicy', () => {
     describe('When rootOf is called', () => {
       it('Then returns "/"', () => {
         // Arrange
-        const sut = posixPolicy.rootOf('/foo/bar');
+        const path = '/foo/bar';
+
+        // Act
+        const result = posixPolicy.rootOf(path);
 
         // Assert
-        expect(sut).toBe('/');
+        expect(result).toBe('/');
       });
     });
   });
@@ -182,20 +199,20 @@ describe('windowsPolicy', () => {
   describe('Given windows policy', () => {
     describe('When sep is read', () => {
       it('Then it is backslash', () => {
-        // Arrange
-        const sut = windowsPolicy.sep;
+        // Arrange & Act
+        const result = windowsPolicy.sep;
 
         // Assert
-        expect(sut).toBe('\\');
+        expect(result).toBe('\\');
       });
     });
     describe('When caseInsensitive is read', () => {
       it('Then it is true', () => {
-        // Arrange
-        const sut = windowsPolicy.caseInsensitive;
+        // Arrange & Act
+        const result = windowsPolicy.caseInsensitive;
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -225,11 +242,11 @@ describe('windowsPolicy', () => {
           label: 'a \\\\?\\UNC\\ extended-length path collapses to the plain UNC form',
         },
       ])('Then $label', ({ input, expected }) => {
-        // Arrange
-        const sut = windowsPolicy.normalizeForCompare(input);
+        // Arrange & Act
+        const result = windowsPolicy.normalizeForCompare(input);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -238,10 +255,13 @@ describe('windowsPolicy', () => {
     describe('When rootOf is called', () => {
       it('Then returns the drive prefix with trailing separator', () => {
         // Arrange
-        const sut = windowsPolicy.rootOf('C:\\Users\\Foo');
+        const path = 'C:\\Users\\Foo';
+
+        // Act
+        const result = windowsPolicy.rootOf(path);
 
         // Assert
-        expect(sut).toBe('C:\\');
+        expect(result).toBe('C:\\');
       });
     });
   });
@@ -250,10 +270,13 @@ describe('windowsPolicy', () => {
     describe('When rootOf is called', () => {
       it('Then returns the server+share prefix', () => {
         // Arrange
-        const sut = windowsPolicy.rootOf('\\\\server\\share\\file.bin');
+        const path = '\\\\server\\share\\file.bin';
+
+        // Act
+        const result = windowsPolicy.rootOf(path);
 
         // Assert
-        expect(sut).toBe('\\\\server\\share\\');
+        expect(result).toBe('\\\\server\\share\\');
       });
     });
   });

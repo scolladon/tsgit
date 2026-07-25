@@ -148,10 +148,10 @@ describe('fetchMissing', () => {
         await seedRepo(ctx, {});
 
         // Act
-        const sut = await createPromisorRemote(ctx).fetch([FAKE_TIP]);
+        const result = await createPromisorRemote(ctx).fetch([FAKE_TIP]);
 
         // Assert
-        expect(sut).toEqual({ attempted: false, requested: 1, fetched: 0 });
+        expect(result).toEqual({ attempted: false, requested: 1, fetched: 0 });
       });
     });
   });
@@ -220,10 +220,10 @@ describe('fetchMissing', () => {
         await withConfig(ctx, PARTIAL_CONFIG);
 
         // Act
-        const sut = await fetchMissing(ctx, { oids: [] });
+        const result = await fetchMissing(ctx, { oids: [] });
 
         // Assert
-        expect(sut).toEqual({ remote: 'origin', requested: 0, fetched: 0 });
+        expect(result).toEqual({ remote: 'origin', requested: 0, fetched: 0 });
       });
     });
   });
@@ -239,10 +239,10 @@ describe('fetchMissing', () => {
         await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, present), new Uint8Array([1]));
 
         // Act
-        const sut = await fetchMissing(ctx, { oids: [present] });
+        const result = await fetchMissing(ctx, { oids: [present] });
 
         // Assert
-        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
       });
     });
   });
@@ -263,13 +263,13 @@ describe('fetchMissing', () => {
 
         // Act — the object now lives only in a local pack; touching the
         // network would throw.
-        const sut = await fetchMissing(
+        const result = await fetchMissing(
           { ...seeded, transport: forbiddenTransport() },
           { oids: [blobId] },
         );
 
         // Assert — the pack registry reports it present, so nothing is fetched.
-        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
       });
     });
   });
@@ -286,10 +286,10 @@ describe('fetchMissing', () => {
         const ctx: Context = { ...base, transport };
 
         // Act
-        const sut = await fetchMissing(ctx, { oids: [blobId] });
+        const result = await fetchMissing(ctx, { oids: [blobId] });
 
         // Assert
-        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
         expect(requests.some((r) => r.url.includes('info/refs'))).toBe(true);
         expect(requests.some((r) => r.url.includes('git-upload-pack'))).toBe(true);
         const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
@@ -315,11 +315,11 @@ describe('fetchMissing', () => {
         await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.pack`, packBytes);
 
         // Act
-        const sut = await fetchMissing(ctx, { oids: [blobId] });
+        const result = await fetchMissing(ctx, { oids: [blobId] });
 
         // Assert — the pre-existing pack made writeExclusive throw FILE_EXISTS,
         // which fetchMissing swallows: the objects are already on disk.
-        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
       });
     });
   });
@@ -336,10 +336,10 @@ describe('fetchMissing', () => {
         const ctx: Context = { ...base, transport };
 
         // Act — the same missing oid appears twice.
-        const sut = await fetchMissing(ctx, { oids: [blobId, blobId] });
+        const result = await fetchMissing(ctx, { oids: [blobId, blobId] });
 
         // Assert — collectMissing de-duplicates, so it is fetched once.
-        expect(sut).toEqual({ remote: 'origin', requested: 2, fetched: 1 });
+        expect(result).toEqual({ remote: 'origin', requested: 2, fetched: 1 });
         expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
       });
     });
@@ -357,10 +357,10 @@ describe('fetchMissing', () => {
         const ctx: Context = { ...base, transport };
 
         // Act
-        const sut = await createPromisorRemote(ctx).fetch([blobId]);
+        const result = await createPromisorRemote(ctx).fetch([blobId]);
 
         // Assert
-        expect(sut).toEqual({ attempted: true, requested: 1, fetched: 1 });
+        expect(result).toEqual({ attempted: true, requested: 1, fetched: 1 });
       });
     });
   });
@@ -413,11 +413,11 @@ describe('fetchMissing', () => {
         };
 
         // Act
-        const sut = await fetchMissing(ctx, { oids: [blobId] });
+        const result = await fetchMissing(ctx, { oids: [blobId] });
 
         // Assert — the configured credential reached the wire: the `{ auth }`
         // spread was passed to `withDefaults`, not an empty object.
-        expect(sut).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
         const post = requests.find((r) => r.method === 'POST');
         expect(post?.headers?.authorization).toBe('Bearer sekret');
       });

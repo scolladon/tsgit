@@ -12,30 +12,30 @@ describe('stash-message builders', () => {
     describe('When wipMessage is built', () => {
       it('Then it reads "WIP on <branch>: <abbrev> <subject>"', () => {
         // Arrange + Act
-        const sut = wipMessage('main', 'abc1234', 'initial commit');
+        const result = wipMessage('main', 'abc1234', 'initial commit');
 
         // Assert
-        expect(sut).toBe('WIP on main: abc1234 initial commit');
+        expect(result).toBe('WIP on main: abc1234 initial commit');
       });
     });
 
     describe('When indexMessage is built', () => {
       it('Then it reads "index on <branch>: <abbrev> <subject>"', () => {
         // Arrange + Act
-        const sut = indexMessage('main', 'abc1234', 'initial commit');
+        const result = indexMessage('main', 'abc1234', 'initial commit');
 
         // Assert
-        expect(sut).toBe('index on main: abc1234 initial commit');
+        expect(result).toBe('index on main: abc1234 initial commit');
       });
     });
 
     describe('When untrackedMessage is built', () => {
       it('Then it reads "untracked files on <branch>: <abbrev> <subject>"', () => {
         // Arrange + Act
-        const sut = untrackedMessage('main', 'abc1234', 'initial commit');
+        const result = untrackedMessage('main', 'abc1234', 'initial commit');
 
         // Assert
-        expect(sut).toBe('untracked files on main: abc1234 initial commit');
+        expect(result).toBe('untracked files on main: abc1234 initial commit');
       });
     });
   });
@@ -44,10 +44,10 @@ describe('stash-message builders', () => {
     describe('When onMessage is built', () => {
       it('Then it reads "On <branch>: <message>"', () => {
         // Arrange + Act
-        const sut = onMessage('main', 'wip before refactor');
+        const result = onMessage('main', 'wip before refactor');
 
         // Assert
-        expect(sut).toBe('On main: wip before refactor');
+        expect(result).toBe('On main: wip before refactor');
       });
     });
   });
@@ -72,10 +72,10 @@ describe('stash-message builders', () => {
         },
       ])('Then $label', ({ headRef, expected }) => {
         // Arrange + Act
-        const sut = stashBranchLabel(headRef);
+        const result = stashBranchLabel(headRef);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

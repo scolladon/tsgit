@@ -84,10 +84,10 @@ describe('compareEntryPath', () => {
         const second = makeEntry(secondPath, secondSha);
 
         // Act
-        const sut = compareEntryPath(first, second);
+        const result = compareEntryPath(first, second);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -106,11 +106,11 @@ describe('serializeIndex', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
+        const result = serializeIndex(index);
 
         // Assert
-        expect(sut.length).toBe(12);
-        const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+        expect(result.length).toBe(12);
+        const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
         expect(view.getUint32(0)).toBe(0x44495243);
         expect(view.getUint32(4)).toBe(2);
         expect(view.getUint32(8)).toBe(0);
@@ -132,13 +132,13 @@ describe('serializeIndex', () => {
 
         // Act
         const serialized = serializeIndex(index);
-        const sut = parseIndex(withChecksum(serialized));
+        const result = parseIndex(withChecksum(serialized));
 
         // Assert
-        expect(sut.entries).toHaveLength(1);
-        expect(sut.entries[0]?.path).toBe('hello.txt');
-        expect(sut.entries[0]?.id).toBe(SHA_A);
-        expect(sut.entries[0]?.mode).toBe(FILE_MODE.REGULAR);
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.path).toBe('hello.txt');
+        expect(result.entries[0]?.id).toBe(SHA_A);
+        expect(result.entries[0]?.mode).toBe(FILE_MODE.REGULAR);
       });
     });
   });
@@ -156,12 +156,12 @@ describe('serializeIndex', () => {
 
         // Act
         const serialized = serializeIndex(index);
-        const sut = parseIndex(withChecksum(serialized));
+        const result = parseIndex(withChecksum(serialized));
 
         // Assert
-        expect(sut.entries[0]?.path).toBe('a.txt');
-        expect(sut.entries[1]?.path).toBe('b.txt');
-        expect(sut.entries[2]?.path).toBe('c.txt');
+        expect(result.entries[0]?.path).toBe('a.txt');
+        expect(result.entries[1]?.path).toBe('b.txt');
+        expect(result.entries[2]?.path).toBe('c.txt');
       });
     });
   });
@@ -178,10 +178,10 @@ describe('serializeIndex', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
+        const result = serializeIndex(index);
 
         // Assert
-        const entrySize = sut.length - 12;
+        const entrySize = result.length - 12;
         expect(entrySize % 8).toBe(0);
       });
     });
@@ -200,10 +200,10 @@ describe('serializeIndex', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
+        const result = serializeIndex(index);
 
         // Assert
-        const entrySize = sut.length - 12;
+        const entrySize = result.length - 12;
         expect(entrySize).toBe(72);
         expect(entrySize % 8).toBe(0);
       });
@@ -223,8 +223,8 @@ describe('serializeIndex', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
-        const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+        const result = serializeIndex(index);
+        const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
 
         // Assert
         const flagsRaw = view.getUint16(12 + 60);
@@ -247,12 +247,12 @@ describe('serializeIndex', () => {
 
         // Act
         const serialized = serializeIndex(index);
-        const sut = parseIndex(withChecksum(serialized));
+        const result = parseIndex(withChecksum(serialized));
 
         // Assert
-        expect(sut.extensions).toHaveLength(1);
-        expect(sut.extensions[0]?.signature).toBe('TREE');
-        expect(sut.extensions[0]?.data).toEqual(extData);
+        expect(result.extensions).toHaveLength(1);
+        expect(result.extensions[0]?.signature).toBe('TREE');
+        expect(result.extensions[0]?.data).toEqual(extData);
       });
     });
   });
@@ -275,14 +275,14 @@ describe('serializeIndex', () => {
 
         // Act
         const serialized = serializeIndex(index);
-        const sut = parseIndex(withChecksum(serialized));
+        const result = parseIndex(withChecksum(serialized));
 
         // Assert
-        expect(sut.extensions).toHaveLength(2);
-        expect(sut.extensions[0]?.signature).toBe('TREE');
-        expect(sut.extensions[0]?.data).toEqual(ext1);
-        expect(sut.extensions[1]?.signature).toBe('REUC');
-        expect(sut.extensions[1]?.data).toEqual(ext2);
+        expect(result.extensions).toHaveLength(2);
+        expect(result.extensions[0]?.signature).toBe('TREE');
+        expect(result.extensions[0]?.data).toEqual(ext1);
+        expect(result.extensions[1]?.signature).toBe('REUC');
+        expect(result.extensions[1]?.data).toEqual(ext2);
       });
     });
   });
@@ -300,12 +300,12 @@ describe('serializeIndex', () => {
 
         // Act
         const serialized = serializeIndex(index);
-        const sut = parseIndex(withChecksum(serialized));
+        const result = parseIndex(withChecksum(serialized));
 
         // Assert
-        expect(sut.entries).toHaveLength(2);
-        expect(sut.entries[0]?.path).toBe('same.txt');
-        expect(sut.entries[1]?.path).toBe('same.txt');
+        expect(result.entries).toHaveLength(2);
+        expect(result.entries[0]?.path).toBe('same.txt');
+        expect(result.entries[1]?.path).toBe('same.txt');
       });
     });
   });
@@ -322,13 +322,13 @@ describe('serializeIndex', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
+        const result = serializeIndex(index);
 
         // Assert — output = header (12) + padded entry only, no trailing 20-byte checksum
         const pathBytes = new TextEncoder().encode('file.txt');
         const entryLength = 62 + pathBytes.length;
         const paddedEntryLength = (entryLength + 8) & ~7;
-        expect(sut.length).toBe(12 + paddedEntryLength);
+        expect(result.length).toBe(12 + paddedEntryLength);
       });
     });
   });
@@ -337,7 +337,7 @@ describe('serializeIndex', () => {
     describe('Given arbitrary entries', () => {
       describe('When serializing then parsing', () => {
         it('Then all entries preserved', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(fc.array(arbIndexEntry(), { minLength: 0, maxLength: 5 }), (entries) => {
               const uniqueEntries = deduplicateByPath(entries);
@@ -347,9 +347,12 @@ describe('serializeIndex', () => {
                 extensions: [],
                 trailerSha: new Uint8Array(0),
               };
+
+              // Act
               const serialized = serializeIndex(index);
               const parsed = parseIndex(withChecksum(serialized));
 
+              // Assert
               const sortedPaths = [...uniqueEntries].map((e) => e.path as string).sort();
               const parsedPaths = parsed.entries.map((e) => e.path as string);
               expect(parsedPaths).toEqual(sortedPaths);
@@ -362,7 +365,7 @@ describe('serializeIndex', () => {
     describe('Given any entry', () => {
       describe('When serializing', () => {
         it('Then total entry size is multiple of 8', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(arbIndexEntry(), (entry) => {
               const index: GitIndex = {
@@ -371,8 +374,12 @@ describe('serializeIndex', () => {
                 extensions: [],
                 trailerSha: new Uint8Array(0),
               };
+
+              // Act
               const serialized = serializeIndex(index);
               const entrySize = serialized.length - 12;
+
+              // Assert
               expect(entrySize % 8).toBe(0);
             }),
           );
@@ -398,11 +405,11 @@ describe('serializeIndex — index v3 extended flags', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
+        const result = serializeIndex(index);
 
         // Assert — the on-disk version is derived from the entries, not the
         // informational `index.version` field (which is 2 here).
-        const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+        const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
         expect(view.getUint32(4)).toBe(3);
       });
     });
@@ -420,11 +427,11 @@ describe('serializeIndex — index v3 extended flags', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
+        const result = serializeIndex(index);
 
         // Assert — even though `index.version` is 3, no entry needs extended
         // flags so the minimum on-disk version (2) is chosen.
-        const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+        const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
         expect(view.getUint32(4)).toBe(2);
       });
     });
@@ -442,8 +449,8 @@ describe('serializeIndex — index v3 extended flags', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
-        const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+        const result = serializeIndex(index);
+        const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
 
         // Assert — flags word (offset 12+60) has the 0x4000 extended bit; the
         // extended-flags word (offset 12+62) carries the skip-worktree bit.
@@ -465,8 +472,8 @@ describe('serializeIndex — index v3 extended flags', () => {
         };
 
         // Act
-        const sut = serializeIndex(index);
-        const view = new DataView(sut.buffer, sut.byteOffset, sut.byteLength);
+        const result = serializeIndex(index);
+        const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
 
         // Assert
         expect(view.getUint16(12 + 62)).toBe(0x2000);
@@ -489,13 +496,13 @@ describe('serializeIndex — index v3 extended flags', () => {
 
         // Act
         const serialized = serializeIndex(index);
-        const sut = parseIndex(withChecksum(serialized));
+        const result = parseIndex(withChecksum(serialized));
 
         // Assert — round-trip preserves the bit; the padded entry stays aligned.
         expect((serialized.length - 12) % 8).toBe(0);
-        expect(sut.entries[0]?.flags.skipWorktree).toBe(true);
-        expect(sut.entries[0]?.flags.intentToAdd).toBe(false);
-        expect(sut.entries[0]?.path).toBe('sparse.ts');
+        expect(result.entries[0]?.flags.skipWorktree).toBe(true);
+        expect(result.entries[0]?.flags.intentToAdd).toBe(false);
+        expect(result.entries[0]?.path).toBe('sparse.ts');
       });
     });
   });
@@ -512,10 +519,10 @@ describe('serializeIndex — index v3 extended flags', () => {
         };
 
         // Act
-        const sut = parseIndex(withChecksum(serializeIndex(index)));
+        const result = parseIndex(withChecksum(serializeIndex(index)));
 
         // Assert — version derived back to 2; entries identical after path sort.
-        expect(sut).toEqual({
+        expect(result).toEqual({
           version: 2,
           entries: [...index.entries].sort((l, r) =>
             (l.path as string) < (r.path as string) ? -1 : 1,
@@ -543,11 +550,11 @@ describe('serializeIndex — index v3 extended flags', () => {
         };
 
         // Act
-        const sut = parseIndex(withChecksum(serializeIndex(index)));
+        const result = parseIndex(withChecksum(serializeIndex(index)));
 
         // Assert — version derived back to 3; every entry (and its flags)
         // survives the parse/serialize cycle byte-for-byte.
-        expect(sut).toEqual({
+        expect(result).toEqual({
           version: 3,
           entries: [...index.entries].sort((l, r) =>
             (l.path as string) < (r.path as string) ? -1 : 1,

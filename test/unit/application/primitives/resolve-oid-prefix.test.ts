@@ -30,10 +30,10 @@ describe('resolveOidPrefix', () => {
         const full = 'a'.repeat(40);
 
         // Act
-        const sut = await resolveOidPrefix(wrapped.ctx, full);
+        const result = await resolveOidPrefix(wrapped.ctx, full);
 
         // Assert
-        expect(sut).toBe(full);
+        expect(result).toBe(full);
         expect(wrapped.calls().filter((c) => c.method === 'readdir')).toEqual([]);
       });
     });
@@ -81,10 +81,10 @@ describe('resolveOidPrefix', () => {
         const { prefix, expected } = await arrange(ctx);
 
         // Act
-        const sut = await resolveOidPrefix(ctx, prefix);
+        const result = await resolveOidPrefix(ctx, prefix);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -96,10 +96,10 @@ describe('resolveOidPrefix', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const sut = await resolveOidPrefix(ctx, 'deadbeef');
+        const result = await resolveOidPrefix(ctx, 'deadbeef');
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -172,10 +172,10 @@ describe('resolveOidPrefix', () => {
         );
 
         // Act
-        const sut = await resolveOidPrefix(ctx, id.slice(0, 7));
+        const result = await resolveOidPrefix(ctx, id.slice(0, 7));
 
         // Assert
-        expect(sut).toBe(id);
+        expect(result).toBe(id);
       });
     });
   });
@@ -193,10 +193,10 @@ describe('resolveOidPrefix', () => {
         );
 
         // Act
-        const sut = await resolveOidPrefix(ctx, id.slice(0, 7));
+        const result = await resolveOidPrefix(ctx, id.slice(0, 7));
 
         // Assert
-        expect(sut).toBe(id);
+        expect(result).toBe(id);
       });
     });
   });
@@ -212,10 +212,10 @@ describe('resolveOidPrefix', () => {
         await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/${suffix}/child`, new Uint8Array([0]));
 
         // Act
-        const sut = await resolveOidPrefix(ctx, 'abcd');
+        const result = await resolveOidPrefix(ctx, 'abcd');
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -230,10 +230,10 @@ describe('resolveOidPrefix', () => {
         await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cd`, new Uint8Array([0]));
 
         // Act
-        const sut = await resolveOidPrefix(ctx, 'abcd');
+        const result = await resolveOidPrefix(ctx, 'abcd');
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -249,10 +249,10 @@ describe('resolveOidPrefix', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const sut = await resolveOidPrefix(ctx, prefix);
+        const result = await resolveOidPrefix(ctx, prefix);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -265,10 +265,10 @@ describe('resolveOidPrefix', () => {
         await writeLooseNamed(ctx, `ab${'0'.repeat(38)}`);
 
         // Act
-        const sut = await resolveOidPrefix(ctx, 'ab');
+        const result = await resolveOidPrefix(ctx, 'ab');
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -280,10 +280,10 @@ describe('resolveOidPrefix', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const sut = await resolveOidPrefix(ctx, 'ffff');
+        const result = await resolveOidPrefix(ctx, 'ffff');
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -299,10 +299,10 @@ describe('resolveOidPrefix', () => {
         await writeLooseNamed(ctx, other);
 
         // Act
-        const sut = await resolveOidPrefix(ctx, 'cd11');
+        const result = await resolveOidPrefix(ctx, 'cd11');
 
         // Assert
-        expect(sut).toBe(match);
+        expect(result).toBe(match);
       });
     });
   });

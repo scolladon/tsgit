@@ -52,11 +52,11 @@ describe('branch', () => {
         const { ctx } = await seedWithCommit();
 
         // Act
-        const sut = await branchList(ctx);
+        const result = await branchList(ctx);
 
         // Assert
-        expect(sut.branches.map((b) => b.name)).toContain('refs/heads/main');
-        expect(sut.branches.find((b) => b.name === 'refs/heads/main')?.current).toBe(true);
+        expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
+        expect(result.branches.find((b) => b.name === 'refs/heads/main')?.current).toBe(true);
       });
     });
   });
@@ -68,10 +68,10 @@ describe('branch', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await branchCreate(ctx, { name: 'feature' });
+        const result = await branchCreate(ctx, { name: 'feature' });
 
         // Assert
-        expect(sut.id).toBe(commitId);
+        expect(result.id).toBe(commitId);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(true);
       });
     });
@@ -84,7 +84,7 @@ describe('branch', () => {
         const { ctx } = await seedWithCommit();
         await branchCreate(ctx, { name: 'feature' });
 
-        // Assert
+        // Act + Assert
         await expectError(() => branchCreate(ctx, { name: 'feature' }), 'BRANCH_EXISTS');
       });
     });
@@ -112,7 +112,7 @@ describe('branch', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Assert
+        // Act + Assert
         await expectError(
           () => branchDelete(ctx, { name: 'main' }),
           'CANNOT_DELETE_CHECKED_OUT_BRANCH',
@@ -127,7 +127,7 @@ describe('branch', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Assert
+        // Act + Assert
         await expectError(() => branchDelete(ctx, { name: 'ghost' }), 'BRANCH_NOT_FOUND');
       });
     });
@@ -140,10 +140,10 @@ describe('branch', () => {
         const { ctx } = await seedWithCommit();
 
         // Act
-        const sut = await branchRename(ctx, { from: 'main', to: 'trunk' });
+        const result = await branchRename(ctx, { from: 'main', to: 'trunk' });
 
         // Assert
-        expect(sut).toEqual({ from: 'refs/heads/main', to: 'refs/heads/trunk' });
+        expect(result).toEqual({ from: 'refs/heads/main', to: 'refs/heads/trunk' });
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/trunk`)).toBe(true);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
@@ -228,9 +228,9 @@ describe('branch', () => {
         await branchCreate(ctx, { name: 'feature' });
 
         // Act + Assert — must not throw with force.
-        const sut = await branchCreate(ctx, { name: 'feature', force: true });
+        const result = await branchCreate(ctx, { name: 'feature', force: true });
         // Assert
-        expect(sut.name).toBe('refs/heads/feature');
+        expect(result.name).toBe('refs/heads/feature');
       });
     });
   });
@@ -242,10 +242,10 @@ describe('branch', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = await branchCreate(ctx, { name: 'pin', startPoint: commitId });
+        const result = await branchCreate(ctx, { name: 'pin', startPoint: commitId });
 
         // Assert
-        expect(sut.id).toBe(commitId);
+        expect(result.id).toBe(commitId);
       });
     });
   });
@@ -258,10 +258,10 @@ describe('branch', () => {
         await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        const sut = await branchCreate(ctx, { name: 'pin', startPoint: 'feature' });
+        const result = await branchCreate(ctx, { name: 'pin', startPoint: 'feature' });
 
         // Assert
-        expect(sut.id).toBe(commitId);
+        expect(result.id).toBe(commitId);
       });
     });
   });
@@ -274,10 +274,10 @@ describe('branch', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
 
         // Act
-        const sut = await branchList(ctx);
+        const result = await branchList(ctx);
 
         // Assert
-        expect(sut.branches).toEqual([]);
+        expect(result.branches).toEqual([]);
       });
     });
   });
@@ -306,7 +306,7 @@ describe('branch', () => {
         await branchCreate(ctx, { name: 'a' });
         await branchCreate(ctx, { name: 'b' });
 
-        // Assert
+        // Act + Assert
         await expectError(() => branchRename(ctx, { from: 'a', to: 'b' }), 'BRANCH_EXISTS');
       });
     });
@@ -321,10 +321,10 @@ describe('branch', () => {
         await branchCreate(ctx, { name: 'nested/leaf' });
 
         // Act
-        const sut = await branchList(ctx);
+        const result = await branchList(ctx);
 
         // Assert
-        expect(sut.branches.map((b) => b.name)).toEqual(['refs/heads/main']);
+        expect(result.branches.map((b) => b.name)).toEqual(['refs/heads/main']);
       });
     });
   });
@@ -337,10 +337,10 @@ describe('branch', () => {
         await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        const sut = await branchList(ctx);
+        const result = await branchList(ctx);
 
         // Assert
-        expect(sut.branches.find((b) => b.name === 'refs/heads/feature')?.current).toBe(false);
+        expect(result.branches.find((b) => b.name === 'refs/heads/feature')?.current).toBe(false);
       });
     });
   });
@@ -361,10 +361,10 @@ describe('branch', () => {
         await branchCreate(ctx, { name: 'beta' });
 
         // Act
-        const sut = await branchList(ctx);
+        const result = await branchList(ctx);
 
         // Assert — ascending: beta < main < xray.
-        expect(sut.branches.map((b) => b.name)).toEqual([
+        expect(result.branches.map((b) => b.name)).toEqual([
           'refs/heads/beta',
           'refs/heads/main',
           'refs/heads/xray',
@@ -556,10 +556,10 @@ describe('branch', () => {
         const r = right as RefName;
 
         // Act
-        const sut = compareRefName(l, r);
+        const result = compareRefName(l, r);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -577,10 +577,10 @@ describe('branch', () => {
         await branchCreate(ctx, { name: 'HEAD', startPoint: first });
 
         // Act — default startPoint ('HEAD') must resolve the symbolic HEAD -> second.
-        const sut = await branchCreate(ctx, { name: 'probe' });
+        const result = await branchCreate(ctx, { name: 'probe' });
 
         // Assert
-        expect(sut.id).toBe(second.id);
+        expect(result.id).toBe(second.id);
       });
     });
   });

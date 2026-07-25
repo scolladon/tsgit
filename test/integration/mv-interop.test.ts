@@ -94,12 +94,12 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
         // Act
         const moved = await repo.mv(['a.txt'], 'renamed.txt');
         runGit(['-C', pair.peer, 'mv', 'a.txt', 'renamed.txt']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
         expect(moved.moved).toEqual([{ from: 'a.txt', to: 'renamed.txt' }]);
         await expect(readFile(path.join(pair.ours, 'renamed.txt'), 'utf8')).resolves.toBe(
           'hello\n',
@@ -121,12 +121,12 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
         // Act
         const moved = await repo.mv(['b.txt'], 'dir');
         runGit(['-C', pair.peer, 'mv', 'b.txt', 'dir']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
         expect(moved.moved).toEqual([{ from: 'b.txt', to: 'dir/b.txt' }]);
         await expect(pathExists(pair.ours, 'dir/b.txt')).resolves.toBe(true);
       });
@@ -145,12 +145,12 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
         // Act
         await repo.mv(['old'], 'new');
         runGit(['-C', pair.peer, 'mv', 'old', 'new']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
         await expect(pathExists(pair.ours, 'new/nested/two.txt')).resolves.toBe(true);
         await expect(pathExists(pair.ours, 'old')).resolves.toBe(false);
       });
@@ -169,12 +169,12 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
         // Act
         await repo.mv(['a.txt'], 'b.txt', { force: true });
         runGit(['-C', pair.peer, 'mv', '-f', 'a.txt', 'b.txt']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
         await expect(readFile(path.join(pair.ours, 'b.txt'), 'utf8')).resolves.toBe('source\n');
         await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(false);
       });
@@ -192,12 +192,12 @@ describe.skipIf(!GIT_AVAILABLE)('mv porcelain interop', () => {
         // Act
         await repo.mv(['a.txt'], 'renamed.txt');
         runGit(['-C', pair.peer, 'mv', 'a.txt', 'renamed.txt']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
         await expect(readFile(path.join(pair.ours, 'renamed.txt'), 'utf8')).resolves.toBe(
           'edited\n',
         );

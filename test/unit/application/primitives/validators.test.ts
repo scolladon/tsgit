@@ -34,22 +34,22 @@ describe('isEmptyFrom', () => {
   describe('Given empty array', () => {
     describe('When invoked', () => {
       it('Then returns true', () => {
-        // Arrange
-        const sut = isEmptyFrom([]);
+        // Arrange & Act
+        const result = isEmptyFrom([]);
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
   describe('Given one-element array', () => {
     describe('When invoked', () => {
       it('Then returns false', () => {
-        // Arrange
-        const sut = isEmptyFrom(['a']);
+        // Arrange & Act
+        const result = isEmptyFrom(['a']);
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -63,11 +63,11 @@ describe('exceedsMaxWalkSeeds boundary triple', () => {
         { length: 1024, expected: false, label: 'returns false (at cap)' },
         { length: 1025, expected: true, label: 'returns true (just-over cap)' },
       ])('Then $label', ({ length, expected }) => {
-        // Arrange
-        const sut = exceedsMaxWalkSeeds(new Array(length).fill(0));
+        // Arrange & Act
+        const result = exceedsMaxWalkSeeds(new Array(length).fill(0));
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -85,11 +85,11 @@ describe('messageContainsNul', () => {
         { value: 'hello world', expected: false, label: 'returns false for a clean message' },
         { value: '', expected: false, label: 'returns false for an empty string' },
       ])('Then $label', ({ value, expected }) => {
-        // Arrange
-        const sut = messageContainsNul(value);
+        // Arrange & Act
+        const result = messageContainsNul(value);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -111,11 +111,11 @@ describe('exceedsMaxCommitMessageBytes boundary triple', () => {
           label: 'returns true (just-over)',
         },
       ])('Then $label', ({ length, expected }) => {
-        // Arrange
-        const sut = exceedsMaxCommitMessageBytes('x'.repeat(length));
+        // Arrange & Act
+        const result = exceedsMaxCommitMessageBytes('x'.repeat(length));
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -129,11 +129,11 @@ describe('exceedsMaxIndexBytes boundary triple', () => {
         { size: 256 * 1024 * 1024, expected: false, label: 'returns false (at cap)' },
         { size: 256 * 1024 * 1024 + 1, expected: true, label: 'returns true (just-over)' },
       ])('Then $label', ({ size, expected }) => {
-        // Arrange
-        const sut = exceedsMaxIndexBytes(size);
+        // Arrange & Act
+        const result = exceedsMaxIndexBytes(size);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -153,11 +153,11 @@ describe('exceedsMaxSymbolicDepth boundary triple (default cap = 5)', () => {
           label: 'returns false (cap override works)',
         },
       ])('Then $label', ({ depth, cap, expected }) => {
-        // Arrange
-        const sut = exceedsMaxSymbolicDepth(depth, cap);
+        // Arrange & Act
+        const result = exceedsMaxSymbolicDepth(depth, cap);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -171,11 +171,11 @@ describe('exceedsMaxPeelDepth boundary triple (default cap = 5)', () => {
         { depth: 5, expected: false, label: 'returns false (at cap)' },
         { depth: 6, expected: true, label: 'returns true (just-over)' },
       ])('Then $label', ({ depth, expected }) => {
-        // Arrange
-        const sut = exceedsMaxPeelDepth(depth);
+        // Arrange & Act
+        const result = exceedsMaxPeelDepth(depth);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -196,11 +196,11 @@ describe('isContainedRefSegment', () => {
         { value: 'C:/foo', expected: false, label: 'returns false (UNC/drive)' },
         { value: 'refs/../escape', expected: false, label: 'returns false (traversal)' },
       ])('Then $label', ({ value, expected }) => {
-        // Arrange
-        const sut = isContainedRefSegment(value);
+        // Arrange & Act
+        const result = isContainedRefSegment(value);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -214,11 +214,11 @@ describe('isHead', () => {
         { value: 'refs/heads/main', expected: false, label: 'returns false' },
         { value: 'head', expected: false, label: 'returns false (case-sensitive)' },
       ])('Then $label', ({ value, expected }) => {
-        // Arrange
-        const sut = isHead(value);
+        // Arrange & Act
+        const result = isHead(value);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -232,11 +232,11 @@ describe('isGitlink', () => {
         { mode: '100644', expected: false, label: 'returns false (blob)' },
         { mode: '040000', expected: false, label: 'returns false (tree)' },
       ])('Then $label', ({ mode, expected }) => {
-        // Arrange
-        const sut = isGitlink(mode);
+        // Arrange & Act
+        const result = isGitlink(mode);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -250,11 +250,11 @@ describe('exceedsMaxTreeDepth boundary triple', () => {
         { depth: 5, cap: 5, expected: false, label: 'returns false (at)' },
         { depth: 6, cap: 5, expected: true, label: 'returns true' },
       ])('Then $label', ({ depth, cap, expected }) => {
-        // Arrange
-        const sut = exceedsMaxTreeDepth(depth, cap);
+        // Arrange & Act
+        const result = exceedsMaxTreeDepth(depth, cap);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -268,11 +268,11 @@ describe('exceedsMaxTreeEntries boundary triple', () => {
         { count: 3, cap: 3, expected: false, label: 'returns false (at)' },
         { count: 4, cap: 3, expected: true, label: 'returns true' },
       ])('Then $label', ({ count, cap, expected }) => {
-        // Arrange
-        const sut = exceedsMaxTreeEntries(count, cap);
+        // Arrange & Act
+        const result = exceedsMaxTreeEntries(count, cap);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -302,11 +302,11 @@ describe('looksLikeObjectId', () => {
         { value: 'refs/heads/main', expected: false, label: 'returns false (ref-like)' },
         { value: '', expected: false, label: 'returns false (empty string)' },
       ])('Then $label', ({ value, expected }) => {
-        // Arrange
-        const sut = looksLikeObjectId(value);
+        // Arrange & Act
+        const result = looksLikeObjectId(value);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -316,22 +316,22 @@ describe('hasDeclaredId', () => {
   describe('Given an empty string', () => {
     describe('When invoked', () => {
       it('Then returns false', () => {
-        // Arrange
-        const sut = hasDeclaredId('');
+        // Arrange & Act
+        const result = hasDeclaredId('');
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
   describe('Given a hex id', () => {
     describe('When invoked', () => {
       it('Then returns true', () => {
-        // Arrange
-        const sut = hasDeclaredId('0'.repeat(40));
+        // Arrange & Act
+        const result = hasDeclaredId('0'.repeat(40));
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -353,11 +353,11 @@ describe('isInvalidExtraHeaderKey', () => {
         },
         { key: 'a\tb', expected: true, label: 'returns true for a key with a tab' },
       ])('Then $label', ({ key, expected }) => {
-        // Arrange
-        const sut = isInvalidExtraHeaderKey(key);
+        // Arrange & Act
+        const result = isInvalidExtraHeaderKey(key);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -397,11 +397,11 @@ describe('hasHeaderInjectionChars', () => {
           label: 'returns false for an INTERIOR single LF only (every guard is false)',
         },
       ])('Then $label', ({ value, expected }) => {
-        // Arrange
-        const sut = hasHeaderInjectionChars(value);
+        // Arrange & Act
+        const result = hasHeaderInjectionChars(value);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -426,11 +426,11 @@ describe('hasSignatureInjectionChars', () => {
             'returns false for an interior double LF but no NUL/CR — the double-LF rule does not apply to this predicate',
         },
       ])('Then $label', ({ value, expected }) => {
-        // Arrange
-        const sut = hasSignatureInjectionChars(value);
+        // Arrange & Act
+        const result = hasSignatureInjectionChars(value);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -444,11 +444,11 @@ describe('exceedsMaxPackIdxBytes boundary triple', () => {
         { size: MAX_PACK_IDX_BYTES, expected: false, label: 'returns false (at cap)' },
         { size: MAX_PACK_IDX_BYTES + 1, expected: true, label: 'returns true (just-over)' },
       ])('Then $label', ({ size, expected }) => {
-        // Arrange
-        const sut = exceedsMaxPackIdxBytes(size);
+        // Arrange & Act
+        const result = exceedsMaxPackIdxBytes(size);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

@@ -116,52 +116,56 @@ describe.skipIf(SKIP_REASON !== false)('catFile — partial-clone lazy fetch', (
     return entries.filter((name) => name.endsWith('.pack')).length;
   };
 
-  it('Given a blob omitted by the filter, When catFile is called, Then it lazy-fetches and returns ok', async () => {
-    // Arrange
-    const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-cf-'));
-    workDirs.push(workDir);
-    const repo = await cloneInto(workDir);
-    const gitDir = path.join(workDir, '.git');
-    const blobOid = await findOmittedBlob(repo);
-    const packsBefore = await countPacks(gitDir);
+  describe('Given a blob omitted by the filter, When catFile is called', () => {
+    it('Then it lazy-fetches and returns ok', async () => {
+      // Arrange
+      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-cf-'));
+      workDirs.push(workDir);
+      const repo = await cloneInto(workDir);
+      const gitDir = path.join(workDir, '.git');
+      const blobOid = await findOmittedBlob(repo);
+      const packsBefore = await countPacks(gitDir);
 
-    // Act
-    const result = await repo.catFile({ ids: [blobOid] });
+      // Act
+      const result = await repo.catFile({ ids: [blobOid] });
 
-    // Assert
-    expect(result.entries).toHaveLength(1);
-    const [entry] = result.entries;
-    if (entry?.ok !== true) throw new Error('expected ok');
-    expect(entry.type).toBe('blob');
-    // A new pack landed via the promisor.
-    expect(await countPacks(gitDir)).toBe(packsBefore + 1);
+      // Assert
+      expect(result.entries).toHaveLength(1);
+      const [entry] = result.entries;
+      if (entry?.ok !== true) throw new Error('expected ok');
+      expect(entry.type).toBe('blob');
+      // A new pack landed via the promisor.
+      expect(await countPacks(gitDir)).toBe(packsBefore + 1);
 
-    await repo.dispose();
-  }, 30_000);
+      await repo.dispose();
+    }, 30_000);
+  });
 
-  it('Given an id the promisor errors on, When catFile is called, Then the wire-protocol error propagates (not swallowed as missing)', async () => {
-    // Arrange — a fabricated oid the remote will refuse to serve. Per
-    // ADR-088, only OBJECT_NOT_FOUND is a soft "missing"; network /
-    // protocol errors propagate so the caller sees the real failure.
-    const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-cf-'));
-    workDirs.push(workDir);
-    const repo = await cloneInto(workDir);
-    const unknown = '1'.repeat(40) as ObjectId;
+  describe('Given an id the promisor errors on, When catFile is called', () => {
+    it('Then the wire-protocol error propagates (not swallowed as missing)', async () => {
+      // Arrange — a fabricated oid the remote will refuse to serve. Per
+      // ADR-088, only OBJECT_NOT_FOUND is a soft "missing"; network /
+      // protocol errors propagate so the caller sees the real failure.
+      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-cf-'));
+      workDirs.push(workDir);
+      const repo = await cloneInto(workDir);
+      const unknown = '1'.repeat(40) as ObjectId;
 
-    // Act
-    let caught: unknown;
-    try {
-      await repo.catFile({ ids: [unknown] });
-    } catch (err) {
-      caught = err;
-    }
+      // Act
+      let caught: unknown;
+      try {
+        await repo.catFile({ ids: [unknown] });
+      } catch (err) {
+        caught = err;
+      }
 
-    // Assert — a TsgitError of a non-OBJECT_NOT_FOUND code propagates; the
-    // result is NOT a soft `{ ok: false, reason: 'missing' }` entry.
-    expect(caught).toBeInstanceOf(TsgitError);
-    if (!(caught instanceof TsgitError)) throw caught;
-    expect(caught.data.code).not.toBe('OBJECT_NOT_FOUND');
+      // Assert — a TsgitError of a non-OBJECT_NOT_FOUND code propagates; the
+      // result is NOT a soft `{ ok: false, reason: 'missing' }` entry.
+      expect(caught).toBeInstanceOf(TsgitError);
+      if (!(caught instanceof TsgitError)) throw caught;
+      expect(caught.data.code).not.toBe('OBJECT_NOT_FOUND');
 
-    await repo.dispose();
-  }, 30_000);
+      await repo.dispose();
+    }, 30_000);
+  });
 });

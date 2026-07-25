@@ -50,7 +50,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then one conflict region between clean context', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'a\nb\nc\n',
             'a\nX\nc\n',
@@ -58,7 +57,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe('CLEAN[a\n]CONFLICT[ours=X\n|theirs=Y\n]CLEAN[c\n]');
@@ -70,7 +69,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then all clean, both changes applied', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'a\nb\nc\nd\ne\n',
             'A\nb\nc\nd\ne\n',
@@ -78,7 +76,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(result.every((s) => s.kind === 'clean')).toBe(true);
@@ -91,7 +89,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then the shared trailing line is trimmed out below the conflict', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'p\nq\nr\ns\nt\n',
             'p\nX\nY\nZ\nt\n',
@@ -99,7 +96,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -113,7 +110,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then the shared leading line is trimmed out above the conflict', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             '1\n2\n3\n4\n5\n',
             '1\nP\nA\nB\n5\n',
@@ -121,7 +117,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -135,7 +131,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then it is still trimmed (no alphanumeric gate)', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             '1\n2\n3\n4\n5\n',
             '1\nA\nB\n \n5\n',
@@ -143,7 +138,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -157,7 +152,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then the internal common line stays inside the conflict', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             '1\n2\n3\n4\n5\n',
             '1\nA\nMID\nB\n5\n',
@@ -165,7 +159,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -179,7 +173,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then they coalesce into one conflict with the gap duplicated on both sides', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'H\nX\nm1\nm2\nm3\nY\nT\n',
             'H\nXo\nm1\nm2\nm3\nYo\nT\n',
@@ -187,7 +180,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -201,7 +194,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then they stay separate with the gap clean between them', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'H\nX\nm1\nm2\nm3\nm4\nY\nT\n',
             'H\nXo\nm1\nm2\nm3\nm4\nYo\nT\n',
@@ -209,7 +201,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -223,7 +215,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then the one-sided change stays clean and is never absorbed', () => {
           // Arrange — ours changes line 1 (one-sided) and line 3 (conflict); theirs only line 3.
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'H\n1\n2\n3\nT\n',
             'H\nOO\n2\nXo\nT\n',
@@ -231,7 +222,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -246,7 +237,6 @@ describe('region-merge', () => {
         it('Then the intervening change blocks coalescing', () => {
           // Arrange — ours changes A,m,B; theirs changes A,B; m is one-sided. Base gap is 3 but
           // the one-sided change sits between, so git keeps the two conflicts separate.
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'H\nA\nx\nm\ny\nB\nT\n',
             'H\nAo\nx\nOO\ny\nBo\nT\n',
@@ -254,7 +244,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -268,11 +258,10 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then the differing middle conflicts and the edges are clean', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor('', 'a\nb\nc\n', 'a\nX\nc\n');
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe('CLEAN[a\n]CONFLICT[ours=b\n|theirs=X\n]CLEAN[c\n]');
@@ -284,7 +273,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then a zero-length conflict region forms', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'a\nb\n',
             'a\nO1\nO2\nb\n',
@@ -292,7 +280,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -306,7 +294,6 @@ describe('region-merge', () => {
       describe('When buildMergeSegments runs', () => {
         it('Then the twin is deduped and stays clean', () => {
           // Arrange
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'a\nb\nc\nd\ne\n',
             'X\nb\nc\nd\ne\n',
@@ -314,7 +301,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(result.every((s) => s.kind === 'clean')).toBe(true);
@@ -328,7 +315,6 @@ describe('region-merge', () => {
         it('Then the conflict span covers the wider change end', () => {
           // Arrange — ours edits [1,4) (3 lines); theirs edits only [2,3). The group span must
           // extend to ours' end (4), not shrink to theirs' end (3).
-          const sut = buildMergeSegments;
           const { baseLines, oursChanges, theirsChanges } = argsFor(
             'a\nb\nc\nd\ne\n',
             'a\nX\nX\nX\ne\n',
@@ -336,7 +322,7 @@ describe('region-merge', () => {
           );
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe(
@@ -352,7 +338,6 @@ describe('region-merge', () => {
           // Arrange — ours edits [1,3); theirs edits [2,5), which sorts after ours yet
           // ends wider. The running group end must extend from 3 to 5 to cover theirs,
           // otherwise d/e leak out of the conflict into a trailing clean run.
-          const sut = buildMergeSegments;
           const baseLines = lines('a\n', 'b\n', 'c\n', 'd\n', 'e\n', 'f\n');
           const oursChanges: ChangeRange[] = [
             { baseStart: 1, baseEnd: 3, replacement: lines('X\n') },
@@ -362,7 +347,7 @@ describe('region-merge', () => {
           ];
 
           // Act
-          const result = sut(baseLines, oursChanges, theirsChanges);
+          const result = buildMergeSegments(baseLines, oursChanges, theirsChanges);
 
           // Assert
           expect(render(result)).toBe('CLEAN[a\n]CONFLICT[ours=X\nd\ne\n|theirs=b\nY\n]CLEAN[f\n]');
@@ -376,11 +361,10 @@ describe('region-merge', () => {
       describe('When applyChangesToSpan runs', () => {
         it('Then base lines fill the untouched gap around the replacement', () => {
           // Arrange
-          const sut = applyChangesToSpan;
           const base = lines('a\n', 'b\n', 'c\n', 'd\n', 'e\n');
 
           // Act — replace [1,2) with [X], keep base[2], replace [3,4) with [Y]
-          const result = sut(base, 1, 4, [
+          const result = applyChangesToSpan(base, 1, 4, [
             { baseStart: 1, baseEnd: 2, replacement: lines('X\n') },
             { baseStart: 3, baseEnd: 4, replacement: lines('Y\n') },
           ]);
@@ -429,11 +413,8 @@ describe('region-merge', () => {
               'the suffix is capped so the prefix is not re-counted when one side is entirely a repeat of the other',
           },
         ])('Then $label', ({ ours, theirs, prefix, oursMid, theirsMid, suffix }) => {
-          // Arrange
-          const sut = trimCommonEdges;
-
-          // Act
-          const result = sut(ours, theirs);
+          // Arrange & Act
+          const result = trimCommonEdges(ours, theirs);
 
           // Assert
           expect(text(result.prefix)).toBe(prefix);
@@ -515,11 +496,8 @@ describe('region-merge', () => {
             label: 'two non-zero ranges that only touch at a boundary do not overlap',
           },
         ])('Then $label', ({ a, b, expected }) => {
-          // Arrange
-          const sut = rangesOverlap;
-
-          // Act
-          const result = sut(range(a[0], a[1]), range(b[0], b[1]));
+          // Arrange & Act
+          const result = rangesOverlap(range(a[0], a[1]), range(b[0], b[1]));
 
           // Assert
           expect(result).toBe(expected);

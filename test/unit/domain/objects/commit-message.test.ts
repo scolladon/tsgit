@@ -13,10 +13,10 @@ describe('stripspace', () => {
       const message = 'first';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('first\n');
+      expect(result).toBe('first\n');
     });
   });
 
@@ -33,10 +33,10 @@ describe('stripspace', () => {
       },
     ])('Then $label', ({ message, expected }) => {
       // Arrange & Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe(expected);
+      expect(result).toBe(expected);
     });
   });
 
@@ -46,10 +46,10 @@ describe('stripspace', () => {
       const message = 'a\n\n\nb';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('a\n\nb\n');
+      expect(result).toBe('a\n\nb\n');
     });
   });
 
@@ -59,10 +59,10 @@ describe('stripspace', () => {
       const message = 'a\n\nb';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('a\n\nb\n');
+      expect(result).toBe('a\n\nb\n');
     });
   });
 
@@ -72,10 +72,10 @@ describe('stripspace', () => {
       const message = '\n\na';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('a\n');
+      expect(result).toBe('a\n');
     });
   });
 
@@ -85,10 +85,10 @@ describe('stripspace', () => {
       const message = 'a\n\n';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('a\n');
+      expect(result).toBe('a\n');
     });
   });
 
@@ -98,10 +98,10 @@ describe('stripspace', () => {
       const message = '#c\nreal';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('#c\nreal\n');
+      expect(result).toBe('#c\nreal\n');
     });
   });
 
@@ -111,10 +111,10 @@ describe('stripspace', () => {
       const message = '  x';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('  x\n');
+      expect(result).toBe('  x\n');
     });
   });
 
@@ -124,10 +124,10 @@ describe('stripspace', () => {
       const message = '  \n\n  ';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('');
+      expect(result).toBe('');
     });
   });
 
@@ -137,10 +137,10 @@ describe('stripspace', () => {
       const message = '';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('');
+      expect(result).toBe('');
     });
   });
 
@@ -150,10 +150,10 @@ describe('stripspace', () => {
       const message = 'a\n\nb\n';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('a\n\nb\n');
+      expect(result).toBe('a\n\nb\n');
     });
   });
 
@@ -163,10 +163,10 @@ describe('stripspace', () => {
       const message = '\u00A0';
 
       // Act
-      const sut = stripspace(message);
+      const result = stripspace(message);
 
       // Assert
-      expect(sut).toBe('\u00A0\n');
+      expect(result).toBe('\u00A0\n');
     });
   });
 });
@@ -203,10 +203,10 @@ describe('subjectLine', () => {
       },
     ])('Then $label', ({ message, expected }) => {
       // Arrange & Act
-      const sut = subjectLine(message);
+      const result = subjectLine(message);
 
       // Assert
-      expect(sut).toBe(expected);
+      expect(result).toBe(expected);
     });
   });
 });

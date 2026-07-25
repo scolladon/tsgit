@@ -14,11 +14,8 @@ describe('matchFuncRec', () => {
       ['a lowercase a boundary', 'apply()'],
       ['a lowercase z boundary', 'zip()'],
     ])('Then a line beginning with %s is returned as the heading', (_label, text) => {
-      // Arrange
-      const sut = matchFuncRec;
-
-      // Act
-      const result = sut(line(text));
+      // Arrange & Act
+      const result = matchFuncRec(line(text));
 
       // Assert
       expect(result).toBe(text);
@@ -36,11 +33,8 @@ describe('matchFuncRec', () => {
     ['a backtick (just below a)', '`tick'],
   ])('Given a line beginning with %s, When matched', (_label, text) => {
     it('Then it is not a function line', () => {
-      // Arrange
-      const sut = matchFuncRec;
-
-      // Act
-      const result = sut(line(text));
+      // Arrange & Act
+      const result = matchFuncRec(line(text));
 
       // Assert
       expect(result).toBeUndefined();
@@ -56,11 +50,8 @@ describe('matchFuncRec', () => {
     ['a form feed', 'void f()\f'],
   ])('Given a function line ending with %s, When matched', (_label, text) => {
     it('Then the trailing whitespace byte is stripped', () => {
-      // Arrange
-      const sut = matchFuncRec;
-
-      // Act
-      const result = sut(line(text));
+      // Arrange & Act
+      const result = matchFuncRec(line(text));
 
       // Assert
       expect(result).toBe('void f()');
@@ -69,11 +60,8 @@ describe('matchFuncRec', () => {
 
   describe('Given a function line ending with a non-whitespace control byte, When matched', () => {
     it('Then it is kept (0x08 is below the isspace range)', () => {
-      // Arrange
-      const sut = matchFuncRec;
-
-      // Act
-      const result = sut(line('void f()\b'));
+      // Arrange & Act
+      const result = matchFuncRec(line('void f()\b'));
 
       // Assert
       expect(result).toBe('void f()\b');
@@ -83,11 +71,10 @@ describe('matchFuncRec', () => {
   describe('Given a function line longer than 80 bytes, When matched', () => {
     it('Then the heading is capped at 80 bytes', () => {
       // Arrange
-      const sut = matchFuncRec;
       const long = `a${'b'.repeat(99)}`; // 100 identifier bytes
 
       // Act
-      const result = sut(line(long));
+      const result = matchFuncRec(line(long));
 
       // Assert
       expect(result).toBe(long.slice(0, 80));
@@ -99,11 +86,10 @@ describe('findFuncLine', () => {
   describe('Given an old file scanned backward from a hunk, When searched', () => {
     it('Then it returns the nearest preceding function line', () => {
       // Arrange
-      const sut = findFuncLine;
       const lines = ['int f(void)', '{', '\tint a = 1;', '\tint b = 2;'].map(line);
 
       // Act — scan from index 3 down toward -1
-      const result = sut(lines, 3, -1);
+      const result = findFuncLine(lines, 3, -1);
 
       // Assert
       expect(result).toEqual({ index: 0, heading: 'int f(void)' });
@@ -144,11 +130,10 @@ describe('findFuncLine', () => {
       },
     ])('Then $label', ({ lines, start, limit }) => {
       // Arrange
-      const sut = findFuncLine;
       const encoded = lines.map(line);
 
       // Act
-      const result = sut(encoded, start, limit);
+      const result = findFuncLine(encoded, start, limit);
 
       // Assert
       expect(result).toBeUndefined();
@@ -158,11 +143,10 @@ describe('findFuncLine', () => {
   describe('Given a forward scan (start below limit), When searched', () => {
     it('Then it steps upward and returns the first function line ahead', () => {
       // Arrange
-      const sut = findFuncLine;
       const lines = ['{', '\tbody', 'int g(void)', '\tmore'].map(line);
 
       // Act — scan from index 0 up toward limit 4
-      const result = sut(lines, 0, 4);
+      const result = findFuncLine(lines, 0, 4);
 
       // Assert
       expect(result).toEqual({ index: 2, heading: 'int g(void)' });

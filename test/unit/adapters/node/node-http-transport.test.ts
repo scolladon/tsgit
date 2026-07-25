@@ -326,13 +326,13 @@ describe('NodeHttpTransport', () => {
               label: 'an undefined value entry is omitted',
             },
           ])('Then $label', ({ input, expected, omittedKey }) => {
-            // Arrange / Act
-            const sut = normalizeHeaders(input);
+            // Arrange & Act
+            const result = normalizeHeaders(input);
 
             // Assert
-            expect(sut).toEqual(expected);
+            expect(result).toEqual(expected);
             if (omittedKey !== undefined) {
-              expect(sut[omittedKey]).toBeUndefined();
+              expect(result[omittedKey]).toBeUndefined();
             }
           });
         });
@@ -377,10 +377,10 @@ describe('NodeHttpTransport', () => {
             },
           ])('Then $label', ({ code, expected, forbidden }) => {
             // Arrange
-            const sut = makeErrnoError(code);
+            const err = makeErrnoError(code);
 
             // Act
-            const reason = sanitizeErrorReason(sut);
+            const reason = sanitizeErrorReason(err);
 
             // Assert
             expect(reason).toBe(expected);

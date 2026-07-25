@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RefName } from '../../../../src/domain/objects/object-id.js';
-import { shortBranchName as sut } from '../../../../src/domain/refs/short-branch-name.js';
+import { shortBranchName } from '../../../../src/domain/refs/short-branch-name.js';
 
 describe('Given a ref name', () => {
   describe('When stripping the heads prefix', () => {
@@ -25,7 +25,7 @@ describe('Given a ref name', () => {
       const name = RefName.from(ref);
 
       // Act
-      const result = sut(name);
+      const result = shortBranchName(name);
 
       // Assert
       expect(result).toBe(expected);

@@ -42,10 +42,10 @@ describe('primitives/config-read', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut).toEqual({});
+        expect(result).toEqual({});
       });
     });
   });
@@ -56,16 +56,20 @@ describe('primitives/config-read', () => {
         { value: 'true', expected: true, label: 'parsed.core.bare is true' },
         { value: 'false', expected: false, label: 'parsed.core.bare is false' },
         { value: 'nope', expected: false, label: 'an unparseable boolean defaults to false' },
+        { value: 'yes', expected: true, label: 'parsed.core.bare is true (yes truthy alias)' },
+        { value: 'no', expected: false, label: 'parsed.core.bare is false (no falsy alias)' },
+        { value: 'on', expected: true, label: 'parsed.core.bare is true (on truthy alias)' },
+        { value: 'off', expected: false, label: 'parsed.core.bare is false (off falsy alias)' },
       ])('Then $label', async ({ value, expected }) => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, `[core]\nbare = ${value}\n`);
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(expected);
+        expect(result.core?.bare).toBe(expected);
       });
     });
   });
@@ -83,10 +87,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, `[core]\n  logallrefupdates = ${value}\n`);
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.logAllRefUpdates).toBe(expected);
+        expect(result.core?.logAllRefUpdates).toBe(expected);
       });
     });
   });
@@ -99,29 +103,39 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — strict shape: no `logAllRefUpdates` key is emitted at all,
         // not even as an explicit `undefined`.
-        expect(sut.core).toStrictEqual({ bare: true });
+        expect(result.core).toStrictEqual({ bare: true });
       });
     });
   });
 
-  describe('Given an unrecognised [core] key', () => {
-    describe('When readConfig', () => {
-      it('Then it does not become logAllRefUpdates', async () => {
-        // Arrange — only `bare`/`excludesfile`/`logallrefupdates` are consumed;
-        // `autocrlf` is a real git key tsgit ignores.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  autocrlf = always\n');
+  describe('Given a [core] key that must not promote core into existence, When readConfig', () => {
+    it.each([
+      {
+        config: '[core]\n  autocrlf = always\n',
+        label: 'an unrecognised key (autocrlf is a real git key tsgit ignores)',
+      },
+      {
+        config: '[core]\n  bareX\n',
+        label: 'an unrecognized valueless key (bareX, not consumed by the [core] merge)',
+      },
+      {
+        config: '[core]\n  excludesfile\n',
+        label: 'a string-typed key as a valueless entry (excludesfile skipped)',
+      },
+    ])('Then core stays undefined ($label)', async ({ config }) => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, config);
 
-        // Act
-        const sut = await readConfig(ctx);
+      // Act
+      const result = await readConfig(ctx);
 
-        // Assert
-        expect(sut.core).toBeUndefined();
-      });
+      // Assert
+      expect(result.core).toBeUndefined();
     });
   });
 
@@ -133,10 +147,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  logallrefupdates = always\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core).toEqual({ logAllRefUpdates: 'always' });
+        expect(result.core).toEqual({ logAllRefUpdates: 'always' });
       });
     });
   });
@@ -149,10 +163,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  hooksPath = /opt/githooks\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.hooksPath).toBe('/opt/githooks');
+        expect(result.core?.hooksPath).toBe('/opt/githooks');
       });
     });
   });
@@ -165,10 +179,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  HooksPath = .husky\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.hooksPath).toBe('.husky');
+        expect(result.core?.hooksPath).toBe('.husky');
       });
     });
   });
@@ -181,10 +195,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  hooksPath = /opt/githooks\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core).toEqual({ hooksPath: '/opt/githooks' });
+        expect(result.core).toEqual({ hooksPath: '/opt/githooks' });
       });
     });
   });
@@ -195,10 +209,9 @@ describe('primitives/config-read', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  notesRef = refs/notes/custom\n');
-        const sut = readConfig;
 
         // Act
-        const result = await sut(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
         expect(result.core?.notesRef).toBe('refs/notes/custom');
@@ -212,10 +225,9 @@ describe('primitives/config-read', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  notesref = refs/notes/custom\n');
-        const sut = readConfig;
 
         // Act
-        const result = await sut(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
         expect(result.core?.notesRef).toBe('refs/notes/custom');
@@ -231,28 +243,41 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.user?.name).toBe('Ada Lovelace');
-        expect(sut.user?.email).toBe('ada@example.com');
+        expect(result.user?.name).toBe('Ada Lovelace');
+        expect(result.user?.email).toBe('ada@example.com');
       });
     });
   });
 
-  describe('Given a config with [user] name only', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.user is undefined (both fields required)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[user]\n  name = Solo\n');
+  describe('Given a config that must not populate [user], When readConfig', () => {
+    it.each([
+      { config: '[user]\n  name = Solo\n', label: 'name only (email required too)' },
+      { config: '[user]\n  email = ada@example.com\n', label: 'email only (name required too)' },
+      {
+        config: '[foo]\n  name = X\n  email = e@x.com\n',
+        label: 'name and email under a non-user section',
+      },
+      {
+        config: '[user "sub"]\n  name = X\n  email = e@x.com\n',
+        label: 'name and email under a subsectioned [user "sub"]',
+      },
+      {
+        config: '[user]\n  name = N\n  bogus = B\n',
+        label: 'name and an unrecognized key (not treated as email)',
+      },
+    ])('Then parsed.user is undefined ($label)', async ({ config }) => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, config);
 
-        // Act
-        const sut = await readConfig(ctx);
+      // Act
+      const result = await readConfig(ctx);
 
-        // Assert
-        expect(sut.user).toBeUndefined();
-      });
+      // Assert
+      expect(result.user).toBeUndefined();
     });
   });
 
@@ -264,10 +289,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[user]\n  signingKey = ABCD1234\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.user?.signingKey).toBe('ABCD1234');
+        expect(result.user?.signingKey).toBe('ABCD1234');
       });
     });
   });
@@ -280,10 +305,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[user]\n  signingKey = ABCD1234\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — strict key set: name/email must be absent, not present-and-undefined
-        expect(sut.user).toStrictEqual({ signingKey: 'ABCD1234' });
+        expect(result.user).toStrictEqual({ signingKey: 'ABCD1234' });
       });
     });
   });
@@ -296,10 +321,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[user]\n  name = Ada Lovelace\n  email = ada@example.com\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — strict key set: signingKey must be absent, not present-and-undefined
-        expect(sut.user).toStrictEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
+        expect(result.user).toStrictEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
       });
     });
   });
@@ -312,10 +337,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "origin"]\n  url = https://example.com/r.git\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('origin')?.url).toBe('https://example.com/r.git');
+        expect(result.remote?.get('origin')?.url).toBe('https://example.com/r.git');
       });
     });
   });
@@ -331,10 +356,10 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('origin')?.fetch).toEqual([
+        expect(result.remote?.get('origin')?.fetch).toEqual([
           '+refs/heads/*:refs/remotes/origin/*',
           '+refs/tags/*:refs/tags/*',
         ]);
@@ -350,11 +375,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  remote = origin\n  merge = refs/heads/main\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.remote).toBe('origin');
-        expect(sut.branch?.get('main')?.merge).toBe('refs/heads/main');
+        expect(result.branch?.get('main')?.remote).toBe('origin');
+        expect(result.branch?.get('main')?.merge).toBe('refs/heads/main');
       });
     });
   });
@@ -367,10 +392,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  remote = origin\n  pushRemote = upstream\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.pushRemote).toBe('upstream');
+        expect(result.branch?.get('main')?.pushRemote).toBe('upstream');
       });
     });
   });
@@ -383,10 +408,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  PUSHREMOTE = upstream\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.pushRemote).toBe('upstream');
+        expect(result.branch?.get('main')?.pushRemote).toBe('upstream');
       });
     });
   });
@@ -399,10 +424,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  remote = origin\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.pushRemote).toBeUndefined();
+        expect(result.branch?.get('main')?.pushRemote).toBeUndefined();
       });
     });
   });
@@ -415,10 +440,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  foo = bar\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.pushRemote).toBeUndefined();
+        expect(result.branch?.get('main')?.pushRemote).toBeUndefined();
       });
     });
   });
@@ -431,10 +456,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  pushRemote\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.pushRemote).toBeUndefined();
+        expect(result.branch?.get('main')?.pushRemote).toBeUndefined();
       });
     });
   });
@@ -450,12 +475,12 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.submodule?.get('libs/a')?.url).toBe('../a');
-        expect(sut.submodule?.get('libs/a')?.active).toBe(true);
-        expect(sut.submodule?.get('libs/a')?.update).toBe('rebase');
+        expect(result.submodule?.get('libs/a')?.url).toBe('../a');
+        expect(result.submodule?.get('libs/a')?.active).toBe(true);
+        expect(result.submodule?.get('libs/a')?.update).toBe('rebase');
       });
     });
   });
@@ -471,11 +496,11 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — url from the first block is not clobbered by the second.
-        expect(sut.submodule?.get('libs/a')?.url).toBe('../a');
-        expect(sut.submodule?.get('libs/a')?.active).toBe(true);
+        expect(result.submodule?.get('libs/a')?.url).toBe('../a');
+        expect(result.submodule?.get('libs/a')?.active).toBe(true);
       });
     });
   });
@@ -488,10 +513,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.submodule).toBeUndefined();
+        expect(result.submodule).toBeUndefined();
       });
     });
   });
@@ -507,12 +532,12 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.merge?.get('custom')?.name).toBe('my driver');
-        expect(sut.merge?.get('custom')?.driver).toBe('run %O %A %B');
-        expect(sut.merge?.get('custom')?.recursive).toBe('binary');
+        expect(result.merge?.get('custom')?.name).toBe('my driver');
+        expect(result.merge?.get('custom')?.driver).toBe('run %O %A %B');
+        expect(result.merge?.get('custom')?.recursive).toBe('binary');
       });
     });
   });
@@ -525,11 +550,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[merge "a"]\n  driver = tool-a\n[merge "b"]\n  driver = tool-b\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.merge?.get('a')?.driver).toBe('tool-a');
-        expect(sut.merge?.get('b')?.driver).toBe('tool-b');
+        expect(result.merge?.get('a')?.driver).toBe('tool-a');
+        expect(result.merge?.get('b')?.driver).toBe('tool-b');
       });
     });
   });
@@ -545,11 +570,11 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — name from the first block is not clobbered by the second.
-        expect(sut.merge?.get('custom')?.name).toBe('my driver');
-        expect(sut.merge?.get('custom')?.driver).toBe('tool');
+        expect(result.merge?.get('custom')?.name).toBe('my driver');
+        expect(result.merge?.get('custom')?.driver).toBe('tool');
       });
     });
   });
@@ -562,12 +587,12 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[merge "custom"]\n  driver = tool\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.merge?.get('custom')?.driver).toBe('tool');
-        expect(sut.merge?.get('custom')?.name).toBeUndefined();
-        expect(sut.merge?.get('custom')?.recursive).toBeUndefined();
+        expect(result.merge?.get('custom')?.driver).toBe('tool');
+        expect(result.merge?.get('custom')?.name).toBeUndefined();
+        expect(result.merge?.get('custom')?.recursive).toBeUndefined();
       });
     });
   });
@@ -580,11 +605,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[merge "custom"]\n  name = drv\n  unrelated = binary\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — the recursive branch must only fire for a `recursive` key.
-        expect(sut.merge?.get('custom')?.name).toBe('drv');
-        expect(sut.merge?.get('custom')?.recursive).toBeUndefined();
+        expect(result.merge?.get('custom')?.name).toBe('drv');
+        expect(result.merge?.get('custom')?.recursive).toBeUndefined();
       });
     });
   });
@@ -597,10 +622,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[merge]\n  driver = tool\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.merge).toBeUndefined();
+        expect(result.merge).toBeUndefined();
       });
     });
   });
@@ -613,10 +638,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.merge).toBeUndefined();
+        expect(result.merge).toBeUndefined();
       });
     });
   });
@@ -629,11 +654,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[diff "upper"]\n\ttextconv = up\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.diff?.get('upper')?.textconv).toBe('up');
-        expect(sut.diff?.get('upper')?.cachetextconv).toBeUndefined();
+        expect(result.diff?.get('upper')?.textconv).toBe('up');
+        expect(result.diff?.get('upper')?.cachetextconv).toBeUndefined();
       });
     });
   });
@@ -646,11 +671,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tunrelated = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — the cachetextconv branch must only fire for a `cachetextconv` key.
-        expect(sut.diff?.get('upper')?.textconv).toBe('up');
-        expect(sut.diff?.get('upper')?.cachetextconv).toBeUndefined();
+        expect(result.diff?.get('upper')?.textconv).toBe('up');
+        expect(result.diff?.get('upper')?.cachetextconv).toBeUndefined();
       });
     });
   });
@@ -663,11 +688,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tcachetextconv = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.diff?.get('upper')?.textconv).toBe('up');
-        expect(sut.diff?.get('upper')?.cachetextconv).toBe(true);
+        expect(result.diff?.get('upper')?.textconv).toBe('up');
+        expect(result.diff?.get('upper')?.cachetextconv).toBe(true);
       });
     });
   });
@@ -680,10 +705,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tcachetextconv\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.diff?.get('upper')?.cachetextconv).toBe(true);
+        expect(result.diff?.get('upper')?.cachetextconv).toBe(true);
       });
     });
   });
@@ -696,11 +721,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[diff "a"]\n\ttextconv = tool-a\n[diff "b"]\n\ttextconv = tool-b\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.diff?.get('a')?.textconv).toBe('tool-a');
-        expect(sut.diff?.get('b')?.textconv).toBe('tool-b');
+        expect(result.diff?.get('a')?.textconv).toBe('tool-a');
+        expect(result.diff?.get('b')?.textconv).toBe('tool-b');
       });
     });
   });
@@ -716,11 +741,11 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — textconv from the first block is not clobbered by the second.
-        expect(sut.diff?.get('upper')?.textconv).toBe('up');
-        expect(sut.diff?.get('upper')?.cachetextconv).toBe(true);
+        expect(result.diff?.get('upper')?.textconv).toBe('up');
+        expect(result.diff?.get('upper')?.cachetextconv).toBe(true);
       });
     });
   });
@@ -733,10 +758,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.diff).toBeUndefined();
+        expect(result.diff).toBeUndefined();
       });
     });
   });
@@ -749,10 +774,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[diff]\n\ttextconv = up\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.diff).toBeUndefined();
+        expect(result.diff).toBeUndefined();
       });
     });
   });
@@ -765,13 +790,13 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[filter "myf"]\n\tclean = up\n\tsmudge = down\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.filter?.get('myf')?.clean).toBe('up');
-        expect(sut.filter?.get('myf')?.smudge).toBe('down');
-        expect(sut.filter?.get('myf')?.process).toBeUndefined();
-        expect(sut.filter?.get('myf')?.required).toBeUndefined();
+        expect(result.filter?.get('myf')?.clean).toBe('up');
+        expect(result.filter?.get('myf')?.smudge).toBe('down');
+        expect(result.filter?.get('myf')?.process).toBeUndefined();
+        expect(result.filter?.get('myf')?.required).toBeUndefined();
       });
     });
   });
@@ -784,11 +809,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[filter "myf"]\n\tclean = up\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.filter?.get('myf')?.clean).toBe('up');
-        expect(sut.filter?.get('myf')?.smudge).toBeUndefined();
+        expect(result.filter?.get('myf')?.clean).toBe('up');
+        expect(result.filter?.get('myf')?.smudge).toBeUndefined();
       });
     });
   });
@@ -801,11 +826,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[filter "myf"]\n\tclean = up\n\tunrelated = pr\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — the process branch must only fire for a `process` key.
-        expect(sut.filter?.get('myf')?.clean).toBe('up');
-        expect(sut.filter?.get('myf')?.process).toBeUndefined();
+        expect(result.filter?.get('myf')?.clean).toBe('up');
+        expect(result.filter?.get('myf')?.process).toBeUndefined();
       });
     });
   });
@@ -818,10 +843,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[filter "f"]\n\tclean = up\n\trequired\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.filter?.get('f')?.required).toBe(true);
+        expect(result.filter?.get('f')?.required).toBe(true);
       });
     });
   });
@@ -837,13 +862,13 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.filter?.get('f')?.clean).toBe('cl');
-        expect(sut.filter?.get('f')?.smudge).toBe('sm');
-        expect(sut.filter?.get('f')?.process).toBe('pr');
-        expect(sut.filter?.get('f')?.required).toBe(true);
+        expect(result.filter?.get('f')?.clean).toBe('cl');
+        expect(result.filter?.get('f')?.smudge).toBe('sm');
+        expect(result.filter?.get('f')?.process).toBe('pr');
+        expect(result.filter?.get('f')?.required).toBe(true);
       });
     });
   });
@@ -856,11 +881,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[filter "a"]\n\tclean = tool-a\n[filter "b"]\n\tsmudge = tool-b\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.filter?.get('a')?.clean).toBe('tool-a');
-        expect(sut.filter?.get('b')?.smudge).toBe('tool-b');
+        expect(result.filter?.get('a')?.clean).toBe('tool-a');
+        expect(result.filter?.get('b')?.smudge).toBe('tool-b');
       });
     });
   });
@@ -873,11 +898,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[filter "myf"]\n\tclean = cl\n[filter "myf"]\n\tsmudge = sm\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — clean from the first block is not clobbered by the second.
-        expect(sut.filter?.get('myf')?.clean).toBe('cl');
-        expect(sut.filter?.get('myf')?.smudge).toBe('sm');
+        expect(result.filter?.get('myf')?.clean).toBe('cl');
+        expect(result.filter?.get('myf')?.smudge).toBe('sm');
       });
     });
   });
@@ -890,10 +915,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.filter).toBeUndefined();
+        expect(result.filter).toBeUndefined();
       });
     });
   });
@@ -906,10 +931,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[filter]\n\tclean = up\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.filter).toBeUndefined();
+        expect(result.filter).toBeUndefined();
       });
     });
   });
@@ -925,10 +950,10 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — comments do not leak into values; bare is still parsed.
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
   });
@@ -941,10 +966,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, 'orphan = value\n[core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
   });
@@ -958,10 +983,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "origin"]\n  url = https://example.com/\\\n    really-long.git\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('origin')?.url).toBe('https://example.com/    really-long.git');
+        expect(result.remote?.get('origin')?.url).toBe('https://example.com/    really-long.git');
       });
     });
   });
@@ -974,10 +999,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[unknown]\n  key = value\n[core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
   });
@@ -1025,43 +1050,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[user]\n\tname\t=\tBob\t\n\temail\t=\tbob@x.com\t\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.user?.name).toBe('Bob');
-        expect(sut.user?.email).toBe('bob@x.com');
-      });
-    });
-  });
-
-  describe('Given a config with bare=yes (truthy alias)', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.bare is true', async () => {
-        // Arrange — Git accepts yes/on/1 as true and no/off/0 as false.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\nbare = yes\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.bare).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a config with bare=no', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.bare is false', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\nbare = no\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.bare).toBe(false);
+        expect(result.user?.name).toBe('Bob');
+        expect(result.user?.email).toBe('bob@x.com');
       });
     });
   });
@@ -1074,10 +1067,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote]\n  url = https://example.com/r.git\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote).toBeUndefined();
+        expect(result.remote).toBeUndefined();
       });
     });
   });
@@ -1093,11 +1086,11 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('origin')?.url).toBe('https://second.example/r.git');
-        expect(sut.remote?.get('origin')?.fetch).toEqual(['+a:b', '+c:d']);
+        expect(result.remote?.get('origin')?.url).toBe('https://second.example/r.git');
+        expect(result.remote?.get('origin')?.fetch).toEqual(['+a:b', '+c:d']);
       });
     });
   });
@@ -1113,11 +1106,11 @@ describe('primitives/config-read', () => {
         );
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.remote).toBe('b');
-        expect(sut.branch?.get('main')?.merge).toBe('refs/heads/y');
+        expect(result.branch?.get('main')?.remote).toBe('b');
+        expect(result.branch?.get('main')?.merge).toBe('refs/heads/y');
       });
     });
   });
@@ -1130,27 +1123,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "x"]\n  fetch = +a:b\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('x')?.url).toBeUndefined();
-        expect(sut.remote?.get('x')?.fetch).toEqual(['+a:b']);
-      });
-    });
-  });
-
-  describe('Given a [user] with email only', () => {
-    describe('When readConfig', () => {
-      it('Then user is undefined (both required)', async () => {
-        // Arrange — finalize() requires both name AND email; either alone collapses.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[user]\n  email = ada@example.com\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.user).toBeUndefined();
+        expect(result.remote?.get('x')?.url).toBeUndefined();
+        expect(result.remote?.get('x')?.fetch).toEqual(['+a:b']);
       });
     });
   });
@@ -1185,9 +1162,12 @@ describe('primitives/config-read', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[remote "origin"]\n  url = https://example.com/r.git # trailing\n');
-        const sut = await readConfig(ctx);
+
+        // Act
+        const result = await readConfig(ctx);
+
         // Assert
-        expect(sut.remote?.get('origin')?.url).toBe('https://example.com/r.git');
+        expect(result.remote?.get('origin')?.url).toBe('https://example.com/r.git');
       });
     });
   });
@@ -1198,9 +1178,12 @@ describe('primitives/config-read', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[remote "origin"]\n  url = "https://example.com/r#frag.git"\n');
-        const sut = await readConfig(ctx);
+
+        // Act
+        const result = await readConfig(ctx);
+
         // Assert
-        expect(sut.remote?.get('origin')?.url).toContain('#frag');
+        expect(result.remote?.get('origin')?.url).toContain('#frag');
       });
     });
   });
@@ -1280,10 +1263,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '  [core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
   });
@@ -1296,10 +1279,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "origin"]\n  url = ab\\\ncd ef.git\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('origin')?.url).toBe('abcd ef.git');
+        expect(result.remote?.get('origin')?.url).toBe('abcd ef.git');
       });
     });
   });
@@ -1312,10 +1295,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true\\');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — pending must be pushed at EOF or `bare` is lost.
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
   });
@@ -1328,10 +1311,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true ; trailing semicolon comment\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
   });
@@ -1344,10 +1327,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true # hash ; semi\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — cutting at `;` instead would leave `true # hash` (unparseable → false).
-        expect(sut.core?.bare).toBe(true);
+        expect(result.core?.bare).toBe(true);
       });
     });
   });
@@ -1437,40 +1420,6 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given a `[core]` body line holding an unrecognized valueless key', () => {
-    describe('When readConfig', () => {
-      it('Then core stays undefined', async () => {
-        // Arrange — `bareX` is a valid valueless key (boolean-true in git) but
-        // not a key the [core] merge consumes; it must not synthesize `bare`.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  bareX\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — an unrecognized key never promotes `core` into existence.
-        expect(sut.core).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a `[core]` string-typed key as a valueless entry', () => {
-    describe('When readConfig', () => {
-      it('Then the field is skipped and core stays undefined', async () => {
-        // Arrange — `excludesfile` is string-typed; a valueless occurrence is
-        // treated as absent and must not promote `core` into existence.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  excludesfile\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core).toBeUndefined();
-      });
-    });
-  });
-
   describe('Given a `[core "sub"]` section before a plain `[core]`', () => {
     describe('When readConfig', () => {
       it('Then the subsectioned core is ignored', async () => {
@@ -1479,42 +1428,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = false\n[core "weird"]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — `[core "weird"]` is ignored, so `bare` stays false.
-        expect(sut.core?.bare).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a non-user section without a subsection carrying name/email keys', () => {
-    describe('When readConfig', () => {
-      it('Then it is not parsed as `[user]`', async () => {
-        // Arrange — `[foo]` must not satisfy the `[user]` branch.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[foo]\n  name = X\n  email = e@x.com\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.user).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a `[user "sub"]` section with name and email', () => {
-    describe('When readConfig', () => {
-      it('Then the subsectioned user is ignored', async () => {
-        // Arrange — user with a subsection must NOT be treated as `[user]`.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[user "sub"]\n  name = X\n  email = e@x.com\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.user).toBeUndefined();
+        expect(result.core?.bare).toBe(false);
       });
     });
   });
@@ -1527,26 +1444,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[foo]\n  remote = origin\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given a `[user]` section with name and an unrecognized key', () => {
-    describe('When readConfig', () => {
-      it('Then the unrecognized key is not treated as email', async () => {
-        // Arrange — only the literal key `email` may populate user.email.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[user]\n  name = N\n  bogus = B\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert — user needs both name AND email; `bogus` must not stand in for email.
-        expect(sut.user).toBeUndefined();
+        expect(result.branch).toBeUndefined();
       });
     });
   });
@@ -1559,10 +1460,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "o"]\n  url = u\n  bogus = B\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('o')?.fetch).toBeUndefined();
+        expect(result.remote?.get('o')?.fetch).toBeUndefined();
       });
     });
   });
@@ -1575,10 +1476,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "o"]\n  url = u\n  bogus = B\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('o')?.partialCloneFilter).toBeUndefined();
+        expect(result.remote?.get('o')?.partialCloneFilter).toBeUndefined();
       });
     });
   });
@@ -1591,10 +1492,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "o"]\n  url = u\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remote?.get('o')?.fetch).toBeUndefined();
+        expect(result.remote?.get('o')?.fetch).toBeUndefined();
       });
     });
   });
@@ -1607,10 +1508,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote]\n  pushDefault = origin\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remotePushDefault).toBe('origin');
+        expect(result.remotePushDefault).toBe('origin');
       });
     });
   });
@@ -1623,10 +1524,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote]\n  foo = bar\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remotePushDefault).toBeUndefined();
+        expect(result.remotePushDefault).toBeUndefined();
       });
     });
   });
@@ -1639,10 +1540,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[remote "origin"]\n  url = u\n  pushDefault = other\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.remotePushDefault).toBeUndefined();
+        expect(result.remotePushDefault).toBeUndefined();
       });
     });
   });
@@ -1655,11 +1556,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  remote = a\n[branch "main"]\n  merge = m\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — `remote` from the first section must survive the second merge.
-        expect(sut.branch?.get('main')?.remote).toBe('a');
-        expect(sut.branch?.get('main')?.merge).toBe('m');
+        expect(result.branch?.get('main')?.remote).toBe('a');
+        expect(result.branch?.get('main')?.merge).toBe('m');
       });
     });
   });
@@ -1672,10 +1573,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[branch "main"]\n  remote = origin\n  bogus = B\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.branch?.get('main')?.merge).toBeUndefined();
+        expect(result.branch?.get('main')?.merge).toBeUndefined();
       });
     });
   });
@@ -1688,10 +1589,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[user]\n  name = N\n  email = e@x.com\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — `core` key must not be present at all.
-        expect('core' in sut).toBe(false);
+        expect('core' in result).toBe(false);
       });
     });
   });
@@ -1704,11 +1605,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  excludesfile = /etc/gitignore\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — no `bare` key when bare was never configured.
-        expect(sut.core?.excludesFile).toBe('/etc/gitignore');
-        expect('bare' in (sut.core ?? {})).toBe(false);
+        expect(result.core?.excludesFile).toBe('/etc/gitignore');
+        expect('bare' in (result.core ?? {})).toBe(false);
       });
     });
   });
@@ -1721,11 +1622,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — no `excludesFile` key when it was never configured.
-        expect(sut.core?.bare).toBe(true);
-        expect('excludesFile' in (sut.core ?? {})).toBe(false);
+        expect(result.core?.bare).toBe(true);
+        expect('excludesFile' in (result.core ?? {})).toBe(false);
       });
     });
   });
@@ -1738,11 +1639,11 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  sshCommand = ssh -v\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — sshCommand round-trips verbatim; no `bare` key when unconfigured.
-        expect(sut.core?.sshCommand).toBe('ssh -v');
-        expect('bare' in (sut.core ?? {})).toBe(false);
+        expect(result.core?.sshCommand).toBe('ssh -v');
+        expect('bare' in (result.core ?? {})).toBe(false);
       });
     });
   });
@@ -1755,10 +1656,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  sshCommand\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — a valueless key is treated as absent for the string-typed field.
-        expect('sshCommand' in (sut.core ?? {})).toBe(false);
+        expect('sshCommand' in (result.core ?? {})).toBe(false);
       });
     });
   });
@@ -1771,10 +1672,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect('remote' in sut).toBe(false);
+        expect('remote' in result).toBe(false);
       });
     });
   });
@@ -1787,10 +1688,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect('branch' in sut).toBe(false);
+        expect('branch' in result).toBe(false);
       });
     });
   });
@@ -1829,42 +1730,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[foo "bar"]\n  remote = origin\n  merge = refs/heads/x\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — branch must stay absent; the `foo` section is unknown.
-        expect(sut.branch).toBeUndefined();
-      });
-    });
-  });
-
-  describe('Given `bare = on` (truthy alias)', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.bare is true', async () => {
-        // Arrange — `on`/`1` are git truthy aliases.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  bare = on\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.bare).toBe(true);
-      });
-    });
-  });
-
-  describe('Given `bare = off` (explicit false alias)', () => {
-    describe('When readConfig', () => {
-      it('Then parsed.core.bare is false', async () => {
-        // Arrange — `off`/`0` are git falsy aliases; not truthy.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n  bare = off\n');
-
-        // Act
-        const sut = await readConfig(ctx);
-
-        // Assert
-        expect(sut.core?.bare).toBe(false);
+        expect(result.branch).toBeUndefined();
       });
     });
   });
@@ -1898,10 +1767,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, config);
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.sparseCheckout).toBe(expected);
+        expect(result.core?.sparseCheckout).toBe(expected);
       });
     });
   });
@@ -1930,10 +1799,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, config);
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.sparseCheckoutCone).toBe(expected);
+        expect(result.core?.sparseCheckoutCone).toBe(expected);
       });
     });
   });
@@ -1947,10 +1816,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  sparseCheckout = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core).toEqual({ sparseCheckout: true });
+        expect(result.core).toEqual({ sparseCheckout: true });
       });
     });
   });
@@ -1963,10 +1832,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  sparseCheckoutCone = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core).toEqual({ sparseCheckoutCone: true });
+        expect(result.core).toEqual({ sparseCheckoutCone: true });
       });
     });
   });
@@ -1980,10 +1849,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  bare = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert — strict shape: only `bare`, neither sparse key present.
-        expect(sut.core).toStrictEqual({ bare: true });
+        expect(result.core).toStrictEqual({ bare: true });
       });
     });
   });
@@ -1997,10 +1866,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  sparseCheckout = true\n  sparseCheckoutCone = false\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core).toEqual({ sparseCheckout: true, sparseCheckoutCone: false });
+        expect(result.core).toEqual({ sparseCheckout: true, sparseCheckoutCone: false });
       });
     });
   });
@@ -2039,10 +1908,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, config);
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.looseCompression).toBe(expected);
+        expect(result.core?.looseCompression).toBe(expected);
       });
     });
   });
@@ -2068,10 +1937,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, config);
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core?.looseCompression).toBeUndefined();
+        expect(result.core?.looseCompression).toBeUndefined();
       });
     });
   });
@@ -2084,10 +1953,10 @@ describe('primitives/config-read', () => {
         await seed(ctx, '[core]\n  loosecompression = 9\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.core).toEqual({ looseCompression: 9 });
+        expect(result.core).toEqual({ looseCompression: 9 });
       });
     });
   });
@@ -2139,11 +2008,8 @@ describe('primitives/config-read', () => {
         // Arrange — `cache.delete` of an absent key is a harmless no-op.
         const ctx = createMemoryContext();
 
-        // Act
-        const sut = (): void => invalidateConfigCache(ctx);
-
         // Assert
-        expect(sut).not.toThrow();
+        expect(() => invalidateConfigCache(ctx)).not.toThrow();
       });
     });
   });
@@ -2229,10 +2095,10 @@ describe('primitives/config-read', () => {
           await seed(ctx, '[extensions]\n\tpartialClone = origin\n');
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          expect(sut.extensions?.partialClone).toBe('origin');
+          expect(result.extensions?.partialClone).toBe('origin');
         });
       });
     });
@@ -2245,27 +2111,35 @@ describe('primitives/config-read', () => {
           await seed(ctx, '[extensions]\n\tpartialclone = upstream\n');
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          expect(sut.extensions?.partialClone).toBe('upstream');
+          expect(result.extensions?.partialClone).toBe('upstream');
         });
       });
     });
 
-    describe('Given a config with no [extensions] section', () => {
-      describe('When readConfig', () => {
-        it('Then extensions is undefined', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await seed(ctx, '[core]\n\tbare = false\n');
+    describe('Given a config with no matching [extensions] section, When readConfig', () => {
+      it.each([
+        { config: '[core]\n\tbare = false\n', label: 'no [extensions] section at all' },
+        {
+          config: '[other]\npartialclone = origin\n',
+          label: 'a partialclone key under a non-extensions section',
+        },
+        {
+          config: '[extensions "sub"]\n\tpartialclone = origin\n',
+          label: 'an [extensions "sub"] subsection (not treated as [extensions])',
+        },
+      ])('Then extensions is undefined ($label)', async ({ config }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
 
-          // Act
-          const sut = await readConfig(ctx);
+        // Act
+        const result = await readConfig(ctx);
 
-          // Assert
-          expect(sut.extensions).toBeUndefined();
-        });
+        // Assert
+        expect(result.extensions).toBeUndefined();
       });
     });
 
@@ -2280,10 +2154,10 @@ describe('primitives/config-read', () => {
           );
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          expect(sut.remote?.get('origin')?.promisor).toBe(true);
+          expect(result.remote?.get('origin')?.promisor).toBe(true);
         });
       });
     });
@@ -2299,10 +2173,10 @@ describe('primitives/config-read', () => {
           );
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          expect(sut.remote?.get('origin')?.partialCloneFilter).toBe('blob:none');
+          expect(result.remote?.get('origin')?.partialCloneFilter).toBe('blob:none');
         });
       });
     });
@@ -2315,10 +2189,10 @@ describe('primitives/config-read', () => {
           await seed(ctx, '[remote "origin"]\n\tURL = https://example.com/r.git\n');
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          expect(sut.remote?.get('origin')?.url).toBe('https://example.com/r.git');
+          expect(result.remote?.get('origin')?.url).toBe('https://example.com/r.git');
         });
       });
     });
@@ -2331,10 +2205,10 @@ describe('primitives/config-read', () => {
           await seed(ctx, '[remote "origin"]\n\turl = https://example.com/r.git\n');
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          const remote = sut.remote?.get('origin');
+          const remote = result.remote?.get('origin');
           expect(remote?.promisor).toBeUndefined();
           expect(remote?.partialCloneFilter).toBeUndefined();
         });
@@ -2352,10 +2226,10 @@ describe('primitives/config-read', () => {
           );
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          const remote = sut.remote?.get('origin');
+          const remote = result.remote?.get('origin');
           expect(remote?.url).toBe('https://e.com/r.git');
           expect(remote?.pushUrl).toBe('git@e.com:r.git');
         });
@@ -2370,10 +2244,10 @@ describe('primitives/config-read', () => {
           await seed(ctx, '[remote "origin"]\n\turl = https://e.com/r.git\n');
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          expect(sut.remote?.get('origin')?.pushUrl).toBeUndefined();
+          expect(result.remote?.get('origin')?.pushUrl).toBeUndefined();
         });
       });
     });
@@ -2386,42 +2260,10 @@ describe('primitives/config-read', () => {
           await seed(ctx, '[remote "origin"]\n\tPUSHURL = git@e.com:r.git\n');
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert
-          expect(sut.remote?.get('origin')?.pushUrl).toBe('git@e.com:r.git');
-        });
-      });
-    });
-
-    describe('Given a partialclone key under a non-extensions section', () => {
-      describe('When readConfig', () => {
-        it('Then extensions stays undefined', async () => {
-          // Arrange — only the literal `[extensions]` section feeds mergeExtensions.
-          const ctx = createMemoryContext();
-          await seed(ctx, '[other]\npartialclone = origin\n');
-
-          // Act
-          const sut = await readConfig(ctx);
-
-          // Assert
-          expect(sut.extensions).toBeUndefined();
-        });
-      });
-    });
-
-    describe('Given an [extensions "sub"] subsection', () => {
-      describe('When readConfig', () => {
-        it('Then it is NOT treated as [extensions]', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await seed(ctx, '[extensions "sub"]\n\tpartialclone = origin\n');
-
-          // Act
-          const sut = await readConfig(ctx);
-
-          // Assert
-          expect(sut.extensions).toBeUndefined();
+          expect(result.remote?.get('origin')?.pushUrl).toBe('git@e.com:r.git');
         });
       });
     });
@@ -2437,10 +2279,10 @@ describe('primitives/config-read', () => {
           );
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert — only the `partialclonefilter` key sets the field.
-          expect(sut.remote?.get('origin')?.partialCloneFilter).toBeUndefined();
+          expect(result.remote?.get('origin')?.partialCloneFilter).toBeUndefined();
         });
       });
     });
@@ -2453,10 +2295,10 @@ describe('primitives/config-read', () => {
           await seed(ctx, '[extensions]\nname = enabled\n');
 
           // Act
-          const sut = await readConfig(ctx);
+          const result = await readConfig(ctx);
 
           // Assert — only the `partialclone` key populates extensions.
-          expect(sut.extensions?.partialClone).toBeUndefined();
+          expect(result.extensions?.partialClone).toBeUndefined();
         });
       });
     });
@@ -2472,10 +2314,10 @@ describe('primitives/config-read parseIniSections', () => {
           '[core]\n\tbare = true\n# a comment\n[remote "origin"]\n\turl = https://e\\\n/r.git\n';
 
         // Act
-        const sut: ReadonlyArray<IniSection> = parseIniSections(text);
+        const result: ReadonlyArray<IniSection> = parseIniSections(text);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           { section: 'core', subsection: undefined, entries: [{ key: 'bare', value: 'true' }] },
           {
             section: 'remote',
@@ -2494,10 +2336,10 @@ describe('primitives/config-read parseIniSections', () => {
         const text = '';
 
         // Act
-        const sut = parseIniSections(text);
+        const result = parseIniSections(text);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -2519,11 +2361,10 @@ describe('primitives/config-read value grammar', () => {
       ['"a ; c"', 'a ; c'],
     ])('Then %j parses to %j (quotes stripped, spans concatenated)', (raw, expected) => {
       // Arrange
-      const sut = parseIniSections;
       const text = configTextFor(raw);
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(firstValue(result)).toBe(expected);
@@ -2542,11 +2383,10 @@ describe('primitives/config-read value grammar', () => {
       ['"a\\\\b"', 'a\\b'],
     ])('Then %j decodes to %j', (raw, expected) => {
       // Arrange
-      const sut = parseIniSections;
       const text = configTextFor(raw);
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(firstValue(result)).toBe(expected);
@@ -2568,11 +2408,10 @@ describe('primitives/config-read value grammar', () => {
       ['a\x0c', 'a\x0c'],
     ])('Then %j parses to %j (GIT_SPACE trim: space/tab/CR only)', (raw, expected) => {
       // Arrange
-      const sut = parseIniSections;
       const text = configTextFor(raw);
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(firstValue(result)).toBe(expected);
@@ -2580,11 +2419,10 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then a quote toggle resets the trailing-whitespace trim', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = configTextFor('a ""');
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(firstValue(result)).toBe('a ');
@@ -2592,11 +2430,10 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then an escape append resets the trailing-whitespace trim', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = configTextFor('a \\t');
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(firstValue(result)).toBe('a \t');
@@ -2606,11 +2443,10 @@ describe('primitives/config-read value grammar', () => {
   describe('Given backslash continuations, When parseIniSections', () => {
     it('Then the continuation line leading whitespace is preserved as interior', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = '[test]\n\tv = a\\\n   b\n';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result[0]?.entries).toEqual([{ key: 'v', value: 'a   b' }]);
@@ -2618,11 +2454,10 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then an escaped backslash at end of line is not a continuation', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = '[test]\n\tv = a\\\\\n\tw = c\n';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result[0]?.entries).toEqual([
@@ -2633,11 +2468,10 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then a continuation inside a quote span carries the quote state across lines', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = '[test]\n\tv = "a\\\nb"\n';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result[0]?.entries).toEqual([{ key: 'v', value: 'ab' }]);
@@ -2645,11 +2479,10 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then a continuation on the final line ends the value without error', () => {
       // Arrange — git fakes an end-of-line at EOF.
-      const sut = parseIniSections;
       const text = '[test]\n\tv = a\\';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result[0]?.entries).toEqual([{ key: 'v', value: 'a' }]);
@@ -2657,11 +2490,10 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then a section header after a continued value is still recognized', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = '[test]\n\tv = a\\\nb\n[next]\n\tw = c\n';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result).toEqual([
@@ -2674,11 +2506,10 @@ describe('primitives/config-read value grammar', () => {
   describe('Given comment characters, When parseIniSections', () => {
     it('Then an unquoted hash starts a comment and trailing whitespace is trimmed', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = configTextFor('a # c');
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(firstValue(result)).toBe('a');
@@ -2688,13 +2519,10 @@ describe('primitives/config-read value grammar', () => {
       ['hash', '[test]\n\tab#cd = x\n\tv = ok\n'],
       ['semicolon', '[test]\n\tab;cd = x\n\tv = ok\n'],
     ])('Then a %s comment before the equals sign causes CONFIG_PARSE_ERROR', (_label, text) => {
-      // Arrange — the comment swallows the `=`, landing the line on the
+      // Arrange + Act + Assert — the comment swallows the `=`, landing the line on the
       // valueless-key path; `ab#cd` / `ab;cd` fail the key grammar → git refuses.
-      const sut = parseIniSections;
-
-      // Act + Assert
       try {
-        sut(text, 'test.cfg');
+        parseIniSections(text, 'test.cfg');
         expect.unreachable('parseIniSections must throw when comment swallows =');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -2706,12 +2534,11 @@ describe('primitives/config-read value grammar', () => {
     it('Then a line with a semicolon before = and a hash after = causes CONFIG_PARSE_ERROR', () => {
       // Arrange — the `;` before `=` swallows the `=`; `a;b` fails the key
       // grammar (semicolon is not alnum/dash) → git refuses the file.
-      const sut = parseIniSections;
       const text = '[test]\n\ta;b = x # y\n\tv = ok\n';
 
       // Act + Assert
       try {
-        sut(text, 'test.cfg');
+        parseIniSections(text, 'test.cfg');
         expect.unreachable('parseIniSections must throw on comment-swallowed = line');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -2723,12 +2550,11 @@ describe('primitives/config-read value grammar', () => {
     it('Then an unindented comment-swallowed line causes CONFIG_PARSE_ERROR', () => {
       // Arrange — without indentation the key starts at column 0; the `;` still
       // fails the grammar and git refuses the file with `bad config line N`.
-      const sut = parseIniSections;
       const text = '[test]\na;b = x # y\nv = ok\n';
 
       // Act + Assert
       try {
-        sut(text, 'test.cfg');
+        parseIniSections(text, 'test.cfg');
         expect.unreachable('parseIniSections must throw on unindented comment-swallowed line');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -2743,11 +2569,8 @@ describe('primitives/config-read value grammar', () => {
       ['hash-then-semicolon', '[test] # c ; d\n\tv = ok\n'],
       ['semicolon-then-hash', '[test] ; c # d\n\tv = ok\n'],
     ])('Then a %s trailing comment is cut at the earliest marker', (_label, text) => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act
-      const result = sut(text);
+      // Arrange & Act
+      const result = parseIniSections(text);
 
       // Assert
       expect(result).toEqual([
@@ -2758,11 +2581,10 @@ describe('primitives/config-read value grammar', () => {
     it('Then a comment after a closed quoted subsection is still cut', () => {
       // Arrange — the quote span must CLOSE at its second `"` so the later
       // `#` is unquoted again and the trailing comment is stripped.
-      const sut = parseIniSections;
       const text = '[branch "a"] # c\n\tv = ok\n';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result).toEqual([
@@ -2772,11 +2594,10 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then a hash inside a quoted subsection is not a comment', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = '[branch "a#b"]\n\tv = ok\n';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result).toEqual([
@@ -2787,11 +2608,10 @@ describe('primitives/config-read value grammar', () => {
     it('Then a backslash-escaped quote inside a quoted subsection is decoded and does not close the span', () => {
       // Arrange — `\"` decodes to `"` (not verbatim `\"`); the `#` after it stays
       // inside the span and becomes part of the subsection name, not a comment.
-      const sut = parseIniSections;
       const text = '[branch "a\\"#b"]\n\tv = ok\n';
 
       // Act
-      const result = sut(text);
+      const result = parseIniSections(text);
 
       // Assert
       expect(result).toEqual([
@@ -2853,11 +2673,8 @@ describe('primitives/config-read value grammar', () => {
         label: 'an empty quoted subsection `""` yields an empty string (not undefined)',
       },
     ])('Then $label', ({ text, subsection }) => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act
-      const result = sut(text);
+      // Arrange & Act
+      const result = parseIniSections(text);
 
       // Assert
       expect(result).toEqual([{ section: 's', subsection, entries: [{ key: 'k', value: 'v' }] }]);
@@ -2917,12 +2734,9 @@ describe('primitives/config-read value grammar', () => {
         label: 'a malformed header on line 3 of a multi-line file reports `line: 3`',
       },
     ])('Then $label', ({ text, expectedData }) => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act + Assert
+      // Arrange + Act + Assert
       try {
-        sut(text, 'test-source');
+        parseIniSections(text, 'test-source');
         expect.unreachable('parseIniSections must throw on a malformed quoted subsection header');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -2950,12 +2764,9 @@ describe('primitives/config-read value grammar', () => {
         label: 'a failure on a continuation line reports the continuation physical line',
       },
     ])('Then $label', ({ text, line }) => {
-      // Arrange
-      const sut = parseIniSections;
-
-      // Act + Assert
+      // Arrange + Act + Assert
       try {
-        sut(text);
+        parseIniSections(text);
         expect.unreachable('parseIniSections must throw on a malformed value');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -2966,12 +2777,11 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then the source label is carried when provided', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = '[test]\n\tv = "bad\n';
 
       // Act + Assert
       try {
-        sut(text, 'some/config');
+        parseIniSections(text, 'some/config');
         expect.unreachable('parseIniSections must throw on an unclosed quote');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -2981,12 +2791,11 @@ describe('primitives/config-read value grammar', () => {
 
     it('Then the source label is absent when not provided', () => {
       // Arrange
-      const sut = parseIniSections;
       const text = '[test]\n\tv = "bad\n';
 
       // Act + Assert
       try {
-        sut(text);
+        parseIniSections(text);
         expect.unreachable('parseIniSections must throw on an unclosed quote');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -3074,12 +2883,12 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       await seed(ctx, '[user]\n\tname = ada\n');
 
       // Act
-      const sut = await readConfigSections({ ctx, scope: 'local' });
+      const result = await readConfigSections({ ctx, scope: 'local' });
 
       // Assert
-      expect(sut).toHaveLength(1);
-      expect(sut[0]?.scope).toBe('local');
-      expect(sut[0]?.section.section).toBe('user');
+      expect(result).toHaveLength(1);
+      expect(result[0]?.scope).toBe('local');
+      expect(result[0]?.section.section).toBe('user');
     });
   });
 
@@ -3089,10 +2898,10 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       const ctx = createMemoryContext();
 
       // Act
-      const sut = await readConfigSections({ ctx, scope: 'local' });
+      const result = await readConfigSections({ ctx, scope: 'local' });
 
       // Assert
-      expect(sut).toEqual([]);
+      expect(result).toEqual([]);
     });
   });
 
@@ -3136,10 +2945,10 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       await seed(ctx, '[user]\n\tname = ada\n');
 
       // Act
-      const sut = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+      const result = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', value: 'ada', scope: 'local' });
+      expect(result).toEqual({ key: 'user.name', value: 'ada', scope: 'local' });
     });
   });
 
@@ -3149,10 +2958,10 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       const ctx = createMemoryContext();
 
       // Act
-      const sut = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+      const result = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', value: undefined });
+      expect(result).toEqual({ key: 'user.name', value: undefined });
     });
   });
 
@@ -3191,14 +3000,14 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       );
 
       // Act
-      const sut = await getAllConfigValues({
+      const result = await getAllConfigValues({
         ctx,
         key: 'remote.origin.fetch',
         scope: 'local',
       });
 
       // Assert
-      expect(sut.values).toEqual([
+      expect(result.values).toEqual([
         { value: '+refs/heads/*:refs/remotes/origin/*', scope: 'local' },
         { value: '+refs/tags/*:refs/tags/*', scope: 'local' },
       ]);
@@ -3211,10 +3020,10 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       const ctx = createMemoryContext();
 
       // Act
-      const sut = await getAllConfigValues({ ctx, key: 'user.email', scope: 'local' });
+      const result = await getAllConfigValues({ ctx, key: 'user.email', scope: 'local' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.email', values: [] });
+      expect(result).toEqual({ key: 'user.email', values: [] });
     });
   });
 
@@ -3314,12 +3123,12 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       await seed(ctx, '[user]\n\tname = ada\n');
 
       // Act
-      const sut = await readConfigSections({ ctx });
+      const result = await readConfigSections({ ctx });
 
       // Assert
-      expect(sut).toHaveLength(1);
-      expect(sut[0]?.scope).toBe('local');
-      expect(sut[0]?.section.section).toBe('user');
+      expect(result).toHaveLength(1);
+      expect(result[0]?.scope).toBe('local');
+      expect(result[0]?.section.section).toBe('user');
     });
   });
 
@@ -3330,10 +3139,10 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
       await seed(ctx, '[user]\n\tname = ada\n');
 
       // Act
-      const sut = await getConfigValue({ ctx, key: 'user.name', scope: 'global' });
+      const result = await getConfigValue({ ctx, key: 'user.name', scope: 'global' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', value: undefined });
+      expect(result).toEqual({ key: 'user.name', value: undefined });
     });
   });
 });
@@ -3342,11 +3151,8 @@ describe('primitives/config-read valueless keys', () => {
   describe('parseIniSections — valueless entry tokenisation', () => {
     describe('Given [a]\\n\\tkey\\n, When parseIniSections', () => {
       it('Then one entry with key and value null', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tkey\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\tkey\n');
 
         // Assert
         expect(result).toEqual([
@@ -3372,11 +3178,8 @@ describe('primitives/config-read valueless keys', () => {
         },
         { input: '[a]\nkey', key: 'key', label: 'value is null (no trailing newline accepted)' },
       ])('Then $label', ({ input, key }) => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut(input);
+        // Arrange & Act
+        const result = parseIniSections(input);
 
         // Assert
         expect(result[0]?.entries).toEqual([{ key, value: null }]);
@@ -3396,12 +3199,9 @@ describe('primitives/config-read valueless keys', () => {
         { text: '[a]\nkey\r \n', label: 'lone CR before trailing space (key\\r )' },
         { text: '[a]\n\tab#cd = x\n', label: 'a comment swallowing the = (ab#cd = x)' },
       ])('Then throws CONFIG_PARSE_ERROR with line 2 and the source ($label)', ({ text }) => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
-          sut(text, 'test.cfg');
+          parseIniSections(text, 'test.cfg');
           expect.unreachable('must throw on a key that violates the grammar');
         } catch (err) {
           if (!(err instanceof TsgitError)) throw err;
@@ -3415,11 +3215,8 @@ describe('primitives/config-read valueless keys', () => {
   describe('parseIniSections — leniency preserved', () => {
     describe('Given a valid valueless key before any section (orphan), When parseIniSections', () => {
       it('Then the orphan records under the empty section ahead of the named section', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('key\n[a]\n\tv = ok\n');
+        // Arrange & Act
+        const result = parseIniSections('key\n[a]\n\tv = ok\n');
 
         // Assert
         expect(result).toEqual([
@@ -3431,12 +3228,9 @@ describe('primitives/config-read valueless keys', () => {
 
     describe('Given `[a] key` on a header line followed by a body entry, When parseIniSections', () => {
       it('Then the header opens a section and the same-line valueless key joins the body entry', () => {
-        // Arrange — `[a] key` is a header `[a]` plus a same-line valueless entry;
+        // Arrange + Act — `[a] key` is a header `[a]` plus a same-line valueless entry;
         // the following `v = ok` lands in the same re-opened section.
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n[a] key\n\tv = ok\n');
+        const result = parseIniSections('[a]\n[a] key\n\tv = ok\n');
 
         // Assert — first `[a]` is empty; the second carries the same-line key and `v`.
         expect(result).toEqual([
@@ -3455,11 +3249,8 @@ describe('primitives/config-read valueless keys', () => {
 
     describe('Given a full-line comment, When parseIniSections', () => {
       it('Then skipped and no throw', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n# comment\n\tv = ok\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n# comment\n\tv = ok\n');
 
         // Assert
         expect(result).toEqual([
@@ -3470,11 +3261,8 @@ describe('primitives/config-read valueless keys', () => {
 
     describe('Given a blank line, When parseIniSections', () => {
       it('Then skipped and no throw', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\n\tv = ok\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\n\tv = ok\n');
 
         // Assert
         expect(result).toEqual([
@@ -3643,11 +3431,8 @@ describe('primitives/config-read valueless keys', () => {
 describe('primitives/config-read tokenizeConfig', () => {
   describe('Given a simple section with one entry, When tokenizeConfig', () => {
     it('Then returns a header token followed by an entry token with correct span', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tkey = v\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tkey = v\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3659,11 +3444,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a backslash continuation, When tokenizeConfig', () => {
     it('Then the entry spans both physical lines with the joined value', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tkey = one\\\n   two\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tkey = one\\\n   two\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3675,11 +3457,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given chained backslash continuations, When tokenizeConfig', () => {
     it('Then the entry spans all physical lines with endLine equal to the last continuation plus one', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tkey = one\\\n   two\\\n   three\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tkey = one\\\n   two\\\n   three\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3691,11 +3470,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a quoted continuation, When tokenizeConfig', () => {
     it('Then the entry spans both physical lines with the concatenated quoted value', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tkey = "one\\\n   two"\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tkey = "one\\\n   two"\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3707,11 +3483,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a backslash inside a trailing comment, When tokenizeConfig', () => {
     it('Then the backslash is not a continuation and the next line is a separate entry', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tkey = one # c\\\n\tnext = x\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tkey = one # c\\\n\tnext = x\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3724,11 +3497,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a continuation tail that looks like a key line, When tokenizeConfig', () => {
     it('Then the tail is value content and only the real url entry is emitted', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tnote = first\\\n\turl = fake\n\turl = real\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tnote = first\\\n\turl = fake\n\turl = real\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3741,11 +3511,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a continuation tail that looks like a section header, When tokenizeConfig', () => {
     it('Then only one header token is emitted and note spans both physical lines', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tnote = v\\\n[x]\n\tkey = old\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tnote = v\\\n[x]\n\tkey = old\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3758,11 +3525,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given blank lines and comment lines, When tokenizeConfig', () => {
     it('Then blank lines emit blank tokens and comment lines emit comment tokens', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\n# c\n   ; c\n   \n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\n# c\n   ; c\n   \n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3777,14 +3541,11 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a header with or without an inline comment, When tokenizeConfig', () => {
     it('Then hasComment is true when an unquoted inline comment is present and false otherwise', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const withComment = sut('[a] # note\n');
-      const withSemicolonComment = sut('[a] ; note\n');
-      const withoutComment = sut('[a]\n');
-      const quotedHash = sut('[a "x#y"]\n');
+      // Arrange & Act
+      const withComment = tokenizeConfig('[a] # note\n');
+      const withSemicolonComment = tokenizeConfig('[a] ; note\n');
+      const withoutComment = tokenizeConfig('[a]\n');
+      const quotedHash = tokenizeConfig('[a "x#y"]\n');
 
       // Assert
       expect((withComment[0] as Extract<ConfigToken, { kind: 'header' }>).hasComment).toBe(true);
@@ -3800,13 +3561,10 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a not-header body line starting with [ (`[half`), When tokenizeConfig', () => {
     it('Then it refuses with CONFIG_PARSE_ERROR on its physical line like git', () => {
-      // Arrange — `[half` is not a valid header and has no key char at column 0,
+      // Arrange + Act + Assert — `[half` is not a valid header and has no key char at column 0,
       // so git refuses it (bad config line 2); the parser must not skip it.
-      const sut = tokenizeConfig;
-
-      // Act + Assert
       try {
-        sut('[a]\n\t[half\n');
+        tokenizeConfig('[a]\n\t[half\n');
         expect.unreachable('tokenizeConfig must refuse a bracket-shaped non-header line');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -3820,11 +3578,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a valueless entry, When tokenizeConfig', () => {
     it('Then the entry token has a null value and a single-line span', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const result = sut('[a]\n\tkey\n');
+      // Arrange & Act
+      const result = tokenizeConfig('[a]\n\tkey\n');
 
       // Assert
       expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3837,12 +3592,11 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given a line whose key is missing (`\\t= v`), When tokenizeConfig', () => {
     it('Then it refuses with CONFIG_PARSE_ERROR on its physical line (no key char before `=`)', () => {
       // Arrange
-      const sut = tokenizeConfig;
       const input = '[a]\n\t= v\n';
 
       // Act + Assert — the key scanner requires an alpha first char
       try {
-        sut(input);
+        tokenizeConfig(input);
         expect.unreachable('tokenizeConfig must refuse a line with no key');
       } catch (err) {
         if (!(err instanceof TsgitError)) throw err;
@@ -3857,11 +3611,10 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given an orphan entry before any header, When tokenizeConfig', () => {
     it('Then the orphan entry token precedes the header token and parseIniSections records the orphan section', () => {
       // Arrange
-      const sut = tokenizeConfig;
       const input = 'key = v\n[a]\n';
 
       // Act
-      const tokens = sut(input);
+      const tokens = tokenizeConfig(input);
       const sections = parseIniSections(input);
 
       // Assert
@@ -3879,12 +3632,9 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given text with a single trailing newline versus two trailing newlines, When tokenizeConfig', () => {
     it('Then the LF terminator emits no token but a second blank line does emit a blank token', () => {
-      // Arrange
-      const sut = tokenizeConfig;
-
-      // Act
-      const singleNewline = sut('[a]\n');
-      const doubleNewline = sut('[a]\n\n');
+      // Arrange & Act
+      const singleNewline = tokenizeConfig('[a]\n');
+      const doubleNewline = tokenizeConfig('[a]\n\n');
 
       // Assert
       expect(singleNewline).toEqual<ReadonlyArray<ConfigToken>>([
@@ -3900,11 +3650,10 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given a continuation that consumes the EOF terminator, When tokenizeConfig', () => {
     it('Then the entry endLine equals the split-array length pinning the exclusive-end contract at EOF', () => {
       // Arrange
-      const sut = tokenizeConfig;
       const input = '[a]\n\tk = v\\\n';
 
       // Act
-      const result = sut(input);
+      const result = tokenizeConfig(input);
 
       // Assert
       const lines = input.split('\n');
@@ -3918,12 +3667,9 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given a malformed section header', () => {
     describe('When tokenizeConfig parses it', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1 and the partial section name', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
-          sut('[s "a" x]\n\tk = v\n');
+          tokenizeConfig('[s "a" x]\n\tk = v\n');
           expect.unreachable('tokenizeConfig must refuse a malformed header');
         } catch (err) {
           if (!(err instanceof TsgitError)) throw err;
@@ -3937,12 +3683,9 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given a bad key line under a valid header', () => {
     describe('When tokenizeConfig parses it', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
-          sut('[a]\nbad!key\n');
+          tokenizeConfig('[a]\nbad!key\n');
           expect.unreachable('tokenizeConfig must refuse a bad key line');
         } catch (err) {
           if (!(err instanceof TsgitError)) throw err;
@@ -3956,12 +3699,9 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given an entry value with an unclosed quote', () => {
     describe('When tokenizeConfig parses it', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
-          sut('[a]\nk = "unclosed\n');
+          tokenizeConfig('[a]\nk = "unclosed\n');
           expect.unreachable('tokenizeConfig must refuse an unclosed quote');
         } catch (err) {
           if (!(err instanceof TsgitError)) throw err;
@@ -3976,12 +3716,11 @@ describe('primitives/config-read tokenizeConfig', () => {
     describe('When tokenizeConfig and parseIniSections parse it', () => {
       it('Then both errors carry the source label', () => {
         // Arrange
-        const sut = tokenizeConfig;
         const source = 'my-config';
 
         // Act + Assert — tokenizeConfig carries the source label
         try {
-          sut('[s "a" x]\n\tk = v\n', source);
+          tokenizeConfig('[s "a" x]\n\tk = v\n', source);
           expect.unreachable('tokenizeConfig must refuse a malformed header');
         } catch (err) {
           if (!(err instanceof TsgitError)) throw err;
@@ -4006,11 +3745,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns the valueless entry for a matching key (step 2: single valueless key)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\tname\n\temail = a@b.c\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result?.key).toBe('user.name');
@@ -4021,11 +3759,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns undefined when all keys are valued (step 3: valued only)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\tname = Ada\n\temail = a@b.c\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4034,11 +3771,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns undefined when the key is absent (step 4: key absent)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\temail = a@b.c\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4047,11 +3783,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns undefined when config is empty (step 4: empty config)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4060,10 +3795,9 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns undefined when config file does not exist (step 4: missing file)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4072,11 +3806,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns the valueless email when name is valued (step 5: file-order, valued name)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\tname = Ada\n\temail\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result?.key).toBe('user.email');
@@ -4086,11 +3819,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns the first valueless when name appears before email (step 6: both valueless, name earlier)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\tname\n\temail\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result?.key).toBe('user.name');
@@ -4100,11 +3832,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns the first valueless when email appears before name (step 7: discriminator — file-position order)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\temail\n\tname\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result?.key).toBe('user.email');
@@ -4114,11 +3845,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then matches the key case-insensitively and returns canonical lower-case (step 8)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\tNAME\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
 
       // Assert
       expect(result?.key).toBe('user.name');
@@ -4128,11 +3858,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then does not match entries under the wrong section (step 9: negative scoping)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[other]\n\tname\n[user]\n\temail = a@b.c\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4141,11 +3870,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns the entry only under the correct section (step 9: positive scoping)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[other]\n\tname\n[user]\n\tname\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name']);
 
       // Assert
       expect(result?.key).toBe('user.name');
@@ -4155,11 +3883,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns the full qualified key including subsection (step 10: subsection match)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[remote "origin"]\n\turl\n');
 
       // Act
-      const result = await sut(ctx, 'remote', 'origin', ['url']);
+      const result = await findFirstValuelessEntry(ctx, 'remote', 'origin', ['url']);
 
       // Assert
       expect(result?.key).toBe('remote.origin.url');
@@ -4170,11 +3897,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then returns undefined when subsection does not match (step 10: subsection mismatch)', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[remote "origin"]\n\turl\n');
 
       // Act
-      const result = await sut(ctx, 'remote', 'other', ['url']);
+      const result = await findFirstValuelessEntry(ctx, 'remote', 'other', ['url']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4183,11 +3909,10 @@ describe('Given a config with valueless/valued entries', () => {
     it('Then matches the subsection case-sensitively (a differing case does not match)', async () => {
       // Arrange — git subsection names are case-SENSITIVE, unlike section names.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[remote "Origin"]\n\turl\n');
 
       // Act
-      const result = await sut(ctx, 'remote', 'origin', ['url']);
+      const result = await findFirstValuelessEntry(ctx, 'remote', 'origin', ['url']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4198,11 +3923,10 @@ describe('Given a config with valueless/valued entries', () => {
       // and is only set to true when a matching [section] header is seen.
       // Mutant (inSection=true) would wrongly return the pre-header entry.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '\tname\n[user]\n\temail = a@b.c\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4212,11 +3936,10 @@ describe('Given a config with valueless/valued entries', () => {
       // Arrange — a valueless key that is NOT in the requested key set must be
       // skipped. Mutant (!keySet.has → false) would wrongly return it.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessEntry;
       await seed(ctx, '[user]\n\tfoo\n\temail = a@b.c\n');
 
       // Act
-      const result = await sut(ctx, 'user', undefined, ['name', 'email']);
+      const result = await findFirstValuelessEntry(ctx, 'user', undefined, ['name', 'email']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4229,11 +3952,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
     it('Then it reports a valueless key in the only subsection with its verbatim subsection', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[merge "custom"]\n\tdriver\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert
       expect(result?.key).toBe('merge.custom.driver');
@@ -4245,11 +3967,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
       // Arrange — name valueless at line 2 (subsection zzz), driver valueless at
       // line 4 (subsection aaa); the earlier line wins regardless of lexical order.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[merge "zzz"]\n\tname\n[merge "aaa"]\n\tdriver\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert
       expect(result?.key).toBe('merge.zzz.name');
@@ -4259,11 +3980,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
     it('Then it does not report a valueless key under a non-matching section', async () => {
       // Arrange — the valueless key sits under [other], not [merge].
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[other "custom"]\n\tdriver\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4272,11 +3992,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
     it('Then it does not report an empty-string (valued) key, only a null one', async () => {
       // Arrange — `driver = ` is valued (empty string), not valueless.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[merge "custom"]\n\tdriver = \n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4285,11 +4004,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
     it('Then it does not report a valueless non-target key under a matching subsection', async () => {
       // Arrange — `recursive` is not in the requested key set.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[merge "custom"]\n\trecursive\n\tdriver = mycmd\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert
       expect(result).toBeUndefined();
@@ -4298,11 +4016,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
     it('Then it lower-cases the section and key but keeps the subsection verbatim', async () => {
       // Arrange — section/key matched case-insensitively; subsection case preserved.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[Merge "Custom"]\n\tDRIVER\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert
       expect(result?.key).toBe('merge.Custom.driver');
@@ -4313,11 +4030,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
       // Arrange — a flat `[merge]` (no subsection) holding a valueless `driver`; the
       // qualified key omits the subsection segment (`merge.driver`, not `merge..driver`).
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[merge]\n\tdriver\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert
       expect(result?.key).toBe('merge.driver');
@@ -4328,11 +4044,12 @@ describe('Given a section with valueless/valued entries across subsections', () 
       // Arrange — git's merge-driver keys are only meaningful under a subsection, so a
       // subsectionless `[merge] driver` is inert; requireSubsection must not report it.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[merge]\n\tdriver\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name'], { requireSubsection: true });
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name'], {
+        requireSubsection: true,
+      });
 
       // Assert
       expect(result).toBeUndefined();
@@ -4341,11 +4058,12 @@ describe('Given a section with valueless/valued entries across subsections', () 
     it('Then requireSubsection still reports a subsectioned valueless key', async () => {
       // Arrange — a subsectioned valueless driver IS git's death; requireSubsection keeps it.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, '[merge "custom"]\n\tdriver\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name'], { requireSubsection: true });
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name'], {
+        requireSubsection: true,
+      });
 
       // Assert
       expect(result?.key).toBe('merge.custom.driver');
@@ -4355,11 +4073,10 @@ describe('Given a section with valueless/valued entries across subsections', () 
       // Arrange — a valueless `driver` in the orphan region (before any header) must
       // not be reported; only the one under the real [merge "custom"] header counts.
       const ctx = createMemoryContext();
-      const sut = findFirstValuelessInSection;
       await seed(ctx, 'driver\n[merge "custom"]\n\tdriver\n');
 
       // Act
-      const result = await sut(ctx, 'merge', ['driver', 'name']);
+      const result = await findFirstValuelessInSection(ctx, 'merge', ['driver', 'name']);
 
       // Assert — the orphan key at line 1 is skipped; the [merge "custom"] key at line 3 wins.
       expect(result?.key).toBe('merge.custom.driver');
@@ -4392,11 +4109,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   describe('header and entry on the same physical line', () => {
     describe('Given `[a] key = v`, When tokenizeConfig', () => {
       it('Then a header token is followed by a shared-line entry token and the section records a.key = v', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const tokens = sut('[a] key = v\n');
+        // Arrange & Act
+        const tokens = tokenizeConfig('[a] key = v\n');
         const sections = parseIniSections('[a] key = v\n');
 
         // Assert
@@ -4420,11 +4134,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] key` (valueless same-line), When tokenizeConfig', () => {
       it('Then a shared-line valueless entry token follows the header', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const tokens = sut('[a] key\n');
+        // Arrange & Act
+        const tokens = tokenizeConfig('[a] key\n');
         const sections = parseIniSections('[a] key\n');
 
         // Assert
@@ -4448,11 +4159,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a]key=v` (no gap after the bracket), When tokenizeConfig', () => {
       it('Then the shared-line entry starts right after the bracket and records a.key = v', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const tokens = sut('[a]key=v\n');
+        // Arrange & Act
+        const tokens = tokenizeConfig('[a]key=v\n');
         const sections = parseIniSections('[a]key=v\n');
 
         // Assert
@@ -4476,11 +4184,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a]\\tkey = v` (TAB gap after the bracket), When parseIniSections', () => {
       it('Then a.key = v is recorded', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\tkey = v\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\tkey = v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4491,11 +4196,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a "s"] key = v` (subsectioned header + same-line entry), When tokenizeConfig', () => {
       it('Then the shared-line entry starts past the closing quote+bracket and records a.s.key = v', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const tokens = sut('[a "s"] key = v\n');
+        // Arrange & Act
+        const tokens = tokenizeConfig('[a "s"] key = v\n');
         const sections = parseIniSections('[a "s"] key = v\n');
 
         // Assert
@@ -4519,11 +4221,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a]key` (no gap, valueless), When parseIniSections', () => {
       it('Then a.key valueless is recorded', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]key\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]key\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4534,11 +4233,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] key=` (empty value), When parseIniSections', () => {
       it('Then a.key records the empty string distinct from valueless', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a] key=\n');
+        // Arrange & Act
+        const result = parseIniSections('[a] key=\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4549,11 +4245,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] key = v\\n\\tk2 = v2` (same-line entry then a following entry), When parseIniSections', () => {
       it('Then both a.key = v and a.k2 = v2 are recorded', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a] key = v\n\tk2 = v2\n');
+        // Arrange & Act
+        const result = parseIniSections('[a] key = v\n\tk2 = v2\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4571,11 +4264,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] key = a=b` (first `=` splits, rest is value), When parseIniSections', () => {
       it('Then a.key records the value a=b', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a] key = a=b\n');
+        // Arrange & Act
+        const result = parseIniSections('[a] key = a=b\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4586,11 +4276,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a]  key  =  v` (surrounding spaces), When parseIniSections', () => {
       it('Then a.key = v is recorded with the value trimmed', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]  key  =  v\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]  key  =  v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4602,11 +4289,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given `[a] key = one\\\\\\n  two` (same-line continuation), When tokenizeConfig', () => {
       it('Then the shared-line entry spans onto the next physical line with value one␣␣two', () => {
         // Arrange
-        const sut = tokenizeConfig;
         const input = '[a] key = one\\\n  two\n';
 
         // Act
-        const tokens = sut(input);
+        const tokens = tokenizeConfig(input);
         const sections = parseIniSections(input);
 
         // Assert — endLine crosses the physical line boundary
@@ -4630,11 +4316,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] key = v\\r` (CRLF line), When parseIniSections', () => {
       it('Then a.key = v is recorded ignoring the trailing CR', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a] key = v\r\n');
+        // Arrange & Act
+        const result = parseIniSections('[a] key = v\r\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4645,11 +4328,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] # c` (same-line comment after header), When tokenizeConfig', () => {
       it('Then only the header token is emitted with no entry', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const tokens = sut('[a] # c\n');
+        // Arrange & Act
+        const tokens = tokenizeConfig('[a] # c\n');
         const sections = parseIniSections('[a] # c\n');
 
         // Assert
@@ -4664,11 +4344,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] ; c` (same-line semicolon comment), When tokenizeConfig', () => {
       it('Then only the header token is emitted with no entry', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const result = sut('[a] ; c\n');
+        // Arrange & Act
+        const result = tokenizeConfig('[a] ; c\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -4682,11 +4359,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given `[a][b]\\nx=1` (chain then body entry), When tokenizeConfig', () => {
       it('Then two header tokens at line 0 precede the body entry recorded under the last section', () => {
         // Arrange
-        const sut = tokenizeConfig;
         const input = '[a][b]\nx=1\n';
 
         // Act
-        const tokens = sut(input);
+        const tokens = tokenizeConfig(input);
         const sections = parseIniSections(input);
 
         // Assert
@@ -4705,11 +4381,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given `[a][b]k=1` (chain then same-line entry, no gap), When tokenizeConfig', () => {
       it('Then the same-line entry shares the last header line and records b.k = 1', () => {
         // Arrange
-        const sut = tokenizeConfig;
         const input = '[a][b]k=1\n';
 
         // Act
-        const tokens = sut(input);
+        const tokens = tokenizeConfig(input);
         const sections = parseIniSections(input);
 
         // Assert
@@ -4735,11 +4410,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] [b] k=1` (chain with gaps then same-line entry), When parseIniSections', () => {
       it('Then b.k = 1 is recorded under the last section', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a] [b] k=1\n');
+        // Arrange & Act
+        const result = parseIniSections('[a] [b] k=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4752,11 +4424,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given `[a][b][c] k=1` (three-header chain then same-line entry), When tokenizeConfig', () => {
       it('Then three header tokens at line 0 precede the entry recorded under the last section', () => {
         // Arrange
-        const sut = tokenizeConfig;
         const input = '[a][b][c] k=1\n';
 
         // Act
-        const tokens = sut(input);
+        const tokens = tokenizeConfig(input);
         const sections = parseIniSections(input);
 
         // Assert
@@ -4784,11 +4455,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a]\\n[b][c]\\nk=1` (header, then a chain on its own line, then a body entry), When parseIniSections', () => {
       it('Then the body entry records under the last chained section', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n[b][c]\nk=1\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n[b][c]\nk=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4802,11 +4470,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given `[a][b "s"] k=1` (plain header chained to a subsectioned header), When tokenizeConfig', () => {
       it('Then the entry records under the subsectioned last section b.s.k = 1', () => {
         // Arrange
-        const sut = tokenizeConfig;
         const input = '[a][b "s"] k=1\n';
 
         // Act
-        const tokens = sut(input);
+        const tokens = tokenizeConfig(input);
         const sections = parseIniSections(input);
 
         // Assert
@@ -4832,11 +4499,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a "s"][b] k=1` (subsectioned header chained to a plain header), When parseIniSections', () => {
       it('Then the entry records under the plain last section b.k = 1', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a "s"][b] k=1\n');
+        // Arrange & Act
+        const result = parseIniSections('[a "s"][b] k=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4849,11 +4513,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given `[a][b]` (chain with no entry), When tokenizeConfig', () => {
       it('Then both headers are emitted as empty sections with no entry', () => {
         // Arrange
-        const sut = tokenizeConfig;
         const input = '[a][b]\n';
 
         // Act
-        const tokens = sut(input);
+        const tokens = tokenizeConfig(input);
         const sections = parseIniSections(input);
 
         // Assert
@@ -4870,11 +4533,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a][b] # c` (chain then a same-line comment), When tokenizeConfig', () => {
       it('Then both headers are emitted, the last carrying the comment flag, with no entry', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const result = sut('[a][b] # c\n');
+        // Arrange & Act
+        const result = tokenizeConfig('[a][b] # c\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<ConfigToken>>([
@@ -4981,11 +4641,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   describe('the unquoted section-name grammar accepts what git accepts', () => {
     describe('Given `[1a]` (digit-first section, unlike keys), When parseIniSections', () => {
       it('Then the section records as 1a', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[1a]\nk=1\n');
+        // Arrange & Act
+        const result = parseIniSections('[1a]\nk=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -4996,11 +4653,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a.b]` (dot in section), When parseIniSections', () => {
       it('Then the section records as a.b', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a.b]\nk=1\n');
+        // Arrange & Act
+        const result = parseIniSections('[a.b]\nk=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5011,11 +4665,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a-b]` (dash in section), When parseIniSections', () => {
       it('Then the section records as a-b', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a-b]\nk=1\n');
+        // Arrange & Act
+        const result = parseIniSections('[a-b]\nk=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5026,11 +4677,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] ` (trailing space after the bracket), When parseIniSections', () => {
       it('Then the section records as a with the trailing gap ignored', () => {
-        // Arrange — a gap after `]` is fine; only whitespace INSIDE the brackets refuses
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a] \nk=1\n');
+        // Arrange + Act — a gap after `]` is fine; only whitespace INSIDE the brackets refuses
+        const result = parseIniSections('[a] \nk=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5080,11 +4728,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   describe('the unified key grammar accepts what git accepts', () => {
     describe('Given `\\tk = v` under a header, When parseIniSections', () => {
       it('Then a.k = v is recorded', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk = v\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\tk = v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5095,11 +4740,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `\\tk   = v` under a header (spaces before `=`), When parseIniSections', () => {
       it('Then a.k = v is recorded', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk   = v\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\tk   = v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5110,11 +4752,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `\\tk\\t= v` under a header (TAB before `=`), When parseIniSections', () => {
       it('Then a.k = v is recorded', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk\t= v\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\tk\t= v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5125,11 +4764,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `\\tkey   ` under a header (trailing spaces, no `=`), When parseIniSections', () => {
       it('Then a.key valueless is recorded', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tkey   \n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\tkey   \n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5142,11 +4778,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   describe('orphan (sectionless) keys', () => {
     describe('Given `orphan = v` before any header, When parseIniSections', () => {
       it('Then it records under the empty section with no subsection', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('orphan = v\n');
+        // Arrange & Act
+        const result = parseIniSections('orphan = v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5157,11 +4790,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `orphan` (valueless) before any header, When parseIniSections', () => {
       it('Then it records valueless under the empty section', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('orphan\n');
+        // Arrange & Act
+        const result = parseIniSections('orphan\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5172,11 +4802,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `orphan = v\\n[a]\\n\\tk = w` (orphan then a section), When parseIniSections', () => {
       it('Then the orphan section precedes the named section', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('orphan = v\n[a]\n\tk = w\n');
+        // Arrange & Act
+        const result = parseIniSections('orphan = v\n[a]\n\tk = w\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5188,11 +4815,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given a header-only file, When parseIniSections', () => {
       it('Then no empty orphan section is emitted', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk = v\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\tk = v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5217,33 +4841,24 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given the three empty-section identities, When qualifyKey', () => {
       it('Then an orphan (undefined subsection) renders the bare key with no dot', () => {
-        // Arrange
-        const sut = qualifyKey;
-
-        // Act
-        const result = sut({ section: '', subsection: undefined, entries: [] }, 'Key');
+        // Arrange & Act
+        const result = qualifyKey({ section: '', subsection: undefined, entries: [] }, 'Key');
 
         // Assert
         expect(result).toBe('key');
       });
 
       it('Then an empty section with an empty subsection renders both dots before the key', () => {
-        // Arrange
-        const sut = qualifyKey;
-
-        // Act
-        const result = sut({ section: '', subsection: '', entries: [] }, 'Key');
+        // Arrange & Act
+        const result = qualifyKey({ section: '', subsection: '', entries: [] }, 'Key');
 
         // Assert
         expect(result).toBe('..key');
       });
 
       it('Then a named empty-section subsection renders .subsection.key', () => {
-        // Arrange
-        const sut = qualifyKey;
-
-        // Act
-        const result = sut({ section: '', subsection: 'x', entries: [] }, 'Key');
+        // Arrange & Act
+        const result = qualifyKey({ section: '', subsection: 'x', entries: [] }, 'Key');
 
         // Assert
         expect(result).toBe('.x.key');
@@ -5252,12 +4867,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given the orphan key `orphan`, When parseConfigKey', () => {
       it('Then it is unaddressable — CONFIG_KEY_INVALID with reason missing-name', () => {
-        // Arrange
-        const sut = parseConfigKey;
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
-          sut('orphan');
+          parseConfigKey('orphan');
           expect.unreachable('orphan key must be unaddressable');
         } catch (err) {
           if (!(err instanceof TsgitError)) throw err;
@@ -5301,11 +4913,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `\\t#whole = line` under a header (whole-line comment), When tokenizeConfig', () => {
       it('Then it is a comment token and no entry records', () => {
-        // Arrange
-        const sut = tokenizeConfig;
-
-        // Act
-        const tokens = sut('[a]\n\t#whole = line\n');
+        // Arrange & Act
+        const tokens = tokenizeConfig('[a]\n\t#whole = line\n');
         const sections = parseIniSections('[a]\n\t#whole = line\n');
 
         // Assert
@@ -5321,11 +4930,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given a `;`-led whole-line comment that also holds a later `#`, When tokenizeConfig', () => {
       it('Then the earliest marker (the `;`) starts the comment so the line is one comment token', () => {
-        // Arrange — `;` sits at column 0, before the `#`; the earliest marker must win.
-        const sut = tokenizeConfig;
-
-        // Act
-        const tokens = sut('; a # b\n');
+        // Arrange + Act — `;` sits at column 0, before the `#`; the earliest marker must win.
+        const tokens = tokenizeConfig('; a # b\n');
 
         // Assert — cutting at the later `#` instead would leave `; a`, which the key grammar refuses.
         expect(tokens).toEqual<ReadonlyArray<ConfigToken>>([{ kind: 'comment', line: 0 }]);
@@ -5334,11 +4940,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `\\tk = v # trailing` under a header (value-side comment), When parseIniSections', () => {
       it('Then a.k = v is recorded with the comment dropped', () => {
-        // Arrange
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk = v # trailing\n');
+        // Arrange & Act
+        const result = parseIniSections('[a]\n\tk = v # trailing\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5358,11 +4961,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given a key followed by spaces then `=` (`k   =`), When parseIniSections', () => {
       it('Then the space run is skipped and a.k = v is recorded', () => {
-        // Arrange — isolates the post-key space skip on the `=` branch
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk   = v\n');
+        // Arrange + Act — isolates the post-key space skip on the `=` branch
+        const result = parseIniSections('[a]\n\tk   = v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5373,11 +4973,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given a key followed by a TAB then `=` (`k\\t=`), When parseIniSections', () => {
       it('Then the TAB is skipped and a.k = v is recorded', () => {
-        // Arrange — isolates the post-key TAB skip on the `=` branch
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk\t= v\n');
+        // Arrange + Act — isolates the post-key TAB skip on the `=` branch
+        const result = parseIniSections('[a]\n\tk\t= v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5388,11 +4985,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given the post-key terminator branches, When parseIniSections', () => {
       it('Then a bare EOL records a valueless entry', () => {
-        // Arrange — isolates the EOL branch
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk\n');
+        // Arrange + Act — isolates the EOL branch
+        const result = parseIniSections('[a]\n\tk\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5401,11 +4995,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
 
       it('Then a CR-at-EOL records a valueless entry', () => {
-        // Arrange — isolates the CR-at-EOL branch
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk\r\n');
+        // Arrange + Act — isolates the CR-at-EOL branch
+        const result = parseIniSections('[a]\n\tk\r\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5414,11 +5005,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
 
       it('Then an `=` records a valued entry', () => {
-        // Arrange — isolates the `=` branch
-        const sut = parseIniSections;
-
-        // Act
-        const result = sut('[a]\n\tk = v\n');
+        // Arrange + Act — isolates the `=` branch
+        const result = parseIniSections('[a]\n\tk = v\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
@@ -5437,11 +5025,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given a 0x-prefixed hex value', () => {
       describe('When parseGitInt', () => {
         it('Then it parses base-16 to the exact magnitude (0xFF is 255)', () => {
-          // Arrange
-          const sut = parseGitInt;
-
-          // Act
-          const result = sut('0xFF');
+          // Arrange & Act
+          const result = parseGitInt('0xFF');
 
           // Assert
           expect(result).toStrictEqual({ ok: true, value: 255 });
@@ -5452,11 +5037,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given a leading-zero octal value', () => {
       describe('When parseGitInt', () => {
         it('Then it parses base-8 to the exact magnitude (017 is 15)', () => {
-          // Arrange
-          const sut = parseGitInt;
-
-          // Act
-          const result = sut('017');
+          // Arrange & Act
+          const result = parseGitInt('017');
 
           // Assert
           expect(result).toStrictEqual({ ok: true, value: 15 });
@@ -5467,11 +5049,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given a decimal value with a k unit suffix', () => {
       describe('When parseGitInt', () => {
         it('Then it multiplies the magnitude by 1024 (10k is 10240)', () => {
-          // Arrange
-          const sut = parseGitInt;
-
-          // Act
-          const result = sut('10k');
+          // Arrange & Act
+          const result = parseGitInt('10k');
 
           // Assert
           expect(result).toStrictEqual({ ok: true, value: 10240 });
@@ -5482,11 +5061,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given a value with leading ASCII whitespace', () => {
       describe('When parseGitInt', () => {
         it('Then the leading spaces and tabs are trimmed before parsing (5 is 5)', () => {
-          // Arrange
-          const sut = parseGitInt;
-
-          // Act
-          const result = sut(' \t5');
+          // Arrange & Act
+          const result = parseGitInt(' \t5');
 
           // Assert
           expect(result).toStrictEqual({ ok: true, value: 5 });
@@ -5497,11 +5073,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given a value with trailing non-unit garbage', () => {
       describe('When parseGitInt', () => {
         it('Then it fails with reason invalid unit (5x is rejected, not 5)', () => {
-          // Arrange
-          const sut = parseGitInt;
-
-          // Act
-          const result = sut('5x');
+          // Arrange & Act
+          const result = parseGitInt('5x');
 
           // Assert
           expect(result).toStrictEqual({ ok: false, reason: 'invalid unit' });
@@ -5512,11 +5085,8 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     describe('Given a magnitude one past the int64 maximum', () => {
       describe('When parseGitInt', () => {
         it('Then it fails with reason out of range', () => {
-          // Arrange
-          const sut = parseGitInt;
-
-          // Act
-          const result = sut('9223372036854775808');
+          // Arrange & Act
+          const result = parseGitInt('9223372036854775808');
 
           // Assert
           expect(result).toStrictEqual({ ok: false, reason: 'out of range' });
@@ -5543,10 +5113,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           // Arrange
           const ctx = createMemoryContext();
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
-          const sut = findFirstInvalidCompression;
 
           // Act
-          const result = await sut(ctx);
+          const result = await findFirstInvalidCompression(ctx);
 
           // Assert
           expect(result).toBeUndefined();
@@ -5554,53 +5123,46 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
-    describe('Given core.loosecompression is valueless (null value)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns numeric failure with value empty string and reason invalid unit', async () => {
+    describe('Given a loosecompression or compression value with an invalid unit, When findFirstInvalidCompression', () => {
+      it.each([
+        {
+          config: '[core]\n\tloosecompression\n',
+          key: 'core.loosecompression',
+          value: '',
+          label: 'loosecompression is valueless (null value)',
+        },
+        {
+          config: '[core]\n\tloosecompression = abc\n',
+          key: 'core.loosecompression',
+          value: 'abc',
+          label: 'loosecompression = abc',
+        },
+        {
+          config: '[core]\n\tcompression = abc\n',
+          key: 'core.compression',
+          value: 'abc',
+          label: 'compression = abc',
+        },
+      ])(
+        'Then returns numeric failure with reason invalid unit ($label)',
+        async ({ config, key, value }) => {
           // Arrange
           const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tloosecompression\n');
-          const sut = findFirstInvalidCompression;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
 
           // Act
-          const result = await sut(ctx);
+          const result = await findFirstInvalidCompression(ctx);
 
           // Assert
           expect(result).not.toBeUndefined();
-          expect(result?.key).toBe('core.loosecompression');
+          expect(result?.key).toBe(key);
           expect(result?.failure.kind).toBe('numeric');
           if (result?.failure.kind === 'numeric') {
-            expect(result.failure.value).toBe('');
+            expect(result.failure.value).toBe(value);
             expect(result.failure.reason).toBe('invalid unit');
           }
-        });
-      });
-    });
-
-    describe('Given core.loosecompression = abc (invalid unit)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns numeric failure with value abc and reason invalid unit', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(
-            `${ctx.layout.gitDir}/config`,
-            '[core]\n\tloosecompression = abc\n',
-          );
-          const sut = findFirstInvalidCompression;
-
-          // Act
-          const result = await sut(ctx);
-
-          // Assert
-          expect(result).not.toBeUndefined();
-          expect(result?.key).toBe('core.loosecompression');
-          expect(result?.failure.kind).toBe('numeric');
-          if (result?.failure.kind === 'numeric') {
-            expect(result.failure.value).toBe('abc');
-            expect(result.failure.reason).toBe('invalid unit');
-          }
-        });
-      });
+        },
+      );
     });
 
     describe('Given core.loosecompression = 999999999999999999999999 (out of range)', () => {
@@ -5612,10 +5174,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
             `${ctx.layout.gitDir}/config`,
             '[core]\n\tloosecompression = 999999999999999999999999\n',
           );
-          const sut = findFirstInvalidCompression;
 
           // Act
-          const result = await sut(ctx);
+          const result = await findFirstInvalidCompression(ctx);
 
           // Assert
           expect(result).not.toBeUndefined();
@@ -5627,95 +5188,37 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
-    describe('Given core.loosecompression = 99 (valid int, outside zlib range)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns zlib failure with level 99', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(
-            `${ctx.layout.gitDir}/config`,
-            '[core]\n\tloosecompression = 99\n',
-          );
-          const sut = findFirstInvalidCompression;
+    describe('Given a loosecompression or compression value outside the zlib range, When findFirstInvalidCompression', () => {
+      it.each([
+        {
+          config: '[core]\n\tloosecompression = 99\n',
+          level: 99,
+          label: 'loosecompression = 99 (valid int, outside zlib range)',
+        },
+        {
+          config: '[core]\n\tloosecompression = -2\n',
+          level: -2,
+          label: 'loosecompression = -2 (valid int, below zlib min)',
+        },
+        {
+          config: '[core]\n\tcompression = 10\n',
+          level: 10,
+          label: 'compression = 10 (one past the zlib maximum)',
+        },
+      ])('Then returns zlib failure with the level ($label)', async ({ config, level }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
 
-          // Act
-          const result = await sut(ctx);
+        // Act
+        const result = await findFirstInvalidCompression(ctx);
 
-          // Assert
-          expect(result).not.toBeUndefined();
-          expect(result?.failure.kind).toBe('zlib');
-          if (result?.failure.kind === 'zlib') {
-            expect(result.failure.level).toBe(99);
-          }
-        });
-      });
-    });
-
-    describe('Given core.loosecompression = -2 (valid int, below zlib min)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns zlib failure with level -2', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(
-            `${ctx.layout.gitDir}/config`,
-            '[core]\n\tloosecompression = -2\n',
-          );
-          const sut = findFirstInvalidCompression;
-
-          // Act
-          const result = await sut(ctx);
-
-          // Assert
-          expect(result).not.toBeUndefined();
-          expect(result?.failure.kind).toBe('zlib');
-          if (result?.failure.kind === 'zlib') {
-            expect(result.failure.level).toBe(-2);
-          }
-        });
-      });
-    });
-
-    describe('Given core.compression = 10 (one past the zlib maximum)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns zlib failure with level 10', async () => {
-          // Arrange — 10 is one above the valid zlib range; git rejects it.
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = 10\n');
-          const sut = findFirstInvalidCompression;
-
-          // Act
-          const result = await sut(ctx);
-
-          // Assert
-          expect(result).not.toBeUndefined();
-          expect(result?.failure.kind).toBe('zlib');
-          if (result?.failure.kind === 'zlib') {
-            expect(result.failure.level).toBe(10);
-          }
-        });
-      });
-    });
-
-    describe('Given core.compression = abc (invalid unit)', () => {
-      describe('When findFirstInvalidCompression', () => {
-        it('Then returns numeric failure with key core.compression', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcompression = abc\n');
-          const sut = findFirstInvalidCompression;
-
-          // Act
-          const result = await sut(ctx);
-
-          // Assert
-          expect(result).not.toBeUndefined();
-          expect(result?.key).toBe('core.compression');
-          expect(result?.failure.kind).toBe('numeric');
-          if (result?.failure.kind === 'numeric') {
-            expect(result.failure.value).toBe('abc');
-            expect(result.failure.reason).toBe('invalid unit');
-          }
-        });
+        // Assert
+        expect(result).not.toBeUndefined();
+        expect(result?.failure.kind).toBe('zlib');
+        if (result?.failure.kind === 'zlib') {
+          expect(result.failure.level).toBe(level);
+        }
       });
     });
 
@@ -5728,10 +5231,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
             `${ctx.layout.gitDir}/config`,
             '[core]\n\tloosecompression = abc\n\tcompression = abc\n',
           );
-          const sut = findFirstInvalidCompression;
 
           // Act
-          const result = await sut(ctx);
+          const result = await findFirstInvalidCompression(ctx);
 
           // Assert
           expect(result?.key).toBe('core.loosecompression');
@@ -5748,10 +5250,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
             `${ctx.layout.gitDir}/config`,
             '[core]\n\tcompression = abc\n\tloosecompression = abc\n',
           );
-          const sut = findFirstInvalidCompression;
 
           // Act
-          const result = await sut(ctx);
+          const result = await findFirstInvalidCompression(ctx);
 
           // Assert
           expect(result?.key).toBe('core.compression');
@@ -5768,10 +5269,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[commit]\n  gpgsign = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.commit?.gpgSign).toBe(true);
+        expect(result.commit?.gpgSign).toBe(true);
       });
     });
   });
@@ -5784,10 +5285,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[commit]\n  template = /path/to/tpl\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.commit).toBeUndefined();
+        expect(result.commit).toBeUndefined();
       });
     });
   });
@@ -5800,10 +5301,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[commit]\n  gpgsign = false\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.commit?.gpgSign).toBe(false);
+        expect(result.commit?.gpgSign).toBe(false);
       });
     });
   });
@@ -5816,10 +5317,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[tag]\n  gpgSign = true\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.tag?.gpgSign).toBe(true);
+        expect(result.tag?.gpgSign).toBe(true);
       });
     });
   });
@@ -5832,10 +5333,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[tag]\n  sort = version:refname\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.tag).toBeUndefined();
+        expect(result.tag).toBeUndefined();
       });
     });
   });
@@ -5852,10 +5353,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, `[push]\n  gpgSign = ${value}\n`);
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.push?.gpgSign).toBe(value);
+        expect(result.push?.gpgSign).toBe(value);
       });
     });
   });
@@ -5904,10 +5405,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       await seed(ctx, config);
 
       // Act
-      const sut = await readConfig(ctx);
+      const result = await readConfig(ctx);
 
       // Assert
-      expect(sut.push?.default).toBe(expected);
+      expect(result.push?.default).toBe(expected);
     });
   });
 
@@ -5932,10 +5433,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       await seed(ctx, config);
 
       // Act
-      const sut = await readConfig(ctx);
+      const result = await readConfig(ctx);
 
       // Assert
-      expect(sut.push?.default).toBeUndefined();
+      expect(result.push?.default).toBeUndefined();
     });
   });
 
@@ -5956,10 +5457,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       // Arrange
       const ctx = createMemoryContext();
       await seed(ctx, config);
-      const sut = findInvalidPushDefault;
 
       // Act
-      const result = await sut(ctx);
+      const result = await findInvalidPushDefault(ctx);
 
       // Assert
       expect(result).toBeUndefined();
@@ -5972,10 +5472,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[user]\n  name = Bob\n[push]\n  default = bogus\n');
-        const sut = findInvalidPushDefault;
 
         // Act
-        const result = await sut(ctx);
+        const result = await findInvalidPushDefault(ctx);
 
         // Assert
         expect(result?.key).toBe('push.default');
@@ -5992,10 +5491,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[push]\n  default = Simple\n');
-        const sut = findInvalidPushDefault;
 
         // Act
-        const result = await sut(ctx);
+        const result = await findInvalidPushDefault(ctx);
 
         // Assert
         expect(result?.value).toBe('Simple');
@@ -6009,10 +5507,9 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[push]\n  default = current\n  default = bogus\n');
-        const sut = findInvalidPushDefault;
 
         // Act
-        const result = await sut(ctx);
+        const result = await findInvalidPushDefault(ctx);
 
         // Assert
         expect(result?.value).toBe('bogus');
@@ -6032,10 +5529,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       await seed(ctx, `[gpg]\n  format = ${value}\n`);
 
       // Act
-      const sut = await readConfig(ctx);
+      const result = await readConfig(ctx);
 
       // Assert
-      expect(sut.gpg?.format).toBe(value);
+      expect(result.gpg?.format).toBe(value);
     });
   });
 
@@ -6047,10 +5544,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[gpg]\n  program = /usr/bin/gpg2\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.gpg?.program).toBe('/usr/bin/gpg2');
+        expect(result.gpg?.program).toBe('/usr/bin/gpg2');
       });
     });
   });
@@ -6063,10 +5560,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[gpg "ssh"]\n  program = /usr/bin/ssh-keygen\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.gpg?.ssh?.program).toBe('/usr/bin/ssh-keygen');
+        expect(result.gpg?.ssh?.program).toBe('/usr/bin/ssh-keygen');
       });
     });
   });
@@ -6103,10 +5600,10 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       await seed(ctx, config);
 
       // Act
-      const sut = await readConfig(ctx);
+      const result = await readConfig(ctx);
 
       // Assert
-      expect(sut.gpg).toBeUndefined();
+      expect(result.gpg).toBeUndefined();
     });
   });
 
@@ -6118,13 +5615,13 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act
-        const sut = await readConfig(ctx);
+        const result = await readConfig(ctx);
 
         // Assert
-        expect(sut.commit).toBeUndefined();
-        expect(sut.tag).toBeUndefined();
-        expect(sut.push).toBeUndefined();
-        expect(sut.gpg).toBeUndefined();
+        expect(result.commit).toBeUndefined();
+        expect(result.tag).toBeUndefined();
+        expect(result.push).toBeUndefined();
+        expect(result.gpg).toBeUndefined();
       });
     });
   });

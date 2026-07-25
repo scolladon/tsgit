@@ -112,10 +112,10 @@ describe('isBetterName', () => {
           const incoming = rev(incomingFromTag, incomingDistance, incomingDate);
 
           // Act
-          const sut = isBetterName(existing, incoming);
+          const result = isBetterName(existing, incoming);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         },
       );
     });

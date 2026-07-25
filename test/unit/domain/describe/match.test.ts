@@ -63,10 +63,10 @@ describe('tagNameMatches', () => {
         },
       ])('Then $label', ({ name, include, exclude, expected }) => {
         // Arrange + Act
-        const sut = tagNameMatches(name, include, exclude);
+        const result = tagNameMatches(name, include, exclude);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

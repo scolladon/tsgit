@@ -285,11 +285,11 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, { all: true });
+      const result = await bundleCreate(ctx, { all: true });
 
       // Assert — headers byte-identical; annotated tag ref line carries tag-object oid
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
-      const tagRef = sut.refs.find((r) => r.name === 'refs/tags/v1.0');
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+      const tagRef = result.refs.find((r) => r.name === 'refs/tags/v1.0');
       expect(tagRef?.oid).toBe(tagV10Oid);
     });
   });
@@ -331,10 +331,10 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
         const gitBytes = gitBundleCreate(pair.peer, bundleFile, gitArgs, env);
 
         // Act
-        const sut = await bundleCreate(ctx, options);
+        const result = await bundleCreate(ctx, options);
 
         // Assert
-        expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
+        expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
       },
     );
   });
@@ -348,14 +348,14 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['main~2..main'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, {
+      const result = await bundleCreate(ctx, {
         revs: [{ range: ['main~2', 'main'] }],
       });
 
       // Assert — byte-identical headers; prerequisite is secondOid (= main~2)
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
-      expect(sut.prerequisites).toHaveLength(1);
-      expect(sut.prerequisites[0]?.oid).toBe(secondOid);
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+      expect(result.prerequisites).toHaveLength(1);
+      expect(result.prerequisites[0]?.oid).toBe(secondOid);
     });
   });
 
@@ -368,20 +368,20 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['main...feature'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, {
+      const result = await bundleCreate(ctx, {
         revs: [{ symmetricRange: ['main', 'feature'] }],
       });
 
       // Assert — header bytes byte-identical; prerequisite comment matches git's format_subject (%s),
       // which folds the whole first paragraph into a single line joined with spaces
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
-      expect(sut.prerequisites).toHaveLength(1);
-      expect(sut.prerequisites[0]?.oid).toBe(firstOid);
-      expect(sut.prerequisites[0]?.comment).toBe('First line of subject Second line of subject');
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+      expect(result.prerequisites).toHaveLength(1);
+      expect(result.prerequisites[0]?.oid).toBe(firstOid);
+      expect(result.prerequisites[0]?.comment).toBe('First line of subject Second line of subject');
       // Ref parity: same ref names and OIDs
       const gitHdr = parseBundleHeader(gitBytes, '<git>');
       const gitRefs = gitHdr.refs.map((r) => `${r.name as string} ${r.oid as string}`);
-      const tsRefs = sut.refs.map((r) => `${r.name as string} ${r.oid as string}`);
+      const tsRefs = result.refs.map((r) => `${r.name as string} ${r.oid as string}`);
       expect(tsRefs).toEqual(gitRefs);
     });
   });
@@ -397,13 +397,13 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       const gitTwoDot = gitBundleCreate(pair.peer, twoDotFile, ['main~2..main'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, {
+      const result = await bundleCreate(ctx, {
         revs: [{ tip: 'main' }, { exclude: 'main~2' }],
       });
 
       // Assert — byte-identical to git's exclude form AND to git's two-dot form
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitBytes));
-      expect(headerBytes(sut.bytes)).toEqual(headerBytes(gitTwoDot));
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitTwoDot));
     });
   });
 
@@ -420,14 +420,14 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['main...feature'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, {
+      const result = await bundleCreate(ctx, {
         revs: [{ symmetricRange: ['main', 'feature'] }],
       });
 
       // Assert — oid-sorted; matches git's header prerequisites
       const gitHdr = parseBundleHeader(gitBytes, '<git>');
       const gitPrereqs = gitHdr.prerequisites.map((p) => p.oid as string);
-      const tsPrereqs = sut.prerequisites.map((p) => p.oid as string);
+      const tsPrereqs = result.prerequisites.map((p) => p.oid as string);
       expect(tsPrereqs).toEqual([...tsPrereqs].sort());
       expect(tsPrereqs).toEqual(gitPrereqs);
     });
@@ -442,14 +442,14 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       const gitBytes = gitBundleCreate(pairCriss.peer, bundleFile, ['branch-a...branch-b'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, {
+      const result = await bundleCreate(ctx, {
         revs: [{ symmetricRange: ['branch-a', 'branch-b'] }],
       });
 
       // Assert — two prerequisites (A and B commits), oid-sorted ascending
       const gitHdr = parseBundleHeader(gitBytes, '<git>');
       const gitPrereqs = gitHdr.prerequisites.map((p) => p.oid as string);
-      const tsPrereqs = sut.prerequisites.map((p) => p.oid as string);
+      const tsPrereqs = result.prerequisites.map((p) => p.oid as string);
       expect(tsPrereqs).toHaveLength(2);
       expect(tsPrereqs).toEqual([...tsPrereqs].sort());
       expect(new Set(tsPrereqs)).toEqual(new Set([ccAOid, ccBOid]));
@@ -493,10 +493,10 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, { all: true });
+      const result = await bundleCreate(ctx, { all: true });
 
       // Assert — same oid sets
-      const tsOids = await packOids(ctx, sut.bytes);
+      const tsOids = await packOids(ctx, result.bytes);
       const gitOids = await packOids(ctx, gitBytes);
       expect(tsOids).toEqual(gitOids);
     });
@@ -514,19 +514,19 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       gitBundleCreate(pair.peer, bundleFile, ['main~2..main'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, {
+      const result = await bundleCreate(ctx, {
         revs: [{ range: ['main~2', 'main'] }],
       });
 
       // Assert — prerequisite commits absent from tsgit's pack
-      const tsOids = await packOids(ctx, sut.bytes);
+      const tsOids = await packOids(ctx, result.bytes);
       expect(tsOids.has(firstOid)).toBe(false);
       expect(tsOids.has(secondOid)).toBe(false);
       expect(tsOids.has(mainOid)).toBe(true);
 
       // Cross-tool: git verifies tsgit's bundle (proves the closure is correct)
       const tsBundleFile = path.join(bundleDir, 'pin3-two-dot-ts.bundle');
-      await writeFile(tsBundleFile, sut.bytes);
+      await writeFile(tsBundleFile, result.bytes);
       const gitVerify = tryRunGit(['-C', pair.peer, 'bundle', 'verify', tsBundleFile], { env });
       expect(gitVerify.ok).toBe(true);
     });
@@ -542,18 +542,18 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       gitBundleCreate(pairCriss.peer, gitBundleFile, ['branch-a...branch-b'], env);
 
       // Act
-      const sut = await bundleCreate(ctx, {
+      const result = await bundleCreate(ctx, {
         revs: [{ symmetricRange: ['branch-a', 'branch-b'] }],
       });
 
       // Assert — merge-base commits absent from tsgit's pack
-      const tsOids = await packOids(ctx, sut.bytes);
+      const tsOids = await packOids(ctx, result.bytes);
       expect(tsOids.has(ccAOid)).toBe(false);
       expect(tsOids.has(ccBOid)).toBe(false);
 
       // Cross-tool: git verifies tsgit's bundle
       const tsBundleFile = path.join(bundleDirCriss, 'pin3-criss-ts.bundle');
-      await writeFile(tsBundleFile, sut.bytes);
+      await writeFile(tsBundleFile, result.bytes);
       const gitVerify = tryRunGit(['-C', pairCriss.peer, 'bundle', 'verify', tsBundleFile], {
         env,
       });
@@ -569,9 +569,9 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     it('Then git bundle verify passes and git clone succeeds with matching HEAD', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
-      const sut = await bundleCreate(ctx, { all: true });
+      const created = await bundleCreate(ctx, { all: true });
       const bundleFile = path.join(bundleDir, 'pin4-roundtrip.bundle');
-      await writeFile(bundleFile, sut.bytes);
+      await writeFile(bundleFile, created.bytes);
       const cloneTarget = path.join(cloneDir, 'clone-all');
 
       // Act — git bundle verify
@@ -607,7 +607,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
 
       // Act — tsgit reads git's bundle
-      const sut = await bundleVerify(ctx, { path: bundleFile });
+      const result = await bundleVerify(ctx, { path: bundleFile });
 
       // Act — git verifies the same bundle
       const gitResult = tryRunGit(['bundle', 'verify', bundleFile], { env });
@@ -616,16 +616,16 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       expect(gitResult.ok).toBe(true);
 
       // Assert — reconstructed output lines appear in git's stdout
-      const reconstructed = reconstructVerifyLines(sut);
+      const reconstructed = reconstructVerifyLines(result);
       for (const line of reconstructed) {
         expect(gitResult.stdout).toContain(line);
       }
 
       // Assert — complete-history bundle: no prerequisites, all refs present
-      expect(sut.recordsCompleteHistory).toBe(true);
-      expect(sut.prerequisites).toHaveLength(0);
-      expect(sut.prerequisitesPresent).toBe(true);
-      expect(sut.refs.some((r) => r.name === 'refs/heads/main')).toBe(true);
+      expect(result.recordsCompleteHistory).toBe(true);
+      expect(result.prerequisites).toHaveLength(0);
+      expect(result.prerequisitesPresent).toBe(true);
+      expect(result.refs.some((r) => r.name === 'refs/heads/main')).toBe(true);
     });
   });
 
@@ -633,11 +633,11 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     it('Then prerequisitesPresent is false and the missing oid is listed', async () => {
       // Arrange — create incremental bundle in main repo
       const mainCtx = createNodeContext({ workDir: pair.peer });
-      const sut = await bundleCreate(mainCtx, {
+      const created = await bundleCreate(mainCtx, {
         revs: [{ range: ['main~2', 'main'] }],
       });
       const bundleFile = path.join(pair.ours, 'pin5-missing-prereq.bundle');
-      await writeFile(bundleFile, sut.bytes);
+      await writeFile(bundleFile, created.bytes);
 
       // Use the ours scratch dir (no git objects) as the context for verify
       const emptyCtx = createNodeContext({ workDir: pair.ours });
@@ -655,7 +655,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 6: verify full-pack-parse detects a corrupt entry
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given a bundle with a corrupt pack entry byte and a recomputed (valid) SHA-1 trailer', () => {
+  describe('Given a bundle with a corrupt pack entry byte and a recomputed (valid) SHA-1 trailer, When bundleVerify is called', () => {
     it('Then bundleVerify throws DECOMPRESS_FAILED (pack-entry inflate failure)', async () => {
       // Arrange — valid bundle, then flip one byte in pack data and fix the trailer
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -836,7 +836,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     },
   ];
 
-  describe('Given a bad-header path passed to bundleVerify (directory or plain-text file)', () => {
+  describe('Given a bad-header path passed to bundleVerify (directory or plain-text file), When bundleVerify is called', () => {
     it.each(BAD_HEADER_MATRIX)(
       'Then BUNDLE_BAD_HEADER is thrown, reconstructing git "does not look like" error for $label',
       async ({ file, setup }) => {
@@ -899,7 +899,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 8: listHeads exact ref-name prefix filtering matches git
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given bundleListHeads with no filter', () => {
+  describe('Given bundleListHeads with no filter, When bundleListHeads is called', () => {
     it('Then all refs from the bundle header are returned in order', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -908,16 +908,16 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       await writeFile(bundleFile, created.bytes);
 
       // Act
-      const sut = await bundleListHeads(ctx, { path: bundleFile });
+      const result = await bundleListHeads(ctx, { path: bundleFile });
 
       // Assert — all refs returned in the same order as the bundle header
-      const names = sut.refs.map((r) => r.name as string);
+      const names = result.refs.map((r) => r.name as string);
       const expected = created.refs.map((r) => r.name as string);
       expect(names).toEqual(expected);
     });
   });
 
-  describe('Given bundleListHeads with exact full-name filter ["refs/tags/v1.0"]', () => {
+  describe('Given bundleListHeads with exact full-name filter ["refs/tags/v1.0"], When bundleListHeads is called', () => {
     it('Then only refs/tags/v1.0 is returned (exact-match)', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -926,18 +926,18 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       await writeFile(bundleFile, created.bytes);
 
       // Act
-      const sut = await bundleListHeads(ctx, {
+      const result = await bundleListHeads(ctx, {
         path: bundleFile,
         names: ['refs/tags/v1.0' as RefName],
       });
 
       // Assert — exactly one ref
-      expect(sut.refs).toHaveLength(1);
-      expect(sut.refs[0]?.name).toBe('refs/tags/v1.0');
+      expect(result.refs).toHaveLength(1);
+      expect(result.refs[0]?.name).toBe('refs/tags/v1.0');
     });
   });
 
-  describe('Given bundleListHeads with near-miss partial names ["v1.0", "tags/v1.0", "main"]', () => {
+  describe('Given bundleListHeads with near-miss partial names ["v1.0", "tags/v1.0", "main"], When bundleListHeads is called', () => {
     it('Then no refs are returned (partial names do not match full ref names, matching git)', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -970,7 +970,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 9: hash-algorithm field
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given bundleVerify on a v2 git bundle', () => {
+  describe('Given bundleVerify on a v2 git bundle, When the hash algorithm field is read', () => {
     it('Then hashAlgorithm is "sha1", reconstructing "The bundle uses this hash algorithm: sha1"', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -979,13 +979,13 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       await writeFile(bundleFile, created.bytes);
 
       // Act
-      const sut = await bundleVerify(ctx, { path: bundleFile });
+      const result = await bundleVerify(ctx, { path: bundleFile });
 
       // Assert — structured field
-      expect(sut.hashAlgorithm).toBe('sha1');
+      expect(result.hashAlgorithm).toBe('sha1');
 
       // Reconstruct git's human-readable line from the structured field
-      const reconstructed = `The bundle uses this hash algorithm: ${sut.hashAlgorithm}`;
+      const reconstructed = `The bundle uses this hash algorithm: ${result.hashAlgorithm}`;
       expect(reconstructed).toBe('The bundle uses this hash algorithm: sha1');
 
       // Verify git also emits this line
@@ -998,7 +998,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 10: tsgit verifies git-created incremental (thin) bundle
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given a git-created incremental bundle (thin pack) with prerequisites present in the verifying repo', () => {
+  describe('Given a git-created incremental bundle (thin pack) with prerequisites present in the verifying repo, When bundleVerify is called', () => {
     it('Then tsgit bundleVerify succeeds with prerequisitesPresent:true and git also accepts the bundle', async () => {
       // Arrange — git creates an incremental bundle; its pack is thin (delta bases are
       // prerequisite objects outside the pack body). Verify against the full repo where
@@ -1010,14 +1010,14 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       gitBundleCreate(pair.peer, bundleFile, ['main~2..main'], env);
 
       // Act
-      const sut = await bundleVerify(ctx, { path: bundleFile });
+      const result = await bundleVerify(ctx, { path: bundleFile });
 
       // Assert — tsgit accepts the thin bundle
-      expect(sut.prerequisitesPresent).toBe(true);
-      expect(sut.missingPrerequisites).toHaveLength(0);
-      expect(sut.recordsCompleteHistory).toBe(false);
-      expect(sut.prerequisites).toHaveLength(1);
-      expect(sut.prerequisites[0]?.oid as string).toBe(secondOid);
+      expect(result.prerequisitesPresent).toBe(true);
+      expect(result.missingPrerequisites).toHaveLength(0);
+      expect(result.recordsCompleteHistory).toBe(false);
+      expect(result.prerequisites).toHaveLength(1);
+      expect(result.prerequisites[0]?.oid as string).toBe(secondOid);
 
       // git also accepts the same bundle (verdicts match)
       const gitResult = tryRunGit(['-C', pair.peer, 'bundle', 'verify', bundleFile], { env });
@@ -1028,7 +1028,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     });
   });
 
-  describe('Given a git-created incremental bundle (thin pack) with prerequisites absent from the verifying repo', () => {
+  describe('Given a git-created incremental bundle (thin pack) with prerequisites absent from the verifying repo, When bundleVerify is called', () => {
     it('Then tsgit bundleVerify reports prerequisitesPresent:false with missing oids and git also refuses', async () => {
       // Arrange — create the incremental bundle in the full repo, then copy it
       // to an initialised-but-empty scratch repo so both tsgit and git can run

@@ -11,8 +11,8 @@ describe('file-mode properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbFileModeEnum(), (mode) => {
-            const sut = normalizeFileMode(mode);
-            expect(sut).toBe(mode);
+            const result = normalizeFileMode(mode);
+            expect(result).toBe(mode);
           }),
           { numRuns: 50 },
         );
@@ -41,8 +41,8 @@ describe('file-mode properties', () => {
         fc.assert(
           fc.property(arbRawOctal, (raw) => {
             if (raw === '040000') {
-              const sut = normalizeFileMode(raw);
-              expect(sut).toBe(FILE_MODE.DIRECTORY);
+              const result = normalizeFileMode(raw);
+              expect(result).toBe(FILE_MODE.DIRECTORY);
               return;
             }
             expect(() => normalizeFileMode(raw)).toThrow(

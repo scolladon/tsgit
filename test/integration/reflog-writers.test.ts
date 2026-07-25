@@ -62,174 +62,194 @@ afterEach(() => {
 });
 
 describe('integration — reflog writers', () => {
-  it('Given two commits on main, When committed, Then HEAD and the branch log both entries with catalogued messages', async () => {
-    // Arrange
-    const ctx = await seed();
+  describe('Given two commits on main, When committed', () => {
+    it('Then HEAD and the branch log both entries with catalogued messages', async () => {
+      // Arrange
+      const ctx = await seed();
 
-    // Act
-    const first = await commit(ctx, { message: 'first', author });
-    await stageFile(ctx, 'b.txt', 'b');
-    const second = await commit(ctx, { message: 'second', author });
+      // Act
+      const first = await commit(ctx, { message: 'first', author });
+      await stageFile(ctx, 'b.txt', 'b');
+      const second = await commit(ctx, { message: 'second', author });
 
-    // Assert — branch log
-    const branchLog = await readReflog(ctx, MAIN);
-    expect(branchLog).toHaveLength(2);
-    expect(branchLog[0]?.oldId).toBe('0'.repeat(40));
-    expect(branchLog[0]?.newId).toBe(first.id);
-    expect(branchLog[0]?.message).toBe('commit (initial): first');
-    expect(branchLog[1]?.oldId).toBe(first.id);
-    expect(branchLog[1]?.newId).toBe(second.id);
-    expect(branchLog[1]?.message).toBe('commit: second');
+      // Assert — branch log
+      const branchLog = await readReflog(ctx, MAIN);
+      expect(branchLog).toHaveLength(2);
+      expect(branchLog[0]?.oldId).toBe('0'.repeat(40));
+      expect(branchLog[0]?.newId).toBe(first.id);
+      expect(branchLog[0]?.message).toBe('commit (initial): first');
+      expect(branchLog[1]?.oldId).toBe(first.id);
+      expect(branchLog[1]?.newId).toBe(second.id);
+      expect(branchLog[1]?.message).toBe('commit: second');
 
-    // Assert — HEAD log mirrors the branch (HEAD coupling)
-    const headLog = await readReflog(ctx, HEAD);
-    expect(headLog.map((e) => e.newId)).toEqual([first.id, second.id]);
-    expect(headLog.map((e) => e.message)).toEqual(['commit (initial): first', 'commit: second']);
+      // Assert — HEAD log mirrors the branch (HEAD coupling)
+      const headLog = await readReflog(ctx, HEAD);
+      expect(headLog.map((e) => e.newId)).toEqual([first.id, second.id]);
+      expect(headLog.map((e) => e.message)).toEqual(['commit (initial): first', 'commit: second']);
+    });
   });
 
-  it('Given a branch created from a start point, When created, Then the new branch log records the creation', async () => {
-    // Arrange
-    const ctx = await seed();
-    await commit(ctx, { message: 'first', author });
+  describe('Given a branch created from a start point, When created', () => {
+    it('Then the new branch log records the creation', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commit(ctx, { message: 'first', author });
 
-    // Act
-    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
+      // Act
+      await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
 
-    // Assert
-    const log = await readReflog(ctx, 'refs/heads/feature' as RefName);
-    expect(log).toHaveLength(1);
-    expect(log[0]?.message).toBe('branch: Created from main');
+      // Assert
+      const log = await readReflog(ctx, 'refs/heads/feature' as RefName);
+      expect(log).toHaveLength(1);
+      expect(log[0]?.message).toBe('branch: Created from main');
+    });
   });
 
-  it('Given a branch with history, When renamed, Then the moved log is preserved and a rename entry is appended', async () => {
-    // Arrange
-    const ctx = await seed();
-    await commit(ctx, { message: 'first', author });
-    await stageFile(ctx, 'b.txt', 'b');
-    await commit(ctx, { message: 'second', author });
-    const before = await readReflog(ctx, MAIN);
-    expect(before).toHaveLength(2);
+  describe('Given a branch with history, When renamed', () => {
+    it('Then the moved log is preserved and a rename entry is appended', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commit(ctx, { message: 'first', author });
+      await stageFile(ctx, 'b.txt', 'b');
+      await commit(ctx, { message: 'second', author });
+      const before = await readReflog(ctx, MAIN);
+      expect(before).toHaveLength(2);
 
-    // Act
-    await branchRename(ctx, { from: 'main', to: 'trunk' });
+      // Act
+      await branchRename(ctx, { from: 'main', to: 'trunk' });
 
-    // Assert — source log is gone, history survived on the target
-    expect(await readReflog(ctx, MAIN)).toEqual([]);
-    const renamed = await readReflog(ctx, 'refs/heads/trunk' as RefName);
-    expect(renamed.slice(0, 2).map((e) => e.message)).toEqual([
-      'commit (initial): first',
-      'commit: second',
-    ]);
-    expect(renamed.at(-1)?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+      // Assert — source log is gone, history survived on the target
+      expect(await readReflog(ctx, MAIN)).toEqual([]);
+      const renamed = await readReflog(ctx, 'refs/heads/trunk' as RefName);
+      expect(renamed.slice(0, 2).map((e) => e.message)).toEqual([
+        'commit (initial): first',
+        'commit: second',
+      ]);
+      expect(renamed.at(-1)?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+    });
   });
 
-  it('Given a branch with a reflog, When deleted, Then the reflog file is removed', async () => {
-    // Arrange
-    const ctx = await seed();
-    await commit(ctx, { message: 'first', author });
-    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
-    expect(await readReflog(ctx, 'refs/heads/feature' as RefName)).toHaveLength(1);
+  describe('Given a branch with a reflog, When deleted', () => {
+    it('Then the reflog file is removed', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commit(ctx, { message: 'first', author });
+      await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
+      expect(await readReflog(ctx, 'refs/heads/feature' as RefName)).toHaveLength(1);
 
-    // Act
-    await branchDelete(ctx, { name: 'feature' });
+      // Act
+      await branchDelete(ctx, { name: 'feature' });
 
-    // Assert
-    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/feature`)).toBe(false);
+      // Assert
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/feature`)).toBe(false);
+    });
   });
 
-  it('Given a branch switch, When checkout moves HEAD, Then HEAD logs the move with both labels', async () => {
-    // Arrange
-    const ctx = await seed();
-    await commit(ctx, { message: 'first', author });
-    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
+  describe('Given a branch switch, When checkout moves HEAD', () => {
+    it('Then HEAD logs the move with both labels', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commit(ctx, { message: 'first', author });
+      await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
 
-    // Act
-    await checkout(ctx, { rev: 'feature' });
+      // Act
+      await checkout(ctx, { rev: 'feature' });
 
-    // Assert
-    const headLog = await readReflog(ctx, HEAD);
-    expect(headLog.at(-1)?.message).toBe('checkout: moving from main to feature');
+      // Assert
+      const headLog = await readReflog(ctx, HEAD);
+      expect(headLog.at(-1)?.message).toBe('checkout: moving from main to feature');
+    });
   });
 
-  it('Given a detached checkout, When checkout moves HEAD to a commit, Then HEAD logs the move', async () => {
-    // Arrange
-    const ctx = await seed();
-    const first = await commit(ctx, { message: 'first', author });
+  describe('Given a detached checkout, When checkout moves HEAD to a commit', () => {
+    it('Then HEAD logs the move', async () => {
+      // Arrange
+      const ctx = await seed();
+      const first = await commit(ctx, { message: 'first', author });
 
-    // Act
-    await checkout(ctx, { rev: first.id, detach: true });
+      // Act
+      await checkout(ctx, { rev: first.id, detach: true });
 
-    // Assert
-    const headLog = await readReflog(ctx, HEAD);
-    expect(headLog.at(-1)?.message).toBe(`checkout: moving from main to ${first.id.slice(0, 7)}`);
-    expect(headLog.at(-1)?.newId).toBe(first.id);
+      // Assert
+      const headLog = await readReflog(ctx, HEAD);
+      expect(headLog.at(-1)?.message).toBe(`checkout: moving from main to ${first.id.slice(0, 7)}`);
+      expect(headLog.at(-1)?.newId).toBe(first.id);
+    });
   });
 
-  it('Given a reset to an earlier commit, When reset runs, Then the branch and HEAD log the move', async () => {
-    // Arrange
-    const ctx = await seed();
-    const first = await commit(ctx, { message: 'first', author });
-    await stageFile(ctx, 'b.txt', 'b');
-    await commit(ctx, { message: 'second', author });
+  describe('Given a reset to an earlier commit, When reset runs', () => {
+    it('Then the branch and HEAD log the move', async () => {
+      // Arrange
+      const ctx = await seed();
+      const first = await commit(ctx, { message: 'first', author });
+      await stageFile(ctx, 'b.txt', 'b');
+      await commit(ctx, { message: 'second', author });
 
-    // Act
-    await reset(ctx, { mode: 'soft', rev: first.id });
+      // Act
+      await reset(ctx, { mode: 'soft', rev: first.id });
 
-    // Assert
-    const headLog = await readReflog(ctx, HEAD);
-    expect(headLog.at(-1)?.message).toBe(`reset: moving to ${first.id}`);
-    expect(headLog.at(-1)?.newId).toBe(first.id);
+      // Assert
+      const headLog = await readReflog(ctx, HEAD);
+      expect(headLog.at(-1)?.message).toBe(`reset: moving to ${first.id}`);
+      expect(headLog.at(-1)?.newId).toBe(first.id);
+    });
   });
 
-  it('Given diverged branches resolvable by fast-forward, When merged, Then a fast-forward entry is logged', async () => {
-    // Arrange
-    const ctx = await seed();
-    await commit(ctx, { message: 'first', author });
-    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
-    await checkout(ctx, { rev: 'feature' });
-    await stageFile(ctx, 'b.txt', 'b');
-    await commit(ctx, { message: 'on feature', author });
-    await checkout(ctx, { rev: 'main' });
+  describe('Given diverged branches resolvable by fast-forward, When merged', () => {
+    it('Then a fast-forward entry is logged', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commit(ctx, { message: 'first', author });
+      await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
+      await checkout(ctx, { rev: 'feature' });
+      await stageFile(ctx, 'b.txt', 'b');
+      await commit(ctx, { message: 'on feature', author });
+      await checkout(ctx, { rev: 'main' });
 
-    // Act
-    await mergeRun(ctx, { rev: 'feature', author });
+      // Act
+      await mergeRun(ctx, { rev: 'feature', author });
 
-    // Assert
-    const branchLog = await readReflog(ctx, MAIN);
-    expect(branchLog.at(-1)?.message).toBe('merge feature: Fast-forward');
+      // Assert
+      const branchLog = await readReflog(ctx, MAIN);
+      expect(branchLog.at(-1)?.message).toBe('merge feature: Fast-forward');
+    });
   });
 
-  it('Given two diverged branches, When merged cleanly, Then a merge-commit entry is logged', async () => {
-    // Arrange
-    const ctx = await seed({ 'a.txt': 'a' });
-    await commit(ctx, { message: 'first', author });
-    await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
-    await checkout(ctx, { rev: 'feature' });
-    await stageFile(ctx, 'feature.txt', 'f');
-    await commit(ctx, { message: 'on feature', author });
-    await checkout(ctx, { rev: 'main' });
-    await stageFile(ctx, 'mainline.txt', 'm');
-    await commit(ctx, { message: 'on main', author });
+  describe('Given two diverged branches, When merged cleanly', () => {
+    it('Then a merge-commit entry is logged', async () => {
+      // Arrange
+      const ctx = await seed({ 'a.txt': 'a' });
+      await commit(ctx, { message: 'first', author });
+      await branchCreate(ctx, { name: 'feature', startPoint: 'main' });
+      await checkout(ctx, { rev: 'feature' });
+      await stageFile(ctx, 'feature.txt', 'f');
+      await commit(ctx, { message: 'on feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await stageFile(ctx, 'mainline.txt', 'm');
+      await commit(ctx, { message: 'on main', author });
 
-    // Act
-    await mergeRun(ctx, { rev: 'feature', author });
+      // Act
+      await mergeRun(ctx, { rev: 'feature', author });
 
-    // Assert
-    const branchLog = await readReflog(ctx, MAIN);
-    expect(branchLog.at(-1)?.message).toBe("merge feature: Merge made by the 'tsgit' strategy.");
+      // Assert
+      const branchLog = await readReflog(ctx, MAIN);
+      expect(branchLog.at(-1)?.message).toBe("merge feature: Merge made by the 'tsgit' strategy.");
+    });
   });
 
-  it('Given a tag created under the default config, When the tag is made, Then no reflog file is written', async () => {
-    // Arrange
-    const ctx = await seed();
-    await commit(ctx, { message: 'first', author });
+  describe('Given a tag created under the default config, When the tag is made', () => {
+    it('Then no reflog file is written', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commit(ctx, { message: 'first', author });
 
-    // Act
-    await tagCreate(ctx, { name: 'v1' });
+      // Act
+      await tagCreate(ctx, { name: 'v1' });
 
-    // Assert — refs/tags/* is not default-loggable
-    expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/tags/v1`)).toBe(false);
-    expect(await readReflog(ctx, 'refs/tags/v1' as RefName)).toEqual([]);
+      // Assert — refs/tags/* is not default-loggable
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/tags/v1`)).toBe(false);
+      expect(await readReflog(ctx, 'refs/tags/v1' as RefName)).toEqual([]);
+    });
   });
 });
 
@@ -246,46 +266,50 @@ describe.skipIf(GIT === undefined)('integration — reflog interop with canonica
     await rm(tmpdir, { recursive: true, force: true });
   });
 
-  it('Given a reflog tsgit writes, When git reflog reads it, Then git parses every entry', async () => {
-    // Arrange — a real git repo with one commit, then a tsgit-formatted line
-    runGit(['init', '-q', '-b', 'main', tmpdir]);
-    runGit(['-C', tmpdir, 'config', 'user.name', 'Ada']);
-    runGit(['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
-    runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'seed']);
-    const headOid = runGit(['-C', tmpdir, 'rev-parse', 'HEAD']).trim() as ObjectId;
-    const line = serializeReflogLine({
-      oldId: headOid,
-      newId: headOid,
-      identity: author,
-      message: 'reset: moving to HEAD',
+  describe('Given a reflog tsgit writes, When git reflog reads it', () => {
+    it('Then git parses every entry', async () => {
+      // Arrange — a real git repo with one commit, then a tsgit-formatted line
+      runGit(['init', '-q', '-b', 'main', tmpdir]);
+      runGit(['-C', tmpdir, 'config', 'user.name', 'Ada']);
+      runGit(['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
+      runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'seed']);
+      const headOid = runGit(['-C', tmpdir, 'rev-parse', 'HEAD']).trim() as ObjectId;
+      const line = serializeReflogLine({
+        oldId: headOid,
+        newId: headOid,
+        identity: author,
+        message: 'reset: moving to HEAD',
+      });
+
+      // Act — append the tsgit-serialized entry, then ask git to read the log
+      const { appendFile } = await import('node:fs/promises');
+      await appendFile(path.join(tmpdir, '.git', 'logs', 'HEAD'), line);
+      const reflog = runGit(['-C', tmpdir, 'reflog', 'show', 'HEAD']).trim();
+
+      // Assert — git surfaces the tsgit-written entry
+      expect(reflog).toContain('reset: moving to HEAD');
     });
-
-    // Act — append the tsgit-serialized entry, then ask git to read the log
-    const { appendFile } = await import('node:fs/promises');
-    await appendFile(path.join(tmpdir, '.git', 'logs', 'HEAD'), line);
-    const reflog = runGit(['-C', tmpdir, 'reflog', 'show', 'HEAD']).trim();
-
-    // Assert — git surfaces the tsgit-written entry
-    expect(reflog).toContain('reset: moving to HEAD');
   });
 
-  it('Given a reflog git wrote, When readReflog parses it, Then every entry round-trips', async () => {
-    // Arrange — git produces a multi-entry HEAD reflog
-    runGit(['init', '-q', '-b', 'main', tmpdir]);
-    runGit(['-C', tmpdir, 'config', 'user.name', 'Ada']);
-    runGit(['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
-    runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'first']);
-    runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'second']);
+  describe('Given a reflog git wrote, When readReflog parses it', () => {
+    it('Then every entry round-trips', async () => {
+      // Arrange — git produces a multi-entry HEAD reflog
+      runGit(['init', '-q', '-b', 'main', tmpdir]);
+      runGit(['-C', tmpdir, 'config', 'user.name', 'Ada']);
+      runGit(['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
+      runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'first']);
+      runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'second']);
 
-    // Act
-    const raw = await readFile(path.join(tmpdir, '.git', 'logs', 'HEAD'), 'utf8');
-    const sut = parseReflog(raw);
+      // Act
+      const raw = await readFile(path.join(tmpdir, '.git', 'logs', 'HEAD'), 'utf8');
+      const result = parseReflog(raw);
 
-    // Assert — both commit entries parsed, oldest-first
-    expect(sut).toHaveLength(2);
-    expect(sut[0]?.oldId).toBe('0'.repeat(40));
-    expect(sut[0]?.message).toBe('commit (initial): first');
-    expect(sut[1]?.oldId).toBe(sut[0]?.newId);
-    expect(sut[1]?.message).toBe('commit: second');
+      // Assert — both commit entries parsed, oldest-first
+      expect(result).toHaveLength(2);
+      expect(result[0]?.oldId).toBe('0'.repeat(40));
+      expect(result[0]?.message).toBe('commit (initial): first');
+      expect(result[1]?.oldId).toBe(result[0]?.newId);
+      expect(result[1]?.message).toBe('commit: second');
+    });
   });
 });

@@ -9,10 +9,10 @@ describe('git-index error', () => {
       describe('When checking error.data', () => {
         it("Then code is 'INVALID_INDEX_HEADER' and reason matches", () => {
           // Arrange & Act
-          const sut = invalidIndexHeader('bad magic');
+          const result = invalidIndexHeader('bad magic');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_INDEX_HEADER', reason: 'bad magic' });
+          expect(result.data).toEqual({ code: 'INVALID_INDEX_HEADER', reason: 'bad magic' });
         });
       });
     });
@@ -21,10 +21,10 @@ describe('git-index error', () => {
       describe('When checking error.data', () => {
         it('Then offset is 42 and reason matches', () => {
           // Arrange & Act
-          const sut = invalidIndexEntry(42, 'truncated');
+          const result = invalidIndexEntry(42, 'truncated');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_INDEX_ENTRY',
             offset: 42,
             reason: 'truncated',
@@ -39,37 +39,38 @@ describe('git-index error', () => {
       describe('When checking instanceof Error', () => {
         it('Then returns true', () => {
           // Arrange & Act
-          const sut = invalidIndexHeader('bad');
+          const result = invalidIndexHeader('bad');
 
           // Assert
-          expect(sut).toBeInstanceOf(Error);
+          expect(result).toBeInstanceOf(Error);
         });
       });
       describe('When accessing .name', () => {
         it("Then equals 'TsgitError'", () => {
           // Arrange & Act
-          const sut = invalidIndexHeader('bad');
+          const result = invalidIndexHeader('bad');
 
           // Assert
-          expect(sut.name).toBe('TsgitError');
+          expect(result.name).toBe('TsgitError');
         });
       });
       describe('When accessing .message', () => {
         it('Then contains the error code', () => {
           // Arrange & Act
-          const sut = invalidIndexHeader('bad');
+          const result = invalidIndexHeader('bad');
 
           // Assert
-          expect(sut.message).toContain('INVALID_INDEX_HEADER');
+          expect(result.message).toContain('INVALID_INDEX_HEADER');
         });
       });
       describe('When switching on data.code in exhaustive switch', () => {
         it('Then all 29 cases handleable', () => {
           // Arrange
-          const sut = invalidIndexHeader('test');
+          const result = invalidIndexHeader('test');
 
-          // Act & Assert
-          const data: TsgitErrorData = sut.data;
+          // Act
+          const data: TsgitErrorData = result.data;
+
           // Assert
           assertExhaustiveSwitch(data);
         });

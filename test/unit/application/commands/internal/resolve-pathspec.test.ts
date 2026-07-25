@@ -51,11 +51,11 @@ describe('resolvePathspec', () => {
         },
       ])('Then $label', ({ patterns, hasGlob, literalMustMatch }) => {
         // Arrange
-        const sut = resolvePathspec(patterns);
+        const result = resolvePathspec(patterns);
 
         // Assert
-        expect(sut.hasGlob).toBe(hasGlob);
-        expect(sut.literalMustMatch).toEqual(literalMustMatch);
+        expect(result.hasGlob).toBe(hasGlob);
+        expect(result.literalMustMatch).toEqual(literalMustMatch);
       });
     });
   });

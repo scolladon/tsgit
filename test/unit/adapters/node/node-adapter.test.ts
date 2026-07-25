@@ -312,11 +312,11 @@ describe('resolveHomeDir', () => {
   describe('Given an empty string', () => {
     describe('When resolved', () => {
       it('Then returns undefined', () => {
-        // Arrange
-        const sut = resolveHomeDir('');
+        // Arrange & Act
+        const result = resolveHomeDir('');
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -324,11 +324,11 @@ describe('resolveHomeDir', () => {
   describe('Given a non-empty path', () => {
     describe('When resolved', () => {
       it('Then returns the path verbatim', () => {
-        // Arrange
-        const sut = resolveHomeDir('/home/me');
+        // Arrange & Act
+        const result = resolveHomeDir('/home/me');
 
         // Assert
-        expect(sut).toBe('/home/me');
+        expect(result).toBe('/home/me');
       });
     });
   });
@@ -338,12 +338,12 @@ describe('buildLayout', () => {
   describe('Given homeDir=undefined', () => {
     describe('When built', () => {
       it('Then layout has no homeDir key', () => {
-        // Arrange
-        const sut = buildLayout('/wt', '/wt/.git', false, undefined);
+        // Arrange & Act
+        const result = buildLayout('/wt', '/wt/.git', false, undefined);
 
         // Assert
-        expect(sut).toEqual({ workDir: '/wt', gitDir: '/wt/.git', bare: false });
-        expect('homeDir' in sut).toBe(false);
+        expect(result).toEqual({ workDir: '/wt', gitDir: '/wt/.git', bare: false });
+        expect('homeDir' in result).toBe(false);
       });
     });
   });
@@ -351,12 +351,12 @@ describe('buildLayout', () => {
   describe('Given homeDir set', () => {
     describe('When built', () => {
       it('Then layout.homeDir matches', () => {
-        // Arrange
-        const sut = buildLayout('/wt', '/wt/.git', true, '/home/me');
+        // Arrange & Act
+        const result = buildLayout('/wt', '/wt/.git', true, '/home/me');
 
         // Assert
-        expect(sut.homeDir).toBe('/home/me');
-        expect(sut.bare).toBe(true);
+        expect(result.homeDir).toBe('/home/me');
+        expect(result.bare).toBe(true);
       });
     });
   });

@@ -22,10 +22,10 @@ describe('hashBlob', () => {
         const content = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
 
         // Act
-        const sut = await hashBlob(wrapped.ctx, content);
+        const result = await hashBlob(wrapped.ctx, content);
 
         // Assert
-        expect(sut).toMatch(/^[0-9a-f]{40}$/);
+        expect(result).toMatch(/^[0-9a-f]{40}$/);
         const writes = wrapped
           .calls()
           .filter(
@@ -45,11 +45,11 @@ describe('hashBlob', () => {
         const content = new Uint8Array([1, 2, 3, 4]);
 
         // Act
-        const sut = await hashBlob(wrapped.ctx, content, { write: false });
+        const result = await hashBlob(wrapped.ctx, content, { write: false });
 
         // Assert
-        const sutNoOpt = await hashBlob(base, content);
-        expect(sut).toBe(sutNoOpt);
+        const resultNoOpt = await hashBlob(base, content);
+        expect(result).toBe(resultNoOpt);
         const writes = wrapped
           .calls()
           .filter((c) => c.method === 'write' || c.method === 'writeExclusive');
@@ -66,11 +66,11 @@ describe('hashBlob', () => {
         const content = new Uint8Array([0x68, 0x69]); // "hi"
 
         // Act
-        const sut = await hashBlob(ctx, content, { write: true });
+        const result = await hashBlob(ctx, content, { write: true });
 
         // Assert
-        expect(sut).toMatch(/^[0-9a-f]{40}$/);
-        const roundtripped = await readObject(ctx, sut);
+        expect(result).toMatch(/^[0-9a-f]{40}$/);
+        const roundtripped = await readObject(ctx, result);
         expect(roundtripped.type).toBe('blob');
         if (roundtripped.type !== 'blob') return;
         expect(Array.from(roundtripped.content)).toEqual(Array.from(content));
@@ -104,10 +104,10 @@ describe('hashBlob', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const sut = await hashBlob(ctx, new Uint8Array(0));
+        const result = await hashBlob(ctx, new Uint8Array(0));
 
         // Assert
-        expect(sut).toBe('e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
+        expect(result).toBe('e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
       });
     });
   });
@@ -197,10 +197,10 @@ describe('hashBlob', () => {
         const atCap = new Uint8Array(MAX_WORKING_TREE_BLOB_BYTES);
 
         // Act
-        const sut = await hashBlob(ctx, atCap);
+        const result = await hashBlob(ctx, atCap);
 
         // Assert
-        expect(sut).toBe(stubOid);
+        expect(result).toBe(stubOid);
       });
     });
   });

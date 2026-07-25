@@ -92,11 +92,11 @@ describe('computePatchId', () => {
       ]);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).toBe(other);
+      expect(result).toBe(other);
     });
   });
 
@@ -109,11 +109,11 @@ describe('computePatchId', () => {
       const cB = await commitFile(ctx, 'l1\nOTHER\nl3\n', [base]);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).not.toBe(other);
+      expect(result).not.toBe(other);
     });
   });
 
@@ -168,11 +168,11 @@ describe('computePatchId', () => {
       ]);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).toBe(other);
+      expect(result).toBe(other);
     });
   });
 
@@ -184,11 +184,11 @@ describe('computePatchId', () => {
       const rootOther = await commitFile(ctx, 'goodbye\n', []);
 
       // Act
-      const sut = await computePatchId(ctx, root);
+      const result = await computePatchId(ctx, root);
 
       // Assert — a non-empty hex digest, distinct from a different root's
-      expect(sut).toMatch(/^[0-9a-f]+$/);
-      expect(sut).not.toBe(await computePatchId(ctx, rootOther));
+      expect(result).toMatch(/^[0-9a-f]+$/);
+      expect(result).not.toBe(await computePatchId(ctx, rootOther));
     });
   });
 
@@ -206,11 +206,11 @@ describe('computePatchId', () => {
       const cB = await commitGitlink(ctx, gitlinkOid, [base]);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert — same pointer → same patch-id
-      expect(sut).toBe(other);
+      expect(result).toBe(other);
     });
   });
 
@@ -226,11 +226,11 @@ describe('computePatchId', () => {
       const cB = await commitGitlink(ctx, gitlinkOidB, [base]);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert — different pointers → different patch-ids
-      expect(sut).not.toBe(other);
+      expect(result).not.toBe(other);
     });
   });
 
@@ -243,11 +243,11 @@ describe('computePatchId', () => {
       const cB = await commitFile(ctx, 'BIN\0BBBB', []);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).not.toBe(other);
+      expect(result).not.toBe(other);
     });
   });
 
@@ -259,11 +259,11 @@ describe('computePatchId', () => {
       const cB = await commitFile(ctx, 'BIN\0SAME', []);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).toBe(other);
+      expect(result).toBe(other);
     });
   });
 
@@ -277,11 +277,11 @@ describe('computePatchId', () => {
       const cB = await commitFile(ctx, 'BIN\0BBBB', [base]);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).not.toBe(other);
+      expect(result).not.toBe(other);
     });
   });
 
@@ -294,11 +294,11 @@ describe('computePatchId', () => {
       const cB = await commitFile(ctx, 'x  y\n', [base]);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).toBe(other);
+      expect(result).toBe(other);
     });
   });
 
@@ -311,11 +311,11 @@ describe('computePatchId', () => {
       const cB = await commitFile(ctx, 'b\nc\n', []);
 
       // Act
-      const sut = await computePatchId(ctx, cA);
+      const result = await computePatchId(ctx, cA);
       const other = await computePatchId(ctx, cB);
 
       // Assert
-      expect(sut).toBe(other);
+      expect(result).toBe(other);
     });
   });
 

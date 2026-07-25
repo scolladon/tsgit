@@ -132,11 +132,11 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         // Act
         await repo.reset({ mode: 'soft', rev: c0 });
         runGit(['-C', pair.peer, 'reset', '--soft', c0]);
-        const sut = await snapshot(pair.ours);
+        const result = await snapshot(pair.ours);
 
         // Assert
-        expect(sut).toEqual(await snapshot(pair.peer));
-        expect(sut.head).toBe(c0);
+        expect(result).toEqual(await snapshot(pair.peer));
+        expect(result.head).toBe(c0);
       });
     });
 
@@ -148,12 +148,12 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         // Act
         await repo.reset({ mode: 'mixed', rev: c0 });
         runGit(['-C', pair.peer, 'reset', '--mixed', c0]);
-        const sut = await snapshot(pair.ours);
+        const result = await snapshot(pair.ours);
 
         // Assert
-        expect(sut).toEqual(await snapshot(pair.peer));
-        expect(sut.head).toBe(c0);
-        expect(sut.bExists).toBe(true);
+        expect(result).toEqual(await snapshot(pair.peer));
+        expect(result.head).toBe(c0);
+        expect(result.bExists).toBe(true);
       });
     });
 
@@ -165,13 +165,13 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         // Act
         await repo.reset({ mode: 'hard', rev: c0 });
         runGit(['-C', pair.peer, 'reset', '--hard', c0]);
-        const sut = await snapshot(pair.ours);
+        const result = await snapshot(pair.ours);
 
         // Assert
-        expect(sut).toEqual(await snapshot(pair.peer));
-        expect(sut.head).toBe(c0);
-        expect(sut.a).toBe('v0\n');
-        expect(sut.bExists).toBe(false);
+        expect(result).toEqual(await snapshot(pair.peer));
+        expect(result.head).toBe(c0);
+        expect(result.a).toBe('v0\n');
+        expect(result.bExists).toBe(false);
       });
     });
   });
@@ -215,9 +215,9 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         await repo.reset({ mode: 'hard', rev: c0 });
 
         // Assert — guards the routing from over-skipping a real move.
-        const sut = topReflogSubject(pair.ours, 'HEAD');
-        expect(sut).toBe(`reset: moving to ${c0}`);
-        expect(sut).toBe(topReflogSubject(pair.peer, 'HEAD'));
+        const result = topReflogSubject(pair.ours, 'HEAD');
+        expect(result).toBe(`reset: moving to ${c0}`);
+        expect(result).toBe(topReflogSubject(pair.peer, 'HEAD'));
       });
     });
   });

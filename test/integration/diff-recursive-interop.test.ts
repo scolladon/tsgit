@@ -72,83 +72,87 @@ const gitCommit = (dir: string, message: string): void => {
 };
 
 describe.skipIf(!GIT_AVAILABLE)('integration — recursive (sub-directory) diff git parity', () => {
-  it('Given a file modified inside a sub-directory, When tsgit emits the patch, Then it matches `git diff` byte-for-byte AND the frozen golden', async () => {
-    // Arrange — `a/b.txt` changes content across two commits.
-    const pair = await makePeerPair('diff-recursive-modify');
-    try {
-      runGit(['init', '-q', '-b', 'main', pair.peer]);
-      await writePeerFile(pair.peer, 'a/b.txt', 'b1\n');
-      runGit(['-C', pair.peer, 'add', 'a/b.txt']);
-      gitCommit(pair.peer, 'first');
-      await writePeerFile(pair.peer, 'a/b.txt', 'b2\n');
-      runGit(['-C', pair.peer, 'add', 'a/b.txt']);
-      gitCommit(pair.peer, 'second');
-      const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
-      const golden = await loadGolden('nested-modify');
+  describe('Given a file modified inside a sub-directory, When tsgit emits the patch', () => {
+    it('Then it matches `git diff` byte-for-byte AND the frozen golden', async () => {
+      // Arrange — `a/b.txt` changes content across two commits.
+      const pair = await makePeerPair('diff-recursive-modify');
+      try {
+        runGit(['init', '-q', '-b', 'main', pair.peer]);
+        await writePeerFile(pair.peer, 'a/b.txt', 'b1\n');
+        runGit(['-C', pair.peer, 'add', 'a/b.txt']);
+        gitCommit(pair.peer, 'first');
+        await writePeerFile(pair.peer, 'a/b.txt', 'b2\n');
+        runGit(['-C', pair.peer, 'add', 'a/b.txt']);
+        gitCommit(pair.peer, 'second');
+        const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
+        const golden = await loadGolden('nested-modify');
 
-      const ctx = createMemoryContext();
-      await init(ctx);
-      await writeCtxFile(ctx, 'a/b.txt', 'b1\n');
-      await add(ctx, ['a/b.txt']);
-      const c1 = await commit(ctx, { message: 'first', author });
-      await writeCtxFile(ctx, 'a/b.txt', 'b2\n');
-      await add(ctx, ['a/b.txt']);
-      const c2 = await commit(ctx, { message: 'second', author });
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await writeCtxFile(ctx, 'a/b.txt', 'b1\n');
+        await add(ctx, ['a/b.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await writeCtxFile(ctx, 'a/b.txt', 'b2\n');
+        await add(ctx, ['a/b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
 
-      // Act
-      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-      const sut = await reconstructPatch(ctx, treeDiff);
+        // Act
+        const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+        const result = await reconstructPatch(ctx, treeDiff);
 
-      // Assert — double pin.
-      expect(sut).toBe(live);
-      expect(sut).toBe(golden);
-    } finally {
-      await pair.dispose();
-    }
+        // Assert — double pin.
+        expect(result).toBe(live);
+        expect(result).toBe(golden);
+      } finally {
+        await pair.dispose();
+      }
+    });
   });
 
-  it('Given nested add, modify, delete and a deep nest in one diff, When tsgit emits the patch, Then it matches `git diff` AND the frozen golden', async () => {
-    // Arrange — first commit seeds `del/y.txt` + `mod/m.txt`; second adds
-    // `add/new.txt` and `deep/a/b/c.txt`, modifies `mod/m.txt`, deletes
-    // `del/y.txt`. The recursive diff must order files by full path.
-    const pair = await makePeerPair('diff-recursive-mixed');
-    try {
-      runGit(['init', '-q', '-b', 'main', pair.peer]);
-      await writePeerFile(pair.peer, 'del/y.txt', 'y\n');
-      await writePeerFile(pair.peer, 'mod/m.txt', 'm1\n');
-      runGit(['-C', pair.peer, 'add', '-A']);
-      gitCommit(pair.peer, 'first');
-      await writePeerFile(pair.peer, 'add/new.txt', 'new\n');
-      await writePeerFile(pair.peer, 'deep/a/b/c.txt', 'deep\n');
-      await writePeerFile(pair.peer, 'mod/m.txt', 'm2\n');
-      runGit(['-C', pair.peer, 'rm', '-q', 'del/y.txt']);
-      runGit(['-C', pair.peer, 'add', '-A']);
-      gitCommit(pair.peer, 'second');
-      const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
-      const golden = await loadGolden('nested-mixed');
+  describe('Given nested add, modify, delete and a deep nest in one diff, When tsgit emits the patch', () => {
+    it('Then it matches `git diff` AND the frozen golden', async () => {
+      // Arrange — first commit seeds `del/y.txt` + `mod/m.txt`; second adds
+      // `add/new.txt` and `deep/a/b/c.txt`, modifies `mod/m.txt`, deletes
+      // `del/y.txt`. The recursive diff must order files by full path.
+      const pair = await makePeerPair('diff-recursive-mixed');
+      try {
+        runGit(['init', '-q', '-b', 'main', pair.peer]);
+        await writePeerFile(pair.peer, 'del/y.txt', 'y\n');
+        await writePeerFile(pair.peer, 'mod/m.txt', 'm1\n');
+        runGit(['-C', pair.peer, 'add', '-A']);
+        gitCommit(pair.peer, 'first');
+        await writePeerFile(pair.peer, 'add/new.txt', 'new\n');
+        await writePeerFile(pair.peer, 'deep/a/b/c.txt', 'deep\n');
+        await writePeerFile(pair.peer, 'mod/m.txt', 'm2\n');
+        runGit(['-C', pair.peer, 'rm', '-q', 'del/y.txt']);
+        runGit(['-C', pair.peer, 'add', '-A']);
+        gitCommit(pair.peer, 'second');
+        const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
+        const golden = await loadGolden('nested-mixed');
 
-      const ctx = createMemoryContext();
-      await init(ctx);
-      await writeCtxFile(ctx, 'del/y.txt', 'y\n');
-      await writeCtxFile(ctx, 'mod/m.txt', 'm1\n');
-      await add(ctx, ['del/y.txt', 'mod/m.txt']);
-      const c1 = await commit(ctx, { message: 'first', author });
-      await writeCtxFile(ctx, 'add/new.txt', 'new\n');
-      await writeCtxFile(ctx, 'deep/a/b/c.txt', 'deep\n');
-      await writeCtxFile(ctx, 'mod/m.txt', 'm2\n');
-      await rm(ctx, ['del/y.txt']);
-      await add(ctx, ['add/new.txt', 'deep/a/b/c.txt', 'mod/m.txt']);
-      const c2 = await commit(ctx, { message: 'second', author });
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await writeCtxFile(ctx, 'del/y.txt', 'y\n');
+        await writeCtxFile(ctx, 'mod/m.txt', 'm1\n');
+        await add(ctx, ['del/y.txt', 'mod/m.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await writeCtxFile(ctx, 'add/new.txt', 'new\n');
+        await writeCtxFile(ctx, 'deep/a/b/c.txt', 'deep\n');
+        await writeCtxFile(ctx, 'mod/m.txt', 'm2\n');
+        await rm(ctx, ['del/y.txt']);
+        await add(ctx, ['add/new.txt', 'deep/a/b/c.txt', 'mod/m.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
 
-      // Act
-      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-      const sut = await reconstructPatch(ctx, treeDiff);
+        // Act
+        const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+        const result = await reconstructPatch(ctx, treeDiff);
 
-      // Assert — double pin.
-      expect(sut).toBe(live);
-      expect(sut).toBe(golden);
-    } finally {
-      await pair.dispose();
-    }
+        // Assert — double pin.
+        expect(result).toBe(live);
+        expect(result).toBe(golden);
+      } finally {
+        await pair.dispose();
+      }
+    });
   });
 });

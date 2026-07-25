@@ -21,11 +21,10 @@ describe('Given a flat notes trie to write', () => {
 
     it('Then each note is emitted with its full-hex name and never reads a subtree', async () => {
       // Arrange
-      const sut = planWrite;
       const read = never();
       const trie = await insert(await insert(createEmptyTrie(), a, val, read), b, oid40('b'), read);
       // Act
-      const result = await sut(trie, read);
+      const result = await planWrite(trie, read);
       // Assert
       expect(read).not.toHaveBeenCalled();
       expect(result.entries).toEqual([
@@ -41,7 +40,6 @@ describe('Given a flat notes trie to write', () => {
 
     it('Then the notes are still emitted with their full-hex names', async () => {
       // Arrange
-      const sut = planWrite;
       const trie = await insert(
         await insert(createEmptyTrie(), a, val, never()),
         b,
@@ -49,7 +47,7 @@ describe('Given a flat notes trie to write', () => {
         never(),
       );
       // Act
-      const result = await sut(trie, never());
+      const result = await planWrite(trie, never());
       // Assert
       const names = result.entries.map((entry) => entry.name).sort();
       expect(names).toEqual([a, b].sort());
@@ -74,10 +72,9 @@ describe('Given a sticky fanned notes trie', () => {
   describe('When the trie is written', () => {
     it('Then the untouched subtrees are reused without being read', async () => {
       // Arrange
-      const sut = planWrite;
       const read = never();
       // Act
-      const result = await sut(stickyTrie(), read);
+      const result = await planWrite(stickyTrie(), read);
       // Assert
       expect(read).not.toHaveBeenCalled();
       const dirs = result.entries.filter((entry) => entry.mode === FILE_MODE.DIRECTORY);
@@ -86,10 +83,8 @@ describe('Given a sticky fanned notes trie', () => {
     });
 
     it('Then the loaded internal note is emitted at one-byte fanout', async () => {
-      // Arrange
-      const sut = planWrite;
-      // Act
-      const result = await sut(stickyTrie(), never());
+      // Arrange & Act
+      const result = await planWrite(stickyTrie(), never());
       // Assert
       const notes = result.entries.filter((entry) => entry.mode === FILE_MODE.REGULAR);
       expect(notes).toEqual([{ name: `f0/${'0'.repeat(38)}`, mode: FILE_MODE.REGULAR, oid: val }]);
@@ -109,12 +104,11 @@ describe('Given a flat trie carrying a stray subtree', () => {
   describe('When it is written below the fanout threshold', () => {
     it('Then the stray subtree is unpacked and its note flattened to the top level', async () => {
       // Arrange
-      const sut = planWrite;
       const read = vi.fn<SubtreeReader>(async () => [
         { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
       ]);
       // Act
-      const result = await sut(buildTrie(), read);
+      const result = await planWrite(buildTrie(), read);
       // Assert
       expect(read).toHaveBeenCalledWith(subtreeOid);
       const names = result.entries.map((entry) => entry.name).sort();
@@ -125,14 +119,13 @@ describe('Given a flat trie carrying a stray subtree', () => {
   describe('When the unpacked subtree carries a preserved entry', () => {
     it('Then the preserved entry keeps its directory-qualified name', async () => {
       // Arrange
-      const sut = planWrite;
       const readmeId = oid40('d');
       const read = vi.fn<SubtreeReader>(async () => [
         { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
         { mode: FILE_MODE.REGULAR, name: 'README', id: readmeId },
       ]);
       // Act
-      const result = await sut(buildTrie(), read);
+      const result = await planWrite(buildTrie(), read);
       // Assert
       expect(result.entries).toContainEqual({
         name: '00/README',
@@ -147,11 +140,10 @@ describe('Given a notes trie with a preserved non-note entry', () => {
   describe('When it is written', () => {
     it('Then the preserved entry is emitted verbatim at the root level', async () => {
       // Arrange
-      const sut = planWrite;
       const readmeId = oid40('d');
       const trie = loadTrieRoot([{ mode: FILE_MODE.REGULAR, name: 'README', id: readmeId }]);
       // Act
-      const result = await sut(trie, never());
+      const result = await planWrite(trie, never());
       // Assert
       expect(result.entries).toContainEqual({
         name: 'README',
@@ -166,7 +158,6 @@ describe('Given an internal node wrapping a stray subtree', () => {
   describe('When the writer recurses into the internal slot', () => {
     it('Then it threads the deeper child depth so the nested subtree is unpacked', async () => {
       // Arrange
-      const sut = planWrite;
       const subtreeOid = oid40('f');
       const innerBlob = oid40('a');
       const innerNode = setSlot(createEmptyTrie(), 0, {
@@ -179,7 +170,7 @@ describe('Given an internal node wrapping a stray subtree', () => {
         { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
       ]);
       // Act
-      await sut(trie, read);
+      await planWrite(trie, read);
       // Assert
       expect(read).toHaveBeenCalledWith(subtreeOid);
     });

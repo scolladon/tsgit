@@ -134,10 +134,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'v1.0', head, clock);
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           tag: RefName.from('refs/tags/v1.0'),
           name: 'v1.0',
           distance: 0,
@@ -160,12 +160,12 @@ describe('describe', () => {
         await commitFile(ctx, 'c3');
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert
-        expect(sut.name).toBe('v1.0');
-        expect(sut.distance).toBe(2);
-        expect(sut.exact).toBe(false);
+        expect(result.name).toBe('v1.0');
+        expect(result.distance).toBe(2);
+        expect(result.exact).toBe(false);
       });
     });
   });
@@ -182,11 +182,11 @@ describe('describe', () => {
         await commitFile(ctx, 'c3');
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert
-        expect(sut.name).toBe('v2.0');
-        expect(sut.distance).toBe(1);
+        expect(result.name).toBe('v2.0');
+        expect(result.distance).toBe(1);
       });
     });
   });
@@ -201,10 +201,10 @@ describe('describe', () => {
         const head = await commitFile(ctx, 'c2');
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx));
+        const error = await catchError(() => describeCmd(ctx));
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: head });
+        expect(error.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: head });
       });
     });
 
@@ -217,11 +217,11 @@ describe('describe', () => {
         await commitFile(ctx, 'c2');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { tags: true });
+        const result = await describeCmd(ctx, undefined, { tags: true });
 
         // Assert
-        expect(sut.name).toBe('light');
-        expect(sut.distance).toBe(1);
+        expect(result.name).toBe('light');
+        expect(result.distance).toBe(1);
       });
     });
   });
@@ -237,12 +237,12 @@ describe('describe', () => {
         await getRefStore(ctx).writeLoose(RefName.from('refs/heads/feat'), c2);
 
         // Act
-        const sut = await describeCmd(ctx, c2, { all: true });
+        const result = await describeCmd(ctx, c2, { all: true });
 
         // Assert
-        expect(sut.name).toBe('heads/feat');
-        expect(sut.tag).toBe(RefName.from('refs/heads/feat'));
-        expect(sut.distance).toBe(0);
+        expect(result.name).toBe('heads/feat');
+        expect(result.tag).toBe(RefName.from('refs/heads/feat'));
+        expect(result.distance).toBe(0);
       });
     });
   });
@@ -262,11 +262,11 @@ describe('describe', () => {
         const merge = await writeCommit(ctx, tree, [first, second], 'merge');
 
         // Act
-        const sut = await describeCmd(ctx, merge, { firstParent: true });
+        const result = await describeCmd(ctx, merge, { firstParent: true });
 
         // Assert
-        expect(sut.name).toBe('main-tag');
-        expect(sut.distance).toBe(1);
+        expect(result.name).toBe('main-tag');
+        expect(result.distance).toBe(1);
       });
     });
 
@@ -281,10 +281,10 @@ describe('describe', () => {
         const merge = await writeCommit(ctx, tree, [base, second], 'merge');
 
         // Act
-        const sut = await describeCmd(ctx, merge);
+        const result = await describeCmd(ctx, merge);
 
         // Assert
-        expect(sut.name).toBe('feat-tag');
+        expect(result.name).toBe('feat-tag');
       });
     });
   });
@@ -297,10 +297,10 @@ describe('describe', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { always: true });
+        const result = await describeCmd(ctx, undefined, { always: true });
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           tag: undefined,
           name: '',
           distance: 0,
@@ -320,10 +320,10 @@ describe('describe', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx));
+        const error = await catchError(() => describeCmd(ctx));
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_NAMES', oid: head });
+        expect(error.data).toEqual({ code: 'NO_NAMES', oid: head });
       });
     });
   });
@@ -339,10 +339,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'v2.0', c2, clock);
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx, c1));
+        const error = await catchError(() => describeCmd(ctx, c1));
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_REACHABLE_NAMES', oid: c1 });
+        expect(error.data).toEqual({ code: 'NO_REACHABLE_NAMES', oid: c1 });
       });
     });
   });
@@ -357,10 +357,10 @@ describe('describe', () => {
         const head = await commitFile(ctx, 'c2');
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx, undefined, { exactMatch: true }));
+        const error = await catchError(() => describeCmd(ctx, undefined, { exactMatch: true }));
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_EXACT_MATCH', oid: head });
+        expect(error.data).toEqual({ code: 'NO_EXACT_MATCH', oid: head });
       });
     });
   });
@@ -374,11 +374,11 @@ describe('describe', () => {
         const head = await commitFile(ctx, 'c2');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { exactMatch: true, always: true });
+        const result = await describeCmd(ctx, undefined, { exactMatch: true, always: true });
 
         // Assert
-        expect(sut.tag).toBeUndefined();
-        expect(sut.oid).toBe(head);
+        expect(result.tag).toBeUndefined();
+        expect(result.oid).toBe(head);
       });
     });
   });
@@ -395,11 +395,11 @@ describe('describe', () => {
         await commitFile(ctx, 'c3');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { candidates: 1 });
+        const result = await describeCmd(ctx, undefined, { candidates: 1 });
 
         // Assert
-        expect(sut.name).toBe('v2.0');
-        expect(sut.distance).toBe(1);
+        expect(result.name).toBe('v2.0');
+        expect(result.distance).toBe(1);
       });
     });
   });
@@ -430,12 +430,12 @@ describe('describe', () => {
         const merge = await buildSplit(ctx);
 
         // Act
-        const sut = await describeCmd(ctx, merge);
+        const result = await describeCmd(ctx, merge);
 
         // Assert — frozen-depth tie broken by found order (side), then the
         // winner's depth is finalised from 2 to its exact 3.
-        expect(sut.name).toBe('side');
-        expect(sut.distance).toBe(3);
+        expect(result.name).toBe('side');
+        expect(result.distance).toBe(3);
       });
     });
 
@@ -446,11 +446,11 @@ describe('describe', () => {
         const merge = await buildSplit(ctx);
 
         // Act
-        const sut = await describeCmd(ctx, merge, { candidates: 1 });
+        const result = await describeCmd(ctx, merge, { candidates: 1 });
 
         // Assert
-        expect(sut.name).toBe('side');
-        expect(sut.distance).toBe(3);
+        expect(result.name).toBe('side');
+        expect(result.distance).toBe(3);
       });
     });
   });
@@ -481,11 +481,11 @@ describe('describe', () => {
         const merge = await buildSplitWithLightweight(ctx);
 
         // Act
-        const sut = await describeCmd(ctx, merge);
+        const result = await describeCmd(ctx, merge);
 
         // Assert
-        expect(sut.name).toBe('near');
-        expect(sut.distance).toBe(2);
+        expect(result.name).toBe('near');
+        expect(result.distance).toBe(2);
       });
     });
   });
@@ -517,11 +517,11 @@ describe('describe', () => {
         const merge = await buildThreeTagSplit(ctx);
 
         // Act
-        const sut = await describeCmd(ctx, merge);
+        const result = await describeCmd(ctx, merge);
 
         // Assert
-        expect(sut.name).toBe('t1');
-        expect(sut.distance).toBe(3);
+        expect(result.name).toBe('t1');
+        expect(result.distance).toBe(3);
       });
     });
 
@@ -532,11 +532,11 @@ describe('describe', () => {
         const merge = await buildThreeTagSplit(ctx);
 
         // Act
-        const sut = await describeCmd(ctx, merge, { candidates: 1 });
+        const result = await describeCmd(ctx, merge, { candidates: 1 });
 
         // Assert
-        expect(sut.name).toBe('t2');
-        expect(sut.distance).toBe(4);
+        expect(result.name).toBe('t2');
+        expect(result.distance).toBe(4);
       });
     });
   });
@@ -551,10 +551,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'bbb', head, 2_000);
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert
-        expect(sut.name).toBe('bbb');
+        expect(result.name).toBe('bbb');
       });
     });
   });
@@ -571,11 +571,11 @@ describe('describe', () => {
         await commitFile(ctx, 'c3');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { match: 'v*', exclude: 'rc*' });
+        const result = await describeCmd(ctx, undefined, { match: 'v*', exclude: 'rc*' });
 
         // Assert — rc-1 (nearer) is filtered out, leaving v1.0.
-        expect(sut.name).toBe('v1.0');
-        expect(sut.distance).toBe(2);
+        expect(result.name).toBe('v1.0');
+        expect(result.distance).toBe(2);
       });
     });
   });
@@ -590,11 +590,11 @@ describe('describe', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'changed\n');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { dirty: true });
+        const result = await describeCmd(ctx, undefined, { dirty: true });
 
         // Assert
-        expect(sut.dirty).toBe(true);
-        expect(sut.name).toBe('v1.0');
+        expect(result.dirty).toBe(true);
+        expect(result.name).toBe('v1.0');
       });
     });
   });
@@ -608,10 +608,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'v1.0', head, clock);
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { dirty: true });
+        const result = await describeCmd(ctx, undefined, { dirty: true });
 
         // Assert
-        expect(sut.dirty).toBe(false);
+        expect(result.dirty).toBe(false);
       });
     });
   });
@@ -626,10 +626,10 @@ describe('describe', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/untracked.txt`, 'u\n');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { dirty: true });
+        const result = await describeCmd(ctx, undefined, { dirty: true });
 
         // Assert
-        expect(sut.dirty).toBe(false);
+        expect(result.dirty).toBe(false);
       });
     });
   });
@@ -646,11 +646,11 @@ describe('describe', () => {
         await add(ctx, ['c1.txt']);
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { dirty: true });
+        const result = await describeCmd(ctx, undefined, { dirty: true });
 
         // Assert
-        expect(sut.dirty).toBe(true);
-        expect(sut.name).toBe('v1.0');
+        expect(result.dirty).toBe(true);
+        expect(result.name).toBe('v1.0');
       });
     });
   });
@@ -667,10 +667,10 @@ describe('describe', () => {
         await add(ctx, ['c1.txt']);
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { broken: true });
+        const result = await describeCmd(ctx, undefined, { broken: true });
 
         // Assert
-        expect(sut.dirty).toBe(true);
+        expect(result.dirty).toBe(true);
       });
     });
   });
@@ -698,11 +698,11 @@ describe('describe', () => {
         await mergeRun(ctx, { rev: 'feature', author: ident(clock) });
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { dirty: true });
+        const result = await describeCmd(ctx, undefined, { dirty: true });
 
         // Assert
-        expect(sut.dirty).toBe(true);
-        expect(sut.name).toBe('v1.0');
+        expect(result.dirty).toBe(true);
+        expect(result.name).toBe('v1.0');
       });
     });
   });
@@ -716,10 +716,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'v1.0', head, clock);
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx, head, { dirty: true }));
+        const error = await catchError(() => describeCmd(ctx, head, { dirty: true }));
 
         // Assert
-        expect(sut.data).toMatchObject({
+        expect(error.data).toMatchObject({
           code: 'INVALID_OPTION',
           option: 'dirty',
           reason: 'option dirty and commit-ishes cannot be used together',
@@ -736,10 +736,10 @@ describe('describe', () => {
         await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx, undefined, { candidates: -1 }));
+        const error = await catchError(() => describeCmd(ctx, undefined, { candidates: -1 }));
 
         // Assert
-        expect(sut.data).toMatchObject({
+        expect(error.data).toMatchObject({
           code: 'INVALID_OPTION',
           option: 'candidates',
           reason: 'expected a non-negative integer, got -1',
@@ -773,10 +773,10 @@ describe('describe', () => {
         await commitFile(ctx, 'c2');
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert — the tree tag peels to a tree and is dropped, leaving v1.0.
-        expect(sut.name).toBe('v1.0');
+        expect(result.name).toBe('v1.0');
         // And describing the tree oid itself refuses — the dropped tree tag must
         // not be mapped onto the tree (which would let it exact-match).
         const onTree = await catchError(() => describeCmd(ctx, tree));
@@ -798,11 +798,11 @@ describe('describe', () => {
         );
 
         // Act
-        const sut = await describeCmd(ctx, c1, { all: true });
+        const result = await describeCmd(ctx, c1, { all: true });
 
         // Assert — the symbolic origin/HEAD is skipped; heads/main resolves directly.
-        expect(sut.name).toBe('heads/main');
-        expect(sut.exact).toBe(true);
+        expect(result.name).toBe('heads/main');
+        expect(result.exact).toBe(true);
       });
     });
   });
@@ -817,10 +817,10 @@ describe('describe', () => {
         const tree = await treeOf(ctx, c1);
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx, tree));
+        const error = await catchError(() => describeCmd(ctx, tree));
 
         // Assert
-        expect(sut.data).toMatchObject({ code: 'NO_REACHABLE_NAMES' });
+        expect(error.data).toMatchObject({ code: 'NO_REACHABLE_NAMES' });
       });
     });
   });
@@ -834,10 +834,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'v1.0', head, clock);
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { candidates: 0 });
+        const result = await describeCmd(ctx, undefined, { candidates: 0 });
 
         // Assert
-        expect(sut).toMatchObject({ name: 'v1.0', distance: 0, exact: true });
+        expect(result).toMatchObject({ name: 'v1.0', distance: 0, exact: true });
       });
     });
   });
@@ -851,10 +851,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'v1.0', head, clock);
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { exactMatch: true });
+        const result = await describeCmd(ctx, undefined, { exactMatch: true });
 
         // Assert
-        expect(sut).toMatchObject({ name: 'v1.0', distance: 0, exact: true });
+        expect(result).toMatchObject({ name: 'v1.0', distance: 0, exact: true });
       });
     });
   });
@@ -868,10 +868,10 @@ describe('describe', () => {
         await tagCreate(ctx, { name: 'light', target: head });
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx));
+        const error = await catchError(() => describeCmd(ctx));
 
         // Assert — a priority-1 tag must not exact-match in annotated-only mode.
-        expect(sut.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: head });
+        expect(error.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: head });
       });
     });
   });
@@ -885,10 +885,10 @@ describe('describe', () => {
         await annotatedTag(ctx, 'v1.0', head, clock);
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx, head, { broken: true }));
+        const error = await catchError(() => describeCmd(ctx, head, { broken: true }));
 
         // Assert
-        expect(sut.data).toMatchObject({ code: 'INVALID_OPTION', option: 'dirty' });
+        expect(error.data).toMatchObject({ code: 'INVALID_OPTION', option: 'dirty' });
       });
     });
   });
@@ -903,10 +903,10 @@ describe('describe', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'changed\n');
 
         // Act
-        const sut = await describeCmd(ctx, undefined, { broken: true });
+        const result = await describeCmd(ctx, undefined, { broken: true });
 
         // Assert
-        expect(sut.dirty).toBe(true);
+        expect(result.dirty).toBe(true);
       });
     });
   });
@@ -921,10 +921,10 @@ describe('describe', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'changed\n');
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert
-        expect(sut.dirty).toBe(false);
+        expect(result.dirty).toBe(false);
       });
     });
   });
@@ -945,11 +945,11 @@ describe('describe', () => {
         const merge = await writeCommit(ctx, tree, [a1, b1], 'merge');
 
         // Act
-        const sut = await describeCmd(ctx, merge, { candidates: 1 });
+        const result = await describeCmd(ctx, merge, { candidates: 1 });
 
         // Assert — |tag-b..merge| = { merge, a1 } = 2.
-        expect(sut.name).toBe('tag-b');
-        expect(sut.distance).toBe(2);
+        expect(result.name).toBe('tag-b');
+        expect(result.distance).toBe(2);
       });
     });
   });
@@ -963,10 +963,10 @@ describe('describe', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c1}\n`);
 
         // Act
-        const sut = await describeCmd(ctx, c1, { all: true });
+        const result = await describeCmd(ctx, c1, { all: true });
 
         // Assert — git never names a commit `HEAD`; only `heads/main` qualifies.
-        expect(sut.name).toBe('heads/main');
+        expect(result.name).toBe('heads/main');
       });
     });
   });
@@ -987,10 +987,10 @@ describe('describe', () => {
         }
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert
-        expect(sut.name).toBe('t6');
+        expect(result.name).toBe('t6');
       });
     });
   });
@@ -1008,10 +1008,10 @@ describe('describe', () => {
         await tagObjectRef(ctx, 'outer', innerOid, 'tag', 3_000);
 
         // Act
-        const sut = await describeCmd(ctx);
+        const result = await describeCmd(ctx);
 
         // Assert
-        expect(sut.name).toBe('outer');
+        expect(result.name).toBe('outer');
       });
     });
   });
@@ -1028,10 +1028,10 @@ describe('describe --contains', () => {
         await annotatedTag(ctx, 'v1.0', c1, clock);
 
         // Act
-        const sut = await describeCmd(ctx, c0, { contains: true });
+        const result = await describeCmd(ctx, c0, { contains: true });
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           oid: c0,
           ref: RefName.from('refs/tags/v1.0'),
           tagDeref: true,
@@ -1049,10 +1049,10 @@ describe('describe --contains', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await describeCmd(ctx, head, { contains: true, all: true });
+        const result = await describeCmd(ctx, head, { contains: true, all: true });
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
 
@@ -1063,10 +1063,10 @@ describe('describe --contains', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await catchError(() => describeCmd(ctx, head, { contains: true }));
+        const error = await catchError(() => describeCmd(ctx, head, { contains: true }));
 
         // Assert
-        expect(sut.data).toMatchObject({ code: 'CANNOT_DESCRIBE', oid: head });
+        expect(error.data).toMatchObject({ code: 'CANNOT_DESCRIBE', oid: head });
       });
 
       it('Then with always it returns an undefined-ref result instead', async () => {
@@ -1075,10 +1075,10 @@ describe('describe --contains', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await describeCmd(ctx, head, { contains: true, always: true });
+        const result = await describeCmd(ctx, head, { contains: true, always: true });
 
         // Assert
-        expect(sut).toEqual({ oid: head, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({ oid: head, ref: undefined, tagDeref: false, steps: [] });
       });
     });
   });
@@ -1094,10 +1094,10 @@ describe('describe --contains', () => {
         await annotatedTag(ctx, 'beta-1', c1, clock);
 
         // Act
-        const sut = await describeCmd(ctx, c0, { contains: true, match: 'release-*' });
+        const result = await describeCmd(ctx, c0, { contains: true, match: 'release-*' });
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/tags/release-1'));
+        expect(result.ref).toBe(RefName.from('refs/tags/release-1'));
       });
     });
   });
@@ -1118,12 +1118,12 @@ describe('describe --contains', () => {
           await commitFile(ctx, 'c1');
 
           // Act
-          const sut = await catchError(() =>
+          const error = await catchError(() =>
             describeCmd(ctx, undefined, { contains: true, ...extra }),
           );
 
           // Assert
-          expect(sut.data).toMatchObject({
+          expect(error.data).toMatchObject({
             code: 'INVALID_OPTION',
             option,
             reason: `option ${option} cannot be combined with contains`,

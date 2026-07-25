@@ -15,10 +15,10 @@ describe('domain repository error', () => {
       describe('When checking data', () => {
         it('Then code and path preserved', () => {
           // Arrange & Act
-          const sut = notARepository('/some/path' as FilePath);
+          const result = notARepository('/some/path' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'NOT_A_REPOSITORY', path: '/some/path' });
+          expect(result.data).toEqual({ code: 'NOT_A_REPOSITORY', path: '/some/path' });
         });
       });
     });
@@ -27,10 +27,10 @@ describe('domain repository error', () => {
       describe('When checking data', () => {
         it('Then code and operation preserved', () => {
           // Arrange & Act
-          const sut = bareRepository('add');
+          const result = bareRepository('add');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'BARE_REPOSITORY', operation: 'add' });
+          expect(result.data).toEqual({ code: 'BARE_REPOSITORY', operation: 'add' });
         });
       });
     });
@@ -39,10 +39,10 @@ describe('domain repository error', () => {
       describe('When checking data', () => {
         it('Then code and path preserved', () => {
           // Arrange & Act
-          const sut = alreadyInitialized('/repo/.git' as FilePath);
+          const result = alreadyInitialized('/repo/.git' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'ALREADY_INITIALIZED', path: '/repo/.git' });
+          expect(result.data).toEqual({ code: 'ALREADY_INITIALIZED', path: '/repo/.git' });
         });
       });
     });
@@ -70,10 +70,10 @@ describe('domain repository error', () => {
       describe('When TsgitError(...).message is read', () => {
         it.each(cases)('Then it equals the documented format', (data, expected) => {
           // Arrange & Act
-          const sut = new TsgitError(data);
+          const result = new TsgitError(data);
 
           // Assert
-          expect(sut.message).toBe(expected);
+          expect(result.message).toBe(expected);
         });
       });
     });

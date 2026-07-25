@@ -10,10 +10,10 @@ describe('toSnapshotEntries', () => {
     const report: RawReport = { files: [] };
 
     // Act
-    const sut = toSnapshotEntries(report);
+    const result = toSnapshotEntries(report);
 
     // Assert
-    expect(sut).toEqual([]);
+    expect(result).toEqual([]);
   });
     });
   });
@@ -29,10 +29,10 @@ describe('toSnapshotEntries', () => {
     };
 
     // Act
-    const sut = toSnapshotEntries(report);
+    const result = toSnapshotEntries(report);
 
     // Assert
-    expect(sut).toEqual([{ name: 'log:walk > tsgit', unit: 'ms', value: 4 }]);
+    expect(result).toEqual([{ name: 'log:walk > tsgit', unit: 'ms', value: 4 }]);
   });
     });
   });
@@ -46,10 +46,10 @@ describe('toSnapshotEntries', () => {
     };
 
     // Act
-    const sut = toSnapshotEntries(report);
+    const result = toSnapshotEntries(report);
 
     // Assert
-    expect(sut).toEqual([{ name: 'log:walk > tsgit', unit: 'ms', value: 9 }]);
+    expect(result).toEqual([{ name: 'log:walk > tsgit', unit: 'ms', value: 9 }]);
   });
     });
   });
@@ -76,10 +76,10 @@ describe('toSnapshotEntries', () => {
     };
 
     // Act
-    const sut = toSnapshotEntries(report);
+    const result = toSnapshotEntries(report);
 
     // Assert
-    expect(sut).toEqual([
+    expect(result).toEqual([
       { name: 'log:walk > tsgit', unit: 'ms', value: 1 },
       { name: 'log:walk > isomorphic-git', unit: 'ms', value: 2 },
       { name: 'status:clean > tsgit', unit: 'ms', value: 3 },

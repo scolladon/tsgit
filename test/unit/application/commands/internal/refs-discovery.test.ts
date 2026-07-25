@@ -58,11 +58,11 @@ describe('discoverRefsForService', () => {
           const session = fakeSession({ body: advertisementBody(service) });
 
           // Act
-          const sut = await discoverRefsForService(session, service);
+          const result = await discoverRefsForService(session, service);
 
           // Assert
-          expect(sut.refs).toHaveLength(1);
-          expect(sut.refs[0]?.name).toBe('refs/heads/main');
+          expect(result.refs).toHaveLength(1);
+          expect(result.refs[0]?.name).toBe('refs/heads/main');
         },
       );
     });
@@ -79,11 +79,11 @@ describe('discoverRefsForService', () => {
         const session = fakeSession({ body, servicePrologue: false });
 
         // Act
-        const sut = await discoverRefsForService(session, 'git-upload-pack');
+        const result = await discoverRefsForService(session, 'git-upload-pack');
 
         // Assert
-        expect(sut.refs).toHaveLength(1);
-        expect(sut.refs[0]?.name).toBe('refs/heads/main');
+        expect(result.refs).toHaveLength(1);
+        expect(result.refs[0]?.name).toBe('refs/heads/main');
       });
     });
   });

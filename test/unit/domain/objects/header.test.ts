@@ -21,11 +21,11 @@ describe('header', () => {
           const bytes = headerBytes(raw);
 
           // Act
-          const sut = parseHeader(bytes);
+          const result = parseHeader(bytes);
 
           // Assert
-          expect(sut.type).toBe(type);
-          expect(sut.size).toBe(size);
+          expect(result.type).toBe(type);
+          expect(result.size).toBe(size);
         });
       });
     });
@@ -37,10 +37,10 @@ describe('header', () => {
           const raw = headerBytes('blob 12\0hello world!');
 
           // Act
-          const sut = parseHeader(raw);
+          const result = parseHeader(raw);
 
           // Assert
-          expect(sut.contentOffset).toBe(8);
+          expect(result.contentOffset).toBe(8);
         });
       });
     });
@@ -102,10 +102,10 @@ describe('header', () => {
       describe('When serializing', () => {
         it("Then produces bytes for 'blob 42\\0'", () => {
           // Arrange & Act
-          const sut = serializeHeader('blob', 42);
+          const result = serializeHeader('blob', 42);
 
           // Assert
-          expect(sut).toEqual(headerBytes('blob 42\0'));
+          expect(result).toEqual(headerBytes('blob 42\0'));
         });
       });
     });
@@ -114,10 +114,10 @@ describe('header', () => {
       describe('When serializing', () => {
         it("Then produces bytes for 'tree 0\\0'", () => {
           // Arrange & Act
-          const sut = serializeHeader('tree', 0);
+          const result = serializeHeader('tree', 0);
 
           // Assert
-          expect(sut).toEqual(headerBytes('tree 0\0'));
+          expect(result).toEqual(headerBytes('tree 0\0'));
         });
       });
     });
@@ -133,11 +133,11 @@ describe('header', () => {
 
           // Act
           const serialized = serializeHeader(type, size);
-          const sut = parseHeader(serialized);
+          const result = parseHeader(serialized);
 
           // Assert
-          expect(sut.type).toBe(type);
-          expect(sut.size).toBe(size);
+          expect(result.type).toBe(type);
+          expect(result.size).toBe(size);
         });
       });
     });

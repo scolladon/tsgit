@@ -108,10 +108,10 @@ describe('nameRev', () => {
         await annotatedTag(ctx, 'v1.0', head, clock);
 
         // Act
-        const sut = await nameRev(ctx, head);
+        const result = await nameRev(ctx, head);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           oid: head,
           ref: RefName.from('refs/tags/v1.0'),
           tagDeref: true,
@@ -130,10 +130,10 @@ describe('nameRev', () => {
         await lightweightTag(ctx, 'light', head);
 
         // Act
-        const sut = await nameRev(ctx, head);
+        const result = await nameRev(ctx, head);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           oid: head,
           ref: RefName.from('refs/tags/light'),
           tagDeref: false,
@@ -151,10 +151,10 @@ describe('nameRev', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await nameRev(ctx, head);
+        const result = await nameRev(ctx, head);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           oid: head,
           ref: RefName.from('refs/heads/main'),
           tagDeref: false,
@@ -175,11 +175,11 @@ describe('nameRev', () => {
         await annotatedTag(ctx, 'v2.0', c2, clock);
 
         // Act
-        const sut = await nameRev(ctx, c0);
+        const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/tags/v2.0'));
-        expect(sut.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
+        expect(result.ref).toBe(RefName.from('refs/tags/v2.0'));
+        expect(result.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
       });
     });
   });
@@ -244,10 +244,10 @@ describe('nameRev', () => {
         await pointBranch(ctx, 'nearbr', await commitFileOnTop(ctx, c0));
 
         // Act
-        const sut = await nameRev(ctx, c0);
+        const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/tags/fartag'));
+        expect(result.ref).toBe(RefName.from('refs/tags/fartag'));
       });
     });
   });
@@ -264,11 +264,11 @@ describe('nameRev', () => {
         await annotatedTag(ctx, 'far', c2, clock + 500);
 
         // Act
-        const sut = await nameRev(ctx, c0);
+        const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/tags/near'));
-        expect(sut.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
+        expect(result.ref).toBe(RefName.from('refs/tags/near'));
+        expect(result.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
       });
     });
   });
@@ -285,11 +285,11 @@ describe('nameRev', () => {
         await lightweightTag(ctx, 'aaa', c1);
 
         // Act
-        const sut = await nameRev(ctx, c0);
+        const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/tags/aaa'));
-        expect(sut.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
+        expect(result.ref).toBe(RefName.from('refs/tags/aaa'));
+        expect(result.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
       });
     });
   });
@@ -305,10 +305,10 @@ describe('nameRev', () => {
         await annotatedTag(ctx, 'told', c1, 1_000);
 
         // Act
-        const sut = await nameRev(ctx, c0);
+        const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/tags/told'));
+        expect(result.ref).toBe(RefName.from('refs/tags/told'));
       });
     });
   });
@@ -321,10 +321,10 @@ describe('nameRev', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await nameRev(ctx, head, { tags: true });
+        const result = await nameRev(ctx, head, { tags: true });
 
         // Assert
-        expect(sut).toEqual({ oid: head, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({ oid: head, ref: undefined, tagDeref: false, steps: [] });
       });
     });
   });
@@ -338,10 +338,10 @@ describe('nameRev', () => {
         await lightweightTag(ctx, 'pick', head);
 
         // Act
-        const sut = await nameRev(ctx, head, { refs: 'refs/tags/*' });
+        const result = await nameRev(ctx, head, { refs: 'refs/tags/*' });
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/tags/pick'));
+        expect(result.ref).toBe(RefName.from('refs/tags/pick'));
       });
     });
 
@@ -353,10 +353,10 @@ describe('nameRev', () => {
         await lightweightTag(ctx, 'drop', head);
 
         // Act
-        const sut = await nameRev(ctx, head, { exclude: 'refs/tags/*' });
+        const result = await nameRev(ctx, head, { exclude: 'refs/tags/*' });
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -370,10 +370,10 @@ describe('nameRev', () => {
         const orphan = await writeCommit(ctx, tree, []);
 
         // Act
-        const sut = await nameRev(ctx, orphan);
+        const result = await nameRev(ctx, orphan);
 
         // Assert
-        expect(sut).toEqual({ oid: orphan, ref: undefined, tagDeref: false, steps: [] });
+        expect(result).toEqual({ oid: orphan, ref: undefined, tagDeref: false, steps: [] });
       });
     });
   });
@@ -386,11 +386,11 @@ describe('nameRev', () => {
         const head = await commitFile(ctx, 'c1');
 
         // Act
-        const sut = await nameRev(ctx);
+        const result = await nameRev(ctx);
 
         // Assert
-        expect(sut.oid).toBe(head);
-        expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result.oid).toBe(head);
+        expect(result.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -418,10 +418,10 @@ describe('nameRev', () => {
         await tagCreate(ctx, { name: 'tree-tag', target: treeTagOid });
 
         // Act
-        const sut = await nameRev(ctx, head);
+        const result = await nameRev(ctx, head);
 
         // Assert — the tree tag is dropped; the branch still names the commit.
-        expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -439,10 +439,10 @@ describe('nameRev', () => {
         );
 
         // Act
-        const sut = await nameRev(ctx, head);
+        const result = await nameRev(ctx, head);
 
         // Assert
-        expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -470,10 +470,10 @@ describe('nameRev', () => {
         }
 
         // Act
-        const sut = await nameRev(ctx, c1, { tags: true });
+        const result = await nameRev(ctx, c1, { tags: true });
 
         // Assert — the oldest still-peelable tag (t1) names c1; t8 is dropped.
-        expect(sut.ref).toBe(RefName.from('refs/tags/t1'));
+        expect(result.ref).toBe(RefName.from('refs/tags/t1'));
       });
     });
   });
@@ -488,11 +488,11 @@ describe('nameRev', () => {
         await pointBranch(ctx, 'corrupt', corrupt);
 
         // Act
-        const sut = await nameRev(ctx, corrupt);
+        const result = await nameRev(ctx, corrupt);
 
         // Assert — the commit itself is named; the tree "parent" is skipped.
-        expect(sut.ref).toBe(RefName.from('refs/heads/corrupt'));
-        expect(sut.steps).toEqual([]);
+        expect(result.ref).toBe(RefName.from('refs/heads/corrupt'));
+        expect(result.steps).toEqual([]);
       });
     });
   });
@@ -537,10 +537,10 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       const { counted, tip } = await arrange();
 
       // Act
-      const sut = await nameRev(counted, tip);
+      const result = await nameRev(counted, tip);
 
       // Assert
-      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result.ref).toBe(RefName.from('refs/heads/main'));
     });
 
     it('Then the walk stops at the date cutoff instead of reading the whole chain', async () => {
@@ -592,10 +592,10 @@ describe('Given a recent branch and a disjoint branch whose tip is over a day ol
       const { counted, target } = await arrange();
 
       // Act
-      const sut = await nameRev(counted, target);
+      const result = await nameRev(counted, target);
 
       // Assert
-      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result.ref).toBe(RefName.from('refs/heads/main'));
     });
 
     it('Then the stale branch is never seeded so its ancestry is never read', async () => {
@@ -632,10 +632,10 @@ describe('Given a chain whose middle commit is dated exactly one day older than 
       const { counted, tip } = await arrange();
 
       // Act
-      const sut = await nameRev(counted, tip);
+      const result = await nameRev(counted, tip);
 
       // Assert
-      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result.ref).toBe(RefName.from('refs/heads/main'));
     });
 
     it('Then reading reaches the boundary commit and its parent, not just the tip', async () => {
@@ -674,11 +674,11 @@ describe('Given a diamond whose shared parent is reached by both merge sides', (
       const { counted, shared } = await arrange();
 
       // Act
-      const sut = await nameRev(counted, shared);
+      const result = await nameRev(counted, shared);
 
       // Assert
-      expect(sut.ref).toBe(RefName.from('refs/heads/main'));
-      expect(sut.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
+      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
     });
 
     it('Then the shared parent already named by the first-parent side is not re-read', async () => {

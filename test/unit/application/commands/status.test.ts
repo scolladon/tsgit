@@ -39,8 +39,8 @@ const seedClean = async () => {
 };
 
 /** The single `changes` record for a path, or undefined if the path is clean. */
-const changeFor = (sut: StatusResult, path: string): ChangedPath | undefined =>
-  sut.changes.find((c) => c.path === path);
+const changeFor = (result: StatusResult, path: string): ChangedPath | undefined =>
+  result.changes.find((c) => c.path === path);
 
 describe('status', () => {
   describe('Given a clean repo', () => {
@@ -50,13 +50,13 @@ describe('status', () => {
         const ctx = await seedClean();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.clean).toBe(true);
-        expect(sut.changes).toEqual([]);
-        expect(sut.untracked).toEqual([]);
-        expect(sut.branch).toBe('refs/heads/main');
+        expect(result.clean).toBe(true);
+        expect(result.changes).toEqual([]);
+        expect(result.untracked).toEqual([]);
+        expect(result.branch).toBe('refs/heads/main');
       });
     });
   });
@@ -69,11 +69,11 @@ describe('status', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'modified');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — `.M` shape: unstaged modify, staged unchanged → head equals index.
-        expect(sut.clean).toBe(false);
-        const c = changeFor(sut, 'a.txt');
+        expect(result.clean).toBe(false);
+        const c = changeFor(result, 'a.txt');
         expect(c?.unstaged).toBe('modified');
         expect(c?.staged).toBeUndefined();
         expect(c?.head?.id).toBe(c?.index?.id);
@@ -91,10 +91,10 @@ describe('status', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — ` D` shape: the working file is gone, so no `worktree`.
-        const c = changeFor(sut, 'a.txt');
+        const c = changeFor(result, 'a.txt');
         expect(c?.unstaged).toBe('deleted');
         expect(c?.index?.mode).toBe('100644');
         expect(c?.worktree).toBeUndefined();
@@ -109,11 +109,11 @@ describe('status', () => {
         const ctx = await seedClean();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — kills the `head.kind === 'direct'` EqualityOperator flip.
-        expect(sut.detached).toBe(false);
-        expect(sut.branch).toBe('refs/heads/main');
+        expect(result.detached).toBe(false);
+        expect(result.branch).toBe('refs/heads/main');
       });
     });
   });
@@ -129,11 +129,11 @@ describe('status', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${oid}\n`);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.detached).toBe(true);
-        expect(sut.branch).toBeUndefined();
+        expect(result.detached).toBe(true);
+        expect(result.branch).toBeUndefined();
       });
     });
   });
@@ -150,10 +150,10 @@ describe('status', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u2.txt`, '2');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — kills the dropped-sort and comparator-flip mutants.
-        expect(sut.untracked).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
+        expect(result.untracked).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
       });
     });
   });
@@ -169,10 +169,10 @@ describe('status', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u1.txt`, '1');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — kills the comparator's `< ` -> `>= ` mutant.
-        expect(sut.untracked).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
+        expect(result.untracked).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
       });
     });
   });
@@ -202,11 +202,11 @@ describe('status', () => {
         const ctx = await seedSparseRepo();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.clean).toBe(true);
-        expect(sut.changes).toEqual([]);
+        expect(result.clean).toBe(true);
+        expect(result.changes).toEqual([]);
       });
     });
   });
@@ -220,10 +220,10 @@ describe('status', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/docs/b.txt`, 'b');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — no `untracked` entry for the still-tracked path.
-        expect(sut.untracked).not.toContain('docs/b.txt');
+        expect(result.untracked).not.toContain('docs/b.txt');
       });
     });
   });
@@ -248,11 +248,11 @@ describe('status', () => {
         };
 
         // Act
-        const sut = await status(failingReadCtx);
+        const result = await status(failingReadCtx);
 
         // Assert — kills the catch's BooleanLiteral mutant (would drop a.txt).
-        expect(changeFor(sut, 'a.txt')?.unstaged).toBe('modified');
-        expect(sut.clean).toBe(false);
+        expect(changeFor(result, 'a.txt')?.unstaged).toBe('modified');
+        expect(result.clean).toBe(false);
       });
     });
   });
@@ -268,16 +268,16 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await add(ctx, ['b.txt']);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — `A ` shape: staged add only; b.txt matches the index on disk.
-        const c = changeFor(sut, 'b.txt');
+        const c = changeFor(result, 'b.txt');
         expect(c?.staged).toBe('added');
         expect(c?.unstaged).toBeUndefined();
         expect(c?.head).toBeUndefined();
         expect(c?.index?.mode).toBe('100644');
         expect(c?.worktree?.mode).toBe('100644');
-        expect(sut.clean).toBe(false);
+        expect(result.clean).toBe(false);
       });
     });
   });
@@ -291,10 +291,10 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — `M ` shape: staged modify, no working-tree column; head≠index.
-        const c = changeFor(sut, 'a.txt');
+        const c = changeFor(result, 'a.txt');
         expect(c?.staged).toBe('modified');
         expect(c?.unstaged).toBeUndefined();
         expect(c?.head?.id).not.toBe(c?.index?.id);
@@ -310,15 +310,15 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await rm(ctx, ['a.txt']);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — `D ` shape: head present, index/worktree absent.
-        const c = changeFor(sut, 'a.txt');
+        const c = changeFor(result, 'a.txt');
         expect(c?.staged).toBe('deleted');
         expect(c?.head?.mode).toBe('100644');
         expect(c?.index).toBeUndefined();
         expect(c?.worktree).toBeUndefined();
-        expect(sut.untracked).toEqual([]);
+        expect(result.untracked).toEqual([]);
       });
     });
   });
@@ -331,14 +331,14 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await rm(ctx, ['a.txt'], { cached: true });
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — two clean sources: a staged delete and the untracked on-disk file.
-        const c = changeFor(sut, 'a.txt');
+        const c = changeFor(result, 'a.txt');
         expect(c?.staged).toBe('deleted');
         expect(c?.head?.mode).toBe('100644');
         expect(c?.index).toBeUndefined();
-        expect(sut.untracked).toContain('a.txt');
+        expect(result.untracked).toContain('a.txt');
       });
     });
   });
@@ -353,10 +353,10 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'worktree');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — `MM`: staged and unstaged on one record, head/index/worktree all set.
-        const c = changeFor(sut, 'a.txt');
+        const c = changeFor(result, 'a.txt');
         expect(c?.staged).toBe('modified');
         expect(c?.unstaged).toBe('modified');
         expect(c?.head?.id).not.toBe(c?.index?.id);
@@ -375,10 +375,10 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — a kind change is git's `T`; the side modes capture it.
-        const c = changeFor(sut, 'a.txt');
+        const c = changeFor(result, 'a.txt');
         expect(c?.staged).toBe('type-changed');
         expect(c?.head?.mode).toBe('100644');
         expect(c?.index?.mode).toBe('120000');
@@ -398,11 +398,11 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await add(ctx, ['a.txt', 'b.txt']);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — both `added` against the empty HEAD tree, no head blobs.
-        expect(sut.changes.map((c) => c.path)).toEqual(['a.txt', 'b.txt']);
-        for (const c of sut.changes) {
+        expect(result.changes.map((c) => c.path)).toEqual(['a.txt', 'b.txt']);
+        for (const c of result.changes) {
           expect(c.staged).toBe('added');
           expect(c.head).toBeUndefined();
           expect(c.index?.mode).toBe('100644');
@@ -422,10 +422,10 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await add(ctx, ['z.txt']);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — byte order: a.txt (deleted) before z.txt (added).
-        expect(sut.changes.map((c) => `${c.path}:${c.staged}`)).toEqual([
+        expect(result.changes.map((c) => `${c.path}:${c.staged}`)).toEqual([
           'a.txt:deleted',
           'z.txt:added',
         ]);
@@ -451,12 +451,12 @@ describe('status — staged column (index-vs-HEAD)', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a2');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — byte order a.txt (unstaged) before z.txt (staged).
-        expect(sut.changes.map((c) => `${c.path}:${c.staged ?? '-'}:${c.unstaged ?? '-'}`)).toEqual(
-          ['a.txt:-:modified', 'z.txt:modified:-'],
-        );
+        expect(
+          result.changes.map((c) => `${c.path}:${c.staged ?? '-'}:${c.unstaged ?? '-'}`),
+        ).toEqual(['a.txt:-:modified', 'z.txt:modified:-']);
       });
     });
   });
@@ -470,7 +470,7 @@ describe('status — staged column (index-vs-HEAD)', () => {
         const ctx = await seedClean();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/index`, 'corrupt');
 
-        // Act / Assert
+        // Act + Assert
         try {
           await status(ctx);
           expect.unreachable('status should reject a corrupt index');
@@ -688,11 +688,11 @@ describe('status — progress reporting', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.clean).toBe(false);
-        expect(sut.untracked).toContain('b.txt');
+        expect(result.clean).toBe(false);
+        expect(result.untracked).toContain('b.txt');
       });
     });
   });
@@ -709,12 +709,12 @@ describe('status — progress reporting', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/build.log`, 'log');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.untracked).toEqual([]);
-        expect(sut.changes).toEqual([]);
-        expect(sut.clean).toBe(true);
+        expect(result.untracked).toEqual([]);
+        expect(result.changes).toEqual([]);
+        expect(result.clean).toBe(true);
       });
     });
   });
@@ -732,11 +732,11 @@ describe('status — progress reporting', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/secret.bin`, 'changed');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — the working pass covers tracked entries regardless of ignore status.
-        expect(changeFor(sut, 'secret.bin')?.unstaged).toBe('modified');
-        expect(sut.untracked).not.toContain('secret.bin');
+        expect(changeFor(result, 'secret.bin')?.unstaged).toBe('modified');
+        expect(result.untracked).not.toContain('secret.bin');
       });
     });
   });
@@ -750,17 +750,17 @@ describe('status — progress reporting', () => {
         await ctx.fs.rm(`${ctx.layout.gitDir}/HEAD`);
         const { reporter, events } = recordingProgress();
 
-        // Act / Assert
+        // Act
         try {
           await status(replaceProgress(ctx, reporter));
         } catch {
           // expected — HEAD removal causes the read path to throw before start fires
         }
-        // start may or may not have fired depending on where the throw happened;
-        // the contract is: IF start fires, end MUST follow.
+
+        // Assert — start may or may not have fired depending on where the throw
+        // happened; the contract is: IF start fires, end MUST follow.
         const startCount = events.filter((e) => e.kind === 'start').length;
         const endCount = events.filter((e) => e.kind === 'end').length;
-        // Assert
         expect(endCount).toBe(startCount);
       });
     });
@@ -779,10 +779,10 @@ describe('status — progress reporting', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/link`, 'target-content');
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        const c = changeFor(sut, 'link');
+        const c = changeFor(result, 'link');
         expect(c?.unstaged).toBe('type-changed');
         expect(c?.worktree?.mode).toBe('100644');
       });
@@ -861,10 +861,10 @@ describe('toStagedKind', () => {
         },
       ])('Then $label', ({ change, expected }) => {
         // Arrange
-        const sut: DiffChange = change;
+        const diffChange: DiffChange = change;
 
         // Act
-        const result = toStagedKind(sut);
+        const result = toStagedKind(diffChange);
 
         // Assert
         expect(result).toBe(expected);
@@ -892,10 +892,10 @@ describe('toUnstagedKind', () => {
         { label: "'unchanged' yields no kind", input: 'unchanged', expected: undefined },
       ] as const)('Then $label', ({ input, expected }) => {
         // Arrange + Act
-        const sut = toUnstagedKind(input);
+        const result = toUnstagedKind(input);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -930,11 +930,11 @@ describe('status — unmerged column', () => {
         const ctx = await seedConflict();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — one unmerged entry carrying base/ours/theirs blobs.
-        expect(sut.unmerged).toHaveLength(1);
-        const entry = sut.unmerged[0];
+        expect(result.unmerged).toHaveLength(1);
+        const entry = result.unmerged[0];
         expect(entry?.kind).toBe('both-modified');
         expect(entry?.path).toBe('file.txt');
         expect(entry?.base?.mode).toBe('100644');
@@ -950,11 +950,11 @@ describe('status — unmerged column', () => {
         const ctx = await seedConflict();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — git lists an unmerged path only under "Unmerged paths".
-        expect(sut.changes.map((c) => c.path)).not.toContain('file.txt');
-        expect(sut.untracked).not.toContain('file.txt');
+        expect(result.changes.map((c) => c.path)).not.toContain('file.txt');
+        expect(result.untracked).not.toContain('file.txt');
       });
 
       it('Then the repo is not clean', async () => {
@@ -962,10 +962,10 @@ describe('status — unmerged column', () => {
         const ctx = await seedConflict();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.clean).toBe(false);
+        expect(result.clean).toBe(false);
       });
     });
   });
@@ -977,10 +977,10 @@ describe('status — unmerged column', () => {
         const ctx = await seedConflict();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — mW is the on-disk regular-file mode; stages stay intact.
-        const entry = sut.unmerged[0];
+        const entry = result.unmerged[0];
         expect(entry?.path).toBe('file.txt');
         expect(entry?.worktree?.mode).toBe('100644');
         expect(entry?.base).toBeDefined();
@@ -998,10 +998,10 @@ describe('status — unmerged column', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/file.txt`);
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — no worktree side, but the index stages are still reported.
-        const entry = sut.unmerged[0];
+        const entry = result.unmerged[0];
         expect(entry?.path).toBe('file.txt');
         expect(entry?.worktree).toBeUndefined();
         expect(entry?.base).toBeDefined();
@@ -1032,11 +1032,11 @@ describe('status — unmerged column', () => {
         await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert — UD: base + ours present, theirs omitted.
-        expect(sut.unmerged).toHaveLength(1);
-        const entry = sut.unmerged[0];
+        expect(result.unmerged).toHaveLength(1);
+        const entry = result.unmerged[0];
         expect(entry?.kind).toBe('deleted-by-them');
         expect(entry?.path).toBe('file.txt');
         expect(entry?.base).toBeDefined();
@@ -1070,10 +1070,10 @@ describe('status — unmerged column', () => {
         await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.unmerged.map((u) => u.path)).toEqual(['a.txt', 'z.txt']);
+        expect(result.unmerged.map((u) => u.path)).toEqual(['a.txt', 'z.txt']);
       });
     });
   });
@@ -1085,10 +1085,10 @@ describe('status — unmerged column', () => {
         const ctx = await seedClean();
 
         // Act
-        const sut = await status(ctx);
+        const result = await status(ctx);
 
         // Assert
-        expect(sut.unmerged).toEqual([]);
+        expect(result.unmerged).toEqual([]);
       });
     });
   });

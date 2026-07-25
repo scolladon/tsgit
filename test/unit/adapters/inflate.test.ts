@@ -242,12 +242,11 @@ describe('inflateZlibMember', () => {
     describe('When decoding at the member start', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const payload = new Uint8Array([1, 2, 3, 4, 5]);
         const member = deflateSync(payload, { level: 0 });
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -260,12 +259,11 @@ describe('inflateZlibMember', () => {
     describe('When decoding at the member start', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const payload = new Uint8Array(randomBytes(70000));
         const member = deflateSync(payload, { level: 0 });
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -278,7 +276,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding at the second member offset', () => {
       it('Then returns only the second member and its exact length', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const payload1 = new Uint8Array([9, 8, 7]);
         const payload2 = new Uint8Array([6, 5, 4, 3]);
         const member1 = deflateSync(payload1, { level: 0 });
@@ -288,8 +285,8 @@ describe('inflateZlibMember', () => {
         concatenated.set(member2, member1.length);
 
         // Act
-        const first = sut(concatenated, 0);
-        const second = sut(concatenated, first.bytesConsumed);
+        const first = inflateZlibMember(concatenated, 0);
+        const second = inflateZlibMember(concatenated, first.bytesConsumed);
 
         // Assert
         expect(first.bytesConsumed).toBe(member1.length);
@@ -345,11 +342,10 @@ describe('inflateZlibMember', () => {
         },
       ])('Then $label', ({ buildMember, reason }) => {
         // Arrange
-        const sut = inflateZlibMember;
         const member = buildMember();
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), reason);
+        assertDecompressFailed(() => inflateZlibMember(member, 0), reason);
       });
     });
   });
@@ -358,13 +354,12 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the length-mismatch reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const blockHeaderByte = 0x01; // BFINAL=1, BTYPE=00 (stored)
         const member = new Uint8Array([cmf, flg, blockHeaderByte, 3, 0, 0, 0]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'stored block length mismatch');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'stored block length mismatch');
       });
     });
   });
@@ -373,14 +368,13 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the checksum-mismatch reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
         const corrupted = new Uint8Array(member);
         const lastIndex = corrupted.length - 1;
         corrupted[lastIndex] = (corrupted[lastIndex] as number) ^ 0x01;
 
         // Act & Assert
-        assertDecompressFailed(() => sut(corrupted, 0), 'adler32 checksum mismatch');
+        assertDecompressFailed(() => inflateZlibMember(corrupted, 0), 'adler32 checksum mismatch');
       });
     });
   });
@@ -389,12 +383,14 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the unexpected-end reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
         const truncated = member.subarray(0, member.length - 2);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(truncated, 0), 'unexpected end of deflate stream');
+        assertDecompressFailed(
+          () => inflateZlibMember(truncated, 0),
+          'unexpected end of deflate stream',
+        );
       });
     });
   });
@@ -403,13 +399,12 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the reserved-block-type reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const blockHeaderByte = 0x07; // BFINAL=1, BTYPE=11 (reserved)
         const member = new Uint8Array([cmf, flg, blockHeaderByte]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'reserved block type');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'reserved block type');
       });
     });
   });
@@ -418,12 +413,11 @@ describe('inflateZlibMember', () => {
     describe('When decoding a fixed-Huffman member with no body bytes', () => {
       it('Then round-trips to empty output with byte-exact bytesConsumed', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const member = deflateSync(new Uint8Array(0));
         expect(readFirstBlockType(member)).toBe(FIXED_BLOCK_TYPE);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual([]);
@@ -436,13 +430,12 @@ describe('inflateZlibMember', () => {
     describe('When decoding a short repetitive payload', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const payload = new TextEncoder().encode('abc'.repeat(13));
         const member = deflateSync(payload);
         expect(readFirstBlockType(member)).toBe(FIXED_BLOCK_TYPE);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -455,13 +448,12 @@ describe('inflateZlibMember', () => {
     describe('When decoding a run-length payload (overlapping copy)', () => {
       it('Then the replicated bytes are byte-exact', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const payload = new TextEncoder().encode('a'.repeat(30));
         const member = deflateSync(payload);
         expect(readFirstBlockType(member)).toBe(FIXED_BLOCK_TYPE);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -474,7 +466,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the distance-exceeds-output reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -484,7 +475,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'distance exceeds output');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'distance exceeds output');
       });
     });
   });
@@ -493,7 +484,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-length-code reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -502,7 +492,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid length code');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid length code');
       });
     });
   });
@@ -510,7 +500,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding a larger structured payload', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const lines = Array.from(
           { length: 60 },
           (_, i) => `line ${i}: the quick brown fox jumps over the lazy dog ${i * 7}`,
@@ -520,7 +509,7 @@ describe('inflateZlibMember', () => {
         expect(readFirstBlockType(member)).toBe(DYNAMIC_BLOCK_TYPE);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -533,7 +522,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const repeatedSlice = new Uint8Array(randomBytes(4096));
         const gapFiller = new Uint8Array(randomBytes(28000));
         const payload = new Uint8Array(repeatedSlice.length * 2 + gapFiller.length);
@@ -543,7 +531,7 @@ describe('inflateZlibMember', () => {
         const member = deflateSync(payload);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -556,7 +544,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the no-previous-length reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -578,7 +565,10 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'code-length repeat with no previous length');
+        assertDecompressFailed(
+          () => inflateZlibMember(member, 0),
+          'code-length repeat with no previous length',
+        );
       });
     });
   });
@@ -587,7 +577,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-code-length-run reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -613,7 +602,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid code-length run');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid code-length run');
       });
     });
   });
@@ -622,7 +611,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then accepts the boundary-exact run instead of rejecting it as an overflow', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -658,7 +646,7 @@ describe('inflateZlibMember', () => {
         // Act & Assert
         // 'invalid code-length run' here would mean the boundary-exact repeat
         // was wrongly rejected as an overflow.
-        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid huffman code');
       });
     });
   });
@@ -667,7 +655,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding a length/distance pair that selects it', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-distance-code reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -685,7 +672,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid distance code');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid distance code');
       });
     });
   });
@@ -694,7 +681,6 @@ describe('inflateZlibMember', () => {
     describe('When the bitstream selects the unused 15-bit-deep code', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-huffman-code reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -712,7 +698,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid huffman code');
       });
     });
   });
@@ -721,7 +707,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-literal-lengths-set reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -736,7 +721,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid literal/lengths set');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid literal/lengths set');
       });
     });
   });
@@ -745,7 +730,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-distances-set reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -759,7 +743,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid distances set');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid distances set');
       });
     });
   });
@@ -768,7 +752,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding a back-reference that selects that single code', () => {
       it('Then decodes successfully instead of rejecting the table as incomplete', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -797,7 +780,7 @@ describe('inflateZlibMember', () => {
         ]);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -810,7 +793,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding a literal-only body that never selects a distance code', () => {
       it('Then decodes successfully instead of rejecting the table as incomplete', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -835,7 +817,7 @@ describe('inflateZlibMember', () => {
         ]);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -848,7 +830,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding reaches the first block-body symbol', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-huffman-code reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -862,7 +843,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid huffman code');
       });
     });
   });
@@ -871,7 +852,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding reaches the first code-length symbol', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-huffman-code reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -887,7 +867,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid huffman code');
       });
     });
   });
@@ -896,7 +876,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-code-lengths-set reason (no degenerate exception for the CL table itself)', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -916,7 +895,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid code lengths set');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid code lengths set');
       });
     });
   });
@@ -925,7 +904,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-code-lengths-set reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -954,7 +932,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid code lengths set');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid code lengths set');
       });
     });
   });
@@ -963,7 +941,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then throws DECOMPRESS_FAILED with the invalid-code-lengths reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -980,7 +957,7 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'invalid huffman code lengths');
+        assertDecompressFailed(() => inflateZlibMember(member, 0), 'invalid huffman code lengths');
       });
     });
   });
@@ -993,12 +970,11 @@ describe('inflateZlibMember', () => {
     describe('When decoding with maxOutputBytes below the decoded output length', () => {
       it('Then throws DECOMPRESS_FAILED with the safety-cap reason', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const smallCap = payloadLength / 2;
 
         // Act & Assert
         assertDecompressFailed(
-          () => sut(member, 0, smallCap),
+          () => inflateZlibMember(member, 0, smallCap),
           'inflated output exceeds safety cap',
         );
       });
@@ -1006,11 +982,8 @@ describe('inflateZlibMember', () => {
 
     describe('When decoding with maxOutputBytes exactly at the decoded output length', () => {
       it('Then decodes successfully without false-tripping the cap', () => {
-        // Arrange
-        const sut = inflateZlibMember;
-
-        // Act
-        const result = sut(member, 0, payloadLength);
+        // Arrange & Act
+        const result = inflateZlibMember(member, 0, payloadLength);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -1029,13 +1002,12 @@ describe('inflateZlibMember', () => {
     describe('When a buffer grow is triggered under the enormous cap', () => {
       it('Then the resize stays bounded by the needed capacity and decodes exactly', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const payload = new Uint8Array(GROW_TRIGGERING_LENGTH).fill(0x41);
         const member = deflateSync(payload);
         const unboundedCap = Number.MAX_SAFE_INTEGER;
 
         // Act
-        const result = sut(member, 0, unboundedCap);
+        const result = inflateZlibMember(member, 0, unboundedCap);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -1048,7 +1020,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding a payload whose only literal uses the forced 15-bit code', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -1071,7 +1042,7 @@ describe('inflateZlibMember', () => {
         ]);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
@@ -1086,7 +1057,6 @@ describe('inflateZlibMember', () => {
         // Arrange — only the 3-bit block header is present; decodeSymbol reads
         // past it into padding zeros and then off the end of the single byte,
         // without ever reaching a stored-length/adler trailer readBytes call.
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -1094,7 +1064,10 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'unexpected end of deflate stream');
+        assertDecompressFailed(
+          () => inflateZlibMember(member, 0),
+          'unexpected end of deflate stream',
+        );
       });
     });
   });
@@ -1106,7 +1079,6 @@ describe('inflateZlibMember', () => {
         // exactly 16 bits (2 whole bytes), so the member ends precisely where
         // the distance symbol's first bit would be read: no back-reference is
         // ever assembled, and no output has been emitted yet.
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -1116,7 +1088,10 @@ describe('inflateZlibMember', () => {
         const member = new Uint8Array([cmf, flg, ...writer.toBytes()]);
 
         // Act & Assert
-        assertDecompressFailed(() => sut(member, 0), 'unexpected end of deflate stream');
+        assertDecompressFailed(
+          () => inflateZlibMember(member, 0),
+          'unexpected end of deflate stream',
+        );
       });
     });
   });
@@ -1125,7 +1100,6 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it('Then decodes successfully (the boundary is valid, not exceeded)', () => {
         // Arrange
-        const sut = inflateZlibMember;
         const [cmf, flg] = buildZlibHeader(0);
         const writer = new TestBitWriter();
         writer.writeField(1, 1); // BFINAL
@@ -1144,7 +1118,7 @@ describe('inflateZlibMember', () => {
         ]);
 
         // Act
-        const result = sut(member, 0);
+        const result = inflateZlibMember(member, 0);
 
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));

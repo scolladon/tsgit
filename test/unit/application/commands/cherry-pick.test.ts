@@ -296,10 +296,10 @@ describe('cherryPickRun — merge commits', () => {
         await codeOf(() => cherryPickRun(ctx, { commits: [`${base}..feature`] }));
 
         // Act
-        const sut = await cherryPickAbort(ctx);
+        const result = await cherryPickAbort(ctx);
 
         // Assert
-        expect(sut.head).toBe(base);
+        expect(result.head).toBe(base);
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(base);
         expect(await ctx.fs.exists(work(ctx, 'f1.txt'))).toBe(false); // the committed c1 pick undone
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
@@ -316,10 +316,10 @@ describe('cherryPickRun — merge commits', () => {
         await codeOf(() => cherryPickRun(ctx, { commits: [`${base}..feature`] }));
 
         // Act
-        const sut = await cherryPickSkip(ctx);
+        const result = await cherryPickSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('picked');
+        expect(result.kind).toBe('picked');
         expect(await ctx.fs.readUtf8(work(ctx, 'f2.txt'))).toBe('f2\n'); // post-merge pick applied
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
       });
@@ -348,11 +348,11 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [`${base.id}..feature`] });
+        const result = await cherryPickRun(ctx, { commits: [`${base.id}..feature`] });
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind === 'picked') expect(sut.commits).toHaveLength(3);
+        expect(result.kind).toBe('picked');
+        if (result.kind === 'picked') expect(result.commits).toHaveLength(3);
         expect(await ctx.fs.readUtf8(work(ctx, 'f1.txt'))).toBe('f1\n');
         expect(await ctx.fs.readUtf8(work(ctx, 'f3.txt'))).toBe('f3\n');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
@@ -368,13 +368,13 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         const mainHead = await resolveRef(ctx, 'refs/heads/main' as RefName);
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+        const result = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') {
-          expect(sut.commit).toBe(c1);
-          expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') {
+          expect(result.commit).toBe(c1);
+          expect(result.remaining).toBe(1);
         }
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(`${c1}\n`);
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/head`)).toBe(`${mainHead}\n`);
@@ -392,11 +392,11 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         const { ctx, base } = await seedRange();
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+        const result = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
 
         // Assert — git writes sequencer/opts only for non-default options; a plain
         // committing sequence must not persist a `no-commit` (or any) option line.
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer/opts`)).toBe(false);
       });
     });
@@ -410,14 +410,14 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         const { ctx, c1 } = await seedRange();
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: ['main..feature'] });
+        const result = await cherryPickRun(ctx, { commits: ['main..feature'] });
 
         // Assert — the sequence starts at c1 (not the parentless root `base`),
         // with only c2 remaining.
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') {
-          expect(sut.commit).toBe(c1);
-          expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') {
+          expect(result.commit).toBe(c1);
+          expect(result.remaining).toBe(1);
         }
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(`${c1}\n`);
         const todo = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`);
@@ -436,10 +436,10 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx);
+        const result = await cherryPickContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('picked');
+        expect(result.kind).toBe('picked');
         expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n'); // c2 applied
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
@@ -467,10 +467,10 @@ describe('cherryPickRun — ranges and the sequencer', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx);
+        const result = await cherryPickContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('picked');
+        expect(result.kind).toBe('picked');
         expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n');
       });
     });
@@ -513,10 +513,10 @@ describe('cherryPickAbort', () => {
         await cherryPickRun(ctx, { commits: [`${base}..feature`] });
 
         // Act
-        const sut = await cherryPickAbort(ctx);
+        const result = await cherryPickAbort(ctx);
 
         // Assert
-        expect(sut.head).toBe(preSeq);
+        expect(result.head).toBe(preSeq);
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(preSeq);
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nMAIN\n'); // restored
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
@@ -533,10 +533,10 @@ describe('cherryPickAbort', () => {
         const headBefore = await resolveRef(ctx, 'refs/heads/main' as RefName);
 
         // Act
-        const sut = await cherryPickAbort(ctx);
+        const result = await cherryPickAbort(ctx);
 
         // Assert
-        expect(sut.head).toBe(headBefore);
+        expect(result.head).toBe(headBefore);
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nMAIN\n');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
       });
@@ -568,10 +568,10 @@ describe('cherryPickSkip', () => {
         await cherryPickRun(ctx, { commits: [`${base}..feature`] }); // conflict on c1
 
         // Act
-        const sut = await cherryPickSkip(ctx);
+        const result = await cherryPickSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('picked');
+        expect(result.kind).toBe('picked');
         expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g\n'); // c2 applied
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nMAIN\n'); // c1 dropped
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
@@ -586,11 +586,11 @@ describe('cherryPickSkip', () => {
         const { ctx } = await seedConflictPick();
 
         // Act
-        const sut = await cherryPickSkip(ctx);
+        const result = await cherryPickSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind === 'picked') expect(sut.commits).toHaveLength(0);
+        expect(result.kind).toBe('picked');
+        if (result.kind === 'picked') expect(result.commits).toHaveLength(0);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
       });
     });
@@ -622,17 +622,17 @@ describe('cherryPickContinue', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx);
+        const result = await cherryPickContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind !== 'picked') return;
-        const data = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        const data = await readCommit(ctx, result.commits[0]?.created as ObjectId);
         expect(data.author).toEqual(FEAT_AUTHOR);
         expect(data.committer.name).toBe(COMMITTER.name);
         expect(data.parents).toHaveLength(1);
         expect(data.message).toBe('feat change\n'); // # Conflicts block stripped
-        expect(sut.commits[0]?.source).toBe(feature);
+        expect(result.commits[0]?.source).toBe(feature);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
         const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
@@ -665,11 +665,11 @@ describe('cherryPickContinue', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx);
+        const result = await cherryPickContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('empty');
-        if (sut.kind === 'empty') expect(sut.commit).toBe(feature);
+        expect(result.kind).toBe('empty');
+        if (result.kind === 'empty') expect(result.commit).toBe(feature);
       });
     });
 
@@ -681,11 +681,11 @@ describe('cherryPickContinue', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx, { allowEmpty: true });
+        const result = await cherryPickContinue(ctx, { allowEmpty: true });
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind === 'picked') expect(sut.commits).toHaveLength(1);
+        expect(result.kind).toBe('picked');
+        if (result.kind === 'picked') expect(result.commits).toHaveLength(1);
       });
     });
   });
@@ -699,13 +699,13 @@ describe('cherryPickRun', () => {
         const { ctx, feature, base } = await seedFeature();
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: ['feature'] });
+        const result = await cherryPickRun(ctx, { commits: ['feature'] });
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind !== 'picked') return;
-        const created = sut.commits[0]?.created as ObjectId;
-        expect(sut.commits[0]?.source).toBe(feature);
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        const created = result.commits[0]?.created as ObjectId;
+        expect(result.commits[0]?.source).toBe(feature);
         const data = await readCommit(ctx, created);
         expect(data.author).toEqual(FEAT_AUTHOR); // preserved
         expect(data.committer.name).toBe(COMMITTER.name); // current identity
@@ -724,12 +724,12 @@ describe('cherryPickRun', () => {
         const { ctx, feature } = await seedFeature();
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: ['feature'], recordOrigin: true });
+        const result = await cherryPickRun(ctx, { commits: ['feature'], recordOrigin: true });
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind !== 'picked') return;
-        const data = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        const data = await readCommit(ctx, result.commits[0]?.created as ObjectId);
         expect(data.message).toBe(
           `add feat\n\nbody line\n\n(cherry picked from commit ${feature})\n`,
         );
@@ -749,12 +749,12 @@ describe('cherryPickRun', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [feature, second.id] });
+        const result = await cherryPickRun(ctx, { commits: [feature, second.id] });
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind !== 'picked') return;
-        expect(sut.commits).toHaveLength(2);
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        expect(result.commits).toHaveLength(2);
         expect(await ctx.fs.readUtf8(work(ctx, 'feat.txt'))).toBe('feat\n');
         expect(await ctx.fs.readUtf8(work(ctx, 'feat2.txt'))).toBe('feat2\n');
       });
@@ -782,10 +782,10 @@ describe('cherryPickRun', () => {
         });
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [root] });
+        const result = await cherryPickRun(ctx, { commits: [root] });
 
         // Assert
-        expect(sut.kind).toBe('picked');
+        expect(result.kind).toBe('picked');
         expect(await ctx.fs.readUtf8(work(ctx, 'r.txt'))).toBe('r\n');
       });
     });
@@ -812,14 +812,14 @@ describe('cherryPickRun', () => {
         await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [feature.id] });
+        const result = await cherryPickRun(ctx, { commits: [feature.id] });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.commit).toBe(feature.id);
-        expect(sut.conflicts.map((c) => c.path)).toContain('f.txt');
-        expect(sut.remaining).toBe(0);
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.commit).toBe(feature.id);
+        expect(result.conflicts.map((c) => c.path)).toContain('f.txt');
+        expect(result.remaining).toBe(0);
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(
           `${feature.id}\n`,
         );
@@ -886,11 +886,11 @@ describe('cherryPickRun', () => {
         await cherryPickRun(ctx, { commits: [feature] });
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [feature] });
+        const result = await cherryPickRun(ctx, { commits: [feature] });
 
         // Assert
-        expect(sut.kind).toBe('empty');
-        if (sut.kind === 'empty') expect(sut.commit).toBe(feature);
+        expect(result.kind).toBe('empty');
+        if (result.kind === 'empty') expect(result.commit).toBe(feature);
       });
     });
   });
@@ -902,11 +902,11 @@ describe('cherryPickRun', () => {
         const { ctx, feature, base } = await seedFeature();
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: ['feature'], noCommit: true });
+        const result = await cherryPickRun(ctx, { commits: ['feature'], noCommit: true });
 
         // Assert
-        expect(sut.kind).toBe('no-commit');
-        if (sut.kind === 'no-commit') expect(sut.sources).toEqual([feature]);
+        expect(result.kind).toBe('no-commit');
+        if (result.kind === 'no-commit') expect(result.sources).toEqual([feature]);
         const index = await readIndex(ctx);
         expect(index.entries.some((e) => e.path === 'feat.txt')).toBe(true);
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(base); // HEAD unmoved
@@ -928,10 +928,10 @@ describe('cherryPickRun', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [feature, second.id], noCommit: true });
+        const result = await cherryPickRun(ctx, { commits: [feature, second.id], noCommit: true });
 
         // Assert
-        expect(sut.kind).toBe('no-commit');
+        expect(result.kind).toBe('no-commit');
         const index = await readIndex(ctx);
         expect(index.entries.some((e) => e.path === 'feat.txt')).toBe(true);
         expect(index.entries.some((e) => e.path === 'feat2.txt')).toBe(true);
@@ -961,10 +961,10 @@ describe('cherryPickRun', () => {
         await commit(ctx, { message: 'main change', author: MAIN_AUTHOR });
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [feature.id], noCommit: true });
+        const result = await cherryPickRun(ctx, { commits: [feature.id], noCommit: true });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
       });
@@ -980,12 +980,12 @@ describe('cherryPickRun', () => {
         const headBefore = await resolveRef(ctx, 'refs/heads/main' as RefName);
 
         // Act — pick it again with --allow-empty
-        const sut = await cherryPickRun(ctx, { commits: [feature], allowEmpty: true });
+        const result = await cherryPickRun(ctx, { commits: [feature], allowEmpty: true });
 
         // Assert
-        expect(sut.kind).toBe('picked');
-        if (sut.kind !== 'picked') return;
-        const created = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        const created = await readCommit(ctx, result.commits[0]?.created as ObjectId);
         const parent = await readCommit(ctx, headBefore);
         expect(created.tree).toBe(parent.tree); // empty: tree unchanged
         expect(created.parents).toEqual([headBefore]);
@@ -1110,8 +1110,8 @@ describe('cherryPick — observable surfaces', () => {
         await cherryPickRun(ctx, { commits: ['feature'] });
 
         // Assert
-        const sut = await readReflog(ctx, 'refs/heads/main' as RefName);
-        expect(sut.at(-1)?.message).toBe('cherry-pick: add feat');
+        const result = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(result.at(-1)?.message).toBe('cherry-pick: add feat');
       });
 
       it('Then it preserves the source author and stamps the current committer at ~now', async () => {
@@ -1119,10 +1119,11 @@ describe('cherryPick — observable surfaces', () => {
         const { ctx, feature } = await seedFeature();
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: ['feature'] });
+        const result = await cherryPickRun(ctx, { commits: ['feature'] });
 
         // Assert
-        const created = sut.kind === 'picked' ? (sut.commits[0]?.created as ObjectId) : undefined;
+        const created =
+          result.kind === 'picked' ? (result.commits[0]?.created as ObjectId) : undefined;
         const pick = await readCommit(ctx, created as ObjectId);
         const source = await readCommit(ctx, feature);
         expect(pick.author).toEqual(source.author);
@@ -1144,11 +1145,11 @@ describe('cherryPick — observable surfaces', () => {
         const { ctx } = await seedRange();
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: ['main..feature'], noCommit: true });
+        const result = await cherryPickRun(ctx, { commits: ['main..feature'], noCommit: true });
 
         // Assert — c1 conflicts at index 0 of [c1, c2]; one pick remains.
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') expect(result.remaining).toBe(1);
       });
     });
   });
@@ -1194,10 +1195,10 @@ describe('cherryPick — observable surfaces', () => {
     ])('When %s runs', (_verb, call, operation) => {
       it(`Then it refuses with BARE_REPOSITORY for "${operation}"`, async () => {
         // Arrange
-        const sut = await makeBare();
+        const ctx = await makeBare();
 
         // Act
-        const data = await dataOf(() => call(sut));
+        const data = await dataOf(() => call(ctx));
 
         // Assert
         expect(data.code).toBe('BARE_REPOSITORY');
@@ -1284,10 +1285,10 @@ describe('cherryPick — observable surfaces', () => {
         const branchBefore = (await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message;
 
         // Act
-        const sut = await cherryPickAbort(ctx);
+        const result = await cherryPickAbort(ctx);
 
         // Assert — the branch did not move, so it is the unchanged head
-        expect(sut.head).toBe(head);
+        expect(result.head).toBe(head);
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog.at(-1)?.message).toBe(`reset: moving to ${head}`);
         const branchLog = await readReflog(ctx, 'refs/heads/main' as RefName);
@@ -1326,13 +1327,15 @@ describe('cherryPick — observable surfaces', () => {
       });
 
       it('Then a redundant (empty) pick writes a draft with no conflicts block', async () => {
-        // Arrange — apply `feature`, then pick it again so its change is redundant.
+        // Arrange — apply `feature` once (clean) so a second pick is redundant.
         const { ctx } = await seedFeature();
         await cherryPickRun(ctx, { commits: ['feature'] });
-        const sut = await cherryPickRun(ctx, { commits: ['feature'] });
+
+        // Act — pick it again; the change is already applied.
+        const result = await cherryPickRun(ctx, { commits: ['feature'] });
 
         // Assert
-        expect(sut.kind).toBe('empty');
+        expect(result.kind).toBe('empty');
         const draft = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
         expect(draft).not.toContain('# Conflicts:');
       });
@@ -1349,14 +1352,14 @@ describe('cherryPick — observable surfaces', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx);
+        const result = await cherryPickContinue(ctx);
 
         // Assert — both the resolved pick and the resumed pick are reported…
-        expect(sut.kind).toBe('picked');
-        if (sut.kind !== 'picked') throw new Error('expected picked');
-        expect(sut.commits).toHaveLength(2);
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') throw new Error('expected picked');
+        expect(result.commits).toHaveLength(2);
         // …and the resumed pick used the persisted record-origin opt.
-        const last = sut.commits.at(-1) as { source: ObjectId; created: ObjectId };
+        const last = result.commits.at(-1) as { source: ObjectId; created: ObjectId };
         const resumed = await readCommit(ctx, last.created);
         expect(resumed.message).toContain(`(cherry picked from commit ${last.source})`);
       });
@@ -1372,11 +1375,11 @@ describe('cherryPickRun — resume-state faithfulness', () => {
         const { ctx, base, c1, feature } = await seedCleanThenConflict();
 
         // Act — c1 applies cleanly at index 0; c2 conflicts at index 1.
-        const sut = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
+        const result = await cherryPickRun(ctx, { commits: [`${base}..feature`] });
 
         // Assert — the persisted todo is sliced to the remaining pick alone.
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') expect(sut.commit).toBe(feature);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') expect(result.commit).toBe(feature);
         const todoLines = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`))
           .split('\n')
           .filter(Boolean);
@@ -1398,12 +1401,12 @@ describe('cherryPickRun — the -x provenance footer', () => {
         const source = await makeCleanRootPick(ctx, 'x.txt', 'solo');
 
         // Act
-        const sut = await cherryPickRun(ctx, { commits: [source], recordOrigin: true });
+        const result = await cherryPickRun(ctx, { commits: [source], recordOrigin: true });
 
         // Assert — the trailing-whitespace strip must not eat the final word.
-        expect(sut.kind).toBe('picked');
-        if (sut.kind !== 'picked') return;
-        const data = await readCommit(ctx, sut.commits[0]?.created as ObjectId);
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        const data = await readCommit(ctx, result.commits[0]?.created as ObjectId);
         expect(data.message).toBe(`solo\n\n(cherry picked from commit ${source})\n`);
       });
     });
@@ -1457,10 +1460,10 @@ describe('cherryPickRun — index lock release', () => {
 
         // Act — the empty path returns without committing, so only the finally
         // release clears the lock file it acquired.
-        const sut = await cherryPickRun(ctx, { commits: [feature] });
+        const result = await cherryPickRun(ctx, { commits: [feature] });
 
         // Assert
-        expect(sut.kind).toBe('empty');
+        expect(result.kind).toBe('empty');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
     });
@@ -1536,13 +1539,13 @@ describe('cherryPickContinue — remaining count on an empty re-stop', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx);
+        const result = await cherryPickContinue(ctx);
 
         // Assert — c1 re-stops empty; c2 (one pick) still remains.
-        expect(sut.kind).toBe('empty');
-        if (sut.kind === 'empty') {
-          expect(sut.commit).toBe(c1);
-          expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('empty');
+        if (result.kind === 'empty') {
+          expect(result.commit).toBe(c1);
+          expect(result.remaining).toBe(1);
         }
       });
     });
@@ -1561,11 +1564,11 @@ describe('cherryPickContinue — resumed conflict persists the sequencer', () =>
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await cherryPickContinue(ctx);
+        const result = await cherryPickContinue(ctx);
 
         // Assert — the resumed pick's stop must re-slice the persisted todo.
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') expect(sut.commit).toBe(feature);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') expect(result.commit).toBe(feature);
         const todoLines = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`))
           .split('\n')
           .filter(Boolean);
@@ -1587,11 +1590,11 @@ describe('cherryPickSkip — resumed conflict persists the sequencer', () => {
         await cherryPickRun(ctx, { commits: [`${base}..feature`] });
 
         // Act
-        const sut = await cherryPickSkip(ctx);
+        const result = await cherryPickSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') expect(sut.commit).toBe(feature);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') expect(result.commit).toBe(feature);
         const todoLines = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`))
           .split('\n')
           .filter(Boolean);

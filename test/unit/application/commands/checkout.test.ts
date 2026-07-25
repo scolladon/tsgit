@@ -34,12 +34,12 @@ describe('checkout', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { rev: 'feature' });
+        const result = await checkout(ctx, { rev: 'feature' });
 
         // Assert
-        expect(sut.branch).toBe('refs/heads/feature');
-        expect(sut.id).toBe(commitId);
-        expect(sut.detached).toBe(false);
+        expect(result.branch).toBe('refs/heads/feature');
+        expect(result.id).toBe(commitId);
+        expect(result.detached).toBe(false);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe('ref: refs/heads/feature\n');
       });
@@ -53,11 +53,11 @@ describe('checkout', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { rev: commitId });
+        const result = await checkout(ctx, { rev: commitId });
 
         // Assert
-        expect(sut.detached).toBe(true);
-        expect(sut.id).toBe(commitId);
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(commitId);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe(`${commitId}\n`);
       });
@@ -188,11 +188,11 @@ describe('checkout', () => {
         const { ctx } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { rev: 'main' });
+        const result = await checkout(ctx, { rev: 'main' });
 
         // Assert
-        expect(sut.branch).toBe('refs/heads/main');
-        expect(sut.detached).toBe(false);
+        expect(result.branch).toBe('refs/heads/main');
+        expect(result.detached).toBe(false);
       });
     });
   });
@@ -204,11 +204,11 @@ describe('checkout', () => {
         const { ctx, commitId } = await seedWithBranches();
 
         // Act — branch name + detach should resolve to the oid AND detach.
-        const sut = await checkout(ctx, { rev: commitId, detach: true });
+        const result = await checkout(ctx, { rev: commitId, detach: true });
 
         // Assert
-        expect(sut.detached).toBe(true);
-        expect(sut.id).toBe(commitId);
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(commitId);
       });
     });
   });
@@ -227,11 +227,11 @@ describe('checkout', () => {
         await commit(ctx, { message: 'v2', author });
 
         // Act — checkout the first commit
-        const sut = await checkout(ctx, { rev: c1.id, force: true });
+        const result = await checkout(ctx, { rev: c1.id, force: true });
 
         // Assert — working tree now matches v1, and changedPaths reflects the update
-        expect(sut.detached).toBe(true);
-        expect(sut.changedPaths).toBeGreaterThanOrEqual(1);
+        expect(result.detached).toBe(true);
+        expect(result.changedPaths).toBeGreaterThanOrEqual(1);
         const bytes = await ctx.fs.read(`${ctx.layout.workDir}/foo.txt`);
         expect(new TextDecoder().decode(bytes)).toBe('v1');
       });
@@ -379,10 +379,10 @@ describe('checkout', () => {
         expect(stagedBlobId).toBeDefined();
 
         // Act — default source is 'index'.
-        const sut = await checkout(ctx, { paths: ['a.txt'] });
+        const result = await checkout(ctx, { paths: ['a.txt'] });
 
         // Assert — file content reverts to the staged 'v2'.
-        expect(sut.changedPaths).toBe(1);
+        expect(result.changedPaths).toBe(1);
         const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`);
         expect(onDisk).toBe('v2');
 
@@ -423,12 +423,12 @@ describe('checkout', () => {
         await ctx.fs.writeExclusive(lockPath, sentinel);
 
         // Act
-        const sut = await checkout(ctx, { paths: ['a.txt'] });
+        const result = await checkout(ctx, { paths: ['a.txt'] });
 
         // Assert — operation succeeds (1 path rewritten because path-restore now
         // unconditionally writes the source content, matching canonical git);
         // lock is intact (no acquire/release round-trip for the lockless branch).
-        expect(sut.changedPaths).toBe(1);
+        expect(result.changedPaths).toBe(1);
         expect(await ctx.fs.exists(lockPath)).toBe(true);
         const lockBytes = await ctx.fs.read(lockPath);
         expect(Array.from(lockBytes)).toEqual([0x53, 0x45, 0x4e, 0x54]);
@@ -505,11 +505,11 @@ describe('checkout — mutation hardening', () => {
         const { ctx } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { rev: 'feature' });
+        const result = await checkout(ctx, { rev: 'feature' });
 
         // Assert — symref, not detached.
-        expect(sut.detached).toBe(false);
-        expect(sut.branch).toBe('refs/heads/feature');
+        expect(result.detached).toBe(false);
+        expect(result.branch).toBe('refs/heads/feature');
       });
     });
   });
@@ -565,12 +565,12 @@ describe('checkout — mutation hardening', () => {
         const refPath = 'refs/heads/feature';
 
         // Act
-        const sut = await checkout(ctx, { rev: refPath, detach: true });
+        const result = await checkout(ctx, { rev: refPath, detach: true });
 
         // Assert — HEAD detached at the RESOLVED commit oid, not the raw ref text.
-        expect(sut.detached).toBe(true);
-        expect(sut.id).toBe(commitId);
-        expect(sut.id).not.toBe(refPath);
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(commitId);
+        expect(result.id).not.toBe(refPath);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe(`${commitId}\n`);
       });
@@ -587,11 +587,11 @@ describe('checkout — mutation hardening', () => {
         const { ctx } = await seedWithBranches();
 
         // Act
-        const sut = await checkout(ctx, { rev: 'feature', detach: false });
+        const result = await checkout(ctx, { rev: 'feature', detach: false });
 
         // Assert
-        expect(sut.detached).toBe(false);
-        expect(sut.branch).toBe('refs/heads/feature');
+        expect(result.detached).toBe(false);
+        expect(result.branch).toBe('refs/heads/feature');
       });
     });
   });
@@ -654,13 +654,15 @@ describe('checkout — mutation hardening', () => {
         await rm(ctx, ['gone.txt']);
         const fewer = await commit(ctx, { message: 'fewer', author });
 
-        // Re-stage both then check out the older 'both' commit, then check out
-        // 'fewer' to force a deletion-only transition.
+        // Re-stage both then check out the older 'both' commit to establish the
+        // pre-transition baseline.
         await checkout(ctx, { rev: both.id, force: true });
-        const sut = await checkout(ctx, { rev: fewer.id, force: true });
+
+        // Act — check out 'fewer' to force a deletion-only transition.
+        const result = await checkout(ctx, { rev: fewer.id, force: true });
 
         // Assert — exactly one path changed (the deletion) and it was committed.
-        expect(sut.changedPaths).toBe(1);
+        expect(result.changedPaths).toBe(1);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/gone.txt`)).toBe(false);
         const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
         const idx = await readIndex(ctx);
@@ -685,17 +687,20 @@ describe('checkout — mutation hardening', () => {
         await add(ctx, ['extra.txt']);
         const withExtra = await commit(ctx, { message: 'with extra', author });
 
-        // Detach onto origin-pt removing extra.txt, then check out withExtra by
-        // oid (detached) so the result goes through the L98 detached branch.
+        // Detach onto origin-pt removing extra.txt to establish the baseline
+        // before the write-only transition under test.
         await checkout(ctx, { rev: 'origin-pt', force: true });
-        const sut = await checkout(ctx, { rev: withExtra.id, force: true });
+
+        // Act — check out withExtra by oid (detached) so the result goes
+        // through the L98 detached branch.
+        const result = await checkout(ctx, { rev: withExtra.id, force: true });
 
         // Assert — exactly one write, sum is exactly 1 (not -1 or other), and the
         // index commit ran (the L90 guard fired on the written>0 operand; a
         // LogicalOperator || → && or written>0 → written<=0 mutant would skip the
         // commit and leave the index without extra.txt).
-        expect(sut.detached).toBe(true);
-        expect(sut.changedPaths).toBe(1);
+        expect(result.detached).toBe(true);
+        expect(result.changedPaths).toBe(1);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/extra.txt`)).toBe(true);
         const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
         const idx = await readIndex(ctx);
@@ -711,7 +716,7 @@ describe('checkout — mutation hardening', () => {
         // regex `/^[0-9a-f]{40}$/` must NOT match (length 41 + trailing `z`), so
         // resolveSwitchOid resolves it via resolveRef into the real commit oid.
         // Dropping the `$` anchor (`/^[0-9a-f]{40}/`) matches the 40-hex PREFIX,
-        // making resolveSwitchOid return the raw ref name as the oid — `sut.id`
+        // making resolveSwitchOid return the raw ref name as the oid — `result.id`
         // would then be the ref text, not the resolved commit.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -723,12 +728,12 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${hexPrefixRef}`, `${c.id}\n`);
 
         // Act — detach:true forces the detached branch; rev is the hex-prefix ref.
-        const sut = await checkout(ctx, { rev: hexPrefixRef, detach: true });
+        const result = await checkout(ctx, { rev: hexPrefixRef, detach: true });
 
         // Assert — id is the RESOLVED commit oid, never the raw ref text.
-        expect(sut.detached).toBe(true);
-        expect(sut.id).toBe(c.id);
-        expect(sut.id).not.toBe(hexPrefixRef);
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(c.id);
+        expect(result.id).not.toBe(hexPrefixRef);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe(`${c.id}\n`);
       });
@@ -754,12 +759,12 @@ describe('checkout — mutation hardening', () => {
         const fullRefPath = `refs/heads/${hexBranch}`;
 
         // Act — rev is the full ref path ending in a 40-hex run.
-        const sut = await checkout(ctx, { rev: fullRefPath, detach: true });
+        const result = await checkout(ctx, { rev: fullRefPath, detach: true });
 
         // Assert — id is the RESOLVED commit oid, never the raw ref path text.
-        expect(sut.detached).toBe(true);
-        expect(sut.id).toBe(c.id);
-        expect(sut.id).not.toBe(fullRefPath);
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(c.id);
+        expect(result.id).not.toBe(fullRefPath);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe(`${c.id}\n`);
       });
@@ -787,12 +792,12 @@ describe('checkout — mutation hardening', () => {
         await commit(ctx, { message: 'b-only', author });
 
         // Act — non-detached switch back to feature (writes a.txt, deletes b.txt).
-        const sut = await checkout(ctx, { rev: 'feature', force: true });
+        const result = await checkout(ctx, { rev: 'feature', force: true });
 
         // Assert — symref branch (non-detached) and the exact sum 1 + 1 = 2.
-        expect(sut.detached).toBe(false);
-        expect(sut.branch).toBe('refs/heads/feature');
-        expect(sut.changedPaths).toBe(2);
+        expect(result.detached).toBe(false);
+        expect(result.branch).toBe('refs/heads/feature');
+        expect(result.changedPaths).toBe(2);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(false);
       });
@@ -875,13 +880,13 @@ describe('checkout — mutation hardening', () => {
         const c = await commit(ctx, { message: 'baseline', author });
 
         // Act
-        const sut = await checkout(ctx, { paths: ['*.nomatch'] });
+        const result = await checkout(ctx, { paths: ['*.nomatch'] });
 
         // Assert — zero-match no-op; result resolves current HEAD, detached false.
-        expect(sut.changedPaths).toBe(0);
-        expect(sut.detached).toBe(false);
-        expect(sut.branch).toBeUndefined();
-        expect(sut.id).toBe(c.id);
+        expect(result.changedPaths).toBe(0);
+        expect(result.detached).toBe(false);
+        expect(result.branch).toBeUndefined();
+        expect(result.id).toBe(c.id);
       });
     });
   });
@@ -903,12 +908,12 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([0, 0, 0, 0]));
 
         // Act — must succeed: the early return never reads the corrupt index.
-        const sut = await checkout(ctx, { paths: ['*.nomatch'], source: 'HEAD' });
+        const result = await checkout(ctx, { paths: ['*.nomatch'], source: 'HEAD' });
 
         // Assert — no-op result, no parse error surfaced.
-        expect(sut.changedPaths).toBe(0);
-        expect(sut.id).toBe(c.id);
-        expect(sut.detached).toBe(false);
+        expect(result.changedPaths).toBe(0);
+        expect(result.id).toBe(c.id);
+        expect(result.detached).toBe(false);
       });
     });
   });
@@ -927,11 +932,11 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'dirty');
 
         // Act
-        const sut = await checkout(ctx, { paths: ['a.txt'] });
+        const result = await checkout(ctx, { paths: ['a.txt'] });
 
         // Assert
-        expect(sut.detached).toBe(false);
-        expect(sut.changedPaths).toBe(1);
+        expect(result.detached).toBe(false);
+        expect(result.changedPaths).toBe(1);
       });
     });
   });
@@ -967,10 +972,10 @@ describe('checkout — mutation hardening', () => {
         expect(stagedBlobId).not.toBe(headBlobId);
 
         // Act
-        const sut = await checkout(ctx, { paths: ['h.txt'], source: 'HEAD' });
+        const result = await checkout(ctx, { paths: ['h.txt'], source: 'HEAD' });
 
         // Assert — disk reverts AND the index commit recorded HEAD's blob id.
-        expect(sut.changedPaths).toBe(1);
+        expect(result.changedPaths).toBe(1);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/h.txt`)).toBe('head-version');
         const committedIndex = await readIndex(ctx);
         expect(committedIndex.entries.find((e) => e.path === 'h.txt')?.id).toBe(headBlobId);
@@ -992,10 +997,10 @@ describe('checkout — mutation hardening', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir/nested.txt`, 'dirty');
 
         // Act
-        const sut = await checkout(ctx, { paths: ['dir/nested.txt'], source: 'HEAD' });
+        const result = await checkout(ctx, { paths: ['dir/nested.txt'], source: 'HEAD' });
 
         // Assert
-        expect(sut.changedPaths).toBe(1);
+        expect(result.changedPaths).toBe(1);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/dir/nested.txt`)).toBe('nested-head');
       });
     });
@@ -1135,10 +1140,10 @@ describe('checkout — sparse checkout', () => {
         await enableSparseSrcOnly(ctx);
 
         // Act
-        const sut = await checkout(ctx, { rev: 'feature' });
+        const result = await checkout(ctx, { rev: 'feature' });
 
         // Assert — in-pattern file present, excluded file removed from disk.
-        expect(sut.branch).toBe('refs/heads/feature');
+        expect(result.branch).toBe('refs/heads/feature');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
         // The new index keeps every path; `docs/b.txt` is now skip-worktree.
@@ -1164,10 +1169,10 @@ describe('checkout — sparse checkout', () => {
         await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        const sut = await checkout(ctx, { rev: 'feature' });
+        const result = await checkout(ctx, { rev: 'feature' });
 
         // Assert — both files on disk, no skip-worktree entry.
-        expect(sut.branch).toBe('refs/heads/feature');
+        expect(result.branch).toBe('refs/heads/feature');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(true);
         const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
@@ -1241,6 +1246,7 @@ describe('checkout — progress reporting', () => {
         const ctx = await seedWithBranch();
         const { reporter, events } = recordingProgress();
 
+        // Act
         await checkout(withProgress(ctx, reporter), { rev: 'feature' });
 
         // Assert
@@ -1264,10 +1270,10 @@ describe('checkout — progress reporting', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.md`, 'b-modified');
 
         // Act — restore only `*.ts`.
-        const sut = await checkout(ctx, { paths: ['*.ts'], source: 'HEAD' });
+        const result = await checkout(ctx, { paths: ['*.ts'], source: 'HEAD' });
 
         // Assert — a.ts reverts, b.md stays modified.
-        expect(sut.changedPaths).toBe(1);
+        expect(result.changedPaths).toBe(1);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.ts`)).toBe('a-original');
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b.md`)).toBe('b-modified');
       });
@@ -1285,10 +1291,10 @@ describe('checkout — progress reporting', () => {
         await commit(ctx, { message: 'baseline', author });
 
         // Act
-        const sut = await checkout(ctx, { paths: ['*.nope'], source: 'HEAD' });
+        const result = await checkout(ctx, { paths: ['*.nope'], source: 'HEAD' });
 
         // Assert
-        expect(sut.changedPaths).toBe(0);
+        expect(result.changedPaths).toBe(0);
       });
     });
   });
@@ -1353,6 +1359,7 @@ describe('checkout — progress reporting', () => {
         const ctx = await seedWithBranch();
         const { reporter, events } = recordingProgress();
 
+        // Act
         try {
           await checkout(withProgress(ctx, reporter), { rev: 'does-not-exist' });
         } catch {
@@ -1481,10 +1488,10 @@ describe('checkout — post-checkout hook', () => {
         const { ctx } = await seedTwoTips(runner);
 
         // Act
-        const sut = await checkout(ctx, { rev: 'feature' });
+        const result = await checkout(ctx, { rev: 'feature' });
 
         // Assert
-        expect(sut.branch).toBe('refs/heads/feature');
+        expect(result.branch).toBe('refs/heads/feature');
       });
     });
   });

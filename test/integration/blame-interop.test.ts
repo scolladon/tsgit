@@ -288,27 +288,29 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     },
   ];
 
-  it.each(BLAME_PORCELAIN_MATRIX)(
-    'Then $label reconstructs git blame --porcelain',
-    async ({ fixture, file, worktreeMode, range }) => {
-      // Arrange
-      const { dir, ctx } = fixture();
-      const gitArgs = range ? ['-L', `${range.start},${range.end}`] : [];
+  describe('Given the blame-porcelain fixture matrix, When blame runs for each scenario', () => {
+    it.each(BLAME_PORCELAIN_MATRIX)(
+      'Then $label reconstructs git blame --porcelain',
+      async ({ fixture, file, worktreeMode, range }) => {
+        // Arrange
+        const { dir, ctx } = fixture();
+        const gitArgs = range ? ['-L', `${range.start},${range.end}`] : [];
 
-      // Act
-      const ours = renderPorcelain(
-        await blame(ctx, file, {
-          ...(worktreeMode ? { worktree: true } : {}),
-          ...(range ? { range } : {}),
-        }),
-      );
+        // Act
+        const ours = renderPorcelain(
+          await blame(ctx, file, {
+            ...(worktreeMode ? { worktree: true } : {}),
+            ...(range ? { range } : {}),
+          }),
+        );
 
-      // Assert
-      if (worktreeMode) {
-        expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(dir, file, ...gitArgs)));
-      } else {
-        expect(ours).toBe(gitPorcelain(dir, file, ...gitArgs));
-      }
-    },
-  );
+        // Assert
+        if (worktreeMode) {
+          expect(scrubNow(ours)).toBe(scrubNow(gitPorcelainWorktree(dir, file, ...gitArgs)));
+        } else {
+          expect(ours).toBe(gitPorcelain(dir, file, ...gitArgs));
+        }
+      },
+    );
+  });
 });

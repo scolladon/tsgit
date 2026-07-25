@@ -29,10 +29,10 @@ describe('shallow-file', () => {
           await ctx.fs.mkdir(ctx.layout.gitDir);
 
           // Act
-          const sut = await readShallow(ctx);
+          const result = await readShallow(ctx);
 
           // Assert
-          expect(sut.size).toBe(0);
+          expect(result.size).toBe(0);
         });
       });
     });
@@ -46,12 +46,12 @@ describe('shallow-file', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n${OID_B}\n`);
 
           // Act
-          const sut = await readShallow(ctx);
+          const result = await readShallow(ctx);
 
           // Assert
-          expect(sut.size).toBe(2);
-          expect(sut.has(OID_A)).toBe(true);
-          expect(sut.has(OID_B)).toBe(true);
+          expect(result.size).toBe(2);
+          expect(result.has(OID_A)).toBe(true);
+          expect(result.has(OID_B)).toBe(true);
         });
       });
     });
@@ -65,10 +65,10 @@ describe('shallow-file', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, '\n');
 
           // Act
-          const sut = await readShallow(ctx);
+          const result = await readShallow(ctx);
 
           // Assert
-          expect(sut.size).toBe(0);
+          expect(result.size).toBe(0);
         });
       });
     });
@@ -82,10 +82,10 @@ describe('shallow-file', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n\n${OID_B}\n`);
 
           // Act
-          const sut = await readShallow(ctx);
+          const result = await readShallow(ctx);
 
           // Assert
-          expect(sut.size).toBe(2);
+          expect(result.size).toBe(2);
         });
       });
     });
@@ -99,11 +99,11 @@ describe('shallow-file', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `not-an-oid\n${OID_A}\nzzz\n`);
 
           // Act
-          const sut = await readShallow(ctx);
+          const result = await readShallow(ctx);
 
           // Assert
-          expect(sut.size).toBe(1);
-          expect(sut.has(OID_A)).toBe(true);
+          expect(result.size).toBe(1);
+          expect(result.has(OID_A)).toBe(true);
         });
       });
     });
@@ -182,11 +182,11 @@ describe('shallow-file', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `  ${OID_A}  \n`);
 
           // Act
-          const sut = await readShallow(ctx);
+          const result = await readShallow(ctx);
 
           // Assert
-          expect(sut.size).toBe(1);
-          expect(sut.has(OID_A)).toBe(true);
+          expect(result.size).toBe(1);
+          expect(result.has(OID_A)).toBe(true);
         });
       });
     });
@@ -223,9 +223,9 @@ describe('shallow-file', () => {
           await updateShallow(ctx, { shallow: [], unshallow: [OID_A] });
 
           // Assert
-          const sut = await readShallow(ctx);
-          expect(sut.has(OID_A)).toBe(false);
-          expect(sut.has(OID_B)).toBe(true);
+          const result = await readShallow(ctx);
+          expect(result.has(OID_A)).toBe(false);
+          expect(result.has(OID_B)).toBe(true);
         });
       });
       describe('When updateShallow empties the set via unshallow', () => {
@@ -294,11 +294,11 @@ describe('shallow-file', () => {
 
           // Act
           await updateShallow(ctx, { shallow: [OID_A, OID_B, OID_C], unshallow: [] });
-          const sut = await readShallow(ctx);
+          const result = await readShallow(ctx);
 
           // Assert
-          expect(sut.size).toBe(3);
-          expect([...sut].sort()).toEqual([OID_A, OID_B, OID_C]);
+          expect(result.size).toBe(3);
+          expect([...result].sort()).toEqual([OID_A, OID_B, OID_C]);
         });
       });
     });

@@ -26,10 +26,10 @@ describe('encoding', () => {
           const array = new Uint8Array(bytes);
 
           // Act
-          const sut = bytesToHex(array);
+          const result = bytesToHex(array);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -44,10 +44,10 @@ describe('encoding', () => {
           { hex: '09af', expected: [0x09, 0xaf], label: 'digits and letters a-f' },
         ])('Then $label returns the correct bytes', ({ hex, expected }) => {
           // Arrange & Act
-          const sut = hexToBytes(hex);
+          const result = hexToBytes(hex);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array(expected));
+          expect(result).toEqual(new Uint8Array(expected));
         });
       });
     });
@@ -99,10 +99,10 @@ describe('encoding', () => {
           const b = new Uint8Array([1, 2, 3]);
 
           // Act
-          const sut = compareBytes(a, b);
+          const result = compareBytes(a, b);
 
           // Assert
-          expect(sut).toBe(0);
+          expect(result).toBe(0);
         });
       });
     });
@@ -115,10 +115,10 @@ describe('encoding', () => {
           const b = new Uint8Array([0x02]);
 
           // Act
-          const sut = compareBytes(a, b);
+          const result = compareBytes(a, b);
 
           // Assert
-          expect(sut).toBeLessThan(0);
+          expect(result).toBeLessThan(0);
         });
       });
     });
@@ -131,10 +131,10 @@ describe('encoding', () => {
           const b = new Uint8Array([0x01]);
 
           // Act
-          const sut = compareBytes(a, b);
+          const result = compareBytes(a, b);
 
           // Assert
-          expect(sut).toBeGreaterThan(0);
+          expect(result).toBeGreaterThan(0);
         });
       });
     });
@@ -147,10 +147,10 @@ describe('encoding', () => {
           const b = new Uint8Array([0x01]);
 
           // Act
-          const sut = compareBytes(a, b);
+          const result = compareBytes(a, b);
 
           // Assert
-          expect(sut).toBeGreaterThan(0);
+          expect(result).toBeGreaterThan(0);
         });
       });
     });
@@ -182,10 +182,10 @@ describe('encoding', () => {
           const arrayB = new Uint8Array(b);
 
           // Act
-          const sut = bytesEqual(arrayA, arrayB);
+          const result = bytesEqual(arrayA, arrayB);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -242,10 +242,10 @@ describe('encoding', () => {
           const array = new Uint8Array(bytes);
 
           // Act
-          const sut = indexOf(array, target, fromIndex);
+          const result = indexOf(array, target, fromIndex);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -259,10 +259,10 @@ describe('encoding', () => {
           { str: '', expected: [] },
         ])('Then returns the UTF-8 Uint8Array for "$str"', ({ str, expected }) => {
           // Arrange & Act
-          const sut = encode(str);
+          const result = encode(str);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array(expected));
+          expect(result).toEqual(new Uint8Array(expected));
         });
       });
     });
@@ -274,10 +274,10 @@ describe('encoding', () => {
           const bytes = new Uint8Array([104, 101, 108, 108, 111]);
 
           // Act
-          const sut = decode(bytes);
+          const result = decode(bytes);
 
           // Assert
-          expect(sut).toBe('hello');
+          expect(result).toBe('hello');
         });
       });
     });
@@ -289,10 +289,10 @@ describe('encoding', () => {
           const str = '日本語🚀';
 
           // Act
-          const sut = decode(encode(str));
+          const result = decode(encode(str));
 
           // Assert
-          expect(sut).toBe(str);
+          expect(result).toBe(str);
         });
       });
     });
@@ -314,10 +314,10 @@ describe('encoding', () => {
           },
         ])('Then $label', ({ text, expected }) => {
           // Arrange & Act
-          const sut = splitHeaderAndMessage(text);
+          const result = splitHeaderAndMessage(text);
 
           // Assert
-          expect(sut).toEqual(expected);
+          expect(result).toEqual(expected);
         });
       });
     });
@@ -328,10 +328,10 @@ describe('encoding', () => {
       describe('When formatting', () => {
         it('Then returns key + space + value', () => {
           // Arrange & Act
-          const sut = formatContinuationHeader('gpgsig', 'value');
+          const result = formatContinuationHeader('gpgsig', 'value');
 
           // Assert
-          expect(sut).toBe('gpgsig value');
+          expect(result).toBe('gpgsig value');
         });
       });
     });
@@ -340,10 +340,10 @@ describe('encoding', () => {
       describe('When formatting', () => {
         it('Then continuation lines are prefixed with space', () => {
           // Arrange & Act
-          const sut = formatContinuationHeader('gpgsig', 'line1\nline2\nline3');
+          const result = formatContinuationHeader('gpgsig', 'line1\nline2\nline3');
 
           // Assert
-          expect(sut).toBe('gpgsig line1\n line2\n line3');
+          expect(result).toBe('gpgsig line1\n line2\n line3');
         });
       });
     });
@@ -380,10 +380,10 @@ describe('encoding', () => {
           },
         ])('Then $label', ({ line, expected }) => {
           // Arrange & Act
-          const sut = parseHeaderLine(line);
+          const result = parseHeaderLine(line);
 
           // Assert
-          expect(sut).toEqual(expected);
+          expect(result).toEqual(expected);
         });
       });
     });
@@ -393,7 +393,7 @@ describe('encoding', () => {
     describe('Given the roundtrip property "bytesToHex(hexToBytes(hex)) === hex for any valid even-length hex string"', () => {
       describe('When sampled', () => {
         it('Then it holds', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(
               fc.uint8Array({ minLength: 0, maxLength: 100 }).map((bytes) =>
@@ -402,8 +402,11 @@ describe('encoding', () => {
                   .join(''),
               ),
               (hex) => {
-                const sut = bytesToHex(hexToBytes(hex));
-                expect(sut).toBe(hex);
+                // Act
+                const result = bytesToHex(hexToBytes(hex));
+
+                // Assert
+                expect(result).toBe(hex);
               },
             ),
           );
@@ -414,11 +417,14 @@ describe('encoding', () => {
     describe('Given the roundtrip property "hexToBytes(bytesToHex(bytes)) equals original bytes"', () => {
       describe('When sampled', () => {
         it('Then it holds', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(fc.uint8Array({ minLength: 0, maxLength: 100 }), (bytes) => {
-              const sut = hexToBytes(bytesToHex(bytes));
-              expect(sut).toEqual(bytes);
+              // Act
+              const result = hexToBytes(bytesToHex(bytes));
+
+              // Assert
+              expect(result).toEqual(bytes);
             }),
           );
         });
@@ -428,11 +434,14 @@ describe('encoding', () => {
     describe('Given the reflexive property "compareBytes(a, a) === 0 for any array"', () => {
       describe('When checked', () => {
         it('Then it holds', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(fc.uint8Array({ minLength: 0, maxLength: 100 }), (a) => {
-              const sut = compareBytes(a, a);
-              expect(sut).toBe(0);
+              // Act
+              const result = compareBytes(a, a);
+
+              // Assert
+              expect(result).toBe(0);
             }),
           );
         });
@@ -442,14 +451,17 @@ describe('encoding', () => {
     describe('Given the antisymmetric property "Math.sign(compareBytes(a, b)) === -Math.sign(compareBytes(b, a))"', () => {
       describe('When checked', () => {
         it('Then it holds', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(
               fc.uint8Array({ minLength: 0, maxLength: 50 }),
               fc.uint8Array({ minLength: 0, maxLength: 50 }),
               (a, b) => {
+                // Act
                 const ab = compareBytes(a, b);
                 const ba = compareBytes(b, a);
+
+                // Assert
                 if (ab === 0) {
                   expect(ba).toBe(0);
                 } else {

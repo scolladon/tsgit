@@ -6,7 +6,7 @@ describe('memory shim — openRepository', () => {
   describe('Given no options', () => {
     describe('When openRepository runs', () => {
       it('Then it returns a frozen Repository handle', async () => {
-        // Arrange
+        // Arrange & Act
         const sut = await openRepository();
 
         // Assert
@@ -19,7 +19,7 @@ describe('memory shim — openRepository', () => {
   describe('Given the default cwd', () => {
     describe('When inspecting ctx', () => {
       it("Then it equals '/repo' and the layout matches", async () => {
-        // Arrange
+        // Arrange & Act
         const sut = await openRepository();
 
         // Assert
@@ -34,7 +34,7 @@ describe('memory shim — openRepository', () => {
   describe("Given algorithm 'sha256'", () => {
     describe('When inspecting ctx.hashConfig', () => {
       it('Then digestLength is 32 (sha256)', async () => {
-        // Arrange
+        // Arrange & Act
         const sut = await openRepository({ algorithm: 'sha256' });
 
         // Assert
@@ -46,7 +46,7 @@ describe('memory shim — openRepository', () => {
   describe('Given default algorithm', () => {
     describe('When inspecting ctx.hashConfig', () => {
       it('Then digestLength is 20 (sha1)', async () => {
-        // Arrange
+        // Arrange & Act
         const sut = await openRepository();
 
         // Assert
@@ -64,6 +64,7 @@ describe('memory shim — openRepository', () => {
           files: { '/repo/seed.txt': seedBytes },
         });
 
+        // Act
         await sut.init();
 
         // Assert
@@ -78,8 +79,9 @@ describe('memory shim — openRepository', () => {
       it('Then status reports clean and on refs/heads/main', async () => {
         // Arrange
         const sut = await openRepository();
-
         await sut.init();
+
+        // Act
         const result = await sut.status();
 
         // Assert
@@ -96,9 +98,9 @@ describe('memory shim — openRepository', () => {
         const sut = await openRepository();
         await sut.dispose();
 
+        // Act & Assert
         try {
           await sut.init();
-          // Assert
           expect.unreachable();
         } catch (err) {
           expect((err as { data: { code: string } }).data.code).toBe('REPOSITORY_DISPOSED');

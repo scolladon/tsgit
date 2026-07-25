@@ -25,14 +25,14 @@ export interface OverMockedHeuristic {
 }
 
 export interface UnderAssertedHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly minAssertionsPerTest: number;
 }
 
 export type AaaMarker = 'Arrange' | 'Act' | 'Assert';
 
 export interface GwtTitleHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   // Raw patterns kept for diagnostics; compiled forms are the runtime path.
   readonly describeGiven: string;
   readonly describeWhen: string;
@@ -48,23 +48,30 @@ export interface GwtTitleHeuristic {
 }
 
 export interface AaaBodyHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly required: ReadonlyArray<AaaMarker>;
 }
 
 export interface SutNamingHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly banned: ReadonlyArray<string>;
 }
 
 export interface BareClassThrowHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly regex: string;
   readonly compiledRegex: RegExp;
 }
 
 export interface EmptyAaaSectionHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
+}
+
+export interface SutBindsResultHeuristic {
+  readonly tiers: ReadonlyArray<TierName>;
+  // Callees exempt from the bare-call check — factories that legitimately
+  // return the object under test (adapters, operators, resolvers, …).
+  readonly allowlist: ReadonlyArray<string>;
 }
 
 export const DIRECTORY_CLASSES = ['root', 'network/', 'posix-only/', 'win-only/'] as const;
@@ -89,6 +96,7 @@ export const GATING_KEYS = [
   'bareClassToThrow',
   'emptyAaaSection',
   'integrationProof',
+  'sutBindsResult',
 ] as const;
 export type GatingKey = (typeof GATING_KEYS)[number];
 export type GatingConfig = Readonly<Record<GatingKey, boolean>>;
@@ -104,6 +112,7 @@ export interface PyramidManifest {
     readonly bareClassToThrow: BareClassThrowHeuristic;
     readonly emptyAaaSection: EmptyAaaSectionHeuristic;
     readonly integrationProof: IntegrationProofHeuristic;
+    readonly sutBindsResult: SutBindsResultHeuristic;
   };
   readonly gating: GatingConfig;
   readonly excludePaths: ReadonlyArray<string>;
@@ -157,11 +166,7 @@ const parseTier = (raw: unknown, index: number): TierDefinition => {
   return { name, glob, target, warnBelow, warnAbove: warnAboveValue };
 };
 
-const compileRegex = (
-  pattern: string,
-  heuristicName: string,
-  flags: string,
-): RegExp => {
+const compileRegex = (pattern: string, heuristicName: string, flags: string): RegExp => {
   try {
     return new RegExp(pattern, flags);
   } catch (cause) {
@@ -170,11 +175,7 @@ const compileRegex = (
   }
 };
 
-const requireTier = (
-  raw: unknown,
-  field: string,
-  tierNames: ReadonlySet<TierName>,
-): TierName => {
+const requireTier = (raw: unknown, field: string, tierNames: ReadonlySet<TierName>): TierName => {
   if (typeof raw !== 'string' || raw.length === 0) {
     return fail(`${field} tier must be a non-empty string`);
   }
@@ -184,6 +185,27 @@ const requireTier = (
   return raw;
 };
 
+const requireTiers = (
+  raw: unknown,
+  field: string,
+  tierNames: ReadonlySet<TierName>,
+): ReadonlyArray<TierName> => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return fail(`${field} tiers must be a non-empty array of strings`);
+  }
+  const tiers: TierName[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return fail(`${field} tiers entry must be a non-empty string`);
+    }
+    if (!tierNames.has(entry)) {
+      return fail(`${field} references unknown tier "${entry}"`);
+    }
+    tiers.push(entry);
+  }
+  return tiers;
+};
+
 const requireRegexPattern = (raw: unknown, field: string): string => {
   if (typeof raw !== 'string' || raw.length === 0) {
     return fail(`${field} regex must be a non-empty string`);
@@ -191,10 +213,7 @@ const requireRegexPattern = (raw: unknown, field: string): string => {
   return raw;
 };
 
-const parseOverMocked = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): OverMockedHeuristic => {
+const parseOverMocked = (raw: unknown, tierNames: ReadonlySet<TierName>): OverMockedHeuristic => {
   if (!isObject(raw)) {
     return fail('overMockedIntegration must be an object');
   }
@@ -219,7 +238,7 @@ const parseUnderAsserted = (
   if (!isObject(raw)) {
     return fail('underAssertedUnit must be an object');
   }
-  const tier = requireTier(raw.tier, 'underAssertedUnit', tierNames);
+  const tiers = requireTiers(raw.tiers, 'underAssertedUnit', tierNames);
   const { minAssertionsPerTest } = raw;
   if (
     typeof minAssertionsPerTest !== 'number' ||
@@ -228,27 +247,21 @@ const parseUnderAsserted = (
   ) {
     return fail('underAssertedUnit minAssertionsPerTest must be an integer >= 1');
   }
-  return { tier, minAssertionsPerTest };
+  return { tiers, minAssertionsPerTest };
 };
 
-const parseGwtTitle = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): GwtTitleHeuristic => {
+const parseGwtTitle = (raw: unknown, tierNames: ReadonlySet<TierName>): GwtTitleHeuristic => {
   if (!isObject(raw)) {
     return fail('gwtTitle must be an object');
   }
-  const tier = requireTier(raw.tier, 'gwtTitle', tierNames);
+  const tiers = requireTiers(raw.tiers, 'gwtTitle', tierNames);
   const describeGiven = requireRegexPattern(raw.describeGiven, 'gwtTitle.describeGiven');
   const describeWhen = requireRegexPattern(raw.describeWhen, 'gwtTitle.describeWhen');
-  const describeCombined = requireRegexPattern(
-    raw.describeCombined,
-    'gwtTitle.describeCombined',
-  );
+  const describeCombined = requireRegexPattern(raw.describeCombined, 'gwtTitle.describeCombined');
   const itThen = requireRegexPattern(raw.itThen, 'gwtTitle.itThen');
   const legacyItGwt = requireRegexPattern(raw.legacyItGwt, 'gwtTitle.legacyItGwt');
   return {
-    tier,
+    tiers,
     describeGiven,
     describeWhen,
     describeCombined,
@@ -262,14 +275,11 @@ const parseGwtTitle = (
   };
 };
 
-const parseAaaBody = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): AaaBodyHeuristic => {
+const parseAaaBody = (raw: unknown, tierNames: ReadonlySet<TierName>): AaaBodyHeuristic => {
   if (!isObject(raw)) {
     return fail('aaaBody must be an object');
   }
-  const tier = requireTier(raw.tier, 'aaaBody', tierNames);
+  const tiers = requireTiers(raw.tiers, 'aaaBody', tierNames);
   const { required } = raw;
   if (!Array.isArray(required) || required.length === 0) {
     return fail('aaaBody required must be a non-empty array');
@@ -287,17 +297,14 @@ const parseAaaBody = (
     seen.add(marker);
     markers.push(marker);
   }
-  return { tier, required: markers };
+  return { tiers, required: markers };
 };
 
-const parseSutNaming = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): SutNamingHeuristic => {
+const parseSutNaming = (raw: unknown, tierNames: ReadonlySet<TierName>): SutNamingHeuristic => {
   if (!isObject(raw)) {
     return fail('sutNaming must be an object');
   }
-  const tier = requireTier(raw.tier, 'sutNaming', tierNames);
+  const tiers = requireTiers(raw.tiers, 'sutNaming', tierNames);
   const { banned } = raw;
   if (!Array.isArray(banned) || banned.length === 0) {
     return fail('sutNaming banned must be a non-empty array');
@@ -317,7 +324,7 @@ const parseSutNaming = (
     seen.add(entry);
     aliases.push(entry);
   }
-  return { tier, banned: aliases };
+  return { tiers, banned: aliases };
 };
 
 const parseBareClassThrow = (
@@ -327,9 +334,9 @@ const parseBareClassThrow = (
   if (!isObject(raw)) {
     return fail('bareClassToThrow must be an object');
   }
-  const tier = requireTier(raw.tier, 'bareClassToThrow', tierNames);
+  const tiers = requireTiers(raw.tiers, 'bareClassToThrow', tierNames);
   const regex = requireRegexPattern(raw.regex, 'bareClassToThrow');
-  return { tier, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow', 'g') };
+  return { tiers, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow', 'g') };
 };
 
 const parseEmptyAaaSection = (
@@ -339,8 +346,40 @@ const parseEmptyAaaSection = (
   if (!isObject(raw)) {
     return fail('emptyAaaSection must be an object');
   }
-  const tier = requireTier(raw.tier, 'emptyAaaSection', tierNames);
-  return { tier };
+  const tiers = requireTiers(raw.tiers, 'emptyAaaSection', tierNames);
+  return { tiers };
+};
+
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+const parseSutBindsResult = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): SutBindsResultHeuristic => {
+  if (!isObject(raw)) {
+    return fail('sutBindsResult must be an object');
+  }
+  const tiers = requireTiers(raw.tiers, 'sutBindsResult', tierNames);
+  const { allowlist } = raw;
+  if (!Array.isArray(allowlist)) {
+    return fail('sutBindsResult allowlist must be an array');
+  }
+  const seen = new Set<string>();
+  const callees: string[] = [];
+  for (const entry of allowlist) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return fail('sutBindsResult allowlist entry must be a non-empty string');
+    }
+    if (!IDENTIFIER_RE.test(entry)) {
+      return fail(`sutBindsResult allowlist entry "${entry}" must be a valid identifier`);
+    }
+    if (seen.has(entry)) {
+      return fail(`sutBindsResult allowlist has duplicate "${entry}"`);
+    }
+    seen.add(entry);
+    callees.push(entry);
+  }
+  return { tiers, allowlist: callees };
 };
 
 const DIRECTORY_CLASS_SET: ReadonlySet<string> = new Set<string>(DIRECTORY_CLASSES);
@@ -414,8 +453,14 @@ const parseIntegrationProof = (
   const buckets = parseBuckets(raw.buckets);
   const surfaceRegexSource = requireRegexPattern(raw.surfaceRegex, 'integrationProof.surfaceRegex');
   const surfaceRegex = compileRegex(surfaceRegexSource, 'integrationProof.surfaceRegex', '');
-  const uniqueMinLength = requirePositiveInt(raw.uniqueMinLength, 'integrationProof.uniqueMinLength');
-  const uniqueMaxLength = requirePositiveInt(raw.uniqueMaxLength, 'integrationProof.uniqueMaxLength');
+  const uniqueMinLength = requirePositiveInt(
+    raw.uniqueMinLength,
+    'integrationProof.uniqueMinLength',
+  );
+  const uniqueMaxLength = requirePositiveInt(
+    raw.uniqueMaxLength,
+    'integrationProof.uniqueMaxLength',
+  );
   if (uniqueMinLength >= uniqueMaxLength) {
     return fail('integrationProof uniqueMinLength must be < uniqueMaxLength');
   }
@@ -440,6 +485,7 @@ const DEFAULT_GATING: GatingConfig = Object.freeze<GatingConfig>({
   bareClassToThrow: false,
   emptyAaaSection: false,
   integrationProof: false,
+  sutBindsResult: false,
 });
 
 // `excludePaths` is reserved for the audit's own self-test fixtures — files
@@ -523,6 +569,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
     'bareClassToThrow',
     'emptyAaaSection',
     'integrationProof',
+    'sutBindsResult',
   ] as const;
   for (const key of requiredHeuristicKeys) {
     if (heuristics[key] === undefined) {
@@ -542,6 +589,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
       bareClassToThrow: parseBareClassThrow(heuristics.bareClassToThrow, tierNames),
       emptyAaaSection: parseEmptyAaaSection(heuristics.emptyAaaSection, tierNames),
       integrationProof: parseIntegrationProof(heuristics.integrationProof, tierNames),
+      sutBindsResult: parseSutBindsResult(heuristics.sutBindsResult, tierNames),
     },
     gating: parseGating(gating),
     excludePaths: parseExcludePaths(excludePaths),

@@ -35,12 +35,12 @@ describe('parseSideBand — channel 1 (pack data)', () => {
         const source = asyncOf([dataPkt(1, a), dataPkt(1, b)]);
 
         // Act
-        const sut = await collect(parseSideBand(source, {}));
+        const result = await collect(parseSideBand(source, {}));
 
         // Assert
-        expect(sut).toHaveLength(2);
-        expect(sut[0]).toEqual(a);
-        expect(sut[1]).toEqual(b);
+        expect(result).toHaveLength(2);
+        expect(result[0]).toEqual(a);
+        expect(result[1]).toEqual(b);
       });
     });
   });
@@ -54,12 +54,12 @@ describe('parseSideBand — channel 1 (pack data)', () => {
         const source = asyncOf([dataPkt(1, empty), dataPkt(1, tail)]);
 
         // Act
-        const sut = await collect(parseSideBand(source, {}));
+        const result = await collect(parseSideBand(source, {}));
 
         // Assert
-        expect(sut).toHaveLength(2);
-        expect(sut[0]?.byteLength).toBe(0);
-        expect(sut[1]).toEqual(tail);
+        expect(result).toHaveLength(2);
+        expect(result[0]?.byteLength).toBe(0);
+        expect(result[1]).toEqual(tail);
       });
     });
   });
@@ -74,10 +74,10 @@ describe('parseSideBand — channel 2 (progress)', () => {
         const source = asyncOf([dataPkt(2, enc.encode('Counting...')), flushPkt()]);
 
         // Act
-        const sut = await collect(parseSideBand(source, { onProgress }));
+        const result = await collect(parseSideBand(source, { onProgress }));
 
         // Assert
-        expect(sut).toHaveLength(0);
+        expect(result).toHaveLength(0);
         expect(onProgress).toHaveBeenCalledTimes(1);
         expect(onProgress).toHaveBeenCalledWith('Counting...');
       });
@@ -92,10 +92,10 @@ describe('parseSideBand — channel 2 (progress)', () => {
         const source = asyncOf([dataPkt(2, Uint8Array.from([0xff])), flushPkt()]);
 
         // Act
-        const sut = await collect(parseSideBand(source, { onProgress }));
+        const result = await collect(parseSideBand(source, { onProgress }));
 
         // Assert
-        expect(sut).toHaveLength(0);
+        expect(result).toHaveLength(0);
         expect(onProgress).toHaveBeenCalledTimes(1);
         expect(onProgress).toHaveBeenCalledWith('�');
       });
@@ -113,11 +113,11 @@ describe('parseSideBand — channel 2 (progress)', () => {
         const source = asyncOf([dataPkt(2, enc.encode('progress')), dataPkt(1, tail)]);
 
         // Act
-        const sut = await collect(parseSideBand(source, { onProgress }));
+        const result = await collect(parseSideBand(source, { onProgress }));
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]).toEqual(tail);
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual(tail);
       });
     });
   });
@@ -237,10 +237,10 @@ describe('parseSideBand — flush handling', () => {
         const source = asyncOf([flushPkt()]);
 
         // Act
-        const sut = await collect(parseSideBand(source, {}));
+        const result = await collect(parseSideBand(source, {}));
 
         // Assert
-        expect(sut).toHaveLength(0);
+        expect(result).toHaveLength(0);
       });
     });
   });
@@ -254,11 +254,11 @@ describe('parseSideBand — flush handling', () => {
         const source = asyncOf([dataPkt(1, a), flushPkt(), dataPkt(1, b)]);
 
         // Act
-        const sut = await collect(parseSideBand(source, {}));
+        const result = await collect(parseSideBand(source, {}));
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]).toEqual(a);
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual(a);
       });
     });
   });

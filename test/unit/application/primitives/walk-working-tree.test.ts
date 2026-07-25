@@ -44,10 +44,10 @@ describe('walkWorkingTree', () => {
         const ctx = await seedFs({});
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx));
+        const result = await collect(walkWorkingTree(ctx));
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -59,10 +59,10 @@ describe('walkWorkingTree', () => {
         const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx));
+        const result = await collect(walkWorkingTree(ctx));
 
         // Assert
-        expect(sut.sort()).toEqual(['a.txt', 'b.txt']);
+        expect(result.sort()).toEqual(['a.txt', 'b.txt']);
       });
     });
   });
@@ -78,10 +78,10 @@ describe('walkWorkingTree', () => {
         });
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx));
+        const result = await collect(walkWorkingTree(ctx));
 
         // Assert
-        expect(sut.sort()).toEqual(['a/b/c.txt', 'a/d.txt', 'e.txt']);
+        expect(result.sort()).toEqual(['a/b/c.txt', 'a/d.txt', 'e.txt']);
       });
     });
   });
@@ -114,10 +114,10 @@ describe('walkWorkingTree', () => {
         const ctx = await seedFs({ 'a.txt': '1', [path]: content });
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx));
+        const result = await collect(walkWorkingTree(ctx));
 
         // Assert
-        expect(sut).toEqual(['a.txt']);
+        expect(result).toEqual(['a.txt']);
       });
     });
   });
@@ -133,10 +133,10 @@ describe('walkWorkingTree', () => {
         });
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx));
+        const result = await collect(walkWorkingTree(ctx));
 
         // Assert — only the top-level file is yielded; nothing under vendor/lib.
-        expect(sut).toEqual(['a.txt']);
+        expect(result).toEqual(['a.txt']);
       });
     });
   });
@@ -151,10 +151,10 @@ describe('walkWorkingTree', () => {
         // Act
         const entries: Array<{ path: string; stat: { isSymbolicLink: boolean } }> = [];
         for await (const e of walkWorkingTree(ctx)) entries.push({ path: e.path, stat: e.stat });
-        const sut = entries.find((e) => e.path === 'link');
+        const linkEntry = entries.find((e) => e.path === 'link');
 
         // Assert
-        expect(sut?.stat.isSymbolicLink).toBe(true);
+        expect(linkEntry?.stat.isSymbolicLink).toBe(true);
       });
     });
   });
@@ -167,7 +167,7 @@ describe('walkWorkingTree', () => {
         controller.abort();
         const ctx = await seedFs({ 'a.txt': '1' }, { signal: controller.signal });
 
-        // Assert
+        // Act + Assert
         await expectError(() => collect(walkWorkingTree(ctx)), 'OPERATION_ABORTED');
       });
     });
@@ -225,10 +225,10 @@ describe('walkWorkingTree', () => {
         const ctx = await seedFs({ 'a/b/c.txt': 'x' });
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx, { maxDepth: 2 }));
+        const result = await collect(walkWorkingTree(ctx, { maxDepth: 2 }));
 
         // Assert
-        expect(sut).toEqual(['a/b/c.txt']);
+        expect(result).toEqual(['a/b/c.txt']);
       });
     });
   });
@@ -260,10 +260,10 @@ describe('walkWorkingTree', () => {
         const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx, { maxEntries: 2 }));
+        const result = await collect(walkWorkingTree(ctx, { maxEntries: 2 }));
 
         // Assert
-        expect(sut.sort()).toEqual(['a.txt', 'b.txt']);
+        expect(result.sort()).toEqual(['a.txt', 'b.txt']);
       });
     });
   });
@@ -293,7 +293,7 @@ describe('walkWorkingTree', () => {
         });
         const hostileCtx = { ...ctx, fs: hostileFs };
 
-        // Assert
+        // Act + Assert
         await expectError(() => collect(walkWorkingTree(hostileCtx)), 'PATHSPEC_OUTSIDE_REPO');
       });
     });
@@ -327,10 +327,10 @@ describe('walkWorkingTree', () => {
         const hostileCtx = { ...ctx, fs: hostileFs };
 
         // Act
-        const sut = await collect(walkWorkingTree(hostileCtx));
+        const result = await collect(walkWorkingTree(hostileCtx));
 
         // Assert — phantom skipped; real file yielded.
-        expect(sut).toEqual(['a.txt']);
+        expect(result).toEqual(['a.txt']);
       });
     });
   });
@@ -363,10 +363,10 @@ describe('walkWorkingTree', () => {
         const hostileCtx = { ...ctx, fs: hostileFs };
 
         // Act
-        const sut = await collect(walkWorkingTree(hostileCtx));
+        const result = await collect(walkWorkingTree(hostileCtx));
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -400,10 +400,10 @@ describe('walkWorkingTree', () => {
         const hostileCtx = { ...ctx, fs: hostileFs };
 
         // Act
-        const sut = await collect(walkWorkingTree(hostileCtx));
+        const result = await collect(walkWorkingTree(hostileCtx));
 
         // Assert — the directory is walked normally; its real sibling is yielded.
-        expect(sut).toEqual(['sub/sibling.txt']);
+        expect(result).toEqual(['sub/sibling.txt']);
       });
     });
   });
@@ -416,10 +416,10 @@ describe('walkWorkingTree', () => {
         const ignore = (path: string) => path === 'a.txt';
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx, { ignore }));
+        const result = await collect(walkWorkingTree(ctx, { ignore }));
 
         // Assert
-        expect(sut).toEqual(['b.txt']);
+        expect(result).toEqual(['b.txt']);
       });
     });
   });
@@ -450,10 +450,10 @@ describe('walkWorkingTree', () => {
         const ignore = (_path: string, isDir: boolean) => isDir; // prune the only directory
 
         // Act
-        const sut = await collect(walkWorkingTree(trackingCtx, { ignore }));
+        const result = await collect(walkWorkingTree(trackingCtx, { ignore }));
 
         // Assert — only the root file yielded; no descent into `pruned/`.
-        expect(sut).toEqual(['kept.txt']);
+        expect(result).toEqual(['kept.txt']);
         expect(lstatsInsidePruned).toBe(0);
       });
     });
@@ -470,10 +470,10 @@ describe('walkWorkingTree', () => {
         };
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx, { ignore }));
+        const result = await collect(walkWorkingTree(ctx, { ignore }));
 
         // Assert
-        expect(sut).toEqual(['sync.txt']);
+        expect(result).toEqual(['sync.txt']);
       });
     });
   });
@@ -485,10 +485,10 @@ describe('walkWorkingTree', () => {
         const ctx = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx));
+        const result = await collect(walkWorkingTree(ctx));
 
         // Assert — both yielded; no filtering.
-        expect(sut.sort()).toEqual(['a.txt', 'b.txt']);
+        expect(result.sort()).toEqual(['a.txt', 'b.txt']);
       });
     });
   });
@@ -503,10 +503,10 @@ describe('walkWorkingTree', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.git/HEAD`, 'ref: refs/heads/main\n');
 
         // Act
-        const sut = await collect(walkWorkingTree(ctx));
+        const result = await collect(walkWorkingTree(ctx));
 
         // Assert — yielded normal entries;.git skipped; b/c.txt yielded.
-        expect(sut.sort()).toEqual(['a.txt', 'b/c.txt']);
+        expect(result.sort()).toEqual(['a.txt', 'b/c.txt']);
       });
     });
   });

@@ -364,7 +364,7 @@ it('expect(1)', () => {
       ...MANIFEST,
       heuristics: {
         ...MANIFEST.heuristics,
-        underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 2 },
+        underAssertedUnit: { tiers: ['unit'], minAssertionsPerTest: 2 },
       },
     };
     const source = `
@@ -387,7 +387,7 @@ it('only one assert', () => {
       ...MANIFEST,
       heuristics: {
         ...MANIFEST.heuristics,
-        underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 2 },
+        underAssertedUnit: { tiers: ['unit'], minAssertionsPerTest: 2 },
       },
     };
     const source = `
@@ -402,6 +402,29 @@ it('two asserts', () => {
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a heuristic scoped to tiers unit and integration, When both a unit and an integration file have zero assertions, Then both are flagged', () => {
+    // Arrange
+    const multiTier: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        underAssertedUnit: { tiers: ['unit', 'integration'], minAssertionsPerTest: 1 },
+      },
+    };
+    const source = `
+it('empty', () => {});
+`;
+
+    // Act
+    const sut = detectUnderAsserted(multiTier, [
+      file('test/unit/a.test.ts', source),
+      file('test/integration/b.test.ts', source),
+    ]);
+
+    // Assert
+    expect(sut.map((f) => f.path)).toEqual(['test/integration/b.test.ts', 'test/unit/a.test.ts']);
   });
 
   it('Given a file fixture, When the empty-body it lives at line 3, Then the finding reports line 3 exactly', () => {

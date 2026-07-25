@@ -22,10 +22,10 @@ describe('error', () => {
       describe('When checking error.data.value', () => {
         it("Then equals 'xyz'", () => {
           // Arrange & Act
-          const sut = invalidObjectId('xyz');
+          const result = invalidObjectId('xyz');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_OBJECT_ID', value: 'xyz' });
+          expect(result.data).toEqual({ code: 'INVALID_OBJECT_ID', value: 'xyz' });
         });
       });
     });
@@ -34,10 +34,10 @@ describe('error', () => {
       describe('When checking error.data.code', () => {
         it("Then equals 'INVALID_OBJECT_HEADER'", () => {
           // Arrange & Act
-          const sut = invalidObjectHeader('bad');
+          const result = invalidObjectHeader('bad');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_OBJECT_HEADER',
             reason: 'bad',
           });
@@ -49,10 +49,10 @@ describe('error', () => {
       describe('When checking error.data', () => {
         it("Then offset is 5 and reason is 'truncated'", () => {
           // Arrange & Act
-          const sut = invalidTreeEntry(5, 'truncated');
+          const result = invalidTreeEntry(5, 'truncated');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_TREE_ENTRY',
             offset: 5,
             reason: 'truncated',
@@ -65,10 +65,10 @@ describe('error', () => {
       describe('When checking error.data.code', () => {
         it("Then equals 'INVALID_COMMIT'", () => {
           // Arrange & Act
-          const sut = invalidCommit('missing tree');
+          const result = invalidCommit('missing tree');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_COMMIT',
             reason: 'missing tree',
           });
@@ -80,10 +80,10 @@ describe('error', () => {
       describe('When checking error.data.code', () => {
         it("Then equals 'INVALID_TAG'", () => {
           // Arrange & Act
-          const sut = invalidTag('missing object');
+          const result = invalidTag('missing object');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_TAG',
             reason: 'missing object',
           });
@@ -95,10 +95,10 @@ describe('error', () => {
       describe('When checking error.data.code', () => {
         it("Then equals 'INVALID_FILE_MODE'", () => {
           // Arrange & Act
-          const sut = invalidFileMode('999');
+          const result = invalidFileMode('999');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_FILE_MODE', value: '999' });
+          expect(result.data).toEqual({ code: 'INVALID_FILE_MODE', value: '999' });
         });
       });
     });
@@ -107,10 +107,10 @@ describe('error', () => {
       describe('When checking error.data', () => {
         it('Then line and reason correct', () => {
           // Arrange & Act
-          const sut = invalidIdentity('bad', 'no email');
+          const result = invalidIdentity('bad', 'no email');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_IDENTITY',
             line: 'bad',
             reason: 'no email',
@@ -124,10 +124,10 @@ describe('error', () => {
         it('Then code and id are set', () => {
           // Arrange & Act
           const id = 'a'.repeat(40) as ObjectId;
-          const sut = treeCycleDetected(id);
+          const result = treeCycleDetected(id);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'TREE_CYCLE_DETECTED', id });
+          expect(result.data).toEqual({ code: 'TREE_CYCLE_DETECTED', id });
         });
       });
     });
@@ -136,10 +136,10 @@ describe('error', () => {
       describe('When checking error.data', () => {
         it('Then code and depth are set', () => {
           // Arrange & Act
-          const sut = treeDepthExceeded(42);
+          const result = treeDepthExceeded(42);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'TREE_DEPTH_EXCEEDED', depth: 42 });
+          expect(result.data).toEqual({ code: 'TREE_DEPTH_EXCEEDED', depth: 42 });
         });
       });
     });
@@ -149,10 +149,10 @@ describe('error', () => {
         it('Then code, id, actualSize, limit are set', () => {
           // Arrange & Act
           const id = 'b'.repeat(40) as ObjectId;
-          const sut = objectTooLarge(id, 200, 100);
+          const result = objectTooLarge(id, 200, 100);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'OBJECT_TOO_LARGE',
             id,
             actualSize: 200,
@@ -167,13 +167,13 @@ describe('error', () => {
         it('Then contains id, size, and limit', () => {
           // Arrange & Act
           const id = 'c'.repeat(40) as ObjectId;
-          const sut = objectTooLarge(id, 999, 100);
+          const result = objectTooLarge(id, 999, 100);
 
           // Assert
-          expect(sut.message).toContain('object too large');
-          expect(sut.message).toContain(id);
-          expect(sut.message).toContain('size=999');
-          expect(sut.message).toContain('limit=100');
+          expect(result.message).toContain('object too large');
+          expect(result.message).toContain(id);
+          expect(result.message).toContain('size=999');
+          expect(result.message).toContain('limit=100');
         });
       });
     });
@@ -184,37 +184,37 @@ describe('error', () => {
       describe('When checking instanceof Error', () => {
         it('Then returns true', () => {
           // Arrange & Act
-          const sut = invalidObjectId('xyz');
+          const result = invalidObjectId('xyz');
 
           // Assert
-          expect(sut).toBeInstanceOf(Error);
+          expect(result).toBeInstanceOf(Error);
         });
       });
       describe('When accessing .name', () => {
         it("Then equals 'TsgitError'", () => {
           // Arrange & Act
-          const sut = invalidObjectId('xyz');
+          const result = invalidObjectId('xyz');
 
           // Assert
-          expect(sut.name).toBe('TsgitError');
+          expect(result.name).toBe('TsgitError');
         });
       });
       describe('When accessing .message', () => {
         it('Then contains the error code', () => {
           // Arrange & Act
-          const sut = invalidObjectId('xyz');
+          const result = invalidObjectId('xyz');
 
           // Assert
-          expect(sut.message).toContain('INVALID_OBJECT_ID');
+          expect(result.message).toContain('INVALID_OBJECT_ID');
         });
       });
       describe('When accessing .stack', () => {
         it('Then stack trace exists', () => {
           // Arrange & Act
-          const sut = invalidObjectId('xyz');
+          const result = invalidObjectId('xyz');
 
           // Assert
-          expect(sut.stack).toBeDefined();
+          expect(result.stack).toBeDefined();
         });
       });
       describe('When switching on data.code in exhaustive switch', () => {

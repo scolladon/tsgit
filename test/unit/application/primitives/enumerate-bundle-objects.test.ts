@@ -97,10 +97,12 @@ describe('enumerateBundleObjects', () => {
       it('Then returns empty objects and boundary without reading the repo', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result: BundleObjectClosure = await sut(ctx, { wants: [], haves: [] });
+        const result: BundleObjectClosure = await enumerateBundleObjects(ctx, {
+          wants: [],
+          haves: [],
+        });
 
         // Assert
         expect(result.objects).toEqual([]);
@@ -115,10 +117,9 @@ describe('enumerateBundleObjects', () => {
         // Arrange
         const { ctx, commit1, commit2, commit3, tree2, tree3, blobB, blobC } =
           await buildLinearFixture();
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commit3], haves: [commit1] });
+        const result = await enumerateBundleObjects(ctx, { wants: [commit3], haves: [commit1] });
 
         // Assert
         expect(sorted(result.objects)).toEqual(
@@ -129,10 +130,9 @@ describe('enumerateBundleObjects', () => {
       it('Then blobA tree1 and commit1 are absent from objects', async () => {
         // Arrange
         const { ctx, blobA, tree1, commit1, commit3 } = await buildLinearFixture();
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commit3], haves: [commit1] });
+        const result = await enumerateBundleObjects(ctx, { wants: [commit3], haves: [commit1] });
 
         // Assert
         expect(result.objects).not.toContain(blobA);
@@ -143,10 +143,9 @@ describe('enumerateBundleObjects', () => {
       it('Then boundary is exactly [commit1]', async () => {
         // Arrange
         const { ctx, commit1, commit3 } = await buildLinearFixture();
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commit3], haves: [commit1] });
+        const result = await enumerateBundleObjects(ctx, { wants: [commit3], haves: [commit1] });
 
         // Assert
         expect(sorted(result.boundary)).toEqual([commit1]);
@@ -158,10 +157,9 @@ describe('enumerateBundleObjects', () => {
         // Arrange
         const { ctx, blobA, blobB, blobC, commit1, commit2, commit3, tree1, tree2, tree3 } =
           await buildLinearFixture();
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commit3], haves: [] });
+        const result = await enumerateBundleObjects(ctx, { wants: [commit3], haves: [] });
 
         // Assert
         expect(sorted(result.objects)).toEqual(
@@ -177,8 +175,6 @@ describe('enumerateBundleObjects', () => {
       it('Then boundary is [first] and blobX is excluded from objects', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = enumerateBundleObjects;
-
         const blobX = await makeBlob(ctx, 'X');
         const blobA = await makeBlob(ctx, 'A');
         const blobB = await makeBlob(ctx, 'B');
@@ -196,7 +192,10 @@ describe('enumerateBundleObjects', () => {
         const commitFeature = await makeCommit(ctx, treeFeature, [commit1], 'feature', 3);
 
         // Act
-        const result = await sut(ctx, { wants: [commitMain, commitFeature], haves: [commit1] });
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [commitMain, commitFeature],
+          haves: [commit1],
+        });
 
         // Assert
         expect(sorted(result.boundary)).toEqual([commit1]);
@@ -251,10 +250,12 @@ describe('enumerateBundleObjects', () => {
       it('Then boundary includes both A and B even though B was not listed in haves', async () => {
         // Arrange
         const { ctx, commitA, commitB, commitM1, commitM2 } = await buildCrissCrossFixture();
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commitM1], haves: [commitA, commitM2] });
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [commitM1],
+          haves: [commitA, commitM2],
+        });
 
         // Assert — the criss-cross case: B must appear even though haves=[A, M2]
         expect(sorted(result.boundary)).toEqual(sorted([commitA, commitB]));
@@ -264,10 +265,12 @@ describe('enumerateBundleObjects', () => {
         // Arrange
         const { ctx, blobA, blobB, commitA, commitM1, commitM2, treeM1, blobX } =
           await buildCrissCrossFixture();
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commitM1], haves: [commitA, commitM2] });
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [commitM1],
+          haves: [commitA, commitM2],
+        });
 
         // Assert
         expect(sorted(result.objects)).toEqual(sorted([commitM1, treeM1, blobX]));
@@ -282,8 +285,6 @@ describe('enumerateBundleObjects', () => {
       it('Then objects include the tag oid plus all commit tree and blob objects', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = enumerateBundleObjects;
-
         const blobA = await makeBlob(ctx, 'A');
         const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: blobA }]);
         const commit1 = await makeCommit(ctx, tree1, [], 'tagged commit', 1);
@@ -301,7 +302,7 @@ describe('enumerateBundleObjects', () => {
         const tagId = await writeObject(ctx, tag);
 
         // Act
-        const result = await sut(ctx, { wants: [tagId], haves: [] });
+        const result = await enumerateBundleObjects(ctx, { wants: [tagId], haves: [] });
 
         // Assert
         expect(sorted(result.objects)).toEqual(sorted([tagId, commit1, tree1, blobA]));
@@ -315,17 +316,16 @@ describe('enumerateBundleObjects', () => {
       it('Then throws PACK_TOO_LARGE when the second object would be emitted', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = enumerateBundleObjects;
-
         const blobA = await makeBlob(ctx, 'A');
         const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: blobA }]);
         const commit1 = await makeCommit(ctx, tree1, [], 'c', 1);
 
-        // Act + Assert
+        // Act
         try {
-          await sut(ctx, { wants: [commit1], haves: [], maxObjects: 1 });
+          await enumerateBundleObjects(ctx, { wants: [commit1], haves: [], maxObjects: 1 });
           expect.unreachable('expected PACK_TOO_LARGE to be thrown');
         } catch (error) {
+          // Assert
           expect(error).toBeInstanceOf(TsgitError);
           const data = (error as TsgitError).data as {
             readonly code: string;
@@ -362,10 +362,9 @@ describe('enumerateBundleObjects', () => {
         const commitA = await makeCommit(base, treeA, [], 'A', 1);
         const commitB = await makeCommit(base, treeB, [commitA], 'B', 2);
         const { ctx, calls } = instrumentedContext(base);
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commitB], haves: [] });
+        const result = await enumerateBundleObjects(ctx, { wants: [commitB], haves: [] });
 
         // Assert — object set is correct
         expect(result.objects).toContain(sharedTree);
@@ -405,10 +404,12 @@ describe('enumerateBundleObjects — haves-side isDirectory guard', () => {
         ]);
         const haveCommit = await makeCommit(ctx, haveTree, [], 'have', 1);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommit] });
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [haveCommit],
+        });
 
         // Assert
         expect(result.objects).not.toContain(blobX);
@@ -438,10 +439,9 @@ describe('enumerateBundleObjects — wants-side gitlink guard', () => {
           { mode: BLOB_MODE, name: 'a.txt', id: blobA },
         ]);
         const commit = await makeCommit(ctx, tree, [], 'with-gitlink', 1);
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [commit], haves: [] });
+        const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
 
         // Assert
         expect(result.objects).not.toContain(GITLINK_OID);
@@ -472,11 +472,13 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
           { mode: BLOB_MODE, name: 'b.txt', id: blobB },
         ]);
         const wantCommit = await makeCommit(ctx, tree2, [haveCommit], 'want', 2);
-        const sut = enumerateBundleObjects;
 
         // Act
         let thrown: unknown;
-        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommit] }).catch((err) => {
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [haveCommit],
+        }).catch((err) => {
           thrown = err;
           return null;
         });
@@ -500,11 +502,13 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
         const blobA = await makeBlob(ctx, 'A');
         const tree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blobA }]);
         const wantCommit = await makeCommit(ctx, tree, [PHANTOM_PARENT], 'want', 1);
-        const sut = enumerateBundleObjects;
 
         // Act
         let thrown: unknown;
-        const result = await sut(ctx, { wants: [wantCommit], haves: [] }).catch((err) => {
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [],
+        }).catch((err) => {
           thrown = err;
           return null;
         });
@@ -567,14 +571,15 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
           current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
         }
         const commit = await makeCommit(ctx, current, [], 'at-limit', 1);
-        const sut = enumerateBundleObjects;
 
         // Act
         let thrown: unknown;
-        const result = await sut(ctx, { wants: [commit], haves: [] }).catch((err) => {
-          thrown = err;
-          return null;
-        });
+        const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] }).catch(
+          (err) => {
+            thrown = err;
+            return null;
+          },
+        );
 
         // Assert — no TREE_DEPTH_EXCEEDED; all objects present
         expect(thrown).toBeUndefined();
@@ -601,12 +606,11 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const wantBlob = await makeBlob(ctx, 'want');
         const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
-        const sut = enumerateBundleObjects;
 
         // Act
         let thrown: unknown;
         try {
-          await sut(ctx, { wants: [wantCommit], haves: [haveCommit] });
+          await enumerateBundleObjects(ctx, { wants: [wantCommit], haves: [haveCommit] });
         } catch (err) {
           thrown = err;
         }
@@ -636,11 +640,13 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const wantBlob = await makeBlob(ctx, 'new');
         const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'n.txt', id: wantBlob }]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
-        const sut = enumerateBundleObjects;
 
         // Act
         let thrown: unknown;
-        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommit] }).catch((err) => {
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [haveCommit],
+        }).catch((err) => {
           thrown = err;
           return null;
         });
@@ -727,10 +733,12 @@ describe('enumerateBundleObjects — haves-side shared-subtree dedup', () => {
         const haveCommitB = await makeCommit(base, haveTreeB, [haveCommitA], 'haveB', 2);
         const wantCommit = await makeCommit(base, wantTree, [haveCommitB], 'want', 3);
         const { ctx, calls } = instrumentedContext(base);
-        const sut = enumerateBundleObjects;
 
         // Act
-        const result = await sut(ctx, { wants: [wantCommit], haves: [haveCommitB] });
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [haveCommitB],
+        });
 
         // Assert — the shared subtree (in the uninteresting closure) is excluded,
         // the new blob is emitted, and the subtree was read from disk once only.

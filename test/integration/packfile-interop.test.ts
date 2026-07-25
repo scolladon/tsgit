@@ -52,11 +52,11 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
       it('Then git fsck accepts the pack and cat-file reads every object', async () => {
         // Arrange — write the blobs into ours so we can read their bytes
         // back to build the pack entries.
-        const sut = createNodeContext({ workDir: pair.ours });
+        const ctx = createNodeContext({ workDir: pair.ours });
         const payloads = ['alpha\n', 'bravo\n', 'charlie\n'];
         const ids: ObjectId[] = [];
         for (const payload of payloads) {
-          const id = await writeObject(sut, {
+          const id = await writeObject(ctx, {
             type: 'blob',
             id: '' as ObjectId,
             content: new TextEncoder().encode(payload),
@@ -74,10 +74,10 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
             id,
             content: new TextEncoder().encode(payloads[ids.indexOf(id)] as string),
           };
-          const loose = serializeObject(blob, sut.hashConfig);
+          const loose = serializeObject(blob, ctx.hashConfig);
           const nul = loose.indexOf(0);
           const content = loose.subarray(nul + 1);
-          const compressed = await sut.compressor.deflate(content);
+          const compressed = await ctx.compressor.deflate(content);
           writerEntries.push({
             type: PACK_ENTRY_TYPE.BLOB,
             uncompressedSize: content.length,
@@ -85,7 +85,7 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
           });
         }
         const packResult = serializePackfile(writerEntries);
-        const packTrailer = await sut.hash.hash(packResult.data);
+        const packTrailer = await ctx.hash.hash(packResult.data);
         const packBytes = new Uint8Array(packResult.data.length + packTrailer.length);
         packBytes.set(packResult.data, 0);
         packBytes.set(packTrailer, packResult.data.length);
@@ -98,7 +98,7 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
           });
         }
         const idxBody = serializePackIndex(indexEntries, packTrailer);
-        const idxTrailerBytes = await sut.hash.hash(idxBody);
+        const idxTrailerBytes = await ctx.hash.hash(idxBody);
         const idxBytes = new Uint8Array(idxBody.length + idxTrailerBytes.length);
         idxBytes.set(idxBody, 0);
         idxBytes.set(idxTrailerBytes, idxBody.length);

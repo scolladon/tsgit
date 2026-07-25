@@ -14,10 +14,10 @@ describe('blob', () => {
           const source = new Uint8Array([1, 2, 3]);
 
           // Act
-          const sut = parseBlobContent(DUMMY_ID, source);
+          const result = parseBlobContent(DUMMY_ID, source);
 
           // Assert
-          expect(sut.content.buffer).toBe(source.buffer);
+          expect(result.content.buffer).toBe(source.buffer);
         });
       });
     });
@@ -29,10 +29,10 @@ describe('blob', () => {
           const source = new Uint8Array(0);
 
           // Act
-          const sut = parseBlobContent(DUMMY_ID, source);
+          const result = parseBlobContent(DUMMY_ID, source);
 
           // Assert
-          expect(sut.content.length).toBe(0);
+          expect(result.content.length).toBe(0);
         });
       });
     });
@@ -45,10 +45,10 @@ describe('blob', () => {
           for (let i = 0; i < 256; i++) source[i] = i;
 
           // Act
-          const sut = parseBlobContent(DUMMY_ID, source);
+          const result = parseBlobContent(DUMMY_ID, source);
 
           // Assert
-          expect(sut.content).toEqual(source);
+          expect(result.content).toEqual(source);
         });
       });
     });
@@ -63,10 +63,10 @@ describe('blob', () => {
           const blob = parseBlobContent(DUMMY_ID, content);
 
           // Act
-          const sut = serializeBlobContent(blob);
+          const result = serializeBlobContent(blob);
 
           // Assert
-          expect(sut).toEqual(content);
+          expect(result).toEqual(content);
         });
       });
     });
@@ -81,10 +81,10 @@ describe('blob', () => {
           const blob = parseBlobContent(DUMMY_ID, content);
 
           // Act
-          const sut = parseBlobContent(DUMMY_ID, serializeBlobContent(blob));
+          const result = parseBlobContent(DUMMY_ID, serializeBlobContent(blob));
 
           // Assert
-          expect(sut.content).toEqual(content);
+          expect(result.content).toEqual(content);
         });
       });
     });
@@ -94,12 +94,15 @@ describe('blob', () => {
     describe('Given the roundtrip property "parseBlobContent(id, serializeBlobContent(blob)).content equals original content"', () => {
       describe('When sampled', () => {
         it('Then it holds', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(fc.uint8Array({ minLength: 0, maxLength: 10000 }), (content) => {
+              // Act
               const blob = parseBlobContent(DUMMY_ID, content);
-              const sut = parseBlobContent(DUMMY_ID, serializeBlobContent(blob));
-              expect(sut.content).toEqual(content);
+              const result = parseBlobContent(DUMMY_ID, serializeBlobContent(blob));
+
+              // Assert
+              expect(result.content).toEqual(content);
             }),
           );
         });

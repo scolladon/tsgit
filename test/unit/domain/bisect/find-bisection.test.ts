@@ -31,11 +31,8 @@ describe('findBisection', () => {
 
   describe('Given an empty candidate list, When finding bisection', () => {
     it('Then it returns undefined (no midpoint exists)', () => {
-      // Arrange
-      const sut = findBisection;
-
-      // Act
-      const result = sut([]);
+      // Arrange & Act
+      const result = findBisection([]);
 
       // Assert
       expect(result).toBeUndefined();
@@ -45,11 +42,10 @@ describe('findBisection', () => {
   describe('Given a single-candidate set (all=1), When finding bisection', () => {
     it('Then the single commit is the midpoint with reaches=1 and candidateCount=1', () => {
       // Arrange
-      const sut = findBisection;
       const candidates = [c('c9', [])];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert
       expect(result).toEqual({
@@ -80,11 +76,10 @@ describe('findBisection', () => {
       'Then midpoint is $nextCommit with reaches=$reaches for all=$all',
       ({ all, lo, nextCommit, reaches }) => {
         // Arrange
-        const sut = findBisection;
         const candidates = linearChain(lo, 9);
 
         // Act
-        const result = sut(candidates);
+        const result = findBisection(candidates);
 
         // Assert
         expect(result?.nextCommit).toBe(oid(nextCommit));
@@ -103,7 +98,6 @@ describe('findBisection', () => {
       // top:   fill from merge(w=3) → weight=4, diff=2*4-4=4 → not halfway
       // best_bisection: root1 dist=min(1,3)=1, root2 dist=1, merge dist=min(3,1)=1, top dist=0
       // root1 is first in list → wins the three-way tie
-      const sut = findBisection;
       const root1 = c('r1', []);
       const root2 = c('r2', []);
       const merge = c('mg', ['r1', 'r2']);
@@ -111,7 +105,7 @@ describe('findBisection', () => {
       const candidates = [root1, root2, merge, top];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert — approx_halfway never fired; result comes from best_bisection
       expect(result?.nextCommit).toBe(root1.id);
@@ -126,7 +120,6 @@ describe('findBisection', () => {
     it('Then midpoint is B2 (list-order tie-break over A2, both distance=2)', () => {
       // Arrange — oldest-first list: B1, A1, B2, A2, M, top
       // B2 appears before A2 so strict-`>` keeps B2 as winner.
-      const sut = findBisection;
       const b1 = c('B1', []);
       const a1 = c('A1', []);
       const b2 = c('B2', ['B1']);
@@ -136,7 +129,7 @@ describe('findBisection', () => {
       const candidates = [b1, a1, b2, a2, m, top];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert
       expect(result?.nextCommit).toBe(b2.id);
@@ -148,7 +141,6 @@ describe('findBisection', () => {
   describe('Given diamond all=4 (good=A1,B1: candidates=B2,A2,M,top), When finding bisection', () => {
     it('Then midpoint is B2 with reaches=1 (list-order tie-break)', () => {
       // Arrange — B2 and A2 are seeds (parents excluded); B2 before A2 in list
-      const sut = findBisection;
       const b2 = c('B2', []);
       const a2 = c('A2', []);
       const m = c('M', ['A2', 'B2']);
@@ -156,7 +148,7 @@ describe('findBisection', () => {
       const candidates = [b2, a2, m, top];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert
       expect(result?.nextCommit).toBe(b2.id);
@@ -174,7 +166,6 @@ describe('findBisection', () => {
       // merge: ≥2 in-set parents → mergeWeights path;
       //   countDistance(merge) = {merge,s1,s2} = 3;
       //   approxHalfway(3,5) = 2*3-5=1 ∈ {-1,0,1} → EARLY RETURN.
-      const sut = findBisection;
       const s1 = c('s1', []);
       const s2 = c('s2', []);
       const merge = c('mg', ['s1', 's2']);
@@ -183,7 +174,7 @@ describe('findBisection', () => {
       const candidates = [s1, s2, merge, u1, u2];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert — merge short-circuits in mergeWeights phase before fill/best
       expect(result?.nextCommit).toBe(merge.id);
@@ -199,7 +190,6 @@ describe('findBisection', () => {
       // mergeWeights: countDistance(merge)={merge,s1,s2}=3; approxHalfway(3,7)=|6-7|=1 → FIRES.
       // Without early-return: fillWeights would assign sc.weight=4;
       //   approxHalfway(4,7)=|8-7|=1 would fire for sc instead → wrong nextCommit.
-      const sut = findBisection;
       const s1 = c('s1', []);
       const s2 = c('s2', []);
       const merge = c('mg', ['s1', 's2']);
@@ -210,7 +200,7 @@ describe('findBisection', () => {
       const candidates = [s1, s2, merge, sc, u1, u2, u3];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert — merge is chosen by mergeWeights before fillWeights can fire at sc
       expect(result?.nextCommit).toBe(merge.id);
@@ -225,13 +215,12 @@ describe('findBisection', () => {
     it('Then the FIRST candidate (earlier in list) wins — strict > keeps earlier', () => {
       // Arrange — a=seed, b=seed, all=2; both have dist=min(1,1)=1
       // strict `>` means the first one found wins; a comes before b in the list.
-      const sut = findBisection;
       const a = c('aa', []);
       const b = c('bb', []);
       const candidates = [a, b]; // a is earlier
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert — a wins (first in list when tied)
       expect(result?.nextCommit).toBe(a.id);
@@ -251,14 +240,13 @@ describe('findBisection', () => {
         // fill pass 1: child3 deferred (child2 not yet weighted, parent-weight undefined);
         //              child2 filled from seeded child1 → weight=2;
         //              approx_halfway(2,3)=|4-3|=1 fires → returned immediately.
-        const sut = findBisection;
         const child1 = c('ch1', []);
         const child2 = c('ch2', ['ch1']);
         const child3 = c('ch3', ['ch2']);
         const candidates = [child3, child2, child1]; // reverse order
 
         // Act
-        const result = sut(candidates);
+        const result = findBisection(candidates);
 
         // Assert — child2 is the midpoint: weight=2, candidateCount=3
         expect(result?.nextCommit).toBe(child2.id);
@@ -279,7 +267,6 @@ describe('findBisection', () => {
       // No commit hits approx_halfway, so the result comes from best_bisection.
       //   distance min(w,6-w): head=1, r1=1, r0=1, w4=2, w2=2, bad=0 → w4 (first max) wins.
       // Seeding the head distance as min(5, 6+5)=5 would suppress w4 and wrongly keep head.
-      const sut = findBisection;
       const r1 = c('r1', []);
       const r0 = c('r0', []);
       const w2 = c('w2', ['r1']);
@@ -289,7 +276,7 @@ describe('findBisection', () => {
       const candidates = [head, r1, r0, w4, w2, bad];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert — w4 is the true midpoint (weight 4, distance 2), not the high-weight head
       expect(result?.nextCommit).toBe(w4.id);
@@ -309,7 +296,6 @@ describe('findBisection', () => {
       //                (diff=2*2-6=-2, not halfway).
       //   fill pass 2: `mid` filled → w3; diff=2*3-6=0 → approx_halfway fires → mid returned.
       // Collapsing the loop to a single pass leaves `mid` unweighted and loses its weight.
-      const sut = findBisection;
       const root = c('root', []);
       const lo = c('lo', ['root']);
       const mid = c('mid', ['lo']);
@@ -319,7 +305,7 @@ describe('findBisection', () => {
       const candidates = [mid, lo, root, m1, m2, bad];
 
       // Act
-      const result = sut(candidates);
+      const result = findBisection(candidates);
 
       // Assert — mid resolves on the second pass with its real weight of 3
       expect(result?.nextCommit).toBe(mid.id);

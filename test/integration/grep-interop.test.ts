@@ -182,11 +182,8 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   describe('Given the working-tree target (default)', () => {
     describe('When grepping for the literal in wt_only_unstaged.txt', () => {
       it('Then tsgit finds the path and git grep agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
+        // Arrange & Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }] });
         const gitOutput = git(dir, 'grep', '-F', '-l', LIT);
 
         // Assert
@@ -204,11 +201,8 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   describe('Given the index (--cached) target', () => {
     describe('When grepping for the literal in staged_only.txt', () => {
       it('Then tsgit finds the path and git grep --cached agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }], target: 'index' });
+        // Arrange & Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }], target: 'index' });
         const gitOutput = git(dir, 'grep', '--cached', '-F', '-l', LIT);
 
         // Assert
@@ -274,31 +268,33 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   ];
 
   describe('Given a path tsgit excludes from a grep target', () => {
-    it.each(OMIT_MATRIX)(
-      'Then tsgit omits $label, does not throw, and git grep agrees',
-      async ({ path: excludedPath, run, gitArgs, stripHeadPrefix }) => {
-        // Act — must not throw (git exits 0 when no match found due to absent files)
-        let result: GrepResult | undefined;
-        let caught: unknown;
-        try {
-          result = await run();
-        } catch (e) {
-          caught = e;
-        }
-        const gitOutput = git(dir, 'grep', ...gitArgs);
+    describe('When grep runs against the excluded path', () => {
+      it.each(OMIT_MATRIX)(
+        'Then tsgit omits $label, does not throw, and git grep agrees',
+        async ({ path: excludedPath, run, gitArgs, stripHeadPrefix }) => {
+          // Arrange & Act — must not throw (git exits 0 when no match found due to absent files)
+          let result: GrepResult | undefined;
+          let caught: unknown;
+          try {
+            result = await run();
+          } catch (e) {
+            caught = e;
+          }
+          const gitOutput = git(dir, 'grep', ...gitArgs);
 
-        // Assert
-        expect(caught).toBeUndefined();
-        const tsgitPaths = result!.paths.map((p) => p.path as string);
-        const gitPaths = gitOutput
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map((p) => (stripHeadPrefix ? p.replace(/^HEAD:/, '') : p));
-        expect(tsgitPaths).not.toContain(excludedPath);
-        expect(gitPaths).not.toContain(excludedPath);
-      },
-    );
+          // Assert
+          expect(caught).toBeUndefined();
+          const tsgitPaths = result!.paths.map((p) => p.path as string);
+          const gitPaths = gitOutput
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((p) => (stripHeadPrefix ? p.replace(/^HEAD:/, '') : p));
+          expect(tsgitPaths).not.toContain(excludedPath);
+          expect(gitPaths).not.toContain(excludedPath);
+        },
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -307,11 +303,8 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   describe('Given a multi-line blob with NEEDLE on line 12', () => {
     describe('When grepping the working tree for the literal', () => {
       it('Then tsgit reports lineNumber 12 and git grep -n agrees', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
+        // Arrange & Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }] });
         const gitLine = git(dir, 'grep', '-n', '-F', LIT, '--', 'a.txt').trim();
 
         // Assert
@@ -336,11 +329,8 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   describe('Given 5 enumerated text paths and 1 binary path of which 3+1 contain NEEDLE', () => {
     describe('When grepping the HEAD treeish for the literal', () => {
       it('Then tsgit derives the same matching paths and per-file counts as git grep -l/-c', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, {
+        // Arrange & Act
+        const result = await grep(ctx, {
           patterns: [{ fixed: LIT }],
           target: { treeish: 'HEAD' },
         });
@@ -360,11 +350,8 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   describe('Given a binary blob that contains NEEDLE', () => {
     describe('When grepping the working tree for the literal', () => {
       it('Then tsgit sets binaryMatch true with empty hits, and git grep reports "Binary file matches"', async () => {
-        // Arrange
-        const sut = grep;
-
-        // Act
-        const result = await sut(ctx, { patterns: [{ fixed: LIT }] });
+        // Arrange & Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }] });
         const gitOutput = git(dir, 'grep', '-F', LIT, '--', 'b.bin');
 
         // Assert tsgit structured data

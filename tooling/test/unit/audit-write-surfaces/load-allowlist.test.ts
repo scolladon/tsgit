@@ -32,10 +32,10 @@ describe('parseAllowlist', () => {
         const sutContent = '{ "surfaces": [] }';
 
         // Act
-        const sut = parseAllowlist(sutContent, sutConfig());
+        const result = parseAllowlist(sutContent, sutConfig());
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -49,10 +49,10 @@ describe('parseAllowlist', () => {
         });
 
         // Act
-        const sut = parseAllowlist(sutContent, sutConfig());
+        const result = parseAllowlist(sutContent, sutConfig());
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           { surface: 'tree', reason: 'because', deferredTo: '20.x' },
         ]);
       });
@@ -68,10 +68,10 @@ describe('parseAllowlist', () => {
         });
 
         // Act
-        const sut = parseAllowlist(sutContent, sutConfig());
+        const result = parseAllowlist(sutContent, sutConfig());
 
         // Assert
-        expect(sut[0]?.deferredTo).toBeNull();
+        expect(result[0]?.deferredTo).toBeNull();
       });
     });
   });

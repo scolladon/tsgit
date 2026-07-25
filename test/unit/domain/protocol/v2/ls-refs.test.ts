@@ -43,11 +43,8 @@ describe('buildLsRefsRequest', () => {
   describe('Given symrefs, peel, and ref-prefixes', () => {
     describe('When buildLsRefsRequest builds the request', () => {
       it('Then it emits command=ls-refs, delim, symrefs, peel, and one ref-prefix line per prefix, flush', async () => {
-        // Arrange
-        const sut = buildLsRefsRequest;
-
-        // Act
-        const bytes = sut({
+        // Arrange & Act
+        const bytes = buildLsRefsRequest({
           symrefs: true,
           peel: true,
           refPrefixes: ['HEAD', 'refs/heads/', 'refs/tags/'],
@@ -74,11 +71,8 @@ describe('buildLsRefsRequest', () => {
   describe('Given symrefs and peel both omitted and no ref-prefixes', () => {
     describe('When buildLsRefsRequest builds the request', () => {
       it('Then it emits only the command header, delim, and flush', async () => {
-        // Arrange
-        const sut = buildLsRefsRequest;
-
-        // Act
-        const bytes = sut({});
+        // Arrange & Act
+        const bytes = buildLsRefsRequest({});
         const lines = await decodeAll(bytes);
 
         // Assert
@@ -105,11 +99,11 @@ describe('parseLsRefsResponse', () => {
         ]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.head).toEqual({ name: 'HEAD', id: OID1 });
-        expect(sut.refs.find((r) => r.name === 'refs/heads/main')).toEqual({
+        expect(result.head).toEqual({ name: 'HEAD', id: OID1 });
+        expect(result.refs.find((r) => r.name === 'refs/heads/main')).toEqual({
           name: 'refs/heads/main',
           id: OID1,
         });
@@ -123,10 +117,10 @@ describe('parseLsRefsResponse', () => {
         ]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.capabilities).toEqual(['symref=HEAD:refs/heads/main']);
+        expect(result.capabilities).toEqual(['symref=HEAD:refs/heads/main']);
       });
     });
   });
@@ -202,16 +196,16 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${line}\n`]);
 
         // Act
-        let sut: unknown;
+        let caught: unknown;
         try {
           await parseLsRefsResponse(stream);
         } catch (e) {
-          sut = e;
+          caught = e;
         }
 
         // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'INVALID_REF_LINE', line });
       });
     });
   });
@@ -223,10 +217,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${OID1} refs/tags/v1 peeled:${OID2}\n`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.refs.find((r) => r.name === 'refs/tags/v1')?.peeled).toBe(OID2);
+        expect(result.refs.find((r) => r.name === 'refs/tags/v1')?.peeled).toBe(OID2);
       });
     });
   });
@@ -239,10 +233,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${oid64} refs/heads/main\n`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.refs).toEqual([{ name: 'refs/heads/main', id: OID.from(oid64) }]);
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', id: OID.from(oid64) }]);
       });
     });
   });
@@ -254,11 +248,11 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody(['unborn HEAD symref-target:refs/heads/main\n']);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.head).toBeUndefined();
-        expect(sut.refs).toEqual([]);
+        expect(result.head).toBeUndefined();
+        expect(result.refs).toEqual([]);
       });
 
       it('Then capabilities still carries the synthesized symref=HEAD:<target> entry (v1-ghost parity)', async () => {
@@ -269,10 +263,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody(['unborn HEAD symref-target:refs/heads/main\n']);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.capabilities).toEqual(['symref=HEAD:refs/heads/main']);
+        expect(result.capabilities).toEqual(['symref=HEAD:refs/heads/main']);
       });
     });
   });
@@ -284,11 +278,11 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${OID3} HEAD\n`, `${OID1} refs/heads/main\n`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.head).toEqual({ name: 'HEAD', id: OID3 });
-        expect(sut.refs).toEqual([
+        expect(result.head).toEqual({ name: 'HEAD', id: OID3 });
+        expect(result.refs).toEqual([
           { name: 'HEAD', id: OID3 },
           { name: 'refs/heads/main', id: OID1 },
         ]);
@@ -299,10 +293,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${OID3} HEAD\n`, `${OID1} refs/heads/main\n`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.capabilities).toEqual([]);
+        expect(result.capabilities).toEqual([]);
       });
     });
   });
@@ -314,10 +308,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${OID1} refs/heads/main\n`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.capabilities).toEqual([]);
+        expect(result.capabilities).toEqual([]);
       });
     });
   });
@@ -329,10 +323,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${OID1} refs/heads/main`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.refs).toEqual([{ name: 'refs/heads/main', id: OID1 }]);
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', id: OID1 }]);
       });
     });
   });
@@ -347,11 +341,11 @@ describe('parseLsRefsResponse', () => {
         ]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.refs).toEqual([{ name: 'refs/heads/main', id: OID1 }]);
-        expect(sut.head).toBeUndefined();
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', id: OID1 }]);
+        expect(result.head).toBeUndefined();
       });
     });
   });
@@ -365,10 +359,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${OID1} symref-target:sneaky\n`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.refs).toEqual([{ name: 'symref-target:sneaky', id: OID1 }]);
+        expect(result.refs).toEqual([{ name: 'symref-target:sneaky', id: OID1 }]);
       });
     });
   });
@@ -383,10 +377,10 @@ describe('parseLsRefsResponse', () => {
         const stream = responseBody([`${OID1} symref-target:sneaky peeled:${OID2}\n`]);
 
         // Act
-        const sut = await parseLsRefsResponse(stream);
+        const result = await parseLsRefsResponse(stream);
 
         // Assert
-        expect(sut.refs).toEqual([{ name: 'symref-target:sneaky', id: OID1, peeled: OID2 }]);
+        expect(result.refs).toEqual([{ name: 'symref-target:sneaky', id: OID1, peeled: OID2 }]);
       });
     });
   });
@@ -444,10 +438,10 @@ describe('parseLsRefsResponse — advertised-refs cap', () => {
         }
 
         // Act
-        const sut = await parseLsRefsResponse(pkts());
+        const result = await parseLsRefsResponse(pkts());
 
         // Assert
-        expect(sut.refs.length).toBe(MAX_ADVERTISED_REFS);
+        expect(result.refs.length).toBe(MAX_ADVERTISED_REFS);
       }, 30_000);
     });
   });

@@ -80,14 +80,14 @@ describe('revert run', () => {
         const { ctx, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await revertRun(ctx, { commits: ['HEAD'] });
+        const result = await revertRun(ctx, { commits: ['HEAD'] });
 
         // Assert
-        expect(sut.kind).toBe('reverted');
-        if (sut.kind !== 'reverted') throw new Error('expected reverted');
-        expect(sut.commits).toHaveLength(1);
-        const created = sut.commits[0]?.created as ObjectId;
-        expect(sut.commits[0]?.source).toBe(c2);
+        expect(result.kind).toBe('reverted');
+        if (result.kind !== 'reverted') throw new Error('expected reverted');
+        expect(result.commits).toHaveLength(1);
+        const created = result.commits[0]?.created as ObjectId;
+        expect(result.commits[0]?.source).toBe(c2);
         const cData = await readCommit(ctx, created);
         expect(cData.parents).toEqual([c2]);
         expect(cData.author.name).toBe('Vera');
@@ -140,14 +140,14 @@ describe('revert run', () => {
         await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
 
         // Act
-        const sut = await revertRun(ctx, { commits: [c2] });
+        const result = await revertRun(ctx, { commits: [c2] });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.commit).toBe(c2);
-        expect(sut.remaining).toBe(0);
-        expect(sut.conflicts.map((c) => c.path)).toContain('f.txt');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.commit).toBe(c2);
+        expect(result.remaining).toBe(0);
+        expect(result.conflicts.map((c) => c.path)).toContain('f.txt');
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c2}\n`);
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/MERGE_MSG`)).toBe(
           `Revert "c2 mid"\n\nThis reverts commit ${c2}.\n\n# Conflicts:\n#\tf.txt\n`,
@@ -205,13 +205,13 @@ describe('revert run', () => {
         await revertRun(ctx, { commits: [c2] });
 
         // Act — c2 is already reverted, so reverting it again is a no-op.
-        const sut = await revertRun(ctx, { commits: [c2] });
+        const result = await revertRun(ctx, { commits: [c2] });
 
         // Assert
-        expect(sut.kind).toBe('empty');
-        if (sut.kind !== 'empty') throw new Error('expected empty');
-        expect(sut.commit).toBe(c2);
-        expect(sut.remaining).toBe(0);
+        expect(result.kind).toBe('empty');
+        if (result.kind !== 'empty') throw new Error('expected empty');
+        expect(result.commit).toBe(c2);
+        expect(result.remaining).toBe(0);
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
         expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
         expect(await exists(ctx, 'sequencer')).toBe(false);
@@ -235,10 +235,10 @@ describe('revert run', () => {
         await commit(ctx, { message: 'c2 add f3', author: MAIN_AUTHOR });
 
         // Act
-        const sut = await revertRun(ctx, { commits: [root.id] });
+        const result = await revertRun(ctx, { commits: [root.id] });
 
         // Assert
-        expect(sut.kind).toBe('reverted');
+        expect(result.kind).toBe('reverted');
         expect(await ctx.fs.exists(work(ctx, 'f1.txt'))).toBe(false);
         expect(await ctx.fs.exists(work(ctx, 'f2.txt'))).toBe(false);
         expect(await ctx.fs.exists(work(ctx, 'f3.txt'))).toBe(true);
@@ -351,10 +351,10 @@ describe('revert run', () => {
         const { ctx, commits } = await arrange();
 
         // Act
-        const sut = await codeOf(() => revertRun(ctx, { commits }));
+        const result = await codeOf(() => revertRun(ctx, { commits }));
 
         // Assert
-        expect(sut).toBe(code);
+        expect(result).toBe(code);
       });
     });
   });
@@ -391,12 +391,12 @@ describe('revert range and sequencer', () => {
         const { ctx, c1, c2, c3, c4 } = await seedFourFiles();
 
         // Act
-        const sut = await revertRun(ctx, { commits: [`${c1}..HEAD`] });
+        const result = await revertRun(ctx, { commits: [`${c1}..HEAD`] });
 
         // Assert
-        expect(sut.kind).toBe('reverted');
-        if (sut.kind !== 'reverted') throw new Error('expected reverted');
-        expect(sut.commits.map((c) => c.source)).toEqual([c4, c3, c2]);
+        expect(result.kind).toBe('reverted');
+        if (result.kind !== 'reverted') throw new Error('expected reverted');
+        expect(result.commits.map((c) => c.source)).toEqual([c4, c3, c2]);
         expect(await ctx.fs.exists(work(ctx, 'f1.txt'))).toBe(true);
         expect(await ctx.fs.exists(work(ctx, 'f2.txt'))).toBe(false);
         expect(await ctx.fs.exists(work(ctx, 'f3.txt'))).toBe(false);
@@ -429,13 +429,13 @@ describe('revert range and sequencer', () => {
         const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
 
         // Act
-        const sut = await revertRun(ctx, { commits: [`${c1}..${c3}`] });
+        const result = await revertRun(ctx, { commits: [`${c1}..${c3}`] });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.commit).toBe(c3);
-        expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.commit).toBe(c3);
+        expect(result.remaining).toBe(1);
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c3}\n`);
         const todo = await ctx.fs.readUtf8(`${gitDir(ctx)}/sequencer/todo`);
         expect(todo).toBe(`revert ${c3} c3 line1\nrevert ${c2} c2 line2\n`);
@@ -453,13 +453,13 @@ describe('revert range and sequencer', () => {
         const { ctx, c2 } = await seedLinear();
 
         // Act
-        const sut = await revertRun(ctx, { commits: [c2, c2] });
+        const result = await revertRun(ctx, { commits: [c2, c2] });
 
         // Assert
-        expect(sut.kind).toBe('empty');
-        if (sut.kind !== 'empty') throw new Error('expected empty');
-        expect(sut.commit).toBe(c2);
-        expect(sut.remaining).toBe(0);
+        expect(result.kind).toBe('empty');
+        if (result.kind !== 'empty') throw new Error('expected empty');
+        expect(result.commit).toBe(c2);
+        expect(result.remaining).toBe(0);
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
         expect(await exists(ctx, 'sequencer')).toBe(true);
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/sequencer/todo`)).toBe(
@@ -552,17 +552,17 @@ describe('revert continue', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('reverted');
-        if (sut.kind !== 'reverted') throw new Error('expected reverted');
-        expect(sut.commits.map((c) => c.source)).toEqual([c2]);
+        expect(result.kind).toBe('reverted');
+        if (result.kind !== 'reverted') throw new Error('expected reverted');
+        expect(result.commits.map((c) => c.source)).toEqual([c2]);
         const reflog = await readReflog(ctx, 'refs/heads/main' as RefName);
         expect(reflog.at(-1)?.message).toBe('commit: Revert "c2 mid"');
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
         expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
-        const created = sut.commits[0]?.created as ObjectId;
+        const created = result.commits[0]?.created as ObjectId;
         expect((await readCommit(ctx, created)).parents).toHaveLength(1);
       });
     });
@@ -598,12 +598,12 @@ describe('revert continue', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('reverted');
-        if (sut.kind !== 'reverted') throw new Error('expected reverted');
-        expect(sut.commits.map((c) => c.source)).toEqual([c3, c2]);
+        expect(result.kind).toBe('reverted');
+        if (result.kind !== 'reverted') throw new Error('expected reverted');
+        expect(result.commits.map((c) => c.source)).toEqual([c3, c2]);
         expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g1\n');
         expect(await exists(ctx, 'sequencer')).toBe(false);
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
@@ -620,12 +620,12 @@ describe('revert continue', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('empty');
-        if (sut.kind !== 'empty') throw new Error('expected empty');
-        expect(sut.commit).toBe(c2);
+        expect(result.kind).toBe('empty');
+        if (result.kind !== 'empty') throw new Error('expected empty');
+        expect(result.commit).toBe(c2);
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c2}\n`);
       });
     });
@@ -640,12 +640,12 @@ describe('revert continue', () => {
         if (stop.kind !== 'empty') throw new Error('seed: expected empty stop');
 
         // Act
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('reverted');
-        if (sut.kind !== 'reverted') throw new Error('expected reverted');
-        expect(sut.commits).toEqual([]);
+        expect(result.kind).toBe('reverted');
+        if (result.kind !== 'reverted') throw new Error('expected reverted');
+        expect(result.commits).toEqual([]);
         expect(await exists(ctx, 'sequencer')).toBe(false);
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
       });
@@ -727,12 +727,12 @@ describe('revert skip', () => {
         const { ctx, c2 } = await seedRangeConflictStop();
 
         // Act
-        const sut = await revertSkip(ctx);
+        const result = await revertSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('reverted');
-        if (sut.kind !== 'reverted') throw new Error('expected reverted');
-        expect(sut.commits.map((c) => c.source)).toEqual([c2]);
+        expect(result.kind).toBe('reverted');
+        if (result.kind !== 'reverted') throw new Error('expected reverted');
+        expect(result.commits.map((c) => c.source)).toEqual([c2]);
         expect(await ctx.fs.readUtf8(work(ctx, 'g.txt'))).toBe('g1\n');
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('f4\n'); // c3 revert discarded
         expect(await exists(ctx, 'sequencer')).toBe(false);
@@ -748,12 +748,12 @@ describe('revert skip', () => {
         const { ctx } = await seedConflictStop();
 
         // Act
-        const sut = await revertSkip(ctx);
+        const result = await revertSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('reverted');
-        if (sut.kind !== 'reverted') throw new Error('expected reverted');
-        expect(sut.commits).toEqual([]);
+        expect(result.kind).toBe('reverted');
+        if (result.kind !== 'reverted') throw new Error('expected reverted');
+        expect(result.commits).toEqual([]);
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
         expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
       });
@@ -787,11 +787,11 @@ describe('revert abort', () => {
         const branchBefore = (await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message;
 
         // Act
-        const sut = await revertAbort(ctx);
+        const result = await revertAbort(ctx);
 
         // Assert
-        expect(sut.head).toBe(head);
-        expect(sut.branch).toBe('refs/heads/main');
+        expect(result.head).toBe(head);
+        expect(result.branch).toBe('refs/heads/main');
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog.at(-1)?.message).toBe(`reset: moving to ${head}`);
         const branchLog = await readReflog(ctx, 'refs/heads/main' as RefName);
@@ -833,10 +833,10 @@ describe('revert abort', () => {
         if (code !== 'REVERT_MERGE_NO_MAINLINE') throw new Error('seed: expected merge stop');
 
         // Act
-        const sut = await revertAbort(ctx);
+        const result = await revertAbort(ctx);
 
         // Assert
-        expect(sut.head).toBe(top); // pre-sequence HEAD, not the top-revert commit
+        expect(result.head).toBe(top); // pre-sequence HEAD, not the top-revert commit
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(top);
         expect(await ctx.fs.exists(work(ctx, 'top.txt'))).toBe(true); // top revert undone
         expect(await exists(ctx, 'sequencer')).toBe(false);
@@ -895,12 +895,12 @@ describe('revert no-commit (-n)', () => {
         const headBefore = await resolveRef(ctx, 'refs/heads/main' as RefName);
 
         // Act — revert c3 and c4 (range c2..HEAD), no commit.
-        const sut = await revertRun(ctx, { commits: [`${c2}..HEAD`], noCommit: true });
+        const result = await revertRun(ctx, { commits: [`${c2}..HEAD`], noCommit: true });
 
         // Assert
-        expect(sut.kind).toBe('no-commit');
-        if (sut.kind !== 'no-commit') throw new Error('expected no-commit');
-        expect(sut.sources).toHaveLength(2);
+        expect(result.kind).toBe('no-commit');
+        if (result.kind !== 'no-commit') throw new Error('expected no-commit');
+        expect(result.sources).toHaveLength(2);
         expect(await ctx.fs.exists(work(ctx, 'f3.txt'))).toBe(false);
         expect(await ctx.fs.exists(work(ctx, 'f4.txt'))).toBe(false);
         expect(await ctx.fs.exists(work(ctx, 'f2.txt'))).toBe(true);
@@ -922,10 +922,10 @@ describe('revert no-commit (-n)', () => {
         await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
 
         // Act
-        const sut = await revertRun(ctx, { commits: [c2], noCommit: true });
+        const result = await revertRun(ctx, { commits: [c2], noCommit: true });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
         expect(await exists(ctx, 'MERGE_MSG')).toBe(false);
         expect(await exists(ctx, 'sequencer')).toBe(false);
@@ -1017,10 +1017,10 @@ describe('revert observable surfaces', () => {
     ])('When %s runs', (_verb, call, operation) => {
       it(`Then it refuses with BARE_REPOSITORY for "${operation}"`, async () => {
         // Arrange
-        const sut = await makeBare();
+        const ctx = await makeBare();
 
         // Act
-        const data = await dataOf(() => call(sut));
+        const data = await dataOf(() => call(ctx));
 
         // Assert
         expect(data.code).toBe('BARE_REPOSITORY');
@@ -1141,10 +1141,10 @@ describe('revert observable surfaces', () => {
         if (first.kind !== 'empty') throw new Error('seed: expected an empty stop');
 
         // Act — continue drops this empty but must stop at the third (also empty).
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert — a faithful drop-then-stop, not a drop-all.
-        expect(sut.kind).toBe('empty');
+        expect(result.kind).toBe('empty');
         expect(await exists(ctx, 'sequencer')).toBe(true);
       });
     });
@@ -1160,12 +1160,12 @@ describe('revert observable surfaces', () => {
         await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
 
         // Act
-        const sut = await revertRun(ctx, { commits: [c2, c2], noCommit: true });
+        const result = await revertRun(ctx, { commits: [c2, c2], noCommit: true });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.remaining).toBe(1);
       });
     });
   });
@@ -1250,12 +1250,12 @@ describe('revert mutation-hardening surfaces', () => {
         await ctx.fs.writeUtf8(`${gitDir(ctx)}/sequencer/todo`, `revert ${c2} c2 mid\n`);
 
         // Act
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.commit).toBe(c2);
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.commit).toBe(c2);
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/REVERT_HEAD`)).toBe(`${c2}\n`);
       });
     });
@@ -1287,10 +1287,10 @@ describe('revert mutation-hardening surfaces', () => {
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
 
         // Act
-        const sut = await revertSkip(ctx);
+        const result = await revertSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('reverted');
+        expect(result.kind).toBe('reverted');
         expect(await exists(ctx, 'sequencer')).toBe(false);
       });
     });
@@ -1340,13 +1340,13 @@ describe('revert mutation-hardening surfaces', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert — onEmpty stays 'stop'; the multi-pick sequencer is re-persisted
         // with c2 alone at todo[0] (proving multiPick stayed true on the resume).
-        expect(sut.kind).toBe('empty');
-        if (sut.kind !== 'empty') throw new Error('expected empty');
-        expect(sut.commit).toBe(c2);
+        expect(result.kind).toBe('empty');
+        if (result.kind !== 'empty') throw new Error('expected empty');
+        expect(result.commit).toBe(c2);
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/sequencer/todo`)).toBe(
           `revert ${c2} c2 edit g\n`,
         );
@@ -1364,13 +1364,13 @@ describe('revert mutation-hardening surfaces', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await revertContinue(ctx);
+        const result = await revertContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('empty');
-        if (sut.kind !== 'empty') throw new Error('expected empty');
-        expect(sut.commit).toBe(c3);
-        expect(sut.remaining).toBe(1); // c2 still pending after the c3 re-stop
+        expect(result.kind).toBe('empty');
+        if (result.kind !== 'empty') throw new Error('expected empty');
+        expect(result.commit).toBe(c3);
+        expect(result.remaining).toBe(1); // c2 still pending after the c3 re-stop
       });
     });
   });
@@ -1398,12 +1398,12 @@ describe('revert mutation-hardening surfaces', () => {
         if (stop.kind !== 'conflict') throw new Error('seed: expected a conflict');
 
         // Act — skip c3; the resumed c2 revert conflicts vs c4 too.
-        const sut = await revertSkip(ctx);
+        const result = await revertSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.commit).toBe(c2);
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.commit).toBe(c2);
         // The multi-pick sequencer is re-persisted with c2 alone at todo[0].
         expect(await ctx.fs.readUtf8(`${gitDir(ctx)}/sequencer/todo`)).toBe(
           `revert ${c2} c2 line1\n`,

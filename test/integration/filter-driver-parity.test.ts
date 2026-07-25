@@ -170,10 +170,10 @@ describe('Given a memory repo declaring *.bin filter=lfs diff=lfs with no Comman
   describe('When add stages a .bin file', () => {
     it('Then the stored blob contains verbatim raw bytes (no clean filter applied)', async () => {
       // Arrange
-      const sut = await buildMemoryFixture();
+      const fixture = await buildMemoryFixture();
 
       // Act — blob already staged in fixture; read it back
-      const blobV1 = await readBlob(sut.ctx, sut.v1BlobOid);
+      const blobV1 = await readBlob(fixture.ctx, fixture.v1BlobOid);
 
       // Assert — raw bytes stored (clean filter not invoked)
       expect(dec(blobV1.content)).toBe(RAW_CONTENT_V1);
@@ -183,16 +183,16 @@ describe('Given a memory repo declaring *.bin filter=lfs diff=lfs with no Comman
   describe('When checkout restores a .bin file', () => {
     it('Then the worktree file contains verbatim blob bytes (no smudge filter applied)', async () => {
       // Arrange — fixture committed v2; restore via checkout paths
-      const sut = await buildMemoryFixture();
+      const fixture = await buildMemoryFixture();
 
       // Remove working-tree file so checkout writes it fresh
-      await sut.ctx.fs.rm(`${sut.ctx.layout.workDir}/a.bin`);
+      await fixture.ctx.fs.rm(`${fixture.ctx.layout.workDir}/a.bin`);
 
       // Act — checkout restores HEAD's a.bin (which holds RAW_CONTENT_V2 blob)
-      await checkout(sut.ctx, { paths: ['a.bin'] });
+      await checkout(fixture.ctx, { paths: ['a.bin'] });
 
       // Assert — worktree bytes equal the raw blob bytes (no smudge)
-      const worktreeBytes = await sut.ctx.fs.read(`${sut.ctx.layout.workDir}/a.bin`);
+      const worktreeBytes = await fixture.ctx.fs.read(`${fixture.ctx.layout.workDir}/a.bin`);
       expect(dec(worktreeBytes)).toBe(RAW_CONTENT_V2);
     });
   });
@@ -200,12 +200,12 @@ describe('Given a memory repo declaring *.bin filter=lfs diff=lfs with no Comman
   describe('When status is queried after a clean checkout', () => {
     it('Then status is clean (raw worktree bytes compared against raw blob)', async () => {
       // Arrange — checkout restores the HEAD blob verbatim
-      const sut = await buildMemoryFixture();
-      await sut.ctx.fs.rm(`${sut.ctx.layout.workDir}/a.bin`);
-      await checkout(sut.ctx, { paths: ['a.bin'] });
+      const fixture = await buildMemoryFixture();
+      await fixture.ctx.fs.rm(`${fixture.ctx.layout.workDir}/a.bin`);
+      await checkout(fixture.ctx, { paths: ['a.bin'] });
 
       // Act
-      const result = await status(sut.ctx);
+      const result = await status(fixture.ctx);
 
       // Assert — a.bin not in changes; repo is clean
       const changedEntry = result.changes.find((c) => c.path === 'a.bin');
@@ -217,10 +217,14 @@ describe('Given a memory repo declaring *.bin filter=lfs diff=lfs with no Comman
   describe('When diff is called between c1 and c2', () => {
     it('Then changes contain a.bin as modify with raw OIDs (no textconv transformation)', async () => {
       // Arrange
-      const sut = await buildMemoryFixture();
+      const fixture = await buildMemoryFixture();
 
       // Act
-      const treeDiff = await diff(sut.ctx, { from: sut.c1Id, to: sut.c2Id, recursive: true });
+      const treeDiff = await diff(fixture.ctx, {
+        from: fixture.c1Id,
+        to: fixture.c2Id,
+        recursive: true,
+      });
 
       // Assert — exactly one relevant change, raw OIDs (textconv never ran)
       const change = treeDiff.changes.find(
@@ -228,8 +232,8 @@ describe('Given a memory repo declaring *.bin filter=lfs diff=lfs with no Comman
       );
       expect(change).toBeDefined();
       expect(change?.type).toBe('modify');
-      expect(change?.oldId).toBe(sut.v1BlobOid);
-      expect(change?.newId).toBe(sut.v2BlobOid);
+      expect(change?.oldId).toBe(fixture.v1BlobOid);
+      expect(change?.newId).toBe(fixture.v2BlobOid);
     });
   });
 });
@@ -267,7 +271,7 @@ describe('Given a node repo (command:false) declaring *.bin filter=lfs diff=lfs 
 
   describe('When status is queried after a clean checkout', () => {
     it('Then status is clean — identical outcome to memory adapter', async () => {
-      // Act
+      // Arrange & Act
       const result = await status(nodeFixture.ctx);
 
       // Assert

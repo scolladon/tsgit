@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { detectBareClassThrow } from '../../../test-pyramid/detect-bare-class-throw.js';
+import type { PyramidManifest } from '../../../test-pyramid/parse-manifest.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();
@@ -122,6 +123,27 @@ describe('detectBareClassThrow', () => {
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a heuristic scoped to tiers unit and integration, When both a unit and an integration file have a bare-class toThrow, Then both are flagged', () => {
+    // Arrange
+    const multiTier: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        bareClassToThrow: { ...MANIFEST.heuristics.bareClassToThrow, tiers: ['unit', 'integration'] },
+      },
+    };
+    const source = `it('whatever', () => { expect(fn).toThrow(TsgitError); });`;
+
+    // Act
+    const sut = detectBareClassThrow(multiTier, [
+      file('test/unit/a.test.ts', source),
+      file('test/integration/b.test.ts', source),
+    ]);
+
+    // Assert
+    expect(sut.map((f) => f.path)).toEqual(['test/integration/b.test.ts', 'test/unit/a.test.ts']);
   });
 
   it('Given multiple files with findings, When scanned, Then they are sorted by path then by line', () => {

@@ -38,11 +38,11 @@ describe('reset', () => {
         const { ctx, c1, c2 } = await seedTwoCommits();
 
         // Act
-        const sut = await reset(ctx, { mode: 'soft', rev: c1 });
+        const result = await reset(ctx, { mode: 'soft', rev: c1 });
 
         // Assert
-        expect(sut.id).toBe(c1);
-        expect(sut.branch).toBe('refs/heads/main');
+        expect(result.id).toBe(c1);
+        expect(result.branch).toBe('refs/heads/main');
         const ref = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
         expect(ref.trim()).toBe(c1);
         expect(c2).not.toBe(c1);
@@ -55,10 +55,13 @@ describe('reset', () => {
       it('Then HEAD branch updated', async () => {
         // Arrange
         const { ctx, c1 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'mixed', rev: c1 });
+
+        // Act
+        const result = await reset(ctx, { mode: 'mixed', rev: c1 });
+
         // Assert
-        expect(sut.mode).toBe('mixed');
-        expect(sut.id).toBe(c1);
+        expect(result.mode).toBe('mixed');
+        expect(result.id).toBe(c1);
       });
     });
   });
@@ -68,10 +71,13 @@ describe('reset', () => {
       it('Then result.mode=hard and HEAD branch updated', async () => {
         // Arrange
         const { ctx, c1 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'hard', rev: c1 });
+
+        // Act
+        const result = await reset(ctx, { mode: 'hard', rev: c1 });
+
         // Assert
-        expect(sut.mode).toBe('hard');
-        expect(sut.id).toBe(c1);
+        expect(result.mode).toBe('hard');
+        expect(result.id).toBe(c1);
       });
     });
   });
@@ -84,11 +90,11 @@ describe('reset', () => {
         const { ctx, c1 } = await seedTwoCommits();
 
         // Act
-        const sut = await reset(ctx, { mode: 'hard', rev: c1 });
+        const result = await reset(ctx, { mode: 'hard', rev: c1 });
 
         // Assert — index
-        expect(sut.mode).toBe('hard');
-        expect(sut.id).toBe(c1);
+        expect(result.mode).toBe('hard');
+        expect(result.id).toBe(c1);
         const index = await readIndex(ctx);
         const paths = index.entries.filter((e) => e.flags.stage === 0).map((e) => e.path);
         expect(paths).toEqual(['a.txt']);
@@ -230,12 +236,15 @@ describe('reset', () => {
       it('Then throws REVPARSE_UNRESOLVED', async () => {
         // Arrange
         const { ctx } = await seedTwoCommits();
+
+        // Act
         let caught: unknown;
         try {
           await reset(ctx, { mode: 'soft', rev: 'no-such-ref' });
         } catch (err) {
           caught = err;
         }
+
         // Assert
         expect((caught as { data?: { code?: string } })?.data?.code).toBe('REVPARSE_UNRESOLVED');
       });
@@ -247,11 +256,13 @@ describe('reset', () => {
       it('Then resolves via refs/heads/<name>', async () => {
         // Arrange
         const { ctx, c2 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'soft', rev: 'main' });
-        // Pin to the exact resolved oid so a mutation to the candidate list (e.g.
-        // dropping the `refs/heads/${target}` prefix) is caught.
-        // Assert
-        expect(sut.id).toBe(c2);
+
+        // Act
+        const result = await reset(ctx, { mode: 'soft', rev: 'main' });
+
+        // Assert — pin to the exact resolved oid so a mutation to the candidate
+        // list (e.g. dropping the `refs/heads/${target}` prefix) is caught.
+        expect(result.id).toBe(c2);
       });
     });
   });
@@ -261,9 +272,12 @@ describe('reset', () => {
       it('Then no-op (HEAD already points there)', async () => {
         // Arrange
         const { ctx, c2 } = await seedTwoCommits();
-        const sut = await reset(ctx, { mode: 'soft', rev: 'HEAD' });
+
+        // Act
+        const result = await reset(ctx, { mode: 'soft', rev: 'HEAD' });
+
         // Assert
-        expect(sut.id).toBe(c2);
+        expect(result.id).toBe(c2);
       });
     });
   });
@@ -379,10 +393,10 @@ describe('reset', () => {
         const { ctx, c1 } = await seedTwoCommits();
 
         // Act
-        const sut = await reset(ctx, { mode: 'mixed', rev: c1 });
+        const result = await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert
-        expect(sut.id).toBe(c1);
+        expect(result.id).toBe(c1);
         const index = await readIndex(ctx);
         const paths = index.entries.filter((e) => e.flags.stage === 0).map((e) => e.path);
         expect(paths).toEqual(['a.txt']);
@@ -511,13 +525,13 @@ describe('reset', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c2}\n`);
 
         // Act
-        const sut = await reset(ctx, { mode: 'soft', rev: c1 });
+        const result = await reset(ctx, { mode: 'soft', rev: c1 });
 
         // Assert — the detached path routes through `updateRef('HEAD', …)`, which
         // writes `${gitDir}/HEAD` with `${id}\n`. An emptied `'HEAD'` ref-name or a
         // skipped write would leave HEAD at c2.
-        expect(sut.branch).toBeUndefined();
-        expect(sut.id).toBe(c1);
+        expect(result.branch).toBeUndefined();
+        expect(result.id).toBe(c1);
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${c1}\n`);
       });
 
@@ -532,9 +546,9 @@ describe('reset', () => {
 
         // Assert — the move records the faithful message, once (no coupled-HEAD
         // double-log on the direct detached write).
-        const sut = await readReflog(ctx, HEAD);
-        expect(sut.length).toBe(before.length + 1);
-        expect(sut.at(-1)?.message).toBe(`reset: moving to ${c1}`);
+        const result = await readReflog(ctx, HEAD);
+        expect(result.length).toBe(before.length + 1);
+        expect(result.at(-1)?.message).toBe(`reset: moving to ${c1}`);
       });
     });
 
@@ -549,10 +563,10 @@ describe('reset', () => {
         await reset(ctx, { mode: 'soft', rev: c2 });
 
         // Assert — neither length nor tip changed; no spurious `reset: moving to`.
-        const sut = await readReflog(ctx, HEAD);
-        expect(sut.length).toBe(before.length);
-        expect(sut.at(-1)?.message).toBe(before.at(-1)?.message);
-        expect(sut.at(-1)?.message).not.toBe(`reset: moving to ${c2}`);
+        const result = await readReflog(ctx, HEAD);
+        expect(result.length).toBe(before.length);
+        expect(result.at(-1)?.message).toBe(before.at(-1)?.message);
+        expect(result.at(-1)?.message).not.toBe(`reset: moving to ${c2}`);
       });
     });
   });
@@ -670,10 +684,10 @@ describe('reset — sparse checkout', () => {
         await enableSparseSrcOnly(ctx);
 
         // Act
-        const sut = await reset(ctx, { mode: 'mixed', rev: c1 });
+        const result = await reset(ctx, { mode: 'mixed', rev: c1 });
 
         // Assert — `docs/b.txt` is excluded, `src/a.txt` stays in-pattern.
-        expect(sut.mode).toBe('mixed');
+        expect(result.mode).toBe('mixed');
         const index = await readIndex(ctx);
         expect(index.entries.find((e) => e.path === 'src/a.txt')?.flags.skipWorktree).toBe(false);
         expect(index.entries.find((e) => e.path === 'docs/b.txt')?.flags.skipWorktree).toBe(true);
@@ -707,10 +721,10 @@ describe('reset — sparse checkout', () => {
         await enableSparseSrcOnly(ctx);
 
         // Act
-        const sut = await reset(ctx, { mode: 'hard', rev: c1 });
+        const result = await reset(ctx, { mode: 'hard', rev: c1 });
 
         // Assert
-        expect(sut.mode).toBe('hard');
+        expect(result.mode).toBe('hard');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a.txt`)).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
         const index = await readIndex(ctx);

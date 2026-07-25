@@ -79,7 +79,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -87,7 +87,7 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('clean');
+        expect(result.kind).toBe('clean');
         expect(await readWork(ctx, 'a')).toBe('two\n');
       });
     });
@@ -113,7 +113,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('A\nb\nc\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -121,7 +121,7 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('clean');
+        expect(result.kind).toBe('clean');
         expect(await readWork(ctx, 'f')).toBe('A\nb\nC\n');
       });
     });
@@ -145,7 +145,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('y\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: base,
           theirsTree: theirs,
@@ -153,7 +153,7 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('clean');
+        expect(result.kind).toBe('clean');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/b`)).toBe(false);
       });
     });
@@ -171,7 +171,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: base,
           theirsTree: base,
@@ -179,8 +179,8 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('clean');
-        if (sut.kind === 'clean') expect(sut.result.written).toBe(0);
+        expect(result.kind).toBe('clean');
+        if (result.kind === 'clean') expect(result.result.written).toBe(0);
       });
     });
   });
@@ -205,7 +205,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -213,15 +213,15 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.conflicts.map((c) => c.path)).toEqual(['a']);
-        expect(sut.conflicts[0]?.type).toBe('content');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts.map((c) => c.path)).toEqual(['a']);
+        expect(result.conflicts[0]?.type).toBe('content');
         const onDisk = await readWork(ctx, 'a');
         expect(onDisk).toContain('<<<<<<<');
         expect(onDisk).toContain('ours');
         expect(onDisk).toContain('theirs');
-        const stages = sut.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
+        const stages = result.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
         expect(stages).toEqual([1, 2, 3]);
       });
     });
@@ -247,7 +247,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -256,7 +256,7 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         const onDisk = await readWork(ctx, 'a');
         expect(onDisk).toContain('<<<<<<< HEAD\n');
         expect(onDisk).toContain('>>>>>>> topic\n');
@@ -280,7 +280,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('local edit\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: base,
           theirsTree: theirs,
@@ -288,10 +288,10 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('would-overwrite');
-        if (sut.kind === 'would-overwrite') {
-          expect(sut.localChanges).toEqual(['a']);
-          expect(sut.untracked).toEqual([]);
+        expect(result.kind).toBe('would-overwrite');
+        if (result.kind === 'would-overwrite') {
+          expect(result.localChanges).toEqual(['a']);
+          expect(result.untracked).toEqual([]);
         }
         expect(await readWork(ctx, 'a')).toBe('local edit\n');
       });
@@ -311,7 +311,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/new`, new TextEncoder().encode('in the way\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: base,
           theirsTree: theirs,
@@ -319,10 +319,10 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('would-overwrite');
-        if (sut.kind === 'would-overwrite') {
-          expect(sut.untracked).toEqual(['new']);
-          expect(sut.localChanges).toEqual([]);
+        expect(result.kind).toBe('would-overwrite');
+        if (result.kind === 'would-overwrite') {
+          expect(result.untracked).toEqual(['new']);
+          expect(result.localChanges).toEqual([]);
         }
         expect(await readWork(ctx, 'new')).toBe('in the way\n');
       });
@@ -348,7 +348,7 @@ describe('applyMergeToWorktree', () => {
         // ours deleted `a`, so the working tree has no `a`.
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -356,9 +356,9 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.conflicts[0]?.type).toBe('modify-delete');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts[0]?.type).toBe('modify-delete');
         expect(await readWork(ctx, 'a')).toBe('theirs\n');
       });
     });
@@ -407,7 +407,7 @@ describe('applyMergeToWorktree', () => {
         }
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -420,17 +420,17 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
         expect(await readWork(ctx, 'a')).toContain('<<<<<<<');
         expect(await readWork(ctx, 'b')).toBe('b-new\n');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/c`)).toBe(false);
         // d cleanly line-merged in the conflict path (resolved-merged → bytes written).
         expect(await readWork(ctx, 'd')).toBe('D1\nd2\nD3\n');
         // Index: a unmerged (1/2/3), b staged (0), sorted a-before-b.
-        const aStages = sut.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
+        const aStages = result.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
         expect(aStages).toEqual([1, 2, 3]);
-        const paths = sut.indexEntries.map((e) => e.path);
+        const paths = result.indexEntries.map((e) => e.path);
         const posA = paths.indexOf('a' as FilePath);
         const posB = paths.indexOf('b' as FilePath);
         expect(posA).toBeLessThan(posB);
@@ -455,7 +455,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('shared\nours\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: emptyBase,
           oursTree,
           theirsTree,
@@ -464,9 +464,9 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.conflicts[0]?.type).toBe('add-add');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts[0]?.type).toBe('add-add');
         const onDisk = await readWork(ctx, 'f');
         // Must contain conflict markers — not just ours bytes
         expect(onDisk).toContain('<<<<<<<');
@@ -475,7 +475,7 @@ describe('applyMergeToWorktree', () => {
         expect(onDisk).toContain('theirs');
         // The marker bytes must differ from ours' raw content
         expect(onDisk).not.toBe('shared\nours\n');
-        const stages = sut.indexEntries.filter((e) => e.path === 'f').map((e) => e.flags.stage);
+        const stages = result.indexEntries.filter((e) => e.path === 'f').map((e) => e.flags.stage);
         // Only stages 2/3 (no base → no stage 1)
         expect(stages).toEqual([2, 3]);
       });
@@ -499,7 +499,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.symlink('target-ours', `${ctx.layout.workDir}/f`);
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: emptyBase,
           oursTree,
           theirsTree,
@@ -508,13 +508,13 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.conflicts[0]?.type).toBe('add-add');
-        expect(sut.conflicts[0]?.contentVerdict).toBeUndefined();
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts[0]?.type).toBe('add-add');
+        expect(result.conflicts[0]?.contentVerdict).toBeUndefined();
         const linkTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/f`);
         expect(linkTarget).toBe('target-ours');
-        const stages = sut.indexEntries.filter((e) => e.path === 'f').map((e) => e.flags.stage);
+        const stages = result.indexEntries.filter((e) => e.path === 'f').map((e) => e.flags.stage);
         expect(stages).toEqual([2, 3]);
       });
     });
@@ -547,7 +547,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: emptyBase,
           oursTree,
           theirsTree,
@@ -556,10 +556,10 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.conflicts[0]?.type).toBe('distinct-types');
-        const conflict = sut.conflicts[0];
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts[0]?.type).toBe('distinct-types');
+        const conflict = result.conflicts[0];
         if (conflict?.type !== 'distinct-types') return;
         // Regular file written at ourPath (~HEAD); symlink written at theirPath (f keeps symlink)
         const ourPath = conflict.ourPath;
@@ -575,8 +575,8 @@ describe('applyMergeToWorktree', () => {
         const linkActualTarget = await ctx.fs.readlink(`${ctx.layout.workDir}/${theirPath}`);
         expect(linkActualTarget).toBe('/etc/target');
         // Index: stage 2 at ourPath, stage 3 at theirPath
-        const stage2 = sut.indexEntries.find((e) => e.path === ourPath && e.flags.stage === 2);
-        const stage3 = sut.indexEntries.find((e) => e.path === theirPath && e.flags.stage === 3);
+        const stage2 = result.indexEntries.find((e) => e.path === ourPath && e.flags.stage === 2);
+        const stage3 = result.indexEntries.find((e) => e.path === theirPath && e.flags.stage === 3);
         expect(stage2).toBeDefined();
         expect(stage3).toBeDefined();
       });
@@ -610,7 +610,7 @@ describe('applyMergeToWorktree', () => {
         // ours is a symlink; working tree has no regular file at 'f'
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: emptyBase,
           oursTree,
           theirsTree,
@@ -619,10 +619,10 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.conflicts[0]?.type).toBe('distinct-types');
-        const conflict = sut.conflicts[0];
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts[0]?.type).toBe('distinct-types');
+        const conflict = result.conflicts[0];
         if (conflict?.type !== 'distinct-types') return;
         // The symlink keeps `f` (ourPath=f); the regular file is renamed (theirPath=f~side)
         const ourPath = conflict.ourPath;
@@ -674,7 +674,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: emptyBase,
           oursTree,
           theirsTree,
@@ -683,9 +683,9 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('would-overwrite');
-        if (sut.kind !== 'would-overwrite') return;
-        expect(sut.untracked).toContain('f~HEAD');
+        expect(result.kind).toBe('would-overwrite');
+        if (result.kind !== 'would-overwrite') return;
+        expect(result.untracked).toContain('f~HEAD');
         // The obstructing file is untouched
         const onDisk = new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/f~HEAD`));
         expect(onDisk).toBe('in the way\n');
@@ -727,7 +727,7 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: emptyBase,
           oursTree,
           theirsTree,
@@ -736,9 +736,9 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('would-overwrite');
-        if (sut.kind !== 'would-overwrite') return;
-        expect(sut.localChanges).toContain('f~HEAD');
+        expect(result.kind).toBe('would-overwrite');
+        if (result.kind !== 'would-overwrite') return;
+        expect(result.localChanges).toContain('f~HEAD');
       });
     });
   });
@@ -816,7 +816,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -824,7 +824,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         });
 
         // Assert — conflict path reached; b's clean side used streaming
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(streamBlobSpy).toHaveBeenCalled();
         expect(writeStreamSpy).toHaveBeenCalled();
         expect(await readWork(ctx, 'b')).toBe('b-new\n');
@@ -928,7 +928,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const result = await applyMergeToWorktree(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -936,7 +936,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         });
 
         // Assert — d is resolved-merged (synthesised bytes); stream path must NOT be taken
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(writeStreamSpy).not.toHaveBeenCalled();
         // streamBlob may have been called for other paths but NOT for d (resolved-merged)
         // Verify d was written via buffered path with merged bytes

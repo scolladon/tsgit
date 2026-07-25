@@ -60,11 +60,7 @@ describe('signPayload', () => {
         expect(call?.command).toBe("'gpg' --status-fd=2 -bsau 'ABCD1234'");
         expect(call?.stdin).toBe(payload);
       });
-    });
-  });
 
-  describe('Given format openpgp', () => {
-    describe('When signPayload runs', () => {
       it('Then the runner request env carries GIT_DIR set to the repo gitDir', async () => {
         // Arrange
         const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
@@ -328,47 +324,31 @@ describe('signPayload', () => {
     });
   });
 
-  describe('Given an ssh runner that fails without writing a .sig file', () => {
+  describe('Given an ssh runner that exits without writing a .sig file', () => {
     describe('When signPayload runs', () => {
-      it('Then result is { ok: false, reason: "signer-failed" } and temp files are still cleaned up', async () => {
-        // Arrange
-        const runner = stubCommandRunner({ exitCode: 1 });
-        const ctx = createMemoryContext({ command: runner });
-        const tmpPath = sshTempPath(ctx);
+      it.each([
+        { exitCode: 1, label: 'a non-zero exit (1)' },
+        { exitCode: 0, label: 'a zero exit (0)' },
+      ])(
+        'Then result is { ok: false, reason: "signer-failed" } and temp files are still cleaned up ($label)',
+        async ({ exitCode }) => {
+          // Arrange
+          const runner = stubCommandRunner({ exitCode });
+          const ctx = createMemoryContext({ command: runner });
+          const tmpPath = sshTempPath(ctx);
 
-        // Act
-        const result = await signPayload(ctx, enc('payload'), {
-          format: 'ssh',
-          selector: '/key',
-        });
+          // Act
+          const result = await signPayload(ctx, enc('payload'), {
+            format: 'ssh',
+            selector: '/key',
+          });
 
-        // Assert
-        expect(result).toEqual({ ok: false, reason: 'signer-failed' });
-        expect(await ctx.fs.exists(tmpPath)).toBe(false);
-        expect(await ctx.fs.exists(`${tmpPath}.sig`)).toBe(false);
-      });
-    });
-  });
-
-  describe('Given an ssh runner that exits 0 without writing a .sig file', () => {
-    describe('When signPayload runs', () => {
-      it('Then result is { ok: false, reason: "signer-failed" } and temp files are still cleaned up', async () => {
-        // Arrange
-        const runner = stubCommandRunner({ exitCode: 0 });
-        const ctx = createMemoryContext({ command: runner });
-        const tmpPath = sshTempPath(ctx);
-
-        // Act
-        const result = await signPayload(ctx, enc('payload'), {
-          format: 'ssh',
-          selector: '/key',
-        });
-
-        // Assert
-        expect(result).toEqual({ ok: false, reason: 'signer-failed' });
-        expect(await ctx.fs.exists(tmpPath)).toBe(false);
-        expect(await ctx.fs.exists(`${tmpPath}.sig`)).toBe(false);
-      });
+          // Assert
+          expect(result).toEqual({ ok: false, reason: 'signer-failed' });
+          expect(await ctx.fs.exists(tmpPath)).toBe(false);
+          expect(await ctx.fs.exists(`${tmpPath}.sig`)).toBe(false);
+        },
+      );
     });
   });
 
@@ -574,11 +554,11 @@ describe('resolveSigningSelector', () => {
           label: 'returns the fallbackIdent (neither keyOverride nor signingKey)',
         },
       ])('Then it $label', ({ options, expected }) => {
-        // Arrange
-        const sut = resolveSigningSelector(options);
+        // Arrange & Act
+        const result = resolveSigningSelector(options);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

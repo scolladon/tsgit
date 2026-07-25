@@ -4,8 +4,6 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import type { GitObject, ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
 
-const sut = enumerateObjects;
-
 const blob = (content: string): GitObject => ({
   type: 'blob',
   id: '' as ObjectId,
@@ -20,7 +18,7 @@ describe('enumerateObjects', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const result = await sut(ctx);
+        const result = await enumerateObjects(ctx);
 
         // Assert
         expect(result).toEqual([]);
@@ -35,7 +33,7 @@ describe('enumerateObjects', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const result = await sut(ctx, { includePacks: false });
+        const result = await enumerateObjects(ctx, { includePacks: false });
 
         // Assert
         expect(result).toEqual([]);
@@ -54,7 +52,7 @@ describe('enumerateObjects', () => {
         const expectedIds = [idA, idB, idC].sort();
 
         // Act
-        const result = await sut(ctx);
+        const result = await enumerateObjects(ctx);
 
         // Assert
         expect([...result].sort()).toEqual(expectedIds);
@@ -71,7 +69,7 @@ describe('enumerateObjects', () => {
         const id = await writeObject(ctx, blob('hello'));
 
         // Act
-        const result = await sut(ctx, { includePacks: false });
+        const result = await enumerateObjects(ctx, { includePacks: false });
 
         // Assert
         expect(result).toContain(id);
@@ -88,7 +86,7 @@ describe('enumerateObjects', () => {
         await writeObject(ctx, blob('same'));
 
         // Act
-        const result = await sut(ctx);
+        const result = await enumerateObjects(ctx);
 
         // Assert
         expect(result.filter((oid) => oid === id)).toHaveLength(1);
@@ -106,7 +104,7 @@ describe('enumerateObjects', () => {
         await writeObject(ctx, blob('ccc'));
 
         // Act
-        const result = await sut(ctx);
+        const result = await enumerateObjects(ctx);
 
         // Assert
         const sorted = [...result].sort();
@@ -136,7 +134,7 @@ describe('enumerateObjects', () => {
         await ctx.fs.mkdir(`${prefixDir}/subdir`);
 
         // Act
-        const result = await sut(ctx);
+        const result = await enumerateObjects(ctx);
 
         // Assert — only the real blob OID; prefix+dirname garbage must not appear
         expect(result).toContain(blobId);

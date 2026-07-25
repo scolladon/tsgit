@@ -44,10 +44,10 @@ describe('isStatClean', () => {
     describe('When comparing', () => {
       it('Then returns true', () => {
         // Arrange & Act
-        const sut = isStatClean(BASE_ENTRY, BASE_STAT);
+        const result = isStatClean(BASE_ENTRY, BASE_STAT);
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -72,10 +72,10 @@ describe('isStatClean', () => {
           const stat: StatData = { ...BASE_STAT, ...overrides };
 
           // Act
-          const sut = isStatClean(BASE_ENTRY, stat);
+          const result = isStatClean(BASE_ENTRY, stat);
 
           // Assert
-          expect(sut).toBe(false);
+          expect(result).toBe(false);
         },
       );
     });
@@ -85,7 +85,7 @@ describe('isStatClean', () => {
     describe('Given any IndexEntry', () => {
       describe('When extracting stat and comparing', () => {
         it('Then isStatClean returns true', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(arbIndexEntry(), (entry) => {
               const stat: StatData = {
@@ -100,7 +100,12 @@ describe('isStatClean', () => {
                 gid: entry.gid,
                 fileSize: entry.fileSize,
               };
-              expect(isStatClean(entry, stat)).toBe(true);
+
+              // Act
+              const result = isStatClean(entry, stat);
+
+              // Assert
+              expect(result).toBe(true);
             }),
           );
         });
@@ -123,7 +128,7 @@ describe('isStatClean', () => {
             'fileSize',
           ] as const;
 
-          // Assert
+          // Act & Assert
           fc.assert(
             fc.property(arbIndexEntry(), fc.constantFrom(...numericFields), (entry, field) => {
               const stat: StatData = {
@@ -139,7 +144,12 @@ describe('isStatClean', () => {
                 fileSize: entry.fileSize,
                 [field]: entry[field] + 1,
               };
-              expect(isStatClean(entry, stat)).toBe(false);
+
+              // Act
+              const result = isStatClean(entry, stat);
+
+              // Assert
+              expect(result).toBe(false);
             }),
           );
         });
@@ -153,11 +163,11 @@ describe('STAGE0_FLAGS', () => {
     describe('When inspecting its shape', () => {
       it('Then it is the default stage-0 flag record', () => {
         // Arrange & Act
-        const sut = STAGE0_FLAGS;
+        const result = STAGE0_FLAGS;
 
         // Assert — every field is pinned so a BooleanLiteral or stage mutant
         // flipping any of them is caught.
-        expect(sut).toEqual({
+        expect(result).toEqual({
           assumeValid: false,
           stage: 0,
           skipWorktree: false,
@@ -191,18 +201,18 @@ describe('skipWorktreeEntry', () => {
         };
 
         // Act
-        const sut = skipWorktreeEntry(input);
+        const result = skipWorktreeEntry(input);
 
         // Assert
-        expect(sut.ctimeSeconds).toBe(0);
-        expect(sut.ctimeNanoseconds).toBe(0);
-        expect(sut.mtimeSeconds).toBe(0);
-        expect(sut.mtimeNanoseconds).toBe(0);
-        expect(sut.dev).toBe(0);
-        expect(sut.ino).toBe(0);
-        expect(sut.uid).toBe(0);
-        expect(sut.gid).toBe(0);
-        expect(sut.fileSize).toBe(0);
+        expect(result.ctimeSeconds).toBe(0);
+        expect(result.ctimeNanoseconds).toBe(0);
+        expect(result.mtimeSeconds).toBe(0);
+        expect(result.mtimeNanoseconds).toBe(0);
+        expect(result.dev).toBe(0);
+        expect(result.ino).toBe(0);
+        expect(result.uid).toBe(0);
+        expect(result.gid).toBe(0);
+        expect(result.fileSize).toBe(0);
       });
       it('Then id/mode/path are copied verbatim', () => {
         // Arrange — a non-default mode so a `mode:` literal mutant cannot survive.
@@ -213,12 +223,12 @@ describe('skipWorktreeEntry', () => {
         };
 
         // Act
-        const sut = skipWorktreeEntry(input);
+        const result = skipWorktreeEntry(input);
 
         // Assert
-        expect(sut.path).toBe(input.path);
-        expect(sut.id).toBe(input.id);
-        expect(sut.mode).toBe(FILE_MODE.EXECUTABLE);
+        expect(result.path).toBe(input.path);
+        expect(result.id).toBe(input.id);
+        expect(result.mode).toBe(FILE_MODE.EXECUTABLE);
       });
       it('Then flags are stage-0 with skipWorktree set', () => {
         // Arrange
@@ -229,10 +239,10 @@ describe('skipWorktreeEntry', () => {
         };
 
         // Act
-        const sut = skipWorktreeEntry(input);
+        const result = skipWorktreeEntry(input);
 
         // Assert — skipWorktree true, every other flag the stage-0 default.
-        expect(sut.flags).toEqual({
+        expect(result.flags).toEqual({
           assumeValid: false,
           stage: 0,
           skipWorktree: true,

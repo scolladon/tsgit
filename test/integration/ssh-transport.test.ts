@@ -88,8 +88,10 @@ describe('Given a memory-adapter context with no ssh transport', () => {
       const ctx = createMemoryContext();
       const url = 'ssh://git@example.invalid/repo.git';
 
-      // Act & Assert
+      // Act
       await expectAdapterUnavailable(clone(ctx, { url }));
+
+      // Assert
       expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(false);
     });
   });

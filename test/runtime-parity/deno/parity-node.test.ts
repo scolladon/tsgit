@@ -37,13 +37,13 @@ for (const scenario of SCENARIOS) {
       await t.step('Then the result matches the scenario expected golden', async () => {
         // Arrange
         await stageFiles(tmpDir, scenario.inputs);
-        const repo = await openRepository({ cwd: tmpDir });
+        const sut = await openRepository({ cwd: tmpDir });
 
         // Act
-        const sut = await scenario.run(repo, scenario.inputs);
+        const result = await scenario.run(sut, scenario.inputs);
 
         // Assert
-        assertEquals(sut, scenario.expected);
+        assertEquals(result, scenario.expected);
       });
     } finally {
       await rm(tmpDir, { recursive: true, force: true });

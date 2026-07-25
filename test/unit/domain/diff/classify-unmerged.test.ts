@@ -38,10 +38,10 @@ describe('classifyUnmerged', () => {
         'Then stages {1:$s1, 2:$s2, 3:$s3} classify as $expected',
         ({ s1, s2, s3, expected }) => {
           // Arrange
-          const sut = group(s1, s2, s3);
+          const entryGroup = group(s1, s2, s3);
 
           // Act
-          const result = classifyUnmerged(sut);
+          const result = classifyUnmerged(entryGroup);
 
           // Assert
           expect(result).toBe(expected);

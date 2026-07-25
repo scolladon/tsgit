@@ -1198,10 +1198,8 @@ describe('computeAssignment characterization', () => {
     'Given cost matrix case #$index (n=$n), When computeAssignment runs',
     ({ n, cost, columnToRow, rowToColumn }) => {
       it('Then the assignment matches the pinned solver output', () => {
-        // Arrange
-        const sut = computeAssignment;
-        // Act
-        const result = sut(n, cost);
+        // Arrange & Act
+        const result = computeAssignment(n, cost);
         // Assert
         expect(result.columnToRow).toEqual(columnToRow);
         expect(result.rowToColumn).toEqual(rowToColumn);

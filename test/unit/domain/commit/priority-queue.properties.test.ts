@@ -13,9 +13,10 @@ const orderedArb = fc.record({ oid: oidArb, date: fc.integer({ min: 0, max: 4 })
 
 describe('Given an arbitrary ordered pair, When comparing with precedes', () => {
   it('Then no entry precedes itself', () => {
-    // Arrange + Act + Assert
+    // Arrange
     fc.assert(
       fc.property(orderedArb, (sut) => {
+        // Act + Assert
         expect(precedes(sut, sut)).toBe(false);
       }),
       { numRuns: 200 },
@@ -23,9 +24,10 @@ describe('Given an arbitrary ordered pair, When comparing with precedes', () => 
   });
 
   it('Then precedes is asymmetric', () => {
-    // Arrange + Act + Assert
+    // Arrange
     fc.assert(
       fc.property(orderedArb, orderedArb, (a, b) => {
+        // Act + Assert
         if (precedes(a, b)) expect(precedes(b, a)).toBe(false);
       }),
       { numRuns: 200 },
@@ -33,7 +35,7 @@ describe('Given an arbitrary ordered pair, When comparing with precedes', () => 
   });
 
   it('Then exactly one direction precedes for any two distinct entries', () => {
-    // Arrange + Act + Assert
+    // Arrange
     fc.assert(
       fc.property(orderedArb, orderedArb, (a, b) => {
         // Arrange

@@ -43,7 +43,7 @@ describe('Given the Step 1.1 type surface', () => {
   describe('When asserting every new domain row type is importable', () => {
     it('Then the imports resolve and the type names are non-empty strings', () => {
       // Arrange — types vanish at runtime; construct concrete witnesses for each.
-      const sut = {
+      const witnesses = {
         snapshotKind: 'tree' satisfies SnapshotKind,
         treeRow: undefined as unknown as TreeEntryRow,
         indexRow: undefined as unknown as IndexEntryRow,
@@ -54,7 +54,7 @@ describe('Given the Step 1.1 type surface', () => {
       };
 
       // Act
-      const observed = sut.snapshotKind;
+      const observed = witnesses.snapshotKind;
 
       // Assert
       expect(observed).toBe('tree');
@@ -64,7 +64,7 @@ describe('Given the Step 1.1 type surface', () => {
   describe('When asserting every new port interface is importable', () => {
     it('Then the imports resolve and concrete witnesses can be typed', () => {
       // Arrange
-      const sut = {
+      const witnesses = {
         scope: 'index' satisfies WriteScope,
         emitter: undefined as unknown as WriteEventEmitter,
         stream: undefined as unknown as WriteEventStream,
@@ -82,7 +82,7 @@ describe('Given the Step 1.1 type surface', () => {
       };
 
       // Act
-      const observed = sut.scope;
+      const observed = witnesses.scope;
 
       // Assert
       expect(observed).toBe('index');
@@ -92,7 +92,7 @@ describe('Given the Step 1.1 type surface', () => {
   describe('When asserting every new application entry surface is importable', () => {
     it('Then the entry interfaces and requireSnapshot helper resolve', () => {
       // Arrange
-      const sut = {
+      const witnesses = {
         treeEntry: undefined as unknown as TreeEntry,
         indexEntry: undefined as unknown as IndexEntry,
         workdirEntry: undefined as unknown as WorkdirEntry,
@@ -100,7 +100,7 @@ describe('Given the Step 1.1 type surface', () => {
       };
 
       // Act
-      const observed = typeof sut.require;
+      const observed = typeof witnesses.require;
 
       // Assert
       expect(observed).toBe('function');

@@ -14,10 +14,10 @@ describe('parseGitattributes', () => {
         const input = '';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut).toEqual({ rules: [], macros: [] });
+        expect(result).toEqual({ rules: [], macros: [] });
       });
     });
   });
@@ -29,10 +29,10 @@ describe('parseGitattributes', () => {
         const input = '# a comment\n';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules).toEqual([]);
+        expect(result.rules).toEqual([]);
       });
     });
   });
@@ -44,10 +44,10 @@ describe('parseGitattributes', () => {
         const input = '   \n';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules).toEqual([]);
+        expect(result.rules).toEqual([]);
       });
     });
   });
@@ -59,12 +59,12 @@ describe('parseGitattributes', () => {
         const input = '*.txt text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules).toHaveLength(1);
-        expect(sut.rules[0]!.pattern).toBe('*.txt');
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ text: true });
+        expect(result.rules).toHaveLength(1);
+        expect(result.rules[0]!.pattern).toBe('*.txt');
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ text: true });
       });
     });
   });
@@ -76,10 +76,10 @@ describe('parseGitattributes', () => {
         const input = '*.bin -merge';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ merge: false });
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ merge: false });
       });
     });
   });
@@ -91,10 +91,10 @@ describe('parseGitattributes', () => {
         const input = 'file !diff';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ diff: 'unspecified' });
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ diff: 'unspecified' });
       });
     });
   });
@@ -106,10 +106,10 @@ describe('parseGitattributes', () => {
         const input = '*.c merge=union';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ merge: { set: 'union' } });
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ merge: { set: 'union' } });
       });
     });
 
@@ -119,10 +119,10 @@ describe('parseGitattributes', () => {
         const input = '*.c merge=';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ merge: { set: '' } });
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ merge: { set: '' } });
       });
     });
   });
@@ -134,10 +134,10 @@ describe('parseGitattributes', () => {
         const input = '*.png -diff -merge';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ diff: false, merge: false });
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ diff: false, merge: false });
       });
     });
   });
@@ -149,10 +149,10 @@ describe('parseGitattributes', () => {
         const input = 'f merge merge=custom';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ merge: { set: 'custom' } });
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ merge: { set: 'custom' } });
       });
     });
   });
@@ -164,11 +164,11 @@ describe('parseGitattributes', () => {
         const input = '*.txt';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules).toHaveLength(1);
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({});
+        expect(result.rules).toHaveLength(1);
+        expect(attrs(result.rules[0]!.attributes)).toEqual({});
       });
     });
   });
@@ -180,10 +180,10 @@ describe('parseGitattributes', () => {
         const input = '*.x - ! =v text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ text: true });
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ text: true });
       });
     });
   });
@@ -195,13 +195,13 @@ describe('parseGitattributes', () => {
         const input = '[attr]binary -diff -merge -text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules).toEqual([]);
-        expect(sut.macros).toHaveLength(1);
-        expect(sut.macros[0]!.name).toBe('binary');
-        expect(attrs(sut.macros[0]!.attributes)).toEqual({
+        expect(result.rules).toEqual([]);
+        expect(result.macros).toHaveLength(1);
+        expect(result.macros[0]!.name).toBe('binary');
+        expect(attrs(result.macros[0]!.attributes)).toEqual({
           diff: false,
           merge: false,
           text: false,
@@ -217,11 +217,11 @@ describe('parseGitattributes', () => {
         const input = '*.txt text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.anchored).toBe(false);
-        expect(sut.rules[0]!.compiled.test('a/b/c.txt')).toBe(true);
+        expect(result.rules[0]!.anchored).toBe(false);
+        expect(result.rules[0]!.compiled.test('a/b/c.txt')).toBe(true);
       });
     });
   });
@@ -233,11 +233,11 @@ describe('parseGitattributes', () => {
         const input = 'sub/dir/*.txt text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.anchored).toBe(true);
-        expect(sut.rules[0]!.compiled.test('sub/dir/x.txt')).toBe(true);
+        expect(result.rules[0]!.anchored).toBe(true);
+        expect(result.rules[0]!.compiled.test('sub/dir/x.txt')).toBe(true);
       });
     });
   });
@@ -249,12 +249,12 @@ describe('parseGitattributes', () => {
         const input = '/top text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.anchored).toBe(true);
-        expect(sut.rules[0]!.compiled.test('top')).toBe(true);
-        expect(sut.rules[0]!.compiled.test('a/top')).toBe(false);
+        expect(result.rules[0]!.anchored).toBe(true);
+        expect(result.rules[0]!.compiled.test('top')).toBe(true);
+        expect(result.rules[0]!.compiled.test('a/top')).toBe(false);
       });
     });
   });
@@ -266,15 +266,15 @@ describe('parseGitattributes', () => {
         const input = 'build/ -merge';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.directoryOnly).toBe(true);
+        expect(result.rules[0]!.directoryOnly).toBe(true);
         // The trailing `/` is stripped before deriving anchor + compiled body:
         // `build` has no interior slash, so it is unanchored and matches `build`.
-        expect(sut.rules[0]!.anchored).toBe(false);
-        expect(sut.rules[0]!.compiled.test('build')).toBe(true);
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ merge: false });
+        expect(result.rules[0]!.anchored).toBe(false);
+        expect(result.rules[0]!.compiled.test('build')).toBe(true);
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ merge: false });
       });
     });
   });
@@ -286,11 +286,11 @@ describe('parseGitattributes', () => {
         const input = '"with space.txt" text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.pattern).toBe('with space.txt');
-        expect(attrs(sut.rules[0]!.attributes)).toEqual({ text: true });
+        expect(result.rules[0]!.pattern).toBe('with space.txt');
+        expect(attrs(result.rules[0]!.attributes)).toEqual({ text: true });
       });
     });
 
@@ -300,10 +300,10 @@ describe('parseGitattributes', () => {
         const input = '"tab\\ttext\\\\end" text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.pattern).toBe('tab\ttext\\end');
+        expect(result.rules[0]!.pattern).toBe('tab\ttext\\end');
       });
 
       it('Then `\\n` and `\\r` decode to newline and carriage return', () => {
@@ -311,10 +311,10 @@ describe('parseGitattributes', () => {
         const input = '"a\\nb\\rc" text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.pattern).toBe('a\nb\rc');
+        expect(result.rules[0]!.pattern).toBe('a\nb\rc');
       });
     });
 
@@ -324,10 +324,10 @@ describe('parseGitattributes', () => {
         const input = '"ab\\';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.pattern).toBe('ab');
+        expect(result.rules[0]!.pattern).toBe('ab');
       });
     });
 
@@ -337,10 +337,10 @@ describe('parseGitattributes', () => {
         const input = '"unterminated text';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules[0]!.pattern).toBe('unterminated text');
+        expect(result.rules[0]!.pattern).toBe('unterminated text');
       });
     });
   });
@@ -352,10 +352,10 @@ describe('parseGitattributes', () => {
         const input = '[attr]   ';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut).toEqual({ rules: [], macros: [] });
+        expect(result).toEqual({ rules: [], macros: [] });
       });
     });
   });
@@ -367,10 +367,10 @@ describe('parseGitattributes', () => {
         const input = '# comment\n\n*.txt text\n*.bin -merge';
 
         // Act
-        const sut = parseGitattributes(input);
+        const result = parseGitattributes(input);
 
         // Assert
-        expect(sut.rules.map((r) => r.lineNumber)).toEqual([3, 4]);
+        expect(result.rules.map((r) => r.lineNumber)).toEqual([3, 4]);
       });
     });
   });

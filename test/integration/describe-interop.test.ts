@@ -128,33 +128,62 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     },
   ];
 
-  it.each(DESCRIBE_FLAG_MATRIX)('Then $label matches git describe', async ({ run, gitArgs }) => {
-    expect(render(await run())).toBe(gitDescribe(rich, ...gitArgs()));
+  describe('Given the rich repo (two tags on c1, v2.0 + a feature branch on c2)', () => {
+    describe('When describeCmd runs with each flag combination', () => {
+      it.each(DESCRIBE_FLAG_MATRIX)(
+        'Then $label matches git describe',
+        async ({ run, gitArgs }) => {
+          // Arrange & Act
+          const result = await run();
+
+          // Assert
+          expect(render(result)).toBe(gitDescribe(rich, ...gitArgs()));
+        },
+      );
+    });
   });
 
-  it('Then the --long line matches git describe --long', async () => {
-    expect(renderLong(await describeCmd(richCtx))).toBe(gitDescribe(rich, '--long'));
+  describe('Given the rich repo, When describeCmd runs with --long', () => {
+    it('Then the --long line matches git describe --long', async () => {
+      // Arrange & Act
+      const result = await describeCmd(richCtx);
+
+      // Assert
+      expect(renderLong(result)).toBe(gitDescribe(rich, '--long'));
+    });
   });
 
-  it('Then an exact commit with two same-commit tags matches git (newer wins)', async () => {
-    const sut = await describeCmd(richCtx, c1);
-    expect(sut.exact).toBe(true);
-    expect(render(sut)).toBe(gitDescribe(rich, c1));
+  describe('Given the rich repo, When describeCmd targets an exact commit with two same-commit tags', () => {
+    it('Then an exact commit with two same-commit tags matches git (newer wins)', async () => {
+      // Arrange & Act
+      const result = await describeCmd(richCtx, c1);
+
+      // Assert
+      expect(result.exact).toBe(true);
+      expect(render(result)).toBe(gitDescribe(rich, c1));
+    });
   });
 
-  it('Then exactMatch on an untagged HEAD co-refuses with git', async () => {
-    const gitResult = tryRunGit(['-C', rich, 'describe', '--exact-match']);
-    let threw = false;
-    try {
-      await describeCmd(richCtx, undefined, { exactMatch: true });
-    } catch {
-      threw = true;
-    }
-    expect(gitResult.ok).toBe(false);
-    expect(threw).toBe(true);
+  describe('Given the rich repo, When describeCmd runs with exactMatch on an untagged HEAD', () => {
+    it('Then exactMatch on an untagged HEAD co-refuses with git', async () => {
+      // Arrange
+      const gitResult = tryRunGit(['-C', rich, 'describe', '--exact-match']);
+      let threw = false;
+
+      // Act
+      try {
+        await describeCmd(richCtx, undefined, { exactMatch: true });
+      } catch {
+        threw = true;
+      }
+
+      // Assert
+      expect(gitResult.ok).toBe(false);
+      expect(threw).toBe(true);
+    });
   });
 
-  describe('Given a merge whose parents each carry a tag', () => {
+  describe('Given a merge whose parents each carry a tag, When describeCmd runs with default and --first-parent', () => {
     let dir = '';
     let ctx: Context;
 
@@ -179,10 +208,13 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     });
 
     it('Then default and --first-parent both match git', async () => {
-      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
-      expect(render(await describeCmd(ctx, undefined, { firstParent: true }))).toBe(
-        gitDescribe(dir, '--first-parent'),
-      );
+      // Arrange & Act
+      const defaultResult = await describeCmd(ctx);
+      const firstParentResult = await describeCmd(ctx, undefined, { firstParent: true });
+
+      // Assert
+      expect(render(defaultResult)).toBe(gitDescribe(dir));
+      expect(render(firstParentResult)).toBe(gitDescribe(dir, '--first-parent'));
     });
   });
 
@@ -218,14 +250,24 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
       await rm(dir, { recursive: true, force: true });
     });
 
-    it('Then default describe keeps the farther, first-met tag, matching git', async () => {
-      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
+    describe('When describeCmd runs with the default candidate budget', () => {
+      it('Then default describe keeps the farther, first-met tag, matching git', async () => {
+        // Arrange & Act
+        const result = await describeCmd(ctx);
+
+        // Assert
+        expect(render(result)).toBe(gitDescribe(dir));
+      });
     });
 
-    it('Then --candidates=1 spends its slot on the farther (newer-found) tag, matching git', async () => {
-      expect(render(await describeCmd(ctx, undefined, { candidates: 1 }))).toBe(
-        gitDescribe(dir, '--candidates=1'),
-      );
+    describe('When describeCmd runs with --candidates=1', () => {
+      it('Then --candidates=1 spends its slot on the farther (newer-found) tag, matching git', async () => {
+        // Arrange & Act
+        const result = await describeCmd(ctx, undefined, { candidates: 1 });
+
+        // Assert
+        expect(render(result)).toBe(gitDescribe(dir, '--candidates=1'));
+      });
     });
   });
 
@@ -235,7 +277,7 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
   // reaching `old`. tsgit omits that break (it cannot change the result), walking
   // the full set and even collecting `old` — yet still reports `ay` because `old`
   // is farther and never wins. This pins that omission against regression.
-  describe('Given an annotated tag behind a merge convergence', () => {
+  describe('Given an annotated tag behind a merge convergence, When describeCmd runs with the default candidate budget', () => {
     let dir = '';
     let ctx: Context;
 
@@ -263,7 +305,11 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     });
 
     it('Then default describe reports the nearest first-met tag, matching git', async () => {
-      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
+      // Arrange & Act
+      const result = await describeCmd(ctx);
+
+      // Assert
+      expect(render(result)).toBe(gitDescribe(dir));
     });
   });
 
@@ -302,14 +348,24 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
       await rm(dir, { recursive: true, force: true });
     });
 
-    it('Then the full budget keeps the nearer later-met tag, matching git', async () => {
-      expect(render(await describeCmd(ctx))).toBe(gitDescribe(dir));
+    describe('When describeCmd runs with the full candidate budget', () => {
+      it('Then the full budget keeps the nearer later-met tag, matching git', async () => {
+        // Arrange & Act
+        const result = await describeCmd(ctx);
+
+        // Assert
+        expect(render(result)).toBe(gitDescribe(dir));
+      });
     });
 
-    it('Then a single slot keeps the first-met tag instead, matching git', async () => {
-      expect(render(await describeCmd(ctx, undefined, { candidates: 1 }))).toBe(
-        gitDescribe(dir, '--candidates=1'),
-      );
+    describe('When describeCmd runs with --candidates=1', () => {
+      it('Then a single slot keeps the first-met tag instead, matching git', async () => {
+        // Arrange & Act
+        const result = await describeCmd(ctx, undefined, { candidates: 1 });
+
+        // Assert
+        expect(render(result)).toBe(gitDescribe(dir, '--candidates=1'));
+      });
     });
   });
 
@@ -327,22 +383,34 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
       await rm(dir, { recursive: true, force: true });
     });
 
-    it('Then --always reconstructs git describe --always', async () => {
-      const sut = await describeCmd(ctx, undefined, { always: true });
-      expect(sut.tag).toBeUndefined();
-      expect(render(sut)).toBe(gitDescribe(dir, '--always'));
+    describe('When describeCmd runs with --always', () => {
+      it('Then --always reconstructs git describe --always', async () => {
+        // Arrange & Act
+        const result = await describeCmd(ctx, undefined, { always: true });
+
+        // Assert
+        expect(result.tag).toBeUndefined();
+        expect(render(result)).toBe(gitDescribe(dir, '--always'));
+      });
     });
 
-    it('Then describe co-refuses with git (no --always)', async () => {
-      const gitResult = tryRunGit(['-C', dir, 'describe']);
-      let threw = false;
-      try {
-        await describeCmd(ctx);
-      } catch {
-        threw = true;
-      }
-      expect(gitResult.ok).toBe(false);
-      expect(threw).toBe(true);
+    describe('When describeCmd runs without --always', () => {
+      it('Then describe co-refuses with git (no --always)', async () => {
+        // Arrange
+        const gitResult = tryRunGit(['-C', dir, 'describe']);
+        let threw = false;
+
+        // Act
+        try {
+          await describeCmd(ctx);
+        } catch {
+          threw = true;
+        }
+
+        // Assert
+        expect(gitResult.ok).toBe(false);
+        expect(threw).toBe(true);
+      });
     });
   });
 
@@ -420,7 +488,7 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     },
   ];
 
-  describe('Given a repository state that determines the --dirty mark', () => {
+  describe('Given a repository state that determines the --dirty mark, When describeCmd runs with --dirty', () => {
     it.each(DIRTY_STATE_MATRIX)(
       'Then $label',
       async ({ expectedDirty, build }) => {
@@ -428,11 +496,11 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
         const { dir, ctx } = await build();
         try {
           // Act
-          const sut = await describeCmd(ctx, undefined, { dirty: true });
+          const result = await describeCmd(ctx, undefined, { dirty: true });
 
           // Assert
-          expect(sut.dirty).toBe(expectedDirty);
-          expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
+          expect(result.dirty).toBe(expectedDirty);
+          expect(render(result)).toBe(gitDescribe(dir, '--dirty'));
         } finally {
           await rm(dir, { recursive: true, force: true });
         }

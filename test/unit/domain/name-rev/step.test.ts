@@ -27,16 +27,16 @@ describe('firstParentName', () => {
         const name = base({ generation: 2, distance: 5, steps });
 
         // Act
-        const sut = firstParentName(name);
+        const result = firstParentName(name);
 
         // Assert
-        expect(sut.generation).toBe(3);
-        expect(sut.distance).toBe(6);
-        expect(sut.steps).toEqual(steps);
-        expect(sut.ref).toBe(name.ref);
-        expect(sut.tagDeref).toBe(name.tagDeref);
-        expect(sut.fromTag).toBe(name.fromTag);
-        expect(sut.taggerDate).toBe(name.taggerDate);
+        expect(result.generation).toBe(3);
+        expect(result.distance).toBe(6);
+        expect(result.steps).toEqual(steps);
+        expect(result.ref).toBe(name.ref);
+        expect(result.tagDeref).toBe(name.tagDeref);
+        expect(result.fromTag).toBe(name.fromTag);
+        expect(result.taggerDate).toBe(name.taggerDate);
       });
     });
   });
@@ -50,16 +50,16 @@ describe('mergeParentName', () => {
         const name = base({ generation: 3, distance: 4, steps: [{ kind: 'ancestor', count: 1 }] });
 
         // Act
-        const sut = mergeParentName(name, 2);
+        const result = mergeParentName(name, 2);
 
         // Assert
-        expect(sut.steps).toEqual([
+        expect(result.steps).toEqual([
           { kind: 'ancestor', count: 1 },
           { kind: 'ancestor', count: 3 },
           { kind: 'parent', number: 2 },
         ]);
-        expect(sut.generation).toBe(0);
-        expect(sut.distance).toBe(4 + MERGE_TRAVERSAL_WEIGHT);
+        expect(result.generation).toBe(0);
+        expect(result.distance).toBe(4 + MERGE_TRAVERSAL_WEIGHT);
       });
     });
   });
@@ -71,12 +71,12 @@ describe('mergeParentName', () => {
         const name = base({ generation: 0, distance: 7, steps: [] });
 
         // Act
-        const sut = mergeParentName(name, 3);
+        const result = mergeParentName(name, 3);
 
         // Assert
-        expect(sut.steps).toEqual([{ kind: 'parent', number: 3 }]);
-        expect(sut.generation).toBe(0);
-        expect(sut.distance).toBe(7 + MERGE_TRAVERSAL_WEIGHT);
+        expect(result.steps).toEqual([{ kind: 'parent', number: 3 }]);
+        expect(result.generation).toBe(0);
+        expect(result.distance).toBe(7 + MERGE_TRAVERSAL_WEIGHT);
       });
     });
   });
@@ -101,10 +101,10 @@ describe('foldSteps', () => {
         const name = base({ generation: 2, steps: [{ kind: 'parent', number: 2 }] });
 
         // Act
-        const sut = foldSteps(name);
+        const result = foldSteps(name);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           { kind: 'parent', number: 2 },
           { kind: 'ancestor', count: 2 },
         ]);
@@ -120,10 +120,10 @@ describe('foldSteps', () => {
         const name = base({ generation: 0, steps });
 
         // Act
-        const sut = foldSteps(name);
+        const result = foldSteps(name);
 
         // Assert
-        expect(sut).toEqual(steps);
+        expect(result).toEqual(steps);
       });
     });
   });

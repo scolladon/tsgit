@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { detectBannedSutName } from '../../../test-pyramid/detect-banned-sut-name.js';
+import type { PyramidManifest } from '../../../test-pyramid/parse-manifest.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();
@@ -114,6 +115,27 @@ describe('detectBannedSutName', () => {
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a heuristic scoped to tiers unit and integration, When both a unit and an integration file declare a banned name, Then both are flagged', () => {
+    // Arrange
+    const multiTier: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        sutNaming: { ...MANIFEST.heuristics.sutNaming, tiers: ['unit', 'integration'] },
+      },
+    };
+    const source = `it('whatever', () => { const subject = build(); expect(subject).toBeDefined(); });`;
+
+    // Act
+    const sut = detectBannedSutName(multiTier, [
+      file('test/unit/a.test.ts', source),
+      file('test/integration/b.test.ts', source),
+    ]);
+
+    // Assert
+    expect(sut.map((f) => f.path)).toEqual(['test/integration/b.test.ts', 'test/unit/a.test.ts']);
   });
 
   it('Given multiple files with findings, When scanned, Then they are sorted by path then by line', () => {

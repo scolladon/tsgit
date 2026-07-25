@@ -90,10 +90,10 @@ describe('resolveRef', () => {
         const { ctx, ref, options } = await arrange();
 
         // Act
-        const sut = await resolveRef(ctx, ref, options);
+        const result = await resolveRef(ctx, ref, options);
 
         // Assert
-        expect(sut).toBe(MAIN_ID);
+        expect(result).toBe(MAIN_ID);
       });
     });
   });
@@ -105,9 +105,10 @@ describe('resolveRef', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/loop\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop', 'ref: HEAD\n');
+
+        // Act + Assert
         try {
           await resolveRef(ctx, 'HEAD');
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CYCLE_DETECTED');
@@ -121,9 +122,10 @@ describe('resolveRef', () => {
       it('Then throws REF_NOT_FOUND', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+
+        // Act + Assert
         try {
           await resolveRef(ctx, 'refs/heads/nope' as RefName);
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_NOT_FOUND');
@@ -145,9 +147,10 @@ describe('resolveRef', () => {
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/s4', 'ref: refs/heads/s5\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/s5', 'ref: refs/heads/s6\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/s6', 'ref: refs/heads/final\n');
+
+        // Act + Assert
         try {
           await resolveRef(ctx, 'refs/heads/s1' as RefName, { maxSymbolicDepth: 5 });
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');
@@ -177,9 +180,12 @@ describe('resolveRef', () => {
         };
         const tagId = await writeObject(ctx, tag);
         await ctx.fs.writeUtf8('/repo/.git/refs/tags/v1', `${tagId}\n`);
-        const sut = await resolveRef(ctx, 'refs/tags/v1' as RefName, { peel: true });
+
+        // Act
+        const result = await resolveRef(ctx, 'refs/tags/v1' as RefName, { peel: true });
+
         // Assert
-        expect(sut).toBe(treeId);
+        expect(result).toBe(treeId);
       });
     });
   });
@@ -210,10 +216,9 @@ describe('resolveRef', () => {
         const ctx = await buildSeededContext();
         const ref = await arrange(ctx);
 
-        // Act
+        // Act + Assert
         try {
           await resolveRef(ctx, ref);
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_REF');
@@ -231,9 +236,10 @@ describe('resolveRef', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop-a', 'ref: refs/heads/loop-b\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop-b', 'ref: refs/heads/loop-a\n');
+
+        // Act + Assert
         try {
           await resolveRef(ctx, 'refs/heads/loop-a' as RefName);
-          // Assert
           expect.unreachable();
         } catch (error) {
           const data = (error as TsgitError).data;
@@ -274,12 +280,15 @@ describe('resolveRef', () => {
           currentType = 'tag';
         }
         await ctx.fs.writeUtf8('/repo/.git/refs/tags/deep', `${currentId}\n`);
-        const sut = await resolveRef(ctx, 'refs/tags/deep' as RefName, {
+
+        // Act
+        const result = await resolveRef(ctx, 'refs/tags/deep' as RefName, {
           peel: true,
           maxPeelDepth: 5,
         });
+
         // Assert
-        expect(sut).toBe(treeId);
+        expect(result).toBe(treeId);
       });
     });
   });
@@ -311,12 +320,13 @@ describe('resolveRef', () => {
           currentType = 'tag';
         }
         await ctx.fs.writeUtf8('/repo/.git/refs/tags/too-deep', `${currentId}\n`);
+
+        // Act + Assert
         try {
           await resolveRef(ctx, 'refs/tags/too-deep' as RefName, {
             peel: true,
             maxPeelDepth: 5,
           });
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');

@@ -293,3 +293,46 @@ describe('Given a describe.skipIf(cond)("outer", body) wrapping an inner describ
     });
   });
 });
+
+describe('Given nested describe() bodies where the inner one contains a regex literal with an embedded quote', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then both blocks still close (the quote inside the regex is not a string delimiter)', () => {
+      // Arrange — kills the regression where a `'`/`"`/`` ` `` inside a
+      // /regex/ literal was misread as a string delimiter. The desync eats
+      // every following character (including real closing parens) as string
+      // content, so findMatchingClose never sees depth return to 0 and
+      // returns -1 — silently dropping BOTH describe() blocks from the scan
+      // (this is the real config-interop.test.ts shape: a `/name
+      // '([^']+)'/` style regex nested two describes deep).
+      const source =
+        "describe('outer', () => { describe('inner', () => { const m = /name '([^']+)'/.exec(s); }); });";
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['outer', 'inner']);
+    });
+  });
+});
+
+describe('Given a describe() body containing a keyword-preceded regex literal with an escaped paren', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then the block still closes (the regex is recognized after `return`, not misread as division)', () => {
+      // Arrange — kills the regression where `isRegexContext` only recognized
+      // operator/bracket predecessors, not keywords like `return`. Without
+      // the keyword check, the `/` after `return` is misread as division, so
+      // the escaped `\(` inside the regex is treated as a real paren and
+      // desyncs findMatchingClose — the whole describe() block is silently
+      // dropped.
+      const source =
+        "describe('outer', () => { const check = () => { return /it\\(/.test(s); }; it('Then y', () => {}); });";
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['outer']);
+    });
+  });
+});

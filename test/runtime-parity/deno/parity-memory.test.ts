@@ -35,13 +35,13 @@ for (const scenario of SCENARIOS) {
   Deno.test(`Given the ${scenario.name} scenario, When the Deno driver runs it against the Memory adapter`, async (t) => {
     await t.step('Then the result matches the scenario expected golden', async () => {
       // Arrange
-      const repo = await openRepository({ files: stageFiles(scenario.inputs) });
+      const sut = await openRepository({ files: stageFiles(scenario.inputs) });
 
       // Act
-      const sut = await scenario.run(repo, scenario.inputs);
+      const result = await scenario.run(sut, scenario.inputs);
 
       // Assert
-      assertEquals(sut, scenario.expected);
+      assertEquals(result, scenario.expected);
     });
   });
 }

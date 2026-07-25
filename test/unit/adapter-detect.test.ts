@@ -40,10 +40,12 @@ describe('isNode', () => {
         // Arrange — attacker-style prototype pollution rows plant `node`/`versions`
         // on the prototype instead of the own object.
         vi.stubGlobal('process', process);
-        const sut = isNode;
+
+        // Act
+        const result = isNode();
 
         // Assert
-        expect(sut()).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -85,10 +87,12 @@ describe('isBrowser', () => {
         // Arrange
         vi.stubGlobal('window', window);
         vi.stubGlobal('navigator', navigator);
-        const sut = isBrowser;
+
+        // Act
+        const result = isBrowser();
 
         // Assert
-        expect(sut()).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -140,10 +144,12 @@ describe('detectRuntime', () => {
         vi.stubGlobal('process', process);
         vi.stubGlobal('window', window);
         vi.stubGlobal('navigator', navigator);
-        const sut = detectRuntime;
+
+        // Act
+        const result = detectRuntime();
 
         // Assert
-        expect(sut()).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

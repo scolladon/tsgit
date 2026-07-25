@@ -113,11 +113,10 @@ describe('resolveScopePath', () => {
         },
       ])('Then $label resolves to the expected path', async ({ scope, arrange }) => {
         // Arrange
-        const sut = resolveScopePath;
         const { ctx, expected } = arrange();
 
         // Act
-        const result = await sut(ctx, scope);
+        const result = await resolveScopePath(ctx, scope);
 
         // Assert
         expect(result).toBe(expected);
@@ -166,12 +165,11 @@ describe('resolveScopePath', () => {
         },
       ])('Then throws $expected.code ($label)', async ({ scope, ctx, expected }) => {
         // Arrange
-        const sut = resolveScopePath;
         let caught: TsgitError | undefined;
 
         // Act
         try {
-          await sut(ctx(), scope);
+          await resolveScopePath(ctx(), scope);
         } catch (err) {
           caught = err as TsgitError;
         }
@@ -274,11 +272,10 @@ describe('isWorktreeScopeActive', () => {
         },
       ])('Then returns $expected ($label)', async ({ files, expected }) => {
         // Arrange
-        const sut = isWorktreeScopeActive;
         const ctx = createMemoryContext({ files });
 
         // Act
-        const result = await sut(ctx);
+        const result = await isWorktreeScopeActive(ctx);
 
         // Assert
         expect(result).toBe(expected);
@@ -376,11 +373,8 @@ describe('mergeConfigsByScope', () => {
           ],
         },
       ])('Then $label', ({ input, expected }) => {
-        // Arrange
-        const sut = mergeConfigsByScope;
-
-        // Act
-        const result = sut(input);
+        // Arrange & Act
+        const result = mergeConfigsByScope(input);
 
         // Assert
         expect(result).toEqual(expected);
@@ -400,10 +394,10 @@ describe('mergeConfigsByScope', () => {
       ];
 
       // Act
-      const sut = mergeConfigsByScope(input);
+      const result = mergeConfigsByScope(input);
 
       // Assert
-      expect(sut.map((e) => e.scope)).toEqual(['system', 'global', 'local', 'worktree']);
+      expect(result.map((e) => e.scope)).toEqual(['system', 'global', 'local', 'worktree']);
     });
   });
 });

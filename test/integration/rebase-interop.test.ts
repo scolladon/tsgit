@@ -76,7 +76,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     await pair.dispose();
   });
 
-  describe('Given a topic diverged from an advanced main', () => {
+  describe('Given a topic diverged from an advanced main, When the topic is rebased onto main', () => {
     it('Then a clean rebase matches git: resulting tree, preserved author, single parent', async () => {
       // Arrange — identical history in both repos
       buildClean(pair.peer);
@@ -97,7 +97,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
-  describe('Given a tsgit-started rebase that conflicts', () => {
+  describe('Given a tsgit-started rebase that conflicts, When the conflict is resolved and handed to git rebase --continue', () => {
     it('Then git rebase --continue finishes it (tsgit rebase-merge state is git-readable)', async () => {
       // Arrange — tsgit hits the conflict and persists `.git/rebase-merge/`
       const dir = pair.ours;
@@ -120,7 +120,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
-  describe('Given a git-started rebase that conflicts', () => {
+  describe('Given a git-started rebase that conflicts, When the conflict is resolved and handed to repo.rebase.continue', () => {
     it('Then repo.rebase.continue finishes it (tsgit reads git rebase-merge state)', async () => {
       // Arrange — git starts the rebase and stops on the conflict
       const dir = pair.ours;
@@ -142,7 +142,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
-  describe('Given a rebase aborted mid-conflict', () => {
+  describe('Given a rebase aborted mid-conflict, When both tools abort', () => {
     it('Then tsgit and git write the same faithful abort reflog, branch untouched', async () => {
       // Arrange — identical conflict in both; run each to the stop.
       buildConflict(pair.peer);
@@ -168,7 +168,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
-  describe('Given a topic commit already present upstream', () => {
+  describe('Given a topic commit already present upstream, When the topic is rebased onto main', () => {
     it('Then tsgit and git drop the identical cherry-pick-equivalent commit', async () => {
       // Arrange — identical history where `dup` is patch-equivalent to a main commit
       buildCherryEquivalent(pair.peer);
@@ -187,7 +187,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
-  describe('Given two unrelated histories (no common ancestor)', () => {
+  describe('Given two unrelated histories (no common ancestor), When the feature branch is rebased onto main', () => {
     it('Then tsgit matches git: same resulting tree, commit count, single-parent tip', async () => {
       // Arrange — identical orphan-branch history in both repos
       buildUnrelated(pair.peer);
@@ -342,114 +342,122 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       { label: 'fixing up a commit', action: 'fixup', target: 'c3' },
     ];
 
-    it.each(REBASE_TODO_MATRIX)(
-      'Then $label matches git: resulting tree + commit count',
-      async ({ action, target }) => {
-        // Arrange — identical history; git applies the scripted todo action
+    describe('When the interactive todo drops, squashes, or fixes up a commit', () => {
+      it.each(REBASE_TODO_MATRIX)(
+        'Then $label matches git: resulting tree + commit count',
+        async ({ action, target }) => {
+          // Arrange — identical history; git applies the scripted todo action
+          buildInteractiveLinear(pair.peer);
+          buildInteractiveLinear(pair.ours);
+          gitRebaseInteractive(pair.peer, `s/^pick (.*${target} subject)/${action} $1/`);
+          const base = oidAt(pair.ours, 'HEAD~3');
+          const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+          const repo = await openRepository({ cwd: pair.ours });
+          const todo =
+            target === 'c2'
+              ? [
+                  { action: 'pick' as const, oid: c1 as string },
+                  { action, oid: c2 as string },
+                  { action: 'pick' as const, oid: c3 as string },
+                ]
+              : [
+                  { action: 'pick' as const, oid: c1 as string },
+                  { action: 'pick' as const, oid: c2 as string },
+                  { action, oid: c3 as string },
+                ];
+
+          // Act
+          const result = await repo.rebase.run({ upstream: base, interactive: todo });
+          await repo.dispose();
+
+          // Assert
+          expect(result.kind).toBe('rebased');
+          expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+          expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+        },
+      );
+    });
+
+    describe('When the interactive todo is an all-pick no-op', () => {
+      it('Then an all-pick edit is a byte-identical no-op (HEAD oid unchanged)', async () => {
+        // Arrange — both repos identical; git rebases -i with no edits
         buildInteractiveLinear(pair.peer);
         buildInteractiveLinear(pair.ours);
-        gitRebaseInteractive(pair.peer, `s/^pick (.*${target} subject)/${action} $1/`);
+        const before = oidAt(pair.ours, 'HEAD');
+        gitRebaseInteractive(pair.peer, 's/^x//'); // no-op edit
         const base = oidAt(pair.ours, 'HEAD~3');
         const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
         const repo = await openRepository({ cwd: pair.ours });
-        const todo =
-          target === 'c2'
-            ? [
-                { action: 'pick' as const, oid: c1 as string },
-                { action, oid: c2 as string },
-                { action: 'pick' as const, oid: c3 as string },
-              ]
-            : [
-                { action: 'pick' as const, oid: c1 as string },
-                { action: 'pick' as const, oid: c2 as string },
-                { action, oid: c3 as string },
-              ];
 
         // Act
-        const result = await repo.rebase.run({ upstream: base, interactive: todo });
+        await repo.rebase.run({
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 as string },
+            { action: 'pick', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
         await repo.dispose();
 
-        // Assert
-        expect(result.kind).toBe('rebased');
-        expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
-        expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
-      },
-    );
-
-    it('Then an all-pick edit is a byte-identical no-op (HEAD oid unchanged)', async () => {
-      // Arrange — both repos identical; git rebases -i with no edits
-      buildInteractiveLinear(pair.peer);
-      buildInteractiveLinear(pair.ours);
-      const before = oidAt(pair.ours, 'HEAD');
-      gitRebaseInteractive(pair.peer, 's/^x//'); // no-op edit
-      const base = oidAt(pair.ours, 'HEAD~3');
-      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
-      const repo = await openRepository({ cwd: pair.ours });
-
-      // Act
-      await repo.rebase.run({
-        upstream: base,
-        interactive: [
-          { action: 'pick', oid: c1 as string },
-          { action: 'pick', oid: c2 as string },
-          { action: 'pick', oid: c3 as string },
-        ],
+        // Assert — HEAD unchanged on tsgit, and equal to git's (identical history)
+        expect(oidAt(pair.ours, 'HEAD')).toBe(before);
+        expect(oidAt(pair.ours, 'HEAD')).toBe(oidAt(pair.peer, 'HEAD'));
       });
-      await repo.dispose();
-
-      // Assert — HEAD unchanged on tsgit, and equal to git's (identical history)
-      expect(oidAt(pair.ours, 'HEAD')).toBe(before);
-      expect(oidAt(pair.ours, 'HEAD')).toBe(oidAt(pair.peer, 'HEAD'));
     });
   });
 
   describe('Given an `edit` stop', () => {
-    it('Then a tsgit edit stop is finished by git rebase --continue', async () => {
-      // Arrange — tsgit stops at `edit c2`
-      const dir = pair.ours;
-      buildInteractiveLinear(dir);
-      const base = oidAt(dir, 'HEAD~3');
-      const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(dir, r));
-      const repo = await openRepository({ cwd: dir });
-      const stop = await repo.rebase.run({
-        upstream: base,
-        interactive: [
-          { action: 'pick', oid: c1 as string },
-          { action: 'edit', oid: c2 as string },
-          { action: 'pick', oid: c3 as string },
-        ],
+    describe('When a tsgit-started rebase stops at `edit` and git finishes it', () => {
+      it('Then a tsgit edit stop is finished by git rebase --continue', async () => {
+        // Arrange — tsgit stops at `edit c2`
+        const dir = pair.ours;
+        buildInteractiveLinear(dir);
+        const base = oidAt(dir, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(dir, r));
+        const repo = await openRepository({ cwd: dir });
+        const stop = await repo.rebase.run({
+          upstream: base,
+          interactive: [
+            { action: 'pick', oid: c1 as string },
+            { action: 'edit', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
+        expect(stop.kind).toBe('stopped');
+        await repo.dispose();
+
+        // Act — hand the edit stop to real git
+        runGit(['-C', dir, '-c', 'core.editor=true', 'rebase', '--continue']);
+
+        // Assert — git finished onto main with all three files
+        expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('main');
+        expect(commitCount(dir)).toBe(4); // base + c1 + c2 + c3
       });
-      expect(stop.kind).toBe('stopped');
-      await repo.dispose();
-
-      // Act — hand the edit stop to real git
-      runGit(['-C', dir, '-c', 'core.editor=true', 'rebase', '--continue']);
-
-      // Assert — git finished onto main with all three files
-      expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('main');
-      expect(commitCount(dir)).toBe(4); // base + c1 + c2 + c3
     });
 
-    it('Then a git edit stop is finished by repo.rebase.continue', async () => {
-      // Arrange — git stops at `edit c2`
-      const dir = pair.ours;
-      buildInteractiveLinear(dir);
-      tryRunGit(['-C', dir, 'rebase', '-i', 'HEAD~3'], {
-        env: {
-          ...runGitEnv(),
-          GIT_SEQUENCE_EDITOR: "perl -i -pe 's/^pick (.*c2 subject)/edit $1/'",
-          GIT_EDITOR: 'true',
-        },
+    describe('When a git-started rebase stops at `edit` and tsgit finishes it', () => {
+      it('Then a git edit stop is finished by repo.rebase.continue', async () => {
+        // Arrange — git stops at `edit c2`
+        const dir = pair.ours;
+        buildInteractiveLinear(dir);
+        tryRunGit(['-C', dir, 'rebase', '-i', 'HEAD~3'], {
+          env: {
+            ...runGitEnv(),
+            GIT_SEQUENCE_EDITOR: "perl -i -pe 's/^pick (.*c2 subject)/edit $1/'",
+            GIT_EDITOR: 'true',
+          },
+        });
+        const repo = await openRepository({ cwd: dir });
+
+        // Act — tsgit reads git's `amend` state and finishes
+        const done = await repo.rebase.continue();
+        await repo.dispose();
+
+        // Assert
+        expect(done.kind).toBe('rebased');
+        expect(commitCount(dir)).toBe(4);
       });
-      const repo = await openRepository({ cwd: dir });
-
-      // Act — tsgit reads git's `amend` state and finishes
-      const done = await repo.rebase.continue();
-      await repo.dispose();
-
-      // Assert
-      expect(done.kind).toBe('rebased');
-      expect(commitCount(dir)).toBe(4);
     });
   });
 });

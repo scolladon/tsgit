@@ -71,10 +71,10 @@ describe('NodeCommandRunner', () => {
         // Act
         const promise = runner.run(baseRequest());
         child.emit('close', 0);
-        const sut = await promise;
+        const result = await promise;
 
         // Assert
-        expect(sut.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
         expect(calls[0]?.command).toBe('sh');
         expect(calls[0]?.args).toEqual(['-c', 'merge a b']);
         expect(calls[0]?.cwd).toBe('/repo');
@@ -110,10 +110,10 @@ describe('NodeCommandRunner', () => {
         // Act
         const promise = runner.run(baseRequest());
         emit(child);
-        const sut = await promise;
+        const result = await promise;
 
         // Assert
-        expect(sut.exitCode).toBe(expectedExitCode);
+        expect(result.exitCode).toBe(expectedExitCode);
       });
     });
   });

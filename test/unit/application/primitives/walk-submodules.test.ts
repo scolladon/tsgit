@@ -137,10 +137,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert
-          expect(sut).toEqual([
+          expect(result).toEqual([
             {
               name: 'vendor-foo',
               path: 'vendor/foo',
@@ -164,10 +164,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert
-          expect(sut).toEqual([
+          expect(result).toEqual([
             { name: 'orphan', path: 'orphan', commit: FAKE_COMMIT_A, depth: 0 },
           ]);
         });
@@ -183,10 +183,10 @@ describe('primitives/walk-submodules', () => {
           const treeId = await writeRootTreeWithGitmodules(ctx, text, []);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert
-          expect(sut).toEqual([]);
+          expect(result).toEqual([]);
         });
       });
     });
@@ -202,10 +202,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert — tree entries are sorted; alpha precedes zebra.
-          expect(sut.map((e) => e.path)).toEqual(['alpha', 'zebra']);
+          expect(result.map((e) => e.path)).toEqual(['alpha', 'zebra']);
         });
       });
     });
@@ -221,10 +221,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert
-          expect(sut).toEqual([
+          expect(result).toEqual([
             {
               name: 'libs-foo',
               path: 'libs/foo',
@@ -247,10 +247,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert
-          expect(sut).toEqual([{ name: 'foo', path: 'foo', commit: FAKE_COMMIT_A, depth: 0 }]);
+          expect(result).toEqual([{ name: 'foo', path: 'foo', commit: FAKE_COMMIT_A, depth: 0 }]);
         });
       });
     });
@@ -268,10 +268,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert — same shape as the regular-file case.
-          expect(sut).toEqual([
+          expect(result).toEqual([
             {
               name: 'vendor-foo',
               path: 'vendorfoo',
@@ -300,10 +300,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert — name falls back to path, no url leaked.
-          expect(sut).toEqual([
+          expect(result).toEqual([
             { name: 'gitlink', path: 'gitlink', commit: FAKE_COMMIT_A, depth: 0 },
           ]);
         });
@@ -325,11 +325,11 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert — known keys carry their declared values, unaffected by the
           // unknown ones that surround them.
-          expect(sut).toEqual([
+          expect(result).toEqual([
             {
               name: 'foo',
               path: 'foo',
@@ -360,10 +360,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert — the gitlink carries the URL from .gitmodules.
-          expect(sut).toEqual([
+          expect(result).toEqual([
             {
               name: 'foo',
               path: 'foo',
@@ -394,10 +394,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert
-          expect(sut).toEqual([
+          expect(result).toEqual([
             {
               name: 'vendor-foo',
               path: 'vendor/foo',
@@ -421,10 +421,9 @@ describe('primitives/walk-submodules', () => {
             { path: 'foo', id: FAKE_COMMIT_A },
           ]);
 
-          // Act & Assert — assert the specific error code via try/catch + .data inspection.
+          // Act + Assert — assert the specific error code via try/catch + .data inspection.
           try {
             await collect(walkSubmodules(ctx, { ref: treeId }));
-            // Assert
             expect.fail('walkSubmodules did not throw');
           } catch (err) {
             expect(err).toBeInstanceOf(TsgitError);
@@ -445,10 +444,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: treeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
 
           // Assert — no url/branch leaked from the unsafe row.
-          expect(sut).toEqual([
+          expect(result).toEqual([
             { name: 'victim', path: 'victim', commit: FAKE_COMMIT_A, depth: 0 },
           ]);
         });
@@ -467,10 +466,10 @@ describe('primitives/walk-submodules', () => {
           await setDetachedHead(ctx, commitId);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx));
+          const result = await collect(walkSubmodules(ctx));
 
           // Assert
-          expect(sut.map((e) => e.path)).toEqual(['foo']);
+          expect(result.map((e) => e.path)).toEqual(['foo']);
         });
       });
     });
@@ -487,10 +486,12 @@ describe('primitives/walk-submodules', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: RefName.from('refs/heads/main') }));
+          const result = await collect(
+            walkSubmodules(ctx, { ref: RefName.from('refs/heads/main') }),
+          );
 
           // Assert
-          expect(sut.map((e) => e.path)).toEqual(['foo']);
+          expect(result.map((e) => e.path)).toEqual(['foo']);
         });
       });
     });
@@ -518,10 +519,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
+          const result = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
 
           // Assert
-          expect(sut).toEqual([
+          expect(result).toEqual([
             {
               name: 'vendor-foo',
               path: 'vendor/foo',
@@ -559,12 +560,12 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(
+          const result = await collect(
             walkSubmodules(ctx, { ref: parentTreeId, recursive: true, maxDepth: 0 }),
           );
 
           // Assert — recursion entered the branch then hit the depth cap; only depth 0 yielded.
-          expect(sut.map((e) => e.depth)).toEqual([0]);
+          expect(result.map((e) => e.depth)).toEqual([0]);
         });
       });
     });
@@ -587,10 +588,10 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: parentTreeId }));
+          const result = await collect(walkSubmodules(ctx, { ref: parentTreeId }));
 
           // Assert
-          expect(sut.map((e) => e.depth)).toEqual([0]);
+          expect(result.map((e) => e.depth)).toEqual([0]);
         });
       });
     });
@@ -606,11 +607,11 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
+          const result = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
 
           // Assert
-          expect(sut).toHaveLength(1);
-          expect(sut[0]?.depth).toBe(0);
+          expect(result).toHaveLength(1);
+          expect(result[0]?.depth).toBe(0);
         });
       });
     });
@@ -631,11 +632,11 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
+          const result = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
 
           // Assert — only the parent surface; the missing object stops recursion silently.
-          expect(sut).toHaveLength(1);
-          expect(sut[0]?.depth).toBe(0);
+          expect(result).toHaveLength(1);
+          expect(result[0]?.depth).toBe(0);
         });
       });
     });
@@ -672,13 +673,13 @@ describe('primitives/walk-submodules', () => {
           // path (`.git/modules/loop/modules/loop`), so it is NOT a cycle and is
           // entered once. We only assert that recursion *terminates* and each
           // entry's depth is monotonically increasing or capped.
-          const sut = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
+          const result = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
 
           // Assert
-          expect(sut.length).toBeGreaterThan(0);
+          expect(result.length).toBeGreaterThan(0);
           const gitdirs = new Set<string>();
           // Walk terminated → no infinite generation. The depths are non-negative.
-          for (const e of sut) {
+          for (const e of result) {
             expect(e.depth).toBeGreaterThanOrEqual(0);
             gitdirs.add(e.path);
           }
@@ -711,11 +712,11 @@ describe('primitives/walk-submodules', () => {
           ]);
 
           // Act
-          const sut = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
+          const result = await collect(walkSubmodules(ctx, { ref: parentTreeId, recursive: true }));
 
           // Assert — recursion terminates (no infinite yield); at least the parent yields.
-          expect(sut.length).toBeGreaterThanOrEqual(1);
-          expect(sut[0]?.depth).toBe(0);
+          expect(result.length).toBeGreaterThanOrEqual(1);
+          expect(result[0]?.depth).toBe(0);
         });
       });
     });

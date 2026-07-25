@@ -18,12 +18,12 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then it covers "src" and every descendant', () => {
         // Arrange / Act
-        const sut = rule('/src/');
+        const result = rule('/src/');
 
         // Assert
-        expect(sut.matcher.test('src')).toBe(true);
-        expect(sut.matcher.test('src/main.c')).toBe(true);
-        expect(sut.matcher.test('src/a/b/c.ts')).toBe(true);
+        expect(result.matcher.test('src')).toBe(true);
+        expect(result.matcher.test('src/main.c')).toBe(true);
+        expect(result.matcher.test('src/a/b/c.ts')).toBe(true);
       });
     });
   });
@@ -32,11 +32,11 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then it covers "src" and every descendant', () => {
         // Arrange / Act
-        const sut = rule('/src');
+        const result = rule('/src');
 
         // Assert
-        expect(sut.matcher.test('src')).toBe(true);
-        expect(sut.matcher.test('src/main.c')).toBe(true);
+        expect(result.matcher.test('src')).toBe(true);
+        expect(result.matcher.test('src/main.c')).toBe(true);
       });
     });
   });
@@ -45,12 +45,12 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then it covers any .ts file at any depth', () => {
         // Arrange / Act
-        const sut = rule('*.ts');
+        const result = rule('*.ts');
 
         // Assert
-        expect(sut.matcher.test('main.ts')).toBe(true);
-        expect(sut.matcher.test('src/app/main.ts')).toBe(true);
-        expect(sut.matcher.test('main.js')).toBe(false);
+        expect(result.matcher.test('main.ts')).toBe(true);
+        expect(result.matcher.test('src/app/main.ts')).toBe(true);
+        expect(result.matcher.test('main.js')).toBe(false);
       });
     });
   });
@@ -59,11 +59,11 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then it covers only direct children', () => {
         // Arrange / Act
-        const sut = rule('/src/*');
+        const result = rule('/src/*');
 
         // Assert
-        expect(sut.matcher.test('src/main.c')).toBe(true);
-        expect(sut.matcher.test('src/a/b.c')).toBe(false);
+        expect(result.matcher.test('src/main.c')).toBe(true);
+        expect(result.matcher.test('src/a/b.c')).toBe(false);
       });
     });
   });
@@ -72,12 +72,12 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then it covers any build subtree at any depth', () => {
         // Arrange / Act
-        const sut = rule('build');
+        const result = rule('build');
 
         // Assert
-        expect(sut.matcher.test('build')).toBe(true);
-        expect(sut.matcher.test('build/out.o')).toBe(true);
-        expect(sut.matcher.test('pkg/build/out.o')).toBe(true);
+        expect(result.matcher.test('build')).toBe(true);
+        expect(result.matcher.test('build/out.o')).toBe(true);
+        expect(result.matcher.test('pkg/build/out.o')).toBe(true);
       });
     });
   });
@@ -86,11 +86,11 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then it is non-recursive', () => {
         // Arrange — `?` is a glob metacharacter, so the rule does not cover descendants.
-        const sut = rule('/src/a?c');
+        const result = rule('/src/a?c');
 
         // Assert
-        expect(sut.matcher.test('src/abc')).toBe(true);
-        expect(sut.matcher.test('src/abc/deep.ts')).toBe(false);
+        expect(result.matcher.test('src/abc')).toBe(true);
+        expect(result.matcher.test('src/abc/deep.ts')).toBe(false);
       });
     });
   });
@@ -100,11 +100,11 @@ describe('compileSparseRule', () => {
       it('Then directoryOnly alone makes it recursive', () => {
         // Arrange — `/src*/` has a glob (`*`) last segment, so the only reason it
         // covers descendants is the trailing-slash directory-only flag.
-        const sut = rule('/src*/');
+        const result = rule('/src*/');
 
         // Assert
-        expect(sut.matcher.test('src-app')).toBe(true);
-        expect(sut.matcher.test('src-app/deep/file.ts')).toBe(true);
+        expect(result.matcher.test('src-app')).toBe(true);
+        expect(result.matcher.test('src-app/deep/file.ts')).toBe(true);
       });
     });
   });
@@ -113,11 +113,11 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then the rule is negated and carries the source', () => {
         // Arrange / Act
-        const sut = rule('!build');
+        const result = rule('!build');
 
         // Assert
-        expect(sut.negated).toBe(true);
-        expect(sut.source).toBe('!build');
+        expect(result.negated).toBe(true);
+        expect(result.source).toBe('!build');
       });
     });
   });
@@ -126,10 +126,10 @@ describe('compileSparseRule', () => {
     describe('When compiled', () => {
       it('Then the rule is not negated', () => {
         // Arrange / Act
-        const sut = rule('build');
+        const result = rule('build');
 
         // Assert
-        expect(sut.negated).toBe(false);
+        expect(result.negated).toBe(false);
       });
     });
   });

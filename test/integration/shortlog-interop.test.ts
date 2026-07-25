@@ -128,27 +128,35 @@ describe.skipIf(!GIT_AVAILABLE)('shortlog interop', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('Then the default summary matches git shortlog (grouping, order, [PATCH], merge)', async () => {
-    // Act
-    const groups = await shortlogCmd(ctx);
+  describe('Given a repo with [PATCH]-prefixed commits, distinct author identities, and a merge', () => {
+    describe('When getting the default shortlog summary', () => {
+      it('Then the default summary matches git shortlog (grouping, order, [PATCH], merge)', async () => {
+        // Arrange & Act
+        const groups = await shortlogCmd(ctx);
 
-    // Assert
-    expect(renderDefault(groups)).toBe(git(dir, 'shortlog', 'HEAD'));
-  });
+        // Assert
+        expect(renderDefault(groups)).toBe(git(dir, 'shortlog', 'HEAD'));
+      });
+    });
 
-  it('Then the per-email reconstruction matches git shortlog -e', async () => {
-    // Act
-    const groups = await shortlogCmd(ctx);
+    describe('When getting the per-email shortlog summary', () => {
+      it('Then the per-email reconstruction matches git shortlog -e', async () => {
+        // Arrange & Act
+        const groups = await shortlogCmd(ctx);
 
-    // Assert
-    expect(renderEmail(groups)).toBe(git(dir, 'shortlog', '-e', 'HEAD'));
-  });
+        // Assert
+        expect(renderEmail(groups)).toBe(git(dir, 'shortlog', '-e', 'HEAD'));
+      });
+    });
 
-  it('Then grouping by committer matches git shortlog -c', async () => {
-    // Act
-    const groups = await shortlogCmd(ctx, { by: 'committer' });
+    describe('When grouping by committer', () => {
+      it('Then grouping by committer matches git shortlog -c', async () => {
+        // Arrange & Act
+        const groups = await shortlogCmd(ctx, { by: 'committer' });
 
-    // Assert
-    expect(renderDefault(groups)).toBe(git(dir, 'shortlog', '-c', 'HEAD'));
+        // Assert
+        expect(renderDefault(groups)).toBe(git(dir, 'shortlog', '-c', 'HEAD'));
+      });
+    });
   });
 });

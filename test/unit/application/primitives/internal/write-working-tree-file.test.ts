@@ -207,10 +207,15 @@ describe('write-working-tree-file', () => {
           const content = new TextEncoder().encode('regular-content');
 
           // Act
-          const sut = writeWorkingTreeEntry(ctx, 'r.txt' as FilePath, content, FILE_MODE.REGULAR);
+          const result = writeWorkingTreeEntry(
+            ctx,
+            'r.txt' as FilePath,
+            content,
+            FILE_MODE.REGULAR,
+          );
 
           // Assert
-          await sut;
+          await result;
           const bytes = await ctx.fs.read(`${ctx.layout.workDir}/r.txt`);
           expect(new TextDecoder().decode(bytes)).toBe('regular-content');
         });

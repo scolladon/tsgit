@@ -25,10 +25,10 @@ describe('commitIsBeforeCutoff', () => {
         },
       ])('Then $label', ({ commitDate, cutoff, expected }) => {
         // Arrange + Act
-        const sut = commitIsBeforeCutoff(commitDate, cutoff);
+        const result = commitIsBeforeCutoff(commitDate, cutoff);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -52,10 +52,10 @@ describe('nameRevCutoff', () => {
         },
       ])('Then $label', ({ targetDate, expected }) => {
         // Arrange + Act
-        const sut = nameRevCutoff(targetDate);
+        const result = nameRevCutoff(targetDate);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

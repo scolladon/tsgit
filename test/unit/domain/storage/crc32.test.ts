@@ -34,11 +34,11 @@ describe('crc32', () => {
     describe('When computing CRC-32 twice', () => {
       it('Then results are identical', () => {
         // Arrange
-        const sut = new Uint8Array([1, 2, 3, 4, 5]);
+        const data = new Uint8Array([1, 2, 3, 4, 5]);
 
         // Act
-        const result1 = crc32(sut);
-        const result2 = crc32(sut);
+        const result1 = crc32(data);
+        const result2 = crc32(data);
 
         // Assert
         expect(result1).toBe(result2);
@@ -54,10 +54,10 @@ describe('crc32', () => {
           fc.assert(
             fc.property(fc.uint8Array({ maxLength: 10000 }), (data) => {
               // Act
-              const sut = crc32(data);
+              const result = crc32(data);
 
               // Assert
-              expect(sut).toBe(crc32(data));
+              expect(result).toBe(crc32(data));
             }),
           );
         });
@@ -68,11 +68,11 @@ describe('crc32', () => {
           fc.assert(
             fc.property(fc.uint8Array({ maxLength: 10000 }), (data) => {
               // Act
-              const sut = crc32(data);
+              const result = crc32(data);
 
               // Assert
-              expect(sut).toBeGreaterThanOrEqual(0);
-              expect(sut).toBeLessThan(2 ** 32);
+              expect(result).toBeGreaterThanOrEqual(0);
+              expect(result).toBeLessThan(2 ** 32);
             }),
           );
         });

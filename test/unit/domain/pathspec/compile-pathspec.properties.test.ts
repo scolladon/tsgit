@@ -13,9 +13,9 @@ describe('compile-pathspec properties', () => {
         const arbPatterns = fc.array(arbPattern, { minLength: 0, maxLength: 6 });
         fc.assert(
           fc.property(arbPatterns, arbCandidatePath(), (patterns, path) => {
-            const sut = compilePathspec(patterns);
-            expect(sut).toHaveLength(patterns.length);
-            for (const entry of sut) {
+            const result = compilePathspec(patterns);
+            expect(result).toHaveLength(patterns.length);
+            for (const entry of result) {
               expect(typeof entry.compiled.test(path)).toBe('boolean');
             }
           }),
@@ -31,10 +31,10 @@ describe('compile-pathspec properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbLiteralPattern(), arbLiteralPattern(), (literal, child) => {
-            const sut = compilePathspec([literal])[0];
+            const result = compilePathspec([literal])[0];
             const descendant = FilePath.from(`${literal}/${child}`);
-            expect(sut?.isLiteral).toBe(true);
-            expect(sut?.compiled.test(descendant)).toBe(true);
+            expect(result?.isLiteral).toBe(true);
+            expect(result?.compiled.test(descendant)).toBe(true);
           }),
           { numRuns: 100 },
         );

@@ -233,8 +233,8 @@ describe('mergeAbort', () => {
         await mergeAbort(ctx);
 
         // Assert
-        const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
-        expect(sut).toBe(fixture.baseTreeFile);
+        const result = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
+        expect(result).toBe(fixture.baseTreeFile);
       });
 
       it('Then the index contains only stage-0 entries (stage-1/2/3 cleared)', async () => {
@@ -247,8 +247,8 @@ describe('mergeAbort', () => {
         await mergeAbort(ctx);
 
         // Assert
-        const sut = await readIndex(ctx);
-        const stages = sut.entries.map((e) => e.flags.stage);
+        const result = await readIndex(ctx);
+        const stages = result.entries.map((e) => e.flags.stage);
         expect(stages.every((s) => s === 0)).toBe(true);
       });
 
@@ -262,8 +262,8 @@ describe('mergeAbort', () => {
         await mergeAbort(ctx);
 
         // Assert
-        const sut = await resolveRef(ctx, MAIN);
-        expect(sut).toBe(preMergeMain);
+        const result = await resolveRef(ctx, MAIN);
+        expect(result).toBe(preMergeMain);
       });
 
       it('Then MERGE_HEAD is removed from disk', async () => {
@@ -276,8 +276,8 @@ describe('mergeAbort', () => {
         await mergeAbort(ctx);
 
         // Assert
-        const sut = await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`);
-        expect(sut).toBe(false);
+        const result = await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`);
+        expect(result).toBe(false);
       });
 
       it('Then MERGE_MSG is removed from disk', async () => {
@@ -290,8 +290,8 @@ describe('mergeAbort', () => {
         await mergeAbort(ctx);
 
         // Assert
-        const sut = await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`);
-        expect(sut).toBe(false);
+        const result = await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(result).toBe(false);
       });
 
       it('Then ORIG_HEAD is preserved as a recovery aid (ADR-173)', async () => {
@@ -322,8 +322,8 @@ describe('mergeAbort', () => {
         await mergeAbort(ctx);
 
         // Assert
-        const sut = await readReflog(ctx, HEAD);
-        expect(sut.at(-1)?.message).toBe('reset: moving to HEAD');
+        const result = await readReflog(ctx, HEAD);
+        expect(result.at(-1)?.message).toBe('reset: moving to HEAD');
         const branchAfter = await readReflog(ctx, MAIN);
         expect(branchAfter.at(-1)?.message).toBe(branchBefore);
         expect(branchAfter.at(-1)?.message).not.toBe('reset: moving to HEAD');
@@ -336,10 +336,10 @@ describe('mergeAbort', () => {
         await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
-        const sut = await mergeAbort(ctx);
+        const result = await mergeAbort(ctx);
 
         // Assert
-        expect(sut.origHead).toBe(preMergeMain);
+        expect(result.origHead).toBe(preMergeMain);
       });
 
       it('Then result.branch matches HEAD target', async () => {
@@ -349,10 +349,10 @@ describe('mergeAbort', () => {
         await mergeRun(ctx, { rev: 'feature', author });
 
         // Act
-        const sut = await mergeAbort(ctx);
+        const result = await mergeAbort(ctx);
 
         // Assert
-        expect(sut.branch).toBe(MAIN);
+        expect(result.branch).toBe(MAIN);
       });
 
       it('Then a clean-path file dirtied after the conflict is rewritten to the pre-merge content (forceRewriteAll)', async () => {
@@ -384,8 +384,8 @@ describe('mergeAbort', () => {
         await mergeAbort(ctx);
 
         // Assert — clean.txt restored from ORIG_HEAD's tree.
-        const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`);
-        expect(sut).toBe('shared\n');
+        const result = await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`);
+        expect(result).toBe('shared\n');
       });
 
       it('Then the index lock is released so a follow-up index write can proceed', async () => {

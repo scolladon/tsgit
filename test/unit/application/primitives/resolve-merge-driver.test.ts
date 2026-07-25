@@ -50,10 +50,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
         await seed(ctx, attrs, config);
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'text' });
+        expect(result).toEqual({ kind: 'text' });
       });
     });
   });
@@ -70,10 +70,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
         await seed(ctx, attrs);
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'binary' });
+        expect(result).toEqual({ kind: 'binary' });
       });
     });
   });
@@ -86,10 +86,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
         await seed(ctx, '* merge=union\n');
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'union' });
+        expect(result).toEqual({ kind: 'union' });
       });
     });
   });
@@ -106,10 +106,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
         );
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', command: 'run %O %A %B', name: 'My Driver' });
+        expect(result).toEqual({ kind: 'external', command: 'run %O %A %B', name: 'My Driver' });
       });
     });
   });
@@ -145,10 +145,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
           await seed(ctx, attrs, config);
 
           // Act
-          const sut = await choose(ctx, 'a.txt');
+          const result = await choose(ctx, 'a.txt');
 
           // Assert
-          expect(sut).toEqual({ kind: 'external', command: 'run %A' });
+          expect(result).toEqual({ kind: 'external', command: 'run %A' });
         },
       );
     });
@@ -183,10 +183,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
           await seed(ctx, attrs, config);
 
           // Act
-          const sut = await choose(ctx, 'a.txt');
+          const result = await choose(ctx, 'a.txt');
 
           // Assert
-          expect(sut).toEqual({ kind: 'missing-command', name });
+          expect(result).toEqual({ kind: 'missing-command', name });
         },
       );
     });
@@ -200,10 +200,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
         await seed(ctx, '* merge=text\n', '[merge "text"]\n\tname = X\n\tdriver = run %A\n');
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'external', command: 'run %A', name: 'X' });
+        expect(result).toEqual({ kind: 'external', command: 'run %A', name: 'X' });
       });
     });
   });
@@ -216,10 +216,10 @@ describe('resolvePathMergeSpec — driver resolution', () => {
         await seed(ctx, '* -merge\n', '[merge "binary"]\n\tdriver = run %A\n');
 
         // Act
-        const sut = await choose(ctx, 'a.txt');
+        const result = await choose(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ kind: 'binary' });
+        expect(result).toEqual({ kind: 'binary' });
       });
     });
   });
@@ -292,10 +292,10 @@ describe('resolvePathMergeSpec', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await spec(ctx, 'a.txt');
+        const result = await spec(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({ driver: { kind: 'text' }, markerSize: 7 });
+        expect(result).toEqual({ driver: { kind: 'text' }, markerSize: 7 });
       });
     });
   });
@@ -308,10 +308,10 @@ describe('resolvePathMergeSpec', () => {
         await seed(ctx, '* conflict-marker-size=15\n');
 
         // Act
-        const sut = await spec(ctx, 'a.txt');
+        const result = await spec(ctx, 'a.txt');
 
         // Assert
-        expect(sut.markerSize).toBe(15);
+        expect(result.markerSize).toBe(15);
       });
     });
   });
@@ -328,10 +328,10 @@ describe('resolvePathMergeSpec', () => {
         );
 
         // Act
-        const sut = await spec(ctx, 'a.txt');
+        const result = await spec(ctx, 'a.txt');
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           driver: { kind: 'external', command: 'run %A' },
           markerSize: 12,
         });
@@ -354,10 +354,10 @@ describe('resolvePathMergeSpec', () => {
         );
 
         // Act
-        const sut = await spec(ctx, 'sub/a.txt');
+        const result = await spec(ctx, 'sub/a.txt');
 
         // Assert
-        expect(sut.markerSize).toBe(9);
+        expect(result.markerSize).toBe(9);
       });
     });
   });

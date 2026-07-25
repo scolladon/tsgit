@@ -57,10 +57,10 @@ describe('merge', () => {
         const c = await commit(ctx, { message: 'first', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: c.id });
+        const result = await mergeRun(ctx, { rev: c.id });
 
         // Assert
-        expect(sut.kind).toBe('up-to-date');
+        expect(result.kind).toBe('up-to-date');
       });
     });
   });
@@ -82,12 +82,12 @@ describe('merge', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature' });
+        const result = await mergeRun(ctx, { rev: 'feature' });
 
         // Assert
-        expect(sut.kind).toBe('fast-forward');
-        if (sut.kind === 'fast-forward') {
-          expect(sut.id).toBe(c2.id);
+        expect(result.kind).toBe('fast-forward');
+        if (result.kind === 'fast-forward') {
+          expect(result.id).toBe(c2.id);
         }
       });
     });
@@ -110,10 +110,10 @@ describe('merge', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — fast-forward materialises m.txt to working tree + index.
-        expect(sut.kind).toBe('fast-forward');
+        expect(result.kind).toBe('fast-forward');
         const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/m.txt`);
         const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
         expect(onDisk).toBe(true);
@@ -139,7 +139,7 @@ describe('merge', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, {
+        const result = await mergeRun(ctx, {
           rev: 'feature',
           fastForward: 'never',
           message: 'merge',
@@ -147,9 +147,9 @@ describe('merge', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('merge');
-        if (sut.kind === 'merge') {
-          expect(sut.parents).toHaveLength(2);
+        expect(result.kind).toBe('merge');
+        if (result.kind === 'merge') {
+          expect(result.parents).toHaveLength(2);
         }
       });
     });
@@ -172,12 +172,12 @@ describe('merge', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', fastForward: 'allow' });
+        const result = await mergeRun(ctx, { rev: 'feature', fastForward: 'allow' });
 
         // Assert
-        expect(sut.kind).toBe('fast-forward');
-        if (sut.kind === 'fast-forward') {
-          expect(sut.id).toBe(second.id);
+        expect(result.kind).toBe('fast-forward');
+        if (result.kind === 'fast-forward') {
+          expect(result.id).toBe(second.id);
         }
       });
     });
@@ -200,12 +200,12 @@ describe('merge', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature' });
+        const result = await mergeRun(ctx, { rev: 'feature' });
 
         // Assert
-        expect(sut.kind).toBe('fast-forward');
-        if (sut.kind === 'fast-forward') {
-          expect(sut.id).toBe(second.id);
+        expect(result.kind).toBe('fast-forward');
+        if (result.kind === 'fast-forward') {
+          expect(result.id).toBe(second.id);
         }
       });
     });
@@ -228,12 +228,12 @@ describe('merge', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', fastForward: 'only' });
+        const result = await mergeRun(ctx, { rev: 'feature', fastForward: 'only' });
 
         // Assert
-        expect(sut.kind).toBe('fast-forward');
-        if (sut.kind === 'fast-forward') {
-          expect(sut.id).toBe(second.id);
+        expect(result.kind).toBe('fast-forward');
+        if (result.kind === 'fast-forward') {
+          expect(result.id).toBe(second.id);
         }
       });
     });
@@ -263,12 +263,12 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — the merge commit's tree contains a.txt + b.txt + c.txt.
-        expect(sut.kind).toBe('merge');
-        if (sut.kind !== 'merge') throw new Error('expected merge kind');
-        const mergeCommit = await readObject(ctx, sut.id);
+        expect(result.kind).toBe('merge');
+        if (result.kind !== 'merge') throw new Error('expected merge kind');
+        const mergeCommit = await readObject(ctx, result.id);
         if (mergeCommit.type !== 'commit') throw new Error('not a commit');
         const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
         const names = mergedTree.entries.map((e) => e.name).sort();
@@ -297,10 +297,10 @@ describe('merge', () => {
         await commit(ctx, { message: 'ours-add', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — m.txt reaches both the working tree and the index.
-        expect(sut.kind).toBe('merge');
+        expect(result.kind).toBe('merge');
         const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/m.txt`);
         const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
         expect(onDisk).toBe(true);
@@ -329,10 +329,10 @@ describe('merge', () => {
         await commit(ctx, { message: 'ours-edit', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — the working file carries both edits.
-        expect(sut.kind).toBe('merge');
+        expect(result.kind).toBe('merge');
         const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
         expect(onDisk).toBe('OURS\nline2\nTHEIRS\n');
       });
@@ -360,10 +360,10 @@ describe('merge', () => {
         await commit(ctx, { message: 'ours-add', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — a.txt is gone from disk and the index.
-        expect(sut.kind).toBe('merge');
+        expect(result.kind).toBe('merge');
         const onDisk = await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`);
         const indexPaths = (await readIndex(ctx)).entries.map((e) => e.path).sort();
         expect(onDisk).toBe(false);
@@ -690,12 +690,12 @@ describe('merge', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/untouched.txt`, 'DRIFTED\n');
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — the guard does not over-fire: the conflict materialises and
         // MERGE_HEAD is written (the untouched path is outside changedPaths),
         // and the dirty bytes at the untouched path survive untouched.
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(true);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/untouched.txt`)).toBe('DRIFTED\n');
       });
@@ -723,12 +723,12 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — merged content combines both line edits.
-        expect(sut.kind).toBe('merge');
-        if (sut.kind !== 'merge') throw new Error('expected merge kind');
-        const mergeCommit = await readObject(ctx, sut.id);
+        expect(result.kind).toBe('merge');
+        if (result.kind !== 'merge') throw new Error('expected merge kind');
+        const mergeCommit = await readObject(ctx, result.id);
         if (mergeCommit.type !== 'commit') throw new Error('not a commit');
         const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
         const fileEntry = mergedTree.entries.find((e) => e.name === 'file.txt');
@@ -760,16 +760,16 @@ describe('merge', () => {
         const mainTip = await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — kind='conflict' with path + type + heads.
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict kind');
-        expect(sut.conflicts).toHaveLength(1);
-        expect(sut.conflicts[0]?.path).toBe('file.txt');
-        expect(sut.conflicts[0]?.type).toBe('content');
-        expect(sut.origHead).toBe(mainTip.id);
-        expect(sut.mergeHead).not.toBe(baseCommit.id); // points at the feature tip
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict kind');
+        expect(result.conflicts).toHaveLength(1);
+        expect(result.conflicts[0]?.path).toBe('file.txt');
+        expect(result.conflicts[0]?.type).toBe('content');
+        expect(result.origHead).toBe(mainTip.id);
+        expect(result.mergeHead).not.toBe(baseCommit.id); // points at the feature tip
 
         // Also confirm HEAD did NOT advance (the conflicting merge must not commit).
         const main = await resolveRef(ctx, 'refs/heads/main' as RefName);
@@ -806,13 +806,13 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — merged tree has b.txt (unchanged) + c.txt (added on main),
         // but a.txt is GONE (resolved-deleted on feature's side).
-        expect(sut.kind).toBe('merge');
-        if (sut.kind !== 'merge') throw new Error('expected merge kind');
-        const mergeCommit = await readObject(ctx, sut.id);
+        expect(result.kind).toBe('merge');
+        if (result.kind !== 'merge') throw new Error('expected merge kind');
+        const mergeCommit = await readObject(ctx, result.id);
         if (mergeCommit.type !== 'commit') throw new Error('not a commit');
         const mergedTree = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
         const names = mergedTree.entries.map((e) => e.name).sort();
@@ -847,12 +847,12 @@ describe('merge', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — merged root has THREE top-level subdirs: src, lib, pkg.
-        expect(sut.kind).toBe('merge');
-        if (sut.kind !== 'merge') throw new Error('expected merge kind');
-        const mergeCommit = await readObject(ctx, sut.id);
+        expect(result.kind).toBe('merge');
+        if (result.kind !== 'merge') throw new Error('expected merge kind');
+        const mergeCommit = await readObject(ctx, result.id);
         if (mergeCommit.type !== 'commit') throw new Error('not a commit');
         const root = (await readObject(ctx, mergeCommit.data.tree)) as Tree;
         const rootNames = root.entries.map((e) => e.name).sort();
@@ -918,14 +918,14 @@ describe('merge', () => {
         });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'unrelated', author });
+        const result = await mergeRun(ctx, { rev: 'unrelated', author });
 
         // Assert — kind='conflict' with add-add for shared.txt.
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict kind');
-        expect(sut.conflicts).toHaveLength(1);
-        expect(sut.conflicts[0]?.path).toBe('shared.txt');
-        expect(sut.conflicts[0]?.type).toBe('add-add');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict kind');
+        expect(result.conflicts).toHaveLength(1);
+        expect(result.conflicts[0]?.path).toBe('shared.txt');
+        expect(result.conflicts[0]?.type).toBe('add-add');
       });
     });
   });
@@ -1001,12 +1001,12 @@ describe('merge.4b conflict persistence', () => {
         await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert
-        const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
-        expect(sut).toContain('<<<<<<<');
-        expect(sut).toContain('=======');
-        expect(sut).toContain('>>>>>>>');
-        expect(sut).toContain('MAIN');
-        expect(sut).toContain('FEATURE');
+        const result = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
+        expect(result).toContain('<<<<<<<');
+        expect(result).toContain('=======');
+        expect(result).toContain('>>>>>>>');
+        expect(result).toContain('MAIN');
+        expect(result).toContain('FEATURE');
       });
       it('Then the open marker is labelled HEAD and the close marker the merged rev', async () => {
         // Arrange
@@ -1017,9 +1017,9 @@ describe('merge.4b conflict persistence', () => {
         await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert
-        const sut = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
-        expect(sut).toContain('<<<<<<< HEAD\n');
-        expect(sut).toContain('>>>>>>> feature\n');
+        const result = await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`);
+        expect(result).toContain('<<<<<<< HEAD\n');
+        expect(result).toContain('>>>>>>> feature\n');
       });
       it('Then .git/MERGE_HEAD records the target tip id', async () => {
         // Arrange
@@ -1031,8 +1031,8 @@ describe('merge.4b conflict persistence', () => {
 
         // Assert — exact content (id + LF), kills mutants that drop LF or
         // record the wrong id.
-        const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
-        expect(sut).toBe(`${featureTip}\n`);
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
+        expect(result).toBe(`${featureTip}\n`);
       });
       it('Then .git/ORIG_HEAD records the pre-merge HEAD id', async () => {
         // Arrange
@@ -1043,8 +1043,8 @@ describe('merge.4b conflict persistence', () => {
         await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert
-        const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`);
-        expect(sut).toBe(`${preMergeMain}\n`);
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`);
+        expect(result).toBe(`${preMergeMain}\n`);
       });
       it('Then the index has stage-1, stage-2, and stage-3 entries for the conflicting path', async () => {
         // Arrange
@@ -1056,8 +1056,8 @@ describe('merge.4b conflict persistence', () => {
 
         // Assert
         const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
-        const sut = await readIndex(ctx);
-        const fileEntries = sut.entries.filter((e) => e.path === 'file.txt');
+        const result = await readIndex(ctx);
+        const fileEntries = result.entries.filter((e) => e.path === 'file.txt');
         const stages = fileEntries.map((e) => e.flags.stage).sort();
         expect(stages).toEqual([1, 2, 3]);
       });
@@ -1072,8 +1072,8 @@ describe('merge.4b conflict persistence', () => {
         await mergeRun(ctx, { rev: 'feature', author, message: 'Merge feature into main' });
 
         // Assert
-        const sut = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
-        expect(sut).toBe('Merge feature into main\n');
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(result).toBe('Merge feature into main\n');
       });
     });
   });
@@ -1103,13 +1103,13 @@ describe('merge.4b conflict persistence', () => {
         await commit(ctx, { message: 'ours-edit-file-only', author });
 
         // Act — conflicting merge: file.txt conflicts, clean.txt resolves to theirs.
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — the merge conflicts on file.txt yet the clean, theirs-only
         // sibling is written to the working tree with theirs bytes (the base
         // bytes are gone). Under a neutered conflict-writer filter the sibling
         // would still read 'base-clean\n'.
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`)).toBe('THEIRS-CLEAN\n');
       });
     });
@@ -1128,10 +1128,10 @@ describe('merge.4b conflict persistence', () => {
         // Act — manual resolution.
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'RESOLVED\n');
         await add(ctx, ['file.txt']);
-        const sut = await commit(ctx, { message: 'resolved merge', author });
+        const result = await commit(ctx, { message: 'resolved merge', author });
 
         // Assert — two parents in the right order.
-        expect(sut.parents).toEqual([preMergeMain, featureTip]);
+        expect(result.parents).toEqual([preMergeMain, featureTip]);
 
         // Verify the merge-state markers were cleared (recovery aid ORIG_HEAD
         // remains; MERGE_HEAD and MERGE_MSG are gone).
@@ -1344,13 +1344,13 @@ describe('merge.4b conflict persistence', () => {
         await add(ctx, ['file.txt']);
 
         // Act — empty user message; commit should fall back to MERGE_MSG.
-        const sut = await commit(ctx, { message: '', author });
+        const result = await commit(ctx, { message: '', author });
 
         // Assert
         const { readObject } = await import(
           '../../../../src/application/primitives/read-object.js'
         );
-        const commitObj = await readObject(ctx, sut.id);
+        const commitObj = await readObject(ctx, result.id);
         if (commitObj.type !== 'commit') throw new Error('not a commit');
         expect(commitObj.data.message).toBe('Merge feature\n');
       });
@@ -1471,6 +1471,7 @@ describe('merge — progress reporting', () => {
         await commit(ctx, { message: 'm', author });
         const { reporter, events } = recordingProgress();
 
+        // Act
         await mergeRun(withProgress(ctx, reporter), { rev: 'main' });
 
         // Assert
@@ -1582,12 +1583,12 @@ describe('merge — guard rails', () => {
         const second = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'old', author });
+        const result = await mergeRun(ctx, { rev: 'old', author });
 
         // Assert — up-to-date, NOT a fresh merge commit.
-        expect(sut.kind).toBe('up-to-date');
-        if (sut.kind !== 'up-to-date') throw new Error('expected up-to-date');
-        expect(sut.id).toBe(second.id);
+        expect(result.kind).toBe('up-to-date');
+        if (result.kind !== 'up-to-date') throw new Error('expected up-to-date');
+        expect(result.id).toBe(second.id);
       });
     });
   });
@@ -1680,12 +1681,12 @@ describe('merge — guard rails', () => {
         const mainTip = await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — exactly [ourId, theirId]; not an empty parents array.
-        expect(sut.kind).toBe('merge');
-        if (sut.kind !== 'merge') throw new Error('expected merge kind');
-        const mergeCommit = await readObject(ctx, sut.id);
+        expect(result.kind).toBe('merge');
+        if (result.kind !== 'merge') throw new Error('expected merge kind');
+        const mergeCommit = await readObject(ctx, result.id);
         if (mergeCommit.type !== 'commit') throw new Error('not a commit');
         expect(mergeCommit.data.parents).toEqual([mainTip.id, featureTip.id]);
         expect(mergeCommit.data.parents).not.toEqual([]);
@@ -1901,16 +1902,16 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
         const before = Math.floor(Date.now() / 1000);
 
         // Act
-        const sut = await resolveMergeAuthor(ctx, { rev: 'feature' });
+        const result = await resolveMergeAuthor(ctx, { rev: 'feature' });
 
         // Assert — name/email from config; timestamp is Date.now()/1000 (seconds,
         // not ms — kills the `/1000`→`*1000` mutant); offset is the literal +0000.
         const after = Math.floor(Date.now() / 1000);
-        expect(sut.name).toBe('Grace');
-        expect(sut.email).toBe('grace@example.com');
-        expect(sut.timezoneOffset).toBe('+0000');
-        expect(sut.timestamp).toBeGreaterThanOrEqual(before);
-        expect(sut.timestamp).toBeLessThanOrEqual(after);
+        expect(result.name).toBe('Grace');
+        expect(result.email).toBe('grace@example.com');
+        expect(result.timezoneOffset).toBe('+0000');
+        expect(result.timestamp).toBeGreaterThanOrEqual(before);
+        expect(result.timestamp).toBeLessThanOrEqual(after);
       });
     });
   });
@@ -1927,10 +1928,10 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
         );
 
         // Act
-        const sut = await resolveMergeAuthor(ctx, { rev: 'feature', author });
+        const result = await resolveMergeAuthor(ctx, { rev: 'feature', author });
 
         // Assert
-        expect(sut).toEqual(author);
+        expect(result).toEqual(author);
       });
     });
   });
@@ -1947,10 +1948,10 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
         };
 
         // Act
-        const sut = resolveMergeCommitter({ rev: 'feature', committer }, author);
+        const result = resolveMergeCommitter({ rev: 'feature', committer }, author);
 
         // Assert
-        expect(sut).toEqual(committer);
+        expect(result).toEqual(committer);
       });
     });
   });
@@ -1958,11 +1959,11 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
   describe('Given no explicit committer', () => {
     describe('When resolveMergeCommitter runs', () => {
       it('Then it falls back to the author', async () => {
-        // Arrange
-        const sut = resolveMergeCommitter({ rev: 'feature' }, author);
+        // Arrange & Act
+        const result = resolveMergeCommitter({ rev: 'feature' }, author);
 
         // Assert
-        expect(sut).toEqual(author);
+        expect(result).toEqual(author);
       });
     });
   });
@@ -1983,10 +1984,10 @@ describe('writeNestedTree (direct)', () => {
         const leaves = [{ path: 'f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
 
         // Act
-        const sut = await writeNestedTree(ctx, leaves, MAX_MERGE_TREE_DEPTH);
+        const result = await writeNestedTree(ctx, leaves, MAX_MERGE_TREE_DEPTH);
 
         // Assert — a real tree id was produced.
-        const tree = await readObject(ctx, sut);
+        const tree = await readObject(ctx, result);
         expect(tree.type).toBe('tree');
       });
     });
@@ -2343,10 +2344,10 @@ describe('materialiseConflictBytes (direct)', () => {
         const conflict = await build(ctx);
 
         // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
+        const result = await materialiseConflictBytes(ctx, conflict);
 
         // Assert
-        expect(decode(sut)).toBe(expected);
+        expect(decode(result)).toBe(expected);
       });
     });
   });
@@ -2388,10 +2389,10 @@ describe('materialiseConflictBytes (direct)', () => {
         const conflict = await build(ctx);
 
         // Act
-        const sut = await materialiseConflictBytes(ctx, conflict);
+        const result = await materialiseConflictBytes(ctx, conflict);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -2414,12 +2415,12 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.path).toBe('u.txt');
-        expect(sut[0]?.flags.stage).toBe(0);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.path).toBe('u.txt');
+        expect(result[0]?.flags.stage).toBe(0);
       });
     });
   });
@@ -2438,12 +2439,12 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.path).toBe('k.txt');
-        expect(sut[0]?.flags.stage).toBe(0);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.path).toBe('k.txt');
+        expect(result[0]?.flags.stage).toBe(0);
       });
     });
   });
@@ -2457,10 +2458,10 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -2479,12 +2480,12 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined);
 
         // Assert — every flag is literally false.
-        expect(sut[0]?.flags.assumeValid).toBe(false);
-        expect(sut[0]?.flags.skipWorktree).toBe(false);
-        expect(sut[0]?.flags.intentToAdd).toBe(false);
+        expect(result[0]?.flags.assumeValid).toBe(false);
+        expect(result[0]?.flags.skipWorktree).toBe(false);
+        expect(result[0]?.flags.intentToAdd).toBe(false);
       });
     });
   });
@@ -2523,10 +2524,10 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, conflicts, undefined);
+        const result = buildConflictIndexEntries(outcomes, conflicts, undefined);
 
         // Assert — fully sorted by path, then by stage within `mmm.txt`.
-        const order = sut.map((e) => `${e.path}@${e.flags.stage}`);
+        const order = result.map((e) => `${e.path}@${e.flags.stage}`);
         expect(order).toEqual(['aaa.txt@0', 'mmm.txt@1', 'mmm.txt@2', 'mmm.txt@3', 'zzz.txt@0']);
       });
     });
@@ -2659,13 +2660,13 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.path).toBe('drop.txt');
-        expect(sut[0]?.flags.stage).toBe(0);
-        expect(sut[0]?.flags.skipWorktree).toBe(true);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.path).toBe('drop.txt');
+        expect(result[0]?.flags.stage).toBe(0);
+        expect(result[0]?.flags.skipWorktree).toBe(true);
       });
     });
   });
@@ -2684,10 +2685,10 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
 
         // Assert
-        expect(sut[0]?.flags.skipWorktree).toBe(true);
+        expect(result[0]?.flags.skipWorktree).toBe(true);
       });
     });
   });
@@ -2706,10 +2707,10 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const sut = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
 
         // Assert
-        expect(sut[0]?.flags.skipWorktree).toBe(false);
+        expect(result[0]?.flags.skipWorktree).toBe(false);
       });
     });
   });
@@ -2740,12 +2741,12 @@ describe('merge — sparse checkout', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/docs/b.txt`);
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert — the in-pattern conflict file is materialised with markers; the
         // excluded clean file stays absent (not re-materialised) and is recorded
         // skip-worktree.
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/src/a.txt`)).toContain('<<<<<<<');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b.txt`)).toBe(false);
         const { readIndex } = await import('../../../../src/application/primitives/read-index.js');
@@ -2766,13 +2767,17 @@ describe('asMergeDirtyError (direct)', () => {
     describe('When asMergeDirtyError maps it', () => {
       it('Then returns WORKING_TREE_DIRTY carrying the same classes', () => {
         // Arrange
-        const sut = asMergeDirtyError(
-          checkoutOverwriteDirty({ localChanges: ['x.txt' as FilePath], untracked: [] }),
-        );
+        const original = checkoutOverwriteDirty({
+          localChanges: ['x.txt' as FilePath],
+          untracked: [],
+        });
+
+        // Act
+        const result = asMergeDirtyError(original);
 
         // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        const data = (sut as TsgitError).data;
+        expect(result).toBeInstanceOf(TsgitError);
+        const data = (result as TsgitError).data;
         expect(data.code).toBe('WORKING_TREE_DIRTY');
         if (data.code === 'WORKING_TREE_DIRTY') {
           expect(data.localChanges).toEqual(['x.txt']);
@@ -2789,10 +2794,10 @@ describe('asMergeDirtyError (direct)', () => {
         const original = new TsgitError({ code: 'NOTHING_TO_COMMIT' });
 
         // Act
-        const sut = asMergeDirtyError(original);
+        const result = asMergeDirtyError(original);
 
         // Assert
-        expect(sut).toBe(original);
+        expect(result).toBe(original);
       });
     });
   });
@@ -2804,10 +2809,10 @@ describe('asMergeDirtyError (direct)', () => {
         const original = new Error('boom');
 
         // Act
-        const sut = asMergeDirtyError(original);
+        const result = asMergeDirtyError(original);
 
         // Assert
-        expect(sut).toBe(original);
+        expect(result).toBe(original);
       });
     });
   });
@@ -2835,10 +2840,10 @@ describe('merge — post-merge hook', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature' });
+        const result = await mergeRun(ctx, { rev: 'feature' });
 
         // Assert
-        expect(sut.kind).toBe('fast-forward');
+        expect(result.kind).toBe('fast-forward');
         const postMerge = runner.calls.filter((c) => c.name === 'post-merge');
         expect(postMerge).toHaveLength(1);
         expect(postMerge[0]?.args).toEqual(['0']);
@@ -2867,10 +2872,10 @@ describe('merge — post-merge hook', () => {
         await commit(ctx, { message: 'ours-add', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert
-        expect(sut.kind).toBe('merge');
+        expect(result.kind).toBe('merge');
         const postMerge = runner.calls.filter((c) => c.name === 'post-merge');
         expect(postMerge).toHaveLength(1);
         expect(postMerge[0]?.args).toEqual(['0']);
@@ -2890,10 +2895,10 @@ describe('merge — post-merge hook', () => {
         const c = await commit(ctx, { message: 'first', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: c.id });
+        const result = await mergeRun(ctx, { rev: c.id });
 
         // Assert
-        expect(sut.kind).toBe('up-to-date');
+        expect(result.kind).toBe('up-to-date');
         expect(runner.calls.some((call) => call.name === 'post-merge')).toBe(false);
       });
     });
@@ -2920,10 +2925,10 @@ describe('merge — post-merge hook', () => {
         await commit(ctx, { message: 'on-main', author });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature', author });
+        const result = await mergeRun(ctx, { rev: 'feature', author });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect(runner.calls.some((call) => call.name === 'post-merge')).toBe(false);
       });
     });
@@ -2949,10 +2954,10 @@ describe('merge — post-merge hook', () => {
         await checkout(ctx, { rev: 'main' });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'feature' });
+        const result = await mergeRun(ctx, { rev: 'feature' });
 
         // Assert
-        expect(sut.kind).toBe('fast-forward');
+        expect(result.kind).toBe('fast-forward');
       });
     });
   });
@@ -3065,10 +3070,10 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — conflict kind and worktree carries marker bytes
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`);
         expect(onDisk).toContain('<<<<<<<');
         expect(onDisk).toContain('=======');
@@ -3138,12 +3143,12 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         });
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — bare add-add: ours symlink remains
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.conflicts[0]?.type).toBe('add-add');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.conflicts[0]?.type).toBe('add-add');
         const target = await ctx.fs.readlink(`${ctx.layout.workDir}/link`);
         expect(target).toBe('target-ours');
       });
@@ -3201,12 +3206,12 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
         ]);
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — conflict reported
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.conflicts[0]?.type).toBe('distinct-types');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.conflicts[0]?.type).toBe('distinct-types');
 
         // Regular file at f.txt~HEAD (ours regular side renamed)
         const oursContent = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt~HEAD`);
@@ -3268,12 +3273,12 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
         ]);
 
         // Act
-        const sut = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, { rev: 'theirs', author });
 
         // Assert — conflict reported
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') throw new Error('expected conflict');
-        expect(sut.conflicts[0]?.type).toBe('distinct-types');
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.conflicts[0]?.type).toBe('distinct-types');
 
         // Regular file at f.txt~theirs (theirs' regular side renamed)
         const theirsContent = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt~theirs`);

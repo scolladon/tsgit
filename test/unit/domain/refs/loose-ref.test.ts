@@ -27,10 +27,10 @@ describe('parseLooseRef', () => {
         },
       ])('Then $label', ({ content, target }) => {
         // Arrange & Act
-        const sut = parseLooseRef(content);
+        const result = parseLooseRef(content);
 
         // Assert
-        expect(sut).toEqual({ type: 'direct', target });
+        expect(result).toEqual({ type: 'direct', target });
       });
     });
   });
@@ -42,10 +42,10 @@ describe('parseLooseRef', () => {
         const content = 'ref: refs/heads/main\n';
 
         // Act
-        const sut = parseLooseRef(content);
+        const result = parseLooseRef(content);
 
         // Assert
-        expect(sut).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
+        expect(result).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
       });
     });
   });
@@ -57,10 +57,10 @@ describe('parseLooseRef', () => {
         const content = 'ref: refs/heads/main';
 
         // Act
-        const sut = parseLooseRef(content);
+        const result = parseLooseRef(content);
 
         // Assert
-        expect(sut).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
+        expect(result).toEqual({ type: 'symbolic', target: 'refs/heads/main' });
       });
     });
   });
@@ -176,10 +176,10 @@ describe('serializeDirectRef', () => {
     describe('When serializing', () => {
       it("Then result is '<sha>\\n'", () => {
         // Arrange & Act
-        const sut = serializeDirectRef(SHA1);
+        const result = serializeDirectRef(SHA1);
 
         // Assert
-        expect(sut).toBe(`${SHA1}\n`);
+        expect(result).toBe(`${SHA1}\n`);
       });
     });
   });
@@ -193,10 +193,10 @@ describe('serializeSymbolicRef', () => {
         const target = 'refs/heads/main' as RefName;
 
         // Act
-        const sut = serializeSymbolicRef(target);
+        const result = serializeSymbolicRef(target);
 
         // Assert
-        expect(sut).toBe('ref: refs/heads/main\n');
+        expect(result).toBe('ref: refs/heads/main\n');
       });
     });
   });
@@ -206,11 +206,11 @@ describe('roundtrip', () => {
   describe('Given any ObjectId', () => {
     describe('When serializing then parsing', () => {
       it('Then roundtrips', () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         fc.assert(
           fc.property(arbObjectId(), (id) => {
-            const sut = parseLooseRef(serializeDirectRef(id));
-            expect(sut).toEqual({ type: 'direct', target: id });
+            const result = parseLooseRef(serializeDirectRef(id));
+            expect(result).toEqual({ type: 'direct', target: id });
           }),
         );
       });
@@ -220,11 +220,11 @@ describe('roundtrip', () => {
   describe('Given any RefName (via arbRefName)', () => {
     describe('When serializing symbolic then parsing', () => {
       it('Then roundtrips', () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         fc.assert(
           fc.property(arbRefName(), (name) => {
-            const sut = parseLooseRef(serializeSymbolicRef(name));
-            expect(sut).toEqual({ type: 'symbolic', target: name });
+            const result = parseLooseRef(serializeSymbolicRef(name));
+            expect(result).toEqual({ type: 'symbolic', target: name });
           }),
         );
       });

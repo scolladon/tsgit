@@ -10,14 +10,14 @@ describe('deriveWorktreeContext', () => {
         const parent = createMemoryContext();
 
         // Act
-        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
 
         // Assert
-        expect(sut.layout.gitDir).toBe(`${parent.layout.gitDir}/worktrees/wt`);
-        expect(sut.layout.commonDir).toBe(parent.layout.gitDir);
-        expect(sut.layout.workDir).toBe('/abs/wt');
-        expect(sut.layout.bare).toBe(false);
-        expect(sut.cwd).toBe('/abs/wt');
+        expect(result.layout.gitDir).toBe(`${parent.layout.gitDir}/worktrees/wt`);
+        expect(result.layout.commonDir).toBe(parent.layout.gitDir);
+        expect(result.layout.workDir).toBe('/abs/wt');
+        expect(result.layout.bare).toBe(false);
+        expect(result.cwd).toBe('/abs/wt');
       });
     });
   });
@@ -38,10 +38,10 @@ describe('deriveWorktreeContext', () => {
         };
 
         // Act
-        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
 
         // Assert
-        expect(sut.fs).toBe(marker);
+        expect(result.fs).toBe(marker);
         expect(calls).toEqual(['/abs/wt']);
       });
     });
@@ -54,10 +54,10 @@ describe('deriveWorktreeContext', () => {
         const parent = createMemoryContext();
 
         // Act
-        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
 
         // Assert
-        expect(sut.fs).toBe(parent.fs);
+        expect(result.fs).toBe(parent.fs);
       });
     });
   });
@@ -75,12 +75,12 @@ describe('deriveWorktreeContext', () => {
         } as never;
 
         // Act
-        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
 
         // Assert
-        expect(sut.promisor).toBeUndefined();
-        expect(sut.hooks).toBeUndefined();
-        expect(sut.command).toBeUndefined();
+        expect(result.promisor).toBeUndefined();
+        expect(result.hooks).toBeUndefined();
+        expect(result.command).toBeUndefined();
       });
     });
   });
@@ -92,11 +92,11 @@ describe('deriveWorktreeContext', () => {
         const parent = createMemoryContext({ homeDir: '/home/user' });
 
         // Act
-        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
 
         // Assert
-        expect(Object.hasOwn(sut.layout, 'homeDir')).toBe(true);
-        expect(sut.layout.homeDir).toBe('/home/user');
+        expect(Object.hasOwn(result.layout, 'homeDir')).toBe(true);
+        expect(result.layout.homeDir).toBe('/home/user');
       });
     });
   });
@@ -108,11 +108,11 @@ describe('deriveWorktreeContext', () => {
         const parent = createMemoryContext();
 
         // Act
-        const sut = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
 
         // Assert
-        expect(Object.hasOwn(sut.layout, 'homeDir')).toBe(false);
-        expect(sut.layout.homeDir).toBeUndefined();
+        expect(Object.hasOwn(result.layout, 'homeDir')).toBe(false);
+        expect(result.layout.homeDir).toBeUndefined();
       });
     });
   });

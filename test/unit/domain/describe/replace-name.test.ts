@@ -96,10 +96,10 @@ describe('shouldReplaceName', () => {
         const incoming = name(incomingP, incomingD);
 
         // Act
-        const sut = shouldReplaceName(existing, incoming);
+        const result = shouldReplaceName(existing, incoming);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

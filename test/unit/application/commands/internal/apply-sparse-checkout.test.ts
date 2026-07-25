@@ -84,10 +84,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'docs/b', 'bbb');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — docs/b deleted, its index entry skip-worktree; src/a kept.
-        expect(sut).toEqual({ materialized: 0, removed: 1, retained: [] });
+        expect(result).toEqual({ materialized: 0, removed: 1, retained: [] });
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b`)).toBe(false);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/a`)).toBe(true);
         const byPath = await readBackIndex(ctx);
@@ -110,10 +110,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedIndex(ctx, [skipped]);
 
         // Act — the matcher now includes src/a.
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — file materialised, bit cleared.
-        expect(sut).toEqual({ materialized: 1, removed: 0, retained: [] });
+        expect(result).toEqual({ materialized: 1, removed: 0, retained: [] });
         const written = await ctx.fs.read(`${ctx.layout.workDir}/src/a`);
         expect(decoder.decode(written)).toBe('aaa');
         const byPath = await readBackIndex(ctx);
@@ -134,11 +134,11 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'docs/b', 'LOCALLY EDITED');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — dirty excludee left on disk, surfaced in `retained`, no skip bit.
-        expect(sut.removed).toBe(0);
-        expect(sut.retained).toEqual(['docs/b']);
+        expect(result.removed).toBe(0);
+        expect(result.retained).toEqual(['docs/b']);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b`)).toBe(true);
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(false);
@@ -158,10 +158,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'docs/b', 'LOCALLY EDITED');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly, force: true });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly, force: true });
 
         // Assert — dirty file forcibly removed, skip-worktree set, nothing retained.
-        expect(sut).toEqual({ materialized: 0, removed: 1, retained: [] });
+        expect(result).toEqual({ materialized: 0, removed: 1, retained: [] });
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b`)).toBe(false);
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(true);
@@ -184,10 +184,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'src/a', 'aaa');
 
         // Act — `disable` path: include everything.
-        const sut = await applySparseCheckout(ctx, { matcher: undefined });
+        const result = await applySparseCheckout(ctx, { matcher: undefined });
 
         // Assert — docs/b re-materialised, every skip-worktree bit cleared.
-        expect(sut).toEqual({ materialized: 1, removed: 0, retained: [] });
+        expect(result).toEqual({ materialized: 1, removed: 0, retained: [] });
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b`)).toBe(true);
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(false);
@@ -214,10 +214,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'docs/b', 'bbb');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — exactly one add, one delete, no retain.
-        expect(sut).toEqual({ materialized: 1, removed: 1, retained: [] });
+        expect(result).toEqual({ materialized: 1, removed: 1, retained: [] });
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/src/c`)).toBe(true);
       });
     });
@@ -234,10 +234,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'src/a', 'aaa');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — nothing removed, but the skip-worktree bit is still applied.
-        expect(sut).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(true);
       });
@@ -259,10 +259,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'src/a', 'aaa');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — only the stage-0 entry survives the rewrite.
-        expect(sut.materialized).toBe(0);
+        expect(result.materialized).toBe(0);
         const byPath = await readBackIndex(ctx);
         expect(byPath.has('src/x' as FilePath)).toBe(false);
         expect(byPath.has('src/a' as FilePath)).toBe(true);
@@ -332,10 +332,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'src/a', 'aaa');
 
         // Act — nothing is written (the file already matches).
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — no materialisation, but the stale bit is cleared.
-        expect(sut).toEqual({ materialized: 0, removed: 0, retained: [] });
+        expect(result).toEqual({ materialized: 0, removed: 0, retained: [] });
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('src/a' as FilePath)?.flags.skipWorktree).toBe(false);
       });
@@ -362,10 +362,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(ctx, 'docs/b', 'MANUALLY RE-CREATED DIRTY');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — retained, file left on disk, skip-worktree cleared.
-        expect(sut.retained).toEqual(['docs/b']);
+        expect(result.retained).toEqual(['docs/b']);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/docs/b`)).toBe(true);
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(false);
@@ -389,10 +389,10 @@ describe('commands/internal/apply-sparse-checkout', () => {
         await seedWorkFile(base, 'docs/b', 'bbb');
 
         // Act
-        const sut = await applySparseCheckout(ctx, { matcher: srcOnly });
+        const result = await applySparseCheckout(ctx, { matcher: srcOnly });
 
         // Assert — the excluded file is found and removed despite the slash.
-        expect(sut).toEqual({ materialized: 0, removed: 1, retained: [] });
+        expect(result).toEqual({ materialized: 0, removed: 1, retained: [] });
         expect(await base.fs.exists(`${base.layout.workDir}/docs/b`)).toBe(false);
       });
     });

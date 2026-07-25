@@ -14,10 +14,10 @@ export const data = { author: AUTHOR, message: 'seed' };
 `;
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/clean.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/clean.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -29,10 +29,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "export const t = Date.now();\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           {
             path: 'test/parity/scenarios/x.scenario.ts',
             line: 1,
@@ -50,10 +50,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "export const r = () => Math.random() * 100;\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           {
             path: 'test/parity/scenarios/x.scenario.ts',
             line: 1,
@@ -71,10 +71,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "export const t = performance.now();\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           {
             path: 'test/parity/scenarios/x.scenario.ts',
             line: 1,
@@ -92,10 +92,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "export const t = new Date();\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           {
             path: 'test/parity/scenarios/x.scenario.ts',
             line: 1,
@@ -113,10 +113,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "export const t = new Date(timestamp);\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           {
             path: 'test/parity/scenarios/x.scenario.ts',
             line: 1,
@@ -134,10 +134,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "export const t = new Date('2026-01-01');\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -149,10 +149,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "const a = Date.now();\nconst b = Math.random();\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           { path: 'test/parity/scenarios/x.scenario.ts', line: 1, kind: 'Date.now' },
           { path: 'test/parity/scenarios/x.scenario.ts', line: 2, kind: 'Math.random' },
         ]);
@@ -167,10 +167,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "// Date.now() is forbidden — this is a note.\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -182,10 +182,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "const x = 1; /* Date.now() forbidden */ const y = 2;\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -197,10 +197,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = "const x = 1; const t = Date.now();\n";
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           { path: 'test/parity/scenarios/x.scenario.ts', line: 1, kind: 'Date.now' },
         ]);
       });
@@ -214,10 +214,10 @@ export const data = { author: AUTHOR, message: 'seed' };
         const source = 'const t = Date.now() + Date.now();\n';
 
         // Act
-        const sut = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
+        const result = detectNondeterministic([file('test/parity/scenarios/x.scenario.ts', source)]);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           { path: 'test/parity/scenarios/x.scenario.ts', line: 1, kind: 'Date.now' },
         ]);
       });

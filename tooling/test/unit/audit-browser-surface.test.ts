@@ -486,19 +486,19 @@ describe('buildReport', () => {
         };
 
         // Act
-        const sut = buildReport(bound, files, allowlist);
+        const result = buildReport(bound, files, allowlist);
 
         // Assert
-        expect(sut.summary).toEqual({
+        expect(result.summary).toEqual({
           commands: { bound: 4, covered: 3, exempt: 1, gaps: 0 },
           primitives: { bound: 3, covered: 1, exempt: 1, gaps: 1 },
         });
-        expect(sut.gaps.commands).toEqual([]);
-        expect(sut.gaps.primitives).toEqual(['walkCommits']);
+        expect(result.gaps.commands).toEqual([]);
+        expect(result.gaps.primitives).toEqual(['walkCommits']);
         // Lock the covered.primitives shape — a mutant that bypassed the
         // primitive coverage map would leave this list empty even though
         // `summary.primitives.covered` accidentally still tallied a 1.
-        expect(sut.covered.primitives).toEqual([
+        expect(result.covered.primitives).toEqual([
           { name: 'readObject', sources: ['test/parity/scenarios/bar.scenario.ts'] },
         ]);
       });
@@ -518,10 +518,10 @@ describe('buildReport', () => {
         const allowlist: Allowlist = { commands: [], primitives: [] };
 
         // Act
-        const sut = buildReport(bound, files, allowlist);
+        const result = buildReport(bound, files, allowlist);
 
         // Assert
-        expect(sut.covered.commands).toEqual([
+        expect(result.covered.commands).toEqual([
           {
             name: 'add',
             sources: ['test/browser/alpha.spec.ts', 'test/parity/scenarios/zeta.scenario.ts'],
@@ -542,11 +542,11 @@ describe('buildReport', () => {
         const allowlist: Allowlist = { commands: [], primitives: [] };
 
         // Act
-        const sut = buildReport(bound, [], allowlist);
+        const result = buildReport(bound, [], allowlist);
 
         // Assert
-        expect(sut.gaps.commands).toEqual(['alpha', 'beta', 'zeta']);
-        expect(sut.gaps.primitives).toEqual(['alpha', 'omega', 'xi']);
+        expect(result.gaps.commands).toEqual(['alpha', 'beta', 'zeta']);
+        expect(result.gaps.primitives).toEqual(['alpha', 'omega', 'xi']);
       });
     });
   });
@@ -557,14 +557,14 @@ describe('formatGapMessage', () => {
     describe('When formatted', () => {
       it('Then the message names every gap under its tier heading', () => {
         // Arrange
-        const sut = buildReport(
+        const result = buildReport(
           { commands: ['clone'], primitives: ['runHook'] },
           [],
           { commands: [], primitives: [] },
         );
 
         // Act
-        const message = formatGapMessage(sut);
+        const message = formatGapMessage(result);
 
         // Assert
         expect(message).toContain('Commands without browser coverage:');
@@ -580,14 +580,14 @@ describe('formatGapMessage', () => {
     describe('When formatted', () => {
       it('Then the primitives heading is omitted', () => {
         // Arrange
-        const sut = buildReport(
+        const result = buildReport(
           { commands: ['clone'], primitives: [] },
           [],
           { commands: [], primitives: [] },
         );
 
         // Act
-        const message = formatGapMessage(sut);
+        const message = formatGapMessage(result);
 
         // Assert
         expect(message).toContain('Commands without browser coverage:');
@@ -600,14 +600,14 @@ describe('formatGapMessage', () => {
     describe('When formatted', () => {
       it('Then the commands heading is omitted but the primitives one is present', () => {
         // Arrange
-        const sut = buildReport(
+        const result = buildReport(
           { commands: [], primitives: ['runHook'] },
           [],
           { commands: [], primitives: [] },
         );
 
         // Act
-        const message = formatGapMessage(sut);
+        const message = formatGapMessage(result);
 
         // Assert
         expect(message).not.toContain('Commands without browser coverage:');
@@ -623,7 +623,7 @@ describe('parseArgs', () => {
     describe('When parsed', () => {
       it('Then defaults are repoRoot + repoRoot/reports + the allowlist under tooling/', () => {
         // Arrange + Act
-        const sut = parseArgs([]);
+        const result = parseArgs([]);
 
         // Assert
         // The derived root is set from the script's location; lock the
@@ -631,9 +631,9 @@ describe('parseArgs', () => {
         // refactor that detaches `out` from `root` (e.g. hardcoding
         // `/reports`) fails loudly. `path.join` keeps the assertion
         // portable across POSIX (forward slash) and Windows (backslash).
-        expect(sut.out).toBe(path.join(sut.root, 'reports'));
-        expect(sut.allowlist).toBe(
-          path.join(sut.root, 'tooling', 'audit-browser-surface.allowlist.json'),
+        expect(result.out).toBe(path.join(result.root, 'reports'));
+        expect(result.allowlist).toBe(
+          path.join(result.root, 'tooling', 'audit-browser-surface.allowlist.json'),
         );
       });
     });
@@ -653,13 +653,13 @@ describe('parseArgs', () => {
         ];
 
         // Act
-        const sut = parseArgs(argv);
+        const result = parseArgs(argv);
 
         // Assert — `path.resolve` is platform-specific: on POSIX
         // `/tmp/repo` stays as-is, on Windows it normalises to a drive-
         // prefixed backslash path. Mirror the resolver in the expectation
         // so the assertion is portable.
-        expect(sut).toEqual({
+        expect(result).toEqual({
           root: path.resolve('/tmp/repo'),
           out: path.resolve('/tmp/out'),
           allowlist: path.resolve('/tmp/allow.json'),
@@ -675,12 +675,12 @@ describe('parseArgs', () => {
         const expectedRoot = path.resolve('/tmp/repo');
 
         // Act
-        const sut = parseArgs(['--root', '/tmp/repo']);
+        const result = parseArgs(['--root', '/tmp/repo']);
 
         // Assert
-        expect(sut.root).toBe(expectedRoot);
-        expect(sut.out).toBe(path.join(expectedRoot, 'reports'));
-        expect(sut.allowlist).toBe(
+        expect(result.root).toBe(expectedRoot);
+        expect(result.out).toBe(path.join(expectedRoot, 'reports'));
+        expect(result.allowlist).toBe(
           path.join(expectedRoot, 'tooling', 'audit-browser-surface.allowlist.json'),
         );
       });

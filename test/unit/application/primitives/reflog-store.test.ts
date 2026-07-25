@@ -52,14 +52,14 @@ describe('reflog-store', () => {
         it('Then the .git/logs file is created with the line', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          const sut = entry();
+          const reflogEntry = entry();
 
           // Act
-          await appendReflog(ctx, HEAD, sut);
+          await appendReflog(ctx, HEAD, reflogEntry);
 
           // Assert
           const raw = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`);
-          expect(raw).toBe(serializeReflogLine(sut));
+          expect(raw).toBe(serializeReflogLine(reflogEntry));
         });
       });
     });
@@ -105,14 +105,14 @@ describe('reflog-store', () => {
         it('Then returns it parsed', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          const sut = entry();
-          await appendReflog(ctx, BRANCH, sut);
+          const reflogEntry = entry();
+          await appendReflog(ctx, BRANCH, reflogEntry);
 
           // Act
           const result = await readReflog(ctx, BRANCH);
 
           // Assert
-          expect(result).toEqual([sut]);
+          expect(result).toEqual([reflogEntry]);
         });
       });
     });
@@ -127,7 +127,7 @@ describe('reflog-store', () => {
           const padded = lineOfSize(MAX_REFLOG_BYTES + 1);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, padded);
 
-          // Act
+          // Act + Assert
           try {
             await readReflog(ctx, HEAD);
             expect.fail('expected INVALID_REFLOG_ENTRY');
@@ -169,7 +169,7 @@ describe('reflog-store', () => {
           // Arrange
           const ctx = createMemoryContext();
 
-          // Act & Assert
+          // Act + Assert
           expect(await reflogExists(ctx, HEAD)).toBe(false);
         });
       });
@@ -182,7 +182,7 @@ describe('reflog-store', () => {
           const ctx = createMemoryContext();
           await appendReflog(ctx, HEAD, entry());
 
-          // Act & Assert
+          // Act + Assert
           expect(await reflogExists(ctx, HEAD)).toBe(true);
         });
       });
@@ -254,8 +254,9 @@ describe('reflog-store', () => {
           // Arrange
           const ctx = createMemoryContext();
 
-          // Act & Assert — must not throw.
+          // Act — must not throw.
           await deleteReflog(ctx, HEAD);
+
           // Assert
           expect(await reflogExists(ctx, HEAD)).toBe(false);
         });

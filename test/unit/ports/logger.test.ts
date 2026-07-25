@@ -6,11 +6,11 @@ describe('Logger port — noopLogger', () => {
   describe('Given noopLogger', () => {
     describe('When inspecting it', () => {
       it('Then it is frozen', () => {
-        // Arrange
-        const sut = Object.isFrozen(noopLogger);
+        // Arrange & Act
+        const result = Object.isFrozen(noopLogger);
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
     describe('When reading any level method', () => {
@@ -32,6 +32,7 @@ describe('wrapLoggerSanitizer — passthrough', () => {
         // Arrange
         const inner = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
+        // Act
         const sut = wrapLoggerSanitizer(inner);
 
         // Assert
@@ -50,7 +51,9 @@ describe('wrapLoggerSanitizer — passthrough', () => {
         // Arrange
         const inner = { warn: vi.fn() };
 
+        // Act
         const sut = wrapLoggerSanitizer(inner);
+        sut.warn?.('m');
 
         // Assert — only the supplied level is exposed; the wrapper preserves
         // the optional-method contract by omitting levels that were not
@@ -59,7 +62,6 @@ describe('wrapLoggerSanitizer — passthrough', () => {
         expect(sut.debug).toBeUndefined();
         expect(sut.info).toBeUndefined();
         expect(sut.error).toBeUndefined();
-        sut.warn?.('m');
         expect(inner.warn).toHaveBeenCalledWith('m', undefined);
       });
     });
@@ -74,6 +76,7 @@ describe('wrapLoggerSanitizer — sanitization', () => {
         const inner = { warn: vi.fn() };
         const sut = wrapLoggerSanitizer(inner);
 
+        // Act
         sut.warn?.('hello\x07world');
 
         // Assert
@@ -89,6 +92,7 @@ describe('wrapLoggerSanitizer — sanitization', () => {
         const inner = { error: vi.fn() };
         const sut = wrapLoggerSanitizer(inner);
 
+        // Act
         sut.error?.('msg', { user: 'evil\x1bdata', count: 42 });
 
         // Assert
@@ -104,6 +108,7 @@ describe('wrapLoggerSanitizer — sanitization', () => {
         const inner = { info: vi.fn() };
         const sut = wrapLoggerSanitizer(inner);
 
+        // Act
         sut.info?.('msg');
 
         // Assert

@@ -19,10 +19,10 @@ describe('parseGitignore', () => {
         },
       ])('Then $label', ({ input }) => {
         // Arrange + Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -34,13 +34,13 @@ describe('parseGitignore', () => {
         const input = 'build/';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.directoryOnly).toBe(true);
-        expect(sut[0]?.negated).toBe(false);
-        expect(sut[0]?.pattern).toBe('build/');
+        expect(result).toHaveLength(1);
+        expect(result[0]?.directoryOnly).toBe(true);
+        expect(result[0]?.negated).toBe(false);
+        expect(result[0]?.pattern).toBe('build/');
       });
     });
   });
@@ -52,12 +52,12 @@ describe('parseGitignore', () => {
         const input = '*.log';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.compiled.test('foo.log')).toBe(true);
-        expect(sut[0]?.compiled.test('foo/log')).toBe(false);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.compiled.test('foo.log')).toBe(true);
+        expect(result[0]?.compiled.test('foo/log')).toBe(false);
       });
     });
   });
@@ -69,12 +69,12 @@ describe('parseGitignore', () => {
         const input = '!**/*.keep';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.negated).toBe(true);
-        expect(sut[0]?.pattern).toBe('!**/*.keep');
+        expect(result).toHaveLength(1);
+        expect(result[0]?.negated).toBe(true);
+        expect(result[0]?.pattern).toBe('!**/*.keep');
       });
     });
   });
@@ -100,11 +100,11 @@ describe('parseGitignore', () => {
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange + Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.anchored).toBe(expected);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.anchored).toBe(expected);
       });
     });
   });
@@ -136,11 +136,11 @@ describe('parseGitignore', () => {
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange + Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.pattern).toBe(expected);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.pattern).toBe(expected);
       });
     });
   });
@@ -152,11 +152,11 @@ describe('parseGitignore', () => {
         const input = '\\#literal';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.pattern).toBe('#literal');
+        expect(result).toHaveLength(1);
+        expect(result[0]?.pattern).toBe('#literal');
       });
     });
   });
@@ -168,13 +168,13 @@ describe('parseGitignore', () => {
         const input = 'foo?.txt';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.compiled.test('foo1.txt')).toBe(true);
-        expect(sut[0]?.compiled.test('foo.txt')).toBe(false);
-        expect(sut[0]?.compiled.test('foo/.txt')).toBe(false);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.compiled.test('foo1.txt')).toBe(true);
+        expect(result[0]?.compiled.test('foo.txt')).toBe(false);
+        expect(result[0]?.compiled.test('foo/.txt')).toBe(false);
       });
     });
   });
@@ -186,12 +186,12 @@ describe('parseGitignore', () => {
         const input = '**foo';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.compiled.test('barfoo')).toBe(true);
-        expect(sut[0]?.compiled.test('a/b/foobar')).toBe(false);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.compiled.test('barfoo')).toBe(true);
+        expect(result[0]?.compiled.test('a/b/foobar')).toBe(false);
       });
     });
   });
@@ -203,12 +203,12 @@ describe('parseGitignore', () => {
         const input = '**/foo';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.compiled.test('foo')).toBe(true);
-        expect(sut[0]?.compiled.test('a/b/foo')).toBe(true);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.compiled.test('foo')).toBe(true);
+        expect(result[0]?.compiled.test('a/b/foo')).toBe(true);
       });
     });
   });
@@ -220,12 +220,12 @@ describe('parseGitignore', () => {
         const input = 'a(b).txt';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.compiled.test('a(b).txt')).toBe(true);
-        expect(sut[0]?.compiled.test('ab.txt')).toBe(false);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.compiled.test('a(b).txt')).toBe(true);
+        expect(result[0]?.compiled.test('ab.txt')).toBe(false);
       });
     });
   });
@@ -237,13 +237,13 @@ describe('parseGitignore', () => {
         const input = '# header\n\n*.log\nbuild/\n!important.log\n# trailing comment\n';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut).toHaveLength(3);
-        expect(sut[0]?.pattern).toBe('*.log');
-        expect(sut[1]?.directoryOnly).toBe(true);
-        expect(sut[2]?.negated).toBe(true);
+        expect(result).toHaveLength(3);
+        expect(result[0]?.pattern).toBe('*.log');
+        expect(result[1]?.directoryOnly).toBe(true);
+        expect(result[2]?.negated).toBe(true);
       });
     });
   });
@@ -256,12 +256,12 @@ describe('parseGitignore', () => {
         const input = '# header\n\n*.log\nbuild/\n!important.log\n# trailing\n';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut[0]?.lineNumber).toBe(3);
-        expect(sut[1]?.lineNumber).toBe(4);
-        expect(sut[2]?.lineNumber).toBe(5);
+        expect(result[0]?.lineNumber).toBe(3);
+        expect(result[1]?.lineNumber).toBe(4);
+        expect(result[2]?.lineNumber).toBe(5);
       });
     });
   });
@@ -274,10 +274,10 @@ describe('parseGitignore', () => {
         const input = '*.log';
 
         // Act
-        const sut = parseGitignore(input);
+        const result = parseGitignore(input);
 
         // Assert
-        expect(sut[0]?.lineNumber).toBe(1);
+        expect(result[0]?.lineNumber).toBe(1);
       });
     });
   });
@@ -292,10 +292,10 @@ describe('tokenizeIgnoreLine', () => {
         { input: '# a comment', label: 'a comment line yields undefined' },
       ])('Then $label', ({ input }) => {
         // Arrange + Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -307,10 +307,10 @@ describe('tokenizeIgnoreLine', () => {
         const input = 'plain';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           negated: false,
           anchored: false,
           directoryOnly: false,
@@ -327,11 +327,11 @@ describe('tokenizeIgnoreLine', () => {
         const input = '!keep.txt';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut?.negated).toBe(true);
-        expect(sut?.cleanPattern).toBe('keep.txt');
+        expect(result?.negated).toBe(true);
+        expect(result?.cleanPattern).toBe('keep.txt');
       });
     });
   });
@@ -343,11 +343,11 @@ describe('tokenizeIgnoreLine', () => {
         const input = '/dist';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut?.anchored).toBe(true);
-        expect(sut?.cleanPattern).toBe('dist');
+        expect(result?.anchored).toBe(true);
+        expect(result?.cleanPattern).toBe('dist');
       });
     });
   });
@@ -359,11 +359,11 @@ describe('tokenizeIgnoreLine', () => {
         const input = 'a/b';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut?.anchored).toBe(true);
-        expect(sut?.cleanPattern).toBe('a/b');
+        expect(result?.anchored).toBe(true);
+        expect(result?.cleanPattern).toBe('a/b');
       });
     });
   });
@@ -375,11 +375,11 @@ describe('tokenizeIgnoreLine', () => {
         const input = 'build/';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut?.directoryOnly).toBe(true);
-        expect(sut?.cleanPattern).toBe('build');
+        expect(result?.directoryOnly).toBe(true);
+        expect(result?.cleanPattern).toBe('build');
       });
     });
   });
@@ -391,10 +391,10 @@ describe('tokenizeIgnoreLine', () => {
         const input = '\\#literal';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut?.cleanPattern).toBe('#literal');
+        expect(result?.cleanPattern).toBe('#literal');
       });
     });
   });
@@ -406,10 +406,10 @@ describe('tokenizeIgnoreLine', () => {
         const input = 'foo   ';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut?.cleanPattern).toBe('foo');
+        expect(result?.cleanPattern).toBe('foo');
       });
     });
   });
@@ -421,10 +421,10 @@ describe('tokenizeIgnoreLine', () => {
         const input = '!/src/';
 
         // Act
-        const sut = tokenizeIgnoreLine(input);
+        const result = tokenizeIgnoreLine(input);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           negated: true,
           anchored: true,
           directoryOnly: true,

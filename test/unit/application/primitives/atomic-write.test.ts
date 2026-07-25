@@ -30,15 +30,18 @@ describe('atomicWriteRef', () => {
         const refPath = '/repo/.git/refs/heads/busy';
         await ctx.fs.write(`${refPath}.lock`, new Uint8Array([0]));
 
-        // Act / Assert
+        // Act
+        let caught: unknown;
         try {
           await atomicWriteRef(ctx, 'refs/heads/busy' as never, refPath, new Uint8Array([1]));
-          // Assert
           expect.unreachable();
         } catch (error) {
-          expect(error).toBeInstanceOf(TsgitError);
-          expect((error as TsgitError).data.code).toBe('REF_LOCKED');
+          caught = error;
         }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REF_LOCKED');
       });
     });
   });
@@ -59,6 +62,9 @@ describe('atomicWriteRef', () => {
             },
           },
         };
+
+        // Act
+        let caught: unknown;
         try {
           await atomicWriteRef(
             wrapped,
@@ -66,12 +72,14 @@ describe('atomicWriteRef', () => {
             '/repo/.git/refs/heads/x',
             new Uint8Array([1]),
           );
-          // Assert
           expect.unreachable();
         } catch (error) {
-          expect(error).toBeInstanceOf(TsgitError);
-          expect((error as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          caught = error;
         }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
       });
     });
   });
@@ -92,6 +100,9 @@ describe('atomicWriteRef', () => {
             },
           },
         };
+
+        // Act
+        let caught: unknown;
         try {
           await atomicWriteRef(
             wrapped,
@@ -99,12 +110,14 @@ describe('atomicWriteRef', () => {
             '/repo/.git/refs/heads/y',
             new Uint8Array([1]),
           );
-          // Assert
           expect.unreachable();
         } catch (error) {
-          expect(error).not.toBeInstanceOf(TsgitError);
-          expect((error as Error).message).toBe('disk full');
+          caught = error;
         }
+
+        // Assert
+        expect(caught).not.toBeInstanceOf(TsgitError);
+        expect((caught as Error).message).toBe('disk full');
       });
     });
   });

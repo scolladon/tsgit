@@ -22,9 +22,7 @@ export interface BannedSutFinding {
   readonly alias: string;
 }
 
-const sortFindings = (
-  findings: ReadonlyArray<BannedSutFinding>,
-): ReadonlyArray<BannedSutFinding> =>
+const sortFindings = (findings: ReadonlyArray<BannedSutFinding>): ReadonlyArray<BannedSutFinding> =>
   [...findings].sort((a, b) => {
     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
     return a.line - b.line;
@@ -41,7 +39,7 @@ export const detectBannedSutName = (
   const detector = buildDetector(heuristic.banned);
   const findings: BannedSutFinding[] = [];
   for (const file of files) {
-    if (classifyTestFile(manifest, file.path) !== heuristic.tier) continue;
+    if (!heuristic.tiers.includes(classifyTestFile(manifest, file.path))) continue;
     const blocks = scanItBlocks(file.source);
     for (const block of blocks) {
       if (block.isSkipped) continue;

@@ -28,14 +28,14 @@ describe('pack-entry', () => {
       describe('When parsing', () => {
         it('Then version=2 objectCount=42', () => {
           // Arrange
-          const sut = new Uint8Array(12);
-          const view = new DataView(sut.buffer);
+          const bytes = new Uint8Array(12);
+          const view = new DataView(bytes.buffer);
           view.setUint32(0, 0x5041434b);
           view.setUint32(4, 2);
           view.setUint32(8, 42);
 
           // Act
-          const result = parsePackHeader(sut);
+          const result = parsePackHeader(bytes);
 
           // Assert
           expect(result).toEqual({ version: 2, objectCount: 42 });
@@ -86,8 +86,8 @@ describe('pack-entry', () => {
           // Arrange — magic 0x0000004b: `toString(16)` is "4b" (2 chars), so
           // `padStart(8, '0')` must produce "0000004b". The StringLiteral
           // mutant replacing the '0' pad char with '' would leave it "4b".
-          const sut = new Uint8Array(12);
-          const view = new DataView(sut.buffer);
+          const bytes = new Uint8Array(12);
+          const view = new DataView(bytes.buffer);
           view.setUint32(0, 0x0000004b);
           view.setUint32(4, 2);
           view.setUint32(8, 1);
@@ -95,7 +95,7 @@ describe('pack-entry', () => {
           // Act
           let caught: unknown;
           try {
-            parsePackHeader(sut);
+            parsePackHeader(bytes);
           } catch (e) {
             caught = e;
           }
@@ -116,10 +116,10 @@ describe('pack-entry', () => {
           const serialized = serializePackHeader(2, 100);
 
           // Act
-          const sut = parsePackHeader(serialized);
+          const result = parsePackHeader(serialized);
 
           // Assert
-          expect(sut).toEqual({ version: 2, objectCount: 100 });
+          expect(result).toEqual({ version: 2, objectCount: 100 });
         });
       });
     });
@@ -168,10 +168,10 @@ describe('pack-entry', () => {
           },
         ])('Then decodes $label', ({ bytes, type, size, dataOffset }) => {
           // Arrange
-          const sut = new Uint8Array(bytes);
+          const data = new Uint8Array(bytes);
 
           // Act
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+          const result = parsePackEntryHeader(data, 0, SHA1_CONFIG);
 
           // Assert
           expect(result.type).toBe(type);
@@ -189,10 +189,10 @@ describe('pack-entry', () => {
           // Arrange — type=6, size=0, distance=10
           // First byte: type=6 size=0 → 0b0_110_0000 = 0x60
           // Distance: 10 < 128, single byte 0x0A
-          const sut = new Uint8Array([0x60, 0x0a]);
+          const bytes = new Uint8Array([0x60, 0x0a]);
 
           // Act
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+          const result = parsePackEntryHeader(bytes, 0, SHA1_CONFIG);
 
           // Assert
           expect(result.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -225,12 +225,12 @@ describe('pack-entry', () => {
           ({ config, byteLength, fillByte, expectedBaseId }) => {
             // Arrange — type=7, size=0 → 0b0_111_0000 = 0x70
             const sha = new Uint8Array(byteLength).fill(fillByte);
-            const sut = new Uint8Array(1 + byteLength);
-            sut[0] = 0x70;
-            sut.set(sha, 1);
+            const bytes = new Uint8Array(1 + byteLength);
+            bytes[0] = 0x70;
+            bytes.set(sha, 1);
 
             // Act
-            const result = parsePackEntryHeader(sut, 0, config);
+            const result = parsePackEntryHeader(bytes, 0, config);
 
             // Assert
             expect(result.type).toBe(PACK_ENTRY_TYPE.REF_DELTA);
@@ -317,11 +317,11 @@ describe('pack-entry', () => {
           },
         ])('Then throws INVALID_PACK_ENTRY for $label', ({ bytes, offset, reasonContains }) => {
           // Arrange
-          const sut = new Uint8Array(bytes);
+          const data = new Uint8Array(bytes);
 
           // Act & Assert
           try {
-            parsePackEntryHeader(sut, offset, SHA1_CONFIG);
+            parsePackEntryHeader(data, offset, SHA1_CONFIG);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -344,10 +344,10 @@ describe('pack-entry', () => {
           // continuation bit set and a terminating byte: the while loop
           // counts exactly 4 continuations. `continuationCount > 4` keeps 4
           // valid; the `>=` mutant would reject the maximum-length encoding.
-          const sut = new Uint8Array([0x60, 0x80, 0x80, 0x80, 0x80, 0x00]);
+          const bytes = new Uint8Array([0x60, 0x80, 0x80, 0x80, 0x80, 0x00]);
 
           // Act — must NOT throw.
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+          const result = parsePackEntryHeader(bytes, 0, SHA1_CONFIG);
 
           // Assert — OFS_DELTA decoded; the 4-continuation distance stayed in bounds.
           expect(result.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -363,10 +363,10 @@ describe('pack-entry', () => {
           // more continuation bytes and a terminating byte: the while loop
           // counts exactly 5 extension bytes. `extensionBytes > 5` keeps 5
           // valid; the `>=` mutant would reject the maximum-length encoding.
-          const sut = new Uint8Array([0b1_001_0000, 0x80, 0x80, 0x80, 0x80, 0x00]);
+          const bytes = new Uint8Array([0b1_001_0000, 0x80, 0x80, 0x80, 0x80, 0x00]);
 
           // Act — must NOT throw.
-          const result = parsePackEntryHeader(sut, 0, SHA1_CONFIG);
+          const result = parsePackEntryHeader(bytes, 0, SHA1_CONFIG);
 
           // Assert — header decoded; the 5-byte encoding stayed within bounds.
           expect(result.type).toBe(PACK_ENTRY_TYPE.COMMIT);
@@ -396,10 +396,10 @@ describe('pack-entry', () => {
           { type: PACK_ENTRY_TYPE.TAG, size: 0, expected: [0b0_100_0000], label: 'type=4 size=0' },
         ])('Then encodes $label', ({ type, size, expected }) => {
           // Arrange & Act
-          const sut = encodePackEntryHeader(type, size);
+          const result = encodePackEntryHeader(type, size);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array(expected));
+          expect(result).toEqual(new Uint8Array(expected));
         });
       });
     });
@@ -413,10 +413,10 @@ describe('pack-entry', () => {
           { distance: 127, expected: [0x7f], label: 'distance=127' },
         ])('Then produces a single byte for $label', ({ distance, expected }) => {
           // Arrange & Act
-          const sut = encodeOfsDistance(distance);
+          const result = encodeOfsDistance(distance);
 
           // Assert
-          expect(sut).toEqual(new Uint8Array(expected));
+          expect(result).toEqual(new Uint8Array(expected));
         });
       });
     });
@@ -428,11 +428,11 @@ describe('pack-entry', () => {
           { distance: 100000, label: 'a large distance (100000)' },
         ])('Then baseDistance matches for $label', ({ distance }) => {
           // Arrange
-          const sut = encodeOfsDistance(distance);
+          const distanceBytes = encodeOfsDistance(distance);
           const entryHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0);
-          const combined = new Uint8Array(entryHeader.length + sut.length);
+          const combined = new Uint8Array(entryHeader.length + distanceBytes.length);
           combined.set(entryHeader);
-          combined.set(sut, entryHeader.length);
+          combined.set(distanceBytes, entryHeader.length);
 
           // Act
           const result = parsePackEntryHeader(combined, 0, SHA1_CONFIG);
@@ -457,10 +457,10 @@ describe('pack-entry', () => {
           { type: PACK_ENTRY_TYPE.REF_DELTA, expected: undefined, label: 'REF_DELTA(7)' },
         ])('Then $label maps to $expected', ({ type, expected }) => {
           // Arrange & Act
-          const sut = packEntryTypeToObjectType(type);
+          const result = packEntryTypeToObjectType(type);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -475,10 +475,10 @@ describe('pack-entry', () => {
             fc.property(fc.integer({ min: 0, max: 2 ** 32 - 1 }), (objectCount) => {
               // Act
               const serialized = serializePackHeader(2, objectCount);
-              const sut = parsePackHeader(serialized);
+              const result = parsePackHeader(serialized);
 
               // Assert
-              expect(sut).toEqual({ version: 2, objectCount });
+              expect(result).toEqual({ version: 2, objectCount });
             }),
           );
         });
@@ -496,11 +496,11 @@ describe('pack-entry', () => {
               (type, size) => {
                 // Act
                 const encoded = encodePackEntryHeader(type, size);
-                const sut = parsePackEntryHeader(encoded, 0, SHA1_CONFIG);
+                const result = parsePackEntryHeader(encoded, 0, SHA1_CONFIG);
 
                 // Assert
-                expect(sut.type).toBe(type);
-                expect(sut.size).toBe(size);
+                expect(result.type).toBe(type);
+                expect(result.size).toBe(size);
               },
             ),
           );
@@ -521,11 +521,13 @@ describe('pack-entry', () => {
               combined.set(distBytes, entryHeader.length);
 
               // Act
-              const sut = parsePackEntryHeader(combined, 0, SHA1_CONFIG);
+              const result = parsePackEntryHeader(combined, 0, SHA1_CONFIG);
 
               // Assert
-              expect(sut.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
-              expect(sut.type === PACK_ENTRY_TYPE.OFS_DELTA && sut.baseDistance).toBe(distance);
+              expect(result.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+              expect(result.type === PACK_ENTRY_TYPE.OFS_DELTA && result.baseDistance).toBe(
+                distance,
+              );
             }),
           );
         });

@@ -9,10 +9,10 @@ describe('refCandidates', () => {
         const base = 'main';
 
         // Act
-        const sut = refCandidates(base);
+        const result = refCandidates(base);
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           'main',
           'refs/main',
           'refs/tags/main',
@@ -31,10 +31,10 @@ describe('refCandidates', () => {
         const base = 'stash';
 
         // Act
-        const sut = refCandidates(base);
+        const result = refCandidates(base);
 
         // Assert
-        expect(sut).toContain('refs/stash');
+        expect(result).toContain('refs/stash');
       });
     });
   });
@@ -46,11 +46,11 @@ describe('refCandidates', () => {
         const base = 'v1';
 
         // Act
-        const sut = refCandidates(base);
+        const result = refCandidates(base);
 
         // Assert
-        const tagPos = sut.findIndex((c) => c === 'refs/tags/v1');
-        const headPos = sut.findIndex((c) => c === 'refs/heads/v1');
+        const tagPos = result.findIndex((c) => c === 'refs/tags/v1');
+        const headPos = result.findIndex((c) => c === 'refs/heads/v1');
         expect(tagPos).toBeLessThan(headPos);
       });
     });
@@ -63,10 +63,10 @@ describe('refCandidates', () => {
         const base = 'origin/main';
 
         // Act
-        const sut = refCandidates(base);
+        const result = refCandidates(base);
 
         // Assert
-        expect(sut).toContain('refs/remotes/origin/main');
+        expect(result).toContain('refs/remotes/origin/main');
       });
     });
   });

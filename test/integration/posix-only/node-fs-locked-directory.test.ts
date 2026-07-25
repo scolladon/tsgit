@@ -48,53 +48,57 @@ describe('NodeFileSystem — POSIX-locked filesystem semantics', () => {
     await env.cleanup();
   });
 
-  it('Given rmRecursive descent into a directory whose lstat surfaces a non-ENOENT error (EACCES via chmod 0o000), When removing, Then the mapped TsgitError propagates as PERMISSION_DENIED', async () => {
-    // Arrange — chmod a subdirectory to 000 so its readdir/lstat fails with EACCES.
-    // This exercises the `throw err` branch in removeTree's catch (anything
-    // other than FILE_NOT_FOUND must propagate; without it errors would be
-    // silently swallowed).
-    const sut = env.fs;
-    const sealed = nodePath.join(env.rootDir, 'sealed');
-    await fsPromises.mkdir(sealed);
-    await fsPromises.writeFile(nodePath.join(sealed, 'inside.txt'), Buffer.from([1]));
-    await fsPromises.chmod(sealed, 0o000);
+  describe('Given rmRecursive descent into a directory whose lstat surfaces a non-ENOENT error (EACCES via chmod 0o000), When removing', () => {
+    it('Then the mapped TsgitError propagates as PERMISSION_DENIED', async () => {
+      // Arrange — chmod a subdirectory to 000 so its readdir/lstat fails with EACCES.
+      // This exercises the `throw err` branch in removeTree's catch (anything
+      // other than FILE_NOT_FOUND must propagate; without it errors would be
+      // silently swallowed).
+      const sut = env.fs;
+      const sealed = nodePath.join(env.rootDir, 'sealed');
+      await fsPromises.mkdir(sealed);
+      await fsPromises.writeFile(nodePath.join(sealed, 'inside.txt'), Buffer.from([1]));
+      await fsPromises.chmod(sealed, 0o000);
 
-    // Act
-    let caught: unknown;
-    try {
-      await sut.rmRecursive(sealed);
-    } catch (err) {
-      caught = err;
-    } finally {
-      // Restore mode so cleanup can proceed.
-      await fsPromises.chmod(sealed, 0o755);
-    }
+      // Act
+      let caught: unknown;
+      try {
+        await sut.rmRecursive(sealed);
+      } catch (err) {
+        caught = err;
+      } finally {
+        // Restore mode so cleanup can proceed.
+        await fsPromises.chmod(sealed, 0o755);
+      }
 
-    // Assert — EACCES maps to PERMISSION_DENIED (positive assertion kills
-    // StringLiteral mutants that would otherwise survive a `not.toBe(…)` check).
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      // Assert — EACCES maps to PERMISSION_DENIED (positive assertion kills
+      // StringLiteral mutants that would otherwise survive a `not.toBe(…)` check).
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
   });
 
-  it('Given openWithNoFollow on a directory (EISDIR), When opening in write mode, Then propagates as PERMISSION_DENIED', async () => {
-    // Arrange — open a directory in write mode triggers EISDIR. The
-    // dedicated mapErrno arm surfaces PERMISSION_DENIED on both POSIX
-    // and Windows; without it POSIX would see UNSUPPORTED_OPERATION
-    // because the Windows-only discriminator rewrap never fires.
-    const sut = env.fs;
-    const dir = nodePath.join(env.rootDir, 'just-a-dir');
-    await fsPromises.mkdir(dir);
+  describe('Given openWithNoFollow on a directory (EISDIR), When opening in write mode', () => {
+    it('Then propagates as PERMISSION_DENIED', async () => {
+      // Arrange — open a directory in write mode triggers EISDIR. The
+      // dedicated mapErrno arm surfaces PERMISSION_DENIED on both POSIX
+      // and Windows; without it POSIX would see UNSUPPORTED_OPERATION
+      // because the Windows-only discriminator rewrap never fires.
+      const sut = env.fs;
+      const dir = nodePath.join(env.rootDir, 'just-a-dir');
+      await fsPromises.mkdir(dir);
 
-    // Act
-    let caught: unknown;
-    try {
-      await sut.openWithNoFollow(dir, 'write');
-    } catch (err) {
-      caught = err;
-    }
+      // Act
+      let caught: unknown;
+      try {
+        await sut.openWithNoFollow(dir, 'write');
+      } catch (err) {
+        caught = err;
+      }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
   });
 });

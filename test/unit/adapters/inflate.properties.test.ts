@@ -9,8 +9,6 @@ import { describe, it } from 'vitest';
 import { inflateZlibMember } from '../../../src/adapters/inflate.js';
 import { arbBytes, arbBytesList } from './arbitraries.js';
 
-const sut = inflateZlibMember;
-
 const ROUND_TRIP_NUM_RUNS = 200;
 const CONCAT_BOUNDARY_NUM_RUNS = 200;
 
@@ -44,7 +42,7 @@ describe('Given an arbitrary byte payload deflated at an arbitrary compression l
         fc.property(arbBytes(), arbCompressionLevel(), (payload, level) => {
           const member = deflateSync(payload, { level });
 
-          const result = sut(member, 0);
+          const result = inflateZlibMember(member, 0);
 
           return bytesEqual(result.output, payload) && result.bytesConsumed === member.length;
         }),
@@ -69,7 +67,7 @@ describe('Given an arbitrary list of byte payloads, each deflated independently'
             const expectedMember = members[i];
             if (expectedPayload === undefined || expectedMember === undefined) return false;
 
-            const result = sut(concatenated, readOffset);
+            const result = inflateZlibMember(concatenated, readOffset);
             if (!bytesEqual(result.output, expectedPayload)) return false;
             if (result.bytesConsumed !== expectedMember.length) return false;
             readOffset += result.bytesConsumed;

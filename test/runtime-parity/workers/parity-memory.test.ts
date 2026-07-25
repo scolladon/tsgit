@@ -36,13 +36,13 @@ describe.each(supported)('Given the $name scenario', (scenario) => {
   describe('When the Workers driver runs it', () => {
     it('Then the result matches the scenario expected golden', async () => {
       // Arrange
-      const repo = await openRepository({ files: stageFiles(scenario.inputs) });
+      const sut = await openRepository({ files: stageFiles(scenario.inputs) });
 
       // Act
-      const sut = await scenario.run(repo, scenario.inputs);
+      const result = await scenario.run(sut, scenario.inputs);
 
       // Assert
-      expect(sut).toEqual(scenario.expected);
+      expect(result).toEqual(scenario.expected);
     });
   });
 });
@@ -52,7 +52,11 @@ describe.each(supported)('Given the $name scenario', (scenario) => {
 describe.each(skipped)('Given the $name scenario', (scenario) => {
   describe.skip(`When the Workers driver runs it [SKIPPED — unsupported on ${WORKERS_RUNTIME}: see scenario for reason]`, () => {
     it('Then the result matches the scenario expected golden', () => {
-      expect(scenario.expected).toBeDefined();
+      // Arrange & Act
+      const result = scenario.expected;
+
+      // Assert
+      expect(result).toBeDefined();
     });
   });
 });

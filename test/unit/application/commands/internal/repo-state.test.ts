@@ -40,10 +40,10 @@ describe('internal/repo-state', () => {
           await seedRepo(ctx);
 
           // Act
-          const sut = await assertRepository(ctx);
+          const result = await assertRepository(ctx);
 
           // Assert
-          expect(sut).toBe(ctx.layout.workDir);
+          expect(result).toBe(ctx.layout.workDir);
         });
       });
     });
@@ -92,10 +92,10 @@ describe('internal/repo-state', () => {
           if (config !== undefined) await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
 
           // Act
-          const sut = await isBare(ctx);
+          const result = await isBare(ctx);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -150,12 +150,12 @@ describe('internal/repo-state', () => {
           await seedRepo(ctx, 'ref: refs/heads/main\n');
 
           // Act
-          const sut = await readHeadRaw(ctx);
+          const result = await readHeadRaw(ctx);
 
           // Assert
-          expect(sut.kind).toBe('symbolic');
-          if (sut.kind === 'symbolic') {
-            expect(sut.target).toBe('refs/heads/main');
+          expect(result.kind).toBe('symbolic');
+          if (result.kind === 'symbolic') {
+            expect(result.target).toBe('refs/heads/main');
           }
         });
       });
@@ -170,12 +170,12 @@ describe('internal/repo-state', () => {
           await seedRepo(ctx, `${oid}\n`);
 
           // Act
-          const sut = await readHeadRaw(ctx);
+          const result = await readHeadRaw(ctx);
 
           // Assert
-          expect(sut.kind).toBe('direct');
-          if (sut.kind === 'direct') {
-            expect(sut.id).toBe(oid);
+          expect(result.kind).toBe('direct');
+          if (result.kind === 'direct') {
+            expect(result.id).toBe(oid);
           }
         });
       });
@@ -523,10 +523,10 @@ describe('internal/repo-state', () => {
           await seedConfig(ctx, '[core]\n\texcludesfile = /x\n');
 
           // Act
-          const sut = await assertOperationalRepository(ctx);
+          const result = await assertOperationalRepository(ctx);
 
           // Assert
-          expect(sut).toBe(ctx.layout.workDir);
+          expect(result).toBe(ctx.layout.workDir);
         });
       });
     });
@@ -540,10 +540,10 @@ describe('internal/repo-state', () => {
           await seedConfig(ctx, '[user]\n\tname = Bob\n');
 
           // Act
-          const sut = await assertOperationalRepository(ctx);
+          const result = await assertOperationalRepository(ctx);
 
           // Assert
-          expect(sut).toBe(ctx.layout.workDir);
+          expect(result).toBe(ctx.layout.workDir);
         });
       });
     });
@@ -583,10 +583,10 @@ describe('internal/repo-state', () => {
             await seedConfig(ctx, `[core]\n\t${key}\n`);
 
             // Act
-            const sut = await assertRepository(ctx);
+            const result = await assertRepository(ctx);
 
             // Assert
-            expect(sut).toBe(ctx.layout.workDir);
+            expect(result).toBe(ctx.layout.workDir);
           },
         );
       });

@@ -20,6 +20,7 @@ describe('createGranularityTracker', () => {
         const reporter = stubReporter();
         const sut = createGranularityTracker(reporter, 'op', 100);
 
+        // Act
         for (let i = 0; i < 99; i += 1) sut.tick();
 
         // Assert
@@ -35,6 +36,7 @@ describe('createGranularityTracker', () => {
         const reporter = stubReporter();
         const sut = createGranularityTracker(reporter, 'op', 100);
 
+        // Act
         for (let i = 0; i < 100; i += 1) sut.tick();
 
         // Assert
@@ -51,6 +53,7 @@ describe('createGranularityTracker', () => {
         const reporter = stubReporter();
         const sut = createGranularityTracker(reporter, 'op', 100);
 
+        // Act
         for (let i = 0; i < 101; i += 1) sut.tick();
 
         // Assert
@@ -67,6 +70,7 @@ describe('createGranularityTracker', () => {
         const reporter = stubReporter();
         const sut = createGranularityTracker(reporter, 'op', 100);
 
+        // Act
         for (let i = 0; i < 200; i += 1) sut.tick();
 
         // Assert
@@ -84,6 +88,7 @@ describe('createGranularityTracker', () => {
         const reporter = stubReporter();
         const sut = createGranularityTracker(reporter, 'op', 100, 250);
 
+        // Act
         for (let i = 0; i < 100; i += 1) sut.tick();
 
         // Assert
@@ -101,6 +106,7 @@ describe('createByteGranularityTracker', () => {
         const reporter = stubReporter();
         const sut = createByteGranularityTracker(reporter, 'push:upload', 65536);
 
+        // Act
         sut.add(65535);
 
         // Assert
@@ -149,6 +155,7 @@ describe('createByteGranularityTracker', () => {
         const reporter = stubReporter();
         const sut = createByteGranularityTracker(reporter, 'push:upload', 65536, 200_000);
 
+        // Act
         sut.add(65536);
 
         // Assert

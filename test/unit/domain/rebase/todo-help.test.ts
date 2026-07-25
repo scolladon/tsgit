@@ -46,14 +46,14 @@ describe('rebase todo-help', () => {
         const picks = [{ action: 'pick' as const, oid: OID_A, subject: 'tc' }];
 
         // Act
-        const sut = rebaseTodoBackup(picks, {
+        const result = rebaseTodoBackup(picks, {
           shortUpstream: '2509fa4',
           shortOrigHead: '1482021',
           shortOnto: '2509fa4',
         });
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           `pick ${OID_A} # tc\n\n# Rebase 2509fa4..1482021 onto 2509fa4 (1 command)\n${HELP_BODY}`,
         );
       });
@@ -68,14 +68,14 @@ describe('rebase todo-help', () => {
         ];
 
         // Act
-        const sut = rebaseTodoBackup(picks, {
+        const result = rebaseTodoBackup(picks, {
           shortUpstream: 'aaaaaaa',
           shortOrigHead: 'bbbbbbb',
           shortOnto: 'ccccccc',
         });
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           `pick ${OID_A} # t1\npick ${OID_B} # t2\n\n# Rebase aaaaaaa..bbbbbbb onto ccccccc (2 commands)\n${HELP_BODY}`,
         );
       });

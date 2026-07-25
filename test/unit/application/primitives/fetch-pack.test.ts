@@ -279,7 +279,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -288,17 +288,17 @@ describe('fetchPack', () => {
 
           // Assert
           const expectedTrailerHex = await ctx.hash.hashHex(packBytes.subarray(0, -20));
-          expect(sut.packSha).toBe(expectedTrailerHex);
-          expect(sut.objectCount).toBe(1);
-          expect(sut.packPath).toBe(
+          expect(result.packSha).toBe(expectedTrailerHex);
+          expect(result.objectCount).toBe(1);
+          expect(result.packPath).toBe(
             `${ctx.layout.gitDir}/objects/pack/pack-${expectedTrailerHex}.pack`,
           );
-          expect(sut.idxPath).toBe(
+          expect(result.idxPath).toBe(
             `${ctx.layout.gitDir}/objects/pack/pack-${expectedTrailerHex}.idx`,
           );
-          const writtenPack = await ctx.fs.read(sut.packPath);
+          const writtenPack = await ctx.fs.read(result.packPath);
           expect(writtenPack).toEqual(packBytes);
-          const writtenIdx = await ctx.fs.read(sut.idxPath);
+          const writtenIdx = await ctx.fs.read(result.idxPath);
           const parsedIdx = parsePackIndex(writtenIdx);
           expect(parsedIdx.objectCount).toBe(1);
           expect(lookupPackIndex(parsedIdx, blobId)).toBeGreaterThanOrEqual(12);
@@ -337,11 +337,11 @@ describe('fetchPack', () => {
             capabilities: ['side-band-64k', 'ofs-delta'],
             progressOp: 'test:write-objects',
           });
-          const sut = await readObject(ctx, blobId);
+          const result = await readObject(ctx, blobId);
 
           // Assert
-          expect(sut.type).toBe('blob');
-          expect(sut.id).toBe(blobId);
+          expect(result.type).toBe('blob');
+          expect(result.id).toBe(blobId);
         });
       });
     });
@@ -385,7 +385,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -394,7 +394,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${sut.packSha}.promisor`;
+          const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${result.packSha}.promisor`;
           expect(await ctx.fs.exists(promisorPath)).toBe(true);
           expect(await ctx.fs.read(promisorPath)).toEqual(new Uint8Array(0));
         });
@@ -412,7 +412,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -420,7 +420,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${sut.packSha}.promisor`;
+          const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${result.packSha}.promisor`;
           expect(await ctx.fs.exists(promisorPath)).toBe(false);
         });
       });
@@ -435,7 +435,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(new Uint8Array(0));
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: ['a'.repeat(40) as ObjectId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -444,7 +444,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.packPath).toBe('');
+          expect(result.packPath).toBe('');
           const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
           expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(false);
         });
@@ -469,7 +469,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k', 'ofs-delta'],
@@ -477,8 +477,8 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(2);
-          const idxBytes = await ctx.fs.read(sut.idxPath);
+          expect(result.objectCount).toBe(2);
+          const idxBytes = await ctx.fs.read(result.idxPath);
           const idx = parsePackIndex(idxBytes);
           expect(idx.objectCount).toBe(2);
           expect(lookupPackIndex(idx, built.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
@@ -504,7 +504,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -512,8 +512,8 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(2);
-          const idx = parsePackIndex(await ctx.fs.read(sut.idxPath));
+          expect(result.objectCount).toBe(2);
+          const idx = parsePackIndex(await ctx.fs.read(result.idxPath));
           expect(idx.objectCount).toBe(2);
           expect(lookupPackIndex(idx, built.ids[1] as ObjectId)).toBeGreaterThanOrEqual(12);
         });
@@ -538,7 +538,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [normal.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -546,8 +546,8 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(2);
-          const idx = parsePackIndex(await ctx.fs.read(sut.idxPath));
+          expect(result.objectCount).toBe(2);
+          const idx = parsePackIndex(await ctx.fs.read(result.idxPath));
           expect(lookupPackIndex(idx, normal.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
           expect(lookupPackIndex(idx, normal.ids[1] as ObjectId)).toBeGreaterThanOrEqual(12);
         });
@@ -746,7 +746,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -754,7 +754,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(0);
+          expect(result.objectCount).toBe(0);
         });
       });
     });
@@ -990,7 +990,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -998,9 +998,9 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(0);
-          expect(sut.packPath).toBe('');
-          expect(sut.idxPath).toBe('');
+          expect(result.objectCount).toBe(0);
+          expect(result.packPath).toBe('');
+          expect(result.idxPath).toBe('');
           const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
           expect(packDir).toHaveLength(0);
         });
@@ -1060,7 +1060,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(tightCtx, toNegotiator(transport), {
+          const result = await fetchPack(tightCtx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1068,7 +1068,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(1);
+          expect(result.objectCount).toBe(1);
         });
       });
     });
@@ -1084,7 +1084,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(exactCtx, toNegotiator(transport), {
+          const result = await fetchPack(exactCtx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1092,7 +1092,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(1);
+          expect(result.objectCount).toBe(1);
         });
       });
     });
@@ -1146,7 +1146,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: [], // no side-band advertised
@@ -1154,8 +1154,8 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.objectCount).toBe(1);
-          const written = await ctx.fs.read(sut.packPath);
+          expect(result.objectCount).toBe(1);
+          const written = await ctx.fs.read(result.packPath);
           expect(written).toEqual(packBytes);
         });
       });
@@ -1219,7 +1219,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1227,9 +1227,9 @@ describe('fetchPack', () => {
           });
 
           // Assert — verifies the post-drain concat (off +=...) is correct.
-          const written = await ctx.fs.read(sut.packPath);
+          const written = await ctx.fs.read(result.packPath);
           expect(written).toEqual(packBytes);
-          expect(sut.objectCount).toBe(1);
+          expect(result.objectCount).toBe(1);
         });
       });
     });
@@ -1255,7 +1255,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [built.ids[0] as ObjectId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1263,7 +1263,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          const idx = parsePackIndex(await ctx.fs.read(sut.idxPath));
+          const idx = parsePackIndex(await ctx.fs.read(result.idxPath));
           expect(idx.objectCount).toBe(1);
           expect(lookupPackIndex(idx, built.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
         });
@@ -1571,7 +1571,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [dummyId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1579,10 +1579,10 @@ describe('fetchPack', () => {
           });
 
           // Assert — synthetic empty result.
-          expect(sut.objectCount).toBe(0);
-          expect(sut.packSha).toBe('');
-          expect(sut.packPath).toBe('');
-          expect(sut.idxPath).toBe('');
+          expect(result.objectCount).toBe(0);
+          expect(result.packSha).toBe('');
+          expect(result.packPath).toBe('');
+          expect(result.idxPath).toBe('');
           // No update events whatsoever (the drain loop never runs).
           const allUpdates = events.filter((e) => e.kind === 'update');
           expect(allUpdates).toHaveLength(0);
@@ -1694,7 +1694,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1702,8 +1702,8 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.shallow).toEqual([]);
-          expect(sut.unshallow).toEqual([]);
+          expect(result.shallow).toEqual([]);
+          expect(result.unshallow).toEqual([]);
           const decoded = new TextDecoder().decode(requests[0]?.body);
           expect(decoded.includes('deepen')).toBe(false);
         });
@@ -1721,7 +1721,7 @@ describe('fetchPack', () => {
           const { transport, requests } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1730,8 +1730,8 @@ describe('fetchPack', () => {
           });
 
           // Assert — `deepen 1\n` in the request body.
-          expect(sut.shallow).toEqual([shallowOid]);
-          expect(sut.unshallow).toEqual([]);
+          expect(result.shallow).toEqual([shallowOid]);
+          expect(result.unshallow).toEqual([]);
           const decoded = new TextDecoder().decode(requests[0]?.body);
           expect(decoded).toContain('deepen 1\n');
         });
@@ -1753,7 +1753,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1762,8 +1762,8 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.shallow).toEqual([]);
-          expect(sut.unshallow).toEqual([]);
+          expect(result.shallow).toEqual([]);
+          expect(result.unshallow).toEqual([]);
         });
       });
     });
@@ -1822,7 +1822,7 @@ describe('fetchPack', () => {
           const { transport } = captureRequests(body);
 
           // Act
-          const sut = await fetchPack(ctx, toNegotiator(transport), {
+          const result = await fetchPack(ctx, toNegotiator(transport), {
             wants: [blobId],
             haves: [],
             capabilities: ['side-band-64k'],
@@ -1831,8 +1831,8 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          expect(sut.shallow).toEqual([shallowOid]);
-          expect(sut.unshallow).toEqual([unshallowOid]);
+          expect(result.shallow).toEqual([shallowOid]);
+          expect(result.unshallow).toEqual([unshallowOid]);
         });
       });
     });
@@ -1893,13 +1893,13 @@ describe('walkPackEntries', () => {
         const ctx = createMemoryContext();
         const { packBytes, baseId, baseContent, targetContent } = await buildThinPack(ctx);
 
-        const sut: ExternalBaseResolver = async (oid) => {
+        const resolveBase: ExternalBaseResolver = async (oid) => {
           if (oid !== baseId) return undefined;
           return { type: 'blob', content: baseContent };
         };
 
         // Act
-        const result = await walkPackEntries(ctx, packBytes, sut);
+        const result = await walkPackEntries(ctx, packBytes, resolveBase);
 
         // Assert — one derived entry, id matches the target blob sha
         expect(result).toHaveLength(1);
@@ -1918,12 +1918,12 @@ describe('walkPackEntries', () => {
         const ctx = createMemoryContext();
         const { packBytes, baseId } = await buildThinPack(ctx);
 
-        const sut: ExternalBaseResolver = async (_oid) => undefined;
+        const resolveBase: ExternalBaseResolver = async (_oid) => undefined;
 
         // Act
         let caught: unknown;
         try {
-          await walkPackEntries(ctx, packBytes, sut);
+          await walkPackEntries(ctx, packBytes, resolveBase);
         } catch (err) {
           caught = err;
         }

@@ -80,10 +80,10 @@ describe('commands/submodule', () => {
         const { ctx } = await seedRepoWithHead(text, [{ name: 'foo', id: FAKE_COMMIT }]);
 
         // Act
-        const sut = await submoduleList(ctx);
+        const result = await submoduleList(ctx);
 
         // Assert
-        expect(sut.entries).toEqual([
+        expect(result.entries).toEqual([
           {
             name: 'foo',
             path: 'foo',
@@ -104,7 +104,7 @@ describe('commands/submodule', () => {
         const ctx = await buildSeededContext();
         // No HEAD seeded — assertRepository must reject.
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleList(ctx);
           // Assert
@@ -159,12 +159,12 @@ describe('commands/submodule', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${parentCommit}\n`);
 
         // Act
-        const sut = await submoduleList(ctx, options);
+        const result = await submoduleList(ctx, options);
 
         // Assert
-        expect(sut.entries.map((e) => e.depth)).toEqual(expectedDepths);
+        expect(result.entries.map((e) => e.depth)).toEqual(expectedDepths);
         if (expectedParent !== undefined) {
-          expect(sut.entries[1]?.parent).toBe(expectedParent);
+          expect(result.entries[1]?.parent).toBe(expectedParent);
         }
       });
     });
@@ -180,11 +180,11 @@ describe('commands/submodule', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/feature`, `${commit}\n`);
 
         // Act
-        const sut = await submoduleList(ctx, { ref: 'refs/heads/feature' });
+        const result = await submoduleList(ctx, { ref: 'refs/heads/feature' });
 
         // Assert
-        expect(sut.entries).toHaveLength(1);
-        expect(sut.entries[0]?.path).toBe('foo');
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.path).toBe('foo');
       });
     });
   });
@@ -196,11 +196,11 @@ describe('commands/submodule', () => {
         const { ctx, tree } = await seedRepoWithHead(undefined, [{ name: 'foo', id: FAKE_COMMIT }]);
 
         // Act — `tree` is the root tree OID directly; coerceRef must recognise it as an oid.
-        const sut = await submoduleList(ctx, { ref: tree });
+        const result = await submoduleList(ctx, { ref: tree });
 
         // Assert
-        expect(sut.entries).toHaveLength(1);
-        expect(sut.entries[0]?.path).toBe('foo');
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.path).toBe('foo');
       });
     });
   });
@@ -211,7 +211,7 @@ describe('commands/submodule', () => {
         // Arrange
         const { ctx } = await seedRepoWithHead(undefined, []);
 
-        // Act & Assert — refs with a literal ".." path-segment are invalid by validateRefName.
+        // Act + Assert — refs with a literal ".." path-segment are invalid by validateRefName.
         try {
           await submoduleList(ctx, { ref: 'refs/../escape' });
           // Assert

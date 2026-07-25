@@ -105,11 +105,8 @@ describe('Given a diff between parent and child', () => {
           'a wholly-rewritten (degraded) diff with no common region: every entry is kept at the suspect',
       },
     ])('Then $label', ({ entries, diff, expectedPassed, expectedKept }) => {
-      // Arrange
-      const sut = splitAgainstParent;
-
-      // Act
-      const result = sut(entries, diff);
+      // Arrange & Act
+      const result = splitAgainstParent(entries, diff);
 
       // Assert
       expect(result.passed).toEqual(expectedPassed);

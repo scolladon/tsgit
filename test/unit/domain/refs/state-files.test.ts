@@ -9,7 +9,7 @@ import {
   REVERT_HEAD,
 } from '../../../../src/domain/refs/state-files.js';
 
-const sut = {
+const STATE_FILE_NAMES = {
   MERGE_HEAD,
   MERGE_MSG,
   ORIG_HEAD,
@@ -31,7 +31,7 @@ describe('Given the git state-marker filenames', () => {
       { key: 'FETCH_HEAD', label: 'is the fetch marker filename' },
     ] as const)('Then $key $label', ({ key }) => {
       // Arrange / Act / Assert
-      expect(sut[key]).toBe(key);
+      expect(STATE_FILE_NAMES[key]).toBe(key);
     });
   });
 });

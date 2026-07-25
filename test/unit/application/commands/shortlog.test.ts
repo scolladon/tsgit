@@ -39,10 +39,9 @@ describe('shortlog', () => {
       await makeCommit(ctx, 'f1', 'b-old', ident('Bob', 1000));
       await makeCommit(ctx, 'f2', '[PATCH] a-mid', ident('Ann', 2000));
       await makeCommit(ctx, 'f3', 'b-new', ident('Bob', 3000));
-      const sut = shortlog;
 
       // Act
-      const result = await sut(ctx);
+      const result = await shortlog(ctx);
 
       // Assert
       expect(result.map((g) => g.name)).toEqual(['Ann', 'Bob']);
@@ -58,10 +57,9 @@ describe('shortlog', () => {
       await init(ctx);
       await makeCommit(ctx, 'f1', 's1', ident('Ann', 1000, 'ann@first'));
       await makeCommit(ctx, 'f2', 's2', ident('Ann', 2000, 'ann@second'));
-      const sut = shortlog;
 
       // Act
-      const result = await sut(ctx);
+      const result = await shortlog(ctx);
 
       // Assert
       expect(result).toHaveLength(1);
@@ -75,11 +73,10 @@ describe('shortlog', () => {
       const ctx = createMemoryContext();
       await init(ctx);
       await makeCommit(ctx, 'f1', 'm', ident('TheAuthor', 1000), ident('TheCommitter', 1000));
-      const sut = shortlog;
 
       // Act
-      const byAuthor = await sut(ctx);
-      const byCommitter = await sut(ctx, { by: 'committer' });
+      const byAuthor = await shortlog(ctx);
+      const byCommitter = await shortlog(ctx, { by: 'committer' });
 
       // Assert
       expect(byAuthor.map((g) => g.name)).toEqual(['TheAuthor']);
@@ -94,10 +91,9 @@ describe('shortlog', () => {
       await init(ctx);
       const first = await makeCommit(ctx, 'f1', 'one', ident('Ann', 1000));
       await makeCommit(ctx, 'f2', 'two', ident('Ann', 2000));
-      const sut = shortlog;
 
       // Act
-      const result = await sut(ctx, { excluding: [first] });
+      const result = await shortlog(ctx, { excluding: [first] });
 
       // Assert
       expect(result).toHaveLength(1);
@@ -113,10 +109,9 @@ describe('shortlog', () => {
       await makeCommit(ctx, 'f1', 'one', ident('Ann', 1000));
       const second = await makeCommit(ctx, 'f2', 'two', ident('Ann', 2000));
       await makeCommit(ctx, 'f3', 'three', ident('Ann', 3000));
-      const sut = shortlog;
 
       // Act
-      const result = await sut(ctx, { rev: second });
+      const result = await shortlog(ctx, { rev: second });
 
       // Assert
       expect(result[0]?.commits.map((c) => c.subject)).toEqual(['one', 'two']);
@@ -131,12 +126,11 @@ describe('shortlog', () => {
       await init(ctx);
       await makeCommit(ctx, 'f1', 'one', ident('Ann', 1000));
       await ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/main`);
-      const sut = shortlog;
 
       // Act
       let caught: unknown;
       try {
-        await sut(ctx);
+        await shortlog(ctx);
       } catch (err) {
         caught = err;
       }
@@ -153,12 +147,11 @@ describe('shortlog', () => {
       const ctx = createMemoryContext();
       await init(ctx);
       await makeCommit(ctx, 'f1', 'one', ident('Ann', 1000));
-      const sut = shortlog;
 
       // Act
       let caught: unknown;
       try {
-        await sut(ctx, { rev: 'no-such-rev' });
+        await shortlog(ctx, { rev: 'no-such-rev' });
       } catch (err) {
         caught = err;
       }

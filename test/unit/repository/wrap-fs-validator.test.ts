@@ -72,7 +72,7 @@ describe('wrapFsValidator — happy path', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expect(sut.read('/repo')).resolves.toBeInstanceOf(Uint8Array);
         expect(fs.read).toHaveBeenCalledWith('/repo');
       });
@@ -86,7 +86,9 @@ describe('wrapFsValidator — happy path', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
+        // Act
         await sut.read('/repo/foo/bar');
+
         // Assert
         expect(fs.read).toHaveBeenCalledWith('/repo/foo/bar');
       });
@@ -100,7 +102,9 @@ describe('wrapFsValidator — happy path', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo/');
 
+        // Act
         await sut.read('/repo/x');
+
         // Assert
         expect(fs.read).toHaveBeenCalled();
       });
@@ -116,7 +120,7 @@ describe('wrapFsValidator — Windows path separators', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, 'C:\\Users\\runner\\repo');
 
-        // Assert
+        // Act + Assert
         await expect(sut.read('C:\\Users\\runner\\repo\\.git\\HEAD')).resolves.toBeInstanceOf(
           Uint8Array,
         );
@@ -128,7 +132,7 @@ describe('wrapFsValidator — Windows path separators', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, 'C:\\Users\\runner\\repo');
 
-        // Assert
+        // Act + Assert
         await expect(sut.read('C:\\Users\\runner\\repo/.git/HEAD')).resolves.toBeInstanceOf(
           Uint8Array,
         );
@@ -140,7 +144,7 @@ describe('wrapFsValidator — Windows path separators', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, 'C:\\Users\\runner\\repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => sut.read('C:\\Users\\runner\\repo-evil\\steal'));
         expect(fs.read).not.toHaveBeenCalled();
       });
@@ -156,7 +160,7 @@ describe('wrapFsValidator — outside cwd rejected', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => sut.read('/etc/passwd'));
         expect(fs.read).not.toHaveBeenCalled();
       });
@@ -170,7 +174,7 @@ describe('wrapFsValidator — outside cwd rejected', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => sut.read('/repo-evil/foo'));
       });
     });
@@ -183,7 +187,7 @@ describe('wrapFsValidator — outside cwd rejected', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => sut.write('/elsewhere', new Uint8Array(0)));
         expect(fs.write).not.toHaveBeenCalled();
       });
@@ -197,7 +201,7 @@ describe('wrapFsValidator — outside cwd rejected', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => sut.rename('/etc/x', '/repo/y'));
       });
     });
@@ -210,7 +214,7 @@ describe('wrapFsValidator — outside cwd rejected', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => sut.rename('/repo/x', '/etc/y'));
       });
     });
@@ -223,7 +227,7 @@ describe('wrapFsValidator — outside cwd rejected', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => sut.symlink('arbitrary-target', '/etc/link'));
       });
     });
@@ -300,7 +304,7 @@ describe('wrapFsValidator — coverage of every wrapped method', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expect(call(sut)).resolves.not.toThrow();
       });
     });
@@ -329,7 +333,7 @@ describe('wrapFsValidator — coverage of every wrapped method', () => {
         const fs = stubFs();
         const sut = wrapFsValidator(fs, '/repo');
 
-        // Assert
+        // Act + Assert
         await expectOutside(() => call(sut) as Promise<unknown>);
       });
     });

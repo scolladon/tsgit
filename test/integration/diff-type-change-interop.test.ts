@@ -543,11 +543,11 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         const { from, to } = r1Exact;
 
         // Act
-        const sut = await diff(ctx, { from, to, detectRenames: true });
+        const result = await diff(ctx, { from, to, detectRenames: true });
 
         // Assert
-        expect(sut.changes).toHaveLength(1);
-        const change = sut.changes[0] as RenameChange;
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0] as RenameChange;
         expect(change.type).toBe('rename');
         expect(change.oldPath).toBe('r1_src');
         expect(change.newPath).toBe('r1_dst');
@@ -591,10 +591,10 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         const { from, to } = r2DifferentOid;
 
         // Act
-        const sut = await diff(ctx, { from, to, detectRenames: true });
+        const result = await diff(ctx, { from, to, detectRenames: true });
 
         // Assert
-        const types = sut.changes.map((c) => c.type);
+        const types = result.changes.map((c) => c.type);
         expect(types).toContain('add');
         expect(types).toContain('delete');
         expect(types).not.toContain('rename');
@@ -621,7 +621,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         const { from, to } = r2DifferentOid;
 
         // Act
-        const sut = await diff(ctx, {
+        const result = await diff(ctx, {
           from,
           to,
           detectRenames: true,
@@ -629,7 +629,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         });
 
         // Assert
-        const types = sut.changes.map((c) => c.type);
+        const types = result.changes.map((c) => c.type);
         expect(types).toContain('add');
         expect(types).toContain('delete');
         expect(types).not.toContain('rename');
@@ -643,7 +643,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         const { from, to } = r2DifferentOid;
 
         // Act
-        const sut = await diff(ctx, {
+        const result = await diff(ctx, {
           from,
           to,
           detectRenames: true,
@@ -651,7 +651,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         });
 
         // Assert
-        const types = sut.changes.map((c) => c.type);
+        const types = result.changes.map((c) => c.type);
         expect(types).toContain('add');
         expect(types).toContain('delete');
         expect(types).not.toContain('rename');
@@ -667,7 +667,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         const { from, to } = r3GitlinkDeleteBlobAdd;
 
         // Act
-        const sut = await diff(ctx, {
+        const result = await diff(ctx, {
           from,
           to,
           detectRenames: true,
@@ -676,15 +676,15 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
 
         // Assert — both sides survive unpaired: gitlink stays a 160000 delete,
         // blob stays a 100644 add, no rename/copy
-        const types = sut.changes.map((c) => c.type);
+        const types = result.changes.map((c) => c.type);
         expect(types).not.toContain('rename');
         expect(types).not.toContain('copy');
-        const deleteChange = sut.changes.find((c) => c.type === 'delete');
+        const deleteChange = result.changes.find((c) => c.type === 'delete');
         expect(deleteChange?.type).toBe('delete');
         if (deleteChange?.type === 'delete') {
           expect(deleteChange.oldMode).toBe('160000');
         }
-        const addChange = sut.changes.find((c) => c.type === 'add');
+        const addChange = result.changes.find((c) => c.type === 'add');
         expect(addChange?.type).toBe('add');
         if (addChange?.type === 'add') {
           expect(addChange.newMode).toBe('100644');
@@ -700,7 +700,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         const { from, to } = copySourceGitlink;
 
         // Act
-        const sut = await diff(ctx, {
+        const result = await diff(ctx, {
           from,
           to,
           detectRenames: true,
@@ -708,13 +708,13 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         });
 
         // Assert — gitlink modify stays M, blob stays pure A, no copy
-        const types = sut.changes.map((c) => c.type);
+        const types = result.changes.map((c) => c.type);
         expect(types).not.toContain('copy');
-        const modifyChange = sut.changes.find(
+        const modifyChange = result.changes.find(
           (c): c is ModifyChange => c.type === 'modify' && c.path === 'cs_mod',
         );
         expect(modifyChange).toBeDefined();
-        const addChange = sut.changes.find((c) => c.type === 'add');
+        const addChange = result.changes.find((c) => c.type === 'add');
         expect(addChange).toBeDefined();
       });
     });
@@ -727,7 +727,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         const { from, to } = breakGitlink;
 
         // Act
-        const sut = await diff(ctx, {
+        const result = await diff(ctx, {
           from,
           to,
           detectRenames: true,
@@ -735,8 +735,8 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         });
 
         // Assert — one ModifyChange, no synthetic delete+add
-        expect(sut.changes).toHaveLength(1);
-        const change = sut.changes[0] as ModifyChange;
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0] as ModifyChange;
         expect(change.type).toBe('modify');
         expect(change.oldMode).toBe('160000');
         expect(change.newMode).toBe('160000');

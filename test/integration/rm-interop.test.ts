@@ -94,10 +94,10 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
         // Act
         const removed = await repo.rm(['a.txt']);
         runGit(['-C', pair.peer, 'rm', '-q', 'a.txt']);
-        const sut = lsStage(pair.ours);
+        const result = lsStage(pair.ours);
 
         // Assert
-        expect(sut).toBe(lsStage(pair.peer));
+        expect(result).toBe(lsStage(pair.peer));
         expect(removed.removed).toEqual(['a.txt']);
         await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(false);
       });
@@ -113,10 +113,10 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
         // Act
         await repo.rm(['a.txt'], { cached: true });
         runGit(['-C', pair.peer, 'rm', '-q', '--cached', 'a.txt']);
-        const sut = lsStage(pair.ours);
+        const result = lsStage(pair.ours);
 
         // Assert
-        expect(sut).toBe(lsStage(pair.peer));
+        expect(result).toBe(lsStage(pair.peer));
         await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(true);
       });
     });

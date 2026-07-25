@@ -21,10 +21,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = 'merge %O %A %B %L %P';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, values);
+        const result = substituteDriverPlaceholders(template, values);
 
         // Assert
-        expect(sut).toBe('merge /tmp/base /tmp/ours /tmp/theirs 7 src/a.txt');
+        expect(result).toBe('merge /tmp/base /tmp/ours /tmp/theirs 7 src/a.txt');
       });
     });
   });
@@ -36,10 +36,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = 'drv %L %S %X %Y';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, values);
+        const result = substituteDriverPlaceholders(template, values);
 
         // Assert
-        expect(sut).toBe('drv 7 parent of 2c77705 (subject) HEAD 2c77705 (subject)');
+        expect(result).toBe('drv 7 parent of 2c77705 (subject) HEAD 2c77705 (subject)');
       });
     });
   });
@@ -51,10 +51,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = '100%% sure %A';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, values);
+        const result = substituteDriverPlaceholders(template, values);
 
         // Assert
-        expect(sut).toBe('100% sure /tmp/ours');
+        expect(result).toBe('100% sure /tmp/ours');
       });
     });
   });
@@ -66,10 +66,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = 'x %Z y';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, values);
+        const result = substituteDriverPlaceholders(template, values);
 
         // Assert
-        expect(sut).toBe('x %Z y');
+        expect(result).toBe('x %Z y');
       });
     });
   });
@@ -81,10 +81,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = '%O%B';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, values);
+        const result = substituteDriverPlaceholders(template, values);
 
         // Assert
-        expect(sut).toBe('/tmp/base/tmp/theirs');
+        expect(result).toBe('/tmp/base/tmp/theirs');
       });
     });
   });
@@ -96,10 +96,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = '%P';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, { ...values, P: 'a%Ob' });
+        const result = substituteDriverPlaceholders(template, { ...values, P: 'a%Ob' });
 
         // Assert
-        expect(sut).toBe('a%Ob');
+        expect(result).toBe('a%Ob');
       });
     });
   });
@@ -111,10 +111,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = 'run %A %';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, values);
+        const result = substituteDriverPlaceholders(template, values);
 
         // Assert
-        expect(sut).toBe('run /tmp/ours %');
+        expect(result).toBe('run /tmp/ours %');
       });
     });
   });
@@ -126,10 +126,10 @@ describe('substituteDriverPlaceholders', () => {
         const template = 'plain command';
 
         // Act
-        const sut = substituteDriverPlaceholders(template, values);
+        const result = substituteDriverPlaceholders(template, values);
 
         // Assert
-        expect(sut).toBe('plain command');
+        expect(result).toBe('plain command');
       });
     });
   });

@@ -119,10 +119,10 @@ describe('rebaseRun', () => {
         const { ctx, mainTip } = await seedDivergent();
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
         const t2 = await readCommit(ctx, tip);
         expect(t2.parents.length).toBe(1);
@@ -176,10 +176,10 @@ describe('rebaseRun', () => {
         const before = await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        expect(sut.kind).toBe('up-to-date');
+        expect(result.kind).toBe('up-to-date');
         expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(before);
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head.some((m) => m.startsWith('rebase'))).toBe(false);
@@ -201,10 +201,10 @@ describe('rebaseRun', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(mainTip);
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head[0]).toBe('rebase (finish): returning to refs/heads/topic');
@@ -231,10 +231,10 @@ describe('rebaseRun', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main', onto: 'newbase' });
+        const result = await rebaseRun(ctx, { upstream: 'main', onto: 'newbase' });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
         const t1 = await readCommit(ctx, tip);
         expect(t1.parents[0]).toBe(newbaseTip);
@@ -264,13 +264,13 @@ describe('rebaseRun', () => {
         const short = (oid: ObjectId): string => oid.slice(0, 7);
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert — result
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') {
-          expect(sut.commit).toBe(t2);
-          expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') {
+          expect(result.commit).toBe(t2);
+          expect(result.remaining).toBe(1);
         }
         // HEAD detached at the last good pick; REBASE_HEAD + stopped-sha = t2
         expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).startsWith('ref:')).toBe(false);
@@ -330,10 +330,10 @@ describe('rebaseRun', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert — distinct-types conflict; message lists both recorded paths
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         const msg = await readMerge(ctx, 'message');
         expect(msg).toContain('# Conflicts:\n');
         expect(msg).toContain('#\tp\n');
@@ -393,11 +393,11 @@ describe('rebaseRun', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert — stops on the f.txt conflict; the patch file carries the
         // nested add as a per-file hunk (full path).
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         const patch = await readMerge(ctx, 'patch');
         expect(patch).toContain('diff --git a/sub/g.txt b/sub/g.txt');
         expect(patch).toContain('+nested');
@@ -414,10 +414,10 @@ describe('rebaseRun', () => {
         await checkout(ctx, { rev: topicTip, detach: true });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         expect(await headIsSymbolic(ctx)).toBe(false);
         const tip = await readCommit(ctx, await resolveRef(ctx, 'HEAD' as RefName));
         const parent = await readCommit(ctx, tip.parents[0] as ObjectId);
@@ -449,11 +449,11 @@ describe('rebaseRun', () => {
         await rebaseRun(ctx, { upstream: 'main' });
 
         // Act
-        const sut = await rebaseAbort(ctx);
+        const result = await rebaseAbort(ctx);
 
         // Assert
-        expect(sut.headName).toBe('detached HEAD');
-        expect(sut.head).toBe(origDetached);
+        expect(result.headName).toBe('detached HEAD');
+        expect(result.head).toBe(origDetached);
         expect(await headIsSymbolic(ctx)).toBe(false);
         expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(origDetached);
         const head = await reflogMessages(ctx, 'HEAD');
@@ -482,12 +482,12 @@ describe('rebaseRun', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
-        if (sut.kind === 'rebased') {
-          expect(sut.commits.map((entry) => entry.source)).toEqual([t2]);
+        expect(result.kind).toBe('rebased');
+        if (result.kind === 'rebased') {
+          expect(result.commits.map((entry) => entry.source)).toEqual([t2]);
         }
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head).toContain('rebase (pick): t2');
@@ -642,10 +642,10 @@ describe('rebaseRun — unrelated histories', () => {
         const { ctx, mainTip } = await seedUnrelated();
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/feature' as RefName));
         expect(tip.message).toBe('feature one\n');
         const replayedRoot = await readCommit(ctx, tip.parents[0] as ObjectId);
@@ -697,13 +697,13 @@ describe('rebaseContinue', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await rebaseContinue(ctx);
+        const result = await rebaseContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('rebased');
-        if (sut.kind === 'rebased') {
+        expect(result.kind).toBe('rebased');
+        if (result.kind === 'rebased') {
           // the resolution of the stopped commit is the single replayed commit
-          expect(sut.commits.length).toBe(1);
+          expect(result.commits.length).toBe(1);
         }
         expect(await headIsSymbolic(ctx)).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(false);
@@ -755,11 +755,11 @@ describe('rebaseSkip', () => {
         const ctx = await seedConflict();
 
         // Act
-        const sut = await rebaseSkip(ctx);
+        const result = await rebaseSkip(ctx);
 
         // Assert
-        expect(sut.kind).toBe('rebased');
-        if (sut.kind === 'rebased') expect(sut.commits.length).toBe(0);
+        expect(result.kind).toBe('rebased');
+        if (result.kind === 'rebased') expect(result.commits.length).toBe(0);
         expect(await headIsSymbolic(ctx)).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(false);
         // f.txt holds main's version (t2 dropped); a.txt (t1) survived.
@@ -791,12 +791,12 @@ describe('rebaseAbort', () => {
         const branchBefore = await reflogMessages(ctx, 'refs/heads/topic');
 
         // Act
-        const sut = await rebaseAbort(ctx);
+        const result = await rebaseAbort(ctx);
 
         // Assert
-        expect(sut.headName).toBe('refs/heads/topic');
+        expect(result.headName).toBe('refs/heads/topic');
         expect(await headIsSymbolic(ctx)).toBe(true);
-        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(sut.head);
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(result.head);
         expect(await ctx.fs.readUtf8(work(ctx, 'f.txt'))).toBe('l1\nTOPIC\n');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
         const head = await reflogMessages(ctx, 'HEAD');
@@ -845,11 +845,11 @@ describe('rebase edge cases', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert — only `add z` replayed; `add x` dropped as empty
-        expect(sut.kind).toBe('rebased');
-        if (sut.kind === 'rebased') expect(sut.commits.length).toBe(1);
+        expect(result.kind).toBe('rebased');
+        if (result.kind === 'rebased') expect(result.commits.length).toBe(1);
         expect(await ctx.fs.exists(work(ctx, 'z.txt'))).toBe(true);
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head).not.toContain('rebase (pick): add x');
@@ -880,11 +880,11 @@ describe('rebase edge cases', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main', onto: 'newbase' });
+        const result = await rebaseRun(ctx, { upstream: 'main', onto: 'newbase' });
 
         // Assert — t1 replayed onto newbase; a.txt (from the excluded merge-base) absent
-        expect(sut.kind).toBe('rebased');
-        if (sut.kind === 'rebased') expect(sut.commits.length).toBe(1);
+        expect(result.kind).toBe('rebased');
+        if (result.kind === 'rebased') expect(result.commits.length).toBe(1);
         expect(await ctx.fs.exists(work(ctx, 't1.txt'))).toBe(true);
         expect(await ctx.fs.exists(work(ctx, 'n1.txt'))).toBe(true);
         expect(await ctx.fs.exists(work(ctx, 'a.txt'))).toBe(false);
@@ -937,20 +937,20 @@ describe('bindRebaseNamespace', () => {
         // Arrange
         const { ctx } = await seedDivergent();
         let guarded = 0;
-        const ns = bindRebaseNamespace(ctx, () => {
+        const sut = bindRebaseNamespace(ctx, () => {
           guarded += 1;
         });
 
         // Act
-        const run = await ns.run({ upstream: 'main' });
+        const result = await sut.run({ upstream: 'main' });
 
         // Assert — run forwarded; the other verbs forward + throw (nothing in progress)
-        expect(run.kind).toBe('rebased');
-        await expect(ns.continue()).rejects.toThrow();
-        await expect(ns.skip()).rejects.toThrow();
-        await expect(ns.abort()).rejects.toThrow();
+        expect(result.kind).toBe('rebased');
+        await expect(sut.continue()).rejects.toThrow();
+        await expect(sut.skip()).rejects.toThrow();
+        await expect(sut.abort()).rejects.toThrow();
         expect(guarded).toBe(4);
-        expect(Object.isFrozen(ns)).toBe(true);
+        expect(Object.isFrozen(sut)).toBe(true);
       });
     });
   });
@@ -1013,7 +1013,7 @@ describe('rebaseRun (interactive)', () => {
         const branchBefore = await reflogMessages(ctx, 'refs/heads/main');
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1023,7 +1023,7 @@ describe('rebaseRun (interactive)', () => {
         });
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           kind: 'rebased',
           commits: [
             { source: c1, created: c1 },
@@ -1048,7 +1048,7 @@ describe('rebaseRun (interactive)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1058,7 +1058,7 @@ describe('rebaseRun (interactive)', () => {
         });
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           kind: 'rebased',
           commits: [
             { source: c1, created: c1 },
@@ -1077,7 +1077,7 @@ describe('rebaseRun (interactive)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1087,7 +1087,7 @@ describe('rebaseRun (interactive)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await mainTipOid(ctx);
         const tipData = await readCommit(ctx, tip);
         expect(tipData.parents).toEqual([c1]); // reparented off c1, skipping c2
@@ -1105,7 +1105,7 @@ describe('rebaseRun (interactive)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c2 },
@@ -1114,7 +1114,7 @@ describe('rebaseRun (interactive)', () => {
         });
 
         // Assert — tip is c1 replayed atop a replayed c2
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n');
         const parent = await readCommit(ctx, tip.parents[0] as ObjectId);
@@ -1130,7 +1130,7 @@ describe('rebaseRun (interactive)', () => {
         const { ctx, base, c1, c2 } = await seedSameFile();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c2 },
@@ -1139,10 +1139,10 @@ describe('rebaseRun (interactive)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind === 'conflict') {
-          expect(sut.commit).toBe(c2);
-          expect(sut.remaining).toBe(1);
+        expect(result.kind).toBe('conflict');
+        if (result.kind === 'conflict') {
+          expect(result.commit).toBe(c2);
+          expect(result.remaining).toBe(1);
         }
         expect(await readMerge(ctx, 'done')).toBe(`pick ${c2} # c2 subject\n`);
         expect(await readMerge(ctx, 'git-rebase-todo')).toBe(`pick ${c1} # c1 subject\n`);
@@ -1157,7 +1157,7 @@ describe('rebaseRun (interactive)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, {
             upstream: base,
             interactive: [
@@ -1169,9 +1169,9 @@ describe('rebaseRun (interactive)', () => {
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain('nothing to do');
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain('nothing to do');
       });
     });
 
@@ -1181,14 +1181,14 @@ describe('rebaseRun (interactive)', () => {
         const { ctx, base } = await seedLinear();
 
         // Act
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, { upstream: base, interactive: [{ action: 'pick', oid: base }] }),
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain('is not in the list');
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain('is not in the list');
       });
     });
   });
@@ -1202,7 +1202,7 @@ describe('rebaseRun (interactive reword)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1212,7 +1212,7 @@ describe('rebaseRun (interactive reword)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c3 reworded\n');
         expect(tip.parents).toEqual([c2]); // base preserved by the fast-forward
@@ -1231,7 +1231,7 @@ describe('rebaseRun (interactive reword)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'drop', oid: c1 },
@@ -1241,7 +1241,7 @@ describe('rebaseRun (interactive reword)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c3 reworded\n');
         const head = await reflogMessages(ctx, 'HEAD');
@@ -1258,14 +1258,14 @@ describe('rebaseRun (interactive reword)', () => {
         const { ctx, base, c1 } = await seedLinear();
 
         // Act
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, { upstream: base, interactive: [{ action: 'reword', oid: c1 }] }),
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain('reword requires a message');
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain('reword requires a message');
       });
     });
   });
@@ -1280,7 +1280,7 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
         const before = await mainTipOid(ctx);
 
         // Act
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, {
             upstream: base,
             interactive: [{ action: 'reword', oid: c1, message: '   \n  \n' }],
@@ -1288,9 +1288,9 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain('reword message must not be empty');
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain('reword message must not be empty');
         expect(await mainTipOid(ctx)).toBe(before); // HEAD never moved
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
       });
@@ -1305,7 +1305,7 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
         const before = await mainTipOid(ctx);
 
         // Act
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, {
             upstream: base,
             interactive: [
@@ -1316,9 +1316,9 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain('squash message must not be empty');
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain('squash message must not be empty');
         expect(await mainTipOid(ctx)).toBe(before);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(false);
       });
@@ -1332,7 +1332,7 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act — fixup never consumes its message, so an empty one is not a refusal
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1341,7 +1341,7 @@ describe('rebaseRun (interactive) — empty reword/squash message', () => {
         });
 
         // Assert — c2 folds into c1, keeping c1's message; no INVALID_OPTION
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n');
       });
@@ -1380,7 +1380,7 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'edit', oid: c1 },
@@ -1389,7 +1389,7 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         });
 
         // Assert
-        expect(sut).toEqual({ kind: 'stopped', commit: c1, remaining: 1 });
+        expect(result).toEqual({ kind: 'stopped', commit: c1, remaining: 1 });
         expect(await readMerge(ctx, 'amend')).toBe(`${c1}\n`);
         expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c1); // HEAD detached at the edit commit
       });
@@ -1403,7 +1403,7 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'drop', oid: c1 },
@@ -1412,7 +1412,7 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('stopped');
+        expect(result.kind).toBe('stopped');
         const amend = (await readMerge(ctx, 'amend')).trim() as ObjectId;
         expect(amend).not.toBe(c2); // reparented onto base, fresh oid
         expect((await readCommit(ctx, amend)).parents).toEqual([base]);
@@ -1436,10 +1436,10 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         });
 
         // Act
-        const sut = await rebaseContinue(ctx);
+        const result = await rebaseContinue(ctx);
 
         // Assert — both commits keep their original oids (a pure no-op edit)
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         expect(await mainTipOid(ctx)).toBe(c2);
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head).toContain('rebase: fast-forward'); // c2 fast-forwarded after the edit
@@ -1457,10 +1457,10 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         await add(ctx, ['extra.txt']);
 
         // Act
-        const sut = await rebaseContinue(ctx);
+        const result = await rebaseContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await mainTipOid(ctx);
         expect(tip).not.toBe(c1); // amended → new oid
         const head = await reflogMessages(ctx, 'HEAD');
@@ -1483,10 +1483,10 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         });
 
         // Act
-        const sut = await rebaseSkip(ctx);
+        const result = await rebaseSkip(ctx);
 
         // Assert — c1 dropped; c2 reparented onto base
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c2 subject\n');
         expect(tip.parents).toEqual([base]);
@@ -1514,10 +1514,10 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await rebaseContinue(ctx);
+        const result = await rebaseContinue(ctx);
 
         // Assert — t1 + resolved-t2 on main; t3 dropped
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head[0]).toBe('rebase (finish): returning to refs/heads/topic');
         expect(head[1]).toBe('rebase (continue): t2 subject');
@@ -1539,10 +1539,10 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         expect(stop.kind).toBe('conflict');
 
         // Act
-        const sut = await rebaseSkip(ctx);
+        const result = await rebaseSkip(ctx);
 
         // Assert — t2 skipped, t3 dropped, only t1 replayed atop main
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const topicTip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
         expect((await readCommit(ctx, topicTip)).message).toBe('t1 subject\n'); // t2/t3 gone
       });
@@ -1563,10 +1563,10 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         });
 
         // Act — continue with no change; the reword replays without its message
-        const sut = await rebaseContinue(ctx);
+        const result = await rebaseContinue(ctx);
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c2 subject\n'); // original kept, not "lost across the stop"
       });
@@ -1582,7 +1582,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1591,7 +1591,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n\nc2 subject\n');
         expect(tip.parents).toEqual([base]); // the group commit replaces c1, on base
@@ -1608,7 +1608,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1617,7 +1617,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n'); // c2's message dropped
         expect(tip.parents).toEqual([base]);
@@ -1634,7 +1634,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1644,7 +1644,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n\nc2 subject\n\nc3 subject\n');
         expect(tip.parents).toEqual([base]);
@@ -1663,7 +1663,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1673,7 +1673,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n'); // both fixups dropped
         const head = await reflogMessages(ctx, 'HEAD');
@@ -1691,7 +1691,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1701,7 +1701,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n\nc2 subject\n'); // c3 (fixup) dropped
       });
@@ -1715,7 +1715,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -1724,7 +1724,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('merged c1 and c2\n');
       });
@@ -1738,14 +1738,14 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1 } = await seedLinear();
 
         // Act
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, { upstream: base, interactive: [{ action: 'squash', oid: c1 }] }),
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain("cannot 'squash' without a previous commit");
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain("cannot 'squash' without a previous commit");
       });
     });
   });
@@ -1891,7 +1891,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act — dropping c1 leaves the squash with nothing to fold into
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, {
             upstream: base,
             interactive: [
@@ -1902,9 +1902,9 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain("cannot 'squash' without a previous commit");
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain("cannot 'squash' without a previous commit");
       });
     });
   });
@@ -1916,7 +1916,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await dataReason(() =>
+        const result = await dataReason(() =>
           rebaseRun(ctx, {
             upstream: base,
             interactive: [
@@ -1927,9 +1927,9 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         );
 
         // Assert
-        expect(sut.code).toBe('INVALID_OPTION');
-        expect(sut.option).toBe('interactive');
-        expect(sut.reason).toContain("cannot 'fixup' without a previous commit");
+        expect(result.code).toBe('INVALID_OPTION');
+        expect(result.option).toBe('interactive');
+        expect(result.reason).toContain("cannot 'fixup' without a previous commit");
       });
     });
   });
@@ -2004,7 +2004,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2, c3 } = await seedLinear();
 
         // Act — c1 folds, c2 fixes up into it (the group ends here, before c3)
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -2014,7 +2014,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert — c3's parent is the cleaned group commit (c2's body dropped)
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c3 subject\n');
         const group = await readCommit(ctx, tip.parents[0] as ObjectId);
@@ -2030,7 +2030,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         const { ctx, base, c1, c2 } = await seedLinear();
 
         // Act
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'pick', oid: c1 },
@@ -2039,7 +2039,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const tip = await readCommit(ctx, await mainTipOid(ctx));
         expect(tip.message).toBe('c1 subject\n');
       });
@@ -2056,7 +2056,7 @@ describe('rebaseRun (interactive, detached HEAD)', () => {
         await checkout(ctx, { rev: t2 });
 
         // Act — t2 conflicts with main's f.txt
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: 'main',
           interactive: [
             { action: 'pick', oid: t1 },
@@ -2065,7 +2065,7 @@ describe('rebaseRun (interactive, detached HEAD)', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect((await readMerge(ctx, 'head-name')).trimEnd()).toBe('detached HEAD');
       });
     });
@@ -2090,9 +2090,9 @@ describe('rebase — hooks', () => {
   };
 
   /** The post-rewrite stdin tsgit must send: one `<source> <created>` line per replayed commit. */
-  const expectedRewriteStdin = (sut: Awaited<ReturnType<typeof rebaseRun>>): string => {
-    if (sut.kind !== 'rebased') throw new Error('expected rebased');
-    return sut.commits.map((c) => `${c.source} ${c.created}\n`).join('');
+  const expectedRewriteStdin = (result: Awaited<ReturnType<typeof rebaseRun>>): string => {
+    if (result.kind !== 'rebased') throw new Error('expected rebased');
+    return result.commits.map((c) => `${c.source} ${c.created}\n`).join('');
   };
 
   describe('Given a pre-rebase hook that exits non-zero', () => {
@@ -2134,10 +2134,10 @@ describe('rebase — hooks', () => {
         const ctx = await seedDivergentHooked(runner);
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const preRebase = runner.calls.filter((c) => c.name === 'pre-rebase');
         expect(preRebase).toHaveLength(1);
         expect(preRebase[0]?.args).toEqual(['main']);
@@ -2153,13 +2153,13 @@ describe('rebase — hooks', () => {
         const ctx = await seedDivergentHooked(runner);
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert
         const postRewrite = runner.calls.filter((c) => c.name === 'post-rewrite');
         expect(postRewrite).toHaveLength(1);
         expect(postRewrite[0]?.args).toEqual(['rebase']);
-        expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(sut));
+        expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(result));
       });
     });
   });
@@ -2177,7 +2177,7 @@ describe('rebase — hooks', () => {
         const c2 = await writeAddCommit(ctx, 'f.txt', 'B\n', 'c2 subject');
 
         // Act — reword c1 (genuine rewrite), pick c2 atop it.
-        const sut = await rebaseRun(ctx, {
+        const result = await rebaseRun(ctx, {
           upstream: base,
           interactive: [
             { action: 'reword', oid: c1, message: 'reworded c1' },
@@ -2186,13 +2186,13 @@ describe('rebase — hooks', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         // An interactive rebase always does work, so pre-rebase fires too.
         expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
         const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
         expect(postRewrite).toHaveLength(1);
         expect(postRewrite[0]?.args).toEqual(['rebase']);
-        expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(sut));
+        expect(postRewrite[0]?.stdin).toBe(expectedRewriteStdin(result));
         // The first rewritten pair maps the reworded source to a new oid.
         expect(postRewrite[0]?.stdin.startsWith(`${c1} `)).toBe(true);
       });
@@ -2213,10 +2213,10 @@ describe('rebase — hooks', () => {
         await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert — git fires neither pre-rebase nor post-rewrite on a no-op rebase.
-        expect(sut.kind).toBe('up-to-date');
+        expect(result.kind).toBe('up-to-date');
         expect(runner.calls.some((call) => call.name === 'post-rewrite')).toBe(false);
         expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(false);
       });
@@ -2238,11 +2238,11 @@ describe('rebase — hooks', () => {
         await checkout(ctx, { rev: 'topic' });
 
         // Act
-        const sut = await rebaseRun(ctx, { upstream: 'main' });
+        const result = await rebaseRun(ctx, { upstream: 'main' });
 
         // Assert — work happened (the branch moved) so pre-rebase fires, but no
         // commit was rewritten so post-rewrite stays silent.
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         expect(runner.calls.some((call) => call.name === 'pre-rebase')).toBe(true);
         expect(runner.calls.some((call) => call.name === 'post-rewrite')).toBe(false);
       });
@@ -2283,10 +2283,10 @@ describe('rebase — hooks', () => {
         await add(ctx, ['f.txt']);
 
         // Act
-        const sut = await rebaseContinue(ctx);
+        const result = await rebaseContinue(ctx);
 
         // Assert — the finishing post-rewrite leads with the pre-stop `t1` pair.
-        expect(sut.kind).toBe('rebased');
+        expect(result.kind).toBe('rebased');
         const postRewrite = runner.calls.filter((call) => call.name === 'post-rewrite');
         expect(postRewrite).toHaveLength(1);
         const stdin = postRewrite[0]?.stdin ?? '';

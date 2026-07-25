@@ -22,7 +22,7 @@
  */
 import { classifyTestFile } from './classify-test-file.ts';
 import type { AaaMarker, PyramidManifest } from './parse-manifest.ts';
-import { scanItBlocks } from './scan-it-blocks.ts';
+import { type ItBlock, scanItBlocks } from './scan-it-blocks.ts';
 import type { SourceFile } from './types.ts';
 
 export interface EmptyAaaSectionFinding {
@@ -101,6 +101,31 @@ const sortFindings = (
     return MARKER_ORDER[a.marker] - MARKER_ORDER[b.marker];
   });
 
+const findingsForBlock = (
+  file: SourceFile,
+  block: ItBlock,
+): ReadonlyArray<EmptyAaaSectionFinding> => {
+  const bodyLines = block.body.split('\n');
+  const hits = collectMarkerHits(bodyLines);
+  const findings: EmptyAaaSectionFinding[] = [];
+  // One iteration per marker line — compound lines own a single section
+  // (the names sharing the line accumulate into `hit.markers`; only the
+  // textually first name is the reporting owner per ADR-115).
+  for (let h = 0; h < hits.length; h += 1) {
+    const hit = hits[h]!;
+    const next = hits[h + 1];
+    const sectionEndExclusive = next === undefined ? bodyLines.length : next.bodyLineIndex;
+    if (sectionHasStatement(bodyLines, hit.bodyLineIndex, sectionEndExclusive)) continue;
+    findings.push({
+      path: file.path,
+      line: block.line + hit.bodyLineIndex,
+      title: block.title,
+      marker: hit.markers[0]!,
+    });
+  }
+  return findings;
+};
+
 export const detectEmptyAaaSection = (
   manifest: PyramidManifest,
   files: ReadonlyArray<SourceFile>,
@@ -108,28 +133,11 @@ export const detectEmptyAaaSection = (
   const heuristic = manifest.heuristics.emptyAaaSection;
   const findings: EmptyAaaSectionFinding[] = [];
   for (const file of files) {
-    if (classifyTestFile(manifest, file.path) !== heuristic.tier) continue;
+    if (!heuristic.tiers.includes(classifyTestFile(manifest, file.path))) continue;
     const blocks = scanItBlocks(file.source);
     for (const block of blocks) {
       if (block.isSkipped) continue;
-      const bodyLines = block.body.split('\n');
-      const hits = collectMarkerHits(bodyLines);
-      // One iteration per marker line — compound lines own a single section
-      // (the names sharing the line accumulate into `hit.markers`; only the
-      // textually first name is the reporting owner per ADR-115).
-      for (let h = 0; h < hits.length; h += 1) {
-        const hit = hits[h]!;
-        const next = hits[h + 1];
-        const sectionEndExclusive = next === undefined ? bodyLines.length : next.bodyLineIndex;
-        if (sectionHasStatement(bodyLines, hit.bodyLineIndex, sectionEndExclusive)) continue;
-        const marker = hit.markers[0]!;
-        findings.push({
-          path: file.path,
-          line: block.line + hit.bodyLineIndex,
-          title: block.title,
-          marker,
-        });
-      }
+      findings.push(...findingsForBlock(file, block));
     }
   }
   return sortFindings(findings);

@@ -17,11 +17,8 @@ describe('isPerWorktreeRef', () => {
         'refs/worktree/private',
         'refs/rewritten/abc',
       ])('Then %s is per-worktree', (name) => {
-        // Arrange
-        const sut = name as RefName;
-
-        // Act
-        const result = isPerWorktreeRef(sut);
+        // Arrange & Act
+        const result = isPerWorktreeRef(name as RefName);
 
         // Assert
         expect(result).toBe(true);
@@ -40,11 +37,8 @@ describe('isPerWorktreeRef', () => {
         'refs/bisection', // starts with refs/bisect but not refs/bisect/ — stays shared
         'HEADER', // not the HEAD pseudoref
       ])('Then %s is shared', (name) => {
-        // Arrange
-        const sut = name as RefName;
-
-        // Act
-        const result = isPerWorktreeRef(sut);
+        // Arrange & Act
+        const result = isPerWorktreeRef(name as RefName);
 
         // Assert
         expect(result).toBe(false);

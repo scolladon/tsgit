@@ -59,10 +59,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is FILE_NOT_FOUND and path preserved', () => {
           // Arrange & Act
-          const sut = fileNotFound('/repo/missing.txt');
+          const result = fileNotFound('/repo/missing.txt');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'FILE_NOT_FOUND', path: '/repo/missing.txt' });
+          expect(result.data).toEqual({ code: 'FILE_NOT_FOUND', path: '/repo/missing.txt' });
         });
       });
     });
@@ -71,10 +71,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is FILE_EXISTS and path preserved', () => {
           // Arrange & Act
-          const sut = fileExists('/repo/already.txt');
+          const result = fileExists('/repo/already.txt');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'FILE_EXISTS', path: '/repo/already.txt' });
+          expect(result.data).toEqual({ code: 'FILE_EXISTS', path: '/repo/already.txt' });
         });
       });
     });
@@ -83,10 +83,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is NOT_A_DIRECTORY and path preserved', () => {
           // Arrange & Act
-          const sut = notADirectory('/repo/file.txt');
+          const result = notADirectory('/repo/file.txt');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'NOT_A_DIRECTORY', path: '/repo/file.txt' });
+          expect(result.data).toEqual({ code: 'NOT_A_DIRECTORY', path: '/repo/file.txt' });
         });
       });
     });
@@ -95,10 +95,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is DIRECTORY_NOT_EMPTY and path preserved', () => {
           // Arrange & Act
-          const sut = directoryNotEmpty('/repo/dir');
+          const result = directoryNotEmpty('/repo/dir');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'DIRECTORY_NOT_EMPTY', path: '/repo/dir' });
+          expect(result.data).toEqual({ code: 'DIRECTORY_NOT_EMPTY', path: '/repo/dir' });
         });
       });
     });
@@ -107,10 +107,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is PERMISSION_DENIED and path preserved', () => {
           // Arrange & Act
-          const sut = permissionDenied('/etc/shadow');
+          const result = permissionDenied('/etc/shadow');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'PERMISSION_DENIED', path: '/etc/shadow' });
+          expect(result.data).toEqual({ code: 'PERMISSION_DENIED', path: '/etc/shadow' });
         });
       });
     });
@@ -119,10 +119,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code, operation, reason populated', () => {
           // Arrange & Act
-          const sut = unsupportedOperation('symlink', 'OPFS does not support');
+          const result = unsupportedOperation('symlink', 'OPFS does not support');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'UNSUPPORTED_OPERATION',
             operation: 'symlink',
             reason: 'OPFS does not support',
@@ -135,10 +135,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is HASH_FAILED and reason preserved', () => {
           // Arrange & Act
-          const sut = hashFailed('crypto.subtle unavailable');
+          const result = hashFailed('crypto.subtle unavailable');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'HASH_FAILED', reason: 'crypto.subtle unavailable' });
+          expect(result.data).toEqual({ code: 'HASH_FAILED', reason: 'crypto.subtle unavailable' });
         });
       });
     });
@@ -147,10 +147,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is COMPRESS_FAILED and reason preserved', () => {
           // Arrange & Act
-          const sut = compressFailed('zlib error');
+          const result = compressFailed('zlib error');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'COMPRESS_FAILED', reason: 'zlib error' });
+          expect(result.data).toEqual({ code: 'COMPRESS_FAILED', reason: 'zlib error' });
         });
       });
     });
@@ -159,10 +159,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is DECOMPRESS_FAILED and reason preserved', () => {
           // Arrange & Act
-          const sut = decompressFailed('corrupt data');
+          const result = decompressFailed('corrupt data');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'DECOMPRESS_FAILED', reason: 'corrupt data' });
+          expect(result.data).toEqual({ code: 'DECOMPRESS_FAILED', reason: 'corrupt data' });
         });
       });
     });
@@ -171,10 +171,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code, statusCode, reason populated', () => {
           // Arrange & Act
-          const sut = httpError(404, 'Not Found');
+          const result = httpError(404, 'Not Found');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'HTTP_ERROR', statusCode: 404, reason: 'Not Found' });
+          expect(result.data).toEqual({ code: 'HTTP_ERROR', statusCode: 404, reason: 'Not Found' });
         });
       });
     });
@@ -183,10 +183,10 @@ describe('domain error — AdapterError', () => {
       describe('When checking data', () => {
         it('Then code is NETWORK_ERROR and reason preserved', () => {
           // Arrange & Act
-          const sut = networkError('Connection refused');
+          const result = networkError('Connection refused');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'NETWORK_ERROR', reason: 'Connection refused' });
+          expect(result.data).toEqual({ code: 'NETWORK_ERROR', reason: 'Connection refused' });
         });
       });
     });
@@ -197,28 +197,28 @@ describe('domain error — AdapterError', () => {
       describe('When checking instanceof Error', () => {
         it('Then returns true', () => {
           // Arrange & Act
-          const sut = fileNotFound('/x');
+          const result = fileNotFound('/x');
 
           // Assert
-          expect(sut).toBeInstanceOf(Error);
+          expect(result).toBeInstanceOf(Error);
         });
       });
       describe('When accessing .name', () => {
         it("Then equals 'TsgitError'", () => {
           // Arrange & Act
-          const sut = fileNotFound('/x');
+          const result = fileNotFound('/x');
 
           // Assert
-          expect(sut.name).toBe('TsgitError');
+          expect(result.name).toBe('TsgitError');
         });
       });
       describe('When accessing.message', () => {
         it('Then contains the error code', () => {
           // Arrange & Act
-          const sut = fileNotFound('/x');
+          const result = fileNotFound('/x');
 
           // Assert
-          expect(sut.message).toContain('FILE_NOT_FOUND');
+          expect(result.message).toContain('FILE_NOT_FOUND');
         });
       });
     });
@@ -229,12 +229,12 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains sanitized prefix and basename ONLY (not full path)', () => {
           // Arrange & Act
-          const sut = fileNotFound('/etc/passwd/secret.txt');
+          const result = fileNotFound('/etc/passwd/secret.txt');
 
           // Assert
-          expect(sut.message).toContain('file not found: secret.txt');
-          expect(sut.message).not.toContain('/etc/passwd');
-          expect(sut.data.code === 'FILE_NOT_FOUND' && sut.data.path).toBe(
+          expect(result.message).toContain('file not found: secret.txt');
+          expect(result.message).not.toContain('/etc/passwd');
+          expect(result.data.code === 'FILE_NOT_FOUND' && result.data.path).toBe(
             '/etc/passwd/secret.txt',
           );
         });
@@ -245,11 +245,11 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains sanitized prefix and basename ONLY', () => {
           // Arrange & Act
-          const sut = fileExists('/home/user/.ssh/id_rsa');
+          const result = fileExists('/home/user/.ssh/id_rsa');
 
           // Assert
-          expect(sut.message).toContain('file already exists: id_rsa');
-          expect(sut.message).not.toContain('/home/user');
+          expect(result.message).toContain('file already exists: id_rsa');
+          expect(result.message).not.toContain('/home/user');
         });
       });
     });
@@ -258,11 +258,11 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains sanitized prefix and basename ONLY', () => {
           // Arrange & Act
-          const sut = notADirectory('/var/lib/data.txt');
+          const result = notADirectory('/var/lib/data.txt');
 
           // Assert
-          expect(sut.message).toContain('not a directory: data.txt');
-          expect(sut.message).not.toContain('/var/lib');
+          expect(result.message).toContain('not a directory: data.txt');
+          expect(result.message).not.toContain('/var/lib');
         });
       });
     });
@@ -271,11 +271,11 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains sanitized prefix and basename ONLY', () => {
           // Arrange & Act
-          const sut = directoryNotEmpty('/var/lib/old-dir');
+          const result = directoryNotEmpty('/var/lib/old-dir');
 
           // Assert
-          expect(sut.message).toContain('directory not empty: old-dir');
-          expect(sut.message).not.toContain('/var/lib');
+          expect(result.message).toContain('directory not empty: old-dir');
+          expect(result.message).not.toContain('/var/lib');
         });
       });
     });
@@ -284,11 +284,11 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains sanitized prefix and basename ONLY', () => {
           // Arrange & Act
-          const sut = permissionDenied('/private/keys/secret.pem');
+          const result = permissionDenied('/private/keys/secret.pem');
 
           // Assert
-          expect(sut.message).toContain('permission denied: secret.pem');
-          expect(sut.message).not.toContain('/private/keys');
+          expect(result.message).toContain('permission denied: secret.pem');
+          expect(result.message).not.toContain('/private/keys');
         });
       });
     });
@@ -299,11 +299,11 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains operation and reason', () => {
           // Arrange & Act
-          const sut = unsupportedOperation('symlink', 'OPFS does not support');
+          const result = unsupportedOperation('symlink', 'OPFS does not support');
 
           // Assert
-          expect(sut.message).toContain('symlink');
-          expect(sut.message).toContain('OPFS does not support');
+          expect(result.message).toContain('symlink');
+          expect(result.message).toContain('OPFS does not support');
         });
       });
     });
@@ -312,10 +312,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains sanitized prefix and reason', () => {
           // Arrange & Act
-          const sut = hashFailed('subtle.digest threw');
+          const result = hashFailed('subtle.digest threw');
 
           // Assert
-          expect(sut.message).toContain('hash computation failed: subtle.digest threw');
+          expect(result.message).toContain('hash computation failed: subtle.digest threw');
         });
       });
     });
@@ -324,10 +324,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then names the branch with no tracking information', () => {
           // Arrange & Act
-          const sut = noUpstreamConfigured('refs/heads/main' as RefName);
+          const result = noUpstreamConfigured('refs/heads/main' as RefName);
 
           // Assert
-          expect(sut.message).toContain('no upstream configured for refs/heads/main');
+          expect(result.message).toContain('no upstream configured for refs/heads/main');
         });
       });
     });
@@ -336,13 +336,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains exact sanitized prefix (not the decompression prefix)', () => {
           // Arrange & Act
-          const sut = compressFailed('zlib deflateSync failed');
+          const result = compressFailed('zlib deflateSync failed');
 
           // Assert — `decompression failed:...` is a distinct case; the message must not fall through to it.
-          expect(sut.message).toContain(
+          expect(result.message).toContain(
             'COMPRESS_FAILED: compression failed: zlib deflateSync failed',
           );
-          expect(sut.message).not.toContain('decompression failed');
+          expect(result.message).not.toContain('decompression failed');
         });
       });
     });
@@ -351,10 +351,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains reason', () => {
           // Arrange & Act
-          const sut = decompressFailed('invalid inflate stream');
+          const result = decompressFailed('invalid inflate stream');
 
           // Assert
-          expect(sut.message).toContain('invalid inflate stream');
+          expect(result.message).toContain('invalid inflate stream');
         });
       });
     });
@@ -363,11 +363,11 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains status code and reason', () => {
           // Arrange & Act
-          const sut = httpError(500, 'Internal Server Error');
+          const result = httpError(500, 'Internal Server Error');
 
           // Assert
-          expect(sut.message).toContain('500');
-          expect(sut.message).toContain('Internal Server Error');
+          expect(result.message).toContain('500');
+          expect(result.message).toContain('Internal Server Error');
         });
       });
     });
@@ -376,10 +376,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with reason', () => {
           // Arrange & Act
-          const sut = networkError('DNS resolution failed');
+          const result = networkError('DNS resolution failed');
 
           // Assert
-          expect(sut.message).toBe('NETWORK_ERROR: network error: DNS resolution failed');
+          expect(result.message).toBe('NETWORK_ERROR: network error: DNS resolution failed');
         });
       });
     });
@@ -388,10 +388,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented constant format', () => {
           // Arrange & Act
-          const sut = operationAborted();
+          const result = operationAborted();
 
           // Assert
-          expect(sut.message).toBe('OPERATION_ABORTED: operation aborted');
+          expect(result.message).toBe('OPERATION_ABORTED: operation aborted');
         });
       });
     });
@@ -400,13 +400,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains id', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'TREE_CYCLE_DETECTED',
             id: 'abc123' as never,
           });
 
           // Assert
-          expect(sut.message).toContain('tree cycle detected: abc123');
+          expect(result.message).toContain('tree cycle detected: abc123');
         });
       });
     });
@@ -415,10 +415,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains depth', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'TREE_DEPTH_EXCEEDED', depth: 42 });
+          const result = new TsgitErrorClass({ code: 'TREE_DEPTH_EXCEEDED', depth: 42 });
 
           // Assert
-          expect(sut.message).toContain('tree depth exceeded: 42');
+          expect(result.message).toContain('tree depth exceeded: 42');
         });
       });
     });
@@ -427,10 +427,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then contains depth', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
+          const result = new TsgitErrorClass({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
 
           // Assert
-          expect(sut.message).toContain('delta chain too deep: 51');
+          expect(result.message).toContain('delta chain too deep: 51');
         });
       });
     });
@@ -439,10 +439,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with reason', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'INVALID_DIFF_INPUT', reason: 'tree is null' });
+          const result = new TsgitErrorClass({
+            code: 'INVALID_DIFF_INPUT',
+            reason: 'tree is null',
+          });
 
           // Assert
-          expect(sut.message).toBe('INVALID_DIFF_INPUT: invalid diff input: tree is null');
+          expect(result.message).toBe('INVALID_DIFF_INPUT: invalid diff input: tree is null');
         });
       });
     });
@@ -451,13 +454,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with id', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'OBJECT_NOT_FOUND',
             id: 'deadbeef' as never,
           });
 
           // Assert
-          expect(sut.message).toBe('OBJECT_NOT_FOUND: object not found: deadbeef');
+          expect(result.message).toBe('OBJECT_NOT_FOUND: object not found: deadbeef');
         });
       });
     });
@@ -466,14 +469,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with expected and actual', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'OBJECT_HASH_MISMATCH',
             expected: 'aaa' as never,
             actual: 'bbb' as never,
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'OBJECT_HASH_MISMATCH: object hash mismatch: expected=aaa actual=bbb',
           );
         });
@@ -484,7 +487,7 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with expected, actual and id', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'UNEXPECTED_OBJECT_TYPE',
             expected: 'commit' as never,
             actual: 'blob' as never,
@@ -492,7 +495,7 @@ describe('domain error — AdapterError', () => {
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'UNEXPECTED_OBJECT_TYPE: unexpected object type: expected=commit actual=blob id=cafe',
           );
         });
@@ -503,14 +506,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with count and limit', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'TREE_ENTRY_LIMIT_EXCEEDED',
             count: 9001,
             limit: 4096,
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'TREE_ENTRY_LIMIT_EXCEEDED: tree entry limit exceeded: count=9001 limit=4096',
           );
         });
@@ -521,13 +524,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with name', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'REF_NOT_FOUND',
             name: 'refs/heads/missing' as never,
           });
 
           // Assert
-          expect(sut.message).toBe('REF_NOT_FOUND: ref not found: refs/heads/missing');
+          expect(result.message).toBe('REF_NOT_FOUND: ref not found: refs/heads/missing');
         });
       });
     });
@@ -536,14 +539,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with depth and joined chain', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'REF_CHAIN_TOO_DEEP',
             depth: 6,
             chain: ['HEAD', 'refs/heads/a', 'refs/heads/b'] as never,
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'REF_CHAIN_TOO_DEEP: ref chain too deep: depth=6 chain=HEAD->refs/heads/a->refs/heads/b',
           );
         });
@@ -554,13 +557,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with joined chain', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'REF_CYCLE_DETECTED',
             chain: ['refs/heads/a', 'refs/heads/b', 'refs/heads/a'] as never,
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'REF_CYCLE_DETECTED: ref cycle detected: refs/heads/a->refs/heads/b->refs/heads/a',
           );
         });
@@ -571,13 +574,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with name', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'REF_LOCKED',
             name: 'refs/heads/main' as never,
           });
 
           // Assert
-          expect(sut.message).toBe('REF_LOCKED: ref locked: refs/heads/main');
+          expect(result.message).toBe('REF_LOCKED: ref locked: refs/heads/main');
         });
       });
     });
@@ -586,7 +589,7 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with name, expected and actual', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'REF_UPDATE_CONFLICT',
             name: 'refs/heads/main' as never,
             expected: 'aaa' as never,
@@ -594,7 +597,7 @@ describe('domain error — AdapterError', () => {
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'REF_UPDATE_CONFLICT: ref update conflict: name=refs/heads/main expected=aaa actual=bbb',
           );
         });
@@ -605,10 +608,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with reason', () => {
           // Arrange & Act
-          const sut = invalidWalkInput('start commit is undefined');
+          const result = invalidWalkInput('start commit is undefined');
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'INVALID_WALK_INPUT: invalid walk input: start commit is undefined',
           );
         });
@@ -619,14 +622,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with raw and reason', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'REFSPEC_INVALID',
             raw: 'bad:spec:extra',
             reason: 'too many colons',
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'REFSPEC_INVALID: invalid refspec "bad:spec:extra": too many colons',
           );
         });
@@ -662,11 +665,11 @@ describe('domain error — AdapterError', () => {
               "a single-segment trailing slash returns 'foo' (no separator; kills the `i > 0` mutant where segment[0] is the last valid one)",
           },
         ])('Then $label', ({ path, expected }) => {
-          // Arrange
-          const sut = basename(path);
+          // Arrange & Act
+          const result = basename(path);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -694,10 +697,10 @@ describe('domain error — AdapterError', () => {
           },
         ])('Then $label', ({ path, expected }) => {
           // Arrange & Act
-          const sut = dirname(path);
+          const result = dirname(path);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -708,10 +711,10 @@ describe('domain error — AdapterError', () => {
       describe('When accessing data.code', () => {
         it('Then matches discriminated union', () => {
           // Arrange
-          const sut: TsgitError = fileNotFound('/x');
+          const result: TsgitError = fileNotFound('/x');
 
           // Act
-          const code = sut.data.code;
+          const code = result.data.code;
 
           // Assert
           expect(code).toBe('FILE_NOT_FOUND');
@@ -725,14 +728,14 @@ describe('domain error — AdapterError', () => {
       describe('When TsgitError.message is read', () => {
         it('Then it equals the documented format', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'RESOURCE_LOCKED',
             resource: 'index',
             path: '/repo/.git/index.lock',
           });
 
           // Assert
-          expect(sut.message).toBe('RESOURCE_LOCKED: index locked: index.lock');
+          expect(result.message).toBe('RESOURCE_LOCKED: index locked: index.lock');
         });
       });
     });
@@ -741,14 +744,14 @@ describe('domain error — AdapterError', () => {
       describe('When TsgitError.message is read', () => {
         it('Then it equals the documented format', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'PACK_TOO_LARGE',
             objectCount: 100_000_000,
             limit: 50_000_000,
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'PACK_TOO_LARGE: pack contains 100000000 objects, exceeds limit 50000000',
           );
         });
@@ -761,15 +764,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvSourceNotTracked('u.txt' as FilePath, 'd/u.txt' as FilePath);
+          const result = mvSourceNotTracked('u.txt' as FilePath, 'd/u.txt' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_SOURCE_NOT_TRACKED',
             source: 'u.txt',
             destination: 'd/u.txt',
           });
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'MV_SOURCE_NOT_TRACKED: not under version control, source=u.txt, destination=d/u.txt',
           );
         });
@@ -780,15 +783,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvBadSource('a.txt' as FilePath, 'z.txt' as FilePath);
+          const result = mvBadSource('a.txt' as FilePath, 'z.txt' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_BAD_SOURCE',
             source: 'a.txt',
             destination: 'z.txt',
           });
-          expect(sut.message).toBe('MV_BAD_SOURCE: bad source, source=a.txt, destination=z.txt');
+          expect(result.message).toBe('MV_BAD_SOURCE: bad source, source=a.txt, destination=z.txt');
         });
       });
     });
@@ -797,15 +800,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvDestinationExists('a.txt' as FilePath, 'keep.txt' as FilePath);
+          const result = mvDestinationExists('a.txt' as FilePath, 'keep.txt' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_DESTINATION_EXISTS',
             source: 'a.txt',
             destination: 'keep.txt',
           });
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'MV_DESTINATION_EXISTS: destination exists, source=a.txt, destination=keep.txt',
           );
         });
@@ -816,15 +819,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvIntoSelf('a.txt' as FilePath, 'a.txt' as FilePath);
+          const result = mvIntoSelf('a.txt' as FilePath, 'a.txt' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_INTO_SELF',
             source: 'a.txt',
             destination: 'a.txt',
           });
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'MV_INTO_SELF: can not move directory into itself, source=a.txt, destination=a.txt',
           );
         });
@@ -835,15 +838,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then the message names the destination and omits the source=…,destination=… suffix', () => {
           // Arrange & Act
-          const sut = mvDestinationNotDirectory('a.txt' as FilePath, 'nope.txt' as FilePath);
+          const result = mvDestinationNotDirectory('a.txt' as FilePath, 'nope.txt' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_DESTINATION_NOT_DIRECTORY',
             source: 'a.txt',
             destination: 'nope.txt',
           });
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             "MV_DESTINATION_NOT_DIRECTORY: destination 'nope.txt' is not a directory, source=a.txt",
           );
         });
@@ -854,15 +857,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvDestinationDirectoryMissing('a.txt' as FilePath, 'missing/' as FilePath);
+          const result = mvDestinationDirectoryMissing('a.txt' as FilePath, 'missing/' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_DESTINATION_DIRECTORY_MISSING',
             source: 'a.txt',
             destination: 'missing/',
           });
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'MV_DESTINATION_DIRECTORY_MISSING: destination directory does not exist, source=a.txt, destination=missing/',
           );
         });
@@ -873,15 +876,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/source/destination and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvMultipleSourcesSameTarget('a.txt' as FilePath, 'd/a.txt' as FilePath);
+          const result = mvMultipleSourcesSameTarget('a.txt' as FilePath, 'd/a.txt' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MV_MULTIPLE_SOURCES_SAME_TARGET',
             source: 'a.txt',
             destination: 'd/a.txt',
           });
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'MV_MULTIPLE_SOURCES_SAME_TARGET: multiple sources for the same target, source=a.txt, destination=d/a.txt',
           );
         });
@@ -892,11 +895,15 @@ describe('domain error — AdapterError', () => {
       describe('When checking data and message', () => {
         it('Then code/child/parent and the faithful message render', () => {
           // Arrange & Act
-          const sut = mvOverlappingSources('a/b' as FilePath, 'a' as FilePath);
+          const result = mvOverlappingSources('a/b' as FilePath, 'a' as FilePath);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'MV_OVERLAPPING_SOURCES', child: 'a/b', parent: 'a' });
-          expect(sut.message).toBe(
+          expect(result.data).toEqual({
+            code: 'MV_OVERLAPPING_SOURCES',
+            child: 'a/b',
+            parent: 'a',
+          });
+          expect(result.message).toBe(
             "MV_OVERLAPPING_SOURCES: cannot move both 'a/b' and its parent directory 'a'",
           );
         });
@@ -912,11 +919,11 @@ describe('domain error — AdapterError', () => {
           const bogus = { code: 'BOGUS_UNKNOWN_CODE' } as unknown as TsgitErrorData;
 
           // Act
-          const sut = new TsgitErrorClass(bogus);
+          const result = new TsgitErrorClass(bogus);
 
           // Assert
-          expect(sut.message).toContain('BOGUS_UNKNOWN_CODE');
-          expect(sut.message).toContain('[object Object]');
+          expect(result.message).toContain('BOGUS_UNKNOWN_CODE');
+          expect(result.message).toContain('[object Object]');
         });
       });
     });
@@ -927,7 +934,7 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with basename, size and limit', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'GITATTRIBUTES_FILE_TOO_LARGE',
             path: 'sub/.gitattributes' as FilePath,
             size: 5000,
@@ -935,7 +942,7 @@ describe('domain error — AdapterError', () => {
           });
 
           // Assert — its own message, never the sparse-checkout case it precedes.
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'GITATTRIBUTES_FILE_TOO_LARGE: .gitattributes too large: .gitattributes size=5000 limit=1024',
           );
         });
@@ -946,10 +953,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the bare "bad config line N" format', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'CONFIG_PARSE_ERROR', line: 5 });
+          const result = new TsgitErrorClass({ code: 'CONFIG_PARSE_ERROR', line: 5 });
 
           // Assert
-          expect(sut.message).toBe('CONFIG_PARSE_ERROR: bad config line 5');
+          expect(result.message).toBe('CONFIG_PARSE_ERROR: bad config line 5');
         });
       });
     });
@@ -958,14 +965,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then equals the "bad config line N in file F" format', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'CONFIG_PARSE_ERROR',
             line: 7,
             source: '/repo/.git/config',
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'CONFIG_PARSE_ERROR: bad config line 7 in file /repo/.git/config',
           );
         });
@@ -976,14 +983,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then names the invalid section and the config file', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'CONFIG_INVALID_FILE',
             sectionName: 'foo.bar',
             source: '/repo/.git/config',
           });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             "CONFIG_INVALID_FILE: invalid section name 'foo.bar' in config file /repo/.git/config",
           );
         });
@@ -994,10 +1001,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then quotes the base url that cannot be reduced further', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'RELATIVE_URL_UNRESOLVABLE', url: '../base' });
+          const result = new TsgitErrorClass({ code: 'RELATIVE_URL_UNRESOLVABLE', url: '../base' });
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             "RELATIVE_URL_UNRESOLVABLE: cannot strip one component off url '../base'",
           );
         });
@@ -1008,13 +1015,13 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then names the submodule work tree with local modifications', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'SUBMODULE_HAS_MODIFICATIONS',
             path: 'libs/sub',
           });
 
           // Assert — its own message, never the SUBMODULE_PATH_EXISTS case it precedes.
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             "SUBMODULE_HAS_MODIFICATIONS: submodule work tree 'libs/sub' contains local modifications",
           );
         });
@@ -1025,10 +1032,12 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then states the path already exists in the index', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'SUBMODULE_PATH_EXISTS', path: 'libs/sub' });
+          const result = new TsgitErrorClass({ code: 'SUBMODULE_PATH_EXISTS', path: 'libs/sub' });
 
           // Assert — the " in the index" suffix distinguishes it from WORKTREE_PATH_EXISTS.
-          expect(sut.message).toBe("SUBMODULE_PATH_EXISTS: 'libs/sub' already exists in the index");
+          expect(result.message).toBe(
+            "SUBMODULE_PATH_EXISTS: 'libs/sub' already exists in the index",
+          );
         });
       });
     });
@@ -1039,10 +1048,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then states the path already exists', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'WORKTREE_PATH_EXISTS', path: 'wt/feature' });
+          const result = new TsgitErrorClass({ code: 'WORKTREE_PATH_EXISTS', path: 'wt/feature' });
 
           // Assert — bare "already exists", without SUBMODULE_PATH_EXISTS's " in the index" suffix.
-          expect(sut.message).toBe("WORKTREE_PATH_EXISTS: 'wt/feature' already exists");
+          expect(result.message).toBe("WORKTREE_PATH_EXISTS: 'wt/feature' already exists");
         });
       });
     });
@@ -1051,14 +1060,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then names the branch and the worktree already using it', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'BRANCH_CHECKED_OUT',
             branch: 'refs/heads/feature',
             path: 'wt/feature',
           });
 
           // Assert — its own message, never the WORKTREE_LOCKED case it precedes.
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             "BRANCH_CHECKED_OUT: 'refs/heads/feature' is already used by worktree at 'wt/feature'",
           );
         });
@@ -1069,14 +1078,14 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then states the working tree is locked', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({
+          const result = new TsgitErrorClass({
             code: 'WORKTREE_LOCKED',
             path: 'wt/feature',
             reason: 'in use',
           });
 
           // Assert — its own message, never the WORKTREE_DIRTY case it precedes.
-          expect(sut.message).toBe("WORKTREE_LOCKED: working tree 'wt/feature' is locked");
+          expect(result.message).toBe("WORKTREE_LOCKED: working tree 'wt/feature' is locked");
         });
       });
     });
@@ -1085,10 +1094,10 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then states the working tree has modified or untracked files', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'WORKTREE_DIRTY', path: 'wt/feature' });
+          const result = new TsgitErrorClass({ code: 'WORKTREE_DIRTY', path: 'wt/feature' });
 
           // Assert — its own message, never the NOT_A_WORKTREE case it precedes.
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             "WORKTREE_DIRTY: 'wt/feature' contains modified or untracked files, use --force to delete it",
           );
         });
@@ -1099,105 +1108,143 @@ describe('domain error — AdapterError', () => {
       describe('When reading message', () => {
         it('Then states the path is not a working tree', () => {
           // Arrange & Act
-          const sut = new TsgitErrorClass({ code: 'NOT_A_WORKTREE', path: 'wt/feature' });
+          const result = new TsgitErrorClass({ code: 'NOT_A_WORKTREE', path: 'wt/feature' });
 
           // Assert
-          expect(sut.message).toBe("NOT_A_WORKTREE: 'wt/feature' is not a working tree");
+          expect(result.message).toBe("NOT_A_WORKTREE: 'wt/feature' is not a working tree");
         });
       });
     });
   });
 
-  describe('Given central-switch error codes, When reading their message', () => {
-    it('Then PATH_NOT_IN_TREE names the path and the rev', () => {
-      // Arrange & Act
-      const sut = pathNotInTree('HEAD', 'missing.txt');
+  describe("Given pathNotInTree('HEAD', 'missing.txt')", () => {
+    describe('When reading .message', () => {
+      it('Then names the path and the rev', () => {
+        // Arrange & Act
+        const result = pathNotInTree('HEAD', 'missing.txt');
 
-      // Assert
-      expect(sut.message).toContain("path 'missing.txt' does not exist in 'HEAD'");
+        // Assert
+        expect(result.message).toContain("path 'missing.txt' does not exist in 'HEAD'");
+      });
     });
+  });
 
-    it('Then WORKTREE_FILE_ABSENT names the unreadable working-tree file', () => {
-      // Arrange & Act
-      const sut = worktreeFileAbsent('f.txt');
+  describe("Given worktreeFileAbsent('f.txt')", () => {
+    describe('When reading .message', () => {
+      it('Then names the unreadable working-tree file', () => {
+        // Arrange & Act
+        const result = worktreeFileAbsent('f.txt');
 
-      // Assert
-      expect(sut.message).toContain("cannot read working-tree file 'f.txt'");
+        // Assert
+        expect(result.message).toContain("cannot read working-tree file 'f.txt'");
+      });
     });
+  });
 
-    it('Then NO_PROMISOR_REMOTE explains the missing promisor remote', () => {
-      // Arrange & Act
-      const sut = noPromisorRemote();
+  describe('Given noPromisorRemote()', () => {
+    describe('When reading .message', () => {
+      it('Then explains the missing promisor remote', () => {
+        // Arrange & Act
+        const result = noPromisorRemote();
 
-      // Assert
-      expect(sut.message).toContain(
-        'no promisor remote configured; this repository is not a partial clone',
-      );
+        // Assert
+        expect(result.message).toContain(
+          'no promisor remote configured; this repository is not a partial clone',
+        );
+      });
     });
+  });
 
-    it('Then INVALID_FILTER_SPEC quotes the spec and reason', () => {
-      // Arrange & Act
-      const sut = invalidFilterSpec('blob:none', 'unsupported');
+  describe("Given invalidFilterSpec('blob:none', 'unsupported')", () => {
+    describe('When reading .message', () => {
+      it('Then quotes the spec and reason', () => {
+        // Arrange & Act
+        const result = invalidFilterSpec('blob:none', 'unsupported');
 
-      // Assert
-      expect(sut.message).toContain('invalid object filter "blob:none": unsupported');
+        // Assert
+        expect(result.message).toContain('invalid object filter "blob:none": unsupported');
+      });
     });
+  });
 
-    it('Then REMOTE_FILTER_UNSUPPORTED states the remote lacks filtering', () => {
-      // Arrange & Act
-      const sut = remoteFilterUnsupported();
+  describe('Given remoteFilterUnsupported()', () => {
+    describe('When reading .message', () => {
+      it('Then states the remote lacks filtering', () => {
+        // Arrange & Act
+        const result = remoteFilterUnsupported();
 
-      // Assert
-      expect(sut.message).toContain('remote does not support partial-clone object filtering');
+        // Assert
+        expect(result.message).toContain('remote does not support partial-clone object filtering');
+      });
     });
+  });
 
-    it('Then SNAPSHOT_REQUIRED includes the reason', () => {
-      // Arrange & Act
-      const sut = snapshotRequired('index changed');
+  describe("Given snapshotRequired('index changed')", () => {
+    describe('When reading .message', () => {
+      it('Then includes the reason', () => {
+        // Arrange & Act
+        const result = snapshotRequired('index changed');
 
-      // Assert
-      expect(sut.message).toContain('snapshot required: index changed');
+        // Assert
+        expect(result.message).toContain('snapshot required: index changed');
+      });
     });
+  });
 
-    it('Then WORKDIR_RACE reports both observed and current stats', () => {
-      // Arrange
-      const observed = { mode: 0o100644, size: 2, mtimeMs: 1 } as unknown as WorkdirStat;
-      const current = { mode: 0o100644, size: 4, mtimeMs: 3 } as unknown as WorkdirStat;
+  describe('Given workdirRace with observed and current working-tree stats', () => {
+    describe('When reading .message', () => {
+      it('Then reports both observed and current stats', () => {
+        // Arrange
+        const observed = { mode: 0o100644, size: 2, mtimeMs: 1 } as unknown as WorkdirStat;
+        const current = { mode: 0o100644, size: 4, mtimeMs: 3 } as unknown as WorkdirStat;
 
-      // Act
-      const sut = workdirRace('a.txt', observed, current);
+        // Act
+        const result = workdirRace('a.txt', observed, current);
 
-      // Assert
-      expect(sut.message).toContain(
-        'working-tree changed under us at a.txt (observed mtime=1 size=2, current mtime=3 size=4)',
-      );
+        // Assert
+        expect(result.message).toContain(
+          'working-tree changed under us at a.txt (observed mtime=1 size=2, current mtime=3 size=4)',
+        );
+      });
     });
+  });
 
-    it('Then ORDER_INVARIANT_VIOLATION names both rows in order', () => {
-      // Arrange & Act
-      const sut = orderInvariantViolation('row-a', 'row-b');
+  describe("Given orderInvariantViolation('row-a', 'row-b')", () => {
+    describe('When reading .message', () => {
+      it('Then names both rows in order', () => {
+        // Arrange & Act
+        const result = orderInvariantViolation('row-a', 'row-b');
 
-      // Assert
-      expect(sut.message).toContain('row order broken: row-a followed by row-b');
+        // Assert
+        expect(result.message).toContain('row order broken: row-a followed by row-b');
+      });
     });
+  });
 
-    it('Then AMBIGUOUS_OID_PREFIX reports the prefix and candidate count', () => {
-      // Arrange
-      const candidates = ['1', '2'] as unknown as ReadonlyArray<ObjectId>;
+  describe('Given ambiguousOidPrefix with a prefix and a candidate list', () => {
+    describe('When reading .message', () => {
+      it('Then reports the prefix and candidate count', () => {
+        // Arrange
+        const candidates = ['1', '2'] as unknown as ReadonlyArray<ObjectId>;
 
-      // Act
-      const sut = ambiguousOidPrefix('abc', candidates);
+        // Act
+        const result = ambiguousOidPrefix('abc', candidates);
 
-      // Assert
-      expect(sut.message).toContain('short object id abc is ambiguous (2 candidates)');
+        // Assert
+        expect(result.message).toContain('short object id abc is ambiguous (2 candidates)');
+      });
     });
+  });
 
-    it('Then INVALID_SEQUENCER_TODO includes the reason', () => {
-      // Arrange & Act
-      const sut = invalidSequencerTodo('bad line');
+  describe("Given invalidSequencerTodo('bad line')", () => {
+    describe('When reading .message', () => {
+      it('Then includes the reason', () => {
+        // Arrange & Act
+        const result = invalidSequencerTodo('bad line');
 
-      // Assert
-      expect(sut.message).toContain('invalid sequencer todo: bad line');
+        // Assert
+        expect(result.message).toContain('invalid sequencer todo: bad line');
+      });
     });
   });
 });
@@ -1207,13 +1254,13 @@ describe('cleanFilterFailed error', () => {
     describe('When accessing .data', () => {
       it('Then data carries code CLEAN_FILTER_FAILED, path, filter, exitCode', () => {
         // Arrange & Act
-        const sut = cleanFilterFailed('src/file.bin' as never, 'lfs', 1);
+        const result = cleanFilterFailed('src/file.bin' as never, 'lfs', 1);
 
         // Assert
-        expect(sut.data.code).toBe('CLEAN_FILTER_FAILED');
-        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.path).toBe('src/file.bin');
-        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.filter).toBe('lfs');
-        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.exitCode).toBe(1);
+        expect(result.data.code).toBe('CLEAN_FILTER_FAILED');
+        expect(result.data.code === 'CLEAN_FILTER_FAILED' && result.data.path).toBe('src/file.bin');
+        expect(result.data.code === 'CLEAN_FILTER_FAILED' && result.data.filter).toBe('lfs');
+        expect(result.data.code === 'CLEAN_FILTER_FAILED' && result.data.exitCode).toBe(1);
       });
     });
   });
@@ -1222,11 +1269,11 @@ describe('cleanFilterFailed error', () => {
     describe('When accessing .data.exitCode', () => {
       it('Then exitCode is preserved as 128', () => {
         // Arrange & Act
-        const sut = cleanFilterFailed('blob.dat' as never, 'myfilter', 128);
+        const result = cleanFilterFailed('blob.dat' as never, 'myfilter', 128);
 
         // Assert
-        expect(sut.data.code).toBe('CLEAN_FILTER_FAILED');
-        expect(sut.data.code === 'CLEAN_FILTER_FAILED' && sut.data.exitCode).toBe(128);
+        expect(result.data.code).toBe('CLEAN_FILTER_FAILED');
+        expect(result.data.code === 'CLEAN_FILTER_FAILED' && result.data.exitCode).toBe(128);
       });
     });
   });
@@ -1235,12 +1282,12 @@ describe('cleanFilterFailed error', () => {
     describe('When reading .message', () => {
       it('Then message contains filter name, file basename and exitCode', () => {
         // Arrange & Act
-        const sut = cleanFilterFailed('repo/assets/photo.png' as never, 'lfs-clean', 2);
+        const result = cleanFilterFailed('repo/assets/photo.png' as never, 'lfs-clean', 2);
 
         // Assert
-        expect(sut.message).toContain('lfs-clean');
-        expect(sut.message).toContain('photo.png');
-        expect(sut.message).toContain('2');
+        expect(result.message).toContain('lfs-clean');
+        expect(result.message).toContain('photo.png');
+        expect(result.message).toContain('2');
       });
     });
   });
@@ -1249,11 +1296,11 @@ describe('cleanFilterFailed error', () => {
     describe('When reading .message prefix', () => {
       it('Then message starts with "clean filter" (not "smudge filter" via case fall-through)', () => {
         // Arrange & Act
-        const sut = cleanFilterFailed('dir/file.dat' as never, 'myfilter', 3);
+        const result = cleanFilterFailed('dir/file.dat' as never, 'myfilter', 3);
 
         // Assert — the CLEAN_FILTER_FAILED case must return its own message, not fall through
         // to the SMUDGE_FILTER_FAILED case which starts with "smudge filter".
-        expect(sut.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter /);
+        expect(result.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter /);
       });
     });
   });
@@ -1264,13 +1311,15 @@ describe('smudgeFilterFailed error', () => {
     describe('When accessing .data', () => {
       it('Then data carries code SMUDGE_FILTER_FAILED, path, filter, exitCode', () => {
         // Arrange & Act
-        const sut = smudgeFilterFailed('src/file.bin' as never, 'lfs', 1);
+        const result = smudgeFilterFailed('src/file.bin' as never, 'lfs', 1);
 
         // Assert
-        expect(sut.data.code).toBe('SMUDGE_FILTER_FAILED');
-        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.path).toBe('src/file.bin');
-        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.filter).toBe('lfs');
-        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.exitCode).toBe(1);
+        expect(result.data.code).toBe('SMUDGE_FILTER_FAILED');
+        expect(result.data.code === 'SMUDGE_FILTER_FAILED' && result.data.path).toBe(
+          'src/file.bin',
+        );
+        expect(result.data.code === 'SMUDGE_FILTER_FAILED' && result.data.filter).toBe('lfs');
+        expect(result.data.code === 'SMUDGE_FILTER_FAILED' && result.data.exitCode).toBe(1);
       });
     });
   });
@@ -1279,11 +1328,11 @@ describe('smudgeFilterFailed error', () => {
     describe('When accessing .data.exitCode', () => {
       it('Then exitCode is preserved as 128', () => {
         // Arrange & Act
-        const sut = smudgeFilterFailed('blob.dat' as never, 'myfilter', 128);
+        const result = smudgeFilterFailed('blob.dat' as never, 'myfilter', 128);
 
         // Assert
-        expect(sut.data.code).toBe('SMUDGE_FILTER_FAILED');
-        expect(sut.data.code === 'SMUDGE_FILTER_FAILED' && sut.data.exitCode).toBe(128);
+        expect(result.data.code).toBe('SMUDGE_FILTER_FAILED');
+        expect(result.data.code === 'SMUDGE_FILTER_FAILED' && result.data.exitCode).toBe(128);
       });
     });
   });
@@ -1292,12 +1341,12 @@ describe('smudgeFilterFailed error', () => {
     describe('When reading .message', () => {
       it('Then message contains filter name, file basename and exitCode', () => {
         // Arrange & Act
-        const sut = smudgeFilterFailed('repo/assets/photo.png' as never, 'lfs-smudge', 2);
+        const result = smudgeFilterFailed('repo/assets/photo.png' as never, 'lfs-smudge', 2);
 
         // Assert
-        expect(sut.message).toContain('lfs-smudge');
-        expect(sut.message).toContain('photo.png');
-        expect(sut.message).toContain('2');
+        expect(result.message).toContain('lfs-smudge');
+        expect(result.message).toContain('photo.png');
+        expect(result.message).toContain('2');
       });
     });
   });
@@ -1308,11 +1357,11 @@ describe('signingFailed error', () => {
     describe('When reading .message', () => {
       it('Then message contains the reason and the format', () => {
         // Arrange & Act
-        const sut = signingFailed('signer-failed', 'openpgp');
+        const result = signingFailed('signer-failed', 'openpgp');
 
         // Assert
-        expect(sut.message).toContain('signer-failed');
-        expect(sut.message).toContain('openpgp');
+        expect(result.message).toContain('signer-failed');
+        expect(result.message).toContain('openpgp');
       });
     });
   });
@@ -1321,11 +1370,11 @@ describe('signingFailed error', () => {
     describe('When reading .message', () => {
       it('Then message contains the reason and omits any format suffix', () => {
         // Arrange & Act
-        const sut = signingFailed('off-node');
+        const result = signingFailed('off-node');
 
         // Assert
-        expect(sut.message).toContain('off-node');
-        expect(sut.message).not.toContain('format=');
+        expect(result.message).toContain('off-node');
+        expect(result.message).not.toContain('format=');
       });
     });
   });
@@ -1334,10 +1383,10 @@ describe('signingFailed error', () => {
     describe('When reading the verbatim .message', () => {
       it('Then nothing is injected between the reason and the closing paren', () => {
         // Arrange & Act
-        const sut = signingFailed('off-node');
+        const result = signingFailed('off-node');
 
         // Assert — the ternary's empty else-branch contributes no characters.
-        expect(sut.message).toBe('SIGNING_FAILED: gpg failed to sign the data (off-node)');
+        expect(result.message).toBe('SIGNING_FAILED: gpg failed to sign the data (off-node)');
       });
     });
   });
@@ -1346,10 +1395,10 @@ describe('signingFailed error', () => {
     describe('When reading .message prefix', () => {
       it('Then message starts with "gpg failed to sign the data" (not a fall-through case)', () => {
         // Arrange & Act
-        const sut = signingFailed('unsupported-format', 'x509');
+        const result = signingFailed('unsupported-format', 'x509');
 
         // Assert
-        expect(sut.message).toMatch(/^SIGNING_FAILED: gpg failed to sign the data \(/);
+        expect(result.message).toMatch(/^SIGNING_FAILED: gpg failed to sign the data \(/);
       });
     });
   });
@@ -1360,10 +1409,10 @@ describe('signedPushUnsupported error', () => {
     describe('When reading .message', () => {
       it('Then message states the receiving end does not support --signed push', () => {
         // Arrange & Act
-        const sut = signedPushUnsupported('origin');
+        const result = signedPushUnsupported('origin');
 
         // Assert
-        expect(sut.message).toBe(
+        expect(result.message).toBe(
           'SIGNED_PUSH_UNSUPPORTED: the receiving end does not support --signed push',
         );
       });
@@ -1393,10 +1442,10 @@ describe('pushRemoteNotUpstream error', () => {
     describe('When reading .message', () => {
       it('Then message names the remote and the branch', () => {
         // Arrange & Act
-        const sut = pushRemoteNotUpstream('pushdef', 'refs/heads/main' as RefName);
+        const result = pushRemoteNotUpstream('pushdef', 'refs/heads/main' as RefName);
 
         // Assert
-        expect(sut.message).toBe(
+        expect(result.message).toBe(
           "PUSH_REMOTE_NOT_UPSTREAM: you are pushing to remote 'pushdef', which is not the upstream of your current branch 'refs/heads/main'",
         );
       });
@@ -1409,13 +1458,13 @@ describe('pushUpstreamNameMismatch error', () => {
     describe('When reading .message', () => {
       it('Then message states the upstream name does not match the branch name', () => {
         // Arrange & Act
-        const sut = pushUpstreamNameMismatch(
+        const result = pushUpstreamNameMismatch(
           'refs/heads/main' as RefName,
           'refs/heads/other' as RefName,
         );
 
         // Assert
-        expect(sut.message).toBe(
+        expect(result.message).toBe(
           'PUSH_UPSTREAM_NAME_MISMATCH: the upstream branch of your current branch does not match the name of your current branch',
         );
       });
@@ -1428,10 +1477,10 @@ describe('pushDefaultNothing error', () => {
     describe('When reading .message', () => {
       it('Then message states push.default is "nothing"', () => {
         // Arrange & Act
-        const sut = pushDefaultNothing();
+        const result = pushDefaultNothing();
 
         // Assert
-        expect(sut.message).toBe(
+        expect(result.message).toBe(
           'PUSH_DEFAULT_NOTHING: you didn\'t specify any refspecs to push, and push.default is "nothing"',
         );
       });
@@ -1444,10 +1493,10 @@ describe('invalidPushDefault error', () => {
     describe('When reading .message', () => {
       it('Then message names the bad config variable, file, and line', () => {
         // Arrange & Act
-        const sut = invalidPushDefault('bogus', '/abs/.git/config', 9);
+        const result = invalidPushDefault('bogus', '/abs/.git/config', 9);
 
         // Assert
-        expect(sut.message).toBe(
+        expect(result.message).toBe(
           "INVALID_PUSH_DEFAULT: bad config variable 'push.default' in file '/abs/.git/config' at line 9",
         );
       });

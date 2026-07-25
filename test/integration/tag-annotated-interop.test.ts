@@ -84,7 +84,7 @@ describe.skipIf(!GIT_AVAILABLE)('tag annotated-create interop', () => {
         const ctx = createNodeContext({ workDir: pair.ours });
 
         // Act
-        const sut = await tagCreate(ctx, {
+        const result = await tagCreate(ctx, {
           name: 'v1',
           target: commitSha,
           annotate: true,
@@ -92,18 +92,16 @@ describe.skipIf(!GIT_AVAILABLE)('tag annotated-create interop', () => {
         });
 
         // Assert
-        expect(sut.id).toBe(peerTagSha);
-        expect(sut.id).not.toBe(commitSha);
+        expect(result.id).toBe(peerTagSha);
+        expect(result.id).not.toBe(commitSha);
         const peerOut = runGit(['-C', pair.peer, 'cat-file', '-p', peerTagSha]);
-        const oursOut = runGit(['-C', pair.ours, 'cat-file', '-p', sut.id]);
+        const oursOut = runGit(['-C', pair.ours, 'cat-file', '-p', result.id]);
         expect(oursOut).toBe(peerOut);
         const oursRefTarget = runGit(['-C', pair.ours, 'rev-parse', 'refs/tags/v1']).trim();
-        expect(oursRefTarget).toBe(sut.id);
+        expect(oursRefTarget).toBe(result.id);
       });
     });
-  });
 
-  describe('Given a matching root commit in both repos', () => {
     describe('When canonical git tags it with a plain tag and tsgit tags it via tagCreate() with no annotate/message', () => {
       it('Then both refs point directly at the commit OID — the lightweight path is unchanged', async () => {
         // Arrange
@@ -113,11 +111,11 @@ describe.skipIf(!GIT_AVAILABLE)('tag annotated-create interop', () => {
         const ctx = createNodeContext({ workDir: pair.ours });
 
         // Act
-        const sut = await tagCreate(ctx, { name: 'v2', target: commitSha });
+        const result = await tagCreate(ctx, { name: 'v2', target: commitSha });
 
         // Assert
         expect(peerRefTarget).toBe(commitSha);
-        expect(sut.id).toBe(commitSha);
+        expect(result.id).toBe(commitSha);
       });
     });
   });

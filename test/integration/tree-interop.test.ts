@@ -45,20 +45,20 @@ describe.skipIf(!GIT_AVAILABLE)('tree interop', () => {
         await writeFile(path.join(pair.peer, 'b.txt'), 'B\n');
         runGit(['-C', pair.peer, 'add', 'a.txt', 'b.txt']);
         const peerTreeSha = runGit(['-C', pair.peer, 'write-tree']).trim();
-        const sut = createNodeContext({ workDir: pair.ours });
+        const ctx = createNodeContext({ workDir: pair.ours });
 
         // Act — write the two blobs to ours, then build the tree
-        const blobA = await writeObject(sut, {
+        const blobA = await writeObject(ctx, {
           type: 'blob',
           id: '' as ObjectId,
           content: new TextEncoder().encode('A\n'),
         });
-        const blobB = await writeObject(sut, {
+        const blobB = await writeObject(ctx, {
           type: 'blob',
           id: '' as ObjectId,
           content: new TextEncoder().encode('B\n'),
         });
-        const oursTreeSha = await writeTree(sut, [
+        const oursTreeSha = await writeTree(ctx, [
           { mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobA },
           { mode: FILE_MODE.REGULAR, name: 'b.txt', id: blobB },
         ]);

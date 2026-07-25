@@ -21,10 +21,10 @@ describe('object-id', () => {
           { hex: 'b'.repeat(64), label: '64-char' },
         ])('Then returns branded ObjectId for the $label hex string', ({ hex }) => {
           // Arrange & Act
-          const sut = ObjectId.from(hex);
+          const result = ObjectId.from(hex);
 
           // Assert
-          expect(sut).toBe(hex);
+          expect(result).toBe(hex);
         });
       });
     });
@@ -62,11 +62,11 @@ describe('object-id', () => {
           const expected = fill.toString(16).repeat(size);
 
           // Act
-          const sut = ObjectId.fromRaw(bytes);
+          const result = ObjectId.fromRaw(bytes);
 
           // Assert
-          expect(sut).toBe(expected);
-          expect(sut.length).toBe(hexLength);
+          expect(result).toBe(expected);
+          expect(result.length).toBe(hexLength);
         });
       });
     });
@@ -117,19 +117,19 @@ describe('object-id', () => {
           const expected = '0000000000000000000000000000000000000000';
 
           // Act
-          const sut = ZERO_OID;
+          const result = ZERO_OID;
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
       describe('When length is read', () => {
         it('Then it equals 40 (sha1 width)', () => {
           // Arrange
-          const sut = ZERO_OID.length;
+          const result = ZERO_OID.length;
 
           // Assert
-          expect(sut).toBe(40);
+          expect(result).toBe(40);
         });
       });
       describe('When passed to ObjectId.from', () => {
@@ -138,10 +138,10 @@ describe('object-id', () => {
           const hex: string = ZERO_OID;
 
           // Act
-          const sut = ObjectId.from(hex);
+          const result = ObjectId.from(hex);
 
           // Assert
-          expect(sut).toBe(ZERO_OID);
+          expect(result).toBe(ZERO_OID);
         });
       });
     });
@@ -155,19 +155,19 @@ describe('object-id', () => {
           const expected = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
           // Act
-          const sut = EMPTY_TREE_OID;
+          const result = EMPTY_TREE_OID;
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
       describe('When length is read', () => {
         it('Then it equals 40', () => {
           // Arrange
-          const sut = EMPTY_TREE_OID.length;
+          const result = EMPTY_TREE_OID.length;
 
           // Assert
-          expect(sut).toBe(40);
+          expect(result).toBe(40);
         });
       });
       describe('When passed to ObjectId.from', () => {
@@ -176,10 +176,10 @@ describe('object-id', () => {
           const hex: string = EMPTY_TREE_OID;
 
           // Act
-          const sut = ObjectId.from(hex);
+          const result = ObjectId.from(hex);
 
           // Assert
-          expect(sut).toBe(EMPTY_TREE_OID);
+          expect(result).toBe(EMPTY_TREE_OID);
         });
       });
     });
@@ -193,10 +193,10 @@ describe('object-id', () => {
           const name = 'refs/heads/main';
 
           // Act
-          const sut = RefName.from(name);
+          const result = RefName.from(name);
 
           // Assert
-          expect(sut).toBe(name);
+          expect(result).toBe(name);
         });
       });
     });
@@ -229,10 +229,10 @@ describe('object-id', () => {
           const path = 'src/index.ts';
 
           // Act
-          const sut = FilePath.from(path);
+          const result = FilePath.from(path);
 
           // Assert
-          expect(sut).toBe(path);
+          expect(result).toBe(path);
         });
       });
     });
@@ -264,8 +264,8 @@ describe('object-id', () => {
           // Arrange + Assert
           fc.assert(
             fc.property(arbObjectId(width), (id) => {
-              const sut = ObjectId.fromRaw(hexToBytes(id));
-              expect(sut).toBe(id);
+              const result = ObjectId.fromRaw(hexToBytes(id));
+              expect(result).toBe(id);
             }),
           );
         });

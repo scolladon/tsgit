@@ -101,10 +101,10 @@ describe('patch-serializer', () => {
         const files: ReadonlyArray<PatchFile> = [];
 
         // Act
-        const sut = renderPatch(files);
+        const result = renderPatch(files);
 
         // Assert
-        expect(sut).toBe('');
+        expect(result).toBe('');
       });
     });
   });
@@ -116,10 +116,10 @@ describe('patch-serializer', () => {
         const file = addFile('hello.txt', 'hello\n', OID_B);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/hello.txt b/hello.txt',
             'new file mode 100644',
@@ -142,10 +142,10 @@ describe('patch-serializer', () => {
         const file = addFile('multi.txt', 'one\ntwo\nthree\n', OID_C);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/multi.txt b/multi.txt',
             'new file mode 100644',
@@ -170,10 +170,10 @@ describe('patch-serializer', () => {
         const file = addFile('empty.txt', '', OID_A);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'new file mode 100644',
@@ -194,10 +194,10 @@ describe('patch-serializer', () => {
         const file = addFile('no-eol.txt', 'one\ntwo', OID_B);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/no-eol.txt b/no-eol.txt',
             'new file mode 100644',
@@ -222,10 +222,10 @@ describe('patch-serializer', () => {
         const file = deleteFile('goodbye.txt', 'goodbye\n', OID_A);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/goodbye.txt b/goodbye.txt',
             'deleted file mode 100644',
@@ -248,10 +248,10 @@ describe('patch-serializer', () => {
         const file = deleteFile('empty.txt', '', OID_C);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'deleted file mode 100644',
@@ -272,10 +272,10 @@ describe('patch-serializer', () => {
         const file = deleteFile('no-eol.txt', 'one\ntwo', OID_A);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/no-eol.txt b/no-eol.txt',
             'deleted file mode 100644',
@@ -300,10 +300,10 @@ describe('patch-serializer', () => {
         const file = addFile('a.txt', 'x\n', OID_A);
 
         // Act
-        const sut = renderPatch([file], { pathPrefix: { old: '', new: '' } });
+        const result = renderPatch([file], { pathPrefix: { old: '', new: '' } });
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a.txt a.txt',
             'new file mode 100644',
@@ -326,10 +326,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'old\n', 'new\n');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -354,10 +354,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('lines.txt', oldText, newText);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/lines.txt b/lines.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -386,10 +386,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'a\nb\nc\n', 'A\nb\nC\n');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -418,11 +418,11 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', oldText, newText);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — first hunk ends after 3 context lines (2,3,4), second
         // hunk starts 3 context lines before line 10 (lines 7,8,9).
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -456,10 +456,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', oldText, newText);
 
         // Act
-        const sut = renderPatch([file], { contextLines: 0 });
+        const result = renderPatch([file], { contextLines: 0 });
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -482,10 +482,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'old', 'new\n');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -509,10 +509,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'old', 'new');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -548,10 +548,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.sh b/foo.sh',
             'old mode 100644',
@@ -576,10 +576,10 @@ describe('patch-serializer', () => {
         const file = modeChangeOnly('foo.sh', 'echo hi\n', FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE);
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.sh b/foo.sh',
             'old mode 100644',
@@ -600,10 +600,10 @@ describe('patch-serializer', () => {
         const file = typeChangeFile('foo', 'old contents\n', '/some/symlink/target');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — verified against real git in mktemp throwaway
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo b/foo',
             'deleted file mode 100644',
@@ -647,10 +647,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — verified against real git in mktemp throwaway
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/binfile.bin b/binfile.bin',
             'deleted file mode 100644',
@@ -691,10 +691,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — verified against real git in a mktemp throwaway
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/swap.bin b/swap.bin',
             'deleted file mode 120000',
@@ -732,10 +732,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/empty.x b/empty.x',
             'deleted file mode 100644',
@@ -761,10 +761,10 @@ describe('patch-serializer', () => {
         const file = renameFile('old/path.txt', 'new/path.txt');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/old/path.txt b/new/path.txt',
             'similarity index 100%',
@@ -797,10 +797,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'index aaaaaaa..bbbbbbb 100644',
@@ -827,10 +827,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'new file mode 100644',
@@ -933,10 +933,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'same\n', 'same\n');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — body is the header + index + --- + +++ + EOF.
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -957,10 +957,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', '', '');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -987,10 +987,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'new file mode 100644',
@@ -1018,10 +1018,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/empty.txt b/empty.txt',
             'deleted file mode 100644',
@@ -1053,10 +1053,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — old side acts like an empty file; one `+hi` line emitted.
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1089,10 +1089,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1125,10 +1125,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1158,10 +1158,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1183,11 +1183,11 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'a\nb\nc', 'A\nb\nc');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — Decoupled from Myers' specific labelling: the marker is
         // the last non-empty line, immediately after the last body line.
-        const lines = sut.split('\n');
+        const lines = result.split('\n');
         expect(lines.at(-1)).toBe(''); // trailing newline
         expect(lines.at(-2)).toBe('\\ No newline at end of file');
         // And it must be preceded by a body line carrying either side's last
@@ -1196,10 +1196,10 @@ describe('patch-serializer', () => {
         expect(beforeMarker.length).toBeGreaterThan(0);
         expect(' -+'.includes(beforeMarker[0] ?? '')).toBe(true);
         // The full header pieces are still produced.
-        expect(sut).toContain('diff --git a/foo.txt b/foo.txt');
-        expect(sut).toContain('index aaaaaaa..bbbbbbb 100644');
-        expect(sut).toContain('--- a/foo.txt');
-        expect(sut).toContain('+++ b/foo.txt');
+        expect(result).toContain('diff --git a/foo.txt b/foo.txt');
+        expect(result).toContain('index aaaaaaa..bbbbbbb 100644');
+        expect(result).toContain('--- a/foo.txt');
+        expect(result).toContain('+++ b/foo.txt');
       });
     });
   });
@@ -1213,10 +1213,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'a\n', 'a\nb\n');
 
         // Act
-        const sut = renderPatch([file], { contextLines: 0 });
+        const result = renderPatch([file], { contextLines: 0 });
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1239,10 +1239,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'a\nb\n', 'a\n');
 
         // Act
-        const sut = renderPatch([file], { contextLines: 0 });
+        const result = renderPatch([file], { contextLines: 0 });
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1272,10 +1272,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/logo.png b/logo.png',
             'deleted file mode 100644',
@@ -1310,10 +1310,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — header + similarity index 87% + rename from/to + index (with mode) + hunk
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/original.txt b/moved.txt',
             'similarity index 87%',
@@ -1353,10 +1353,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — header + index + the diff body markers, but no `@@` hunk
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/original.txt b/moved.txt',
             'similarity index 87%',
@@ -1394,15 +1394,15 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file], { ignoreBlankLines: true });
+        const result = renderPatch([file], { ignoreBlankLines: true });
 
         // Assert — rename header + index kept; no ---/+++ markers and no @@ hunk
-        expect(sut).toContain('rename from original.txt');
-        expect(sut).toContain('rename to moved.txt');
-        expect(sut).toContain('index aaaaaaa..bbbbbbb 100644');
-        expect(sut).not.toContain('@@');
-        expect(sut).not.toContain('--- a/');
-        expect(sut).not.toContain('+++ b/');
+        expect(result).toContain('rename from original.txt');
+        expect(result).toContain('rename to moved.txt');
+        expect(result).toContain('index aaaaaaa..bbbbbbb 100644');
+        expect(result).not.toContain('@@');
+        expect(result).not.toContain('--- a/');
+        expect(result).not.toContain('+++ b/');
       });
     });
   });
@@ -1429,10 +1429,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — mode preamble BEFORE similarity; index line NO trailing mode
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/run.sh b/run-new.sh',
             'old mode 100644',
@@ -1461,10 +1461,10 @@ describe('patch-serializer', () => {
         const file = renameFile('old/path.txt', 'new/path.txt');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — byte-identical to the pre-slice-4 output
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/old/path.txt b/new/path.txt',
             'similarity index 100%',
@@ -1499,10 +1499,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — binary rename: index line present (same mode) + Binary files differ
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/logo.png b/icon.png',
             'similarity index 50%',
@@ -1539,10 +1539,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — header + similarity index 72% + copy from/to + index (with mode) + hunk
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/source.txt b/dest.txt',
             'similarity index 72%',
@@ -1582,10 +1582,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — C100: no index line, no hunk; 4 lines only (diff + similarity + from + to)
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/original.txt b/copied.txt',
             'similarity index 100%',
@@ -1619,11 +1619,11 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — dissimilarity index 100% replaces the normal index-predecessor;
         // index line carries mode (same oldMode/newMode); full D/A hunk follows.
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/rewrite.txt b/rewrite.txt',
             'dissimilarity index 100%',
@@ -1649,11 +1649,11 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'old\n', 'new\n');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — no dissimilarity line; normal index line
-        expect(sut).not.toContain('dissimilarity index');
-        expect(sut).toBe(
+        expect(result).not.toContain('dissimilarity index');
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1690,11 +1690,11 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — full byte-equality: dissimilarity index 66% (truncated, not rounded),
         // followed by the index line and the complete D/A hunk.
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/file.txt b/file.txt',
             'dissimilarity index 66%',
@@ -1736,10 +1736,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — full byte-equality: dissimilarity line precedes binary block.
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/image.png b/image.png',
             'dissimilarity index 100%',
@@ -1773,12 +1773,12 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — index line has no trailing mode when modes differ
-        expect(sut).toContain('dissimilarity index 100%');
+        expect(result).toContain('dissimilarity index 100%');
         // mode suffix absent: "index aaa..bbb" not "index aaa..bbb 100644"
-        expect(sut).toContain('index aaaaaaa..bbbbbbb\n');
+        expect(result).toContain('index aaaaaaa..bbbbbbb\n');
       });
     });
   });
@@ -1805,12 +1805,12 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — binary new side triggers the binary path even when old is text
-        expect(sut).toContain('Binary files a/image.png and b/image.png differ');
+        expect(result).toContain('Binary files a/image.png and b/image.png differ');
         // No hunk markers should appear (binary path returns early)
-        expect(sut).not.toContain('@@');
+        expect(result).not.toContain('@@');
       });
     });
   });
@@ -1838,12 +1838,12 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — binary new side triggers the binary path even when old is text
-        expect(sut).toContain('Binary files a/readme.txt and b/logo.png differ');
+        expect(result).toContain('Binary files a/readme.txt and b/logo.png differ');
         // No hunk markers should appear (binary path returns early)
-        expect(sut).not.toContain('@@');
+        expect(result).not.toContain('@@');
       });
     });
   });
@@ -1856,12 +1856,12 @@ describe('patch-serializer', () => {
         const file = modifyFile('f.txt', '  ws\nreal\n', '    ws\nREAL\n');
 
         // Act
-        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+        const result = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
 
         // Assert — the ws-only line is context (single-space prefix) carrying the
         // NEW-side bytes "    ws" (git emits context from the post-image);
         // the real line appears as a delete/insert pair.
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/f.txt b/f.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -1884,11 +1884,11 @@ describe('patch-serializer', () => {
         const file = modifyFile('t.txt', '\t\tws\nreal\n', '    ws\nREAL\n');
 
         // Act
-        const sut = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+        const result = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
 
         // Assert — context line is the new-side "    ws" (4 spaces), never "\t\tws".
-        expect(sut).toContain('\n     ws\n');
-        expect(sut).not.toContain('\t\tws');
+        expect(result).toContain('\n     ws\n');
+        expect(result).not.toContain('\t\tws');
       });
     });
 
@@ -1899,11 +1899,11 @@ describe('patch-serializer', () => {
         const newBytes = utf8.encode('line1\nchanged\n');
 
         // Act
-        const sut = computeHunks(oldBytes, newBytes, 3);
-        const result = computeHunks(oldBytes, newBytes, 3, {});
+        const implicitOptionsResult = computeHunks(oldBytes, newBytes, 3);
+        const explicitOptionsResult = computeHunks(oldBytes, newBytes, 3, {});
 
         // Assert — byte-identical results for both call forms
-        expect(sut).toEqual(result);
+        expect(implicitOptionsResult).toEqual(explicitOptionsResult);
       });
     });
 
@@ -1913,11 +1913,11 @@ describe('patch-serializer', () => {
         const file = modifyFile('reg.txt', 'old  \n', 'new  \n');
 
         // Act
-        const sut = renderPatch([file]);
-        const result = renderPatch([file], {});
+        const implicitOptionsResult = renderPatch([file]);
+        const explicitOptionsResult = renderPatch([file], {});
 
         // Assert — both call forms are identical
-        expect(sut).toBe(result);
+        expect(implicitOptionsResult).toBe(explicitOptionsResult);
       });
     });
   });
@@ -1959,10 +1959,10 @@ describe('patch-serializer', () => {
         const file = modifyFile(path, oldContent, newContent);
 
         // Act
-        const sut = renderPatch([file], options);
+        const result = renderPatch([file], options);
 
         // Assert
-        expect(sut).toBe('');
+        expect(result).toBe('');
       });
     });
 
@@ -1972,12 +1972,12 @@ describe('patch-serializer', () => {
         const file = modifyFile('mixed.txt', 'a\nb\n', 'a\n\nB\n');
 
         // Act
-        const sut = renderPatch([file], { ignoreBlankLines: true });
+        const result = renderPatch([file], { ignoreBlankLines: true });
 
         // Assert — #BL2: diff --git header present, real change hunk emitted
-        expect(sut).toContain('diff --git');
-        expect(sut).toContain('-b');
-        expect(sut).toContain('+B');
+        expect(result).toContain('diff --git');
+        expect(result).toContain('-b');
+        expect(result).toContain('+B');
       });
     });
 
@@ -1987,11 +1987,11 @@ describe('patch-serializer', () => {
         const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — hunk is present (regression guard — ignoreBlankLines inactive)
-        expect(sut).toContain('diff --git');
-        expect(sut).toContain('@@');
+        expect(result).toContain('diff --git');
+        expect(result).toContain('@@');
       });
     });
 
@@ -2010,10 +2010,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('blank.txt', 'a\n', 'a\n\n');
 
         // Act
-        const sut = renderPatch([file], options);
+        const result = renderPatch([file], options);
 
         // Assert
-        expect(sut).toContain('@@');
+        expect(result).toContain('@@');
       });
     });
 
@@ -2023,10 +2023,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('ctx.txt', 'a\n\nb\n', 'a\n\nB\n');
 
         // Act
-        const sut = renderPatch([file], { ignoreBlankLines: true });
+        const result = renderPatch([file], { ignoreBlankLines: true });
 
         // Assert — the blank context line (a single space) survives suppression
-        expect(sut).toContain('\n \n');
+        expect(result).toContain('\n \n');
       });
     });
 
@@ -2050,12 +2050,12 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file], { ignoreBlankLines: true });
+        const result = renderPatch([file], { ignoreBlankLines: true });
 
         // Assert — body is preserved (header alone is not enough)
-        expect(sut).toContain('--- a/orig.txt');
-        expect(sut).toContain('+++ b/moved.txt');
-        expect(sut).toContain('+CHANGED');
+        expect(result).toContain('--- a/orig.txt');
+        expect(result).toContain('+++ b/moved.txt');
+        expect(result).toContain('+CHANGED');
       });
     });
   });
@@ -2084,10 +2084,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — A1 golden (§ Faithfulness baseline)
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/sub b/sub',
             'new file mode 160000',
@@ -2118,10 +2118,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — DEL1 golden
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/sub b/sub',
             'deleted file mode 160000',
@@ -2155,10 +2155,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — M golden (modePreamble equal-modes form)
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/sm b/sm',
             'index 1111111..2222222 160000',
@@ -2192,10 +2192,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — D1 golden
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/fg b/fg',
             'deleted file mode 100644',
@@ -2236,10 +2236,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — D2 golden
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/gf b/gf',
             'deleted file mode 160000',
@@ -2280,10 +2280,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — D3 golden (symlink delete carries \\ No newline marker)
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/sg b/sg',
             'deleted file mode 120000',
@@ -2325,10 +2325,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert — D4 golden (gitlink delete has no marker; symlink add carries it)
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/gs b/gs',
             'deleted file mode 160000',
@@ -2678,10 +2678,10 @@ describe('patch-serializer', () => {
         };
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/invalid.txt b/invalid.txt',
             'new file mode 100644',
@@ -2713,10 +2713,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'a\nb\nc\nd\ne', 'a\nb\nc\nd\nE');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -2747,10 +2747,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'a\nb\nc\nd\ne\nf\ng\nh', 'A\nb\nc\nd\ne\nf\ng\nh');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -2778,10 +2778,10 @@ describe('patch-serializer', () => {
         const file = modifyFile('foo.txt', 'a\nb\nc\nd\ne\n', 'a\nb\nc\nd\ne\nNEW');
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',
@@ -2814,10 +2814,10 @@ describe('patch-serializer', () => {
         );
 
         // Act
-        const sut = renderPatch([file]);
+        const result = renderPatch([file]);
 
         // Assert
-        expect(sut).toBe(
+        expect(result).toBe(
           [
             'diff --git a/foo.txt b/foo.txt',
             'index aaaaaaa..bbbbbbb 100644',

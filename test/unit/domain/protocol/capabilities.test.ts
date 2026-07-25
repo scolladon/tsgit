@@ -51,10 +51,10 @@ describe('parseCapabilities', () => {
         },
       ])('Then it $label', ({ tail, expected }) => {
         // Arrange & Act
-        const sut = parseCapabilities(tail);
+        const result = parseCapabilities(tail);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -81,10 +81,10 @@ describe('formatCapabilities', () => {
         },
       ])('Then it $label', ({ caps, expected }) => {
         // Arrange & Act
-        const sut = formatCapabilities(caps);
+        const result = formatCapabilities(caps);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -145,10 +145,10 @@ describe('negotiateCapabilities', () => {
         },
       ])('Then it $label', ({ server, client, expected }) => {
         // Arrange & Act
-        const sut = negotiateCapabilities(server, client);
+        const result = negotiateCapabilities(server, client);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });

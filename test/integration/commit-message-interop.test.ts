@@ -94,11 +94,11 @@ describe.skipIf(!GIT_AVAILABLE)('commit message interop', () => {
     describe(`Given a message with ${label}, When the commit porcelain and canonical git commit it`, () => {
       it('Then the commit-object SHAs match', async () => {
         // Arrange + Act
-        const sut = await commitBothWays(message);
+        const result = await commitBothWays(message);
 
         // Assert
-        expect(sut.oursId).toBe(sut.peerId);
-        expect(sut.oursObject).toBe(sut.peerObject);
+        expect(result.oursId).toBe(result.peerId);
+        expect(result.oursObject).toBe(result.peerObject);
       });
     });
   }

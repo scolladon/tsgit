@@ -206,10 +206,10 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL, depth: 1 });
+        const result = await clone(networkCtx, { url: REMOTE_URL, depth: 1 });
 
         // Assert
-        expect(sut.head).toBe('refs/heads/main');
+        expect(result.head).toBe('refs/heads/main');
         const shallowFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
         expect(shallowFile).toBe(`${shallowOid}\n`);
       });
@@ -283,12 +283,12 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert
-        expect(sut.head).toBe('refs/heads/main');
-        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
-        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
+        expect(result.head).toBe('refs/heads/main');
+        expect(result.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
+        expect(result.fetchedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
         const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(headFile).toBe('ref: refs/heads/main\n');
         const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
@@ -344,12 +344,12 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert
-        expect(sut.head).toBe('refs/heads/main');
-        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
-        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
+        expect(result.head).toBe('refs/heads/main');
+        expect(result.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
+        expect(result.fetchedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
         const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(headFile).toBe('ref: refs/heads/main\n');
         const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
@@ -385,11 +385,11 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert
-        expect(sut.head).toBe('refs/heads/main');
-        expect(sut.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
+        expect(result.head).toBe('refs/heads/main');
+        expect(result.fetchedRefs.map((r) => r.name)).toContain('refs/heads/main');
       });
     });
   });
@@ -441,10 +441,10 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert
-        const names = sut.fetchedRefs.map((r) => r.name);
+        const names = result.fetchedRefs.map((r) => r.name);
         expect(names).toContain('refs/remotes/origin/main');
         expect(names).toContain('refs/remotes/origin/dev');
         expect(names).toContain('refs/remotes/origin/feature');
@@ -475,12 +475,12 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert — the local branch ref is created ONLY for the HEAD branch.
         // The `branch === headBranch` gate must hold: a mutant forcing it true
         // would write `refs/heads/feature` for the non-HEAD branch.
-        const names = sut.fetchedRefs.map((r) => r.name);
+        const names = result.fetchedRefs.map((r) => r.name);
         expect(names).toContain('refs/heads/main');
         expect(names).not.toContain('refs/heads/feature');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);
@@ -537,10 +537,10 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert
-        expect(sut.head).toBeUndefined();
+        expect(result.head).toBeUndefined();
         const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         // Direct OID (no `ref:...` prefix).
         expect(headFile.trim()).toBe(blobId);
@@ -680,10 +680,10 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert — tag goes verbatim under refs/tags, never remapped to refs/remotes.
-        const names = sut.fetchedRefs.map((r) => r.name);
+        const names = result.fetchedRefs.map((r) => r.name);
         expect(names).toContain('refs/tags/v1.0');
         expect(names).not.toContain('refs/remotes/origin/v1.0');
         const tagRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`);
@@ -720,10 +720,10 @@ describe('clone', () => {
         };
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert — the literal `HEAD` ref must be skipped (not remapped/written).
-        const names = sut.fetchedRefs.map((r) => r.name);
+        const names = result.fetchedRefs.map((r) => r.name);
         expect(names).not.toContain('HEAD');
         expect(names).not.toContain('refs/remotes/origin/HEAD');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).toBe(false);
@@ -754,10 +754,10 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert — only the HEAD-tracked branch gets a local refs/heads entry.
-        const names = sut.fetchedRefs.map((r) => r.name);
+        const names = result.fetchedRefs.map((r) => r.name);
         expect(names).toContain('refs/heads/main');
         expect(names).not.toContain('refs/heads/dev');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/dev`)).toBe(false);
@@ -794,10 +794,10 @@ describe('clone', () => {
         };
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert — the unsupported ref is not written, and the skip is logged.
-        const names = sut.fetchedRefs.map((r) => r.name);
+        const names = result.fetchedRefs.map((r) => r.name);
         expect(names).not.toContain('refs/notes/commits');
         expect(names).not.toContain('refs/remotes/origin/commits');
         expect(debugCalls).toContainEqual({
@@ -828,11 +828,11 @@ describe('clone', () => {
         const networkCtx = withTransport(ctx, transport);
 
         // Act
-        const sut = await clone(networkCtx, { url: REMOTE_URL });
+        const result = await clone(networkCtx, { url: REMOTE_URL });
 
         // Assert — the malicious ref is dropped, the legitimate ref is
         // written, and gitDir/config is untouched (not clobbered with a raw oid).
-        const names = sut.fetchedRefs.map((r) => r.name);
+        const names = result.fetchedRefs.map((r) => r.name);
         expect(names).not.toContain('refs/remotes/origin/../../../config');
         expect(names).toContain('refs/remotes/origin/main');
         const configAfter = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
@@ -877,6 +877,7 @@ describe('clone — progress reporting', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const { reporter, events } = recordingProgress();
 
+        // Act
         try {
           await clone(withProgress(ctx, reporter), { url: REMOTE_URL });
         } catch {

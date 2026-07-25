@@ -21,6 +21,27 @@
       "target": 5,
       "warnBelow": 3,
       "warnAbove": null
+    },
+    {
+      "name": "parity",
+      "glob": "test/parity/**/*.test.ts",
+      "target": 0,
+      "warnBelow": 0,
+      "warnAbove": null
+    },
+    {
+      "name": "runtime-parity",
+      "glob": "test/runtime-parity/**/*.test.ts",
+      "target": 0,
+      "warnBelow": 0,
+      "warnAbove": null
+    },
+    {
+      "name": "perf",
+      "glob": "test/perf/**/*.test.ts",
+      "target": 0,
+      "warnBelow": 0,
+      "warnAbove": null
     }
   ],
   "heuristics": {
@@ -30,11 +51,11 @@
       "threshold": 0
     },
     "underAssertedUnit": {
-      "tier": "unit",
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "minAssertionsPerTest": 1
     },
     "gwtTitle": {
-      "tier": "unit",
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "describeGiven": "^Given .+$",
       "describeWhen": "^When .+$",
       "describeCombined": "^Given .+?, When .+$",
@@ -42,19 +63,97 @@
       "legacyItGwt": "^Given .+?, When .+?, Then .+$"
     },
     "aaaBody": {
-      "tier": "unit",
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "required": ["Arrange", "Assert"]
     },
     "sutNaming": {
-      "tier": "unit",
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "banned": ["subject", "objectUnderTest", "systemUnderTest", "cut"]
     },
     "bareClassToThrow": {
-      "tier": "unit",
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "regex": "\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)"
     },
     "emptyAaaSection": {
-      "tier": "unit"
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"]
+    },
+    "sutBindsResult": {
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
+      "allowlist": [
+        "openRepository",
+        "createNodeContext",
+        "createMemoryContext",
+        "createContext",
+        "asWorktreeChild",
+        "buildSeededContext",
+        "seedRepo",
+        "open",
+        "openUnavailable",
+        "openGitSession",
+
+        "createCachingIndexResolver",
+        "createFsWorkdirEnumerator",
+        "createCachingTreeResolver",
+        "createRawIndexResolver",
+        "createSingleFlightIndexResolver",
+        "createRawTreeResolver",
+        "createPackRegistry",
+        "createRefStore",
+        "acquireIndexLock",
+        "createWorkdirEntry",
+        "createIndexEntry",
+        "createTreeEntry",
+        "createTreeSnapshot",
+        "createIndexSnapshot",
+        "createWorkdirSnapshot",
+        "createStashSnapshot",
+        "createGranularityTracker",
+        "createByteGranularityTracker",
+        "createCounterGenerationView",
+        "createInMemoryWriteEventBus",
+
+        "withRetry",
+        "withLogging",
+        "withAuth",
+        "withDefaults",
+        "wrapFsValidator",
+        "wrapTransportValidator",
+        "wrapLoggerSanitizer",
+        "factoryFor",
+        "buildContentMerger",
+        "buildGrepMatcher",
+        "buildRefFilter",
+        "buildSparseMatcher",
+        "buildRepoIgnorePredicate",
+        "buildIgnoreEvaluator",
+        "coneMatcher",
+        "nonConeMatcher",
+        "compileGlob",
+        "bindRebaseNamespace",
+        "consoleProgress",
+
+        "tarArchive",
+        "zipArchive",
+        "streamBlob",
+        "catFileBatch",
+        "map",
+        "filter",
+        "find",
+        "flatMap",
+        "join",
+        "innerJoin",
+        "groupBy",
+        "stream",
+        "pushAll",
+        "commitDateWalk",
+        "assertOrdered",
+        "trackedRange",
+        "trackedPipeline4",
+        "pullCounter",
+        "throwingAt",
+        "awaitable",
+        "abortableRange"
+      ]
     },
     "integrationProof": {
       "tier": "integration",
@@ -89,7 +188,8 @@
     "sutNaming": true,
     "bareClassToThrow": true,
     "emptyAaaSection": true,
-    "integrationProof": false
+    "integrationProof": false,
+    "sutBindsResult": true
   },
   "excludePaths": [
     "tooling/test/unit/test-pyramid/detect-*.test.ts",
@@ -100,6 +200,7 @@
     "tooling/test/unit/test-pyramid/scan-describe-blocks.test.ts",
     "tooling/test/integration/audit-test-pyramid.test.ts",
     "tooling/test/integration/audit-browser-surface.test.ts",
+    "tooling/test/integration/audit-write-surfaces.test.ts",
     "tooling/test/integration/check-mutation-budgets.test.ts",
     "tooling/test/integration/compute-mutation-scope.test.ts",
     "tooling/test/integration/has-code-changes.test.ts"

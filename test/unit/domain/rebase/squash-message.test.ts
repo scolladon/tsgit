@@ -108,10 +108,10 @@ describe('rebase squash combined-message builder', () => {
         },
       ])('Then $label', ({ messages, expected }) => {
         // Arrange + Act
-        const sut = buildCombinedMessage(messages);
+        const result = buildCombinedMessage(messages);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
 

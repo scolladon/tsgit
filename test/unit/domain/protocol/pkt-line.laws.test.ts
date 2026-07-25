@@ -35,7 +35,7 @@ describe('pkt-line laws', () => {
   describe('Given the property "encodePktLine then decodePktStream round-trips for any payload up to MAX_PKT_LINE_PAYLOAD"', () => {
     describe('When sampled', () => {
       it('Then it holds', async () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         await fc.assert(
           fc.asyncProperty(
             fc.uint8Array({ minLength: 0, maxLength: 65516 }),
@@ -55,7 +55,7 @@ describe('pkt-line laws', () => {
   describe('Given the property "encodePktStream then decode produces N data entries plus a trailing flush"', () => {
     describe('When sampled', () => {
       it('Then it holds', async () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         await fc.assert(
           fc.asyncProperty(
             fc.array(fc.uint8Array({ minLength: 0, maxLength: 1024 }), { maxLength: 50 }),
@@ -79,7 +79,7 @@ describe('pkt-line laws', () => {
   describe('Given the property "chunk re-arrangement is invariant for valid encoded streams"', () => {
     describe('When sampled', () => {
       it('Then it holds', async () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         await fc.assert(
           fc.asyncProperty(
             fc.array(fc.uint8Array({ minLength: 0, maxLength: 256 }), { maxLength: 8 }),

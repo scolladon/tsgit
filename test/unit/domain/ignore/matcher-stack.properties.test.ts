@@ -20,8 +20,8 @@ describe('matcher-stack properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbCandidatePath(), fc.boolean(), (path, isDir) => {
-            const sut = matchInStack([], path, isDir);
-            expect(sut).toBe('unset');
+            const result = matchInStack([], path, isDir);
+            expect(result).toBe('unset');
           }),
           { numRuns: 50 },
         );
@@ -41,10 +41,10 @@ describe('matcher-stack properties', () => {
             const rules = parseGitignore(rawRules.join('\n'));
             const stack: ReadonlyArray<IgnoreLevel> = [{ basedir: '', rules }];
 
-            const sut = matchInStack(stack, path, isDir);
+            const result = matchInStack(stack, path, isDir);
             const expected = matches(rules, path, isDir);
 
-            expect(sut).toBe(expected);
+            expect(result).toBe(expected);
           }),
           { numRuns: 100 },
         );
@@ -69,10 +69,10 @@ describe('matcher-stack properties', () => {
               const fullPath = FilePath.from(`${basedir}/${suffix}`);
               const stack: ReadonlyArray<IgnoreLevel> = [{ basedir, rules }];
 
-              const sut = matchInStack(stack, fullPath, isDir);
+              const result = matchInStack(stack, fullPath, isDir);
               const expected = matches(rules, suffix, isDir);
 
-              expect(sut).toBe(expected);
+              expect(result).toBe(expected);
             },
           ),
           { numRuns: 100 },
@@ -100,9 +100,9 @@ describe('matcher-stack properties', () => {
               const outOfScope = FilePath.from(`${otherHead}/leaf`);
               const stack: ReadonlyArray<IgnoreLevel> = [{ basedir, rules }];
 
-              const sut = matchInStack(stack, outOfScope, isDir);
+              const result = matchInStack(stack, outOfScope, isDir);
 
-              expect(sut).toBe('unset');
+              expect(result).toBe('unset');
             },
           ),
           { numRuns: 100 },

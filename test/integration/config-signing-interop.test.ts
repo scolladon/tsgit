@@ -32,114 +32,68 @@ describe.skipIf(!GIT_AVAILABLE)('config signing interop', () => {
     await pair.dispose();
   });
 
-  describe('Given git config sets user.signingKey', () => {
+  describe('Given git config sets a signing-related key', () => {
     describe('When readConfig runs', () => {
-      it('Then user.signingKey matches the git-written value', async () => {
+      const SIGNING_KEY_ROWS: ReadonlyArray<{
+        readonly label: string;
+        readonly gitArgs: readonly [string, string];
+        readonly pick: (result: Awaited<ReturnType<typeof readConfig>>) => unknown;
+        readonly expected: unknown;
+      }> = [
+        {
+          label: 'user.signingKey matches the git-written value',
+          gitArgs: ['user.signingKey', 'ABCD1234EF'],
+          pick: (result) => result.user?.signingKey,
+          expected: 'ABCD1234EF',
+        },
+        {
+          label: 'commit.gpgSign matches the git-written value',
+          gitArgs: ['commit.gpgsign', 'true'],
+          pick: (result) => result.commit?.gpgSign,
+          expected: true,
+        },
+        {
+          label: 'tag.gpgSign matches the git-written value',
+          gitArgs: ['tag.gpgsign', 'true'],
+          pick: (result) => result.tag?.gpgSign,
+          expected: true,
+        },
+        {
+          label: 'push.gpgSign matches the git-written value',
+          gitArgs: ['push.gpgsign', 'if-asked'],
+          pick: (result) => result.push?.gpgSign,
+          expected: 'if-asked',
+        },
+        {
+          label: 'gpg.format matches the git-written value',
+          gitArgs: ['gpg.format', 'ssh'],
+          pick: (result) => result.gpg?.format,
+          expected: 'ssh',
+        },
+        {
+          label: 'gpg.program matches the git-written value',
+          gitArgs: ['gpg.program', '/usr/bin/gpg2'],
+          pick: (result) => result.gpg?.program,
+          expected: '/usr/bin/gpg2',
+        },
+        {
+          label: 'gpg.ssh.program matches the git-written value',
+          gitArgs: ['gpg.ssh.program', '/usr/bin/ssh-keygen'],
+          pick: (result) => result.gpg?.ssh?.program,
+          expected: '/usr/bin/ssh-keygen',
+        },
+      ];
+
+      it.each(SIGNING_KEY_ROWS)('Then $label', async ({ gitArgs, pick, expected }) => {
         // Arrange
-        runGit(['-C', pair.ours, 'config', 'user.signingKey', 'ABCD1234EF']);
+        runGit(['-C', pair.ours, 'config', ...gitArgs]);
         const sut = createNodeContext({ workDir: pair.ours });
 
         // Act
         const result = await readConfig(sut);
 
         // Assert
-        expect(result.user?.signingKey).toBe('ABCD1234EF');
-      });
-    });
-  });
-
-  describe('Given git config sets commit.gpgsign true', () => {
-    describe('When readConfig runs', () => {
-      it('Then commit.gpgSign matches the git-written value', async () => {
-        // Arrange
-        runGit(['-C', pair.ours, 'config', 'commit.gpgsign', 'true']);
-        const sut = createNodeContext({ workDir: pair.ours });
-
-        // Act
-        const result = await readConfig(sut);
-
-        // Assert
-        expect(result.commit?.gpgSign).toBe(true);
-      });
-    });
-  });
-
-  describe('Given git config sets tag.gpgsign true', () => {
-    describe('When readConfig runs', () => {
-      it('Then tag.gpgSign matches the git-written value', async () => {
-        // Arrange
-        runGit(['-C', pair.ours, 'config', 'tag.gpgsign', 'true']);
-        const sut = createNodeContext({ workDir: pair.ours });
-
-        // Act
-        const result = await readConfig(sut);
-
-        // Assert
-        expect(result.tag?.gpgSign).toBe(true);
-      });
-    });
-  });
-
-  describe('Given git config sets push.gpgsign if-asked', () => {
-    describe('When readConfig runs', () => {
-      it('Then push.gpgSign matches the git-written value', async () => {
-        // Arrange
-        runGit(['-C', pair.ours, 'config', 'push.gpgsign', 'if-asked']);
-        const sut = createNodeContext({ workDir: pair.ours });
-
-        // Act
-        const result = await readConfig(sut);
-
-        // Assert
-        expect(result.push?.gpgSign).toBe('if-asked');
-      });
-    });
-  });
-
-  describe('Given git config sets gpg.format ssh', () => {
-    describe('When readConfig runs', () => {
-      it('Then gpg.format matches the git-written value', async () => {
-        // Arrange
-        runGit(['-C', pair.ours, 'config', 'gpg.format', 'ssh']);
-        const sut = createNodeContext({ workDir: pair.ours });
-
-        // Act
-        const result = await readConfig(sut);
-
-        // Assert
-        expect(result.gpg?.format).toBe('ssh');
-      });
-    });
-  });
-
-  describe('Given git config sets gpg.program', () => {
-    describe('When readConfig runs', () => {
-      it('Then gpg.program matches the git-written value', async () => {
-        // Arrange
-        runGit(['-C', pair.ours, 'config', 'gpg.program', '/usr/bin/gpg2']);
-        const sut = createNodeContext({ workDir: pair.ours });
-
-        // Act
-        const result = await readConfig(sut);
-
-        // Assert
-        expect(result.gpg?.program).toBe('/usr/bin/gpg2');
-      });
-    });
-  });
-
-  describe('Given git config sets gpg.ssh.program', () => {
-    describe('When readConfig runs', () => {
-      it('Then gpg.ssh.program matches the git-written value', async () => {
-        // Arrange
-        runGit(['-C', pair.ours, 'config', 'gpg.ssh.program', '/usr/bin/ssh-keygen']);
-        const sut = createNodeContext({ workDir: pair.ours });
-
-        // Act
-        const result = await readConfig(sut);
-
-        // Assert
-        expect(result.gpg?.ssh?.program).toBe('/usr/bin/ssh-keygen');
+        expect(pick(result)).toBe(expected);
       });
     });
   });

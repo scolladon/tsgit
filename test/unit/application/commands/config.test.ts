@@ -31,10 +31,10 @@ describe('configGet', () => {
       await configSet(ctx, { key: 'user.name', value: 'Ada' });
 
       // Act
-      const sut = await configGet(ctx, { key: 'user.name' });
+      const result = await configGet(ctx, { key: 'user.name' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', value: 'Ada', scope: 'local' });
+      expect(result).toEqual({ key: 'user.name', value: 'Ada', scope: 'local' });
     });
   });
 
@@ -44,10 +44,10 @@ describe('configGet', () => {
       const ctx = repoCtx();
 
       // Act
-      const sut = await configGet(ctx, { key: 'user.name' });
+      const result = await configGet(ctx, { key: 'user.name' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', value: undefined });
+      expect(result).toEqual({ key: 'user.name', value: undefined });
     });
   });
 });
@@ -63,10 +63,10 @@ describe('configGetAll', () => {
       );
 
       // Act
-      const sut = await configGetAll(ctx, { key: 'remote.origin.fetch' });
+      const result = await configGetAll(ctx, { key: 'remote.origin.fetch' });
 
       // Assert
-      expect(sut.values.map((v) => v.value)).toEqual(['a', 'b', 'c']);
+      expect(result.values.map((v) => v.value)).toEqual(['a', 'b', 'c']);
     });
   });
 });
@@ -82,10 +82,10 @@ describe('configGetRegexp', () => {
       );
 
       // Act
-      const sut = await configGetRegexp(ctx, { keyPattern: /^remote\..*\.url$/ });
+      const result = await configGetRegexp(ctx, { keyPattern: /^remote\..*\.url$/ });
 
       // Assert
-      expect(sut.entries).toEqual([{ key: 'remote.origin.url', value: 'a', scope: 'local' }]);
+      expect(result.entries).toEqual([{ key: 'remote.origin.url', value: 'a', scope: 'local' }]);
     });
   });
 });
@@ -101,10 +101,10 @@ describe('configList', () => {
       );
 
       // Act
-      const sut = await configList(ctx);
+      const result = await configList(ctx);
 
       // Assert
-      expect(sut.entries).toEqual([
+      expect(result.entries).toEqual([
         { key: 'user.name', value: 'Ada', scope: 'local' },
         { key: 'user.email', value: 'a@x', scope: 'local' },
       ]);
@@ -214,10 +214,10 @@ describe('configSet', () => {
       const ctx = repoCtx();
 
       // Act
-      const sut = await configSet(ctx, { key: 'user.email', value: 'me@x.com' });
+      const result = await configSet(ctx, { key: 'user.email', value: 'me@x.com' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.email', value: 'me@x.com', scope: 'local' });
+      expect(result).toEqual({ key: 'user.email', value: 'me@x.com', scope: 'local' });
     });
   });
 
@@ -253,10 +253,10 @@ describe('configSet', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[user]\n\tname = Ada\n');
 
       // Act
-      const sut = await configSet(ctx, { key: 'user.name', value: 'Bob' });
+      const result = await configSet(ctx, { key: 'user.name', value: 'Bob' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', value: 'Bob', scope: 'local' });
+      expect(result).toEqual({ key: 'user.name', value: 'Bob', scope: 'local' });
     });
   });
 
@@ -294,10 +294,10 @@ describe('configUnset', () => {
       await configSet(ctx, { key: 'user.name', value: 'Ada' });
 
       // Act
-      const sut = await configUnset(ctx, { key: 'user.name' });
+      const result = await configUnset(ctx, { key: 'user.name' });
 
       // Assert
-      expect(sut).toEqual({
+      expect(result).toEqual({
         key: 'user.name',
         scope: 'local',
         removed: true,
@@ -312,11 +312,11 @@ describe('configUnset', () => {
       const ctx = repoCtx();
 
       // Act
-      const sut = await configUnset(ctx, { key: 'user.name' });
+      const result = await configUnset(ctx, { key: 'user.name' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', scope: 'local', removed: false });
-      expect(sut).not.toHaveProperty('previousValue');
+      expect(result).toEqual({ key: 'user.name', scope: 'local', removed: false });
+      expect(result).not.toHaveProperty('previousValue');
     });
   });
 
@@ -376,10 +376,10 @@ describe('configUnsetAll', () => {
       );
 
       // Act
-      const sut = await configUnsetAll(ctx, { key: 'remote.origin.fetch' });
+      const result = await configUnsetAll(ctx, { key: 'remote.origin.fetch' });
 
       // Assert
-      expect(sut.removed).toBe(3);
+      expect(result.removed).toBe(3);
       const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
       expect(text).not.toContain('fetch =');
     });
@@ -391,10 +391,10 @@ describe('configUnsetAll', () => {
       const ctx = repoCtx();
 
       // Act
-      const sut = await configUnsetAll(ctx, { key: 'user.name' });
+      const result = await configUnsetAll(ctx, { key: 'user.name' });
 
       // Assert
-      expect(sut).toEqual({ key: 'user.name', scope: 'local', removed: 0 });
+      expect(result).toEqual({ key: 'user.name', scope: 'local', removed: 0 });
     });
   });
 });
@@ -407,13 +407,13 @@ describe('configRenameSection', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "origin"]\n\turl = x\n');
 
       // Act
-      const sut = await configRenameSection(ctx, {
+      const result = await configRenameSection(ctx, {
         oldName: 'remote.origin',
         newName: 'remote.upstream',
       });
 
       // Assert
-      expect(sut).toEqual({
+      expect(result).toEqual({
         oldName: 'remote.origin',
         newName: 'remote.upstream',
         scope: 'local',
@@ -430,10 +430,10 @@ describe('configRemoveSection', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "origin"]\n\turl = x\n');
 
       // Act
-      const sut = await configRemoveSection(ctx, { name: 'remote.origin' });
+      const result = await configRemoveSection(ctx, { name: 'remote.origin' });
 
       // Assert
-      expect(sut).toEqual({ name: 'remote.origin', scope: 'local' });
+      expect(result).toEqual({ name: 'remote.origin', scope: 'local' });
     });
   });
 });

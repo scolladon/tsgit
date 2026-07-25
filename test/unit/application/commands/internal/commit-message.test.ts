@@ -25,10 +25,10 @@ describe('internal/commit-message', () => {
           const explicit = author({ name: 'Bob', email: 'bob@example.com' });
 
           // Act
-          const sut = resolveAuthor({ explicit });
+          const result = resolveAuthor({ explicit });
 
           // Assert
-          expect(sut.name).toBe('Bob');
+          expect(result.name).toBe('Bob');
         });
       });
     });
@@ -37,12 +37,13 @@ describe('internal/commit-message', () => {
       describe('When resolveAuthor', () => {
         it('Then returns the config user', () => {
           // Arrange
-          const sut = resolveAuthor({
-            configUser: author({ name: 'Cfg', email: 'cfg@example.com' }),
-          });
+          const configUser = author({ name: 'Cfg', email: 'cfg@example.com' });
+
+          // Act
+          const result = resolveAuthor({ configUser });
 
           // Assert
-          expect(sut.name).toBe('Cfg');
+          expect(result.name).toBe('Cfg');
         });
       });
     });
@@ -100,14 +101,14 @@ describe('internal/commit-message', () => {
           },
         ])('Then $label', ({ explicit, authorArg, configUser, expected }) => {
           // Arrange + Act
-          const sut = resolveCommitter({
+          const result = resolveCommitter({
             ...(explicit !== undefined && { explicit }),
             ...(authorArg !== undefined && { author: authorArg }),
             configUser,
           });
 
           // Assert
-          expect(sut.name).toBe(expected);
+          expect(result.name).toBe(expected);
         });
       });
     });
@@ -136,14 +137,15 @@ describe('internal/commit-message', () => {
       describe('When sanitizeMessage', () => {
         it('Then strips trailing whitespace and blank lines, keeps leading whitespace and a single newline', () => {
           // Arrange
-          const sut = sanitizeMessage('   leading + trailing whitespace   \n\n', {
-            allowEmpty: false,
-          });
+          const raw = '   leading + trailing whitespace   \n\n';
+
+          // Act
+          const result = sanitizeMessage(raw, { allowEmpty: false });
 
           // Assert — git stripspace keeps leading whitespace on a content line,
           // strips per-line trailing whitespace + trailing blanks, and ensures
           // exactly one trailing newline.
-          expect(sut).toBe('   leading + trailing whitespace\n');
+          expect(result).toBe('   leading + trailing whitespace\n');
         });
       });
     });
@@ -187,10 +189,13 @@ describe('internal/commit-message', () => {
       describe('When sanitizeMessage', () => {
         it("Then returns ''", () => {
           // Arrange
-          const sut = sanitizeMessage('', { allowEmpty: true });
+          const raw = '';
+
+          // Act
+          const result = sanitizeMessage(raw, { allowEmpty: true });
 
           // Assert
-          expect(sut).toBe('');
+          expect(result).toBe('');
         });
       });
     });
@@ -238,10 +243,10 @@ describe('internal/commit-message', () => {
           },
         ])('Then $label', ({ input, expected }) => {
           // Arrange + Act
-          const sut = sanitizeMarkerLabel(input);
+          const result = sanitizeMarkerLabel(input);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -253,10 +258,10 @@ describe('internal/commit-message', () => {
           const big = 'a'.repeat(250);
 
           // Act
-          const sut = sanitizeMarkerLabel(big);
+          const result = sanitizeMarkerLabel(big);
 
           // Assert
-          expect(sut.length).toBe(200);
+          expect(result.length).toBe(200);
         });
       });
     });
@@ -270,11 +275,11 @@ describe('internal/commit-message', () => {
           const raw = `${'a'.repeat(197)}\x01`;
 
           // Act
-          const sut = sanitizeMarkerLabel(raw);
+          const result = sanitizeMarkerLabel(raw);
 
           // Assert
-          expect(sut.length).toBe(200);
-          expect(sut).toBe(`${'a'.repeat(197)}\\x0`);
+          expect(result.length).toBe(200);
+          expect(result).toBe(`${'a'.repeat(197)}\\x0`);
         });
       });
     });

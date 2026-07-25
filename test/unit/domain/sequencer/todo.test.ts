@@ -40,10 +40,10 @@ describe('sequencer todo', () => {
         },
       ])('Then $label', ({ entries, expected }) => {
         // Arrange + Act
-        const sut = serializeTodo(entries);
+        const result = serializeTodo(entries);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -79,10 +79,10 @@ describe('sequencer todo', () => {
         },
       ])('Then $label', ({ text, expected }) => {
         // Arrange + Act
-        const sut = parseTodo(text);
+        const result = parseTodo(text);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
 

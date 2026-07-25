@@ -52,27 +52,23 @@ describe('parse-gitignore properties', () => {
         fc.assert(
           fc.property(arbPatternLines, (patterns) => {
             const text = patterns.join('\n');
-            const sut = parseGitignore(text);
-            const negatedRules = sut.filter((r) => r.negated).length;
+            const result = parseGitignore(text);
+            const negatedRules = result.filter((r) => r.negated).length;
             const negatedInputs = patterns.filter((p) => p.startsWith('!')).length;
             expect(negatedRules).toBe(negatedInputs);
           }),
           { numRuns: 100 },
         );
       });
-    });
-  });
 
-  describe('Given an arbitrary list of pattern lines', () => {
-    describe('When parsed', () => {
       it('Then the count of directory-only rules equals the count of input lines ending with `/`', () => {
         // Arrange + Act + Assert
         const arbPatternLines = fc.array(arbGitignorePattern(), { minLength: 0, maxLength: 8 });
         fc.assert(
           fc.property(arbPatternLines, (patterns) => {
             const text = patterns.join('\n');
-            const sut = parseGitignore(text);
-            const directoryRules = sut.filter((r) => r.directoryOnly).length;
+            const result = parseGitignore(text);
+            const directoryRules = result.filter((r) => r.directoryOnly).length;
             const directoryInputs = patterns.filter((p) => p.endsWith('/')).length;
             expect(directoryRules).toBe(directoryInputs);
           }),
@@ -97,8 +93,8 @@ describe('parse-gitignore properties', () => {
           .map((lines) => lines.join('\n'));
         fc.assert(
           fc.property(arbCommentText, (text) => {
-            const sut = parseGitignore(text);
-            expect(sut).toEqual([]);
+            const result = parseGitignore(text);
+            expect(result).toEqual([]);
           }),
           { numRuns: 100 },
         );
@@ -113,10 +109,10 @@ describe('parse-gitignore properties', () => {
         // not rule indices: skipped (comment/blank) lines leave gaps.
         fc.assert(
           fc.property(arbGitignoreText(), (text) => {
-            const sut = parseGitignore(text);
+            const result = parseGitignore(text);
             const sourceLineCount = text.split('\n').length;
             let previous = 0;
-            for (const rule of sut) {
+            for (const rule of result) {
               expect(rule.lineNumber).toBeGreaterThanOrEqual(1);
               expect(rule.lineNumber).toBeLessThanOrEqual(sourceLineCount);
               expect(rule.lineNumber).toBeGreaterThan(previous);

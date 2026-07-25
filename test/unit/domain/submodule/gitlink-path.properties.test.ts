@@ -13,11 +13,12 @@ describe('Given an arbitrary safe submodule name and path', () => {
   describe('When deriving the worktree gitfile', () => {
     it('Then the `../` run equals the path segment depth and the tail is the name', () => {
       // Arrange
-      const sut = submoduleGitfile;
-      // Act + Assert
       fc.assert(
         fc.property(arbSafeSubmoduleName(), arbSafeSubmoduleName(), (name, path) => {
-          const result = sut(name, path);
+          // Act
+          const result = submoduleGitfile(name, path);
+
+          // Assert
           const expectedDepth = path.split('/').length;
           expect(result).toBe(`gitdir: ${'../'.repeat(expectedDepth)}.git/modules/${name}`);
         }),
@@ -29,11 +30,12 @@ describe('Given an arbitrary safe submodule name and path', () => {
   describe('When deriving the module core.worktree', () => {
     it('Then the `../` run equals 2 + the name segment depth and the tail is the path', () => {
       // Arrange
-      const sut = submoduleCoreWorktree;
-      // Act + Assert
       fc.assert(
         fc.property(arbSafeSubmoduleName(), arbSafeSubmoduleName(), (name, path) => {
-          const result = sut(name, path);
+          // Act
+          const result = submoduleCoreWorktree(name, path);
+
+          // Assert
           const expectedDepth = 2 + name.split('/').length;
           expect(result).toBe(`${'../'.repeat(expectedDepth)}${path}`);
         }),

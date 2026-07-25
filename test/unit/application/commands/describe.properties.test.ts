@@ -98,21 +98,20 @@ describe('describe early termination', () => {
   describe('Given an arbitrary tagged DAG with a unique nearest annotated tag', () => {
     describe('When describing the newest commit', () => {
       it('Then the break-enabled selection matches the exhaustive reachability oracle', async () => {
-        // Arrange
-        const sut = fc.asyncProperty(taggedDagArbitrary, async (model) => {
-          const expected = expectedDescription(model);
-          fc.pre(expected !== undefined);
-          const { ctx, head } = await buildRepo(model);
+        // Arrange + Act + Assert
+        await fc.assert(
+          fc.asyncProperty(taggedDagArbitrary, async (model) => {
+            const expected = expectedDescription(model);
+            fc.pre(expected !== undefined);
+            const { ctx, head } = await buildRepo(model);
 
-          // Act
-          const result = await describeCmd(ctx, head);
+            const result = await describeCmd(ctx, head);
 
-          // Assert
-          expect(result.name).toBe(expected?.name);
-          expect(result.distance).toBe(expected?.distance);
-        });
-
-        await fc.assert(sut, { numRuns: PROPERTY_RUNS });
+            expect(result.name).toBe(expected?.name);
+            expect(result.distance).toBe(expected?.distance);
+          }),
+          { numRuns: PROPERTY_RUNS },
+        );
       });
     });
   });

@@ -24,9 +24,9 @@ describe('Given a submodule name and worktree path', () => {
       ['three-segment path', 'mod', 'a/b/c', 'gitdir: ../../../.git/modules/mod'],
     ])('Then %s yields the path-depth-relative gitdir pointer', (_label, name, path, expected) => {
       // Arrange + Act
-      const sut = submoduleGitfile(name, path);
+      const result = submoduleGitfile(name, path);
       // Assert
-      expect(sut).toBe(expected);
+      expect(result).toBe(expected);
     });
   });
 
@@ -40,9 +40,9 @@ describe('Given a submodule name and worktree path', () => {
       'Then %s yields the name-depth-relative worktree pointer',
       (_label, name, path, expected) => {
         // Arrange + Act
-        const sut = submoduleCoreWorktree(name, path);
+        const result = submoduleCoreWorktree(name, path);
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       },
     );
   });

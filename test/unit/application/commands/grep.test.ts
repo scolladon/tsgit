@@ -55,12 +55,11 @@ describe('Given no patterns, When grep is called', () => {
   it('Then it throws INVALID_OPTION with option "patterns"', async () => {
     // Arrange
     const ctx = await seedRepo();
-    const sut = grep;
 
     // Act
     let caught: unknown;
     try {
-      await sut(ctx, { patterns: [] });
+      await grep(ctx, { patterns: [] });
     } catch (e) {
       caught = e;
     }
@@ -71,6 +70,25 @@ describe('Given no patterns, When grep is called', () => {
     expect(err.data.code).toBe('INVALID_OPTION');
     expect((err.data as { option: string }).option).toBe('patterns');
   });
+
+  it('Then the INVALID_OPTION error reason is exactly "at least one pattern required"', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+
+    // Act
+    let caught: unknown;
+    try {
+      await grep(ctx, { patterns: [] });
+    } catch (e) {
+      caught = e;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const err = caught as TsgitError;
+    const data = err.data as { code: string; option: string; reason: string };
+    expect(data.reason).toBe('at least one pattern required');
+  });
 });
 
 // ─── Guard: u-flag propagates from matcher ────────────────────────────────────
@@ -79,12 +97,11 @@ describe('Given a u-flagged RegExp pattern, When grep is called', () => {
   it('Then it throws INVALID_OPTION with option "pattern"', async () => {
     // Arrange
     const ctx = await seedRepo();
-    const sut = grep;
 
     // Act
     let caught: unknown;
     try {
-      await sut(ctx, { patterns: [/x/u] });
+      await grep(ctx, { patterns: [/x/u] });
     } catch (e) {
       caught = e;
     }
@@ -105,10 +122,9 @@ describe('Given a tracked file with matching content, When grep runs with defaul
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'tracked.txt', 'hello world\nsecond line\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'hello' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'hello' }] });
 
     // Assert
     expect(result.paths).toHaveLength(1);
@@ -124,10 +140,9 @@ describe('Given an untracked file containing the pattern, When grep runs with de
     const ctx = await seedRepo();
     // Write to working tree but do NOT stage — untracked
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/untracked.txt`, 'hello world\n');
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'hello' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'hello' }] });
 
     // Assert
     const paths = result.paths.map((p) => p.path as string);
@@ -144,10 +159,9 @@ describe('Given staged content and unstaged changes, When grep runs with default
     await commitAll(ctx);
     // unstaged modification visible to working tree
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'staged content\nunstaged addition\n');
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'unstaged addition' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'unstaged addition' }] });
 
     // Assert
     expect(result.paths).toHaveLength(1);
@@ -163,17 +177,17 @@ describe('Given a tracked file deleted from the working tree, When grep runs wit
     await commitAll(ctx);
     // Remove from working tree but leave index entry intact
     await ctx.fs.rm(`${ctx.layout.workDir}/deleted.txt`);
-    const sut = grep;
 
-    // Act + Assert — must not throw
+    // Act — must not throw
     let result: GrepResult | undefined;
     let caught: unknown;
     try {
-      result = await sut(ctx, { patterns: [{ fixed: 'hello' }] });
+      result = await grep(ctx, { patterns: [{ fixed: 'hello' }] });
     } catch (e) {
       caught = e;
     }
 
+    // Assert
     expect(caught).toBeUndefined();
     expect(result).toBeDefined();
     const paths = result!.paths.map((p) => p.path as string);
@@ -188,10 +202,9 @@ describe('Given a staged file, When grep runs with target "index"', () => {
     // Arrange
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'staged.txt', 'staged line\n');
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'staged line' }],
       target: 'index',
     });
@@ -208,10 +221,9 @@ describe('Given a staged file, When grep runs with target "index"', () => {
     await commitAll(ctx);
     // unstaged change: write directly to working tree, do NOT add
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/base.txt`, 'committed\nunstaged only\n');
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'unstaged only' }],
       target: 'index',
     });
@@ -234,10 +246,9 @@ describe('Given an index entry with symlink mode (120000), When grep runs with d
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'real.txt', 'hello\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act — default target reads index + working-tree content
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'hello' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'hello' }] });
 
     // Assert — the regular file is found (symlink skip does not break regular entries)
     expect(result.paths.map((p) => p.path as string)).toContain('real.txt');
@@ -251,10 +262,9 @@ describe('Given an index entry with gitlink mode (160000) under --cached, When g
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'a.txt', 'normal content\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'normal content' }],
       target: 'index',
     });
@@ -275,10 +285,9 @@ describe('Given a committed file and a staged change, When grep runs with tree-i
     await commitAll(ctx);
     // stage a change that should NOT appear in HEAD tree
     await writeAndStage(ctx, 'staged_only.txt', 'staged only\n');
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'staged only' }],
       target: { treeish: 'HEAD' },
     });
@@ -292,10 +301,9 @@ describe('Given a committed file and a staged change, When grep runs with tree-i
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'committed.txt', 'committed content\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'committed content' }],
       target: { treeish: 'HEAD' },
     });
@@ -315,10 +323,9 @@ describe('Given a multi-line tracked file, When grep matches line 3', () => {
     const content = 'line1\nline2\nNEEDLE here\nline4\n';
     await writeAndStage(ctx, 'multi.txt', content);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
 
     // Assert
     const hit: GrepLineHit = result.paths[0]!.hits[0]!;
@@ -338,10 +345,9 @@ describe('Given a tracked binary blob whose bytes contain the pattern, When grep
     await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
     await add(ctx, ['data.bin']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'FIND_ME' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'FIND_ME' }] });
 
     // Assert
     expect(result.paths).toHaveLength(1);
@@ -359,10 +365,9 @@ describe('Given a tracked binary blob whose bytes do NOT contain the pattern, Wh
     await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
     await add(ctx, ['data.bin']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'FIND_ME' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'FIND_ME' }] });
 
     // Assert
     expect(result.paths).toHaveLength(0);
@@ -377,10 +382,9 @@ describe('Given a binary blob containing the pattern and invert=true, When grep 
     await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, binaryBlob);
     await add(ctx, ['data.bin']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act — invert must NOT suppress the binary-match report
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'FIND_ME' }],
       invert: true,
     });
@@ -402,10 +406,9 @@ describe('Given a binary blob whose only match lies beyond the first 64 KiB, Whe
     await ctx.fs.write(`${ctx.layout.workDir}/deep.bin`, blob);
     await add(ctx, ['deep.bin']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'DEEP_MATCH' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'DEEP_MATCH' }] });
 
     // Assert — the bounded probe never sees the match (documented 64 KiB binary window)
     expect(result.paths).toHaveLength(0);
@@ -423,10 +426,9 @@ describe('Given a tracked file replaced on disk by a directory, When grep runs t
     await commitAll(ctx);
     await ctx.fs.rm(`${ctx.layout.workDir}/gone.txt`);
     await ctx.fs.mkdir(`${ctx.layout.workDir}/gone.txt`);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
 
     // Assert — gone.txt skipped, found.txt still searched, no throw
     expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);
@@ -442,10 +444,9 @@ describe('Given a tracked regular file replaced on disk by a symlink, When grep 
     await commitAll(ctx);
     await ctx.fs.rm(`${ctx.layout.workDir}/linked.txt`);
     await ctx.fs.symlink('found.txt', `${ctx.layout.workDir}/linked.txt`);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
 
     // Assert
     expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);
@@ -460,10 +461,9 @@ describe('Given a tracked symlink (index mode 120000), When grep runs the defaul
     await ctx.fs.symlink('real.txt', `${ctx.layout.workDir}/link.txt`);
     await add(ctx, ['link.txt']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
 
     // Assert — only the regular file; the symlink (mode 120000) is skipped
     expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['real.txt']);
@@ -479,10 +479,9 @@ describe('Given two tracked files, When grep is restricted to one via pathspec',
     await writeAndStage(ctx, 'a.txt', 'needle\n');
     await writeAndStage(ctx, 'b.txt', 'needle\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       paths: ['a.txt'],
     });
@@ -498,10 +497,9 @@ describe('Given two tracked files, When grep is restricted to one via pathspec',
     await writeAndStage(ctx, 'a.txt', 'needle\n');
     await writeAndStage(ctx, 'b.txt', 'needle\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       paths: ['b.txt'],
     });
@@ -520,10 +518,9 @@ describe('Given a tracked file with two distinct lines, When grep uses two patte
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'f.txt', 'alpha\nbeta\ngamma\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'alpha' }, { fixed: 'beta' }],
     });
 
@@ -548,10 +545,9 @@ describe('Given 5 tracked files where 3 match, When grep runs', () => {
     await writeAndStage(ctx, 'd.txt', 'other\n');
     await writeAndStage(ctx, 'e.txt', 'needle\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'needle' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'needle' }] });
 
     // Assert
     expect(result.paths.map((p) => p.path)).toEqual(['a.txt', 'c.txt', 'e.txt']);
@@ -566,10 +562,9 @@ describe('Given a tracked file with "word" embedded in another word, When grep u
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'f.txt', 'keyword\nword alone\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'word' }],
       wholeWord: true,
     });
@@ -589,10 +584,9 @@ describe('Given a tracked file with the pattern embedded in a larger word, When 
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'embed.txt', 'keyword\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act — wholeWord unset: substring 'word' inside 'keyword' must match
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'word' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'word' }] });
 
     // Assert
     expect(result.paths).toHaveLength(1);
@@ -610,10 +604,9 @@ describe('Given a tracked file with three lines, When grep uses invert', () => {
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'f.txt', 'match\nskip\nmatch\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'match' }],
       invert: true,
     });
@@ -634,10 +627,9 @@ describe('Given a tracked file with a regex match, When grep returns spans', () 
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'f.txt', 'pre MATCH post\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [/MATCH/] });
+    const result: GrepResult = await grep(ctx, { patterns: [/MATCH/] });
 
     // Assert
     const hit = result.paths[0]!.hits[0]!;
@@ -655,10 +647,9 @@ describe('Given a tracked file with no matching content, When grep runs', () => 
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'f.txt', 'nothing here\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'MISSING' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'MISSING' }] });
 
     // Assert
     expect(result.paths).toHaveLength(0);
@@ -673,38 +664,13 @@ describe('Given a tracked text file with matching content, When grep runs', () =
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'text.txt', 'hello world\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'hello' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'hello' }] });
 
     // Assert
     expect(result.paths).toHaveLength(1);
     expect(result.paths[0]!.binaryMatch).toBe(false);
-  });
-});
-
-// ─── Error reason string (kills id 84) ───────────────────────────────────────
-
-describe('Given no patterns, When grep is called', () => {
-  it('Then the INVALID_OPTION error reason is exactly "at least one pattern required"', async () => {
-    // Arrange
-    const ctx = await seedRepo();
-    const sut = grep;
-
-    // Act
-    let caught: unknown;
-    try {
-      await sut(ctx, { patterns: [] });
-    } catch (e) {
-      caught = e;
-    }
-
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    const err = caught as TsgitError;
-    const data = err.data as { code: string; option: string; reason: string };
-    expect(data.reason).toBe('at least one pattern required');
   });
 });
 
@@ -715,10 +681,9 @@ describe('Given a tracked file with a sub-word occurrence, When grep uses wholeW
     // Arrange
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'w.txt', 'keyword only\n');
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'word' }],
       wholeWord: true,
       target: 'index',
@@ -740,10 +705,9 @@ describe('Given a binary blob where the pattern appears only as part of another 
     await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, content);
     await add(ctx, ['data.bin']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act — wholeWord must suppress the embedded binary match
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'FIND_ME' }],
       wholeWord: true,
     });
@@ -762,10 +726,9 @@ describe('Given a binary blob with the pattern embedded in a larger token, When 
     await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, content);
     await add(ctx, ['data.bin']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act — wholeWord unset: the embedded occurrence must still count as presence
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'FIND_ME' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'FIND_ME' }] });
 
     // Assert
     expect(result.paths).toHaveLength(1);
@@ -782,10 +745,9 @@ describe('Given a binary blob where the pattern appears as a whole word, When gr
     await ctx.fs.write(`${ctx.layout.workDir}/data.bin`, content);
     await add(ctx, ['data.bin']);
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'FIND_ME' }],
       wholeWord: true,
     });
@@ -805,10 +767,9 @@ describe('Given two tracked files, When grep is called with an empty paths array
     await writeAndStage(ctx, 'a.txt', 'needle\n');
     await writeAndStage(ctx, 'b.txt', 'needle\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act — paths: [] must behave the same as paths: undefined
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       paths: [],
     });
@@ -863,10 +824,9 @@ describe('Given an index with a stage-1 conflict entry, When grep runs with defa
       trailerSha: new Uint8Array(0),
     };
     await writeIndex(ctx, index);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'needle' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'needle' }] });
 
     // Assert — conflict entry excluded; no path returned
     expect(result.paths).toHaveLength(0);
@@ -886,10 +846,9 @@ describe('Given an index with a symlink-mode entry (120000), When grep runs with
       trailerSha: new Uint8Array(0),
     };
     await writeIndex(ctx, index);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, { patterns: [{ fixed: 'needle' }] });
+    const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'needle' }] });
 
     // Assert — symlink mode excluded from search
     expect(result.paths).toHaveLength(0);
@@ -909,10 +868,9 @@ describe('Given an index with a stage-2 conflict entry, When grep runs with targ
       trailerSha: new Uint8Array(0),
     };
     await writeIndex(ctx, index);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       target: 'index',
     });
@@ -939,10 +897,9 @@ describe('Given an index with one stage-0 and one stage-2 entry, When grep runs 
       trailerSha: new Uint8Array(0),
     };
     await writeIndex(ctx, index);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       target: 'index',
     });
@@ -964,10 +921,9 @@ describe('Given an index with a gitlink-mode entry (160000), When grep runs with
       trailerSha: new Uint8Array(0),
     };
     await writeIndex(ctx, index);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       target: 'index',
     });
@@ -1002,10 +958,9 @@ describe('Given an index with an executable-mode entry (100755), When grep runs 
       trailerSha: new Uint8Array(0),
     };
     await writeIndex(ctx, index);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       target: 'index',
     });
@@ -1024,10 +979,9 @@ describe('Given a committed file in a subdirectory, When grep runs with tree-ish
     const ctx = await seedRepo();
     await writeAndStage(ctx, 'src/nested.txt', 'needle\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       target: { treeish: 'HEAD' },
     });
@@ -1049,10 +1003,9 @@ describe('Given a committed tree containing only a subtree directory entry, When
     await writeAndStage(ctx, 'root.txt', 'needle\n');
     await writeAndStage(ctx, 'sub/leaf.txt', 'needle\n');
     await commitAll(ctx);
-    const sut = grep;
 
     // Act — recursive=true surfaces sub/ directory entry AND sub/leaf.txt blob
-    const result: GrepResult = await sut(ctx, {
+    const result: GrepResult = await grep(ctx, {
       patterns: [{ fixed: 'needle' }],
       target: { treeish: 'HEAD' },
     });

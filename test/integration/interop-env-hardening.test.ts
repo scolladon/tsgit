@@ -24,11 +24,8 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
   describe('Given the hardened interop spawn env', () => {
     describe('When git probes a key a developer commonly sets in global config', () => {
       it('Then no value resolves (the global ~/.gitconfig is not read)', () => {
-        // Arrange
-        const sut = tryRunGit;
-
-        // Act
-        const result = sut(['config', '--get', 'merge.conflictStyle']);
+        // Arrange & Act
+        const result = tryRunGit(['config', '--get', 'merge.conflictStyle']);
 
         // Assert
         expect(result.ok).toBe(false);
@@ -51,11 +48,8 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
       });
 
       it('Then GIT_CONFIG_NOSYSTEM keeps it unread (system vector closed)', () => {
-        // Arrange
-        const sut = tryRunGit;
-
-        // Act
-        const result = sut(['config', '--get', 'credential.helper'], {
+        // Arrange & Act
+        const result = tryRunGit(['config', '--get', 'credential.helper'], {
           env: { ...runGitEnv(), GIT_CONFIG_SYSTEM: systemConfig },
         });
 
@@ -67,11 +61,8 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
 
     describe('When inspecting the spawn env HOME', () => {
       it('Then it points at a non-existent path under the tmp dir (global vector closed)', () => {
-        // Arrange
-        const sut = runGitEnv;
-
-        // Act
-        const home = sut().HOME;
+        // Arrange & Act
+        const home = runGitEnv().HOME;
 
         // Assert
         expect(home).toBeDefined();
@@ -82,11 +73,8 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
 
     describe('When inspecting the spawn env XDG config root', () => {
       it('Then it is redirected under the isolated HOME (XDG vector closed)', () => {
-        // Arrange
-        const sut = runGitEnv;
-
-        // Act
-        const env = sut();
+        // Arrange & Act
+        const env = runGitEnv();
 
         // Assert
         expect(env.XDG_CONFIG_HOME).toBe(path.join(env.HOME as string, '.config'));
@@ -95,11 +83,8 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
 
     describe('When inspecting the spawn env GIT_* keys', () => {
       it('Then only the two deliberate GIT_* keys survive and the ceiling guard is os.tmpdir()', () => {
-        // Arrange
-        const sut = runGitEnv;
-
-        // Act
-        const env = sut();
+        // Arrange & Act
+        const env = runGitEnv();
 
         // Assert
         const gitKeys = Object.keys(env).filter((k) => k.startsWith('GIT_'));

@@ -17,7 +17,10 @@ describe('withLogging — events on success', () => {
         const { logger, events } = recordingLogger();
         const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
         const sut = withLogging({ logger })(transport);
+
+        // Act
         await sut.request(makeRequest());
+
         // Assert
         expect(events).toHaveLength(2);
         expect(events[0]?.kind).toBe('request');
@@ -37,16 +40,18 @@ describe('withLogging — events on success', () => {
         const { logger, events } = recordingLogger();
         const clock = fakeClock(1000);
         const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
-        const wrapped = withLogging({ logger, now: clock.now })(transport);
+        const sut = withLogging({ logger, now: clock.now })(transport);
 
         const innerCallSpy = transport.request as unknown as { mockImplementationOnce?: unknown };
         void innerCallSpy;
 
-        const promise = wrapped.request(makeRequest());
+        // Act
+        const promise = sut.request(makeRequest());
         clock.advance(250);
         await promise;
+
+        // Assert
         if (events[1]?.kind === 'response') {
-          // Assert
           expect(events[1].elapsedMs).toBe(250);
         } else {
           throw new Error('expected response event');
@@ -65,7 +70,8 @@ describe('withLogging — events on failure', () => {
         const original = new Error('boom');
         const { transport } = fakeTransport([original]);
         const sut = withLogging({ logger })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(original);
         expect(events).toHaveLength(2);
         expect(events[0]?.kind).toBe('request');
@@ -90,7 +96,8 @@ describe('withLogging — events on failure', () => {
           },
         };
         const sut = withLogging({ logger, now: clock.now })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toThrow('slow boom');
         if (events[1]?.kind !== 'error') throw new Error('expected error event');
         expect(events[1].elapsedMs).toBe(700);
@@ -107,10 +114,13 @@ describe('withLogging — header redaction', () => {
         const { logger, events } = recordingLogger();
         const { transport } = fakeTransport([makeResponse()]);
         const sut = withLogging({ logger })(transport);
+
+        // Act
         await sut.request(
           makeRequest({ headers: { authorization: 'Bearer xyz', 'x-trace-id': 'abc' } }),
         );
         if (events[0]?.kind !== 'request') throw new Error('expected request');
+
         // Assert
         expect(events[0].headers.authorization).toBeUndefined();
         expect(events[0].headers['x-trace-id']).toBe('abc');
@@ -125,9 +135,12 @@ describe('withLogging — header redaction', () => {
         const { logger, events } = recordingLogger();
         const { transport } = fakeTransport([makeResponse()]);
         const sut = withLogging({ logger })(transport);
+
+        // Act
         await sut.request(makeRequest({ headers: { Authorization: 'Bearer xyz' } }));
         if (events[0]?.kind !== 'request') throw new Error('expected request');
         const keys = Object.keys(events[0].headers).map((k) => k.toLowerCase());
+
         // Assert
         expect(keys).not.toContain('authorization');
       });
@@ -141,8 +154,11 @@ describe('withLogging — header redaction', () => {
         const { logger, events } = recordingLogger();
         const { transport } = fakeTransport([makeResponse()]);
         const sut = withLogging({ logger, redactHeaders: [] })(transport);
+
+        // Act
         await sut.request(makeRequest({ headers: { authorization: 'Bearer xyz' } }));
         if (events[0]?.kind !== 'request') throw new Error('expected request');
+
         // Assert
         expect(events[0].headers.authorization).toBeUndefined();
       });
@@ -156,10 +172,13 @@ describe('withLogging — header redaction', () => {
         const { logger, events } = recordingLogger();
         const { transport } = fakeTransport([makeResponse()]);
         const sut = withLogging({ logger, redactHeaders: ['x-trace-id'] })(transport);
+
+        // Act
         await sut.request(
           makeRequest({ headers: { authorization: 'Bearer xyz', 'x-trace-id': 'abc' } }),
         );
         if (events[0]?.kind !== 'request') throw new Error('expected request');
+
         // Assert
         expect(events[0].headers.authorization).toBeUndefined();
         expect(events[0].headers['x-trace-id']).toBeUndefined();
@@ -199,6 +218,8 @@ describe('withLogging — header redaction', () => {
         const { logger, events } = recordingLogger();
         const { transport } = fakeTransport([makeResponse()]);
         const sut = withLogging({ logger })(transport);
+
+        // Act
         await sut.request(
           makeRequest({
             headers: {
@@ -211,6 +232,7 @@ describe('withLogging — header redaction', () => {
         );
         if (events[0]?.kind !== 'request') throw new Error('expected request');
         const keys = Object.keys(events[0].headers).map((k) => k.toLowerCase());
+
         // Assert
         expect(keys).not.toContain('authorization');
         expect(keys).not.toContain('cookie');
@@ -239,8 +261,11 @@ describe('withLogging — URL redaction', () => {
         const { logger, events } = recordingLogger();
         const { transport } = fakeTransport([makeResponse()]);
         const sut = withLogging({ logger })(transport);
+
+        // Act
         await sut.request(makeRequest({ url: input }));
         if (events[0]?.kind !== 'request') throw new Error('expected request');
+
         // Assert
         expect(events[0].url).toBe(expected);
       });
@@ -302,7 +327,10 @@ describe('withLogging — logger throw safety', () => {
         };
         const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
         const sut = withLogging({ logger })(transport);
+
+        // Act
         const result = await sut.request(makeRequest());
+
         // Assert
         expect(result.statusCode).toBe(200);
       });
@@ -322,7 +350,10 @@ describe('withLogging — logger throw safety', () => {
         };
         const { transport } = fakeTransport([makeResponse({ statusCode: 200 })]);
         const sut = withLogging({ logger })(transport);
+
+        // Act
         await sut.request(makeRequest());
+
         // Assert
         expect(events).toHaveLength(1);
         expect(events[0]?.kind).toBe('response');

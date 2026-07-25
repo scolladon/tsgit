@@ -123,74 +123,84 @@ runs('range-diff interop', () => {
     if (root) await rm(root, { recursive: true, force: true });
   });
 
-  it('Then range-diff -s reconstructs byte-for-byte', async () => {
-    // Arrange
-    const expected = git(root, 'range-diff', '-s', `${baseRev}..v1`, `${baseRev}..v2`);
+  describe('Given the base commit and diverging v1/v2 series built in beforeAll', () => {
+    describe('When range-diff -s runs with default options', () => {
+      it('Then range-diff -s reconstructs byte-for-byte', async () => {
+        // Arrange
+        const expected = git(root, 'range-diff', '-s', `${baseRev}..v1`, `${baseRev}..v2`);
 
-    // Act
-    const entries = await rangeDiffCmd(ctx, {
-      old: range(baseRev, 'v1'),
-      new: range(baseRev, 'v2'),
+        // Act
+        const entries = await rangeDiffCmd(ctx, {
+          old: range(baseRev, 'v1'),
+          new: range(baseRev, 'v2'),
+        });
+
+        // Assert
+        expect(reconstructS(entries)).toBe(expected);
+      });
     });
 
-    // Assert
-    expect(reconstructS(entries)).toBe(expected);
-  });
+    describe('When range-diff -s runs with --creation-factor=1', () => {
+      it('Then --creation-factor=1 reconstructs byte-for-byte', async () => {
+        // Arrange — a low factor forces creations/deletions over fuzzy matches
+        const expected = git(
+          root,
+          'range-diff',
+          '-s',
+          '--creation-factor=1',
+          `${baseRev}..v1`,
+          `${baseRev}..v2`,
+        );
 
-  it('Then --creation-factor=1 reconstructs byte-for-byte', async () => {
-    // Arrange — a low factor forces creations/deletions over fuzzy matches
-    const expected = git(
-      root,
-      'range-diff',
-      '-s',
-      '--creation-factor=1',
-      `${baseRev}..v1`,
-      `${baseRev}..v2`,
-    );
+        // Act
+        const entries = await rangeDiffCmd(ctx, {
+          old: range(baseRev, 'v1'),
+          new: range(baseRev, 'v2'),
+          creationFactor: 1,
+        });
 
-    // Act
-    const entries = await rangeDiffCmd(ctx, {
-      old: range(baseRev, 'v1'),
-      new: range(baseRev, 'v2'),
-      creationFactor: 1,
+        // Assert
+        expect(reconstructS(entries)).toBe(expected);
+      });
     });
 
-    // Assert
-    expect(reconstructS(entries)).toBe(expected);
-  });
+    describe('When range-diff -s runs with --left-only', () => {
+      it('Then --left-only is the entries that touch the old range', async () => {
+        // Arrange
+        const expected = git(
+          root,
+          'range-diff',
+          '-s',
+          '--left-only',
+          `${baseRev}..v1`,
+          `${baseRev}..v2`,
+        );
 
-  it('Then --left-only is the entries that touch the old range', async () => {
-    // Arrange
-    const expected = git(
-      root,
-      'range-diff',
-      '-s',
-      '--left-only',
-      `${baseRev}..v1`,
-      `${baseRev}..v2`,
-    );
+        // Act
+        const entries = await rangeDiffCmd(ctx, {
+          old: range(baseRev, 'v1'),
+          new: range(baseRev, 'v2'),
+        });
+        const leftOnly = entries.filter((e) => e.old);
 
-    // Act
-    const entries = await rangeDiffCmd(ctx, {
-      old: range(baseRev, 'v1'),
-      new: range(baseRev, 'v2'),
+        // Assert
+        expect(reconstructS(leftOnly)).toBe(expected);
+      });
     });
-    const leftOnly = entries.filter((e) => e.old);
 
-    // Assert
-    expect(reconstructS(leftOnly)).toBe(expected);
-  });
+    describe('When a changed pair is inspected for its diff-of-diffs', () => {
+      it('Then a changed pair carries a diff-of-diffs over the ## patch texts', async () => {
+        // Arrange & Act
+        const entries = await rangeDiffCmd(ctx, {
+          old: range(baseRev, 'v1'),
+          new: range(baseRev, 'v2'),
+        });
+        const changed = entries.find((e) => e.status === 'changed');
 
-  it('Then a changed pair carries a diff-of-diffs over the ## patch texts', async () => {
-    // Act
-    const entries = await rangeDiffCmd(ctx, {
-      old: range(baseRev, 'v1'),
-      new: range(baseRev, 'v2'),
+        // Assert — the structured diff-of-diffs is present and non-trivial
+        expect(changed?.diffOfDiffs).toBeDefined();
+        expect(changed?.diffOfDiffs?.hunks.some((h) => h.kind !== 'common')).toBe(true);
+      });
     });
-    const changed = entries.find((e) => e.status === 'changed');
-
-    // Assert — the structured diff-of-diffs is present and non-trivial
-    expect(changed?.diffOfDiffs).toBeDefined();
-    expect(changed?.diffOfDiffs?.hunks.some((h) => h.kind !== 'common')).toBe(true);
   });
 });

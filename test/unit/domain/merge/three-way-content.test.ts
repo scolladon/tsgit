@@ -64,10 +64,10 @@ describe('mergeContent', () => {
         const theirsBytes = enc(theirs);
 
         // Act
-        const sut = mergeContent(baseBytes, oursBytes, theirsBytes);
+        const result = mergeContent(baseBytes, oursBytes, theirsBytes);
 
         // Assert
-        assertClean(sut, expected);
+        assertClean(result, expected);
       });
     });
   });
@@ -81,10 +81,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nd\nE\n'); // change line 4
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'A\nb\nc\nd\nE\n');
+        assertClean(result, 'A\nb\nc\nd\nE\n');
       });
     });
   });
@@ -98,14 +98,14 @@ describe('mergeContent', () => {
         const theirs = enc('a\nY\nc\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
-        if (sut.status === 'conflict') {
-          expect(decoder.decode(sut.markedBytes)).toContain('<<<<<<<');
-          expect(decoder.decode(sut.markedBytes)).toContain('=======');
-          expect(decoder.decode(sut.markedBytes)).toContain('>>>>>>>');
+        assertConflict(result, 'content');
+        if (result.status === 'conflict') {
+          expect(decoder.decode(result.markedBytes)).toContain('<<<<<<<');
+          expect(decoder.decode(result.markedBytes)).toContain('=======');
+          expect(decoder.decode(result.markedBytes)).toContain('>>>>>>>');
         }
       });
     });
@@ -120,12 +120,12 @@ describe('mergeContent', () => {
         const theirs = enc('a\nY\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'binary');
-        if (sut.status === 'conflict') {
-          expect(sut.markedBytes).toEqual(ours);
+        assertConflict(result, 'binary');
+        if (result.status === 'conflict') {
+          expect(result.markedBytes).toEqual(ours);
         }
       });
     });
@@ -138,10 +138,10 @@ describe('mergeContent', () => {
         const bytes = enc('a\nb\n');
 
         // Act
-        const sut = mergeContent(undefined, bytes, bytes);
+        const result = mergeContent(undefined, bytes, bytes);
 
         // Assert
-        assertClean(sut, 'a\nb\n');
+        assertClean(result, 'a\nb\n');
       });
     });
   });
@@ -154,12 +154,12 @@ describe('mergeContent', () => {
         const theirs = enc('world\n');
 
         // Act
-        const sut = mergeContent(undefined, ours, theirs);
+        const result = mergeContent(undefined, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
-        if (sut.status === 'conflict') {
-          const text = decoder.decode(sut.markedBytes);
+        assertConflict(result, 'content');
+        if (result.status === 'conflict') {
+          const text = decoder.decode(result.markedBytes);
           expect(text).toContain('hello');
           expect(text).toContain('world');
         }
@@ -176,14 +176,14 @@ describe('mergeContent', () => {
         const theirs = enc('a\nY\nc\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs, {
+        const result = mergeContent(base, ours, theirs, {
           labels: { ours: 'HEAD', theirs: 'feature' },
         });
 
         // Assert
-        expect(sut.status).toBe('conflict');
-        if (sut.status === 'conflict') {
-          const text = decoder.decode(sut.markedBytes);
+        expect(result.status).toBe('conflict');
+        if (result.status === 'conflict') {
+          const text = decoder.decode(result.markedBytes);
           expect(text).toContain('<<<<<<< HEAD');
           expect(text).toContain('>>>>>>> feature');
         }
@@ -200,10 +200,10 @@ describe('mergeContent', () => {
         const theirs = new Uint8Array([0x61, 0x62, 0x00]);
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'binary');
+        assertConflict(result, 'binary');
       });
     });
   });
@@ -217,10 +217,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nY\nc\nd\ne\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — applyPlan must copy the base suffix after the last change
-        assertClean(sut, 'X\nY\nc\nd\ne\n');
+        assertClean(result, 'X\nY\nc\nd\ne\n');
       });
     });
   });
@@ -234,10 +234,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nY\nb\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — the zero-length overlap detection catches the collision
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -251,10 +251,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nX\nY\nc\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -269,10 +269,10 @@ describe('mergeContent', () => {
         const theirs = enc('X\nb\nc\nd\nY\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — twin applied once + theirs' extra change
-        assertClean(sut, 'X\nb\nc\nd\nY\n');
+        assertClean(result, 'X\nb\nc\nd\nY\n');
       });
     });
   });
@@ -287,10 +287,10 @@ describe('mergeContent', () => {
         const theirs = enc('X\nb\nZ\nd\ne\nf\nY\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — both twins deduped + theirs extra applied
-        assertClean(sut, 'X\nb\nZ\nd\ne\nf\nY\n');
+        assertClean(result, 'X\nb\nZ\nd\ne\nf\nY\n');
       });
     });
   });
@@ -305,10 +305,10 @@ describe('mergeContent', () => {
         const theirs = enc('X\nb\nc\nZ\ne\nf\ng\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — twin at (0,1,[X]) ok but (3,4,[W]) vs (3,4,[Z]) conflicts
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -322,10 +322,10 @@ describe('mergeContent', () => {
         const theirs = enc('X\nb\nY\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'X\nb\nY\n');
+        assertClean(result, 'X\nb\nY\n');
       });
     });
   });
@@ -343,10 +343,10 @@ describe('mergeContent', () => {
         const theirs = enc(theirsLines.join(''));
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — degraded path emits a whole-file content conflict
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       }, 60_000);
     });
   });
@@ -360,10 +360,10 @@ describe('mergeContent', () => {
         const theirs = enc('b\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'binary');
+        assertConflict(result, 'binary');
       });
     });
   });
@@ -381,10 +381,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nd\ne\ng\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -399,10 +399,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nY\nc\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'X\nY\nc\n');
+        assertClean(result, 'X\nY\nc\n');
       });
     });
   });
@@ -416,10 +416,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nP\nQ\nd\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -434,10 +434,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nX\nb\nc\nd\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -456,10 +456,10 @@ describe('mergeContent', () => {
         const ours = enc(oursLines.join(''));
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       }, 60_000);
     });
   });
@@ -475,10 +475,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nZ\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — ours (delete line 2) vs theirs (replace line 2) overlap → conflict
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -494,10 +494,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nP\nQ\nd\ne\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -513,10 +513,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'a\nIO\nb\nc\nd\ne\nIT\nf\ng\nh\n');
+        assertClean(result, 'a\nIO\nb\nc\nd\ne\nIT\nf\ng\nh\n');
       });
     });
   });
@@ -532,10 +532,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'a\nIO\nb\nc\nP\nQ\nf\ng\nh\n');
+        assertClean(result, 'a\nIO\nb\nc\nP\nQ\nf\ng\nh\n');
       });
     });
   });
@@ -551,10 +551,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'a\nb\nc\nP\nQ\nIO\nf\ng\nh\n');
+        assertClean(result, 'a\nb\nc\nP\nQ\nIO\nf\ng\nh\n');
       });
     });
   });
@@ -570,10 +570,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nT1\nT2\ne\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — ranges [3,5) and [1,4) overlap at line 3
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -589,10 +589,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nIT\nb\nc\nd\ne\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'a\nIT\nb\nc\nOO\nf\ng\nh\n');
+        assertClean(result, 'a\nIT\nb\nc\nOO\nf\ng\nh\n');
       });
     });
   });
@@ -608,10 +608,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'a\nb\nc\nOO\nIT\nf\ng\nh\n');
+        assertClean(result, 'a\nb\nc\nOO\nIT\nf\ng\nh\n');
       });
     });
   });
@@ -627,10 +627,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nT1\nd\ne\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(sut, 'a\nT1\nOO\nf\ng\nh\n');
+        assertClean(result, 'a\nT1\nOO\nf\ng\nh\n');
       });
     });
   });
@@ -646,10 +646,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nZ\ne\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — ranges [2,4) and [1,4) overlap → conflict
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -665,10 +665,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nW\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — ranges [2,4) and [2,5) overlap → conflict
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -684,10 +684,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nZ\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — ranges [2,4) and [2,5) overlap → conflict
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -703,10 +703,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nD\ne\nf\ng\nh\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — only an ascending sort produces this exact interleaving
-        assertClean(sut, 'a\nB\nc\nD\ne\nF\ng\nh\n');
+        assertClean(result, 'a\nB\nc\nD\ne\nF\ng\nh\n');
       });
     });
   });
@@ -725,10 +725,10 @@ describe('mergeContent', () => {
         const theirs = enc(`${baseText}APPENDED\n`);
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertConflict(sut, 'content');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -745,12 +745,12 @@ describe('mergeContent', () => {
         const theirs = enc(theirsText);
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — clean, byte-identical to theirs (slow path would yield status 'conflict')
-        expect(sut.status).toBe('clean');
-        if (sut.status === 'clean') {
-          expect(decoder.decode(sut.bytes)).toBe(theirsText);
+        expect(result.status).toBe('clean');
+        if (result.status === 'clean') {
+          expect(decoder.decode(result.bytes)).toBe(theirsText);
         }
       });
     });
@@ -768,12 +768,12 @@ describe('mergeContent', () => {
         const ours = enc(oursText);
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
-        expect(sut.status).toBe('clean');
-        if (sut.status === 'clean') {
-          expect(decoder.decode(sut.bytes)).toBe(oursText);
+        expect(result.status).toBe('clean');
+        if (result.status === 'clean') {
+          expect(decoder.decode(result.bytes)).toBe(oursText);
         }
       });
     });
@@ -791,12 +791,12 @@ describe('mergeContent', () => {
         const theirs = enc(sideText);
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
-        expect(sut.status).toBe('clean');
-        if (sut.status === 'clean') {
-          expect(decoder.decode(sut.bytes)).toBe(sideText);
+        expect(result.status).toBe('clean');
+        if (result.status === 'clean') {
+          expect(decoder.decode(result.bytes)).toBe(sideText);
         }
       });
     });
@@ -814,12 +814,12 @@ describe('mergeContent', () => {
         const theirs = enc(sideText);
 
         // Act
-        const sut = mergeContent(undefined, ours, theirs);
+        const result = mergeContent(undefined, ours, theirs);
 
         // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
-        expect(sut.status).toBe('clean');
-        if (sut.status === 'clean') {
-          expect(decoder.decode(sut.bytes)).toBe(sideText);
+        expect(result.status).toBe('clean');
+        if (result.status === 'clean') {
+          expect(decoder.decode(result.bytes)).toBe(sideText);
         }
       });
     });
@@ -834,10 +834,10 @@ describe('mergeContent', () => {
         fc.assert(
           fc.property(textArray, (bytes) => {
             // Act
-            const sut = mergeContent(bytes, bytes, bytes);
+            const result = mergeContent(bytes, bytes, bytes);
 
             // Assert
-            return sut.status === 'clean';
+            return result.status === 'clean';
           }),
           { numRuns: 40 },
         );
@@ -854,10 +854,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nY\nc\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+        const result = mergeContent(base, ours, theirs, { favor: 'union' });
 
         // Assert
-        assertClean(sut, 'a\nX\nY\nc\n');
+        assertClean(result, 'a\nX\nY\nc\n');
       });
     });
   });
@@ -871,10 +871,10 @@ describe('mergeContent', () => {
         const theirs = enc('p\nM\nN\nZ\nt\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+        const result = mergeContent(base, ours, theirs, { favor: 'union' });
 
         // Assert
-        assertClean(sut, 'p\nX\nY\nM\nN\nZ\nt\n');
+        assertClean(result, 'p\nX\nY\nM\nN\nZ\nt\n');
       });
     });
   });
@@ -888,10 +888,10 @@ describe('mergeContent', () => {
         const theirs = enc('H\nXt\nm1\nm2\nm3\nYt\nT\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+        const result = mergeContent(base, ours, theirs, { favor: 'union' });
 
         // Assert
-        assertClean(sut, 'H\nXo\nm1\nm2\nm3\nYo\nXt\nm1\nm2\nm3\nYt\nT\n');
+        assertClean(result, 'H\nXo\nm1\nm2\nm3\nYo\nXt\nm1\nm2\nm3\nYt\nT\n');
       });
     });
   });
@@ -905,10 +905,10 @@ describe('mergeContent', () => {
         const theirs = enc('a\nYY');
 
         // Act
-        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+        const result = mergeContent(base, ours, theirs, { favor: 'union' });
 
         // Assert
-        assertClean(sut, 'a\nXX\nYY');
+        assertClean(result, 'a\nXX\nYY');
       });
     });
   });
@@ -926,10 +926,10 @@ describe('mergeContent', () => {
         const theirs = enc('Y\nb\nc');
 
         // Act
-        const sut = mergeContent(base, ours, theirs, { favor: 'union' });
+        const result = mergeContent(base, ours, theirs, { favor: 'union' });
 
         // Assert
-        assertClean(sut, 'X\nY\nb\nc');
+        assertClean(result, 'X\nY\nb\nc');
       });
     });
   });
@@ -942,10 +942,10 @@ describe('mergeContent', () => {
         const theirs = enc('world\nx\n');
 
         // Act
-        const sut = mergeContent(undefined, ours, theirs, { favor: 'union' });
+        const result = mergeContent(undefined, ours, theirs, { favor: 'union' });
 
         // Assert
-        assertClean(sut, 'hello\nworld\nx\n');
+        assertClean(result, 'hello\nworld\nx\n');
       });
     });
   });
@@ -959,12 +959,12 @@ describe('mergeContent', () => {
         const theirs = enc('a\nb\nc\nD2\ne\nf\nG\n');
 
         // Act
-        const sut = mergeContent(base, ours, theirs);
+        const result = mergeContent(base, ours, theirs);
 
         // Assert — per-region: A and G apply, only line 3 conflicts
-        expect(sut.status).toBe('conflict');
-        if (sut.status === 'conflict') {
-          expect(decoder.decode(sut.markedBytes)).toBe(
+        expect(result.status).toBe('conflict');
+        if (result.status === 'conflict') {
+          expect(decoder.decode(result.markedBytes)).toBe(
             'A\nb\nc\n<<<<<<< ours\nD\n=======\nD2\n>>>>>>> theirs\ne\nf\nG\n',
           );
         }
@@ -980,12 +980,12 @@ describe('mergeContent', () => {
         const theirs = enc('a\nX\nc\n');
 
         // Act
-        const sut = mergeContent(undefined, ours, theirs);
+        const result = mergeContent(undefined, ours, theirs);
 
         // Assert
-        expect(sut.status).toBe('conflict');
-        if (sut.status === 'conflict') {
-          expect(decoder.decode(sut.markedBytes)).toBe(
+        expect(result.status).toBe('conflict');
+        if (result.status === 'conflict') {
+          expect(decoder.decode(result.markedBytes)).toBe(
             'a\n<<<<<<< ours\nb\n=======\nX\n>>>>>>> theirs\nc\n',
           );
         }

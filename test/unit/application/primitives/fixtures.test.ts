@@ -5,15 +5,15 @@ describe('buildSeededContext', () => {
   describe('Given no parts', () => {
     describe('When building', () => {
       it('Then returns a usable Context with required fields', async () => {
-        // Arrange / Act
-        const sut = await buildSeededContext();
+        // Arrange & Act
+        const result = await buildSeededContext();
 
         // Assert — content checks on each field, not bare presence.
-        expect(sut.layout.gitDir).toBe('/repo/.git');
-        expect(typeof sut.deltaCache.get).toBe('function');
-        expect(typeof sut.deltaCache.set).toBe('function');
-        expect(sut.hashConfig.digestLength).toBe(20);
-        expect(sut.hashConfig.hexLength).toBe(40);
+        expect(result.layout.gitDir).toBe('/repo/.git');
+        expect(typeof result.deltaCache.get).toBe('function');
+        expect(typeof result.deltaCache.set).toBe('function');
+        expect(result.hashConfig.digestLength).toBe(20);
+        expect(result.hashConfig.hexLength).toBe(40);
       });
     });
   });
@@ -45,10 +45,12 @@ describe('buildSeededContext', () => {
       it('Then ctx.signal is set', async () => {
         // Arrange
         const controller = new AbortController();
-        const sut = await buildSeededContext({ signal: controller.signal });
+
+        // Act
+        const result = await buildSeededContext({ signal: controller.signal });
 
         // Assert
-        expect(sut.signal).toBe(controller.signal);
+        expect(result.signal).toBe(controller.signal);
       });
     });
   });
@@ -72,7 +74,7 @@ describe('instrumentedContext', () => {
     });
     describe('When no fs calls are made', () => {
       it('Then calls() is empty', async () => {
-        // Arrange
+        // Arrange & Act — no fs call is made; the point is the untouched state.
         const base = await buildSeededContext();
         const { calls } = instrumentedContext(base);
 

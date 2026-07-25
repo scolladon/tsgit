@@ -46,10 +46,10 @@ describe('encodePktLine', () => {
         const payload = new Uint8Array(0);
 
         // Act
-        const sut = encodePktLine(payload);
+        const result = encodePktLine(payload);
 
         // Assert
-        expect(sut).toEqual(bytesOf('0004'));
+        expect(result).toEqual(bytesOf('0004'));
       });
     });
   });
@@ -61,10 +61,10 @@ describe('encodePktLine', () => {
         const payload = bytesOf('A');
 
         // Act
-        const sut = encodePktLine(payload);
+        const result = encodePktLine(payload);
 
         // Assert
-        expect(sut).toEqual(bytesOf('0005A'));
+        expect(result).toEqual(bytesOf('0005A'));
       });
     });
   });
@@ -76,10 +76,10 @@ describe('encodePktLine', () => {
         const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
 
         // Act
-        const sut = encodePktLine(payload);
+        const result = encodePktLine(payload);
 
         // Assert
-        expect(sut.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4);
+        expect(result.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4);
       });
     });
   });
@@ -91,10 +91,10 @@ describe('encodePktLine', () => {
         const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
 
         // Act
-        const sut = encodePktLine(payload);
+        const result = encodePktLine(payload);
 
         // Assert
-        expect(sut.slice(0, 4)).toEqual(bytesOf('fff0'));
+        expect(result.slice(0, 4)).toEqual(bytesOf('fff0'));
       });
     });
   });
@@ -106,10 +106,10 @@ describe('encodePktLine', () => {
         const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD - 1);
 
         // Act
-        const sut = encodePktLine(payload);
+        const result = encodePktLine(payload);
 
         // Assert
-        expect(sut.slice(0, 4)).toEqual(bytesOf('ffef'));
+        expect(result.slice(0, 4)).toEqual(bytesOf('ffef'));
       });
     });
   });
@@ -161,10 +161,10 @@ describe('encodePktStream', () => {
         },
       ])('Then $label', ({ payloads, expected }) => {
         // Arrange & Act
-        const sut = encodePktStream(payloads);
+        const result = encodePktStream(payloads);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -177,10 +177,10 @@ describe('encodePktStream', () => {
         const p2 = new Uint8Array(1024);
 
         // Act
-        const sut = encodePktStream([p1, p2]);
+        const result = encodePktStream([p1, p2]);
 
         // Assert
-        expect(sut.byteLength).toBe(p1.byteLength + 4 + p2.byteLength + 4 + 4);
+        expect(result.byteLength).toBe(p1.byteLength + 4 + p2.byteLength + 4 + 4);
       });
     });
   });
@@ -193,10 +193,10 @@ describe('encodePktStream', () => {
         const atMax = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
 
         // Act
-        const sut = encodePktStream([atMax]);
+        const result = encodePktStream([atMax]);
 
         // Assert — header(4) + payload + trailing flush(4)
-        expect(sut.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4 + 4);
+        expect(result.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4 + 4);
       });
     });
   });
@@ -247,10 +247,10 @@ describe('encodePktLines', () => {
         },
       ])('Then $label', ({ payloads, expected }) => {
         // Arrange & Act
-        const sut = encodePktLines(payloads);
+        const result = encodePktLines(payloads);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -263,10 +263,10 @@ describe('encodePktLines', () => {
         const atMax = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
 
         // Act
-        const sut = encodePktLines([atMax]);
+        const result = encodePktLines([atMax]);
 
         // Assert — header(4) + payload, no trailing flush
-        expect(sut.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4);
+        expect(result.byteLength).toBe(MAX_PKT_LINE_PAYLOAD + 4);
       });
     });
   });
@@ -329,10 +329,10 @@ describe('decodePktStream — basic packets', () => {
         const chunks = [bytesOf('0000')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks)));
+        const result = await collect(decodePktStream(asyncOf(chunks)));
 
         // Assert
-        expect(sut).toEqual([{ kind: 'flush' }]);
+        expect(result).toEqual([{ kind: 'flush' }]);
       });
     });
   });
@@ -364,10 +364,10 @@ describe('decodePktStream — basic packets', () => {
         const chunks = [bytesOf('0001')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks), { v2: true }));
+        const result = await collect(decodePktStream(asyncOf(chunks), { v2: true }));
 
         // Assert
-        expect(sut).toEqual([{ kind: 'delim' }]);
+        expect(result).toEqual([{ kind: 'delim' }]);
       });
     });
   });
@@ -399,10 +399,10 @@ describe('decodePktStream — basic packets', () => {
         const chunks = [bytesOf('0002')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks), { v2: true }));
+        const result = await collect(decodePktStream(asyncOf(chunks), { v2: true }));
 
         // Assert
-        expect(sut).toEqual([{ kind: 'response-end' }]);
+        expect(result).toEqual([{ kind: 'response-end' }]);
       });
     });
   });
@@ -436,10 +436,10 @@ describe('decodePktStream — basic packets', () => {
         const chunks = [bytesOf('00040000')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks)));
+        const result = await collect(decodePktStream(asyncOf(chunks)));
 
         // Assert
-        expect(sut).toEqual([{ kind: 'data', payload: new Uint8Array(0) }, { kind: 'flush' }]);
+        expect(result).toEqual([{ kind: 'data', payload: new Uint8Array(0) }, { kind: 'flush' }]);
       });
     });
   });
@@ -451,11 +451,11 @@ describe('decodePktStream — basic packets', () => {
         const chunks = [bytesOf('0009done\n')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks)));
+        const result = await collect(decodePktStream(asyncOf(chunks)));
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]).toEqual({ kind: 'data', payload: bytesOf('done\n') });
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual({ kind: 'data', payload: bytesOf('done\n') });
       });
     });
   });
@@ -469,10 +469,10 @@ describe('decodePktStream — reassembly', () => {
         const chunks = [bytesOf('00'), bytesOf('09do'), bytesOf('ne\n')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks)));
+        const result = await collect(decodePktStream(asyncOf(chunks)));
 
         // Assert
-        expect(sut).toEqual([{ kind: 'data', payload: bytesOf('done\n') }]);
+        expect(result).toEqual([{ kind: 'data', payload: bytesOf('done\n') }]);
       });
     });
   });
@@ -484,10 +484,10 @@ describe('decodePktStream — reassembly', () => {
         const chunks = [bytesOf('000f0123456'), bytesOf('789\n')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks)));
+        const result = await collect(decodePktStream(asyncOf(chunks)));
 
         // Assert
-        expect(sut).toEqual([{ kind: 'data', payload: bytesOf('0123456789\n') }]);
+        expect(result).toEqual([{ kind: 'data', payload: bytesOf('0123456789\n') }]);
       });
     });
   });
@@ -499,10 +499,10 @@ describe('decodePktStream — reassembly', () => {
         const chunks = [bytesOf('0006A\n0006B\n')];
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf(chunks)));
+        const result = await collect(decodePktStream(asyncOf(chunks)));
 
         // Assert
-        expect(sut).toEqual([
+        expect(result).toEqual([
           { kind: 'data', payload: bytesOf('A\n') },
           { kind: 'data', payload: bytesOf('B\n') },
         ]);
@@ -520,13 +520,13 @@ describe('decodePktStream — length boundary triple', () => {
         const chunk = encodePktLine(payload);
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf([chunk])));
+        const result = await collect(decodePktStream(asyncOf([chunk])));
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.kind).toBe('data');
-        if (sut[0]?.kind === 'data') {
-          expect(sut[0].payload.byteLength).toBe(MAX_PKT_LINE_PAYLOAD);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.kind).toBe('data');
+        if (result[0]?.kind === 'data') {
+          expect(result[0].payload.byteLength).toBe(MAX_PKT_LINE_PAYLOAD);
         }
       });
     });
@@ -562,13 +562,13 @@ describe('decodePktStream — length boundary triple', () => {
         const chunk = encodePktLine(payload);
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf([chunk])));
+        const result = await collect(decodePktStream(asyncOf([chunk])));
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]?.kind).toBe('data');
-        if (sut[0]?.kind === 'data') {
-          expect(sut[0].payload.byteLength).toBe(MAX_PKT_LINE_PAYLOAD - 1);
+        expect(result).toHaveLength(1);
+        expect(result[0]?.kind).toBe('data');
+        if (result[0]?.kind === 'data') {
+          expect(result[0].payload.byteLength).toBe(MAX_PKT_LINE_PAYLOAD - 1);
         }
       });
     });
@@ -765,11 +765,11 @@ describe('decodePktStream — case-insensitive length parse', () => {
         const chunk = concat(bytesOf('000A'), bytesOf('abcdef'));
 
         // Act
-        const sut = await collect(decodePktStream(asyncOf([chunk])));
+        const result = await collect(decodePktStream(asyncOf([chunk])));
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut[0]).toEqual({ kind: 'data', payload: bytesOf('abcdef') });
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual({ kind: 'data', payload: bytesOf('abcdef') });
       });
     });
   });

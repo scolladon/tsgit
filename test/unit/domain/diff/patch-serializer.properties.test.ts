@@ -214,114 +214,7 @@ describe('patch-serializer (properties)', () => {
           { numRuns: 100 },
         );
       });
-    });
-  });
 
-  describe('Given any single DiffChange shape (add, delete, rename, binary add, or type-change)', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the text always starts with `diff --git ` and ends with `\\n`', () => {
-        fc.assert(
-          fc.property(arbAnyShape(), (file) => {
-            // Arrange — fast-check supplied file
-            const input = [file];
-
-            // Act
-            const sut = renderPatch(input);
-
-            // Assert — invariants every file-class shares.
-            expect(sut.startsWith('diff --git ')).toBe(true);
-            expect(sut.endsWith('\n')).toBe(true);
-          }),
-          { numRuns: 100 },
-        );
-      });
-    });
-  });
-
-  describe('Given a pure rename DiffChange', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the body carries exactly the four expected header lines', () => {
-        fc.assert(
-          fc.property(arbRenameFile(), (file) => {
-            // Arrange — fast-check supplied file
-            const input = [file];
-
-            // Act
-            const sut = renderPatch(input);
-
-            // Assert — rename grammar is fixed: similarity index 100% +
-            // rename from + rename to. No --- / +++ / hunks.
-            expect(sut).toContain('similarity index 100%');
-            expect(sut).toContain('rename from ');
-            expect(sut).toContain('rename to ');
-            expect(sut).not.toContain('\n--- ');
-            expect(sut).not.toContain('\n+++ ');
-            expect(sut).not.toContain('@@ ');
-          }),
-          { numRuns: 100 },
-        );
-      });
-    });
-  });
-
-  describe('Given a binary add DiffChange', () => {
-    describe('When renderPatch is called', () => {
-      it('Then the body carries the Binary files /dev/null and b/X differ line', () => {
-        fc.assert(
-          fc.property(arbBinaryAddFile(), (file) => {
-            // Arrange — fast-check supplied file
-            const input = [file];
-
-            // Act
-            const sut = renderPatch(input);
-
-            // Assert — no hunk markers ever escape into a binary block.
-            expect(sut).toContain('Binary files /dev/null and b/');
-            expect(sut).toContain(' differ');
-            expect(sut).not.toContain('@@ ');
-          }),
-          { numRuns: 100 },
-        );
-      });
-    });
-  });
-
-  describe('Given a type-change DiffChange (file↔symlink, arbitrary content)', () => {
-    describe('When renderPatch is called', () => {
-      it('Then it emits a deletion block then an addition block, no hunk marker inside a binary block', () => {
-        fc.assert(
-          fc.property(arbTypeChangeFile(), (file) => {
-            // Arrange — fast-check supplied a type-change with any text/binary mix
-            const input = [file];
-
-            // Act
-            const sut = renderPatch(input);
-
-            // Assert — git renders a type-change as a full deletion then a full
-            // addition. Group lines into `diff --git ` blocks; content lines are
-            // +/-/space-prefixed, so they never match a bare header/marker prefix.
-            const blocks: string[][] = [];
-            for (const line of sut.split('\n')) {
-              if (line.startsWith('diff --git ')) blocks.push([]);
-              blocks[blocks.length - 1]?.push(line);
-            }
-            expect(blocks).toHaveLength(2);
-            expect(blocks[0]?.some((line) => line.startsWith('deleted file mode '))).toBe(true);
-            expect(blocks[1]?.some((line) => line.startsWith('new file mode '))).toBe(true);
-            for (const block of blocks) {
-              if (block.some((line) => line.startsWith('Binary files '))) {
-                expect(block.some((line) => line.startsWith('@@ '))).toBe(false);
-              }
-            }
-          }),
-          { numRuns: 100 },
-        );
-      });
-    });
-  });
-
-  describe('Given two arbitrary ASCII text streams', () => {
-    describe('When renderPatch emits a modify block', () => {
       it('Then totals across hunks match diffLines edit counts', () => {
         fc.assert(
           fc.property(arbTextStream(), arbTextStream(), (oldText, newText) => {
@@ -345,6 +238,109 @@ describe('patch-serializer (properties)', () => {
             // Assert
             expect(totalDeletes).toBe(expectedDeletes);
             expect(totalInserts).toBe(expectedInserts);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given any single DiffChange shape (add, delete, rename, binary add, or type-change)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the text always starts with `diff --git ` and ends with `\\n`', () => {
+        fc.assert(
+          fc.property(arbAnyShape(), (file) => {
+            // Arrange — fast-check supplied file
+            const input = [file];
+
+            // Act
+            const result = renderPatch(input);
+
+            // Assert — invariants every file-class shares.
+            expect(result.startsWith('diff --git ')).toBe(true);
+            expect(result.endsWith('\n')).toBe(true);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a pure rename DiffChange', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the body carries exactly the four expected header lines', () => {
+        fc.assert(
+          fc.property(arbRenameFile(), (file) => {
+            // Arrange — fast-check supplied file
+            const input = [file];
+
+            // Act
+            const result = renderPatch(input);
+
+            // Assert — rename grammar is fixed: similarity index 100% +
+            // rename from + rename to. No --- / +++ / hunks.
+            expect(result).toContain('similarity index 100%');
+            expect(result).toContain('rename from ');
+            expect(result).toContain('rename to ');
+            expect(result).not.toContain('\n--- ');
+            expect(result).not.toContain('\n+++ ');
+            expect(result).not.toContain('@@ ');
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a binary add DiffChange', () => {
+    describe('When renderPatch is called', () => {
+      it('Then the body carries the Binary files /dev/null and b/X differ line', () => {
+        fc.assert(
+          fc.property(arbBinaryAddFile(), (file) => {
+            // Arrange — fast-check supplied file
+            const input = [file];
+
+            // Act
+            const result = renderPatch(input);
+
+            // Assert — no hunk markers ever escape into a binary block.
+            expect(result).toContain('Binary files /dev/null and b/');
+            expect(result).toContain(' differ');
+            expect(result).not.toContain('@@ ');
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a type-change DiffChange (file↔symlink, arbitrary content)', () => {
+    describe('When renderPatch is called', () => {
+      it('Then it emits a deletion block then an addition block, no hunk marker inside a binary block', () => {
+        fc.assert(
+          fc.property(arbTypeChangeFile(), (file) => {
+            // Arrange — fast-check supplied a type-change with any text/binary mix
+            const input = [file];
+
+            // Act
+            const result = renderPatch(input);
+
+            // Assert — git renders a type-change as a full deletion then a full
+            // addition. Group lines into `diff --git ` blocks; content lines are
+            // +/-/space-prefixed, so they never match a bare header/marker prefix.
+            const blocks: string[][] = [];
+            for (const line of result.split('\n')) {
+              if (line.startsWith('diff --git ')) blocks.push([]);
+              blocks[blocks.length - 1]?.push(line);
+            }
+            expect(blocks).toHaveLength(2);
+            expect(blocks[0]?.some((line) => line.startsWith('deleted file mode '))).toBe(true);
+            expect(blocks[1]?.some((line) => line.startsWith('new file mode '))).toBe(true);
+            for (const block of blocks) {
+              if (block.some((line) => line.startsWith('Binary files '))) {
+                expect(block.some((line) => line.startsWith('@@ '))).toBe(false);
+              }
+            }
           }),
           { numRuns: 100 },
         );

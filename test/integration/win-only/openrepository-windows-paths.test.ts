@@ -44,26 +44,28 @@ const WINDOWS_PATH_FORM_MATRIX: ReadonlyArray<{
 ];
 
 describe('openRepository — Windows path handling', () => {
-  it.each(WINDOWS_PATH_FORM_MATRIX)(
-    'Given $label, When openRepository runs, Then it does NOT throw INVALID_OPTION',
-    async ({ toCwd }) => {
-      // Arrange — mkdtemp on Windows returns a `C:\Users\…\tsgit-it-xxxx` path.
-      const tmp = await mkdtemp(path.join(os.tmpdir(), 'tsgit-it-'));
-      const cwd = toCwd(tmp);
-      const expectedCwd = await realpath(cwd);
-      try {
-        // Act
-        const sut = await openRepository({ cwd });
+  describe('Given a Windows drive-letter or UNC-form cwd, When openRepository runs', () => {
+    it.each(WINDOWS_PATH_FORM_MATRIX)(
+      'Then $label does NOT throw INVALID_OPTION',
+      async ({ toCwd }) => {
+        // Arrange — mkdtemp on Windows returns a `C:\Users\…\tsgit-it-xxxx` path.
+        const tmp = await mkdtemp(path.join(os.tmpdir(), 'tsgit-it-'));
+        const cwd = toCwd(tmp);
+        const expectedCwd = await realpath(cwd);
+        try {
+          // Act
+          const sut = await openRepository({ cwd });
 
-        // Assert — Node shim realpaths the cwd, so ctx.cwd is the
-        // canonical form (8.3 short names expanded); layout.workDir
-        // mirrors it regardless of the input path-form literal.
-        expect(sut.ctx.cwd).toBe(expectedCwd);
-        expect(sut.ctx.layout.workDir).toBe(expectedCwd);
-        await sut.dispose();
-      } finally {
-        await rm(tmp, { recursive: true, force: true });
-      }
-    },
-  );
+          // Assert — Node shim realpaths the cwd, so ctx.cwd is the
+          // canonical form (8.3 short names expanded); layout.workDir
+          // mirrors it regardless of the input path-form literal.
+          expect(sut.ctx.cwd).toBe(expectedCwd);
+          expect(sut.ctx.layout.workDir).toBe(expectedCwd);
+          await sut.dispose();
+        } finally {
+          await rm(tmp, { recursive: true, force: true });
+        }
+      },
+    );
+  });
 });

@@ -73,9 +73,10 @@ describe('walkCommits', () => {
       it('Then throws INVALID_WALK_INPUT', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+
+        // Act + Assert
         try {
           for await (const _ of walkCommits(ctx, { from: [] })) void _;
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
@@ -93,9 +94,10 @@ describe('walkCommits', () => {
           { length: 1025 },
           (_, i) => i.toString().padStart(40, '0') as ObjectId,
         );
+
+        // Act + Assert
         try {
           for await (const _ of walkCommits(ctx, { from: seeds })) void _;
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
@@ -113,17 +115,18 @@ describe('walkCommits', () => {
           { length: 1024 },
           (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
         );
+
+        // Act + Assert — validation accepts at-cap seeds (kills `>` → `>=` boundary
+        // mutants). The first read then fails because the seeds are synthetic —
+        // proving the walk loop actually entered, not that validation silently
+        // swallowed.
         let caught: unknown;
         try {
           for await (const _ of walkCommits(ctx, { from: seeds })) void _;
-          // Assert
           expect.unreachable();
         } catch (error) {
           caught = error;
         }
-        // Validation accepts at-cap seeds (kills `>` → `>=` boundary mutants).
-        // The first read then fails because the seeds are synthetic — proving the
-        // walk loop actually entered, not that validation silently swallowed.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
       });
@@ -136,7 +139,10 @@ describe('walkCommits', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const [rootId] = await linearChain(ctx, 1);
+
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [rootId!] }));
+
         // Assert
         expect(commits.length).toBe(1);
       });
@@ -149,7 +155,10 @@ describe('walkCommits', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const ids = await linearChain(ctx, 5);
+
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
+
         // Assert
         expect(commits.length).toBe(5);
       });
@@ -163,7 +172,10 @@ describe('walkCommits', () => {
         const ctx = await buildSeededContext();
         const ids = await linearChain(ctx, 3);
         const [rootId, , headId] = ids;
+
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [headId!], until: [rootId!] }));
+
         // Assert
         expect(commits.length).toBe(2);
       });
@@ -185,7 +197,10 @@ describe('walkCommits', () => {
           committer: AUTHOR,
           message: 'shallow child',
         });
+
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [childId], ignoreMissing: true }));
+
         // Assert
         expect(commits.length).toBe(1);
       });
@@ -207,9 +222,10 @@ describe('walkCommits', () => {
           committer: AUTHOR,
           message: 'shallow child',
         });
+
+        // Act + Assert
         try {
           for await (const _ of walkCommits(ctx, { from: [childId] })) void _;
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -227,9 +243,10 @@ describe('walkCommits', () => {
         const controller = new AbortController();
         controller.abort();
         const aborted = { ...ctx, signal: controller.signal };
+
+        // Act + Assert
         try {
           for await (const _ of walkCommits(aborted, { from: [id!] })) void _;
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
@@ -244,8 +261,11 @@ describe('walkCommits', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const { a, b, c, d } = await buildDiamond(ctx);
+
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [d] }));
         const ids = commits.map((c0) => c0.id);
+
         // Assert
         expect(new Set(ids).size).toBe(ids.length);
         expect(ids).toContain(a);
@@ -267,8 +287,11 @@ describe('walkCommits', () => {
         // linearizations pass.
         const ctx = await buildSeededContext();
         const { a, b, c, d } = await buildDiamond(ctx);
+
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [d] }));
         const indexOf = (id: ObjectId) => commits.findIndex((x) => x.id === id);
+
         // D is the seed — it must come first.
         // Assert
         expect(indexOf(d)).toBe(0);
@@ -289,8 +312,11 @@ describe('walkCommits', () => {
         // Kills the ternary that chooses [parents[0]] vs all parents for first-parent.
         const ctx = await buildSeededContext();
         const { a, b, c, d } = await buildDiamond(ctx);
+
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [d], order: 'first-parent' }));
         const ids = commits.map((c0) => c0.id);
+
         // First-parent from D: D → B → A. C is the second parent of D, excluded.
         // Assert
         expect(ids).toContain(d);
@@ -329,9 +355,10 @@ describe('walkCommits', () => {
           `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitId)}`,
           compressed,
         );
+
+        // Act + Assert
         try {
           for await (const _ of walkCommits(ctx, { from: [commitId] })) void _;
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
@@ -374,7 +401,9 @@ describe('walkCommits', () => {
         const bBytes = await ctx.fs.read(bPath);
         await ctx.fs.write(aPath, bBytes);
 
+        // Act
         const commits = await collect(walkCommits(ctx, { from: [commitA], verifyHash: false }));
+
         // Assert
         expect(commits.length).toBeGreaterThanOrEqual(1);
         // Parsed content belongs to commitB, not commitA.
@@ -431,11 +460,12 @@ describe('walkCommits', () => {
             },
           },
         };
+
+        // Act + Assert
         try {
           for await (const _ of walkCommits(wrapped, { from: [commitId], ignoreMissing: true })) {
             void _;
           }
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('PERMISSION_DENIED');
@@ -455,6 +485,8 @@ describe('walkCommits', () => {
         const ids = await linearChain(ctx, 3);
         const controller = new AbortController();
         const aborted = { ...ctx, signal: controller.signal };
+
+        // Act + Assert
         try {
           const yielded: ObjectId[] = [];
           for await (const c of walkCommits(aborted, { from: [ids.at(-1)!] })) {
@@ -462,7 +494,6 @@ describe('walkCommits', () => {
             // Abort after first commit is yielded; next loop-head check fires.
             controller.abort();
           }
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
@@ -495,11 +526,12 @@ describe('walkCommits', () => {
             },
           },
         };
+
+        // Act + Assert
         try {
           for await (const _ of walkCommits(wrapped, { from: [commitId], ignoreMissing: true })) {
             void _;
           }
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect(error).not.toBeInstanceOf(TsgitError);
@@ -537,7 +569,6 @@ describe('walkCommits', () => {
           let caught: unknown;
           try {
             for await (const _ of walkCommits(ctx, { from: [seed] })) void _;
-            // Assert
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -609,7 +640,6 @@ describe('walkCommits', () => {
             for await (const c of walkCommits(aborted, { from: [id as ObjectId] })) {
               yielded.push(c.id);
             }
-            // Assert
             expect.unreachable();
           } catch (error) {
             caught = error;

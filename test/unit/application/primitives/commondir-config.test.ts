@@ -25,10 +25,10 @@ describe('common-dir config + info/exclude', () => {
           `${ctx.layout.gitDir}/config`,
           '[user]\n\tname = Alice\n\temail = a@b.c\n',
         );
-        const sut = asWorktreeChild(ctx);
+        const childCtx = asWorktreeChild(ctx);
 
         // Act
-        const result = await readConfig(sut);
+        const result = await readConfig(childCtx);
 
         // Assert
         expect(result.user?.name).toBe('Alice');
@@ -42,10 +42,10 @@ describe('common-dir config + info/exclude', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, '*.tmp\n');
-        const sut = asWorktreeChild(ctx);
+        const childCtx = asWorktreeChild(ctx);
 
         // Act
-        const result = await readInfoExclude(sut);
+        const result = await readInfoExclude(childCtx);
 
         // Assert
         expect(result).toBeDefined();
@@ -58,10 +58,10 @@ describe('common-dir config + info/exclude', () => {
       it('Then it points at the common dir config', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = asWorktreeChild(ctx);
+        const childCtx = asWorktreeChild(ctx);
 
         // Act
-        const result = await resolveScopePath(sut, 'local');
+        const result = await resolveScopePath(childCtx, 'local');
 
         // Assert
         expect(result).toBe(`${ctx.layout.gitDir}/config`);
@@ -76,10 +76,10 @@ describe('common-dir config + info/exclude', () => {
           `${ctx.layout.gitDir}/config`,
           '[extensions]\n\tworktreeConfig = true\n',
         );
-        const sut = asWorktreeChild(ctx);
+        const childCtx = asWorktreeChild(ctx);
 
         // Act
-        const result = await isWorktreeScopeActive(sut);
+        const result = await isWorktreeScopeActive(childCtx);
 
         // Assert
         expect(result).toBe(true);

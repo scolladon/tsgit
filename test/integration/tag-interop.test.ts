@@ -58,11 +58,11 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
         const commitSha = runGit(['-C', pair.peer, 'rev-parse', 'HEAD']).trim() as ObjectId;
         runGit(['-C', pair.peer, 'tag', '-a', 'v1', '-m', 'release one', commitSha], { env });
         const peerTagSha = runGit(['-C', pair.peer, 'rev-parse', 'v1']).trim();
-        const sut = createNodeContext({ workDir: pair.ours });
+        const ctx = createNodeContext({ workDir: pair.ours });
         runGit(['-C', pair.ours, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env });
 
         // Act
-        const oursTagSha = await writeObject(sut, {
+        const oursTagSha = await writeObject(ctx, {
           type: 'tag',
           id: '' as ObjectId,
           data: {
