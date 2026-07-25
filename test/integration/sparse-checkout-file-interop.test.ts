@@ -38,10 +38,10 @@ describe.skipIf(!GIT_AVAILABLE)('sparse-checkout file interop', () => {
         // Enable sparse-checkout via canonical git so the file becomes
         // "active" (git refuses to list patterns without the config flag).
         runGit(['-C', pair.ours, 'config', 'core.sparseCheckout', 'true']);
-        const sut = createNodeContext({ workDir: pair.ours });
+        const ctx = createNodeContext({ workDir: pair.ours });
 
         // Act
-        await writeSparsePatternText(sut, patterns);
+        await writeSparsePatternText(ctx, patterns);
 
         // Assert — canonical git lists the same patterns (one per line).
         const listed = runGit(['-C', pair.ours, 'sparse-checkout', 'list']);

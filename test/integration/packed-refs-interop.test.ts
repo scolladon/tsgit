@@ -56,8 +56,8 @@ describe.skipIf(!GIT_AVAILABLE)('packed-refs interop', () => {
         const original = await readFile(path.join(pair.peer, '.git/packed-refs'), 'utf8');
 
         // Act — parse and re-serialize through tsgit
-        const sut = parsePackedRefs(original);
-        const roundTripped = serializePackedRefs(sut);
+        const result = parsePackedRefs(original);
+        const roundTripped = serializePackedRefs(result);
 
         // Assert
         expect(roundTripped).toBe(original);

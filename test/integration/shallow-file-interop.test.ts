@@ -68,16 +68,16 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-file interop', () => {
             .toString()
             .split('\n')
             .filter((s) => s.length > 0) as unknown as ReadonlyArray<ObjectId>;
-          const sut = createNodeContext({ workDir: ours });
+          const ctx = createNodeContext({ workDir: ours });
 
           // Act
-          await updateShallow(sut, { shallow: peerShas, unshallow: [] });
+          await updateShallow(ctx, { shallow: peerShas, unshallow: [] });
 
           // Assert — bytes match
           const oursBytes = await readFile(path.join(ours, '.git/shallow'));
           expect(oursBytes).toEqual(peerBytes);
           // And tsgit can read its own write back
-          const readBack = await readShallow(sut);
+          const readBack = await readShallow(ctx);
           expect(readBack.size).toBe(peerShas.length);
         } finally {
           await rm(source, { recursive: true, force: true });

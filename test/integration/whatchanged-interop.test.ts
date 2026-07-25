@@ -124,7 +124,7 @@ describe.skipIf(!GIT_AVAILABLE)('whatchanged interop', () => {
   });
 
   it('Then each entry reconstructs git whatchanged raw lines byte-for-byte', async () => {
-    // Act
+    // Arrange & Act
     const entries = await repo.whatchanged();
 
     // Assert — every commit's structured changes equal git's raw lines

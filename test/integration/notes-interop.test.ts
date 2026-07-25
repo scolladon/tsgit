@@ -176,16 +176,20 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When the first note is added', () => {
       it('Then the blob OID matches git', () => {
+        // Act
         // git stores one overwrite later; look up blob from the first notes commit tree
         const firstTreeEntries = runGit(['-C', pair.peer, 'ls-tree', `${gitFirstCommit}^{tree}`]);
         const blobOid = firstTreeEntries
           .split('\n')
           .find((l) => l.includes(annotatedOid))
           ?.split(/\s+/)[2];
+
+        // Assert
         expect(addResult.note).toBe(blobOid);
       });
 
       it('Then the first notes commit tree OID matches git', () => {
+        // Act
         const peerTree = runGit(['-C', pair.peer, 'rev-parse', `${gitFirstCommit}^{tree}`]).trim();
         const oursTree = runGit([
           '-C',
@@ -193,26 +197,35 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           'rev-parse',
           `${addResult.notesCommit}^{tree}`,
         ]).trim();
+
+        // Assert
         expect(oursTree).toBe(peerTree);
       });
 
       it('Then the first notes commit OID matches git', () => {
+        // Arrange, Act & Assert
         expect(addResult.notesCommit).toBe(gitFirstCommit);
       });
 
       it('Then cat-file -p of the notes commit matches git byte-for-byte', () => {
+        // Act
         const peerOut = runGit(['-C', pair.peer, 'cat-file', '-p', gitFirstCommit]);
         const oursOut = runGit(['-C', pair.ours, 'cat-file', '-p', addResult.notesCommit]);
+
+        // Assert
         expect(oursOut).toBe(peerOut);
       });
 
       it('Then the reflog subject is the canonical notes-add message', () => {
+        // Act
         const peerSubject = topReflogSubject(pair.peer, DEFAULT_NOTES_REF);
         // tsgit reflog after force overwrites; check first entry via gitFirstCommit
         const oursSubjectFirst =
           runGit(['-C', pair.ours, 'log', '-g', '--format=%gs', DEFAULT_NOTES_REF])
             .split('\n')
             .at(-2) ?? '';
+
+        // Assert
         expect(oursSubjectFirst).toBe(NOTES_ADD_REFLOG);
         // peer subject after force is also add reflog
         expect(peerSubject).toBe(NOTES_ADD_REFLOG);
@@ -221,28 +234,38 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When an existing note is overwritten with force', () => {
       it('Then the force-overwrite notes commit OID matches git', () => {
+        // Arrange, Act & Assert
         expect(forceResult.notesCommit).toBe(notesCommitOid(pair.peer));
       });
 
       it('Then cat-file -p of the force notes commit matches git', () => {
+        // Act
         const peerForce = notesCommitOid(pair.peer);
         const peerOut = runGit(['-C', pair.peer, 'cat-file', '-p', peerForce]);
         const oursOut = runGit(['-C', pair.ours, 'cat-file', '-p', forceResult.notesCommit]);
+
+        // Assert
         expect(oursOut).toBe(peerOut);
       });
 
       it('Then the force commit message header in cat-file contains the add message', () => {
+        // Act
         const out = runGit(['-C', pair.ours, 'cat-file', '-p', forceResult.notesCommit]);
+
+        // Assert
         expect(out).toContain(NOTES_ADD_MESSAGE);
       });
     });
 
     describe('When notesList is called', () => {
       it('Then reconstructed output matches git notes list stdout', () => {
+        // Act
         const ctx = createNodeContext({ workDir: pair.ours });
         return notesList(ctx).then((entries) => {
           const reconstructed = reconstructNotesList(entries);
           const gitOut = runGit(['-C', pair.peer, 'notes', 'list']);
+
+          // Assert
           expect(reconstructed).toBe(gitOut);
         });
       });
@@ -250,8 +273,10 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When notesRead is called', () => {
       it('Then content matches git notes show stdout', () => {
+        // Act
         const ctx = createNodeContext({ workDir: pair.ours });
         return notesRead(ctx, { object: annotatedOid }).then((result) => {
+          // Assert
           expect(result).not.toBeNull();
           const decoded = new TextDecoder().decode(result?.content);
           const gitShow = gitNoteShow(pair.peer, annotatedOid);
@@ -262,9 +287,10 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When add is called on an existing note without force', () => {
       it('Then tsgit throws NOTES_ALREADY_EXIST and git exits non-zero', async () => {
+        // Arrange
         const ctx = createNodeContext({ workDir: pair.ours });
 
-        // tsgit: should throw
+        // Act — tsgit: should throw
         let thrown: unknown;
         try {
           await notesAdd(ctx, {
@@ -274,11 +300,13 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
         } catch (err) {
           thrown = err;
         }
+
+        // Assert — tsgit refuses
         expect(thrown).toBeInstanceOf(TsgitError);
         expect((thrown as TsgitError).data.code).toBe('NOTES_ALREADY_EXIST');
         expect((thrown as TsgitError).data).toMatchObject({ object: annotatedOid });
 
-        // git: should also refuse
+        // Act — git: should also refuse
         const gitResult = tryRunGit([
           '-C',
           pair.peer,
@@ -288,6 +316,8 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           'refused',
           annotatedOid,
         ]);
+
+        // Assert — git refuses too
         expect(gitResult.ok).toBe(false);
         expect(gitResult.stderr).toContain('existing notes');
       });
@@ -339,16 +369,21 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When 5 notes are added in the same order', () => {
       it('Then the notes tree OID matches git', () => {
+        // Arrange, Act & Assert
         expect(oursTreeAfter5).toBe(peerTreeAfter5);
       });
 
       it('Then the notes commit OID matches git', () => {
+        // Arrange, Act & Assert
         expect(oursCommitAfter5).toBe(peerCommitAfter5);
       });
 
       it('Then the notes tree is flat (no subtrees)', () => {
+        // Act
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfter5]);
         const hasSubtrees = ls.split('\n').some((l) => l.startsWith('040000'));
+
+        // Assert
         expect(hasSubtrees).toBe(false);
       });
     });
@@ -431,38 +466,50 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When all 150 notes have been added (flip region)', () => {
       it('Then the notes tree OID matches git byte-for-byte', () => {
+        // Arrange, Act & Assert
         expect(oursTreeAfterFlip).toBe(peerTreeAfterFlip);
       });
 
       it('Then the notes commit OID matches git', () => {
+        // Arrange, Act & Assert
         expect(oursCommitAfterFlip).toBe(peerCommitAfterFlip);
       });
 
       it('Then the notes tree is fanned (has subtree entries)', () => {
+        // Act
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfterFlip]);
         const hasSubtrees = ls.split('\n').some((l) => l.startsWith('040000'));
+
+        // Assert
         expect(hasSubtrees).toBe(true);
       });
     });
 
     describe('When notes are removed back below the flip threshold (stickiness)', () => {
       it('Then the post-removal notes tree OID still matches git', () => {
+        // Arrange, Act & Assert
         expect(oursTreeAfterRemove).toBe(peerTreeAfterRemove);
       });
 
       it('Then the tree remains fanned after partial removal (stickiness)', () => {
+        // Act
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfterRemove]);
         const hasSubtrees = ls.split('\n').some((l) => l.startsWith('040000'));
+
+        // Assert
         expect(hasSubtrees).toBe(true);
       });
     });
 
     describe('When notesList is called on the fanned ref', () => {
       it('Then it enumerates every note, matching git notes list', async () => {
+        // Act
         const ctx = createNodeContext({ workDir: pair.ours });
         const entries = await notesList(ctx);
         const reconstructed = reconstructNotesList(entries);
         const gitOut = runGit(['-C', pair.peer, 'notes', 'list']);
+
+        // Assert
         expect(reconstructed).toBe(gitOut);
       });
     });
@@ -515,24 +562,32 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When the last note is removed', () => {
       it('Then the tree OID is the canonical empty tree', () => {
+        // Arrange, Act & Assert
         expect(peerTreeAfterRemove).toBe(EMPTY_TREE);
         expect(oursTreeAfterRemove).toBe(EMPTY_TREE);
       });
 
       it('Then the notes commit OID matches git', () => {
+        // Arrange, Act & Assert
         expect(oursRemoveResult.notesCommit).toBe(peerCommitAfterRemove);
       });
 
       it('Then the notes ref is preserved (not deleted)', () => {
+        // Act
         const peerRef = tryRunGit(['-C', pair.peer, 'rev-parse', DEFAULT_NOTES_REF]);
         const oursRef = tryRunGit(['-C', pair.ours, 'rev-parse', DEFAULT_NOTES_REF]);
+
+        // Assert
         expect(peerRef.ok).toBe(true);
         expect(oursRef.ok).toBe(true);
       });
 
       it('Then the remove reflog subject matches git', () => {
+        // Act
         const peerSubject = topReflogSubject(pair.peer, DEFAULT_NOTES_REF);
         const oursSubject = topReflogSubject(pair.ours, DEFAULT_NOTES_REF);
+
+        // Assert
         expect(oursSubject).toBe(peerSubject);
         expect(oursSubject).toBe(NOTES_REMOVE_REFLOG);
       });
@@ -622,13 +677,21 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When tsgit adds a note on top of a tree with a non-note entry', () => {
       it('Then the resulting tree OID matches git (custom-entry preserved)', () => {
+        // Arrange, Act & Assert
         expect(oursTreeAfterSecondAdd).toBe(peerTreeAfterSecondAdd);
       });
 
       it('Then the custom-entry is present in the notes tree', () => {
+        // Act — peer side
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfterSecondAdd]);
+
+        // Assert — peer side
         expect(ls).toContain('custom-entry');
+
+        // Act — ours side
         const oursLs = runGit(['-C', pair.ours, 'ls-tree', oursTreeAfterSecondAdd]);
+
+        // Assert — ours side
         expect(oursLs).toContain('custom-entry');
       });
     });
@@ -655,21 +718,26 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When notesRemove is called on an object without a note', () => {
       it('Then tsgit throws NOTES_OBJECT_HAS_NONE and git exits non-zero', async () => {
+        // Arrange
         const ctx = createNodeContext({ workDir: pair.ours });
 
-        // tsgit
+        // Act — tsgit
         let thrown: unknown;
         try {
           await notesRemove(ctx, { object: unannotatedOid });
         } catch (err) {
           thrown = err;
         }
+
+        // Assert — tsgit refuses
         expect(thrown).toBeInstanceOf(TsgitError);
         expect((thrown as TsgitError).data.code).toBe('NOTES_OBJECT_HAS_NONE');
         expect((thrown as TsgitError).data).toMatchObject({ object: unannotatedOid });
 
-        // git co-refusal
+        // Act — git co-refusal
         const gitResult = tryRunGit(['-C', pair.peer, 'notes', 'remove', unannotatedOid]);
+
+        // Assert — git refuses too
         expect(gitResult.ok).toBe(false);
         // git message: "Object <oid> has no note" (no "error:" prefix)
         expect(gitResult.stderr).toContain(`Object ${unannotatedOid} has no note`);
@@ -705,11 +773,12 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When core.notesRef is set in config', () => {
       it('Then notes operations target the configured ref', async () => {
+        // Arrange
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(PINNED_UNIX * 1000);
-
-        // git: set core.notesRef via -c flag and add note
         const noteFile = await writeTempNote('cfg-ref', 'config ref note\n');
+
+        // Act — git: set core.notesRef via -c flag and add note
         runGit(
           [
             '-C',
@@ -725,7 +794,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           { env: pinnedEnv() },
         );
 
-        // tsgit: set core.notesRef in local config
+        // Act — tsgit: set core.notesRef in local config
         runGit(['-C', pair.ours, 'config', 'core.notesRef', CONFIG_REF]);
         const ctx = createNodeContext({ workDir: pair.ours });
         await notesAdd(ctx, {
@@ -733,14 +802,14 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           content: new TextEncoder().encode('config ref note\n'),
         });
 
-        // Verify both used CONFIG_REF
+        // Assert — both used CONFIG_REF
         const peerCommit = tryRunGit(['-C', pair.peer, 'rev-parse', CONFIG_REF]);
         const oursCommit = tryRunGit(['-C', pair.ours, 'rev-parse', CONFIG_REF]);
         expect(peerCommit.ok).toBe(true);
         expect(oursCommit.ok).toBe(true);
         expect(oursCommit.stdout.trim()).toBe(peerCommit.stdout.trim());
 
-        // Verify default ref was NOT touched
+        // Assert — default ref was NOT touched
         const peerDefault = tryRunGit(['-C', pair.peer, 'rev-parse', DEFAULT_NOTES_REF]);
         const oursDefault = tryRunGit(['-C', pair.ours, 'rev-parse', DEFAULT_NOTES_REF]);
         expect(peerDefault.ok).toBe(false);
@@ -755,17 +824,18 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When GIT_NOTES_REF env var is set', () => {
       it('Then GIT_NOTES_REF takes precedence over core.notesRef', async () => {
+        // Arrange
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(PINNED_UNIX * 1000);
-
-        // git: use GIT_NOTES_REF env for a different commit (re-use annotatedOid on CUSTOM_REF)
         const noteFile = await writeTempNote('env-ref', 'env ref note\n');
+
+        // Act — git: use GIT_NOTES_REF env for a different commit (re-use annotatedOid on CUSTOM_REF)
         runGit(
           ['-C', pair.peer, 'notes', '--ref', CUSTOM_REF, 'add', '-F', noteFile, annotatedOid],
           { env: pinnedEnv() },
         );
 
-        // tsgit: set GIT_NOTES_REF in process.env then call notesAdd with no ref
+        // Act — tsgit: set GIT_NOTES_REF in process.env then call notesAdd with no ref
         process.env.GIT_NOTES_REF = CUSTOM_REF;
         try {
           const ctx = createNodeContext({ workDir: pair.ours });
@@ -777,6 +847,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           delete process.env.GIT_NOTES_REF;
         }
 
+        // Assert
         const peerCommit = tryRunGit(['-C', pair.peer, 'rev-parse', CUSTOM_REF]);
         const oursCommit = tryRunGit(['-C', pair.ours, 'rev-parse', CUSTOM_REF]);
         expect(peerCommit.ok).toBe(true);
@@ -792,14 +863,15 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
         ['build', 'refs/notes/build'],
         ['notes/x', 'refs/notes/x'],
       ])('Then %s expands to %s matching git', async (given, expanded) => {
+        // Arrange
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(PINNED_UNIX * 1000);
-
         const noteFile = await writeTempNote(`expand-${given.replace(/\//g, '-')}`, 'expand\n');
+
+        // Act
         runGit(['-C', pair.peer, 'notes', '--ref', given, 'add', '-F', noteFile, annotatedOid], {
           env: pinnedEnv(),
         });
-
         const ctx = createNodeContext({ workDir: pair.ours });
         await notesAdd(ctx, {
           object: annotatedOid,
@@ -807,6 +879,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           ref: given,
         });
 
+        // Assert
         const peerCommit = tryRunGit(['-C', pair.peer, 'rev-parse', expanded]);
         const oursCommit = tryRunGit(['-C', pair.ours, 'rev-parse', expanded]);
         expect(peerCommit.ok).toBe(true);
@@ -817,10 +890,12 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then a refs/heads/ name nests under refs/notes/, never creating a branch', async () => {
+        // Arrange
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(PINNED_UNIX * 1000);
-
         const noteFile = await writeTempNote('expand-evil-branch', 'evil\n');
+
+        // Act
         runGit(
           [
             '-C',
@@ -835,7 +910,6 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           ],
           { env: pinnedEnv() },
         );
-
         const ctx = createNodeContext({ workDir: pair.ours });
         await notesAdd(ctx, {
           object: annotatedOid,
@@ -843,6 +917,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
           ref: 'refs/heads/evil',
         });
 
+        // Assert
         const nested = 'refs/notes/refs/heads/evil';
         const peerNested = tryRunGit(['-C', pair.peer, 'rev-parse', nested]);
         const oursNested = tryRunGit(['-C', pair.ours, 'rev-parse', nested]);
@@ -862,12 +937,16 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When GIT_NOTES_REF names a ref outside refs/notes/', () => {
       it('Then both git and tsgit refuse', async () => {
+        // Act — git
         const gitResult = tryRunGit(['-C', pair.peer, 'notes', 'add', '-m', 'x', annotatedOid], {
           env: { ...pinnedEnv(), GIT_NOTES_REF: 'build' },
         });
+
+        // Assert — git refuses
         expect(gitResult.ok).toBe(false);
         expect(gitResult.stderr).toContain('outside of refs/notes/');
 
+        // Act — tsgit
         process.env.GIT_NOTES_REF = 'build';
         let thrown: unknown;
         try {
@@ -881,6 +960,8 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
         } finally {
           delete process.env.GIT_NOTES_REF;
         }
+
+        // Assert — tsgit refuses too
         expect(thrown).toBeInstanceOf(TsgitError);
         expect((thrown as TsgitError).data.code).toBe('NOTES_REF_OUTSIDE');
         expect((thrown as TsgitError).data).toMatchObject({ ref: 'build' });
@@ -889,13 +970,17 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When core.notesRef names a ref outside refs/notes/', () => {
       it('Then both git and tsgit refuse', async () => {
+        // Act — git
         const gitResult = tryRunGit(
           ['-C', pair.peer, '-c', 'core.notesRef=build', 'notes', 'add', '-m', 'x', annotatedOid],
           { env: pinnedEnv() },
         );
+
+        // Assert — git refuses
         expect(gitResult.ok).toBe(false);
         expect(gitResult.stderr).toContain('outside of refs/notes/');
 
+        // Act — tsgit
         runGit(['-C', pair.ours, 'config', 'core.notesRef', 'build'], { env: pinnedEnv() });
         let thrown: unknown;
         try {
@@ -909,6 +994,8 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
         } finally {
           runGit(['-C', pair.ours, 'config', '--unset', 'core.notesRef'], { env: pinnedEnv() });
         }
+
+        // Assert — tsgit refuses too
         expect(thrown).toBeInstanceOf(TsgitError);
         expect((thrown as TsgitError).data.code).toBe('NOTES_REF_OUTSIDE');
         expect((thrown as TsgitError).data).toMatchObject({ ref: 'build' });

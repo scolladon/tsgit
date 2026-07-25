@@ -193,6 +193,7 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
 
   describe('Given a single revision', () => {
     it.each(SINGLE_REVISION_MATRIX)('Then $label reconstructs git show', async ({ rev }) => {
+      // Arrange, Act & Assert
       await expectMatch(rev());
     });
   });
@@ -205,6 +206,7 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
 
   describe('Given a merge commit', () => {
     it.each(MERGE_MATRIX)('Then $label reconstructs git show -m', async ({ rev }) => {
+      // Arrange, Act & Assert
       await expectMatchMerge(rev());
     });
   });
@@ -228,15 +230,19 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
 
   describe('Given a <rev>:<path> tree lookup', () => {
     it('Then a blob path reconstructs the raw blob', async () => {
+      // Arrange, Act & Assert
       await expectMatch(`${built.modify}:a.txt`);
     });
     it('Then a nested blob path resolves through sub-trees', async () => {
+      // Arrange, Act & Assert
       await expectMatch(`${built.modify}:sub/b.txt`);
     });
     it('Then an empty path lists the root tree, echoing the input', async () => {
+      // Arrange, Act & Assert
       await expectMatch(`${built.modify}:`);
     });
     it('Then a sub-directory path lists that tree, echoing the input', async () => {
+      // Arrange, Act & Assert
       await expectMatch(`${built.modify}:sub`);
     });
   });

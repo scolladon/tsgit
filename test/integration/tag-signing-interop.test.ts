@@ -152,13 +152,12 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('tag signing interop', () => {
         runGit(['-C', tsDir, 'config', 'gpg.program', openpgpRecorder]);
         const commitSha = seedMatchingRootCommit();
 
-        // Act — real git golden
+        // Act — real git golden, then tsgit
         runGit(['-C', gitDir, 'tag', '-s', '-m', 'signed tag', 'v1', commitSha], {
           env: pinnedEnv(),
         });
         const gitTagSha = runGit(['-C', gitDir, 'rev-parse', 'v1']).trim();
 
-        // Act — tsgit
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(PINNED_UNIX * 1000);
         const result = await tagCreate(ctx, {
@@ -265,13 +264,12 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('tag signing interop', () => {
         runGit(['-C', tsDir, 'config', 'gpg.program', failSigner]);
         const commitSha = seedMatchingRootCommit();
 
-        // Act — real git golden refusal
+        // Act — real git golden refusal, then tsgit refusal
         const gitResult = tryRunGit(
           ['-C', gitDir, 'tag', '-s', '-m', 'should fail', 'v-fail', commitSha],
           { env: pinnedEnv() },
         );
 
-        // Act — tsgit refusal
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(PINNED_UNIX * 1000);
         let caught: unknown;

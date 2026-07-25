@@ -40,10 +40,10 @@ describe.skipIf(!GIT_AVAILABLE)('symbolic-ref interop', () => {
         // Force-rewrite HEAD in peer via canonical git (the file already
         // points at main from init, but the canonical writer round-trips it).
         runGit(['-C', peer, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
-        const sut = createNodeContext({ workDir: ours });
+        const ctx = createNodeContext({ workDir: ours });
 
         // Act
-        await writeSymbolicRef(sut, 'HEAD' as RefName, 'refs/heads/main' as RefName);
+        await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/main' as RefName);
 
         // Assert
         const peerBytes = await readFile(path.join(peer, '.git/HEAD'));

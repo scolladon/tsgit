@@ -129,7 +129,7 @@ describe.skipIf(!GIT_AVAILABLE)('shortlog interop', () => {
   });
 
   it('Then the default summary matches git shortlog (grouping, order, [PATCH], merge)', async () => {
-    // Act
+    // Arrange & Act
     const groups = await shortlogCmd(ctx);
 
     // Assert
@@ -137,7 +137,7 @@ describe.skipIf(!GIT_AVAILABLE)('shortlog interop', () => {
   });
 
   it('Then the per-email reconstruction matches git shortlog -e', async () => {
-    // Act
+    // Arrange & Act
     const groups = await shortlogCmd(ctx);
 
     // Assert
@@ -145,7 +145,7 @@ describe.skipIf(!GIT_AVAILABLE)('shortlog interop', () => {
   });
 
   it('Then grouping by committer matches git shortlog -c', async () => {
-    // Act
+    // Arrange & Act
     const groups = await shortlogCmd(ctx, { by: 'committer' });
 
     // Assert

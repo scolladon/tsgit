@@ -73,10 +73,10 @@ describe.skipIf(!GIT_AVAILABLE)('read-file-at interop', () => {
   describe('Given a committed file at HEAD', () => {
     describe('When readFileAt reads it', () => {
       it('Then the bytes equal git cat-file blob HEAD:<path>', async () => {
-        // Act
-        const sut = await repo.readFileAt('HEAD', 'a.txt');
+        // Arrange & Act
+        const result = await repo.readFileAt('HEAD', 'a.txt');
         // Assert
-        expect(dec(sut.content)).toBe(catBlob('HEAD:a.txt'));
+        expect(dec(result.content)).toBe(catBlob('HEAD:a.txt'));
       });
     });
   });
@@ -84,10 +84,10 @@ describe.skipIf(!GIT_AVAILABLE)('read-file-at interop', () => {
   describe('Given a nested committed file', () => {
     describe('When readFileAt reads the deep path', () => {
       it('Then the bytes equal git cat-file blob HEAD:dir/nested.txt', async () => {
-        // Act
-        const sut = await repo.readFileAt('HEAD', 'dir/nested.txt');
+        // Arrange & Act
+        const result = await repo.readFileAt('HEAD', 'dir/nested.txt');
         // Assert
-        expect(dec(sut.content)).toBe(catBlob('HEAD:dir/nested.txt'));
+        expect(dec(result.content)).toBe(catBlob('HEAD:dir/nested.txt'));
       });
     });
   });
@@ -95,10 +95,10 @@ describe.skipIf(!GIT_AVAILABLE)('read-file-at interop', () => {
   describe('Given a parent-relative rev HEAD~1', () => {
     describe('When readFileAt reads a file', () => {
       it('Then the bytes equal git cat-file blob HEAD~1:<path>', async () => {
-        // Act
-        const sut = await repo.readFileAt('HEAD~1', 'a.txt');
+        // Arrange & Act
+        const result = await repo.readFileAt('HEAD~1', 'a.txt');
         // Assert
-        expect(dec(sut.content)).toBe(catBlob('HEAD~1:a.txt'));
+        expect(dec(result.content)).toBe(catBlob('HEAD~1:a.txt'));
       });
     });
   });
@@ -106,11 +106,11 @@ describe.skipIf(!GIT_AVAILABLE)('read-file-at interop', () => {
   describe('Given an executable file', () => {
     describe('When readFileAt reads it', () => {
       it('Then the mode equals git ls-tree (100755)', async () => {
-        // Act
-        const sut = await repo.readFileAt('HEAD', 'run.sh');
+        // Arrange & Act
+        const result = await repo.readFileAt('HEAD', 'run.sh');
         // Assert
-        expect(sut.mode).toBe(gitMode('HEAD', 'run.sh'));
-        expect(sut.mode).toBe('100755');
+        expect(result.mode).toBe(gitMode('HEAD', 'run.sh'));
+        expect(result.mode).toBe('100755');
       });
     });
   });
@@ -118,12 +118,12 @@ describe.skipIf(!GIT_AVAILABLE)('read-file-at interop', () => {
   describe('Given a symlink entry', () => {
     describe('When readFileAt reads it', () => {
       it('Then the mode is 120000 and the content is the link target', async () => {
-        // Act
-        const sut = await repo.readFileAt('HEAD', 'link');
+        // Arrange & Act
+        const result = await repo.readFileAt('HEAD', 'link');
         // Assert
-        expect(sut.mode).toBe(gitMode('HEAD', 'link'));
-        expect(sut.mode).toBe('120000');
-        expect(dec(sut.content)).toBe('a.txt');
+        expect(result.mode).toBe(gitMode('HEAD', 'link'));
+        expect(result.mode).toBe('120000');
+        expect(dec(result.content)).toBe('a.txt');
       });
     });
   });
@@ -133,11 +133,12 @@ describe.skipIf(!GIT_AVAILABLE)('read-file-at interop', () => {
       it('Then it refuses where git cat-file blob also refuses', async () => {
         // Arrange — canonical git refuses `<rev>:<dir>` as not-a-blob
         expect(tryRunGit(['-C', dir, 'cat-file', 'blob', 'HEAD:dir']).ok).toBe(false);
-        // Act / Assert
+        // Act
         try {
           await repo.readFileAt('HEAD', 'dir');
           expect.unreachable();
         } catch (error) {
+          // Assert
           expect((error as TsgitError).data.code).toBe('UNEXPECTED_OBJECT_TYPE');
         }
       });
@@ -149,11 +150,12 @@ describe.skipIf(!GIT_AVAILABLE)('read-file-at interop', () => {
       it('Then it refuses where git cat-file blob also refuses', async () => {
         // Arrange — canonical git refuses a path not in the tree
         expect(tryRunGit(['-C', dir, 'cat-file', 'blob', 'HEAD:nope']).ok).toBe(false);
-        // Act / Assert
+        // Act
         try {
           await repo.readFileAt('HEAD', 'nope');
           expect.unreachable();
         } catch (error) {
+          // Assert
           expect((error as TsgitError).data.code).toBe('PATH_NOT_IN_TREE');
         }
       });

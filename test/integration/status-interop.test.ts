@@ -418,11 +418,11 @@ describe.skipIf(!GIT_AVAILABLE)('status interop — staged column', () => {
       const { dir, ctx } = await arrange(slug);
 
       // Act
-      const sut = await statusCmd(ctx);
+      const result = await statusCmd(ctx);
 
       // Assert
-      if (expectedClean !== undefined) expect(sut.clean).toBe(expectedClean);
-      expect(reconstruct(sut)).toBe(gitPorcelain(dir));
+      if (expectedClean !== undefined) expect(result.clean).toBe(expectedClean);
+      expect(reconstruct(result)).toBe(gitPorcelain(dir));
     },
     SETUP_TIMEOUT,
   );

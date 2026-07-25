@@ -113,28 +113,33 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
     ];
 
     it.each(REV_RENDER_MATRIX)('Then $label', async ({ rev }) => {
+      // Act & Assert
       expect(renderNameRev(await nameRevCmd(ctx, rev()))).toBe(gitNameRev(dir, rev()));
     });
 
     it('Then a refs filter matches git name-rev --refs', async () => {
+      // Act & Assert
       expect(renderNameRev(await nameRevCmd(ctx, c0, { refs: 'refs/tags/rel*' }))).toBe(
         gitNameRev(dir, c0, '--refs=refs/tags/rel*'),
       );
     });
 
     it('Then an exclude filter matches git name-rev --exclude', async () => {
+      // Act & Assert
       expect(renderNameRev(await nameRevCmd(ctx, c0, { exclude: 'refs/tags/*' }))).toBe(
         gitNameRev(dir, c0, '--exclude=refs/tags/*'),
       );
     });
 
     it('Then describe --contains reconstructs git describe --contains', async () => {
+      // Act & Assert
       expect(renderContains(await describeCmd(ctx, c0, { contains: true }))).toBe(
         git(dir, 'describe', '--contains', c0).trim(),
       );
     });
 
     it('Then describe --contains --match reconstructs git', async () => {
+      // Act & Assert
       expect(renderContains(await describeCmd(ctx, c0, { contains: true, match: 'rel*' }))).toBe(
         git(dir, 'describe', '--contains', '--match', 'rel*', c0).trim(),
       );
@@ -173,6 +178,7 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
     });
 
     it('Then first-parent ancestors render with `~n`', async () => {
+      // Act & Assert
       expect(renderNameRev(await nameRevCmd(ctx, merge))).toBe(gitNameRev(dir, merge));
       expect(renderNameRev(await nameRevCmd(ctx, m1))).toBe(gitNameRev(dir, m1));
       expect(renderNameRev(await nameRevCmd(ctx, base))).toBe(gitNameRev(dir, base));
@@ -184,6 +190,7 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
     ];
 
     it.each(SIDE_COMMIT_MATRIX)('Then $label', async ({ rev }) => {
+      // Act & Assert
       expect(renderNameRev(await nameRevCmd(ctx, rev()))).toBe(gitNameRev(dir, rev()));
     });
   });
@@ -205,12 +212,16 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
     });
 
     it('Then tags-only naming is undefined, matching git name-rev --tags', async () => {
-      const sut = await nameRevCmd(ctx, c0, { tags: true });
-      expect(sut.ref).toBeUndefined();
-      expect(renderNameRev(sut)).toBe(gitNameRev(dir, c0, '--tags'));
+      // Act
+      const result = await nameRevCmd(ctx, c0, { tags: true });
+
+      // Assert
+      expect(result.ref).toBeUndefined();
+      expect(renderNameRev(result)).toBe(gitNameRev(dir, c0, '--tags'));
     });
 
     it('Then describe --contains co-refuses with git on an unnameable commit', async () => {
+      // Act
       const gitResult = tryRunGit(['-C', dir, 'describe', '--contains', c0]);
       let threw = false;
       try {
@@ -218,6 +229,8 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       } catch {
         threw = true;
       }
+
+      // Assert
       expect(gitResult.ok).toBe(false);
       expect(threw).toBe(true);
     });
@@ -244,8 +257,11 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
     });
 
     it('Then the middle commit still resolves with the far-older ancestor pruned', async () => {
-      const sut = await nameRevCmd(ctx, c1);
-      expect(renderNameRev(sut)).toBe(gitNameRev(dir, c1));
+      // Act
+      const result = await nameRevCmd(ctx, c1);
+
+      // Assert
+      expect(renderNameRev(result)).toBe(gitNameRev(dir, c1));
     });
   });
 
@@ -269,15 +285,20 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
     });
 
     it('Then the newer tag still names the newer commit with the older seed pruned', async () => {
-      const sut = await nameRevCmd(ctx, newCommit);
-      expect(renderNameRev(sut)).toBe(gitNameRev(dir, newCommit));
+      // Act
+      const result = await nameRevCmd(ctx, newCommit);
+
+      // Assert
+      expect(renderNameRev(result)).toBe(gitNameRev(dir, newCommit));
     });
 
     it('Then the --tags variant matches with the older seed pruned', async () => {
-      const sut = await nameRevCmd(ctx, newCommit, { tags: true });
-      // --tags queries only refs/tags/*, so git's short name drops the `tags/` prefix
+      // Act
+      const result = await nameRevCmd(ctx, newCommit, { tags: true });
+
+      // Assert — --tags queries only refs/tags/*, so git's short name drops the `tags/` prefix
       // it otherwise disambiguates with — renderNameRev's general reconstruction keeps it.
-      const withoutTagsPrefix = renderNameRev(sut).replace(/^tags\//, '');
+      const withoutTagsPrefix = renderNameRev(result).replace(/^tags\//, '');
       expect(withoutTagsPrefix).toBe(gitNameRev(dir, newCommit, '--tags'));
     });
   });
