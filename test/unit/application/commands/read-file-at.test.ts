@@ -93,11 +93,11 @@ describe('readFileAt', () => {
         // Arrange
         const { ctx, helloId } = await seed();
         // Act
-        const sut = await readFileAt(ctx, 'HEAD', 'a.txt');
+        const result = await readFileAt(ctx, 'HEAD', 'a.txt');
         // Assert
-        expect(sut.id).toBe(helloId);
-        expect(sut.mode).toBe(FILE_MODE.REGULAR);
-        expect(dec(sut.content)).toBe('hello\n');
+        expect(result.id).toBe(helloId);
+        expect(result.mode).toBe(FILE_MODE.REGULAR);
+        expect(dec(result.content)).toBe('hello\n');
       });
     });
   });
@@ -108,9 +108,9 @@ describe('readFileAt', () => {
         // Arrange
         const { ctx } = await seed();
         // Act
-        const sut = await readFileAt(ctx, 'HEAD', 'dir/nested.txt');
+        const result = await readFileAt(ctx, 'HEAD', 'dir/nested.txt');
         // Assert
-        expect(dec(sut.content)).toBe('deep\n');
+        expect(dec(result.content)).toBe('deep\n');
       });
     });
   });
@@ -121,9 +121,9 @@ describe('readFileAt', () => {
         // Arrange
         const { ctx } = await seed();
         // Act
-        const sut = await readFileAt(ctx, 'feature', 'a.txt');
+        const result = await readFileAt(ctx, 'feature', 'a.txt');
         // Assert
-        expect(dec(sut.content)).toBe('hello\n');
+        expect(dec(result.content)).toBe('hello\n');
       });
     });
   });
@@ -134,9 +134,9 @@ describe('readFileAt', () => {
         // Arrange
         const { ctx } = await seed();
         // Act
-        const sut = await readFileAt(ctx, 'v1.0', 'a.txt');
+        const result = await readFileAt(ctx, 'v1.0', 'a.txt');
         // Assert
-        expect(dec(sut.content)).toBe('hello\n');
+        expect(dec(result.content)).toBe('hello\n');
       });
     });
   });
@@ -147,9 +147,9 @@ describe('readFileAt', () => {
         // Arrange
         const { ctx } = await seed();
         // Act
-        const sut = await readFileAt(ctx, 'HEAD~1', 'a.txt');
+        const result = await readFileAt(ctx, 'HEAD~1', 'a.txt');
         // Assert
-        expect(dec(sut.content)).toBe('old\n');
+        expect(dec(result.content)).toBe('old\n');
       });
     });
   });
@@ -159,7 +159,7 @@ describe('readFileAt', () => {
       it('Then refuses with UNEXPECTED_OBJECT_TYPE expecting a blob', async () => {
         // Arrange
         const { ctx } = await seed();
-        // Act / Assert
+        // Act + Assert
         const data = await catchData(() => readFileAt(ctx, 'HEAD', 'dir'));
         expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
         if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
@@ -175,7 +175,7 @@ describe('readFileAt', () => {
       it('Then refuses with UNEXPECTED_OBJECT_TYPE actual commit', async () => {
         // Arrange
         const { ctx } = await seed();
-        // Act / Assert
+        // Act + Assert
         const data = await catchData(() => readFileAt(ctx, 'HEAD', 'sub'));
         expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
         if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
@@ -190,7 +190,7 @@ describe('readFileAt', () => {
       it('Then refuses with PATH_NOT_IN_TREE carrying rev and path', async () => {
         // Arrange
         const { ctx } = await seed();
-        // Act / Assert
+        // Act + Assert
         const data = await catchData(() => readFileAt(ctx, 'HEAD', 'missing'));
         expect(data.code).toBe('PATH_NOT_IN_TREE');
         if (data.code === 'PATH_NOT_IN_TREE') {
@@ -206,7 +206,7 @@ describe('readFileAt', () => {
       it('Then refuses with OBJECT_TOO_LARGE (forwarded to the blob read)', async () => {
         // Arrange
         const { ctx, helloId } = await seed();
-        // Act / Assert
+        // Act + Assert
         const data = await catchData(() => readFileAt(ctx, 'HEAD', 'a.txt', { maxBytes: 2 }));
         expect(data.code).toBe('OBJECT_TOO_LARGE');
         if (data.code === 'OBJECT_TOO_LARGE') {
@@ -223,9 +223,9 @@ describe('readFileAt', () => {
         // Arrange
         const { ctx } = await seed();
         // Act
-        const sut = await readFileAt(ctx, 'HEAD', 'run.sh');
+        const result = await readFileAt(ctx, 'HEAD', 'run.sh');
         // Assert
-        expect(sut.mode).toBe(FILE_MODE.EXECUTABLE);
+        expect(result.mode).toBe(FILE_MODE.EXECUTABLE);
       });
     });
   });
@@ -236,10 +236,10 @@ describe('readFileAt', () => {
         // Arrange
         const { ctx } = await seed();
         // Act
-        const sut = await readFileAt(ctx, 'HEAD', 'link');
+        const result = await readFileAt(ctx, 'HEAD', 'link');
         // Assert
-        expect(sut.mode).toBe(FILE_MODE.SYMLINK);
-        expect(dec(sut.content)).toBe('a.txt');
+        expect(result.mode).toBe(FILE_MODE.SYMLINK);
+        expect(dec(result.content)).toBe('a.txt');
       });
     });
   });

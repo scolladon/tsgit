@@ -106,8 +106,7 @@ describe('notes', () => {
         const content = encoder.encode('hello note');
 
         // Act
-        const sut = notesAdd;
-        const result = await sut(ctx, { object: commitId, content });
+        const result = await notesAdd(ctx, { object: commitId, content });
 
         // Assert
         expect(typeof result.notesCommit).toBe('string');
@@ -125,8 +124,7 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId, content });
 
         // Act
-        const sut = notesRead;
-        const result = await sut(ctx, { object: commitId });
+        const result = await notesRead(ctx, { object: commitId });
 
         // Assert
         expect(result).not.toBeNull();
@@ -213,8 +211,7 @@ describe('notes', () => {
         const first = await notesAdd(ctx, { object: commitId, content: encoder.encode('first') });
 
         // Act
-        const sut = notesAdd;
-        const result = await sut(ctx, {
+        const result = await notesAdd(ctx, {
           object: commitId,
           content: encoder.encode('overwritten'),
           force: true,
@@ -323,8 +320,7 @@ describe('notes', () => {
         const added = await notesAdd(ctx, { object: commitId, content });
 
         // Act
-        const sut = notesRead;
-        const result = await sut(ctx, { object: commitId });
+        const result = await notesRead(ctx, { object: commitId });
 
         // Assert
         expect(result).not.toBeNull();
@@ -343,8 +339,7 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId1, content: encoder.encode('only for c1') });
 
         // Act
-        const sut = notesRead;
-        const result = await sut(ctx, { object: commitId2 });
+        const result = await notesRead(ctx, { object: commitId2 });
 
         // Assert
         expect(result).toBeNull();
@@ -359,8 +354,7 @@ describe('notes', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = notesRead;
-        const result = await sut(ctx, { object: commitId });
+        const result = await notesRead(ctx, { object: commitId });
 
         // Assert
         expect(result).toBeNull();
@@ -373,8 +367,7 @@ describe('notes', () => {
         const { ctx } = await seedWithCommit();
 
         // Act
-        const sut = notesList;
-        const result = await sut(ctx);
+        const result = await notesList(ctx);
 
         // Assert
         expect(result).toEqual([]);
@@ -391,8 +384,7 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId2, content: encoder.encode('n2') });
 
         // Act
-        const sut = notesList;
-        const result = await sut(ctx);
+        const result = await notesList(ctx);
 
         // Assert
         expect(result).toHaveLength(2);
@@ -413,8 +405,7 @@ describe('notes', () => {
         const added = await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
 
         // Act
-        const sut = notesList;
-        const result = await sut(ctx);
+        const result = await notesList(ctx);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -432,8 +423,7 @@ describe('notes', () => {
         await notesAdd(ctx, { object: commitId, content: encoder.encode('to remove') });
 
         // Act
-        const sut = notesRemove;
-        const result = await sut(ctx, { object: commitId });
+        const result = await notesRemove(ctx, { object: commitId });
 
         // Assert
         expect(typeof result.notesCommit).toBe('string');
@@ -481,12 +471,11 @@ describe('notes', () => {
     describe('When notesRemove', () => {
       it('Then the list becomes empty', async () => {
         // Arrange
-        const sut = notesRemove;
         const { ctx, commitId } = await seedWithCommit();
         await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
 
         // Act
-        await sut(ctx, { object: commitId });
+        await notesRemove(ctx, { object: commitId });
 
         // Assert
         const list = await notesList(ctx);
@@ -495,12 +484,11 @@ describe('notes', () => {
 
       it('Then the notes ref still exists', async () => {
         // Arrange
-        const sut = notesRemove;
         const { ctx, commitId } = await seedWithCommit();
         await notesAdd(ctx, { object: commitId, content: encoder.encode('x') });
 
         // Act
-        await sut(ctx, { object: commitId });
+        await notesRemove(ctx, { object: commitId });
 
         // Assert
         const refExists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/notes/commits`);
@@ -563,7 +551,7 @@ describe('notes', () => {
         const { ctx, commitId1, commitId2 } = await seedWithTwoCommits();
         await notesAdd(ctx, { object: commitId1, content: encoder.encode('n1') });
 
-        // Act/Assert — must not throw
+        // Act + Assert — must not throw
         await expect(
           notesAdd(ctx, { object: commitId2, content: encoder.encode('n2') }),
         ).resolves.toBeDefined();
@@ -602,10 +590,9 @@ describe('notes', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
         const expected = await seedFannedNotesRef(ctx);
-        const sut = notesList;
 
         // Act
-        const result = await sut(ctx);
+        const result = await notesList(ctx);
 
         // Assert
         expect(result).toHaveLength(16);
@@ -640,10 +627,9 @@ describe('notes', () => {
           message: "Notes added by 'git notes add'",
         });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/notes/commits`, `${notesCommit}\n`);
-        const sut = notesList;
 
         // Act
-        const result = await sut(ctx);
+        const result = await notesList(ctx);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -679,10 +665,9 @@ describe('notes', () => {
           message: "Notes added by 'git notes add'",
         });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/notes/commits`, `${notesCommit}\n`);
-        const sut = notesList;
 
         // Act
-        const result = await sut(ctx);
+        const result = await notesList(ctx);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -698,8 +683,7 @@ describe('notes', () => {
         const { ctx, commitId } = await seedWithCommit();
 
         // Act
-        const sut = notesAdd;
-        await sut(ctx, { object: 'HEAD', content: encoder.encode('on head') });
+        await notesAdd(ctx, { object: 'HEAD', content: encoder.encode('on head') });
 
         // Assert
         const note = await notesRead(ctx, { object: commitId });

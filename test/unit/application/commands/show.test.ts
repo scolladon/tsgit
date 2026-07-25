@@ -52,14 +52,14 @@ describe('show', () => {
       const head = await revParse(ctx, 'HEAD');
 
       // Act
-      const sut = await show(ctx);
+      const result = await show(ctx);
 
       // Assert
-      expect(sut.kind).toBe('commit');
-      if (sut.kind !== 'commit') throw new Error('expected commit');
-      expect(sut.id).toBe(head);
-      expect(sut.commit.message).toBe('second\n');
-      expect(sut.patch?.changes).toEqual([
+      expect(result.kind).toBe('commit');
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.id).toBe(head);
+      expect(result.commit.message).toBe('second\n');
+      expect(result.patch?.changes).toEqual([
         expect.objectContaining({ type: 'modify', path: 'a.txt' }),
       ]);
     });
@@ -72,11 +72,11 @@ describe('show', () => {
       const root = await revParse(ctx, 'HEAD~1');
 
       // Act
-      const sut = await show(ctx, root);
+      const result = await show(ctx, root);
 
       // Assert
-      if (sut.kind !== 'commit') throw new Error('expected commit');
-      expect(sut.patch?.changes).toEqual([
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.patch?.changes).toEqual([
         expect.objectContaining({ type: 'add', newPath: 'a.txt' }),
       ]);
     });
@@ -93,11 +93,11 @@ describe('show', () => {
       await commit(ctx, { message: 'add nested', author });
 
       // Act
-      const sut = await show(ctx);
+      const result = await show(ctx);
 
       // Assert
-      if (sut.kind !== 'commit') throw new Error('expected commit');
-      expect(sut.patch?.changes).toEqual([
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.patch?.changes).toEqual([
         expect.objectContaining({ type: 'add', newPath: 'sub/b.txt' }),
       ]);
     });
@@ -109,13 +109,13 @@ describe('show', () => {
       const ctx = await seedTwoCommits();
 
       // Act — line 3 changed in a 5-line file: one added, one deleted.
-      const sut = await show(ctx, 'HEAD', { withStat: true });
+      const result = await show(ctx, 'HEAD', { withStat: true });
 
       // Assert
-      if (sut.kind !== 'commit' || sut.patch === undefined) {
+      if (result.kind !== 'commit' || result.patch === undefined) {
         throw new Error('expected a commit with a patch');
       }
-      expect(sut.patch.changes[0]).toMatchObject({ added: 1, deleted: 1, binary: false });
+      expect(result.patch.changes[0]).toMatchObject({ added: 1, deleted: 1, binary: false });
     });
   });
 
@@ -125,13 +125,13 @@ describe('show', () => {
       const ctx = await seedTwoCommits();
 
       // Act
-      const sut = await show(ctx, 'HEAD');
+      const result = await show(ctx, 'HEAD');
 
       // Assert
-      if (sut.kind !== 'commit' || sut.patch === undefined) {
+      if (result.kind !== 'commit' || result.patch === undefined) {
         throw new Error('expected a commit with a patch');
       }
-      expect(sut.patch.changes[0]).not.toHaveProperty('added');
+      expect(result.patch.changes[0]).not.toHaveProperty('added');
     });
   });
 
@@ -141,12 +141,12 @@ describe('show', () => {
       const ctx = await seedTwoCommits();
 
       // Act
-      const sut = await show(ctx, 'HEAD^{tree}');
+      const result = await show(ctx, 'HEAD^{tree}');
 
       // Assert
-      expect(sut.kind).toBe('tree');
-      if (sut.kind !== 'tree') throw new Error('expected tree');
-      expect(sut.entries.map((e) => e.name)).toContain('a.txt');
+      expect(result.kind).toBe('tree');
+      if (result.kind !== 'tree') throw new Error('expected tree');
+      expect(result.entries.map((e) => e.name)).toContain('a.txt');
     });
   });
 
@@ -157,11 +157,11 @@ describe('show', () => {
       const tree = await revParse(ctx, 'HEAD^{tree}');
 
       // Act
-      const sut = await show(ctx, [tree, tree]);
+      const result = await show(ctx, [tree, tree]);
 
       // Assert — structured output returns one result per input rev, in order.
-      expect(sut).toHaveLength(2);
-      expect(sut.every((r) => r.kind === 'tree')).toBe(true);
+      expect(result).toHaveLength(2);
+      expect(result.every((r) => r.kind === 'tree')).toBe(true);
     });
   });
 
@@ -175,12 +175,12 @@ describe('show', () => {
       if (blobId === undefined) throw new Error('a.txt missing');
 
       // Act
-      const sut = await show(ctx, blobId);
+      const result = await show(ctx, blobId);
 
       // Assert
-      expect(sut.kind).toBe('blob');
-      if (sut.kind !== 'blob') throw new Error('expected blob');
-      expect(decode(sut.content)).toBe('l1\nl2\nL3\nl4\nl5\n');
+      expect(result.kind).toBe('blob');
+      if (result.kind !== 'blob') throw new Error('expected blob');
+      expect(decode(result.content)).toBe('l1\nl2\nL3\nl4\nl5\n');
     });
   });
 
@@ -193,15 +193,15 @@ describe('show', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
 
       // Act
-      const sut = await show(ctx, 'v1.0');
+      const result = await show(ctx, 'v1.0');
 
       // Assert
-      expect(sut.kind).toBe('tag');
-      if (sut.kind !== 'tag') throw new Error('expected tag');
-      expect(sut.id).toBe(tagId);
-      expect(sut.tag.tagName).toBe('v1.0');
-      expect(sut.target.kind).toBe('commit');
-      expect(sut.target.id).toBe(head);
+      expect(result.kind).toBe('tag');
+      if (result.kind !== 'tag') throw new Error('expected tag');
+      expect(result.id).toBe(tagId);
+      expect(result.tag.tagName).toBe('v1.0');
+      expect(result.target.kind).toBe('commit');
+      expect(result.target.id).toBe(head);
     });
   });
 
@@ -227,15 +227,15 @@ describe('show', () => {
       });
 
       // Act
-      const sut = await show(ctx, mergeId);
+      const result = await show(ctx, mergeId);
 
       // Assert
-      if (sut.kind !== 'commit') throw new Error('expected commit');
-      expect(sut.patch).toBeUndefined();
-      expect(sut.perParent).toHaveLength(2);
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.patch).toBeUndefined();
+      expect(result.perParent).toHaveLength(2);
       // Merge tree == head's tree: diff vs head is empty; diff vs root carries the change.
-      expect(sut.perParent?.[0]?.changes).toEqual([]);
-      expect(sut.perParent?.[1]?.changes).toEqual([
+      expect(result.perParent?.[0]?.changes).toEqual([]);
+      expect(result.perParent?.[1]?.changes).toEqual([
         expect.objectContaining({ type: 'modify', path: 'a.txt' }),
       ]);
     });
@@ -249,12 +249,12 @@ describe('show', () => {
       const root = await revParse(ctx, 'HEAD~1');
 
       // Act
-      const sut = await show(ctx, [head, root]);
+      const result = await show(ctx, [head, root]);
 
       // Assert
-      expect(sut).toHaveLength(2);
-      expect(sut[0]?.id).toBe(head);
-      expect(sut[1]?.id).toBe(root);
+      expect(result).toHaveLength(2);
+      expect(result[0]?.id).toBe(head);
+      expect(result[1]?.id).toBe(root);
     });
   });
 
@@ -264,10 +264,10 @@ describe('show', () => {
       const ctx = await seedTwoCommits();
 
       // Act
-      const sut = await show(ctx, []);
+      const result = await show(ctx, []);
 
       // Assert
-      expect(sut).toEqual([]);
+      expect(result).toEqual([]);
     });
   });
 

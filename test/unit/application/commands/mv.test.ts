@@ -55,11 +55,11 @@ describe('mv', () => {
         const before = await indexEntry(ctx, 'a.txt');
 
         // Act
-        const sut = await mv(ctx, ['a.txt'], 'b.txt');
+        const result = await mv(ctx, ['a.txt'], 'b.txt');
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
-        expect(sut.skipped).toEqual([]);
+        expect(result.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
+        expect(result.skipped).toEqual([]);
         expect(await exists(ctx, 'a.txt')).toBe(false);
         expect(await readWork(ctx, 'b.txt')).toBe('a');
         const after = await indexEntry(ctx, 'b.txt');
@@ -95,10 +95,10 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a', 'dir/keep.txt': 'k' });
 
         // Act
-        const sut = await mv(ctx, ['a.txt'], 'dir');
+        const result = await mv(ctx, ['a.txt'], 'dir');
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
+        expect(result.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
         expect(await exists(ctx, 'a.txt')).toBe(false);
         expect(await readWork(ctx, 'dir/a.txt')).toBe('a');
       });
@@ -112,10 +112,10 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a', 'b.txt': 'b', 'dir/keep.txt': 'k' });
 
         // Act
-        const sut = await mv(ctx, ['b.txt', 'a.txt'], 'dir');
+        const result = await mv(ctx, ['b.txt', 'a.txt'], 'dir');
 
         // Assert
-        expect(sut.moved).toEqual([
+        expect(result.moved).toEqual([
           { from: 'a.txt', to: 'dir/a.txt' },
           { from: 'b.txt', to: 'dir/b.txt' },
         ]);
@@ -134,10 +134,10 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'old/f.txt': '1', 'old/g.txt': '2' });
 
         // Act
-        const sut = await mv(ctx, ['old'], 'new');
+        const result = await mv(ctx, ['old'], 'new');
 
         // Assert
-        expect(sut.moved).toEqual([
+        expect(result.moved).toEqual([
           { from: 'old/f.txt', to: 'new/f.txt' },
           { from: 'old/g.txt', to: 'new/g.txt' },
         ]);
@@ -174,10 +174,10 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'src/f.txt': '1', 'dest/keep.txt': 'k' });
 
         // Act
-        const sut = await mv(ctx, ['src'], 'dest');
+        const result = await mv(ctx, ['src'], 'dest');
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'src/f.txt', to: 'dest/src/f.txt' }]);
+        expect(result.moved).toEqual([{ from: 'src/f.txt', to: 'dest/src/f.txt' }]);
         expect(await readWork(ctx, 'dest/src/f.txt')).toBe('1');
       });
     });
@@ -209,10 +209,10 @@ describe('mv', () => {
         await ctx.fs.writeUtf8(work(ctx, 'present.txt'), 'x');
 
         // Act
-        const sut = await mv(ctx, ['a.txt'], 'present.txt', { force: true });
+        const result = await mv(ctx, ['a.txt'], 'present.txt', { force: true });
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'present.txt' }]);
+        expect(result.moved).toEqual([{ from: 'a.txt', to: 'present.txt' }]);
         expect(await readWork(ctx, 'present.txt')).toBe('a');
       });
     });
@@ -225,10 +225,10 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a' });
 
         // Act
-        const sut = await mv(ctx, ['a.txt'], 'b.txt', { dryRun: true });
+        const result = await mv(ctx, ['a.txt'], 'b.txt', { dryRun: true });
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
+        expect(result.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
         expect(await exists(ctx, 'a.txt')).toBe(true);
         expect(await exists(ctx, 'b.txt')).toBe(false);
         expect(await indexEntry(ctx, 'a.txt')).toBeDefined();
@@ -244,11 +244,11 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a', 'dir/keep.txt': 'k' });
 
         // Act
-        const sut = await mv(ctx, ['a.txt', 'ghost.txt'], 'dir', { skipErrors: true });
+        const result = await mv(ctx, ['a.txt', 'ghost.txt'], 'dir', { skipErrors: true });
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
-        expect(sut.skipped).toEqual([{ source: 'ghost.txt', reason: 'source-not-tracked' }]);
+        expect(result.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
+        expect(result.skipped).toEqual([{ source: 'ghost.txt', reason: 'source-not-tracked' }]);
         expect(await readWork(ctx, 'dir/a.txt')).toBe('a');
       });
     });
@@ -534,10 +534,10 @@ describe('mv', () => {
         };
 
         // Act
-        const sut = await mv(staleCtx, ['a.txt'], 'b.txt');
+        const result = await mv(staleCtx, ['a.txt'], 'b.txt');
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
+        expect(result.moved).toEqual([{ from: 'a.txt', to: 'b.txt' }]);
       });
     });
   });
@@ -563,10 +563,10 @@ describe('mv', () => {
 
         // Act
         await mv(ctx, ['a.txt'], 'c.txt');
-        const sut = await mv(ctx, ['b.txt'], 'd.txt');
+        const result = await mv(ctx, ['b.txt'], 'd.txt');
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'b.txt', to: 'd.txt' }]);
+        expect(result.moved).toEqual([{ from: 'b.txt', to: 'd.txt' }]);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
     });
@@ -583,8 +583,8 @@ describe('mv', () => {
 
         // Assert — a follow-up mv succeeds instead of RESOURCE_LOCKED.
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
-        const sut = await mv(ctx, ['b.txt'], 'c.txt');
-        expect(sut.moved).toEqual([{ from: 'b.txt', to: 'c.txt' }]);
+        const result = await mv(ctx, ['b.txt'], 'c.txt');
+        expect(result.moved).toEqual([{ from: 'b.txt', to: 'c.txt' }]);
       });
     });
   });
@@ -726,10 +726,10 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a', 'dir/keep.txt': 'k' });
 
         // Act
-        const sut = await mv(ctx, ['a.txt'], 'dir/');
+        const result = await mv(ctx, ['a.txt'], 'dir/');
 
         // Assert
-        expect(sut.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
+        expect(result.moved).toEqual([{ from: 'a.txt', to: 'dir/a.txt' }]);
         expect(await readWork(ctx, 'dir/a.txt')).toBe('a');
       });
     });
@@ -742,11 +742,11 @@ describe('mv', () => {
         const ctx = await seedAndStage({ 'a.txt': 'a', 'z.txt': 'z', 'dir/keep.txt': 'k' });
 
         // Act
-        const sut = await mv(ctx, ['z.txt', 'a.txt'], 'dir');
+        const result = await mv(ctx, ['z.txt', 'a.txt'], 'dir');
 
         // Assert — pins the ascending sort (a mutant that keeps argument order would
         // yield z before a).
-        expect(sut.moved).toEqual([
+        expect(result.moved).toEqual([
           { from: 'a.txt', to: 'dir/a.txt' },
           { from: 'z.txt', to: 'dir/z.txt' },
         ]);

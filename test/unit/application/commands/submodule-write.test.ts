@@ -53,10 +53,10 @@ describe('commands/submodule — init', () => {
         const ctx = await seed({ gitmodules: GITMODULES_ONE, config: ORIGIN });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries).toEqual([
+        expect(result.entries).toEqual([
           { name: 'libs/a', path: 'libs/a', url: 'https://h.x/g/a', registered: true },
         ]);
         const text = await readConfigText(ctx);
@@ -75,10 +75,10 @@ describe('commands/submodule — init', () => {
         });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries[0]).toMatchObject({ registered: true, update: 'rebase' });
+        expect(result.entries[0]).toMatchObject({ registered: true, update: 'rebase' });
         const text = await readConfigText(ctx);
         expect(text).toContain('\turl = https://h.x/g/a\n\tupdate = rebase\n');
       });
@@ -94,7 +94,7 @@ describe('commands/submodule — init', () => {
           config: ORIGIN,
         });
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleInit(ctx);
           expect.fail('init did not reject the invalid update mode');
@@ -121,10 +121,10 @@ describe('commands/submodule — init', () => {
         });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries[0]).toMatchObject({ registered: false, url: 'custom://keep' });
+        expect(result.entries[0]).toMatchObject({ registered: false, url: 'custom://keep' });
         expect(await readConfigText(ctx)).toContain('\turl = custom://keep\n');
       });
     });
@@ -137,10 +137,10 @@ describe('commands/submodule — init', () => {
         const ctx = await seed({ gitmodules: GITMODULES_ONE });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert — DEFAULT_WORK_DIR is /repo; ../a off /repo is /a
-        expect(sut.entries[0]?.url).toBe('/a');
+        expect(result.entries[0]?.url).toBe('/a');
       });
     });
   });
@@ -155,10 +155,10 @@ describe('commands/submodule — init', () => {
         });
 
         // Act
-        const sut = await submoduleInit(ctx, { paths: ['libs/b'] });
+        const result = await submoduleInit(ctx, { paths: ['libs/b'] });
 
         // Assert
-        expect(sut.entries.map((e) => e.path)).toEqual(['libs/b']);
+        expect(result.entries.map((e) => e.path)).toEqual(['libs/b']);
       });
     });
 
@@ -167,7 +167,7 @@ describe('commands/submodule — init', () => {
         // Arrange
         const ctx = await seed({ gitmodules: GITMODULES_ONE, config: ORIGIN });
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleInit(ctx, { paths: ['nope'] });
           expect.fail('init did not reject the unmatched path');
@@ -209,10 +209,10 @@ describe('commands/submodule — init', () => {
         const ctx = await seed({ gitmodules, config: ORIGIN });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+        expect(result.entries.map((e) => e.name)).toEqual(['libs/a']);
       });
     });
   });
@@ -226,7 +226,7 @@ describe('commands/submodule — init', () => {
           config: ORIGIN,
         });
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleInit(ctx);
           expect.fail('init did not reject an oversized .gitmodules');
@@ -249,10 +249,10 @@ describe('commands/submodule — init', () => {
         });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries[0]?.url).toBe('https://up/g/a');
+        expect(result.entries[0]?.url).toBe('https://up/g/a');
       });
     });
   });
@@ -268,10 +268,10 @@ describe('commands/submodule — init', () => {
         });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries[0]?.url).toBe('https://h.x/g/a');
+        expect(result.entries[0]?.url).toBe('https://h.x/g/a');
       });
     });
   });
@@ -283,10 +283,10 @@ describe('commands/submodule — init', () => {
         const ctx = await seed({ config: ORIGIN });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries).toEqual([]);
+        expect(result.entries).toEqual([]);
       });
     });
   });
@@ -298,7 +298,7 @@ describe('commands/submodule — init', () => {
         __resetConfigCacheForTests();
         const ctx = await buildSeededContext();
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleInit(ctx);
           expect.fail('init did not reject the non-repository context');
@@ -320,10 +320,10 @@ describe('commands/submodule — init', () => {
         });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert
-        expect(sut.entries[0]).toMatchObject({
+        expect(result.entries[0]).toMatchObject({
           registered: false,
           url: 'custom://keep',
           update: 'merge',
@@ -339,10 +339,10 @@ describe('commands/submodule — init', () => {
         const ctx = await seed({ gitmodules: '[submodule "x"]\n\tpath = x\n' });
 
         // Act
-        const sut = await submoduleInit(ctx);
+        const result = await submoduleInit(ctx);
 
         // Assert — the guard suppressed the spurious empty-config write
-        expect(sut.entries).toEqual([]);
+        expect(result.entries).toEqual([]);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config`)).toBe(false);
       });
     });
@@ -367,10 +367,10 @@ describe('commands/submodule — sync', () => {
         const ctx = await seed({ gitmodules: GITMODULES_ONE, config: ORIGIN });
 
         // Act
-        const sut = await submoduleSync(ctx);
+        const result = await submoduleSync(ctx);
 
         // Assert
-        expect(sut.entries).toEqual([]);
+        expect(result.entries).toEqual([]);
         expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
       });
     });
@@ -386,10 +386,10 @@ describe('commands/submodule — sync', () => {
         });
 
         // Act
-        const sut = await submoduleSync(ctx);
+        const result = await submoduleSync(ctx);
 
         // Assert
-        expect(sut.entries).toEqual([
+        expect(result.entries).toEqual([
           { name: 'libs/a', path: 'libs/a', url: 'https://h.x/g/moved', syncedRemote: false },
         ]);
         expect(await readConfigText(ctx)).toContain('\turl = https://h.x/g/moved\n');
@@ -408,10 +408,10 @@ describe('commands/submodule — sync', () => {
         await seedModuleConfig(ctx, 'libs/a', 'https://h.x/g/stale');
 
         // Act
-        const sut = await submoduleSync(ctx);
+        const result = await submoduleSync(ctx);
 
         // Assert
-        expect(sut.entries[0]?.syncedRemote).toBe(true);
+        expect(result.entries[0]?.syncedRemote).toBe(true);
         const moduleConfig = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/modules/libs/a/config`);
         expect(moduleConfig).toContain('\turl = https://h.x/g/a\n');
         // The remote.origin.url was overwritten in place — the stale value is gone.
@@ -430,10 +430,10 @@ describe('commands/submodule — sync', () => {
         });
 
         // Act
-        const sut = await submoduleSync(ctx, { paths: ['libs/a'] });
+        const result = await submoduleSync(ctx, { paths: ['libs/a'] });
 
         // Assert
-        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a']);
+        expect(result.entries.map((e) => e.path)).toEqual(['libs/a']);
       });
     });
   });
@@ -445,10 +445,10 @@ describe('commands/submodule — sync', () => {
         const ctx = await seed({ gitmodules: GITMODULES_ONE });
 
         // Act
-        const sut = await submoduleSync(ctx);
+        const result = await submoduleSync(ctx);
 
         // Assert — the guard suppressed the spurious empty-config write
-        expect(sut.entries).toEqual([]);
+        expect(result.entries).toEqual([]);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config`)).toBe(false);
       });
     });
@@ -498,7 +498,7 @@ describe('commands/submodule — deinit', () => {
         // Arrange
         const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleDeinit(ctx);
           expect.fail('deinit did not refuse a bare call');
@@ -520,7 +520,7 @@ describe('commands/submodule — deinit', () => {
         // Arrange
         const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleDeinit(ctx, { all: true, paths: ['libs/a'] });
           expect.fail('deinit did not refuse all combined with a pathspec');
@@ -546,10 +546,10 @@ describe('commands/submodule — deinit', () => {
         await writeWorktreeFile(ctx, 'libs/a', 'file.txt');
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'] });
 
         // Assert
-        expect(sut.entries).toEqual([
+        expect(result.entries).toEqual([
           { name: 'libs/a', path: 'libs/a', url: '../a', cleared: true },
         ]);
         expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
@@ -570,10 +570,10 @@ describe('commands/submodule — deinit', () => {
         });
 
         // Act
-        const sut = await submoduleDeinit(ctx, { all: true });
+        const result = await submoduleDeinit(ctx, { all: true });
 
         // Assert
-        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a', 'libs/b']);
+        expect(result.entries.map((e) => e.path)).toEqual(['libs/a', 'libs/b']);
         const text = await readConfigText(ctx);
         expect(text).not.toContain('[submodule "libs/a"]');
         expect(text).not.toContain('[submodule "libs/b"]');
@@ -589,7 +589,7 @@ describe('commands/submodule — deinit', () => {
         await seedCheckedOut(ctx, 'libs/a');
         await writeWorktreeFile(ctx, 'libs/a', 'dirty.txt');
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleDeinit(ctx, { paths: ['libs/a'] });
           expect.fail('deinit did not refuse a dirty submodule');
@@ -612,10 +612,10 @@ describe('commands/submodule — deinit', () => {
         await writeWorktreeFile(ctx, 'libs/a', 'dirty.txt');
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'], force: true });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'], force: true });
 
         // Assert
-        expect(sut.entries[0]?.cleared).toBe(true);
+        expect(result.entries[0]?.cleared).toBe(true);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/libs/a/dirty.txt`)).toBe(false);
       });
     });
@@ -628,10 +628,10 @@ describe('commands/submodule — deinit', () => {
         const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'] });
 
         // Assert
-        expect(sut.entries[0]?.cleared).toBe(false);
+        expect(result.entries[0]?.cleared).toBe(false);
       });
     });
   });
@@ -644,10 +644,10 @@ describe('commands/submodule — deinit', () => {
         await ctx.fs.mkdir(`${ctx.layout.workDir}/libs/a`);
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'] });
 
         // Assert
-        expect(sut.entries[0]?.cleared).toBe(false);
+        expect(result.entries[0]?.cleared).toBe(false);
         expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
       });
     });
@@ -659,7 +659,7 @@ describe('commands/submodule — deinit', () => {
         // Arrange
         const ctx = await seed({ gitmodules: GITMODULES_ONE, config: REGISTERED_ONE });
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleDeinit(ctx, { paths: ['nope'] });
           expect.fail('deinit did not reject the unmatched path');
@@ -683,7 +683,7 @@ describe('commands/submodule — deinit', () => {
         await seedCheckedOut(ctx, 'libs/b');
         await writeWorktreeFile(ctx, 'libs/b', 'dirty.txt');
 
-        // Act & Assert
+        // Act + Assert
         try {
           await submoduleDeinit(ctx, { all: true });
           expect.fail('deinit did not refuse the dirty second submodule');
@@ -708,10 +708,10 @@ describe('commands/submodule — deinit', () => {
         });
 
         // Act
-        const sut = await submoduleDeinit(ctx, { all: true });
+        const result = await submoduleDeinit(ctx, { all: true });
 
         // Assert — only the safe libs/a is selected
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+        expect(result.entries.map((e) => e.name)).toEqual(['libs/a']);
       });
     });
   });
@@ -726,10 +726,10 @@ describe('commands/submodule — deinit', () => {
         });
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'] });
 
         // Assert — libs/b is left registered
-        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a']);
+        expect(result.entries.map((e) => e.path)).toEqual(['libs/a']);
         expect(await readConfigText(ctx)).toContain('[submodule "libs/b"]');
       });
     });
@@ -742,10 +742,10 @@ describe('commands/submodule — deinit', () => {
         const ctx = await seed({ gitmodules: GITMODULES_ONE });
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'] });
 
         // Assert — the has-section guard suppressed the spurious empty-config write
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+        expect(result.entries.map((e) => e.name)).toEqual(['libs/a']);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/config`)).toBe(false);
       });
     });
@@ -761,10 +761,10 @@ describe('commands/submodule — deinit', () => {
         });
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'] });
 
         // Assert
-        expect(sut.entries[0]?.url).toBe('');
+        expect(result.entries[0]?.url).toBe('');
       });
     });
   });
@@ -780,10 +780,10 @@ describe('commands/submodule — deinit', () => {
         await ctx.fs.mkdir(`${ctx.layout.workDir}/libs/a`);
 
         // Act
-        const sut = await submoduleDeinit(ctx, { paths: ['libs/a'] });
+        const result = await submoduleDeinit(ctx, { paths: ['libs/a'] });
 
         // Assert
-        expect(sut.entries.map((e) => e.name)).toEqual(['libs/a']);
+        expect(result.entries.map((e) => e.name)).toEqual(['libs/a']);
         expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
       });
     });
@@ -827,10 +827,10 @@ describe('commands/submodule — deinit', () => {
 
         // Act — all=true selects every actionable row; the empty pathspec must
         // not narrow the selection to nothing.
-        const sut = await submoduleDeinit(ctx, { all: true, paths: [] });
+        const result = await submoduleDeinit(ctx, { all: true, paths: [] });
 
         // Assert
-        expect(sut.entries.map((e) => e.path)).toEqual(['libs/a', 'libs/b']);
+        expect(result.entries.map((e) => e.path)).toEqual(['libs/a', 'libs/b']);
         const text = await readConfigText(ctx);
         expect(text).not.toContain('[submodule "libs/a"]');
         expect(text).not.toContain('[submodule "libs/b"]');

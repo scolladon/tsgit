@@ -132,10 +132,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commitId } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD');
+        const result = await revParse(ctx, 'HEAD');
 
         // Assert
-        expect(sut).toBe(commitId);
+        expect(result).toBe(commitId);
       });
     });
   });
@@ -149,10 +149,10 @@ describe('revParse', () => {
         const oid = '0123456789abcdef0123456789abcdef01234567';
 
         // Act
-        const sut = await revParse(ctx, oid);
+        const result = await revParse(ctx, oid);
 
         // Assert
-        expect(sut).toBe(oid);
+        expect(result).toBe(oid);
       });
     });
   });
@@ -169,10 +169,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { [`refs/heads/${oid}`]: other } });
 
         // Act
-        const sut = await revParse(ctx, oid);
+        const result = await revParse(ctx, oid);
 
         // Assert — the literal oid, not `other`.
-        expect(sut).toBe(oid);
+        expect(result).toBe(oid);
       });
     });
   });
@@ -186,10 +186,10 @@ describe('revParse', () => {
         const oid = await writeBlob(ctx, 'abbrev-target');
 
         // Act
-        const sut = await revParse(ctx, oid.slice(0, 7));
+        const result = await revParse(ctx, oid.slice(0, 7));
 
         // Assert
-        expect(sut).toBe(oid);
+        expect(result).toBe(oid);
       });
     });
   });
@@ -294,10 +294,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/tags/release': commit } });
 
         // Act
-        const sut = await revParse(ctx, 'release');
+        const result = await revParse(ctx, 'release');
 
         // Assert
-        expect(sut).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });
@@ -311,10 +311,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': commit } });
 
         // Act
-        const sut = await revParse(ctx, 'origin/main');
+        const result = await revParse(ctx, 'origin/main');
 
         // Assert
-        expect(sut).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });
@@ -328,10 +328,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/feature': commit } });
 
         // Act
-        const sut = await revParse(ctx, 'refs/heads/feature');
+        const result = await revParse(ctx, 'refs/heads/feature');
 
         // Assert
-        expect(sut).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });
@@ -369,10 +369,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': child } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD^');
+        const result = await revParse(ctx, 'HEAD^');
 
         // Assert
-        expect(sut).toBe(parent);
+        expect(result).toBe(parent);
       });
     });
   });
@@ -389,10 +389,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': merge } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD^2');
+        const result = await revParse(ctx, 'HEAD^2');
 
         // Assert
-        expect(sut).toBe(p2);
+        expect(result).toBe(p2);
       });
     });
   });
@@ -408,10 +408,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': merge } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD^1');
+        const result = await revParse(ctx, 'HEAD^1');
 
         // Assert
-        expect(sut).toBe(p1);
+        expect(result).toBe(p1);
       });
     });
   });
@@ -440,59 +440,38 @@ describe('revParse', () => {
       return { blobA, blobB, sub, root };
     };
 
-    describe('When revParse(main:a.txt)', () => {
-      it('Then returns the blob at that path', async () => {
+    describe('When revParse resolves the tree-ish path', () => {
+      it.each([
+        {
+          label: 'the blob at a top-level path (main:a.txt)',
+          expr: 'main:a.txt',
+          field: 'blobA' as const,
+        },
+        {
+          label: 'the nested blob via a sub-tree (main:sub/b.txt)',
+          expr: 'main:sub/b.txt',
+          field: 'blobB' as const,
+        },
+        {
+          label: 'the commit tree itself for an empty path (main:)',
+          expr: 'main:',
+          field: 'root' as const,
+        },
+        {
+          label: 'the sub-tree id (main:sub)',
+          expr: 'main:sub',
+          field: 'sub' as const,
+        },
+      ])('Then it returns $label', async ({ expr, field }) => {
         // Arrange
         const ctx = createMemoryContext();
-        const { blobA } = await seedTree(ctx);
+        const tree = await seedTree(ctx);
 
         // Act
-        const sut = await revParse(ctx, 'main:a.txt');
+        const result = await revParse(ctx, expr);
 
         // Assert
-        expect(sut).toBe(blobA);
-      });
-    });
-
-    describe('When revParse(main:sub/b.txt)', () => {
-      it('Then descends sub-trees to the nested blob', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        const { blobB } = await seedTree(ctx);
-
-        // Act
-        const sut = await revParse(ctx, 'main:sub/b.txt');
-
-        // Assert
-        expect(sut).toBe(blobB);
-      });
-    });
-
-    describe('When revParse(main:) with an empty path', () => {
-      it('Then returns the commit tree itself', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        const { root } = await seedTree(ctx);
-
-        // Act
-        const sut = await revParse(ctx, 'main:');
-
-        // Assert
-        expect(sut).toBe(root);
-      });
-    });
-
-    describe('When revParse(main:sub) names a sub-tree', () => {
-      it('Then returns the sub-tree id', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        const { sub } = await seedTree(ctx);
-
-        // Act
-        const sut = await revParse(ctx, 'main:sub');
-
-        // Assert
-        expect(sut).toBe(sub);
+        expect(result).toBe(tree[field]);
       });
     });
 
@@ -599,10 +578,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD~2');
+        const result = await revParse(ctx, 'HEAD~2');
 
         // Assert
-        expect(sut).toBe(gp);
+        expect(result).toBe(gp);
       });
     });
   });
@@ -617,10 +596,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD~1');
+        const result = await revParse(ctx, 'HEAD~1');
 
         // Assert
-        expect(sut).toBe(parent);
+        expect(result).toBe(parent);
       });
     });
   });
@@ -635,10 +614,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD~0');
+        const result = await revParse(ctx, 'HEAD~0');
 
         // Assert
-        expect(sut).toBe(head);
+        expect(result).toBe(head);
       });
     });
   });
@@ -653,10 +632,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD^{tree}');
+        const result = await revParse(ctx, 'HEAD^{tree}');
 
         // Assert
-        expect(sut).toBe(tree);
+        expect(result).toBe(tree);
       });
     });
     describe('When revParse(HEAD^{commit})', () => {
@@ -667,10 +646,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
 
         // Act
-        const sut = await revParse(ctx, 'HEAD^{commit}');
+        const result = await revParse(ctx, 'HEAD^{commit}');
 
         // Assert
-        expect(sut).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });
@@ -685,10 +664,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': tag } });
 
         // Act
-        const sut = await revParse(ctx, 'v1^{commit}');
+        const result = await revParse(ctx, 'v1^{commit}');
 
         // Assert
-        expect(sut).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });
@@ -706,10 +685,10 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': t3 } });
 
         // Act
-        const sut = await revParse(ctx, 'v1^{commit}');
+        const result = await revParse(ctx, 'v1^{commit}');
 
         // Assert
-        expect(sut).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });
@@ -805,10 +784,10 @@ describe('revParse', () => {
         await writeIndexFile(ctx, [{ path: 'a.txt', id: blob, stage: 0 }]);
 
         // Act
-        const sut = await revParse(ctx, ':0:a.txt');
+        const result = await revParse(ctx, ':0:a.txt');
 
         // Assert
-        expect(sut).toBe(blob);
+        expect(result).toBe(blob);
       });
     });
   });
@@ -880,10 +859,10 @@ describe('revParse', () => {
         ]);
 
         // Act
-        const sut = await revParse(ctx, ':3:conflict.txt');
+        const result = await revParse(ctx, ':3:conflict.txt');
 
         // Assert
-        expect(sut).toBe(theirs);
+        expect(result).toBe(theirs);
       });
     });
   });
@@ -943,10 +922,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const sut = await revParse(ctx, 'HEAD@{1}');
+          const result = await revParse(ctx, 'HEAD@{1}');
 
           // Assert
-          expect(sut).toBe(c1);
+          expect(result).toBe(c1);
         });
       });
     });
@@ -965,10 +944,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const sut = await revParse(ctx, 'HEAD@{0}');
+          const result = await revParse(ctx, 'HEAD@{0}');
 
           // Assert
-          expect(sut).toBe(c2);
+          expect(result).toBe(c2);
         });
       });
     });
@@ -985,10 +964,10 @@ describe('revParse', () => {
           await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
 
           // Act
-          const sut = await revParse(ctx, 'main@{0}');
+          const result = await revParse(ctx, 'main@{0}');
 
           // Assert
-          expect(sut).toBe(tip);
+          expect(result).toBe(tip);
         });
       });
     });
@@ -1003,10 +982,10 @@ describe('revParse', () => {
           await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
 
           // Act
-          const sut = await revParse(ctx, '@{0}');
+          const result = await revParse(ctx, '@{0}');
 
           // Assert
-          expect(sut).toBe(tip);
+          expect(result).toBe(tip);
         });
       });
     });
@@ -1021,10 +1000,10 @@ describe('revParse', () => {
           await writeReflog(ctx, HEAD_REF, [reflogEntry(ZERO_OID, c1, 1_000)]);
 
           // Act
-          const sut = await revParse(ctx, '@{0}');
+          const result = await revParse(ctx, '@{0}');
 
           // Assert
-          expect(sut).toBe(c1);
+          expect(result).toBe(c1);
         });
       });
     });
@@ -1045,10 +1024,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const sut = await revParse(ctx, 'HEAD@{1}^');
+          const result = await revParse(ctx, 'HEAD@{1}^');
 
           // Assert
-          expect(sut).toBe(c1);
+          expect(result).toBe(c1);
         });
       });
     });
@@ -1150,10 +1129,10 @@ describe('revParse', () => {
 
           // Act — `now` is the reference for `2.days.ago`; both entries (ts 1000,
           // 2000, i.e. 1970) predate it, so the newest entry is selected.
-          const sut = await revParse(ctx, 'HEAD@{2.days.ago}');
+          const result = await revParse(ctx, 'HEAD@{2.days.ago}');
 
           // Assert
-          expect(sut).toBe(c2);
+          expect(result).toBe(c2);
         });
       });
     });
@@ -1175,10 +1154,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const sut = await revParse(ctx, 'HEAD@{2022-01-01}');
+          const result = await revParse(ctx, 'HEAD@{2022-01-01}');
 
           // Assert
-          expect(sut).toBe(c1);
+          expect(result).toBe(c1);
         });
       });
     });
@@ -1195,10 +1174,10 @@ describe('revParse', () => {
           await writeReflog(ctx, HEAD_REF, [reflogEntry(c1, c1, ts2024)]);
 
           // Act
-          const sut = await revParse(ctx, 'HEAD@{2020-01-01}');
+          const result = await revParse(ctx, 'HEAD@{2020-01-01}');
 
           // Assert
-          expect(sut).toBe(c1);
+          expect(result).toBe(c1);
         });
       });
     });
@@ -1271,10 +1250,10 @@ describe('revParse', () => {
           ]);
 
           // Act — target equals the older entry's exact timestamp.
-          const sut = await revParse(ctx, 'HEAD@{2020-01-01}');
+          const result = await revParse(ctx, 'HEAD@{2020-01-01}');
 
           // Assert — the equal-timestamp entry (c1) is selected, not the prior oldId.
-          expect(sut).toBe(c1);
+          expect(result).toBe(c1);
         });
       });
     });
@@ -1299,10 +1278,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const sut = await revParse(ctx, 'HEAD@{5.days.ago}');
+          const result = await revParse(ctx, 'HEAD@{5.days.ago}');
 
           // Assert — the 10-day-old entry is the newest at or before `now - 5.days`.
-          expect(sut).toBe(tenDayCommit);
+          expect(result).toBe(tenDayCommit);
         });
       });
     });
@@ -1325,10 +1304,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const sut = await revParse(ctx, 'v1@{0}');
+          const result = await revParse(ctx, 'v1@{0}');
 
           // Assert — resolved through the refs/tags/v1 reflog, not the branch.
-          expect(sut).toBe(taggedTip);
+          expect(result).toBe(taggedTip);
         });
       });
     });

@@ -78,10 +78,10 @@ describe('stash push', () => {
         const ctx = await setupRepo();
 
         // Act
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        expect(sut).toEqual({ kind: 'no-local-changes' });
+        expect(result).toEqual({ kind: 'no-local-changes' });
         expect(await readStashStack(ctx)).toEqual([]);
       });
     });
@@ -95,10 +95,10 @@ describe('stash push', () => {
         await write(ctx, 'a.txt', 'modified\n');
 
         // Act
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        expect(sut.kind).toBe('saved');
+        expect(result.kind).toBe('saved');
         expect(await read(ctx, 'a.txt')).toBe('committed\n');
         const stack = await readStashStack(ctx);
         expect(stack).toHaveLength(1);
@@ -114,11 +114,11 @@ describe('stash push', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
 
         // Act
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        if (sut.kind !== 'saved') throw new Error('expected saved');
-        const w = await commitOf(ctx, sut.stash);
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
         // The W tree drops the deleted path; the reset restores it from HEAD.
         expect(await treeContent(ctx, w.tree, 'a.txt')).toBe('<absent>');
         expect(await read(ctx, 'a.txt')).toBe('committed\n');
@@ -134,11 +134,11 @@ describe('stash push', () => {
         await write(ctx, 'a.txt', 'modified\n');
 
         // Act
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        if (sut.kind !== 'saved') throw new Error('expected saved');
-        const w = await commitOf(ctx, sut.stash);
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
         expect(w.parents).toHaveLength(2);
         expect(await treeContent(ctx, w.tree, 'a.txt')).toBe('modified\n');
       });
@@ -189,11 +189,11 @@ describe('stash push', () => {
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        if (sut.kind !== 'saved') throw new Error('expected saved');
-        const w = await commitOf(ctx, sut.stash);
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
         // The index commit's parent is the base (HEAD) commit.
         expect(w.parents[0]).toBe(await headId(ctx));
         const indexCommit = await commitOf(ctx, w.parents[1] as ObjectId);
@@ -235,11 +235,11 @@ describe('stash push', () => {
         await write(ctx, 'new.txt', 'untracked\n');
 
         // Act
-        const sut = await stashPush(ctx, { includeUntracked: true });
+        const result = await stashPush(ctx, { includeUntracked: true });
 
         // Assert
-        if (sut.kind !== 'saved') throw new Error('expected saved');
-        const w = await commitOf(ctx, sut.stash);
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
         expect(w.parents).toHaveLength(3);
         const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
         expect(await treeContent(ctx, uTree, 'new.txt')).toBe('untracked\n');
@@ -258,10 +258,10 @@ describe('stash push', () => {
         await write(ctx, 'new.txt', 'untracked\n');
 
         // Act
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        expect(sut).toEqual({ kind: 'no-local-changes' });
+        expect(result).toEqual({ kind: 'no-local-changes' });
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/new.txt`)).toBe(true);
       });
     });
@@ -304,10 +304,10 @@ describe('stash list', () => {
         const ctx = await setupRepo();
 
         // Act
-        const sut = await stashList(ctx);
+        const result = await stashList(ctx);
 
         // Assert
-        expect(sut).toEqual({ entries: [] });
+        expect(result).toEqual({ entries: [] });
       });
     });
   });
@@ -321,11 +321,11 @@ describe('stash list', () => {
         const second = await pushChange(ctx, 'two\n');
 
         // Act
-        const sut = await stashList(ctx);
+        const result = await stashList(ctx);
 
         // Assert
-        expect(sut.entries.map((e) => e.selector)).toEqual(['stash@{0}', 'stash@{1}']);
-        expect(sut.entries.map((e) => e.stash)).toEqual([second, first]);
+        expect(result.entries.map((e) => e.selector)).toEqual(['stash@{0}', 'stash@{1}']);
+        expect(result.entries.map((e) => e.stash)).toEqual([second, first]);
       });
     });
   });
@@ -342,10 +342,10 @@ describe('stash drop', () => {
         const third = await pushChange(ctx, 'three\n');
 
         // Act
-        const sut = await stashDrop(ctx, { index: 1 });
+        const result = await stashDrop(ctx, { index: 1 });
 
         // Assert
-        expect(sut).toEqual({ dropped: second, remaining: 2 });
+        expect(result).toEqual({ dropped: second, remaining: 2 });
         expect((await stashList(ctx)).entries.map((e) => e.stash)).toEqual([third, first]);
       });
     });
@@ -359,10 +359,10 @@ describe('stash drop', () => {
         await pushChange(ctx, 'one\n');
 
         // Act
-        const sut = await stashDrop(ctx, {});
+        const result = await stashDrop(ctx, {});
 
         // Assert
-        expect(sut.remaining).toBe(0);
+        expect(result.remaining).toBe(0);
         expect((await stashList(ctx)).entries).toEqual([]);
       });
     });
@@ -403,10 +403,10 @@ describe('stash apply', () => {
         if (saved.kind !== 'saved') throw new Error('expected saved');
 
         // Act
-        const sut = await stashApply(ctx, {});
+        const result = await stashApply(ctx, {});
 
         // Assert
-        expect(sut).toEqual({ kind: 'applied', stash: saved.stash });
+        expect(result).toEqual({ kind: 'applied', stash: saved.stash });
         expect(await read(ctx, 'a.txt')).toBe('modified\n');
         // Index still at HEAD → the change is unstaged.
         const idx = await readIndex(ctx);
@@ -500,12 +500,12 @@ describe('stash apply', () => {
         await commit2(ctx, 'current\n', 'diverge');
 
         // Act
-        const sut = await stashApply(ctx, {});
+        const result = await stashApply(ctx, {});
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.conflicts.map((c) => c.path)).toEqual(['a.txt']);
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts.map((c) => c.path)).toEqual(['a.txt']);
         expect(await read(ctx, 'a.txt')).toContain('<<<<<<<');
         const idx = await readIndex(ctx);
         expect(idx.entries.filter((e) => e.path === 'a.txt').map((e) => e.flags.stage)).toEqual([
@@ -677,10 +677,10 @@ describe('stash pop', () => {
         await stashPush(ctx, {});
 
         // Act
-        const sut = await stashPop(ctx, {});
+        const result = await stashPop(ctx, {});
 
         // Assert
-        expect(sut.kind).toBe('applied');
+        expect(result.kind).toBe('applied');
         expect(await read(ctx, 'a.txt')).toBe('modified\n');
         expect((await stashList(ctx)).entries).toEqual([]);
       });
@@ -697,10 +697,10 @@ describe('stash pop', () => {
         await commit2(ctx, 'current\n', 'diverge');
 
         // Act
-        const sut = await stashPop(ctx, {});
+        const result = await stashPop(ctx, {});
 
         // Assert
-        expect(sut.kind).toBe('conflict');
+        expect(result.kind).toBe('conflict');
         expect((await stashList(ctx)).entries).toHaveLength(1);
       });
     });
@@ -791,10 +791,10 @@ describe('stash lock hygiene', () => {
 
         // Act
         await write(ctx, 'a.txt', 'modified\n');
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        expect(sut.kind).toBe('saved');
+        expect(result.kind).toBe('saved');
       });
     });
   });
@@ -810,10 +810,10 @@ describe('stash lock hygiene', () => {
 
         // Act — index lock must be free for this push.
         await write(ctx, 'a.txt', 'again\n');
-        const sut = await stashPush(ctx, {});
+        const result = await stashPush(ctx, {});
 
         // Assert
-        expect(sut.kind).toBe('saved');
+        expect(result.kind).toBe('saved');
       });
     });
   });
@@ -853,11 +853,11 @@ describe('stash pop — selector', () => {
         const newer = await pushChange(ctx, 'newer\n');
 
         // Act
-        const sut = await stashPop(ctx, { index: 1 });
+        const result = await stashPop(ctx, { index: 1 });
 
         // Assert — older applied to the working tree + dropped; newer remains at index 0.
-        expect(sut.kind).toBe('applied');
-        if (sut.kind === 'applied') expect(sut.dropped).toBe(older);
+        expect(result.kind).toBe('applied');
+        if (result.kind === 'applied') expect(result.dropped).toBe(older);
         expect(await read(ctx, 'a.txt')).toBe('older\n');
         const stack = await stashList(ctx);
         expect(stack.entries.map((e) => e.stash)).toEqual([newer]);
@@ -877,11 +877,11 @@ describe('stash push — ignored files', () => {
         await write(ctx, 'tracked-untracked.txt', 'keep\n');
 
         // Act
-        const sut = await stashPush(ctx, { includeUntracked: true });
+        const result = await stashPush(ctx, { includeUntracked: true });
 
         // Assert
-        if (sut.kind !== 'saved') throw new Error('expected saved');
-        const u = (await commitOf(ctx, (await commitOf(ctx, sut.stash)).parents[2] as ObjectId))
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const u = (await commitOf(ctx, (await commitOf(ctx, result.stash)).parents[2] as ObjectId))
           .tree;
         expect(await treeContent(ctx, u, 'tracked-untracked.txt')).toBe('keep\n');
         // The ignored file is excluded from the stash and left on disk.

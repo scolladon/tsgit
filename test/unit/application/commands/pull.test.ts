@@ -126,14 +126,16 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport));
+        const result = await pull(withTransport(ctx, transport));
 
         // Assert
-        expect(sut.merge.kind).toBe('fast-forward');
+        expect(result.merge.kind).toBe('fast-forward');
         expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(b);
         expect(await reflogMessages(ctx, 'refs/heads/main')).toContain('pull: Fast-forward');
         expect(
-          sut.fetch.updatedRefs.some((u) => u.name === 'refs/remotes/origin/main' && u.newId === b),
+          result.fetch.updatedRefs.some(
+            (u) => u.name === 'refs/remotes/origin/main' && u.newId === b,
+          ),
         ).toBe(true);
       });
     });
@@ -153,10 +155,10 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport));
+        const result = await pull(withTransport(ctx, transport));
 
         // Assert
-        expect(sut.merge.kind).toBe('up-to-date');
+        expect(result.merge.kind).toBe('up-to-date');
       });
     });
   });
@@ -180,13 +182,13 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), { author });
+        const result = await pull(withTransport(ctx, transport), { author });
 
         // Assert
-        expect(sut.merge.kind).toBe('merge');
-        if (sut.merge.kind === 'merge') {
-          expect(sut.merge.parents).toHaveLength(2);
-          const obj = await readObject(ctx, sut.merge.id);
+        expect(result.merge.kind).toBe('merge');
+        if (result.merge.kind === 'merge') {
+          expect(result.merge.parents).toHaveLength(2);
+          const obj = await readObject(ctx, result.merge.id);
           expect(obj.type).toBe('commit');
           if (obj.type === 'commit') {
             expect(obj.data.message).toBe(`Merge branch 'main' of ${REMOTE_URL}\n`);
@@ -218,10 +220,10 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), { author });
+        const result = await pull(withTransport(ctx, transport), { author });
 
         // Assert — conflict state persisted, then mergeAbort restores ORIG_HEAD.
-        expect(sut.merge.kind).toBe('conflict');
+        expect(result.merge.kind).toBe('conflict');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(true);
         await mergeAbort(ctx);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
@@ -283,13 +285,13 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), {
+        const result = await pull(withTransport(ctx, transport), {
           remote: 'upstream',
           ref: 'main',
         });
 
         // Assert
-        expect(sut.merge.kind).toBe('fast-forward');
+        expect(result.merge.kind).toBe('fast-forward');
         expect(await resolveRef(ctx, 'refs/remotes/upstream/main' as RefName)).toBe(b);
       });
     });
@@ -312,11 +314,11 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport));
+        const result = await pull(withTransport(ctx, transport));
 
         // Assert
-        expect(sut.fetch.remote).toBe('origin');
-        expect(sut.merge.kind).toBe('up-to-date');
+        expect(result.fetch.remote).toBe('origin');
+        expect(result.merge.kind).toBe('up-to-date');
       });
     });
   });
@@ -338,11 +340,11 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport));
+        const result = await pull(withTransport(ctx, transport));
 
         // Assert
-        expect(sut.fetch.remote).toBe('solo');
-        expect(sut.merge.kind).toBe('up-to-date');
+        expect(result.fetch.remote).toBe('solo');
+        expect(result.merge.kind).toBe('up-to-date');
       });
     });
   });
@@ -566,15 +568,15 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), {
+        const result = await pull(withTransport(ctx, transport), {
           message: 'custom pull message',
           author,
         });
 
         // Assert
-        expect(sut.merge.kind).toBe('merge');
-        if (sut.merge.kind === 'merge') {
-          const obj = await readObject(ctx, sut.merge.id);
+        expect(result.merge.kind).toBe('merge');
+        if (result.merge.kind === 'merge') {
+          const obj = await readObject(ctx, result.merge.id);
           if (obj.type === 'commit') {
             expect(obj.data.message).toBe('custom pull message\n');
           }
@@ -622,10 +624,10 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), { prune: true });
+        const result = await pull(withTransport(ctx, transport), { prune: true });
 
         // Assert
-        expect(sut.fetch.prunedRefs).toContain('refs/remotes/origin/stale');
+        expect(result.fetch.prunedRefs).toContain('refs/remotes/origin/stale');
       });
     });
   });
@@ -648,10 +650,10 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), { fastForward: 'never', author });
+        const result = await pull(withTransport(ctx, transport), { fastForward: 'never', author });
 
         // Assert — a true merge commit, not a fast-forward.
-        expect(sut.merge.kind).toBe('merge');
+        expect(result.merge.kind).toBe('merge');
       });
     });
   });
@@ -821,12 +823,12 @@ describe('pull', () => {
         );
 
         // Act
-        const sut = await pull(withTransport(ctx, transport), { author, committer });
+        const result = await pull(withTransport(ctx, transport), { author, committer });
 
         // Assert
-        expect(sut.merge.kind).toBe('merge');
-        if (sut.merge.kind === 'merge') {
-          const obj = await readObject(ctx, sut.merge.id);
+        expect(result.merge.kind).toBe('merge');
+        if (result.merge.kind === 'merge') {
+          const obj = await readObject(ctx, result.merge.id);
           if (obj.type === 'commit') {
             expect(obj.data.committer.name).toBe('Bob');
           }

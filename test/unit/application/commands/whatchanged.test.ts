@@ -105,10 +105,9 @@ describe('whatchanged', () => {
     it('Then each non-merge commit pairs its log fields with first-parent changes', async () => {
       // Arrange
       const { ctx } = await seedLinear();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx);
+      const result = await whatchanged(ctx);
 
       // Assert — newest first; every entry carries log fields + changes
       expect(messages(result)).toEqual(['empty', 'rename b to c', 'mod a add b', 'root']);
@@ -123,10 +122,9 @@ describe('whatchanged', () => {
     it('Then its changes are the additions against the empty tree', async () => {
       // Arrange
       const { ctx, c1 } = await seedLinear();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx, { rev: c1 });
+      const result = await whatchanged(ctx, { rev: c1 });
 
       // Assert
       expect(result).toHaveLength(1);
@@ -140,10 +138,9 @@ describe('whatchanged', () => {
     it('Then it surfaces a single rename change (detection on)', async () => {
       // Arrange
       const { ctx, c3 } = await seedLinear();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx, { rev: c3, limit: 1 });
+      const result = await whatchanged(ctx, { rev: c3, limit: 1 });
 
       // Assert
       expect(result[0]?.changes.changes).toEqual([
@@ -156,10 +153,9 @@ describe('whatchanged', () => {
     it('Then the entry is present with an empty change set', async () => {
       // Arrange
       const { ctx, c4 } = await seedLinear();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx, { rev: c4, limit: 1 });
+      const result = await whatchanged(ctx, { rev: c4, limit: 1 });
 
       // Assert
       expect(result[0]?.message).toBe('empty');
@@ -171,10 +167,9 @@ describe('whatchanged', () => {
     it('Then the merge is excluded but its ancestors remain', async () => {
       // Arrange
       const { ctx } = await seedDiamond();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx);
+      const result = await whatchanged(ctx);
 
       // Assert — D (2 parents) dropped; reachability preserved (C, B, A present)
       expect(messages(result)).toEqual(['C', 'B', 'A']);
@@ -185,10 +180,9 @@ describe('whatchanged', () => {
     it('Then it is NOT treated as a merge (kept in output)', async () => {
       // Arrange
       const { ctx, b } = await seedDiamond();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx, { rev: b });
+      const result = await whatchanged(ctx, { rev: b });
 
       // Assert — B has one parent (A); both present
       expect(messages(result)).toEqual(['B', 'A']);
@@ -202,10 +196,9 @@ describe('whatchanged', () => {
     it('Then the excluded merge does not consume a limit slot', async () => {
       // Arrange
       const { ctx } = await seedDiamond();
-      const sut = whatchanged;
 
       // Act — walk pops D (merge, skipped), then must still yield two entries
-      const result = await sut(ctx, { limit: 2 });
+      const result = await whatchanged(ctx, { limit: 2 });
 
       // Assert
       expect(result).toHaveLength(2);
@@ -217,10 +210,9 @@ describe('whatchanged', () => {
     it('Then commits at or after the threshold are excluded (boundary inclusive)', async () => {
       // Arrange — c2 sits exactly at the threshold second (2000)
       const { ctx, c3 } = await seedLinear();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx, { rev: c3, before: new Date(2000 * 1000) });
+      const result = await whatchanged(ctx, { rev: c3, before: new Date(2000 * 1000) });
 
       // Assert — c2 (== 2000) and c3 (> 2000) excluded; only root remains
       expect(messages(result)).toEqual(['root']);
@@ -231,10 +223,9 @@ describe('whatchanged', () => {
     it('Then commits reachable from the excluded rev are removed', async () => {
       // Arrange
       const { ctx, c1, c3 } = await seedLinear();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx, { rev: c3, excluding: [c1] });
+      const result = await whatchanged(ctx, { rev: c3, excluding: [c1] });
 
       // Assert
       expect(messages(result)).toEqual(['rename b to c', 'mod a add b']);
@@ -245,10 +236,9 @@ describe('whatchanged', () => {
     it('Then only the first-parent chain (minus merges) is emitted', async () => {
       // Arrange
       const { ctx } = await seedDiamond();
-      const sut = whatchanged;
 
       // Act
-      const result = await sut(ctx, { order: 'first-parent' });
+      const result = await whatchanged(ctx, { order: 'first-parent' });
 
       // Assert — D dropped; spine D→B→A yields B, A (C, the 2nd parent, absent)
       expect(messages(result)).toEqual(['B', 'A']);
@@ -292,12 +282,11 @@ describe('whatchanged', () => {
       ])('Then it throws OBJECT_NOT_FOUND ($label)', async ({ build }) => {
         // Arrange
         const { ctx, options } = await build();
-        const sut = whatchanged;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, options);
+          await whatchanged(ctx, options);
         } catch (err) {
           caught = err;
         }
