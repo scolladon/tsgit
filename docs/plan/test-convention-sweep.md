@@ -92,11 +92,13 @@ That is **13 dedicated giant parts**. Everything else is grouped: **tiny sibling
 cluster into one batch part** (coarser than the design's per-directory default — the plan-phase
 brief's explicit permission), each batch held to ≤ ~48 files.
 
-**Part-count note (transparency, not a blocker).** The ~12–20 aspiration is exceeded to
-**31 parts** because the giant-isolation directive (13 dedicated giants) combined with the
-590-file / all-tier scope sets the floor: 13 giant parts + 18 batch parts. Isolating each
-giant keeps a 2k–6k-LOC single-file diff reviewable and any red gate bisectable; batching the
-small files keeps the other parts to one reviewable atomic commit each.
+**Part-count note (transparency, not a blocker).** The conformance sweep is **31 parts** (13
+dedicated giant parts + 18 batch parts) — the ~12–20 aspiration is exceeded because the
+giant-isolation directive (13 dedicated giants) combined with the 590-file / all-tier scope sets
+the floor. Isolating each giant keeps a 2k–6k-LOC single-file diff reviewable and any red gate
+bisectable; batching the small files keeps the other parts to one reviewable atomic commit each.
+A user-ratified scope extension adds **Group G** (Parts 32–34): the harness extension that locks
+the three axes in as a standing gate on every tier (ADR-506 §"Harness extension"). **Total: 34 parts.**
 
 **Ordering — machine-gated tiers first (strongest backstop), then un-gated tiers:**
 `check:test-pyramid` gates axes 2–3 titles on the **unit** tier only; non-unit tiers rest on
@@ -795,9 +797,176 @@ under its own config.
 
 ---
 
-## Final gate (after Part 31)
+## Conformance checkpoint (after Part 31 — precondition for Group G)
 
 `npm run validate` — full multi-tier suite + `check:test-pyramid` + `test:coverage` (100% by
-construction). Green = behaviour-preservation proof for the whole sweep. The review phase's named
-focus is **axis-1 semantics** (`sut` binds the unit / dropped per rule) and **non-unit-tier
-conformance** (Partitions E–F), which no gate covers.
+construction). Green = behaviour-preservation proof for the **conformance sweep** (Parts 1–31) and,
+per ADR-506's **Ordering invariant**, the precondition that lets Group G flip the gates: a gate may
+turn blocking only once its tier is 100% conformant. The review phase's named focus is **axis-1
+semantics** (`sut` binds the unit / dropped per rule) and **non-unit-tier conformance**
+(Partitions E–F), which no gate covers.
+
+---
+
+# Group G — harness extension (TOOLING, gating — runs LAST, after P31)
+
+**Different framing from Parts 1–31.** Group G is **tooling TDD** (detector unit test RED → GREEN),
+**not** the behaviour-preserving refactor of the conformance parts. It *adds* tooling tests (the
+detectors' own `tooling/test/unit/test-pyramid/` siblings) and changes `tooling/` + the manifest — it
+does **not** touch `src/` and does **not** touch `test/**` product tests (except a straggler-fix in
+G3, which is a behaviour-preserving conformance edit). ADR-506 §"Harness extension" (Decisions E, F,
+Ordering invariant) is the authority. Mutation stays **zero-signal** (CI filters the diff to
+`^src/.*\.ts$`; `tooling/*.ts` is not `src/`). **Surface gates still N/A** (tooling has no public API
+/ barrel / `api.json` surface).
+
+**Load-bearing facts pinned from the tree (do not re-derive):**
+- Heuristic interfaces live in `tooling/test-pyramid/parse-manifest.ts` (NOT `types.ts` — `types.ts`
+  holds only `SourceFile`). Each carries a single `tier: TierName`; the audit drops any file
+  `classifyTestFile(...) === 'unclassified'` **before** detectors run.
+- The manifest (`test-pyramid-budgets.json`) defines only **3 tiers** — `unit`, `integration`, `e2e`.
+  `test/parity/**`, `test/runtime-parity/**`, `test/perf/**` are **unclassified today** → never audited.
+  Decision E therefore REQUIRES adding those 3 tiers to the manifest first, else the membership check
+  can never match them. Tier tallies are **report-only** (only the 8 `GATING_KEYS` heuristics gate —
+  `collectGatingViolations` never inspects tiers), so new tiers with lenient budgets stay green.
+- Current gating: `gwtTitle`, `aaaBody`, `sutNaming`, `bareClassToThrow`, `emptyAaaSection`,
+  `underAssertedUnit` are already `true` (blocking) but scoped `tier:'unit'`; `overMockedIntegration`,
+  `integrationProof` are `false` (untouched by this group).
+- `tooling/test-pyramid/*.ts` is **outside biome's `files.includes` whitelist** (`["src/**","test/**",
+  "*.ts","*.json", …specific tooling files]`) — biome **ignores** the detectors today; `*.json` DOES
+  cover `test-pyramid-budgets.json`. So a NEW detector `.ts` is silently unlinted until added to the
+  whitelist (memory gotcha) — G2 adds it; G1 edits already-(un)linted files so needs no whitelist change.
+
+Boundary checkpoint: the final `npm run validate` after Part 34.
+
+## Part 32 — G1: extend the six structural detectors to a `tiers` set + define parity/runtime-parity/perf tiers (mechanism, gating unchanged)
+
+### Context
+Extend the tier-reach **mechanism** without yet widening the production data (the all-tiers flip is
+G3 — Ordering invariant). Touch:
+- `tooling/test-pyramid/parse-manifest.ts` — change `tier: TierName` → `tiers: ReadonlyArray<TierName>`
+  on `GwtTitleHeuristic`, `AaaBodyHeuristic`, `SutNamingHeuristic`, `EmptyAaaSectionHeuristic`,
+  `BareClassThrowHeuristic`, `UnderAssertedHeuristic`. Add a `requireTiers(raw, field, tierNames)`
+  helper (non-empty `string[]`, each a known tier — mirror `requireTier`). Update `parseGwtTitle`,
+  `parseAaaBody`, `parseSutNaming`, `parseEmptyAaaSection`, `parseBareClassThrow`, `parseUnderAsserted`
+  to read `raw.tiers`. **Leave** `OverMockedHeuristic` + `IntegrationProofHeuristic` on single `tier`.
+- The six detectors — replace the skip `classifyTestFile(manifest, file.path) !== h.tier` →
+  `!h.tiers.includes(classifyTestFile(manifest, file.path))`: `detect-bad-title.ts:94` (`gwt.tier`),
+  `detect-missing-aaa.ts:51`, `detect-empty-aaa-section.ts:111`, `detect-banned-sut-name.ts:44`,
+  `detect-bare-class-throw.ts:40`, `detect-under-asserted.ts:39`.
+- `test-pyramid-budgets.json` — (a) ADD 3 tier definitions: `parity` (glob
+  `test/parity/**/*.test.ts`), `runtime-parity` (glob `test/runtime-parity/**/*.test.ts`), `perf`
+  (glob `test/perf/**/*.test.ts`), each `{ target, warnBelow: 0, warnAbove: null }` (lenient,
+  report-only). (b) change the six heuristics' `"tier": "unit"` → `"tiers": ["unit"]` — **data stays
+  unit-only** so behaviour is identical (all-tiers flip is G3). Gating block **unchanged**.
+- Sibling tests + fixtures — `tooling/test/unit/test-pyramid/manifest-fixture.ts` (migrate `tier`→`tiers`
+  arrays; add the 3 tier defs), `parse-manifest.test.ts` (cover `requireTiers` + unknown-tier reject),
+  and the six detectors' tests (`detect-bad-title.test.ts`, `detect-missing-aaa.test.ts`,
+  `detect-empty-aaa-section.test.ts`, `detect-banned-sut-name.test.ts`, `detect-bare-class-throw.test.ts`,
+  `detect-under-asserted.test.ts`) — add a case proving a heuristic with `tiers:['unit','integration']`
+  flags BOTH a unit and an integration fixture file. Update `render-report.test.ts` / `count-tier-files.test.ts`
+  if the new tier defs change the rendered tally.
+
+### TDD steps
+1. **RED**: in `detect-bad-title.test.ts` (and peers), add a case where the fixture manifest heuristic
+   has `tiers:['unit','integration']` and an integration-classified fixture file carries a bad title —
+   assert it is flagged. Fails today (detector skips non-`tier` files via `!== h.tier`). Note the reason:
+   the integration finding is absent.
+2. **GREEN**: apply the `tier`→`tiers` type + `requireTiers` parser + the six membership-check edits;
+   migrate `manifest-fixture.ts`; add the 3 tier defs + `tiers:["unit"]` to the real manifest. Tests pass.
+3. **REFACTOR**: confirm `overMocked`/`integrationProof` still single-`tier`; `parse-manifest` rejects an
+   unknown tier inside `tiers`; report tally shows parity/runtime-parity/perf (report-only).
+
+### Gate
+`npx vitest run tooling/test/unit/test-pyramid && npm run check:types && ./node_modules/.bin/biome check test-pyramid-budgets.json`
+(biome ignores `tooling/test-pyramid/*.ts` — not in the whitelist; `check:types` + the detector unit
+tests are the substantive gate for the `.ts` edits; `*.json` covers the manifest.)
+
+### Commit
+`test(tooling): extend pyramid structural detectors to a tiers set`
+
+## Part 33 — G2: add the `sutBindsResult` axis-1 detector + allowlist + audit wiring (report-only)
+
+### Context
+New best-effort axis-1 detector (Decision F) — flags `const sut = <bareCall>(…)` (result-in-`sut`),
+ALLOWS `const sut = new X(…)` and a factory allowlist. Add as **report-only** (`gating:false`) here;
+G3 flips it blocking. Touch:
+- NEW `tooling/test-pyramid/detect-sut-binds-result.ts` — export `detectSutBindsResult(manifest, files)`
+  returning `ReadonlyArray<SutBindsResultFinding>` (`path`, `line`, `title?`/binding text). Scan-based
+  (reuse the `scan-*`/offset style — no AST): find `const sut = …` bindings; FLAG when the RHS is a bare
+  call `ident(...)` or `await ident(...)`; ALLOW `new X(...)`, a bare reference `const sut = obj.method`
+  (no call), and any call whose callee is in `heuristic.allowlist`. Uses `tiers` membership like G1.
+- NEW `tooling/test/unit/test-pyramid/detect-sut-binds-result.test.ts` — sibling test: flags
+  `const sut = crc32(data)`; allows `const sut = new NodeHashService('sha256')`; allows
+  `const sut = openRepository(adapters, dir)`; allows `const sut = ObjectId.from` (bare ref).
+- `tooling/test-pyramid/parse-manifest.ts` — add `SutBindsResultHeuristic { tiers, allowlist }`
+  interface + `parseSutBindsResult`; add to `PyramidManifest.heuristics`, `requiredHeuristicKeys`,
+  `GATING_KEYS` tuple (`'sutBindsResult'`), `DEFAULT_GATING`, and the `parseManifest` heuristics block.
+- `tooling/audit-test-pyramid.ts` — import + call `detectSutBindsResult` in `runAudit` findings; add the
+  `sutBindsResult` entry to `FINDING_PRESENT_BY_GATING` (exhaustive-by-`GatingKey` dispatcher — will
+  fail to compile until added).
+- `tooling/test-pyramid/render-report.ts` — `AuditOutcome['findings']` gains `sutBindsResult`; render its
+  section (+ `render-report.test.ts`).
+- `test-pyramid-budgets.json` — add `heuristics.sutBindsResult { tiers:["unit","integration","parity",
+  "runtime-parity","perf"], allowlist:["openRepository", …the this-carrying adapter `create*` factories] }`
+  and `gating.sutBindsResult: false` (report-only in G2).
+- `biome.json` — add `"tooling/test-pyramid/detect-sut-binds-result.ts"` and
+  `"tooling/test/unit/test-pyramid/detect-sut-binds-result.test.ts"` to `files.includes` (else the new
+  files are silently unlinted). Add `parse-manifest.test.ts` coverage for the new heuristic + allowlist.
+
+### TDD steps
+1. **RED**: write `detect-sut-binds-result.test.ts` asserting flag `const sut = crc32(data)` + allow
+   `new X(…)` / allowlisted factory / bare reference. Fails (detector absent / unwired). Note: import/type
+   errors until the manifest + audit wiring land.
+2. **GREEN**: implement the detector + parse-manifest heuristic + audit + render wiring + manifest entry
+   (`gating:false`) + biome whitelist. Detector tests + `parse-manifest.test.ts` + `render-report.test.ts` pass.
+3. **REFACTOR**: allowlist is the only escape hatch (extend with a one-line reason, never suppress);
+   confirm the `FINDING_PRESENT_BY_GATING` dispatcher stays exhaustive.
+
+### Gate
+`npx vitest run tooling/test/unit/test-pyramid && npm run check:types && ./node_modules/.bin/biome check tooling/test-pyramid/detect-sut-binds-result.ts tooling/test/unit/test-pyramid/detect-sut-binds-result.test.ts test-pyramid-budgets.json biome.json`
+(the two new files are now in the whitelist, so biome lints them.)
+
+### Commit
+`test(tooling): add sutBindsResult axis-1 pyramid detector`
+
+## Part 34 — G3: flip gating to blocking on all tiers (Ordering-invariant final step)
+
+### Context
+The single **conform-THEN-gate** flip, after the whole tree is conformed (Parts 1–31) and both
+detectors exist (G1, G2). Manifest-only change + a full-tree audit:
+- `test-pyramid-budgets.json` — (a) widen the six extended heuristics' `"tiers": ["unit"]` →
+  `["unit","integration","parity","runtime-parity","perf"]`; (b) flip `gating.sutBindsResult` `false` →
+  `true` (the six were already `true` — now they gate every tier). No `.ts` change.
+- **Straggler fix (in-part):** running the audit against the real conformed tree is the final backstop
+  that proves the sweep complete. If it surfaces a straggler, fix it **here** — conform that `test/**`
+  file (behaviour-preserving, per §5) OR, for a `sutBindsResult` false positive on a legitimate
+  `this`-carrying factory, extend the manifest `allowlist` with a one-line reason. **Never** suppress a
+  finding, never weaken an assertion. Expected: near-zero stragglers (Parts 1–31 conformed all tiers;
+  G2's detector confirms axis-1).
+
+### TDD steps
+1. **BASELINE**: run the audit against the conformed tree with the flip applied —
+   `node --experimental-strip-types tooling/audit-test-pyramid.ts` (or `npm run check:test-pyramid`);
+   expect zero gated findings. Any finding is a real straggler.
+2. **FLIP + FIX**: apply the `tiers`-widen + `gating.sutBindsResult:true`; conform any straggler /
+   extend the allowlist with a reason; re-run the audit green.
+3. **VERIFY**: the extended + new heuristics now block on all five tiers with the tree green.
+
+### Gate
+`npm run validate`
+(this part's gate IS the final gate — `validate` runs `check:test-pyramid` with the flipped manifest
+over the full multi-tier tree; green proves the gates are blocking AND the tree is 100% conformant.)
+
+### Commit
+`test(tooling): gate the three axes on every tier`
+
+---
+
+## Final gate (after Part 34)
+
+`npm run validate` — full multi-tier suite + `check:test-pyramid` (now gating the three axes on
+`unit`/`integration`/`parity`/`runtime-parity`/`perf` + the new `sutBindsResult`) + `test:coverage`
+(100% by construction). Green = behaviour preserved across Parts 1–31 **and** the extended harness
+enforcing the convention forever on every tier (ADR-506 §"Harness extension"). The review phase's named
+focus remains **axis-1 semantics** and **non-unit-tier conformance**, plus the new detector's
+allowlist discipline.
