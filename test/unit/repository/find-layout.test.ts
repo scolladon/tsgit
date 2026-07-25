@@ -17,10 +17,11 @@ describe('findLayout', () => {
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         await fs.mkdir('/repo/.git');
 
-        const sut = await findLayout(fs, '/repo', posixPolicy);
+        // Act
+        const result = await findLayout(fs, '/repo', posixPolicy);
 
         // Assert
-        expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
       });
     });
   });
@@ -33,10 +34,11 @@ describe('findLayout', () => {
         await fs.mkdir('/repo/.git');
         await fs.mkdir('/repo/sub/dir');
 
-        const sut = await findLayout(fs, '/repo/sub/dir', posixPolicy);
+        // Act
+        const result = await findLayout(fs, '/repo/sub/dir', posixPolicy);
 
         // Assert
-        expect(sut).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
       });
     });
   });
@@ -48,10 +50,11 @@ describe('findLayout', () => {
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         await fs.mkdir('/repo/lonely');
 
-        const sut = await findLayout(fs, '/repo/lonely', posixPolicy);
+        // Act
+        const result = await findLayout(fs, '/repo/lonely', posixPolicy);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -69,10 +72,11 @@ describe('findLayout', () => {
           },
         } as unknown as Parameters<typeof findLayout>[0];
 
-        const sut = await findLayout(fs, '/repo', posixPolicy);
+        // Act
+        const result = await findLayout(fs, '/repo', posixPolicy);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -85,14 +89,15 @@ describe('findLayout', () => {
         // .git is a file (e.g., a worktree gitlink stub) at /repo/.git
         await fs.writeUtf8('/repo/.git', 'gitdir: /elsewhere');
 
-        const sut = await findLayout(fs, '/repo', posixPolicy);
+        // Act
+        const result = await findLayout(fs, '/repo', posixPolicy);
 
         // The walk continues past a non-directory .git. This also documents
         // an equivalent mutant: flipping `if (found)` to `if (true)` keeps
         // the inner `isDirectory` check that gates the return, so the
         // observable behaviour is identical.
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });

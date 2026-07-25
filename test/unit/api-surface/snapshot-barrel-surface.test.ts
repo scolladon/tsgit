@@ -63,7 +63,7 @@ describe('Given the public package barrel', () => {
     it('Then every public snapshot type still resolves through the barrel', () => {
       // Arrange — types vanish at runtime; type-position witnesses prove the
       // names still resolve through `src/index.js` at compile time.
-      const sut = {
+      const witnesses = {
         factory: undefined as unknown as SnapshotFactory,
         stash: undefined as unknown as StashSnapshot,
         workdirOptions: undefined as unknown as WorkdirSnapshotOptions,
@@ -79,7 +79,7 @@ describe('Given the public package barrel', () => {
       };
 
       // Act
-      const observed = sut.kind;
+      const observed = witnesses.kind;
 
       // Assert
       expect(observed).toBe('tree');

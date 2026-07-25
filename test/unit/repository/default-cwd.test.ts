@@ -12,10 +12,12 @@ describe('defaultCwd', () => {
       it('Then returns process.cwd()', () => {
         // Arrange
         vi.stubGlobal('process', { versions: { node: '20.3.0' }, cwd: () => '/some/dir' });
-        const sut = defaultCwd;
+
+        // Act
+        const result = defaultCwd();
 
         // Assert
-        expect(sut()).toBe('/some/dir');
+        expect(result).toBe('/some/dir');
       });
     });
   });
@@ -25,10 +27,12 @@ describe('defaultCwd', () => {
       it("Then returns '/' as the deterministic browser/memory default", () => {
         // Arrange
         vi.stubGlobal('process', undefined);
-        const sut = defaultCwd;
+
+        // Act
+        const result = defaultCwd();
 
         // Assert
-        expect(sut()).toBe('/');
+        expect(result).toBe('/');
       });
     });
   });
@@ -42,10 +46,12 @@ describe('defaultCwd', () => {
           cwd: () => '/should-not-use',
         });
         vi.stubGlobal('process', polluted);
-        const sut = defaultCwd;
+
+        // Act
+        const result = defaultCwd();
 
         // Assert
-        expect(sut()).toBe('/');
+        expect(result).toBe('/');
       });
     });
   });

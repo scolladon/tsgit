@@ -33,6 +33,7 @@ describe('wrapTransportValidator — happy path', () => {
           dnsResolver: async () => ['1.1.1.1'],
         });
 
+        // Act
         await sut.request({ url: 'https://example.com/info/refs', method: 'GET', headers: {} });
 
         // Assert
@@ -50,7 +51,7 @@ describe('wrapTransportValidator — SSRF guards', () => {
         const transport = stubTransport();
         const sut = wrapTransportValidator(transport, undefined);
 
-        // Assert
+        // Act & Assert
         await expectBlocked(() =>
           sut.request({ url: 'https://example.com/x', method: 'GET', headers: {} }),
         );
@@ -69,7 +70,7 @@ describe('wrapTransportValidator — SSRF guards', () => {
           allowPrivateNetworks: false,
         });
 
-        // Assert
+        // Act & Assert
         await expectBlocked(
           () => sut.request({ url: 'https://example.com/x', method: 'GET', headers: {} }),
           ['BLOCKED_HOST'],
@@ -88,7 +89,9 @@ describe('wrapTransportValidator — SSRF guards', () => {
           allowPrivateNetworks: true,
         });
 
+        // Act
         await sut.request({ url: 'https://example.com/x', method: 'GET', headers: {} });
+
         // Assert
         expect(transport.request).toHaveBeenCalled();
       });
@@ -104,7 +107,7 @@ describe('wrapTransportValidator — SSRF guards', () => {
           dnsResolver: async () => ['192.168.1.1'],
         });
 
-        // Assert
+        // Act & Assert
         await expectBlocked(
           () => sut.request({ url: 'https://example.com/x', method: 'GET', headers: {} }),
           ['BLOCKED_HOST'],
@@ -122,7 +125,7 @@ describe('wrapTransportValidator — SSRF guards', () => {
           dnsResolver: async () => ['1.1.1.1'],
         });
 
-        // Assert
+        // Act & Assert
         await expectBlocked(
           () => sut.request({ url: 'http://example.com/x', method: 'GET', headers: {} }),
           ['UNSUPPORTED_SCHEME'],
@@ -141,7 +144,7 @@ describe('wrapTransportValidator — SSRF guards', () => {
           allowInsecure: false,
         });
 
-        // Assert
+        // Act & Assert
         await expectBlocked(
           () => sut.request({ url: 'http://example.com/x', method: 'GET', headers: {} }),
           ['UNSUPPORTED_SCHEME'],
@@ -160,7 +163,9 @@ describe('wrapTransportValidator — SSRF guards', () => {
           allowInsecure: true,
         });
 
+        // Act
         await sut.request({ url: 'http://example.com/x', method: 'GET', headers: {} });
+
         // Assert
         expect(transport.request).toHaveBeenCalled();
       });
@@ -176,7 +181,7 @@ describe('wrapTransportValidator — SSRF guards', () => {
           dnsResolver: async () => ['1.1.1.1'],
         });
 
-        // Assert
+        // Act & Assert
         await expectBlocked(() => sut.request({ url: 'not-a-url', method: 'GET', headers: {} }));
       });
     });

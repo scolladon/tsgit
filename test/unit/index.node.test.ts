@@ -297,7 +297,6 @@ describe('Node shim — worktreeFs raw adapter root', () => {
         const resolvedWorkDir = sut.ctx.layout.workDir;
         await mkdir(path.join(resolvedWorkDir, 'inside'), { recursive: true });
         const worktreeFs = sut.ctx.worktreeFs;
-        expect(worktreeFs).toBeDefined();
         const rawFs = worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
 
         try {
@@ -305,6 +304,7 @@ describe('Node shim — worktreeFs raw adapter root', () => {
           const result = await rawFs?.exists(path.join(resolvedWorkDir, 'inside'));
 
           // Assert — reachable under the correct root; the mutant root would throw.
+          expect(worktreeFs).toBeDefined();
           expect(result).toBe(true);
         } finally {
           await sut.dispose();

@@ -9,11 +9,13 @@ describe('withAuth — validation', () => {
     describe('When created', () => {
       it('Then throws TypeError "withAuth: token is empty"', () => {
         // Arrange
+        const config = { type: 'bearer', token: '' } as const;
+
+        // Act & Assert
         try {
-          withAuth({ type: 'bearer', token: '' });
+          withAuth(config);
           throw new Error('expected throw');
         } catch (err) {
-          // Assert
           expect(err).toBeInstanceOf(TypeError);
           expect((err as TypeError).message).toBe('withAuth: token is empty');
         }
@@ -25,11 +27,13 @@ describe('withAuth — validation', () => {
     describe('When created', () => {
       it.each(['a:b', 'a:', ':a'])('Then throws TypeError', (username) => {
         // Arrange
+        const config = { type: 'basic', username, password: 'x' } as const;
+
+        // Act & Assert
         try {
-          withAuth({ type: 'basic', username, password: 'x' });
+          withAuth(config);
           throw new Error('expected throw');
         } catch (err) {
-          // Assert
           expect(err).toBeInstanceOf(TypeError);
           expect((err as TypeError).message).toBe('withAuth: basic username must not contain ":"');
         }
@@ -53,11 +57,11 @@ describe('withAuth — validation', () => {
           label: 'custom config returns a factory',
         },
       ])('Then $label', ({ config }) => {
-        // Arrange
-        const sut = typeof withAuth(config);
+        // Arrange & Act
+        const result = typeof withAuth(config);
 
         // Assert
-        expect(sut).toBe('function');
+        expect(result).toBe('function');
       });
     });
   });
@@ -70,7 +74,10 @@ describe('withAuth — bearer', () => {
         // Arrange
         const { transport, calls } = fakeTransport([makeResponse()]);
         const sut = withAuth({ type: 'bearer', token: 'xyz' })(transport);
+
+        // Act
         await sut.request(makeRequest());
+
         // Assert
         expect(calls[0]?.headers.authorization).toBe('Bearer xyz');
       });
@@ -83,7 +90,10 @@ describe('withAuth — bearer', () => {
         // Arrange
         const { transport, calls } = fakeTransport([makeResponse()]);
         const sut = withAuth({ type: 'bearer', token: 'tok' })(transport);
+
+        // Act
         await sut.request(makeRequest({ headers: { 'x-trace-id': 'abc' } }));
+
         // Assert
         expect(calls[0]?.headers.authorization).toBe('Bearer tok');
         expect(calls[0]?.headers['x-trace-id']).toBe('abc');
@@ -97,8 +107,11 @@ describe('withAuth — bearer', () => {
         // Arrange
         const { transport, calls } = fakeTransport([makeResponse()]);
         const sut = withAuth({ type: 'bearer', token: 'xyz' })(transport);
+
+        // Act
         await sut.request(makeRequest({ headers: { Authorization: 'Bearer override' } }));
         const inner = calls[0]?.headers ?? {};
+
         // Assert
         expect(inner.Authorization).toBe('Bearer override');
         expect(inner.authorization).toBeUndefined();
@@ -112,8 +125,11 @@ describe('withAuth — bearer', () => {
         // Arrange
         const { transport, calls } = fakeTransport([makeResponse()]);
         const sut = withAuth({ type: 'bearer', token: 'xyz' })(transport);
+
+        // Act
         await sut.request(makeRequest({ headers: { authorization: 'Bearer override' } }));
         const inner = calls[0]?.headers ?? {};
+
         // Assert
         expect(inner.authorization).toBe('Bearer override');
         expect(inner.Authorization).toBeUndefined();
@@ -169,7 +185,10 @@ describe('withAuth — custom', () => {
         // Arrange
         const { transport, calls } = fakeTransport([makeResponse()]);
         const sut = withAuth({ type: 'custom', header: () => 'CustomScheme abc' })(transport);
+
+        // Act
         await sut.request(makeRequest());
+
         // Assert
         expect(calls[0]?.headers.authorization).toBe('CustomScheme abc');
       });
@@ -185,7 +204,10 @@ describe('withAuth — custom', () => {
           type: 'custom',
           header: async () => 'token',
         })(transport);
+
+        // Act
         await sut.request(makeRequest());
+
         // Assert
         expect(calls[0]?.headers.authorization).toBe('token');
       });
@@ -206,7 +228,10 @@ describe('withAuth — custom', () => {
           },
         })(transport);
         const req = makeRequest({ url: 'https://example.com/x', method: 'POST' });
+
+        // Act
         await sut.request(req);
+
         // Assert
         expect(received?.url).toBe(req.url);
         expect(received?.method).toBe(req.method);
@@ -222,11 +247,12 @@ describe('withAuth — custom', () => {
           // Arrange
           const { transport, calls } = fakeTransport([makeResponse()]);
           const sut = withAuth({ type: 'custom', header: () => value })(transport);
+
+          // Act & Assert
           try {
             await sut.request(makeRequest());
             throw new Error('expected throw');
           } catch (err) {
-            // Assert
             expect(err).toBeInstanceOf(TypeError);
             expect((err as TypeError).message).toBe('withAuth: custom returned empty value');
           }
@@ -243,7 +269,10 @@ describe('withAuth — custom', () => {
         const { transport, calls } = fakeTransport([makeResponse()]);
         const cb = vi.fn<(r: HttpRequest) => string>().mockReturnValue('should-not-be-used');
         const sut = withAuth({ type: 'custom', header: cb })(transport);
+
+        // Act
         await sut.request(makeRequest({ headers: { authorization: 'Bearer pre-existing' } }));
+
         // Assert
         expect(cb).not.toHaveBeenCalled();
         expect(calls[0]?.headers.authorization).toBe('Bearer pre-existing');
@@ -263,7 +292,8 @@ describe('withAuth — custom', () => {
             throw boom;
           },
         })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(boom);
         expect(calls).toHaveLength(0);
       });

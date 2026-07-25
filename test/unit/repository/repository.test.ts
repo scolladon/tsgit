@@ -64,7 +64,7 @@ describe('openRepository — construction', () => {
   describe('Given a fallback set and no overrides', () => {
     describe('When openRepository runs', () => {
       it('Then resolves to a Repository handle', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -77,7 +77,7 @@ describe('openRepository — construction', () => {
   describe('Given the returned handle', () => {
     describe('When inspecting it', () => {
       it('Then it is frozen', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -87,7 +87,7 @@ describe('openRepository — construction', () => {
     });
     describe('When inspecting ctx', () => {
       it('Then ctx is frozen', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -96,7 +96,7 @@ describe('openRepository — construction', () => {
     });
     describe('When inspecting the blame binding', () => {
       it('Then repo.blame is a bound function', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -110,7 +110,7 @@ describe('openRepository — hooks', () => {
   describe('Given no hooks option and a fallback without one', () => {
     describe('When openRepository runs', () => {
       it('Then ctx.hooks is undefined', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -125,6 +125,7 @@ describe('openRepository — hooks', () => {
         // Arrange
         const runner = new MemoryHookRunner();
 
+        // Act
         const sut = await open({ hooks: runner });
 
         // Assert
@@ -136,7 +137,7 @@ describe('openRepository — hooks', () => {
   describe('Given hooks: false and a fallback that supplies a runner', () => {
     describe('When openRepository runs', () => {
       it('Then ctx.hooks is undefined', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await openRepository(
           { cwd: '/repo', hooks: false },
           { ...makeFallback(), hooks: new MemoryHookRunner() },
@@ -154,6 +155,7 @@ describe('openRepository — hooks', () => {
         // Arrange
         const runner = new MemoryHookRunner();
 
+        // Act
         const sut = await openRepository({ cwd: '/repo' }, { ...makeFallback(), hooks: runner });
 
         // Assert
@@ -182,6 +184,7 @@ describe('openRepository — command', () => {
         // Arrange
         const runner = new MemoryCommandRunner();
 
+        // Act
         const sut = await open({ command: runner });
 
         // Assert
@@ -193,7 +196,7 @@ describe('openRepository — command', () => {
   describe('Given command: false and a fallback that supplies a runner', () => {
     describe('When openRepository runs', () => {
       it('Then ctx.command is undefined', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await openRepository(
           { cwd: '/repo', command: false },
           { ...makeFallback(), command: new MemoryCommandRunner() },
@@ -211,6 +214,7 @@ describe('openRepository — command', () => {
         // Arrange
         const runner = new MemoryCommandRunner();
 
+        // Act
         const sut = await openRepository({ cwd: '/repo' }, { ...makeFallback(), command: runner });
 
         // Assert
@@ -224,7 +228,7 @@ describe('openRepository — Repository binding integrity', () => {
   describe('Given the returned handle', () => {
     describe('When listing top-level keys', () => {
       it('Then they exactly match the documented surface', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -283,7 +287,7 @@ describe('openRepository — Repository binding integrity', () => {
     });
     describe('When listing primitives', () => {
       it('Then they match the documented Tier-2 surface', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -339,9 +343,9 @@ describe('openRepository — Repository binding integrity', () => {
         ]);
         const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
 
+        // Assert
         for (const key of Object.keys(sut)) {
           if (nonFunctionKeys.has(key)) continue;
-          // Assert
           expect(typeof (sut as unknown as Record<string, unknown>)[key]).toBe('function');
         }
         // Each namespace is a frozen object whose methods are all functions.
@@ -367,10 +371,9 @@ describe('openRepository — INVALID_OPTION validation', () => {
   describe('Given a relative cwd', () => {
     describe('When openRepository runs', () => {
       it('Then throws INVALID_OPTION with .data.option === cwd', async () => {
-        // Arrange
+        // Arrange / Act / Assert
         try {
           await openRepository({ cwd: 'relative' }, makeFallback());
-          // Assert
           expect.unreachable();
         } catch (err) {
           expect(err).toBeInstanceOf(TsgitError);
@@ -387,10 +390,9 @@ describe('openRepository — INVALID_OPTION validation', () => {
   describe('Given parallelism = 0', () => {
     describe('When openRepository runs', () => {
       it('Then throws INVALID_OPTION', async () => {
-        // Arrange
+        // Arrange / Act / Assert
         try {
           await openRepository({ cwd: '/repo', config: { parallelism: 0 } }, makeFallback());
-          // Assert
           expect.unreachable();
         } catch (err) {
           const data = (err as TsgitError).data;
@@ -408,11 +410,12 @@ describe('openRepository — dispose state machine', () => {
         // Arrange
         const sut = await open();
 
+        // Act
         await sut.dispose();
-        // After dispose, init MUST throw REPOSITORY_DISPOSED.
+
+        // Assert — after dispose, init MUST throw REPOSITORY_DISPOSED.
         try {
           await sut.init();
-          // Assert
           expect.unreachable();
         } catch (err) {
           const data = (err as TsgitError).data;
@@ -425,7 +428,7 @@ describe('openRepository — dispose state machine', () => {
   describe('Given an opened repo', () => {
     describe('When ctx is inspected', () => {
       it('Then the promisor port is wired and exposes the fetch contract', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert — the port must expose `.fetch(oids)`; a `{}` mutant on the
@@ -467,9 +470,9 @@ describe('openRepository — dispose state machine', () => {
       it('Then resolves without throwing (idempotent)', async () => {
         // Arrange
         const sut = await open();
-
         await sut.dispose();
-        // Assert
+
+        // Act / Assert
         await expect(sut.dispose()).resolves.toBeUndefined();
       });
     });
@@ -493,6 +496,7 @@ describe('openRepository — dispose state machine', () => {
           fallback,
         );
 
+        // Act
         await Promise.all([sut.dispose(), sut.dispose(), sut.dispose()]);
 
         // Assert
@@ -504,7 +508,7 @@ describe('openRepository — dispose state machine', () => {
   describe('Given a Repository handle', () => {
     describe('When the merge namespace is accessed', () => {
       it('Then run / continue / abort are all functions', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await open();
 
         // Assert
@@ -524,11 +528,11 @@ describe('openRepository — dispose state machine', () => {
           { cwd: '/repo', signal: controller.signal },
           makeFallback(),
         );
-
         controller.abort();
+
+        // Act / Assert
         try {
           await sut.init();
-          // Assert
           expect.unreachable();
         } catch (err) {
           const data = (err as TsgitError).data;
@@ -549,6 +553,8 @@ describe('openRepository — unsafeRawAdapters', () => {
         // IS the user-supplied object.
         const fallback = makeFallback();
         const innerFs = fallback.fs;
+
+        // Act
         const sut = await openRepository(
           { cwd: '/repo', fs: innerFs, unsafeRawAdapters: true },
           fallback,
@@ -566,6 +572,8 @@ describe('openRepository — unsafeRawAdapters', () => {
         // Arrange
         const fallback = makeFallback();
         const innerFs = fallback.fs;
+
+        // Act
         const sut = await openRepository({ cwd: '/repo', fs: innerFs }, fallback);
 
         // Assert
@@ -586,10 +594,10 @@ describe('openRepository — unsafeRawAdapters', () => {
           fallback,
         );
 
+        // Act / Assert — bypass the type system: invoke the wrapped fs directly
+        // with an out-of-cwd path.
         try {
-          // Bypass type-system: invoke wrapped fs directly with an out-of-cwd path.
           await sut.ctx.fs.write('/etc/passwd', new Uint8Array(0));
-          // Assert
           expect.unreachable();
         } catch (err) {
           expect((err as { data: { code: string } }).data.code).toBe('PATHSPEC_OUTSIDE_REPO');
@@ -608,6 +616,7 @@ describe('openRepository — round-trip via memory adapter', () => {
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo' }, fallback);
 
+        // Act
         await sut.init();
 
         // Assert
@@ -828,6 +837,8 @@ describe('openRepository — ctx fields', () => {
       it('Then ctx.signal is set and aborts when the user signal aborts', async () => {
         // Arrange
         const controller = new AbortController();
+
+        // Act
         const sut = await openRepository(
           { cwd: '/repo', signal: controller.signal },
           makeFallback(),
@@ -836,7 +847,11 @@ describe('openRepository — ctx fields', () => {
         // Assert
         expect(sut.ctx.signal).toBeDefined();
         expect(sut.ctx.signal?.aborted).toBe(false);
+
+        // Act
         controller.abort();
+
+        // Assert
         expect(sut.ctx.signal?.aborted).toBe(true);
       });
     });
@@ -845,7 +860,7 @@ describe('openRepository — ctx fields', () => {
   describe('Given opts.config with parallelism', () => {
     describe('When openRepository runs', () => {
       it('Then ctx.config carries the value and is frozen', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await openRepository(
           { cwd: '/repo', config: { parallelism: 4 } },
           makeFallback(),
@@ -862,7 +877,7 @@ describe('openRepository — ctx fields', () => {
   describe('Given opts.config is omitted', () => {
     describe('When openRepository runs', () => {
       it('Then ctx.config is undefined (NOT a frozen empty object) — kills the always-deepFreeze mutant', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await openRepository({ cwd: '/repo' }, makeFallback());
 
         // Assert
@@ -876,6 +891,8 @@ describe('openRepository — ctx fields', () => {
       it('Then ctx.progress is the user-supplied reporter', async () => {
         // Arrange
         const reporter = { start: vi.fn(), update: vi.fn(), end: vi.fn() };
+
+        // Act
         const sut = await openRepository({ cwd: '/repo', progress: reporter }, makeFallback());
 
         // Assert
@@ -887,17 +904,18 @@ describe('openRepository — ctx fields', () => {
   describe('Given an opts.logger', () => {
     describe('When openRepository runs', () => {
       it('Then ctx.logger is present (sanitizer-wrapped) — kills the empty-object spread mutant', async () => {
-        // Arrange
-        // The `{ logger: sanitizedLogger }` literal carries the logger into ctx;
-        // a `{}` mutant would drop it entirely.
+        // Arrange — the `{ logger: sanitizedLogger }` literal carries the logger
+        // into ctx; a `{}` mutant would drop it entirely.
         const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-        const sut = await openRepository({ cwd: '/repo', logger }, makeFallback());
 
-        // Assert — all four levels survive the wrap and forward to the inner sink.
+        // Act
+        const sut = await openRepository({ cwd: '/repo', logger }, makeFallback());
         sut.ctx.logger?.debug?.('debug-message');
         sut.ctx.logger?.info?.('info-message');
         sut.ctx.logger?.warn?.('warn-message');
         sut.ctx.logger?.error?.('error-message');
+
+        // Assert — all four levels survive the wrap and forward to the inner sink.
         expect(logger.debug).toHaveBeenCalledWith('debug-message', undefined);
         expect(logger.info).toHaveBeenCalledWith('info-message', undefined);
         expect(logger.warn).toHaveBeenCalledWith('warn-message', undefined);
@@ -909,7 +927,7 @@ describe('openRepository — ctx fields', () => {
   describe('Given opts.logger is omitted', () => {
     describe('When openRepository runs', () => {
       it('Then ctx.logger is undefined', async () => {
-        // Arrange
+        // Arrange / Act
         const sut = await openRepository({ cwd: '/repo' }, makeFallback());
 
         // Assert

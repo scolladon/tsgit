@@ -9,7 +9,7 @@ describe('noopProgress', () => {
         // Arrange
         const sut = noopProgress;
 
-        // Assert
+        // Act & Assert
         expect(Object.isFrozen(sut)).toBe(true);
       });
     });
@@ -18,7 +18,7 @@ describe('noopProgress', () => {
         // Arrange
         const sut = noopProgress;
 
-        // Assert — covers all three reporter methods.
+        // Act & Assert — covers all three reporter methods.
         expect(sut.start('any-op', 100)).toBeUndefined();
         expect(sut.start('any-op')).toBeUndefined();
         expect(sut.update('any-op', 50, 100, 'text')).toBeUndefined();
@@ -31,7 +31,7 @@ describe('noopProgress', () => {
         // Arrange
         const sut = noopProgress;
 
-        // Assert
+        // Act & Assert
         expect(noopProgress).toBe(sut);
       });
     });
@@ -193,47 +193,21 @@ describe('consoleProgress — op sanitization', () => {
 });
 
 describe('consoleProgress — sink robustness', () => {
-  describe('Given consoleProgress(sink) where sink throws on start', () => {
-    describe('When start runs', () => {
-      it('Then no exception escapes the reporter', () => {
+  describe('Given consoleProgress(sink) where the sink throws', () => {
+    describe('When a reporter method runs', () => {
+      it.each([
+        { label: 'start', call: (reporter: ProgressReporter) => reporter.start('op') },
+        { label: 'update', call: (reporter: ProgressReporter) => reporter.update('op', 1, 2) },
+        { label: 'end', call: (reporter: ProgressReporter) => reporter.end('op') },
+      ])('Then no exception escapes the reporter when $label throws', ({ call }) => {
         // Arrange
         const sink = vi.fn<(line: string) => void>(() => {
           throw new Error('boom');
         });
         const sut = consoleProgress(sink);
 
-        // Act / Assert
-        expect(() => sut.start('op')).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given consoleProgress(sink) where sink throws on update', () => {
-    describe('When update runs', () => {
-      it('Then no exception escapes the reporter', () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>(() => {
-          throw new Error('boom');
-        });
-        const sut = consoleProgress(sink);
-
-        // Act / Assert
-        expect(() => sut.update('op', 1, 2)).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given consoleProgress(sink) where sink throws on end', () => {
-    describe('When end runs', () => {
-      it('Then no exception escapes the reporter', () => {
-        // Arrange
-        const sink = vi.fn<(line: string) => void>(() => {
-          throw new Error('boom');
-        });
-        const sut = consoleProgress(sink);
-
-        // Act / Assert
-        expect(() => sut.end('op')).not.toThrow();
+        // Act & Assert
+        expect(() => call(sut)).not.toThrow();
       });
     });
   });

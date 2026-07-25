@@ -29,14 +29,14 @@ describe('composeAdapters — fallback only', () => {
   describe('Given no user overrides', () => {
     describe('When composeAdapters runs', () => {
       it('Then returns the fallback set verbatim', () => {
-        // Arrange
-        const sut = composeAdapters({}, fallback);
+        // Arrange & Act
+        const result = composeAdapters({}, fallback);
 
         // Assert
-        expect(sut.fs).toBe(fallbackFs);
-        expect(sut.hash).toBe(fallbackHash);
-        expect(sut.compressor).toBe(fallbackCompressor);
-        expect(sut.transport).toBe(fallbackTransport);
+        expect(result.fs).toBe(fallbackFs);
+        expect(result.hash).toBe(fallbackHash);
+        expect(result.compressor).toBe(fallbackCompressor);
+        expect(result.transport).toBe(fallbackTransport);
       });
     });
   });
@@ -82,14 +82,14 @@ describe('composeAdapters — partial user overrides', () => {
           label: 'every slot is the user-supplied value',
         },
       ])('Then $label', ({ overrides, expected }) => {
-        // Arrange
-        const sut = composeAdapters(overrides, fallback);
+        // Arrange & Act
+        const result = composeAdapters(overrides, fallback);
 
         // Assert
-        expect(sut.fs).toBe(expected.fs);
-        expect(sut.hash).toBe(expected.hash);
-        expect(sut.compressor).toBe(expected.compressor);
-        expect(sut.transport).toBe(expected.transport);
+        expect(result.fs).toBe(expected.fs);
+        expect(result.hash).toBe(expected.hash);
+        expect(result.compressor).toBe(expected.compressor);
+        expect(result.transport).toBe(expected.transport);
       });
     });
   });
@@ -97,12 +97,12 @@ describe('composeAdapters — partial user overrides', () => {
   describe('Given user overrides compressor only', () => {
     describe('When composeAdapters runs', () => {
       it('Then only compressor is sentinelCompressor', () => {
-        // Arrange
-        const sut = composeAdapters({ compressor: sentinelCompressor }, fallback);
+        // Arrange & Act
+        const result = composeAdapters({ compressor: sentinelCompressor }, fallback);
 
         // Assert
-        expect(sut.compressor).toBe(sentinelCompressor);
-        expect(sut.fs).toBe(fallbackFs);
+        expect(result.compressor).toBe(sentinelCompressor);
+        expect(result.fs).toBe(fallbackFs);
       });
     });
   });
@@ -110,12 +110,12 @@ describe('composeAdapters — partial user overrides', () => {
   describe('Given user overrides transport only', () => {
     describe('When composeAdapters runs', () => {
       it('Then only transport is sentinelTransport', () => {
-        // Arrange
-        const sut = composeAdapters({ transport: sentinelTransport }, fallback);
+        // Arrange & Act
+        const result = composeAdapters({ transport: sentinelTransport }, fallback);
 
         // Assert
-        expect(sut.transport).toBe(sentinelTransport);
-        expect(sut.fs).toBe(fallbackFs);
+        expect(result.transport).toBe(sentinelTransport);
+        expect(result.fs).toBe(fallbackFs);
       });
     });
   });
@@ -131,12 +131,15 @@ describe('composeAdapters — ADAPTER_UNAVAILABLE', () => {
         ['transport', 'browser'],
       ] as const)('Then throws ADAPTER_UNAVAILABLE mentioning %s', (field, runtime) => {
         // Arrange
-        const sut = composeAdapters;
+        const brokenFallback = {
+          ...fallback,
+          [field]: undefined,
+          runtime,
+        } as unknown as Parameters<typeof composeAdapters>[1];
+
+        // Act & Assert
         try {
-          sut({}, { ...fallback, [field]: undefined, runtime } as unknown as Parameters<
-            typeof composeAdapters
-          >[1]);
-          // Assert
+          composeAdapters({}, brokenFallback);
           expect.unreachable();
         } catch (err) {
           expect(err).toBeInstanceOf(TsgitError);
@@ -155,10 +158,13 @@ describe('composeAdapters — ADAPTER_UNAVAILABLE', () => {
   describe('Given the adapterUnavailable factory', () => {
     describe('When invoked with a reason', () => {
       it('Then sanitization runs (control bytes hex-escaped)', () => {
-        // Arrange
-        const e = adapterUnavailable('node', 'bad\x07data');
+        // Arrange & Act
+        const result = adapterUnavailable('node', 'bad\x07data');
+
         // Assert
-        expect(e.data.code === 'ADAPTER_UNAVAILABLE' && e.data.reason).toBe('bad\\x07data');
+        expect(result.data.code === 'ADAPTER_UNAVAILABLE' && result.data.reason).toBe(
+          'bad\\x07data',
+        );
       });
     });
   });

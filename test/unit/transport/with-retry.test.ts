@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { RetryConfig } from '../../../src/transport/types.js';
 import { defaultDelay, defaultIsRetryable, withRetry } from '../../../src/transport/with-retry.js';
 import {
   bodyWithCancelSpy,
@@ -15,12 +16,11 @@ describe('withRetry — validation', () => {
       it.each([0, -1, 11, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
         'Then throws RangeError with exact message',
         (attempts) => {
-          // Arrange
+          // Arrange & Act & Assert
           try {
             withRetry({ attempts });
             throw new Error('expected throw');
           } catch (err) {
-            // Assert
             expect(err).toBeInstanceOf(RangeError);
             expect((err as RangeError).message).toBe('withRetry: attempts must be 1..10');
           }
@@ -29,28 +29,16 @@ describe('withRetry — validation', () => {
     });
   });
 
-  describe('Given attempts=%j (boundary)', () => {
-    describe('When withRetry is created', () => {
-      it.each([1, 10])('Then returns a factory', (attempts) => {
-        // Arrange
-        const sut = withRetry({ attempts });
-        // Assert
-        expect(typeof sut).toBe('function');
-      });
-    });
-  });
-
   describe('Given baseMs=%j', () => {
     describe('When withRetry is created', () => {
       it.each([-1, Number.POSITIVE_INFINITY, Number.NaN])(
         'Then throws RangeError with exact message',
         (baseMs) => {
-          // Arrange
+          // Arrange & Act & Assert
           try {
             withRetry({ attempts: 3, baseMs });
             throw new Error('expected throw');
           } catch (err) {
-            // Assert
             expect(err).toBeInstanceOf(RangeError);
             expect((err as RangeError).message).toBe('withRetry: baseMs must be ≥ 0');
           }
@@ -59,27 +47,14 @@ describe('withRetry — validation', () => {
     });
   });
 
-  describe('Given baseMs=0', () => {
-    describe('When withRetry is created', () => {
-      it('Then returns a factory', () => {
-        // Arrange
-        const sut = typeof withRetry({ attempts: 3, baseMs: 0 });
-
-        // Assert
-        expect(sut).toBe('function');
-      });
-    });
-  });
-
   describe('Given baseMs=200, maxDelayMs=100', () => {
     describe('When withRetry is created', () => {
       it('Then throws RangeError', () => {
-        // Arrange
+        // Arrange & Act & Assert
         try {
           withRetry({ attempts: 3, baseMs: 200, maxDelayMs: 100 });
           throw new Error('expected throw');
         } catch (err) {
-          // Assert
           expect(err).toBeInstanceOf(RangeError);
           expect((err as RangeError).message).toBe('withRetry: maxDelayMs must be ≥ baseMs');
         }
@@ -87,27 +62,14 @@ describe('withRetry — validation', () => {
     });
   });
 
-  describe('Given baseMs=100, maxDelayMs=100 (equal)', () => {
-    describe('When withRetry is created', () => {
-      it('Then returns a factory', () => {
-        // Arrange
-        const sut = typeof withRetry({ attempts: 3, baseMs: 100, maxDelayMs: 100 });
-
-        // Assert
-        expect(sut).toBe('function');
-      });
-    });
-  });
-
   describe('Given jitter=%j (out of range)', () => {
     describe('When withRetry is created', () => {
       it.each([-0.01, 1.01])('Then throws RangeError', (jitter) => {
-        // Arrange
+        // Arrange & Act & Assert
         try {
           withRetry({ attempts: 3, jitter });
           throw new Error('expected throw');
         } catch (err) {
-          // Assert
           expect(err).toBeInstanceOf(RangeError);
           expect((err as RangeError).message).toBe('withRetry: jitter must be in [0, 1]');
         }
@@ -115,15 +77,28 @@ describe('withRetry — validation', () => {
     });
   });
 
-  describe('Given jitter=%j (boundary)', () => {
+  describe('Given a config value at the valid boundary of a guard', () => {
     describe('When withRetry is created', () => {
-      it.each([0, 1])('Then returns a factory', (jitter) => {
-        // Arrange
-        const sut = typeof withRetry({ attempts: 3, jitter });
+      it.each([
+        { label: 'attempts=1 (lower boundary)', config: { attempts: 1 } },
+        { label: 'attempts=10 (upper boundary)', config: { attempts: 10 } },
+        { label: 'baseMs=0', config: { attempts: 3, baseMs: 0 } },
+        {
+          label: 'baseMs=100, maxDelayMs=100 (equal)',
+          config: { attempts: 3, baseMs: 100, maxDelayMs: 100 },
+        },
+        { label: 'jitter=0', config: { attempts: 3, jitter: 0 } },
+        { label: 'jitter=1', config: { attempts: 3, jitter: 1 } },
+      ] satisfies ReadonlyArray<{ label: string; config: RetryConfig }>)(
+        'Then returns a factory for $label',
+        ({ config }) => {
+          // Arrange & Act
+          const result = typeof withRetry(config);
 
-        // Assert
-        expect(sut).toBe('function');
-      });
+          // Assert
+          expect(result).toBe('function');
+        },
+      );
     });
   });
 });
@@ -136,7 +111,10 @@ describe('withRetry — retry behavior', () => {
         const expected = makeResponse({ statusCode: 200 });
         const { transport, calls } = fakeTransport([expected]);
         const sut = withRetry({ attempts: 1 })(transport);
+
+        // Act
         const result = await sut.request(makeRequest());
+
         // Assert
         expect(calls).toHaveLength(1);
         expect(result).toBe(expected);
@@ -152,7 +130,10 @@ describe('withRetry — retry behavior', () => {
         const ok = makeResponse({ statusCode: 200 });
         const { transport, calls } = fakeTransport([err, ok]);
         const sut = withRetry({ attempts: 2, baseMs: 0 })(transport);
+
+        // Act
         const result = await sut.request(makeRequest());
+
         // Assert
         expect(calls).toHaveLength(2);
         expect(result).toBe(ok);
@@ -197,7 +178,7 @@ describe('withRetry — retry behavior', () => {
         const { transport, calls } = fakeTransport(errors);
         const sut = withRetry({ attempts, baseMs: 0 })(transport);
 
-        // Assert
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(expected);
         expect(calls).toHaveLength(expectedCalls);
       });
@@ -213,7 +194,10 @@ describe('withRetry — retry behavior', () => {
         const ok = makeResponse({ statusCode: 200 });
         const { transport } = fakeTransport([fail, ok]);
         const sut = withRetry({ attempts: 2, baseMs: 0 })(transport);
+
+        // Act
         const result = await sut.request(makeRequest());
+
         // Assert
         expect(result.statusCode).toBe(200);
         expect(cancelSpy()).toBe(1);
@@ -237,7 +221,10 @@ describe('withRetry — retry behavior', () => {
         const ok = makeResponse({ statusCode: 200 });
         const { transport } = fakeTransport([fail, ok]);
         const sut = withRetry({ attempts: 2, baseMs: 0 })(transport);
+
+        // Act
         const result = await sut.request(makeRequest());
+
         // Assert
         expect(result.statusCode).toBe(200);
       });
@@ -255,7 +242,8 @@ describe('withRetry — retry behavior', () => {
           baseMs: 0,
           isRetryable: () => false,
         })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(err);
         expect(calls).toHaveLength(1);
       });
@@ -278,7 +266,8 @@ describe('withRetry — retry behavior', () => {
             return n === 1;
           },
         })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(err2);
         expect(calls).toHaveLength(2);
       });
@@ -322,12 +311,15 @@ describe('withRetry — defaultIsRetryable table', () => {
         void inner;
         const { transport, calls } = fakeTransport(seq);
         const sut = withRetry({ attempts: 2, baseMs: 0 })(transport);
+
+        // Act
         try {
           await sut.request(makeRequest());
         } catch {
           // ignore — we only inspect call count
         }
         const retried = calls.length > 1;
+
         // Assert
         expect(retried).toBe(expected);
       });
@@ -344,7 +336,8 @@ describe('withRetry — cancellation', () => {
         controller.abort('pre-aborted');
         const { transport, calls } = fakeTransport([makeResponse()]);
         const sut = withRetry({ attempts: 2, baseMs: 0 })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest({ signal: controller.signal }))).rejects.toBe(
           'pre-aborted',
         );
@@ -366,11 +359,14 @@ describe('withRetry — cancellation', () => {
           baseMs: 100,
           delay: cd.delay,
         })(transport);
+
+        // Act
         const promise = sut.request(makeRequest({ signal: controller.signal }));
         // wait for first call + backoff to start
         await Promise.resolve();
         await Promise.resolve();
         controller.abort('mid');
+
         // Assert
         await expect(promise).rejects.toBe('mid');
         expect(calls).toHaveLength(1);
@@ -385,7 +381,8 @@ describe('withRetry — cancellation', () => {
         const abortErr = new DOMException('aborted', 'AbortError');
         const { transport, calls } = fakeTransport([abortErr, makeResponse()]);
         const sut = withRetry({ attempts: 3, baseMs: 0 })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(abortErr);
         expect(calls).toHaveLength(1);
       });
@@ -400,7 +397,10 @@ describe('withRetry — cancellation', () => {
         const ok = makeResponse({ statusCode: 200 });
         const { transport, calls } = fakeTransport([timeoutErr, ok]);
         const sut = withRetry({ attempts: 2, baseMs: 0 })(transport);
+
+        // Act
         const result = await sut.request(makeRequest());
+
         // Assert
         expect(result).toBe(ok);
         expect(calls).toHaveLength(2);
@@ -419,7 +419,8 @@ describe('withRetry — cancellation', () => {
           baseMs: 0,
           isRetryable: () => true,
         })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(abortErr);
         expect(calls).toHaveLength(1);
       });
@@ -440,7 +441,10 @@ describe('defaultDelay primitive', () => {
       it('Then setTimeout was NOT called', async () => {
         // Arrange
         const spy = vi.spyOn(globalThis, 'setTimeout');
+
+        // Act
         await defaultDelay(0);
+
         // Assert
         expect(spy).not.toHaveBeenCalled();
       });
@@ -456,12 +460,19 @@ describe('defaultDelay primitive', () => {
         promise.then(() => {
           resolved = true;
         });
+
+        // Act
         vi.advanceTimersByTime(49);
         await Promise.resolve();
+
         // Assert
         expect(resolved).toBe(false);
+
+        // Act
         vi.advanceTimersByTime(1);
         await promise;
+
+        // Assert
         expect(resolved).toBe(true);
       });
     });
@@ -474,7 +485,8 @@ describe('defaultDelay primitive', () => {
         const spy = vi.spyOn(globalThis, 'setTimeout');
         const controller = new AbortController();
         controller.abort('reason');
-        // Assert
+
+        // Act & Assert
         await expect(defaultDelay(1000, controller.signal)).rejects.toBe('reason');
         expect(spy).not.toHaveBeenCalled();
       });
@@ -487,8 +499,11 @@ describe('defaultDelay primitive', () => {
         // Arrange
         const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
         const controller = new AbortController();
+
+        // Act
         const promise = defaultDelay(1000, controller.signal);
         controller.abort('mid-abort');
+
         // Assert
         await expect(promise).rejects.toBe('mid-abort');
         expect(clearSpy).toHaveBeenCalledTimes(1);
@@ -502,9 +517,12 @@ describe('defaultDelay primitive', () => {
         // Arrange
         const controller = new AbortController();
         const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
+
+        // Act
         const promise = defaultDelay(50, controller.signal);
         vi.advanceTimersByTime(50);
         await promise;
+
         // Assert
         expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
       });
@@ -537,10 +555,10 @@ describe('defaultIsRetryable — direct table', () => {
         const error = makeError ? makeError() : new Error('boom');
 
         // Act
-        const sut = defaultIsRetryable({ error, attempt: 1 });
+        const result = defaultIsRetryable({ error, attempt: 1 });
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -548,11 +566,11 @@ describe('defaultIsRetryable — direct table', () => {
   describe('Given no error and no response (undefined undefined)', () => {
     describe('When evaluated', () => {
       it('Then returns false', () => {
-        // Arrange
-        const sut = defaultIsRetryable({ attempt: 1 });
+        // Arrange & Act
+        const result = defaultIsRetryable({ attempt: 1 });
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -578,7 +596,8 @@ describe('defaultIsRetryable — direct table', () => {
       ])('Then it returns %j', (statusCode, expected) => {
         // Arrange
         const response = makeResponse({ statusCode });
-        // Assert
+
+        // Act & Assert
         expect(defaultIsRetryable({ response, attempt: 1 })).toBe(expected);
       });
     });
@@ -609,7 +628,8 @@ describe('withRetry — backoff math (deterministic)', () => {
           jitter: 0,
           delay: delaySpy,
         })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(err);
         expect(delaySpy.mock.calls.map((c) => c[0])).toEqual([100, 100]);
       });
@@ -632,7 +652,10 @@ describe('withRetry — backoff math (deterministic)', () => {
           jitter: 0,
           delay: delaySpy,
         })(transport);
+
+        // Act
         await sut.request(makeRequest());
+
         // Assert
         expect(delaySpy.mock.calls.map((c) => c[0])).toEqual([100, 200]);
       });
@@ -655,8 +678,11 @@ describe('withRetry — backoff math (deterministic)', () => {
           maxDelayMs: 100_000,
           delay: delaySpy,
         })(transport);
+
+        // Act — raw=100000, clamped=100000 (we set maxDelayMs to allow it past
+        // validate); test clamp via default.
         await sut.request(makeRequest());
-        // raw=100000, clamped=100000 (we set maxDelayMs to allow it past validate); test clamp via default:
+
         // Assert
         expect(delaySpy.mock.calls[0]?.[0]).toBe(100_000);
       });
@@ -679,8 +705,10 @@ describe('withRetry — backoff math (deterministic)', () => {
           jitter: 0.5,
           delay: delaySpy,
         })(transport);
+
+        // Act — factor = 1 - 0.5 + 2 * 0.5 * 1.0 = 1.5 → floor(100 * 1.5) = 150
         await sut.request(makeRequest());
-        // factor = 1 - 0.5 + 2 * 0.5 * 1.0 = 1.5 → floor(100 * 1.5) = 150
+
         // Assert
         expect(delaySpy.mock.calls[0]?.[0]).toBe(150);
       });
@@ -703,8 +731,10 @@ describe('withRetry — backoff math (deterministic)', () => {
           jitter: 0.5,
           delay: delaySpy,
         })(transport);
+
+        // Act — factor = 1 - 0.5 + 2 * 0.5 * 0.0 = 0.5 → floor(100 * 0.5) = 50
         await sut.request(makeRequest());
-        // factor = 1 - 0.5 + 2 * 0.5 * 0.0 = 0.5 → floor(100 * 0.5) = 50
+
         // Assert
         expect(delaySpy.mock.calls[0]?.[0]).toBe(50);
       });
@@ -724,9 +754,10 @@ describe('withRetry — last-attempt boundary', () => {
           baseMs: 0,
           isRetryable: () => true,
         })(transport);
-        // Assert
+
+        // Act & Assert — attempts=2, isLast on attempt 2 stops the loop without
+        // consulting the predicate.
         await expect(sut.request(makeRequest())).rejects.toBe(err);
-        // attempts=2, isLast on attempt 2 stops the loop without consulting the predicate
         expect(calls).toHaveLength(2);
       });
     });
@@ -743,7 +774,8 @@ describe('withRetry — last-attempt boundary', () => {
           baseMs: 0,
           isRetryable: () => true,
         })(transport);
-        // Assert
+
+        // Act & Assert
         await expect(sut.request(makeRequest())).rejects.toBe(err);
         expect(calls).toHaveLength(3);
       });

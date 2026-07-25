@@ -18,270 +18,151 @@ const expectInvalid = (fn: () => void, option: string, reasonContains: string): 
   }
 };
 
-describe('validateOptions — happy path', () => {
-  describe('Given an empty opts object', () => {
+describe('validateOptions — invalid option values', () => {
+  describe('Given an option value that fails a guard', () => {
     describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange / Act / Assert
-        expect(() => validateOptions({})).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given fully-populated valid opts', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange / Act / Assert
-        expect(() =>
-          validateOptions({
-            cwd: '/abs/path',
-            config: {
-              parallelism: 8,
-              maxResponseBytes: 1024,
-              maxObjectsPerPack: 1,
-              breakStaleLockMs: 0,
-              maxDnsResults: 64,
-              dnsResolver: async () => ['1.2.3.4'],
-            },
-          }),
-        ).not.toThrow();
-      });
-    });
-  });
-});
-
-describe('validateOptions — opts.cwd', () => {
-  describe("Given opts.cwd = 'relative/path'", () => {
-    describe('When validateOptions runs', () => {
-      it("Then throws INVALID_OPTION with .option === 'cwd'", () => {
-        // Arrange + Assert
-        expectInvalid(() => validateOptions({ cwd: 'relative/path' }), 'cwd', 'absolute');
-      });
-    });
-  });
-
-  describe("Given opts.cwd = '' (empty string)", () => {
-    describe('When validateOptions runs', () => {
-      it("Then throws INVALID_OPTION with .option === 'cwd'", () => {
-        // Arrange + Assert
-        expectInvalid(() => validateOptions({ cwd: '' }), 'cwd', 'absolute');
-      });
-    });
-  });
-
-  describe("Given opts.cwd = '/abs/path' (absolute)", () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ cwd: '/abs/path' })).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given opts.cwd is a Windows UNC path', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw (UNC prefix is checked at the START)', () => {
-        // Arrange — a UNC root `\\server\share` is absolute. The guard inspects the
-        // *start* of the value for the `\\` prefix; this path starts with `\\` but
-        // does NOT end with it, so a startsWith→endsWith mutation would reject it.
-        const cwd = '\\\\server\\share';
-
-        // Act / Assert
-        expect(() => validateOptions({ cwd })).not.toThrow();
-      });
-    });
-  });
-});
-
-describe('validateOptions — opts.config.parallelism', () => {
-  describe('Given parallelism = 0', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        expectInvalid(
-          () => validateOptions({ config: { parallelism: 0 } }),
-          'parallelism',
-          '1..32',
-        );
-      });
-    });
-  });
-
-  describe('Given parallelism = 33', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        expectInvalid(
-          () => validateOptions({ config: { parallelism: 33 } }),
-          'parallelism',
-          '1..32',
-        );
-      });
-    });
-  });
-
-  describe('Given parallelism = 1 (lower boundary)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { parallelism: 1 } })).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given parallelism = 32 (upper boundary)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { parallelism: 32 } })).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given parallelism = 1.5 (non-integer)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        expectInvalid(
-          () => validateOptions({ config: { parallelism: 1.5 } }),
-          'parallelism',
-          'integer',
-        );
-      });
-    });
-  });
-});
-
-describe('validateOptions — opts.config.maxResponseBytes', () => {
-  describe('Given maxResponseBytes = 1023', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        expectInvalid(
-          () => validateOptions({ config: { maxResponseBytes: 1023 } }),
-          'maxResponseBytes',
-          '>= 1024',
-        );
-      });
-    });
-  });
-
-  describe('Given maxResponseBytes = 1024 (boundary)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { maxResponseBytes: 1024 } })).not.toThrow();
-      });
-    });
-  });
-});
-
-describe('validateOptions — opts.config.breakStaleLockMs', () => {
-  describe('Given breakStaleLockMs = -1', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        expectInvalid(
-          () => validateOptions({ config: { breakStaleLockMs: -1 } }),
-          'breakStaleLockMs',
-          '>= 0',
-        );
-      });
-    });
-  });
-
-  describe('Given breakStaleLockMs = 0 (boundary)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { breakStaleLockMs: 0 } })).not.toThrow();
-      });
-    });
-  });
-});
-
-describe('validateOptions — opts.config.maxObjectsPerPack', () => {
-  describe('Given maxObjectsPerPack = 0', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        expectInvalid(
-          () => validateOptions({ config: { maxObjectsPerPack: 0 } }),
-          'maxObjectsPerPack',
-          '>= 1',
-        );
-      });
-    });
-  });
-
-  describe('Given maxObjectsPerPack = 1 (boundary)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { maxObjectsPerPack: 1 } })).not.toThrow();
-      });
-    });
-  });
-});
-
-describe('validateOptions — opts.config.maxDnsResults', () => {
-  describe('Given maxDnsResults = 0', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        expectInvalid(
-          () => validateOptions({ config: { maxDnsResults: 0 } }),
-          'maxDnsResults',
-          '>= 1',
-        );
-      });
-    });
-  });
-
-  describe('Given maxDnsResults = 1 (boundary)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { maxDnsResults: 1 } })).not.toThrow();
-      });
-    });
-  });
-
-  describe('Given maxDnsResults = 64 (default)', () => {
-    describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { maxDnsResults: 64 } })).not.toThrow();
-      });
-    });
-  });
-});
-
-describe('validateOptions — opts.config.dnsResolver', () => {
-  describe('Given dnsResolver passed as a non-function via unsafe cast', () => {
-    describe('When validateOptions runs', () => {
-      it('Then throws INVALID_OPTION', () => {
-        // Arrange + Assert
-        // TypeScript blocks the unsafe shape at compile time; the runtime guard is the second line of defense.
-        expectInvalid(
-          () =>
+      it.each([
+        {
+          label: "a relative cwd ('relative/path')",
+          fn: () => validateOptions({ cwd: 'relative/path' }),
+          option: 'cwd',
+          reasonContains: 'absolute',
+        },
+        {
+          label: 'an empty-string cwd',
+          fn: () => validateOptions({ cwd: '' }),
+          option: 'cwd',
+          reasonContains: 'absolute',
+        },
+        {
+          label: 'parallelism = 0',
+          fn: () => validateOptions({ config: { parallelism: 0 } }),
+          option: 'parallelism',
+          reasonContains: '1..32',
+        },
+        {
+          label: 'parallelism = 33',
+          fn: () => validateOptions({ config: { parallelism: 33 } }),
+          option: 'parallelism',
+          reasonContains: '1..32',
+        },
+        {
+          label: 'parallelism = 1.5 (non-integer)',
+          fn: () => validateOptions({ config: { parallelism: 1.5 } }),
+          option: 'parallelism',
+          reasonContains: 'integer',
+        },
+        {
+          label: 'maxResponseBytes = 1023',
+          fn: () => validateOptions({ config: { maxResponseBytes: 1023 } }),
+          option: 'maxResponseBytes',
+          reasonContains: '>= 1024',
+        },
+        {
+          label: 'breakStaleLockMs = -1',
+          fn: () => validateOptions({ config: { breakStaleLockMs: -1 } }),
+          option: 'breakStaleLockMs',
+          reasonContains: '>= 0',
+        },
+        {
+          label: 'maxObjectsPerPack = 0',
+          fn: () => validateOptions({ config: { maxObjectsPerPack: 0 } }),
+          option: 'maxObjectsPerPack',
+          reasonContains: '>= 1',
+        },
+        {
+          label: 'maxDnsResults = 0',
+          fn: () => validateOptions({ config: { maxDnsResults: 0 } }),
+          option: 'maxDnsResults',
+          reasonContains: '>= 1',
+        },
+        {
+          label: 'dnsResolver passed as a non-function via unsafe cast',
+          // TypeScript blocks the unsafe shape at compile time; the runtime guard
+          // is the second line of defense.
+          fn: () =>
             validateOptions({
               config: {
                 dnsResolver: 'not a function' as unknown as RepositoryConfigDnsResolver,
               },
             }),
-          'dnsResolver',
-          'function',
-        );
+          option: 'dnsResolver',
+          reasonContains: 'function',
+        },
+      ])('Then throws INVALID_OPTION for $label', ({ fn, option, reasonContains }) => {
+        // Arrange + Assert
+        expectInvalid(fn, option, reasonContains);
       });
     });
   });
+});
 
-  describe('Given dnsResolver = an actual function', () => {
+describe('validateOptions — valid option values', () => {
+  describe('Given an option value that satisfies every guard', () => {
     describe('When validateOptions runs', () => {
-      it('Then it does not throw', () => {
-        // Arrange + Assert
-        expect(() => validateOptions({ config: { dnsResolver: async () => [] } })).not.toThrow();
+      it.each([
+        { label: 'an empty opts object', fn: () => validateOptions({}) },
+        {
+          label: 'fully-populated valid opts',
+          fn: () =>
+            validateOptions({
+              cwd: '/abs/path',
+              config: {
+                parallelism: 8,
+                maxResponseBytes: 1024,
+                maxObjectsPerPack: 1,
+                breakStaleLockMs: 0,
+                maxDnsResults: 64,
+                dnsResolver: async () => ['1.2.3.4'],
+              },
+            }),
+        },
+        {
+          label: "an absolute cwd ('/abs/path')",
+          fn: () => validateOptions({ cwd: '/abs/path' }),
+        },
+        {
+          label: 'a Windows UNC cwd (prefix checked at the START)',
+          // A UNC root `\\server\share` is absolute. The guard inspects the *start*
+          // of the value for the `\\` prefix; this path starts with `\\` but does
+          // NOT end with it, so a startsWith→endsWith mutation would reject it.
+          fn: () => validateOptions({ cwd: '\\\\server\\share' }),
+        },
+        {
+          label: 'parallelism = 1 (lower boundary)',
+          fn: () => validateOptions({ config: { parallelism: 1 } }),
+        },
+        {
+          label: 'parallelism = 32 (upper boundary)',
+          fn: () => validateOptions({ config: { parallelism: 32 } }),
+        },
+        {
+          label: 'maxResponseBytes = 1024 (boundary)',
+          fn: () => validateOptions({ config: { maxResponseBytes: 1024 } }),
+        },
+        {
+          label: 'breakStaleLockMs = 0 (boundary)',
+          fn: () => validateOptions({ config: { breakStaleLockMs: 0 } }),
+        },
+        {
+          label: 'maxObjectsPerPack = 1 (boundary)',
+          fn: () => validateOptions({ config: { maxObjectsPerPack: 1 } }),
+        },
+        {
+          label: 'maxDnsResults = 1 (boundary)',
+          fn: () => validateOptions({ config: { maxDnsResults: 1 } }),
+        },
+        {
+          label: 'maxDnsResults = 64 (default)',
+          fn: () => validateOptions({ config: { maxDnsResults: 64 } }),
+        },
+        {
+          label: 'dnsResolver = an actual function',
+          fn: () => validateOptions({ config: { dnsResolver: async () => [] } }),
+        },
+      ])('Then it does not throw for $label', ({ fn }) => {
+        // Arrange + Act + Assert
+        expect(fn).not.toThrow();
       });
     });
   });

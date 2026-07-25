@@ -15,11 +15,8 @@ describe('disposeAdapters', () => {
   describe('Given a ctx with ports that lack dispose', () => {
     describe('When disposeAdapters runs', () => {
       it('Then resolves without error', async () => {
-        // Arrange
-        const sut = disposeAdapters;
-
-        // Act
-        const promise = sut(baseCtx());
+        // Arrange & Act
+        const promise = disposeAdapters(baseCtx());
 
         // Assert
         await expect(promise).resolves.toBeUndefined();
@@ -33,10 +30,9 @@ describe('disposeAdapters', () => {
         // Arrange
         const dispose = vi.fn(async () => {});
         const ctx = withPort(baseCtx(), 'fs', { ...baseCtx().fs, dispose });
-        const sut = disposeAdapters;
 
         // Act
-        await sut(ctx);
+        await disposeAdapters(ctx);
 
         // Assert
         expect(dispose).toHaveBeenCalledTimes(1);
@@ -57,10 +53,9 @@ describe('disposeAdapters', () => {
         ctx = withPort(ctx, 'transport', { ...base.transport, dispose: transportDispose });
         ctx = withPort(ctx, 'compressor', { ...base.compressor, dispose: compressorDispose });
         ctx = withPort(ctx, 'hash', { ...base.hash, dispose: hashDispose });
-        const sut = disposeAdapters;
 
         // Act
-        await sut(ctx);
+        await disposeAdapters(ctx);
 
         // Assert
         expect(fsDispose).toHaveBeenCalledTimes(1);
@@ -82,10 +77,9 @@ describe('disposeAdapters', () => {
         const base = baseCtx();
         let ctx = withPort(base, 'fs', { ...base.fs, dispose: fsDispose });
         ctx = withPort(ctx, 'transport', { ...base.transport, dispose: transportDispose });
-        const sut = disposeAdapters;
 
         // Act
-        const promise = sut(ctx);
+        const promise = disposeAdapters(ctx);
 
         // Assert
         await expect(promise).resolves.toBeUndefined();
@@ -108,10 +102,9 @@ describe('disposeAdapters', () => {
           ...withPort(base, 'fs', { ...base.fs, dispose: fsDispose }),
           logger: { warn },
         };
-        const sut = disposeAdapters;
 
         // Act
-        await sut(ctx);
+        await disposeAdapters(ctx);
 
         // Assert
         expect(warn).toHaveBeenCalledTimes(1);
@@ -131,10 +124,9 @@ describe('disposeAdapters', () => {
           ...baseCtx().fs,
           dispose: 'not-a-function' as unknown,
         });
-        const sut = disposeAdapters;
 
         // Act
-        const promise = sut(ctx);
+        const promise = disposeAdapters(ctx);
 
         // Assert — must not throw despite non-function dispose property.
         await expect(promise).resolves.toBeUndefined();
@@ -148,10 +140,9 @@ describe('disposeAdapters', () => {
         // Arrange
         const dispose = vi.fn(async () => {});
         const ctx = withPort(baseCtx(), 'fs', { ...baseCtx().fs, dispose });
-        const sut = disposeAdapters;
 
         // Act
-        await Promise.all([sut(ctx), sut(ctx)]);
+        await Promise.all([disposeAdapters(ctx), disposeAdapters(ctx)]);
 
         // Assert
         expect(dispose).toHaveBeenCalledTimes(2);
