@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -86,7 +87,8 @@ describe('add', () => {
       it('Then throws EMPTY_PATHSPEC', async () => {
         // Arrange
         const ctx = await seedFreshRepo();
-        // Assert
+
+        // Act + Assert
         await expectError(() => add(ctx, []), 'EMPTY_PATHSPEC');
       });
     });
@@ -99,10 +101,10 @@ describe('add', () => {
         const ctx = await seedFreshRepo({ 'src/foo.ts': 'x' });
 
         // Act
-        const sut = await add(ctx, ['src/foo.ts']);
+        const result = await add(ctx, ['src/foo.ts']);
 
         // Assert
-        expect(sut.added).toEqual(['src/foo.ts']);
+        expect(result.added).toEqual(['src/foo.ts']);
       });
     });
   });
@@ -112,7 +114,8 @@ describe('add', () => {
       it('Then throws PATHSPEC_OUTSIDE_REPO before any I/O', async () => {
         // Arrange
         const ctx = await seedFreshRepo();
-        // Assert
+
+        // Act + Assert
         await expectError(() => add(ctx, ['../escape']), 'PATHSPEC_OUTSIDE_REPO');
       });
     });
@@ -123,7 +126,8 @@ describe('add', () => {
       it('Then throws PATHSPEC_NO_MATCH', async () => {
         // Arrange
         const ctx = await seedFreshRepo();
-        // Assert
+
+        // Act + Assert
         await expectError(() => add(ctx, ['nonexistent.txt']), 'PATHSPEC_NO_MATCH');
       });
     });
@@ -151,7 +155,8 @@ describe('add', () => {
       it('Then throws NOT_A_REPOSITORY', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        // Assert
+
+        // Act + Assert
         await expectError(() => add(ctx, ['x']), 'NOT_A_REPOSITORY');
       });
     });
@@ -191,10 +196,10 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${file}`, content);
 
         // Act
-        const sut = await add(ctx, ['a.txt']);
+        const result = await add(ctx, ['a.txt']);
 
         // Assert
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(['a.txt']);
       });
     });
   });
@@ -208,11 +213,11 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'modified-content');
 
         // Act
-        const sut = await add(ctx, ['a.txt']);
+        const result = await add(ctx, ['a.txt']);
 
         // Assert
-        expect(sut.modified).toEqual(['a.txt']);
-        expect(sut.added).toEqual([]);
+        expect(result.modified).toEqual(['a.txt']);
+        expect(result.added).toEqual([]);
       });
     });
   });
@@ -225,11 +230,11 @@ describe('add', () => {
         await add(ctx, ['a.txt']);
 
         // Act — re-add a.txt (unchanged) + b.txt (new).
-        const sut = await add(ctx, ['a.txt', 'b.txt']);
+        const result = await add(ctx, ['a.txt', 'b.txt']);
 
         // Assert
-        expect(sut.added).toEqual(['b.txt']);
-        expect(sut.modified).toEqual([]);
+        expect(result.added).toEqual(['b.txt']);
+        expect(result.modified).toEqual([]);
       });
     });
   });
@@ -246,11 +251,11 @@ describe('add', () => {
         await add(ctx, ['a.txt']);
 
         // Act
-        const sut = await add(ctx, ['*.txt']);
+        const result = await add(ctx, ['*.txt']);
 
         // Assert
-        expect(sut.modified).toEqual([]);
-        expect(sut.added).toEqual([]);
+        expect(result.modified).toEqual([]);
+        expect(result.added).toEqual([]);
       });
     });
   });
@@ -298,10 +303,10 @@ describe('add', () => {
         const ctx = await seedFreshRepo();
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut).toEqual({ added: [], modified: [], removed: [] });
+        expect(result).toEqual({ added: [], modified: [], removed: [] });
       });
     });
   });
@@ -336,10 +341,10 @@ describe('add', () => {
         const ctx = await seedFreshRepo({ 'b.txt': 'b', 'a.txt': 'a' });
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.added).toEqual(['a.txt', 'b.txt']);
+        expect(result.added).toEqual(['a.txt', 'b.txt']);
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path).sort()).toEqual(['a.txt', 'b.txt']);
       });
@@ -355,11 +360,11 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a-changed');
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.modified).toEqual(['a.txt']);
-        expect(sut.added).toEqual([]);
+        expect(result.modified).toEqual(['a.txt']);
+        expect(result.added).toEqual([]);
       });
     });
   });
@@ -379,13 +384,13 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert — each array sorted INDEPENDENTLY. A mutant that sorts the
         // wrong array (added.sort → modified.sort, etc.) breaks one of these.
-        expect(sut.added).toEqual(['a.txt', 'c.txt']);
-        expect(sut.modified).toEqual(['z.txt']);
-        expect(sut.removed).toEqual(['b.txt']);
+        expect(result.added).toEqual(['a.txt', 'c.txt']);
+        expect(result.modified).toEqual(['z.txt']);
+        expect(result.removed).toEqual(['b.txt']);
       });
     });
   });
@@ -399,10 +404,10 @@ describe('add', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a.txt']);
+        expect(result.removed).toEqual(['a.txt']);
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path)).toEqual(['b.txt']);
       });
@@ -423,11 +428,11 @@ describe('add', () => {
         await sparseCheckoutSet(ctx, { patterns: ['src'], cone: true });
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert — `docs/b.txt` is not in `removed`, and it survives in the index
         // still flagged skip-worktree.
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
         const idx = await readIndex(ctx);
         const docEntry = idx.entries.find((e) => e.path === 'docs/b.txt');
         expect(docEntry).toBeDefined();
@@ -581,10 +586,10 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(['a.txt']);
       });
     });
   });
@@ -597,10 +602,10 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`, `${'a'.repeat(40)}\n`);
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(['a.txt']);
       });
     });
   });
@@ -706,7 +711,7 @@ describe('add', () => {
           }
           const racingCtx = { ...ctx, fs: racingLstatFs(ctx, suffix, flipTo) };
 
-          // Assert
+          // Act + Assert
           await expectError(() => add(racingCtx, [], { all: true }), 'OPERATION_ABORTED');
         },
       );
@@ -765,10 +770,10 @@ describe('add', () => {
         const cappedCtx = { ...ctx, fs: cappedFs };
 
         // Act
-        const sut = await add(cappedCtx, [], { all: true });
+        const result = await add(cappedCtx, [], { all: true });
 
         // Assert
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(['a.txt']);
       });
     });
   });
@@ -789,10 +794,10 @@ describe('add', () => {
         await ctx.fs.symlink(target, `${ctx.layout.workDir}/link`);
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.added).toEqual(['link']);
+        expect(result.added).toEqual(['link']);
       });
     });
   });
@@ -886,10 +891,10 @@ describe('add', () => {
         const ignore = (path: string) => path.startsWith('node_modules/');
 
         // Act
-        const sut = await addAllInternal(ctx, ignore);
+        const result = await addAllInternal(ctx, ignore);
 
         // Assert
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(['a.txt']);
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path)).toEqual(['a.txt']);
       });
@@ -928,10 +933,10 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'node_modules/\n');
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert — only the staged file is added;.gitignore itself ALSO gets staged.
-        expect([...sut.added].sort()).toEqual(['.gitignore', 'a.txt']);
+        expect([...result.added].sort()).toEqual(['.gitignore', 'a.txt']);
       });
     });
   });
@@ -949,10 +954,10 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '!keep.log\n');
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect([...sut.added].sort()).toEqual(['.gitignore', 'sub/.gitignore', 'sub/keep.log']);
+        expect([...result.added].sort()).toEqual(['.gitignore', 'sub/.gitignore', 'sub/keep.log']);
       });
     });
   });
@@ -971,12 +976,12 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'vendor/\n');
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert —.gitignore is newly added; vendor/foo.ts stays in
         // index, NOT in removed.
-        expect(sut.added).toEqual(['.gitignore']);
-        expect(sut.removed).toEqual([]);
+        expect(result.added).toEqual(['.gitignore']);
+        expect(result.removed).toEqual([]);
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path).sort()).toEqual(['.gitignore', 'vendor/foo.ts']);
       });
@@ -993,11 +998,11 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'secret.bin\n');
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert —.gitignore is newly added; secret.bin stays in index, not in removed.
-        expect(sut.added).toEqual(['.gitignore']);
-        expect(sut.removed).toEqual([]);
+        expect(result.added).toEqual(['.gitignore']);
+        expect(result.removed).toEqual([]);
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path).sort()).toEqual(['.gitignore', 'secret.bin']);
       });
@@ -1012,10 +1017,10 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'secret.bin\n');
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(['a.txt']);
       });
     });
   });
@@ -1031,10 +1036,10 @@ describe('add', () => {
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array(50));
 
         // Act — should NOT throw because INVALID_INDEX_HEADER is treated as "no entries".
-        const sut = await add(ctx, ['a.txt']);
+        const result = await add(ctx, ['a.txt']);
 
         // Assert — re-add succeeds with a.txt re-staged.
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(['a.txt']);
       });
     });
   });
@@ -1050,10 +1055,10 @@ describe('add', () => {
         });
 
         // Act
-        const sut = await add(ctx, ['*.ts']);
+        const result = await add(ctx, ['*.ts']);
 
         // Assert
-        expect([...sut.added].sort()).toEqual(['a.ts', 'b.ts']);
+        expect([...result.added].sort()).toEqual(['a.ts', 'b.ts']);
       });
     });
   });
@@ -1065,10 +1070,10 @@ describe('add', () => {
         const ctx = await seedFreshRepo({ 'README.md': '# r' });
 
         // Act
-        const sut = await add(ctx, ['*.ts']);
+        const result = await add(ctx, ['*.ts']);
 
         // Assert
-        expect(sut.added).toEqual([]);
+        expect(result.added).toEqual([]);
       });
     });
   });
@@ -1084,10 +1089,10 @@ describe('add', () => {
         });
 
         // Act
-        const sut = await add(ctx, ['*.ts', '!*.test.ts']);
+        const result = await add(ctx, ['*.ts', '!*.test.ts']);
 
         // Assert
-        expect([...sut.added].sort()).toEqual(['a.ts', 'b.ts']);
+        expect([...result.added].sort()).toEqual(['a.ts', 'b.ts']);
       });
     });
   });
@@ -1103,10 +1108,10 @@ describe('add', () => {
         });
 
         // Act
-        const sut = await add(ctx, ['src']);
+        const result = await add(ctx, ['src']);
 
         // Assert
-        expect([...sut.added].sort()).toEqual(['src/a.ts', 'src/b.ts']);
+        expect([...result.added].sort()).toEqual(['src/a.ts', 'src/b.ts']);
       });
     });
   });
@@ -1122,11 +1127,11 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'dist/\n');
 
         // Act
-        const sut = await add(ctx, ['*.ts']);
+        const result = await add(ctx, ['*.ts']);
 
         // Assert — dist/build.ts is pruned via gitignore even though it
         // matches the pathspec.
-        expect(sut.added).toEqual(['a.ts']);
+        expect(result.added).toEqual(['a.ts']);
       });
     });
   });
@@ -1143,10 +1148,10 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'ignored.txt\n');
 
         // Act
-        const sut = await add(ctx, ['ignored.txt']);
+        const result = await add(ctx, ['ignored.txt']);
 
         // Assert
-        expect(sut.added).toEqual(['ignored.txt']);
+        expect(result.added).toEqual(['ignored.txt']);
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path)).toEqual(['ignored.txt']);
       });
@@ -1190,10 +1195,10 @@ describe('add', () => {
         await ctx.fs.symlink('a.txt', `${ctx.layout.workDir}/link`);
 
         // Act
-        const sut = await add(ctx, ['link']);
+        const result = await add(ctx, ['link']);
 
         // Assert
-        expect(sut.added).toEqual(['link']);
+        expect(result.added).toEqual(['link']);
         const idx = await readIndex(ctx);
         expect(idx.entries.find((e) => e.path === 'link')?.mode).toBe('120000');
       });
@@ -1246,11 +1251,11 @@ describe('add', () => {
         const execCtx = { ...ctx, fs: execFs };
 
         // Act
-        const sut = await add(execCtx, ['a.sh']);
+        const result = await add(execCtx, ['a.sh']);
 
         // Assert
-        expect(sut.modified).toEqual(['a.sh']);
-        expect(sut.added).toEqual([]);
+        expect(result.modified).toEqual(['a.sh']);
+        expect(result.added).toEqual([]);
       });
     });
   });
@@ -1283,11 +1288,11 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.ts`, 'a-changed');
 
         // Act
-        const sut = await add(ctx, ['*.ts']);
+        const result = await add(ctx, ['*.ts']);
 
         // Assert
-        expect(sut.modified).toEqual(['a.ts']);
-        expect(sut.added).toEqual([]);
+        expect(result.modified).toEqual(['a.ts']);
+        expect(result.added).toEqual([]);
       });
     });
   });
@@ -1307,11 +1312,11 @@ describe('add', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.ts`, 'c');
 
         // Act
-        const sut = await add(ctx, ['*.ts']);
+        const result = await add(ctx, ['*.ts']);
 
         // Assert
-        expect(sut.added).toEqual(['c.ts', 'd.ts']);
-        expect(sut.modified).toEqual(['y.ts', 'z.ts']);
+        expect(result.added).toEqual(['c.ts', 'd.ts']);
+        expect(result.modified).toEqual(['y.ts', 'z.ts']);
       });
     });
   });
@@ -1326,10 +1331,10 @@ describe('add', () => {
         const ctx = await seedFreshRepo({ 'src/a.ts': 'a', 'src/b.ts': 'b' });
 
         // Act
-        const sut = await add(ctx, ['**/*.ts']);
+        const result = await add(ctx, ['**/*.ts']);
 
         // Assert
-        expect([...sut.added].sort()).toEqual(['src/a.ts', 'src/b.ts']);
+        expect([...result.added].sort()).toEqual(['src/a.ts', 'src/b.ts']);
       });
     });
   });
@@ -1353,11 +1358,11 @@ describe('add', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/p.txt`);
 
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(sut.modified).toEqual(['y.txt', 'z.txt']);
-        expect(sut.removed).toEqual(['p.txt', 'q.txt']);
+        expect(result.modified).toEqual(['y.txt', 'z.txt']);
+        expect(result.removed).toEqual(['p.txt', 'q.txt']);
       });
     });
   });
@@ -1393,11 +1398,11 @@ describe('add', () => {
         const execCtx = { ...ctx, fs: execFs };
 
         // Act
-        const sut = await add(execCtx, [], { all: true });
+        const result = await add(execCtx, [], { all: true });
 
         // Assert
-        expect(sut.modified).toEqual(['a.sh']);
-        expect(sut.added).toEqual([]);
+        expect(result.modified).toEqual(['a.sh']);
+        expect(result.added).toEqual([]);
       });
     });
   });
@@ -1465,10 +1470,10 @@ describe('add', () => {
           if (deleteFromDisk) await ctx.fs.rm(`${ctx.layout.workDir}/${path}`);
 
           // Act
-          const sut = await addAllInternal(ctx, ignore);
+          const result = await addAllInternal(ctx, ignore);
 
           // Assert
-          expect(sut.removed).toEqual(expectedRemoved);
+          expect(result.removed).toEqual(expectedRemoved);
           const idx = await readIndex(ctx);
           expect(idx.entries.map((e) => e.path)).toEqual(expectedEntries);
         },
@@ -1552,136 +1557,153 @@ describe('add', () => {
     });
   });
 
-  describe('Given a stale index.lock and breakStaleLockMs in literal-path mode', () => {
-    describe('When add', () => {
-      it('Then the stale lock is broken and the file is staged', async () => {
+  describe('Given a stale index.lock and breakStaleLockMs', () => {
+    describe('When add runs in literal-path, glob, or bulk mode', () => {
+      it.each<{
+        seed: Readonly<Record<string, string>>;
+        pathspec: ReadonlyArray<string>;
+        options: AddOptions | undefined;
+        expectedAdded: ReadonlyArray<string>;
+        label: string;
+      }>([
+        {
+          seed: { 'a.txt': 'a' },
+          pathspec: ['a.txt'],
+          options: undefined,
+          expectedAdded: ['a.txt'],
+          label: 'the stale lock is broken and the file is staged (literal-path mode)',
+        },
+        {
+          seed: { 'a.ts': 'a' },
+          pathspec: ['*.ts'],
+          options: undefined,
+          expectedAdded: ['a.ts'],
+          label:
+            'the stale lock is broken and matches are staged (glob/pathspec mode, via addByPathspec)',
+        },
+        {
+          seed: { 'a.txt': 'a' },
+          pathspec: [],
+          options: { all: true },
+          expectedAdded: ['a.txt'],
+          label: 'the stale lock is broken and files are staged (bulk mode, via addAll)',
+        },
+      ])('Then $label', async ({ seed, pathspec, options, expectedAdded }) => {
         // Arrange — pre-create index.lock and report a far-past mtime so the
         // lock is stale. `config.breakStaleLockMs` (baked into staleLockCtx) must
-        // reach acquireIndexLock; if the command stopped sourcing it from config
-        // the lock would not break and RESOURCE_LOCKED would surface.
-        const ctx = await staleLockCtx({ 'a.txt': 'a' });
+        // reach acquireIndexLock regardless of which staging path sources it
+        // from config — literal-path, addByPathspec, or addAll.
+        const ctx = await staleLockCtx(seed);
 
         // Act
-        const sut = await add(ctx, ['a.txt']);
+        const result = await add(ctx, pathspec, options);
 
         // Assert
-        expect(sut.added).toEqual(['a.txt']);
+        expect(result.added).toEqual(expectedAdded);
       });
     });
   });
 
-  describe('Given a stale index.lock and breakStaleLockMs in glob (pathspec) mode', () => {
-    describe('When add', () => {
-      it('Then the stale lock is broken and matches are staged', async () => {
-        // Arrange — glob routes through addByPathspec; config.breakStaleLockMs
-        // must reach acquireIndexLock there too.
-        const ctx = await staleLockCtx({ 'a.ts': 'a' });
-
-        // Act
-        const sut = await add(ctx, ['*.ts']);
-
-        // Assert
-        expect(sut.added).toEqual(['a.ts']);
-      });
-    });
-  });
-
-  describe('Given a stale index.lock and breakStaleLockMs in bulk mode', () => {
-    describe('When add({ all: true })', () => {
-      it('Then the stale lock is broken and files are staged', async () => {
-        // Arrange — bulk mode routes through addAll; config.breakStaleLockMs
-        // must reach acquireIndexLock there too.
-        const ctx = await staleLockCtx({ 'a.txt': 'a' });
-
-        // Act
-        const sut = await add(ctx, [], { all: true });
-
-        // Assert
-        expect(sut.added).toEqual(['a.txt']);
-      });
-    });
-  });
-
-  describe('Given a literal stage that fails mid-flight', () => {
-    describe('When a second add runs', () => {
-      it('Then it succeeds (the finally block released the lock)', async () => {
-        // Arrange — `a.txt` passes allLiteralsAreFiles (its first lstat) but
-        // its second lstat (inside stageOne) throws, so stageOne returns
-        // 'missing' and addLiteralOnly throws PATHSPEC_NO_MATCH. The L116
-        // `finally { lock.release() }` must drop index.lock; without it the
-        // next add would throw RESOURCE_LOCKED.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const baseLstat = ctx.fs.lstat;
-        let aSeen = false;
-        const flakyFs = new Proxy(ctx.fs, {
-          get(target, prop, receiver) {
-            if (prop === 'lstat') {
-              return async (path: string) => {
-                const real = await baseLstat(path);
-                if (!path.endsWith('/a.txt')) return real;
-                if (!aSeen) {
-                  aSeen = true;
-                  return real;
+  describe('Given a stage that fails mid-flight while index.lock is held', () => {
+    describe('When a second add runs on the unmodified ctx', () => {
+      it.each<{
+        seed: Readonly<Record<string, string>>;
+        makeFailingCtx: (
+          ctx: Awaited<ReturnType<typeof seedFreshRepo>>,
+        ) => Awaited<ReturnType<typeof seedFreshRepo>>;
+        failPathspec: ReadonlyArray<string>;
+        failOptions: AddOptions | undefined;
+        failCode: string;
+        retryPathspec: ReadonlyArray<string>;
+        expectedAdded: ReadonlyArray<string>;
+        label: string;
+      }>([
+        {
+          seed: { 'a.txt': 'a' },
+          makeFailingCtx: (ctx) => {
+            // `a.txt` passes allLiteralsAreFiles (its first lstat) but its
+            // second lstat (inside stageOne) throws, so stageOne returns
+            // 'missing' and addLiteralOnly throws PATHSPEC_NO_MATCH.
+            const baseLstat = ctx.fs.lstat;
+            let aSeen = false;
+            const flakyFs = new Proxy(ctx.fs, {
+              get(target, prop, receiver) {
+                if (prop === 'lstat') {
+                  return async (path: string) => {
+                    const real = await baseLstat(path);
+                    if (!path.endsWith('/a.txt')) return real;
+                    if (!aSeen) {
+                      aSeen = true;
+                      return real;
+                    }
+                    throw new TsgitError({ code: 'FILE_NOT_FOUND', path });
+                  };
                 }
-                throw new TsgitError({ code: 'FILE_NOT_FOUND', path });
-              };
-            }
-            return Reflect.get(target, prop, receiver);
+                return Reflect.get(target, prop, receiver);
+              },
+            });
+            return { ...ctx, fs: flakyFs };
           },
-        });
-        const flakyCtx = { ...ctx, fs: flakyFs };
-        await expectError(() => add(flakyCtx, ['a.txt']), 'PATHSPEC_NO_MATCH');
+          failPathspec: ['a.txt'],
+          failOptions: undefined,
+          failCode: 'PATHSPEC_NO_MATCH',
+          retryPathspec: ['a.txt'],
+          expectedAdded: ['a.txt'],
+          label: 'the finally block released the lock (literal-path mode; L116)',
+        },
+        {
+          seed: { 'a.ts': 'a' },
+          makeFailingCtx: (ctx) => ({
+            ...ctx,
+            fs: racingLstatFs(ctx, '/a.ts', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
+          }),
+          failPathspec: ['*.ts'],
+          failOptions: undefined,
+          failCode: 'WORKING_TREE_FILE_TOO_LARGE',
+          retryPathspec: ['*.ts'],
+          expectedAdded: ['a.ts'],
+          label: 'addByPathspec finally released the lock (glob mode; L175)',
+        },
+        {
+          seed: { 'a.txt': 'a' },
+          makeFailingCtx: (ctx) => ({
+            ...ctx,
+            fs: racingLstatFs(ctx, '/a.txt', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
+          }),
+          failPathspec: [],
+          failOptions: { all: true },
+          failCode: 'WORKING_TREE_FILE_TOO_LARGE',
+          retryPathspec: ['a.txt'],
+          expectedAdded: ['a.txt'],
+          label: 'addAll finally released the lock (bulk mode; L228)',
+        },
+      ])(
+        'Then it succeeds — $label',
+        async ({
+          seed,
+          makeFailingCtx,
+          failPathspec,
+          failOptions,
+          failCode,
+          retryPathspec,
+          expectedAdded,
+        }) => {
+          // Arrange — each row's failing setup makes ONE staging mode
+          // (literal, glob/addByPathspec, or bulk/addAll) throw while
+          // index.lock is held; that mode's `finally { lock.release() }`
+          // must still drop the lock, or the retry below would throw
+          // RESOURCE_LOCKED.
+          const ctx = await seedFreshRepo(seed);
+          const failingCtx = makeFailingCtx(ctx);
+          await expectError(() => add(failingCtx, failPathspec, failOptions), failCode);
 
-        // Act — second add on the unmodified ctx must not hit a leaked lock.
-        const sut = await add(ctx, ['a.txt']);
+          // Act — second add on the unmodified ctx must not hit a leaked lock.
+          const result = await add(ctx, retryPathspec);
 
-        // Assert
-        expect(sut.added).toEqual(['a.txt']);
-      });
-    });
-  });
-
-  describe('Given a glob-mode stage that throws on an oversize file', () => {
-    describe('When a second add runs', () => {
-      it('Then it succeeds (addByPathspec finally released the lock)', async () => {
-        // Arrange — glob routes through addByPathspec; an oversize re-lstat
-        // makes stageFromStat throw WORKING_TREE_FILE_TOO_LARGE while the lock
-        // is held. The L175 `finally { lock.release() }` must drop index.lock.
-        const ctx = await seedFreshRepo({ 'a.ts': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.ts', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
-        };
-        await expectError(() => add(racingCtx, ['*.ts']), 'WORKING_TREE_FILE_TOO_LARGE');
-
-        // Act — second add on the unmodified ctx must not hit a leaked lock.
-        const sut = await add(ctx, ['*.ts']);
-
-        // Assert
-        expect(sut.added).toEqual(['a.ts']);
-      });
-    });
-  });
-
-  describe('Given a bulk-mode stage that throws on an oversize file', () => {
-    describe('When a second add runs', () => {
-      it('Then it succeeds (addAll finally released the lock)', async () => {
-        // Arrange — bulk mode routes through addAll; an oversize re-lstat makes
-        // stageFromStat throw while the lock is held. The L228
-        // `finally { lock.release() }` must drop index.lock.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.txt', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
-        };
-        await expectError(() => add(racingCtx, [], { all: true }), 'WORKING_TREE_FILE_TOO_LARGE');
-
-        // Act — second add on the unmodified ctx must not hit a leaked lock.
-        const sut = await add(ctx, ['a.txt']);
-
-        // Assert
-        expect(sut.added).toEqual(['a.txt']);
-      });
+          // Assert
+          expect(result.added).toEqual(expectedAdded);
+        },
+      );
     });
   });
 
