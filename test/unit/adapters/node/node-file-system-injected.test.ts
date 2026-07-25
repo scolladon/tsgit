@@ -703,7 +703,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
         });
         const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.openWithNoFollow(link, 'read');
@@ -732,13 +732,14 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
         });
         const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.openWithNoFollow(file, 'read');
         } catch (err) {
           caught = err;
         }
+        // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
       });
@@ -761,7 +762,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
         });
         const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.openWithNoFollow(file, 'read');
@@ -849,7 +850,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
         });
         const sut = new NodeFileSystem(root, posixPolicy, fsOps);
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.openWithNoFollow(link, 'read');
@@ -878,7 +879,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
         });
         const sut = new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ realpath }));
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.exists('C:\\canonical\\non-errno-exists\\a');
@@ -902,13 +903,14 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
         });
         const sut = new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ realpath }));
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.read('C:\\canonical\\non-errno-read\\a');
         } catch (err) {
           caught = err;
         }
+        // Assert
         expect(caught).toBe('not-an-error');
       });
     });
@@ -928,7 +930,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
         });
         const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.openWithNoFollow(file, 'read');
@@ -1077,7 +1079,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
         });
         const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.exists(sibling);
@@ -1169,7 +1171,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
         });
         const sut = new NodeFileSystem(root, posixPolicy, fsOps);
 
-        // Act + Assert
+        // Act
         let caught: unknown;
         try {
           await sut.exists(child);
