@@ -133,3 +133,53 @@ strongest before reaching the tiers it does not cover.
   permitted by `sutNaming`.
 - The non-unit tiers carry no GWT/AAA/`sut` gate, so the review phase is the safety net
   there and is sequenced to weight it accordingly.
+
+## Harness extension — lock the convention in for every tier (user-requested)
+
+The user asked that the structure be **enforced in future for every kind of test**, closing
+the "non-unit tiers have no gate" gap above. This extends `check:test-pyramid`
+(`tooling/test-pyramid/`, `test-pyramid-budgets.json`) — a **tooling change** (not `src/`,
+so CI mutation stays zero-signal; proven by the detectors' own `tooling/test/unit/test-pyramid/`
+unit tests via TDD).
+
+### Decision E — extend the four structural detectors to all tiers, gating (user judgment)
+
+`gwtTitle` (`detect-bad-title`), `aaaBody` (`detect-missing-aaa`), `emptyAaaSection`
+(`detect-empty-aaa-section`), and `sutNaming` (`detect-banned-sut-name`) move from
+`tier: 'unit'` to **all tiers** (`unit`, `integration`, `parity`, `runtime-parity`, `perf`)
+and are **blocking**. Mechanism: the manifest heuristic gains a `tiers` set (superseding the
+single `tier`); each detector's `classifyTestFile(...) !== heuristic.tier` skip becomes a
+membership check `!heuristic.tiers.includes(classifyTestFile(...))`; the detectors' unit
+tests extend to cover multi-tier classification. `bareClassToThrow` and `underAssertedUnit`
+extend on the same mechanism where they read cleanly; tier-specific heuristics
+(`integrationProof`, `overMockedIntegration`) are untouched.
+
+### Decision F — add a best-effort axis-1 detector `sutBindsResult`, gating (user judgment)
+
+A new detector (`detect-sut-binds-result.ts` + sibling test) flags the seeding smell:
+`const sut = <bare-call>(…)` where `sut` binds a *call result*. It **allows** `const sut = new X(…)`
+(object under test) and a **factory allowlist** (`openRepository`, `createX`, … — the
+`this`-carrying factory calls that legitimately return the object under test). It is
+best-effort and heuristic: false positives are handled by extending the allowlist with a
+one-line reason, never by suppressing the finding. Gating, all tiers. This is the forward
+enforcement of Axis 1, which the name-only `sutNaming` cannot cover.
+
+### Ordering invariant (non-negotiable) — conform, THEN gate
+
+A gate flips on only once its tier is **100% conformant**, else `validate` goes red. So the
+harness-extension parts land **after every conformance part** (all tiers swept). Concretely:
+extend/add the detectors → run `check:test-pyramid` against the fully-conformed tree and fix
+any straggler it surfaces (the detector is the final backstop that proves the sweep complete)
+→ flip `gating` to blocking last. The new-detector work is proper TDD (detector unit test
+red → green); a new detector source file is added to biome's `includes` whitelist in the same
+part (else it is silently unlinted).
+
+### Consequences of the extension
+
+- The three axes are enforced **forever, on every tier** — the durable value the sweep
+  banks on. `sutBindsResult` turns the once-off axis-1 review into a standing gate.
+- `sutBindsResult` is heuristic; the factory allowlist is the escape hatch and is itself
+  reviewed. It will not catch every semantic misuse, but it catches the exact
+  `const sut = call()` shape that seeded 27.6.
+- Budgets/thresholds files still do not move for the *counts*; only the heuristics' tier
+  reach and the `gating` set change, plus one new heuristic entry.

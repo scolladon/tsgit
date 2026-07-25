@@ -81,6 +81,11 @@ therefore a *sufficient* behaviour-preservation proof.
 
 ## 2. What the machine gate does — and does NOT — enforce
 
+> **UPDATE (ADR-506 Decisions E/F, user-requested):** the gaps this section documents
+> (axis-1 un-gated; only the unit tier gated) are **closed by the harness extension** —
+> see §10. The description below is the *pre-extension* gate; the sweep conforms against it,
+> then §10 extends it so all three axes are enforced on **every** tier going forward.
+
 Pinned against the harness (`tooling/audit-test-pyramid.ts`,
 `test-pyramid-budgets.json`). `check:test-pyramid` runs inside `npm run validate`
 and gates these heuristics — **all scoped to `tier: 'unit'`**, all
@@ -435,6 +440,28 @@ For `const sut = ObjectId.from(hex); expect(sut).toBe(hex)`:
   defect to surface, not to paper over with a smuggled test or silently drop.
 - **No property-body edits** — `*.properties.test.ts` structure conforms; the
   `fc.property(…)` invariant and arbitraries are byte-preserved (§4).
-- **No tooling/threshold change** — `test-pyramid-budgets.json`,
-  `mutation-budgets.json`, and the pyramid detectors are untouched; this sweep
-  conforms *to* the existing gate, it does not move it.
+- **No threshold/budget change** — `mutation-budgets.json` and the pyramid *count*
+  budgets in `test-pyramid-budgets.json` are untouched. **Exception (ADR-506 E/F, §10):**
+  the harness *extension* deliberately changes the pyramid detectors' tier reach, adds one
+  heuristic (`sutBindsResult`), and extends the `gating` set — this is the user-requested
+  lock-in, landed after all conformance parts, not a count/threshold move.
+
+## 10. Harness extension — enforce the three axes on every tier (ADR-506 E/F)
+
+The user asked for the structure to be enforced in future for **every kind of test**. This
+closes §2's gaps by extending `check:test-pyramid` (`tooling/test-pyramid/*`,
+`test-pyramid-budgets.json`), a **tooling change** proven by the detectors' own
+`tooling/test/unit/test-pyramid/*.test.ts` (TDD; CI mutation stays zero-signal — tooling is
+not `src/`).
+
+- **Decision E** — extend `gwtTitle`/`aaaBody`/`emptyAaaSection`/`sutNaming` from
+  `tier: 'unit'` to **all tiers**, blocking. Manifest heuristic gains a `tiers` set; each
+  detector's single-tier skip becomes a membership check; detector unit tests extend to
+  multi-tier.
+- **Decision F** — new detector **`sutBindsResult`** flags `const sut = <bare-call>(…)`
+  (result-in-`sut`), **allows** `new X(…)` and a **factory allowlist** (`openRepository`,
+  `createX`, …); best-effort, gating, all tiers. Forward enforcement of Axis 1.
+- **Ordering invariant** — conform first, gate last. The extension parts run **after every
+  conformance part** (§7); the detectors run against the fully-conformed tree, any straggler
+  they surface is fixed, and `gating` flips to blocking last, so `validate` never goes red. A
+  new detector source file is added to biome's `includes` whitelist in the same part.
