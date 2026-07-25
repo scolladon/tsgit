@@ -369,11 +369,11 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          expect(sut.remote).toBe('origin');
-          expect(sut.url).toBe('https://example.com/r.git');
+          expect(result.remote).toBe('origin');
+          expect(result.url).toBe('https://example.com/r.git');
         });
       });
     });
@@ -393,10 +393,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          const updated = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
           expect(updated).toBeDefined();
           expect(updated?.newId).toBe(blobId);
           const onDisk = (
@@ -443,10 +443,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          const updated = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
           expect(updated?.newId).toBe(blobId);
           const requestBodies = requests
             .filter((r) => r.method === 'POST')
@@ -474,10 +474,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          const updated = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
           expect(updated?.newId).toBe(blobId);
         });
       });
@@ -501,10 +501,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          const tagWritten = sut.updatedRefs.find((r) => r.name === 'refs/tags/v1');
+          const tagWritten = result.updatedRefs.find((r) => r.name === 'refs/tags/v1');
           expect(tagWritten).toBeDefined();
           const onDisk = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/tags/v1`)).trim();
           expect(onDisk).toBe(blobId);
@@ -528,10 +528,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          const updated = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+          const updated = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
           expect(updated?.oldId).toBe(oldOid);
           expect(updated?.newId).toBe(blobId);
         });
@@ -591,10 +591,10 @@ describe('fetch', () => {
             });
 
             // Act
-            const sut = await fetch({ ...ctx, transport }, opts);
+            const result = await fetch({ ...ctx, transport }, opts);
 
             // Assert
-            expect(sut.remote).toBe(expectedRemote);
+            expect(result.remote).toBe(expectedRemote);
           },
         );
       });
@@ -622,10 +622,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          expect(sut.remote).toBe('origin');
+          expect(result.remote).toBe('origin');
         });
       });
     });
@@ -831,15 +831,15 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { prune: true });
+          const result = await fetch({ ...ctx, transport }, { prune: true });
 
           // Assert — feature-x pruned AND main preserved. The negative assertion
           // on `main` is what kills the prune `.filter().map()` chain mutant:
           // without the chain, `advertised.has('main')` returns false (the Set
           // holds AdvertisedRef objects, not strings) and `main` would also be
           // deleted.
-          expect(sut.prunedRefs).toContain('refs/remotes/origin/feature-x' as RefName);
-          expect(sut.prunedRefs).not.toContain('refs/remotes/origin/main' as RefName);
+          expect(result.prunedRefs).toContain('refs/remotes/origin/feature-x' as RefName);
+          expect(result.prunedRefs).not.toContain('refs/remotes/origin/main' as RefName);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`)).toBe(
             false,
           );
@@ -868,10 +868,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          expect(sut.prunedRefs).toEqual([]);
+          expect(result.prunedRefs).toEqual([]);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`)).toBe(
             true,
           );
@@ -934,11 +934,11 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert
-          expect(sut.updatedRefs.map((r) => r.name)).not.toContain('HEAD');
-          expect(sut.updatedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
+          expect(result.updatedRefs.map((r) => r.name)).not.toContain('HEAD');
+          expect(result.updatedRefs.map((r) => r.name)).toContain('refs/remotes/origin/main');
         });
       });
     });
@@ -963,11 +963,11 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert — only the branch ref is written; refs/notes/commits is
           // skipped (neither a branch nor a tag).
-          expect(sut.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
+          expect(result.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
         });
       });
     });
@@ -997,11 +997,11 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { depth: 5 });
+          const result = await fetch({ ...ctx, transport }, { depth: 5 });
 
           // Assert — `unshallow` was processed; the shallow file no longer
           // contains the unshallowed oid.
-          expect(sut.unshallow).toEqual([unshallowOid]);
+          expect(result.unshallow).toEqual([unshallowOid]);
           const remaining = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).trim();
           expect(remaining).toBe('b'.repeat(40));
         });
@@ -1031,11 +1031,11 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert — server said nothing about shallow → no write.
-          expect(sut.shallow).toEqual([]);
-          expect(sut.unshallow).toEqual([]);
+          expect(result.shallow).toEqual([]);
+          expect(result.unshallow).toEqual([]);
           // File preserved.
           const after = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
           expect(after).toBe(initial);
@@ -1067,16 +1067,16 @@ describe('fetch', () => {
           // marks a thrown fetch as a kill regardless, so we ALSO check the
           // request body shape to pin the haves-derivation logic itself).
           let caught: unknown;
-          let sut: Awaited<ReturnType<typeof fetch>> | undefined;
+          let result: Awaited<ReturnType<typeof fetch>> | undefined;
           try {
-            sut = await fetch({ ...ctx, transport });
+            result = await fetch({ ...ctx, transport });
           } catch (err) {
             caught = err;
           }
 
           // Assert
           expect(caught).toBeUndefined();
-          expect(sut?.remote).toBe('origin');
+          expect(result?.remote).toBe('origin');
           const postReq = requests.find((r) => r.method === 'POST');
           expect(postReq).toBeDefined();
           const decoded = new TextDecoder().decode(postReq?.body);
@@ -1269,10 +1269,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { prune: true });
+          const result = await fetch({ ...ctx, transport }, { prune: true });
 
           // Assert — succeeds; prunedRefs is empty.
-          expect(sut.prunedRefs).toEqual([]);
+          expect(result.prunedRefs).toEqual([]);
           // remoteDir should NOT have been created (no head refs advertised).
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin`)).toBe(false);
         });
@@ -1299,10 +1299,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { prune: true });
+          const result = await fetch({ ...ctx, transport }, { prune: true });
 
           // Assert
-          expect(sut.prunedRefs).toContain('refs/remotes/origin/feature/x' as RefName);
+          expect(result.prunedRefs).toContain('refs/remotes/origin/feature/x' as RefName);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature/x`)).toBe(
             false,
           );
@@ -1337,12 +1337,12 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { prune: true });
+          const result = await fetch({ ...ctx, transport }, { prune: true });
 
           // Assert — the local `reserved` ref IS pruned (not advertised). With
           // the mutant, advertisedBranches would include 'reserved' and the
           // ref would be preserved.
-          expect(sut.prunedRefs).toContain('refs/remotes/origin/reserved' as RefName);
+          expect(result.prunedRefs).toContain('refs/remotes/origin/reserved' as RefName);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/reserved`)).toBe(
             false,
           );
@@ -1374,10 +1374,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { prune: true });
+          const result = await fetch({ ...ctx, transport }, { prune: true });
 
           // Assert — main is preserved (it IS advertised); no spurious deletes.
-          expect(sut.prunedRefs).toEqual([]);
+          expect(result.prunedRefs).toEqual([]);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
         });
       });
@@ -1407,10 +1407,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert — only the safe ref made it through.
-          expect(sut.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
+          expect(result.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
         });
       });
     });
@@ -1434,10 +1434,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { depth: 1 });
+          const result = await fetch({ ...ctx, transport }, { depth: 1 });
 
           // Assert
-          expect(sut.shallow).toEqual([shallowOid]);
+          expect(result.shallow).toEqual([shallowOid]);
           const onDisk = await readShallow({ ...ctx, transport });
           expect(onDisk.has(shallowOid as ObjectId)).toBe(true);
         });
@@ -1459,10 +1459,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { depth: 1 });
+          const result = await fetch({ ...ctx, transport }, { depth: 1 });
 
           // Assert
-          expect(sut.shallow).toEqual([]);
+          expect(result.shallow).toEqual([]);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/shallow`)).toBe(false);
         });
       });
@@ -1485,10 +1485,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport }, { depth: 3 });
+          const result = await fetch({ ...ctx, transport }, { depth: 3 });
 
           // Assert
-          expect(sut.unshallow).toEqual([unshallowOid]);
+          expect(result.unshallow).toEqual([unshallowOid]);
         });
       });
     });
@@ -1712,12 +1712,12 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert — server said nothing about shallow → updateShallow is NOT
           // called → the unsorted file is preserved verbatim.
-          expect(sut.shallow).toEqual([]);
-          expect(sut.unshallow).toEqual([]);
+          expect(result.shallow).toEqual([]);
+          expect(result.unshallow).toEqual([]);
           expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).toBe(unsorted);
         });
       });
@@ -1835,10 +1835,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport, fs: fsRecordingWrites });
+          const result = await fetch({ ...ctx, transport, fs: fsRecordingWrites });
 
           // Assert — exactly one entry, oldId === newId, and no ref rewrite.
-          const entries = sut.updatedRefs.filter((r) => r.name === 'refs/remotes/origin/main');
+          const entries = result.updatedRefs.filter((r) => r.name === 'refs/remotes/origin/main');
           expect(entries).toHaveLength(1);
           expect(entries[0]?.oldId).toBe(blobId);
           expect(entries[0]?.newId).toBe(blobId);
@@ -1870,10 +1870,10 @@ describe('fetch', () => {
           });
 
           // Act
-          const sut = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport });
 
           // Assert — only the safe branch ref made it through.
-          expect(sut.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
+          expect(result.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
         });
       });
     });
@@ -1909,13 +1909,13 @@ describe('fetch', () => {
           const fsWithPhantom = withPhantomDirEntry(ctx, remoteDir, '..');
 
           // Act
-          const sut = await fetch(
+          const result = await fetch(
             { ...ctx, transport, fs: fsWithPhantom, logger },
             { prune: true },
           );
 
           // Assert — fetch succeeded; the unsafe entry was warned about, not deleted.
-          expect(sut.prunedRefs).toEqual([]);
+          expect(result.prunedRefs).toEqual([]);
           const unsafeWarn = warnings.find(
             (w) => w.message === 'fetch.prune: skipping unsafe ref name',
           );
@@ -1961,13 +1961,13 @@ describe('fetch', () => {
           const fsWithPhantom = withPhantomDirEntry(ctx, remoteDir, 'ghost');
 
           // Act
-          const sut = await fetch(
+          const result = await fetch(
             { ...ctx, transport, fs: fsWithPhantom, logger },
             { prune: true },
           );
 
           // Assert — packed-only ref skipped, not crashed, and not listed as pruned.
-          expect(sut.prunedRefs).toEqual([]);
+          expect(result.prunedRefs).toEqual([]);
           const packedWarn = warnings.find(
             (w) => w.message === 'fetch.prune: skipping packed-only ref',
           );
@@ -2241,11 +2241,11 @@ describe('fetch — everything local', () => {
         });
 
         // Act
-        const sut = await fetch({ ...ctx, transport });
+        const result = await fetch({ ...ctx, transport });
 
         // Assert
         expect(requests.some((r) => r.method === 'POST')).toBe(false);
-        const update = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+        const update = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
         expect(update?.newId).toBe(blobId);
       });
     });
@@ -2344,10 +2344,10 @@ describe('fetch — everything local', () => {
         };
 
         // Act
-        const sut = await fetch({ ...ctx, fs: poisonedFs, transport });
+        const result = await fetch({ ...ctx, fs: poisonedFs, transport });
 
         // Assert
-        const update = sut.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+        const update = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
         expect(update?.newId).toBe(blobId);
       });
     });
