@@ -103,11 +103,10 @@ describe('Given tree with zero-padded filemode', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits zeroPaddedFilemode at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('0100644', 'file.txt', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'warning' });
@@ -117,11 +116,10 @@ describe('Given tree with zero-padded filemode', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits zeroPaddedFilemode at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('0100644', 'file.txt', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'error' });
@@ -137,14 +135,13 @@ describe('Given tree with entries in wrong sort order', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits treeNotSorted at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(
         buildTreeEntry('100644', 'z-file', BLOB_SHA),
         buildTreeEntry('100644', 'a-file', BLOB_SHA),
       );
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -154,14 +151,13 @@ describe('Given tree with entries in wrong sort order', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits treeNotSorted at error severity unchanged', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(
         buildTreeEntry('100644', 'z-file', BLOB_SHA),
         buildTreeEntry('100644', 'a-file', BLOB_SHA),
       );
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -177,7 +173,6 @@ describe('Given commit with missing space before email', () => {
   describe('When validateObject runs on commit', () => {
     it('Then emits missingSpaceBeforeEmail at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'Test<test@example.com> 1234567890 +0000',
@@ -185,7 +180,7 @@ describe('Given commit with missing space before email', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -195,7 +190,6 @@ describe('Given commit with missing space before email', () => {
   describe('When validateObject runs on commit with strict mode', () => {
     it('Then emits missingSpaceBeforeEmail at error severity unchanged', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'Test<test@example.com> 1234567890 +0000',
@@ -203,7 +197,7 @@ describe('Given commit with missing space before email', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -215,7 +209,6 @@ describe('Given tag with missing space before email in tagger', () => {
   describe('When validateObject runs on tag', () => {
     it('Then emits missingSpaceBeforeEmail at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         type: 'blob',
@@ -224,7 +217,7 @@ describe('Given tag with missing space before email in tagger', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -240,7 +233,6 @@ describe('Given tag without tagger entry', () => {
   describe('When validateObject runs on tag', () => {
     it('Then emits missingTaggerEntry at info severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         type: 'blob',
@@ -248,7 +240,7 @@ describe('Given tag without tagger entry', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTaggerEntry', severity: 'info' });
@@ -258,7 +250,6 @@ describe('Given tag without tagger entry', () => {
   describe('When validateObject runs on tag with strict mode', () => {
     it('Then emits missingTaggerEntry at info severity unchanged', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         type: 'blob',
@@ -266,7 +257,7 @@ describe('Given tag without tagger entry', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTaggerEntry', severity: 'info' });
@@ -287,11 +278,10 @@ describe('Given a valid object', () => {
       { kind: 'blob', build: () => encode('hello world\n') },
     ])('Then returns empty findings for a valid $kind object', ({ kind, build }) => {
       // Arrange
-      const sut = validateObject;
       const rawBody = build();
 
       // Act
-      const result = sut({ kind, rawBody, strict: false });
+      const result = validateObject({ kind, rawBody, strict: false });
 
       // Assert
       expect(result).toHaveLength(0);
@@ -307,12 +297,11 @@ describe('Given tree with empty entry name', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits emptyName at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       // entry: "100644 \0<sha>" — name is empty string
       const rawBytes = buildTree(buildTreeEntry('100644', '', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'emptyName', severity: 'warning' });
@@ -322,11 +311,10 @@ describe('Given tree with empty entry name', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits emptyName at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', '', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'emptyName', severity: 'error' });
@@ -342,11 +330,10 @@ describe('Given tree with entry named "."', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits hasDot at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', '.', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDot', severity: 'warning' });
@@ -356,11 +343,10 @@ describe('Given tree with entry named "."', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits hasDot at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', '.', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDot', severity: 'error' });
@@ -376,11 +362,10 @@ describe('Given tree with entry named ".."', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits hasDotdot at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', '..', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotdot', severity: 'warning' });
@@ -390,11 +375,10 @@ describe('Given tree with entry named ".."', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits hasDotdot at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', '..', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotdot', severity: 'error' });
@@ -410,11 +394,10 @@ describe('Given tree with entry named ".git"', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits hasDotgit at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', '.git', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotgit', severity: 'warning' });
@@ -424,11 +407,10 @@ describe('Given tree with entry named ".git"', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits hasDotgit at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', '.git', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotgit', severity: 'error' });
@@ -444,11 +426,10 @@ describe('Given tree with entry name containing "/"', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits fullPathname at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', 'foo/bar', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'fullPathname', severity: 'warning' });
@@ -458,11 +439,10 @@ describe('Given tree with entry name containing "/"', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits fullPathname at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', 'foo/bar', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'fullPathname', severity: 'error' });
@@ -478,11 +458,10 @@ describe('Given tree with null SHA1 entry', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits nullSha1 at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', 'file', NULL_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nullSha1', severity: 'warning' });
@@ -492,11 +471,10 @@ describe('Given tree with null SHA1 entry', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits nullSha1 at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100644', 'file', NULL_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nullSha1', severity: 'error' });
@@ -512,12 +490,11 @@ describe('Given tree with entry name exceeding 4096 bytes', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits largePathname at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const longName = 'a'.repeat(4097);
       const rawBytes = buildTree(buildTreeEntry('100644', longName, BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'largePathname', severity: 'warning' });
@@ -527,12 +504,11 @@ describe('Given tree with entry name exceeding 4096 bytes', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits largePathname at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const longName = 'a'.repeat(4097);
       const rawBytes = buildTree(buildTreeEntry('100644', longName, BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'largePathname', severity: 'error' });
@@ -548,13 +524,12 @@ describe('Given commit with NUL byte in message body', () => {
   describe('When validateObject runs with default severity', () => {
     it('Then emits nulInCommit at warning severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         `tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmessage\x00here\n`,
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nulInCommit', severity: 'warning' });
@@ -564,13 +539,12 @@ describe('Given commit with NUL byte in message body', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits nulInCommit at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         `tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmessage\x00here\n`,
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nulInCommit', severity: 'error' });
@@ -586,11 +560,10 @@ describe('Given tree with unknown file mode', () => {
   describe('When validateObject runs', () => {
     it('Then emits badFilemode at info severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100666', 'file', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badFilemode', severity: 'info' });
@@ -600,11 +573,10 @@ describe('Given tree with unknown file mode', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits badFilemode at info severity unchanged', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100666', 'file', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badFilemode', severity: 'info' });
@@ -620,14 +592,13 @@ describe('Given tree with duplicate entry names', () => {
   describe('When validateObject runs', () => {
     it('Then emits duplicateEntries at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(
         buildTreeEntry('100644', 'file', BLOB_SHA),
         buildTreeEntry('100644', 'file', BLOB_SHA),
       );
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'duplicateEntries', severity: 'error' });
@@ -747,11 +718,10 @@ describe('Given tree bytes that are malformed or truncated', () => {
       },
     ])('Then emits badTree at error severity — $label', ({ build }) => {
       // Arrange
-      const sut = validateObject;
       const rawBody = build();
 
       // Act
-      const result = sut({ kind: 'tree', rawBody, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
@@ -767,11 +737,10 @@ describe('Given tree where .gitmodules is a symlink', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesSymlink at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('120000', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitmodulesSymlink', severity: 'error' });
@@ -787,11 +756,10 @@ describe('Given tree where .gitattributes is a symlink', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitattributesSymlink at info severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('120000', '.gitattributes', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitattributesSymlink', severity: 'info' });
@@ -807,11 +775,10 @@ describe('Given tree where .gitignore is a symlink', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitignoreSymlink at info severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('120000', '.gitignore', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitignoreSymlink', severity: 'info' });
@@ -827,11 +794,10 @@ describe('Given tree where .mailmap is a symlink', () => {
   describe('When validateObject runs', () => {
     it('Then emits mailmapSymlink at info severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('120000', '.mailmap', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'mailmapSymlink', severity: 'info' });
@@ -847,11 +813,10 @@ describe('Given tree where .gitmodules is a directory (non-blob)', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesBlob at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitmodulesBlob', severity: 'error' });
@@ -867,11 +832,10 @@ describe('Given tree where .gitattributes is a directory (non-blob)', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitattributesBlob at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitattributes', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitattributesBlob', severity: 'error' });
@@ -887,14 +851,13 @@ describe('Given commit without tree line', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingTree at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         author: VALID_IDENTITY,
         committer: VALID_IDENTITY,
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTree', severity: 'error' });
@@ -910,14 +873,13 @@ describe('Given commit without author line', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingAuthor at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         committer: VALID_IDENTITY,
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingAuthor', severity: 'error' });
@@ -933,14 +895,13 @@ describe('Given commit without committer line', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingCommitter at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: VALID_IDENTITY,
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingCommitter', severity: 'error' });
@@ -956,13 +917,12 @@ describe('Given commit with multiple author lines', () => {
   describe('When validateObject runs', () => {
     it('Then emits multipleAuthors at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         `tree ${BLOB_SHA_HEX}\nauthor A <a@b.com> 1234567890 +0000\nauthor B <b@c.com> 1234567890 +0000\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'multipleAuthors', severity: 'error' });
@@ -978,14 +938,13 @@ describe('Given commit with NUL byte in header', () => {
   describe('When validateObject runs', () => {
     it('Then emits nulInHeader at error severity', () => {
       // Arrange
-      const sut = validateObject;
       // NUL in author name within the header section
       const rawBytes = encode(
         `tree ${BLOB_SHA_HEX}\nauthor T\x00est <t@t.com> 1234567890 +0000\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nulInHeader', severity: 'error' });
@@ -1001,13 +960,12 @@ describe('Given commit header NUL byte AND missing committer', () => {
   describe('When validateObject runs', () => {
     it('Then result is exactly [nulInHeader], suppressing missing-committer fault', () => {
       // Arrange
-      const sut = validateObject;
       // Header has NUL: early-return fires before checking for committer.
       // Committer is also absent — but the guard short-circuits before that check.
       const rawBytes = encode(`tree ${BLOB_SHA_HEX}\x00junk\nauthor ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toHaveLength(1);
@@ -1024,7 +982,6 @@ describe('Given commit with zero-padded timestamp', () => {
   describe('When validateObject runs', () => {
     it('Then emits zeroPaddedDate at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'T <t@t.com> 01234567890 +0000',
@@ -1032,7 +989,7 @@ describe('Given commit with zero-padded timestamp', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'zeroPaddedDate', severity: 'error' });
@@ -1048,7 +1005,6 @@ describe('Given commit with non-numeric timestamp', () => {
   describe('When validateObject runs', () => {
     it('Then emits badDate at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'T <t@t.com> abc +0000',
@@ -1056,7 +1012,7 @@ describe('Given commit with non-numeric timestamp', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
@@ -1085,7 +1041,6 @@ describe('Given commit with an author timestamp that overflows INT64_MAX', () =>
       },
     ])('Then emits badDateOverflow at error severity — $label', ({ timestamp }) => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: `T <t@t.com> ${timestamp} +0000`,
@@ -1093,7 +1048,7 @@ describe('Given commit with an author timestamp that overflows INT64_MAX', () =>
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
@@ -1106,7 +1061,6 @@ describe('Given commit with timestamp exactly at INT64_MAX (9223372036854775807)
   describe('When validateObject runs', () => {
     it('Then emits no date-related finding (boundary value is valid)', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'T <t@t.com> 9223372036854775807 +0000',
@@ -1114,7 +1068,7 @@ describe('Given commit with timestamp exactly at INT64_MAX (9223372036854775807)
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert — no badDate or badDateOverflow
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
@@ -1140,7 +1094,6 @@ describe('Given commit with a non-numeric author timestamp', () => {
       { label: 'trailing non-digit characters ("123abc")', timestamp: '123abc' },
     ])('Then emits badDate at error severity, not badDateOverflow — $label', ({ timestamp }) => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: `T <t@t.com> ${timestamp} +0000`,
@@ -1148,7 +1101,7 @@ describe('Given commit with a non-numeric author timestamp', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
@@ -1182,11 +1135,10 @@ describe('Given commit with an invalid author timezone', () => {
       },
     ])('Then emits badTimezone at error severity — $label', ({ author }) => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({ tree: BLOB_SHA_HEX, author, committer: VALID_IDENTITY });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
@@ -1202,7 +1154,6 @@ describe('Given commit with no space between email and date', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingSpaceBeforeDate at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'T <t@t.com>1234567890 +0000',
@@ -1210,7 +1161,7 @@ describe('Given commit with no space between email and date', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeDate', severity: 'error' });
@@ -1226,7 +1177,6 @@ describe('Given commit with no email angle brackets in author', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingEmail at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'TestName 1234567890 +0000',
@@ -1234,7 +1184,7 @@ describe('Given commit with no email angle brackets in author', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
@@ -1250,7 +1200,6 @@ describe('Given commit with no name before email', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingNameBeforeEmail at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: '<t@t.com> 1234567890 +0000',
@@ -1258,7 +1207,7 @@ describe('Given commit with no name before email', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingNameBeforeEmail', severity: 'error' });
@@ -1274,13 +1223,12 @@ describe('Given commit with invalid parent SHA1', () => {
   describe('When validateObject runs', () => {
     it('Then emits badParentSha1 at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         `tree ${BLOB_SHA_HEX}\nparent ${'Z'.repeat(40)}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badParentSha1', severity: 'error' });
@@ -1296,13 +1244,12 @@ describe('Given commit with invalid tree SHA1', () => {
   describe('When validateObject runs', () => {
     it('Then emits badTreeSha1 at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         `tree ${'Z'.repeat(40)}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTreeSha1', severity: 'error' });
@@ -1318,7 +1265,6 @@ describe('Given tag without type line', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingType at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         tag: 'v1.0',
@@ -1326,7 +1272,7 @@ describe('Given tag without type line', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingType', severity: 'error' });
@@ -1342,14 +1288,13 @@ describe('Given tag with empty type value', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingTypeEntry at error severity', () => {
       // Arrange
-      const sut = validateObject;
       // "type \n" — type header present but empty value
       const rawBytes = encode(
         `object ${BLOB_SHA_HEX}\ntype \ntag v1.0\ntagger ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTypeEntry', severity: 'error' });
@@ -1365,7 +1310,6 @@ describe('Given tag without tag-name line', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingTag at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         type: 'blob',
@@ -1373,7 +1317,7 @@ describe('Given tag without tag-name line', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTag', severity: 'error' });
@@ -1389,14 +1333,13 @@ describe('Given tag with empty tag name', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingTagEntry at error severity', () => {
       // Arrange
-      const sut = validateObject;
       // "tag \n" — tag header present but empty value
       const rawBytes = encode(
         `object ${BLOB_SHA_HEX}\ntype blob\ntag \ntagger ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTagEntry', severity: 'error' });
@@ -1412,14 +1355,13 @@ describe('Given tag with tag name containing NUL', () => {
   describe('When validateObject runs', () => {
     it('Then emits badTagName at info severity', () => {
       // Arrange
-      const sut = validateObject;
       // tag name with NUL is invalid
       const rawBytes = encode(
         `object ${BLOB_SHA_HEX}\ntype blob\ntag bad\x00name\ntagger ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTagName', severity: 'info' });
@@ -1429,13 +1371,12 @@ describe('Given tag with tag name containing NUL', () => {
   describe('When validateObject runs with strict mode', () => {
     it('Then emits badTagName at info severity unchanged', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         `object ${BLOB_SHA_HEX}\ntype blob\ntag bad\x00name\ntagger ${VALID_IDENTITY}\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: true });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTagName', severity: 'info' });
@@ -1451,7 +1392,6 @@ describe('Given tag with invalid object SHA1', () => {
   describe('When validateObject runs', () => {
     it('Then emits badObjectSha1 at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: 'Z'.repeat(40),
         type: 'blob',
@@ -1460,7 +1400,7 @@ describe('Given tag with invalid object SHA1', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badObjectSha1', severity: 'error' });
@@ -1476,7 +1416,6 @@ describe('Given tag with extra unknown header', () => {
   describe('When validateObject runs', () => {
     it('Then does not emit extraHeaderEntry (IGNORE severity)', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         type: 'blob',
@@ -1486,7 +1425,7 @@ describe('Given tag with extra unknown header', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.map((f) => f.msgId)).not.toContain(MSG_EXTRA_HEADER_ENTRY);
@@ -1502,11 +1441,10 @@ describe('Given .gitmodules blob with invalid submodule name', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesName at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode('[submodule ".."]\n\tpath = foo\n\turl = https://example.com\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1528,11 +1466,10 @@ describe('Given .gitmodules blob with a disallowed URL (starts with --)', () => 
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesUrl at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode('[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1549,11 +1486,10 @@ describe('Given .gitmodules blob with a single-dash URL (starts with -)', () => 
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesUrl at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode('[submodule "sub"]\n\tpath = sub\n\turl = -evil-url\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1570,13 +1506,12 @@ describe('Given .gitmodules blob with a safe URL (https://)', () => {
   describe('When validateObject runs', () => {
     it('Then does NOT emit gitmodulesUrl', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         '[submodule "sub"]\n\tpath = sub\n\turl = https://example.com/repo.git\n',
       );
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1597,12 +1532,11 @@ describe('Given .gitmodules blob with parse error', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesParse at info severity', () => {
       // Arrange
-      const sut = validateObject;
       // Invalid INI syntax — unclosed section header
       const rawBytes = encode('[not-a-valid-section\n\tpath = foo\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1623,7 +1557,6 @@ describe('Given .gitmodules blob with a bare key line (no = sign)', () => {
   describe('When validateObject runs', () => {
     it('Then emits no findings (bare key is silently ignored)', () => {
       // Arrange
-      const sut = validateObject;
       // A line that is not a comment, not a section header, and has no '='
       // exercises the silent-skip branch inside processGitmodulesLine.
       const rawBytes = encode(
@@ -1631,7 +1564,7 @@ describe('Given .gitmodules blob with a bare key line (no = sign)', () => {
       );
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1654,7 +1587,6 @@ describe('Given .gitmodules blob with indented section header containing unsafe 
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesName at error severity (leading whitespace is stripped from section headers)', () => {
       // Arrange
-      const sut = validateObject;
       // The section header is indented with a tab — without rawLine.trim(), the leading
       // '\t' prevents startsWith('[') from matching, and the submodule name is never parsed.
       // With rawLine.trim(), the header is recognized, the name '..' is extracted, and
@@ -1662,7 +1594,7 @@ describe('Given .gitmodules blob with indented section header containing unsafe 
       const rawBytes = encode('\t[submodule ".."]\n\tpath = foo\n\turl = https://example.com\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1684,14 +1616,13 @@ describe('Given a regular blob (not .gitattributes) with a very long line', () =
   describe('When validateObject runs without fileName', () => {
     it('Then does not emit gitattributesLineLength (gitattributes check must not run for non-special blobs)', () => {
       // Arrange
-      const sut = validateObject;
       // A blob with a line exceeding 2048 bytes. If the filename guard is mutated
       // to always-true, gitattributesLineLength fires spuriously.
       const longLine = 'x'.repeat(3000);
       const rawBytes = encode(`${longLine}\n`);
 
       // Act — no fileName; blob is not .gitattributes
-      const result = sut({ kind: 'blob', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'blob', rawBody: rawBytes, strict: false });
 
       // Assert — no gitattributes findings for a blob without the .gitattributes filename
       expect(result.map((f) => f.msgId)).not.toContain('gitattributesLineLength');
@@ -1707,12 +1638,11 @@ describe('Given .gitattributes blob with line exceeding 2048 bytes', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitattributesLineLength at error severity', () => {
       // Arrange
-      const sut = validateObject;
       const longLine = `*.txt ${'key=val '.repeat(300)}`; // well over 2048 bytes
       const rawBytes = encode(`${longLine}\n`);
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1733,13 +1663,12 @@ describe('Given valid .gitmodules blob', () => {
   describe('When validateObject runs', () => {
     it('Then returns no gitmodules findings', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         '[submodule "valid"]\n\tpath = sub\n\turl = https://example.com/repo\n',
       );
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1761,11 +1690,10 @@ describe('Given valid .gitattributes blob', () => {
   describe('When validateObject runs', () => {
     it('Then returns no gitattributes findings', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode('*.ts text eol=lf\n*.png binary\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1787,11 +1715,10 @@ describe('Given an INFO severity id (badFilemode) with strict mode', () => {
   describe('When validateObject runs', () => {
     it('Then severity remains info, not upgraded to error', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100666', 'file', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
 
       // Assert
       const finding = result.find((f) => f.msgId === 'badFilemode');
@@ -1807,11 +1734,8 @@ describe('Given an INFO severity id (badFilemode) with strict mode', () => {
 describe('Given an unknown msgId not in the default-severity catalogue', () => {
   describe('When resolveSeverity is called', () => {
     it('Then returns error as the default fallback', () => {
-      // Arrange
-      const sut = resolveSeverity;
-
-      // Act
-      const result = sut('totallyUnknownMsgId', false);
+      // Arrange & Act
+      const result = resolveSeverity('totallyUnknownMsgId', false);
 
       // Assert
       expect(result).toBe('error');
@@ -1820,11 +1744,8 @@ describe('Given an unknown msgId not in the default-severity catalogue', () => {
 
   describe('When resolveSeverity is called with strict:true', () => {
     it('Then still returns error (no upgrade possible for unknown id)', () => {
-      // Arrange
-      const sut = resolveSeverity;
-
-      // Act
-      const result = sut('totallyUnknownMsgId', true);
+      // Arrange & Act
+      const result = resolveSeverity('totallyUnknownMsgId', true);
 
       // Assert
       expect(result).toBe('error');
@@ -1840,13 +1761,12 @@ describe('Given .gitmodules blob exceeding 100 MiB', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitmodulesLarge at error severity and returns immediately', () => {
       // Arrange
-      const sut = validateObject;
       // Allocate exactly one byte over the 100 MiB limit (all zeros = valid INI by
       // default, but the size guard fires first before any content parsing).
       const rawBytes = new Uint8Array(100 * 1024 * 1024 + 1);
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1868,12 +1788,11 @@ describe('Given .gitattributes blob exceeding 100 MiB', () => {
   describe('When validateObject runs', () => {
     it('Then emits gitattributesLarge at error severity and returns immediately', () => {
       // Arrange
-      const sut = validateObject;
       // Allocate exactly one byte over the 100 MiB limit.
       const rawBytes = new Uint8Array(100 * 1024 * 1024 + 1);
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -1895,7 +1814,6 @@ describe('Given commit with author that has < but no closing >', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingEmail at error severity', () => {
       // Arrange
-      const sut = validateObject;
       // Author has opening '<' but no closing '>' — the gtIdx === -1 branch in
       // checkIdentityLine must fire and emit missingEmail then return early.
       const rawBytes = buildCommit({
@@ -1905,7 +1823,7 @@ describe('Given commit with author that has < but no closing >', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
@@ -1939,7 +1857,6 @@ describe('Given tag with a tagger timestamp that overflows INT64_MAX', () => {
       },
     ])('Then emits badDateOverflow at error severity — $label', ({ timestamp }) => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({
         object: BLOB_SHA_HEX,
         type: 'blob',
@@ -1948,7 +1865,7 @@ describe('Given tag with a tagger timestamp that overflows INT64_MAX', () => {
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
@@ -1965,14 +1882,13 @@ describe('Given tag with tagger line that has no < character', () => {
   describe('When validateObject runs', () => {
     it('Then emits no missingSpaceBeforeEmail finding (checkTaggerLine returns empty)', () => {
       // Arrange
-      const sut = validateObject;
       // The tagger line has no '<', so checkTaggerLine returns [] early (ltIdx === -1).
       const rawBytes = encode(
         `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\ntagger NoEmailNameHere\n\nmsg\n`,
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — checkTaggerLine's early-return branch produces no findings for the
       // tagger line itself (the tag is otherwise valid so no other findings either)
@@ -1989,7 +1905,6 @@ describe('Given tag body with no blank-line separator between header and message
   describe('When validateObject runs', () => {
     it('Then parses the entire body as header with no crash and returns findings', () => {
       // Arrange
-      const sut = validateObject;
       // No '\n\n' in the body: headerText === the full text (blankIdx === -1 branch).
       // A valid tag in this form produces no findings.
       const rawBytes = encode(
@@ -1997,7 +1912,7 @@ describe('Given tag body with no blank-line separator between header and message
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — no findings for a structurally valid tag even without blank separator
       expect(result).toHaveLength(0);
@@ -2041,13 +1956,12 @@ describe('Given a correctly-sorted tree exercising the directory sort-key', () =
       },
     ])('Then emits no treeNotSorted finding — $label', ({ entries }) => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(
         ...entries.map(({ mode, name }) => buildTreeEntry(mode, name, BLOB_SHA)),
       );
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
@@ -2065,7 +1979,6 @@ describe('Given tree with directory entry (040000) before file where dir sort ke
   describe('When validateObject runs', () => {
     it('Then emits treeNotSorted (040000 mode gets "/" appended for sort key)', () => {
       // Arrange
-      const sut = validateObject;
       // Entry 'a' (040000, dir) before 'a!' (100644, file).
       // Sort keys: 'a/' vs 'a!'. '/' (0x2f) > '!' (0x21) → dir AFTER file in sort → treeNotSorted.
       // Without the dir treatment (mutant: mode==='040000' → false):
@@ -2077,7 +1990,7 @@ describe('Given tree with directory entry (040000) before file where dir sort ke
       );
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert — dir sort key 'a/' > 'a!' triggers treeNotSorted
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -2094,11 +2007,10 @@ describe('Given tree where .gitmodules is an executable file (mode 100755)', () 
   describe('When validateObject runs', () => {
     it('Then does NOT emit gitmodulesBlob (executable is a regular file variant)', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('100755', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert — 100755 is a regular file; must NOT emit gitmodulesBlob
       expect(result.map((f) => f.msgId)).not.toContain('gitmodulesBlob');
@@ -2115,11 +2027,10 @@ describe('Given tree with a symlink entry NOT named .mailmap', () => {
   describe('When validateObject runs', () => {
     it('Then does NOT emit mailmapSymlink for a non-mailmap symlink', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTree(buildTreeEntry('120000', 'other-link', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert — mailmapSymlink must only fire for '.mailmap' specifically
       expect(result.map((f) => f.msgId)).not.toContain('mailmapSymlink');
@@ -2135,12 +2046,11 @@ describe('Given tree with .gitmodules as a regular file (mode 100644)', () => {
   describe('When validateObject runs', () => {
     it('Then emits no gitmodulesBlob or gitmodulesSymlink finding', () => {
       // Arrange
-      const sut = validateObject;
       // Mode 100644 → isSymlink=false, isRegular=true → else if(!isRegular) is false
       const rawBytes = buildTree(buildTreeEntry('100644', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'gitmodulesBlob')).toHaveLength(0);
@@ -2157,12 +2067,11 @@ describe('Given tree with .gitattributes as a regular file (mode 100644)', () =>
   describe('When validateObject runs', () => {
     it('Then emits no gitattributesBlob or gitattributesSymlink finding', () => {
       // Arrange
-      const sut = validateObject;
       // Mode 100644 → isSymlink=false, isRegular=true → else if(!isRegular) is false
       const rawBytes = buildTree(buildTreeEntry('100644', '.gitattributes', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'gitattributesBlob')).toHaveLength(0);
@@ -2179,12 +2088,11 @@ describe('Given .gitmodules blob with a non-submodule section header', () => {
   describe('When validateObject runs', () => {
     it('Then emits no finding (non-submodule sections are ignored by the name parser)', () => {
       // Arrange
-      const sut = validateObject;
       // [core] section: header = 'core', startsWith('submodule "') = false → short-circuit
       const rawBytes = encode('[core]\n\tfilemode = true\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -2205,7 +2113,6 @@ describe('Given commit with committer that has no space before email', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingSpaceBeforeEmail for committer via checkIdentityLine', () => {
       // Arrange
-      const sut = validateObject;
       // Committer has no space before '<', triggering checkIdentityLine to return a
       // non-empty array for the committer loop at line 195 (findings.push(f)).
       const rawBytes = buildCommit({
@@ -2215,7 +2122,7 @@ describe('Given commit with committer that has no space before email', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -2231,7 +2138,6 @@ describe('Given commit with an extra non-committer line between author and commi
   describe('When validateObject runs', () => {
     it('Then skips the extra line and still finds committer (while loop i++ body)', () => {
       // Arrange
-      const sut = validateObject;
       // The while loop at `while (!startsWith('committer')) i++` advances past extra
       // headers (like mergetag) between author and committer.
       const rawBytes = encode(
@@ -2239,7 +2145,7 @@ describe('Given commit with an extra non-committer line between author and commi
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert — no missingCommitter finding (committer was found after skip)
       expect(result.filter((f) => f.msgId === 'missingCommitter')).toHaveLength(0);
@@ -2255,7 +2161,6 @@ describe('Given commit with a SHA-256 tree OID (64 hex chars)', () => {
   describe('When validateObject runs', () => {
     it('Then emits no badTreeSha1 finding (SHA-256 OID is valid)', () => {
       // Arrange
-      const sut = validateObject;
       // 64-hex-char SHA-256 OID: SHA1_HEX_RE.test() = false, SHA256_HEX_RE.test() = true.
       const sha256TreeOid = 'a'.repeat(64);
       const rawBytes = encode(
@@ -2263,7 +2168,7 @@ describe('Given commit with a SHA-256 tree OID (64 hex chars)', () => {
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'badTreeSha1')).toHaveLength(0);
@@ -2279,7 +2184,6 @@ describe('Given commit body with no blank-line separator between header and mess
   describe('When validateObject runs', () => {
     it('Then treats entire body as header, returns findings from parsed headers', () => {
       // Arrange
-      const sut = validateObject;
       // No '\n\n' in the body: blankIdx === -1 → headerText = entire text, messageBody = ''.
       // A valid commit without a blank separator still has all the right headers.
       const rawBytes = encode(
@@ -2287,7 +2191,7 @@ describe('Given commit body with no blank-line separator between header and mess
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert — no findings for a structurally valid commit even without blank separator
       expect(result).toHaveLength(0);
@@ -2303,7 +2207,6 @@ describe('Given commit with author that has no timezone after the timestamp', ()
   describe('When validateObject runs', () => {
     it('Then emits no finding for missing timezone (empty string is accepted)', () => {
       // Arrange
-      const sut = validateObject;
       // Identity ends with just a timestamp but no timezone: parts[1] is undefined
       // in checkIdentityLine, timezone = '' from the ?? '' fallback, and the
       // timezone validation condition (timezone !== '') is false so no finding.
@@ -2314,7 +2217,7 @@ describe('Given commit with author that has no timezone after the timestamp', ()
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert — no badTimezone finding for empty timezone
       expect(result.filter((f) => f.msgId === 'badTimezone')).toHaveLength(0);
@@ -2354,11 +2257,10 @@ describe('Given a tag tagger line that must not reach the date-overflow check', 
       },
     ])('Then emits no badDateOverflow finding — $label', ({ tagger }) => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = buildTag({ object: BLOB_SHA_HEX, type: 'blob', tag: 'v1.0', tagger });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — no date fault because the parser bails before the date field
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -2376,14 +2278,13 @@ describe('Given .gitmodules blob with malformed submodule header missing the clo
   describe('When validateObject runs', () => {
     it('Then does not extract the name from a header missing the closing double-quote', () => {
       // Arrange
-      const sut = validateObject;
       // [submodule "..] — starts with 'submodule "' but does NOT end with '"'.
       // With && : startsWith=true, endsWith=false → condition false → names NOT pushed.
       // With || : startsWith=true → condition true → names.push('..') → gitmodulesName fires.
       const rawBytes = encode('[submodule "..]\n\tpath = foo\n\turl = https://example.com\n');
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -2405,7 +2306,6 @@ describe('Given .gitmodules blob with a non-url key whose value starts with a da
   describe('When validateObject runs', () => {
     it('Then does not emit gitmodulesUrl for non-url keys (only url= matters)', () => {
       // Arrange
-      const sut = validateObject;
       // 'path = -bad' — key is 'path', value starts with '-'.
       // If key==='url' guard is mutated to true, '-bad' is pushed to urls and gitmodulesUrl fires.
       const rawBytes = encode(
@@ -2413,7 +2313,7 @@ describe('Given .gitmodules blob with a non-url key whose value starts with a da
       );
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -2435,14 +2335,13 @@ describe('Given .gitmodules blob of exactly 100 MiB (at the boundary, not over)'
   describe('When validateObject runs', () => {
     it('Then does NOT emit gitmodulesLarge (boundary is exclusive: > not >=)', () => {
       // Arrange
-      const sut = validateObject;
       // Exactly 100 MiB = 100 * 1024 * 1024. This is NOT over the limit.
       // With > : 100MiB > 100MiB = false → no error (correct).
       // With >= : 100MiB >= 100MiB = true → error (mutant detected).
       const rawBytes = new Uint8Array(100 * 1024 * 1024);
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -2464,13 +2363,12 @@ describe('Given .gitattributes blob of exactly 100 MiB (at the boundary, not ove
   describe('When validateObject runs', () => {
     it('Then does NOT emit gitattributesLarge (boundary is exclusive: > not >=)', () => {
       // Arrange
-      const sut = validateObject;
       // Exactly 100 MiB. With > : false → no error (correct).
       // With >= : true → error (mutant detected).
       const rawBytes = new Uint8Array(100 * 1024 * 1024);
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -2492,14 +2390,13 @@ describe('Given .gitattributes blob with a line of exactly 2048 bytes', () => {
   describe('When validateObject runs', () => {
     it('Then does NOT emit gitattributesLineLength (2048 bytes is the limit, not over)', () => {
       // Arrange
-      const sut = validateObject;
       // A line of exactly 2048 ASCII bytes. With > : 2048 > 2048 = false → no error.
       // With >= : 2048 >= 2048 = true → error (mutant detected).
       const exactLine = 'a'.repeat(2048);
       const rawBytes = encode(`${exactLine}\n`);
 
       // Act
-      const result = sut({
+      const result = validateObject({
         kind: 'blob',
         rawBody: rawBytes,
         strict: false,
@@ -2520,7 +2417,6 @@ describe('Given commit with exactly one extra author line (two author lines tota
   describe('When validateObject runs', () => {
     it('Then emits exactly one multipleAuthors finding', () => {
       // Arrange
-      const sut = validateObject;
       // Two author lines: primary + one duplicate.
       // i++ correctly advances past the duplicate once; i-- would scan backward
       // and emit two multipleAuthors findings instead of one.
@@ -2529,7 +2425,7 @@ describe('Given commit with exactly one extra author line (two author lines tota
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'multipleAuthors')).toHaveLength(1);
@@ -2546,7 +2442,6 @@ describe('Given commit with author but no committer and no intermediate lines', 
   describe('When validateObject runs', () => {
     it('Then emits missingCommitter and does NOT emit missingAuthor', () => {
       // Arrange
-      const sut = validateObject;
       // Header: tree + author only. No committer.
       // After processing author, i === lines.length exactly; second while exits
       // immediately (i < lines.length is false). committerLine is undefined →
@@ -2556,7 +2451,7 @@ describe('Given commit with author but no committer and no intermediate lines', 
       const rawBytes = encode(`tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingCommitter', severity: 'error' });
@@ -2575,7 +2470,6 @@ describe('Given commit with committer that has no name before the email angle-br
   describe('When validateObject runs', () => {
     it('Then emits missingNameBeforeEmail for the committer', () => {
       // Arrange
-      const sut = validateObject;
       // committer line has no name: "committer <email> timestamp tz"
       // After slice(10) the string is "<email> timestamp tz" → name="" →
       // missingNameBeforeEmail. Without slice(10), name="committer " which is
@@ -2585,7 +2479,7 @@ describe('Given commit with committer that has no name before the email angle-br
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingNameBeforeEmail', severity: 'error' });
@@ -2603,7 +2497,6 @@ describe('Given commit with missing tree header', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingTree and does NOT emit missingAuthor', () => {
       // Arrange
-      const sut = validateObject;
       // No tree line at all — checkTreeAndParents returns nextIdx === -1.
       // The early-return on nextIdx === -1 must fire; if skipped (→false mutant),
       // checkAuthorAndCommitter is called with startIdx=-1, sees lines[-1]=undefined,
@@ -2611,7 +2504,7 @@ describe('Given commit with missing tree header', () => {
       const rawBytes = encode(`author ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTree', severity: 'error' });
@@ -2629,7 +2522,6 @@ describe('Given tree with directory "a" (mode 40000) before file "a-" (mode 1006
   describe('When validateObject runs', () => {
     it('Then emits treeNotSorted (dir sort key "a/" > file sort key "a-")', () => {
       // Arrange
-      const sut = validateObject;
       // git sort keys: "a" (dir) = "a/"; "a-" (file) = "a-".
       // compareBytes("a/", "a-") = '/'(0x2f) - '-'(0x2d) = 2 > 0 → treeNotSorted.
       // M7 (isDir=false): dir key="a". compareBytes("a","a-") = 1-2=-1 → NOT treeNotSorted. MISS.
@@ -2640,7 +2532,7 @@ describe('Given tree with directory "a" (mode 40000) before file "a-" (mode 1006
       );
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -2657,7 +2549,6 @@ describe('Given tree with entry name of exactly 4096 ASCII bytes (at the boundar
   describe('When validateObject runs', () => {
     it('Then does NOT emit largePathname (4096 bytes is the limit, not over it)', () => {
       // Arrange
-      const sut = validateObject;
       // 4096 'a' chars = 4096 UTF-8 bytes: byteLength === MAX_NAME_BYTES.
       // Original (>): 4096 > 4096 = false → no largePathname.
       // Mutant (>=): 4096 >= 4096 = true → largePathname. FALSE POSITIVE.
@@ -2665,7 +2556,7 @@ describe('Given tree with entry name of exactly 4096 ASCII bytes (at the boundar
       const rawBytes = buildTree(buildTreeEntry('100644', exactName, BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'largePathname')).toHaveLength(0);
@@ -2682,14 +2573,13 @@ describe('Given tree with .gitignore as a regular file (mode 100644)', () => {
   describe('When validateObject runs', () => {
     it('Then does NOT emit gitignoreSymlink (only symlink mode triggers this finding)', () => {
       // Arrange
-      const sut = validateObject;
       // mode='100644' → isSymlink=false.
       // Original (&&): name==='.gitignore' && false = false → no gitignoreSymlink.
       // Mutant (||): name==='.gitignore' || false = true → gitignoreSymlink. FALSE POSITIVE.
       const rawBytes = buildTree(buildTreeEntry('100644', '.gitignore', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'gitignoreSymlink')).toHaveLength(0);
@@ -2706,14 +2596,13 @@ describe('Given tree with .mailmap as a regular file (mode 100644)', () => {
   describe('When validateObject runs', () => {
     it('Then does NOT emit mailmapSymlink (only symlink mode triggers this finding)', () => {
       // Arrange
-      const sut = validateObject;
       // mode='100644' → isSymlink=false.
       // Original (&&): name==='.mailmap' && false = false → no mailmapSymlink.
       // Mutant (||): name==='.mailmap' || false = true → mailmapSymlink. FALSE POSITIVE.
       const rawBytes = buildTree(buildTreeEntry('100644', '.mailmap', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'mailmapSymlink')).toHaveLength(0);
@@ -2730,7 +2619,6 @@ describe('Given tree with zero-padded mode "0100644" (normalises to valid mode "
   describe('When validateObject runs', () => {
     it('Then emits zeroPaddedFilemode but NOT badFilemode (normMode is a valid mode after slice)', () => {
       // Arrange
-      const sut = validateObject;
       // mode='0100644': line-188 startsWith('0')=true → zeroPaddedFilemode (unchanged by M20).
       // Original (line-194 startsWith): normMode='100644'. VALID_MODES.has('100644')=true → no badFilemode.
       // Mutant (line-194 endsWith('0')): '0100644'.endsWith('4')=false → normMode='0100644'.
@@ -2738,7 +2626,7 @@ describe('Given tree with zero-padded mode "0100644" (normalises to valid mode "
       const rawBytes = buildTree(buildTreeEntry('0100644', 'file', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert — zeroPaddedFilemode is expected; badFilemode must NOT appear
       expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'warning' });
@@ -2756,7 +2644,6 @@ describe('Given tree with two entries sharing the same name (duplicate)', () => 
   describe('When validateObject runs', () => {
     it('Then emits duplicateEntries but NOT treeNotSorted (equal sort key is not a sort violation)', () => {
       // Arrange
-      const sut = validateObject;
       // Two identical entries → identical sort keys → compareBytes(key, key) = 0.
       // Original (> 0): 0 > 0 = false → no treeNotSorted.
       // Mutant (>= 0): 0 >= 0 = true → treeNotSorted. FALSE POSITIVE.
@@ -2766,7 +2653,7 @@ describe('Given tree with two entries sharing the same name (duplicate)', () => 
       );
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert — duplicate is flagged, but equal sort key is not a sort violation
       expect(result).toContainEqual({ msgId: 'duplicateEntries', severity: 'error' });
@@ -2785,7 +2672,6 @@ describe('Given tag with tagger timestamp exactly equal to INT64_MAX (9223372036
   describe('When validateObject runs', () => {
     it('Then emits no badDateOverflow (INT64_MAX itself is not an overflow)', () => {
       // Arrange
-      const sut = validateObject;
       // '9223372036854775807' has length 19 == INT64_MAX_STR.length.
       // length guard (>) is false → falls through to string comparison.
       // '9223372036854775807' > '9223372036854775807' is false → not overflow.
@@ -2800,7 +2686,7 @@ describe('Given tag with tagger timestamp exactly equal to INT64_MAX (9223372036
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -2820,7 +2706,6 @@ describe('Given tag with tagger timestamp of 18 nines (999999999999999999, less 
   describe('When validateObject runs', () => {
     it('Then emits no badDateOverflow (18-digit number is within range)', () => {
       // Arrange
-      const sut = validateObject;
       // '999999999999999999' has length 18 < 19 → early-return false (no overflow).
       // A3 mutant (if false): skips the length guard, falls through to string
       // comparison: '999999999999999999' > '9223372036854775807' — char 0 '9'='9',
@@ -2833,7 +2718,7 @@ describe('Given tag with tagger timestamp of 18 nines (999999999999999999, less 
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -2855,7 +2740,6 @@ describe('Given tag with a valid tagger where the identity has a space before th
   describe('When validateObject runs', () => {
     it('Then emits no missingSpaceBeforeEmail (the tagger prefix is stripped before parsing)', () => {
       // Arrange
-      const sut = validateObject;
       // taggerLine = 'tagger Test User <test@example.com> 1234567890 +0000'
       // slice(7)  → 'Test User <test@example.com> ...' → name='Test User ', ends with ' ' → OK.
       // F1 mutant (no slice): → 'tagger Test User <test@example.com> ...' →
@@ -2878,7 +2762,7 @@ describe('Given tag with a valid tagger where the identity has a space before th
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — no name before email in tagger: missingSpaceBeforeEmail must fire
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -2898,13 +2782,12 @@ describe('Given valid tag with a blank-line separator and a message body', () =>
   describe('When validateObject runs', () => {
     it('Then emits no findings (valid tag structure regardless of message body content)', () => {
       // Arrange
-      const sut = validateObject;
       const rawBytes = encode(
         `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\ntagger ${VALID_IDENTITY}\n\ntype invalid\n`,
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — a structurally valid tag returns no findings
       expect(result).toHaveLength(0);
@@ -2923,7 +2806,6 @@ describe('Given tag without an object line (checkObjectAndType returns nextIdx: 
   describe('When validateObject runs', () => {
     it('Then emits only missingObject and NOT missingTag (early return halts tag/tagger check)', () => {
       // Arrange
-      const sut = validateObject;
       // No 'object' header → checkObjectAndType returns nextIdx: -1.
       // validateTag early-returns on nextIdx === -1 with only [missingObject].
       // H1 mutant (if false): skips early return → calls checkTagAndTagger(lines, -1, strict)
@@ -2936,7 +2818,7 @@ describe('Given tag without an object line (checkObjectAndType returns nextIdx: 
       });
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — exactly missingObject, no missingTag or missingTaggerEntry
       expect(result).toContainEqual({ msgId: 'missingObject', severity: 'error' });
@@ -2958,7 +2840,6 @@ describe('Given tag with type and tagger but neither object nor tag-name line', 
   describe('When validateObject runs', () => {
     it('Then emits only missingObject and NOT missingTag (struct nextIdx=-1 halts processing)', () => {
       // Arrange
-      const sut = validateObject;
       // Lines: ['type blob', 'tagger IDENTITY']
       // checkObjectAndType sees lines[0]='type blob' (not 'object ...') → missingObject,
       // returns { findings: [missingObject], nextIdx: -1 }.
@@ -2967,7 +2848,7 @@ describe('Given tag with type and tagger but neither object nor tag-name line', 
       const rawBytes = encode(`type blob\ntagger ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — only missingObject; processing must stop before tag/tagger checks
       expect(result).toContainEqual({ msgId: 'missingObject', severity: 'error' });
@@ -2988,7 +2869,6 @@ describe('Given tag with object and tagger but neither type nor tag-name line', 
   describe('When validateObject runs', () => {
     it('Then emits only missingType and NOT missingTag (struct nextIdx=-1 halts processing)', () => {
       // Arrange
-      const sut = validateObject;
       // Lines: ['object SHA', 'tagger IDENTITY']
       // checkObjectAndType: lines[0]='object SHA' ✓, lines[1]='tagger IDENTITY' not 'type ...'
       // → missingType pushed, returns { findings: [missingType], nextIdx: -1 }.
@@ -2997,7 +2877,7 @@ describe('Given tag with object and tagger but neither type nor tag-name line', 
       const rawBytes = encode(`object ${BLOB_SHA_HEX}\ntagger ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — only missingType; processing must stop before tag/tagger checks
       expect(result).toContainEqual({ msgId: 'missingType', severity: 'error' });
@@ -3020,7 +2900,6 @@ describe('Given tag with a non-empty invalid type value (e.g. "frog")', () => {
   describe('When validateObject runs', () => {
     it('Then emits missingTypeEntry and NOT missingTag (struct nextIdx=-1 halts tag/tagger check)', () => {
       // Arrange
-      const sut = validateObject;
       // Lines: ['object SHA', 'type frog', 'tag v1.0', 'tagger IDENTITY']
       // checkObjectAndType: typeVal='frog', !VALID_OBJECT_TYPES.has → missingTypeEntry pushed,
       // returns { findings: [missingTypeEntry], nextIdx: -1 }.
@@ -3031,7 +2910,7 @@ describe('Given tag with a non-empty invalid type value (e.g. "frog")', () => {
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — missingTypeEntry present, missingTag absent
       expect(result).toContainEqual({ msgId: 'missingTypeEntry', severity: 'error' });
@@ -3054,7 +2933,6 @@ describe('Given tag where tagger line is present but has wrong prefix (author in
   describe('When validateObject runs', () => {
     it('Then emits missingTaggerEntry (wrong prefix disqualifies the tagger line)', () => {
       // Arrange
-      const sut = validateObject;
       // Manually encode: tagger slot replaced with 'author' prefix.
       // taggerLine = 'author T <t@t.com> 1234567890 +0000' → defined, exists in
       // the right position, but does NOT start with 'tagger '.
@@ -3066,7 +2944,7 @@ describe('Given tag where tagger line is present but has wrong prefix (author in
       );
 
       // Act
-      const result = sut({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
 
       // Assert — wrong-prefix tagger line must trigger missingTaggerEntry
       expect(result).toContainEqual({ msgId: 'missingTaggerEntry', severity: 'info' });
@@ -3086,7 +2964,6 @@ describe('Given commit author with a valid timezone offset of +0230', () => {
   describe('When validateObject runs', () => {
     it('Then emits no badTimezone (hours=2 <24 and minutes=30 <60)', () => {
       // Arrange
-      const sut = validateObject;
       // '+0230': passes TIMEZONE_RE; hours=parseInt('02')=2 <24; minutes=parseInt('30')=30 <60.
       // B2 mutant (slice(1,3)→tz): hours=parseInt('+0230')=230 ≥24 → false → badTimezone. FAILS.
       // B3 mutant (slice(3,5)→tz): minutes=parseInt('+0230')=230 ≥60 → false → badTimezone. FAILS.
@@ -3097,7 +2974,7 @@ describe('Given commit author with a valid timezone offset of +0230', () => {
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badTimezone' }));
@@ -3118,7 +2995,6 @@ describe('Given commit author with 18-digit all-nines timestamp (999999999999999
   describe('When validateObject runs', () => {
     it('Then emits no badDateOverflow (18-digit value is within INT64_MAX range)', () => {
       // Arrange
-      const sut = validateObject;
       // length=18 < 19 → return false → no overflow.
       // C2 mutant (if false): '999999999999999999'>'9223372036854775807':'9'='9','9'>'2'→true → badDateOverflow. FAILS.
       const rawBytes = buildCommit({
@@ -3128,7 +3004,7 @@ describe('Given commit author with 18-digit all-nines timestamp (999999999999999
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -3149,7 +3025,6 @@ describe('Given commit author with single-character zero timestamp ("0")', () =>
   describe('When validateObject runs', () => {
     it('Then emits no zeroPaddedDate (single "0" is not a zero-padded date)', () => {
       // Arrange
-      const sut = validateObject;
       // '0': startsWith('0')=true, length=1. Original (>1): 1>1=false → no zeroPaddedDate.
       // D1 mutant (>=1): 1>=1=true → zeroPaddedDate. FAILS.
       const rawBytes = buildCommit({
@@ -3159,7 +3034,7 @@ describe('Given commit author with single-character zero timestamp ("0")', () =>
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert — '0' is a valid timestamp (epoch); must not trigger zeroPaddedDate
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'zeroPaddedDate' }));
@@ -3180,7 +3055,6 @@ describe('Given commit author identity with ">" but no "<" (opening angle-bracke
   describe('When validateObject runs', () => {
     it('Then emits missingEmail (ltIdx===-1 guard fires on missing opening bracket)', () => {
       // Arrange
-      const sut = validateObject;
       // 'Test User> 1234567890 +0000': indexOf('<')=-1, indexOf('>')=9.
       // Original: ltIdx===-1 → push missingEmail, return immediately.
       // F1 mutant (block {}): skipped → gtIdx=9, date parses → no missingEmail. FAILS.
@@ -3193,7 +3067,7 @@ describe('Given commit author identity with ">" but no "<" (opening angle-bracke
       });
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
@@ -3212,7 +3086,6 @@ describe('Given commit with a NUL byte in the body (after the blank-line separat
   describe('When validateObject runs', () => {
     it('Then emits nullInCommit (NUL in body detected via messageBody check)', () => {
       // Arrange
-      const sut = validateObject;
       // NUL is only in the body; headerText has no NUL so nulInHeader does NOT fire.
       // messageBody.includes('\x00') = true → nulInCommit.
       // H1 mutant (indexOf('Stryker...')): blankIdx=-1 always → messageBody='' → no nulInCommit. FAILS.
@@ -3221,7 +3094,7 @@ describe('Given commit with a NUL byte in the body (after the blank-line separat
       );
 
       // Act
-      const result = sut({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
 
       // Assert — nulInCommit (warning), not nulInHeader, because the NUL is only in the body
       expect(result).toContainEqual({ msgId: 'nulInCommit', severity: 'warning' });
@@ -3244,13 +3117,12 @@ describe('Given tree entry with canonical directory mode "40000"', () => {
   describe('When validateObject runs', () => {
     it('Then does NOT emit badFilemode (40000 is valid; endsWith mutant would strip wrong char)', () => {
       // Arrange
-      const sut = validateObject;
       // mode='40000': startsWith('0')=false → normMode='40000' → VALID_MODES ✓ → no badFilemode.
       // M20 mutant (endsWith('0')): '40000'.endsWith('0')=true → normMode='4000' → VALID_MODES ✗ → badFilemode.
       const rawBytes = buildTree(buildTreeEntry('40000', 'subdir', BLOB_SHA));
 
       // Act
-      const result = sut({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'badFilemode')).toHaveLength(0);
