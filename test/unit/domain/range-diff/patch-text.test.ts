@@ -58,11 +58,10 @@ describe('renderRangePatch', () => {
       },
     ])('Then $label', ({ message, expected }) => {
       // Arrange
-      const sut = renderRangePatch;
       const input = baseInput({ message });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert
       expect(result.patch).toBe(expected);
@@ -72,11 +71,10 @@ describe('renderRangePatch', () => {
   describe('Given a single-file modification, When rendered', () => {
     it('Then the file header, stripped @@ and prefixed body lines appear in the diff slice', () => {
       // Arrange
-      const sut = renderRangePatch;
       const input = baseInput({ files: [modify('f.txt', 'one\ntwo\n', 'one\nTWO\n')] });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert — diff slice begins at the file header; @@ has no line numbers
       expect(result.diff).toBe(' ## f.txt ##\n@@\n one\n-two\n+TWO\n');
@@ -88,7 +86,6 @@ describe('renderRangePatch', () => {
   describe('Given a function-bearing source change, When rendered', () => {
     it('Then the @@ line carries the path and the enclosing function heading', () => {
       // Arrange
-      const sut = renderRangePatch;
       const before =
         'int main(void)\n{\n\tint a = 1;\n\tint b = 2;\n\tint c = 3;\n\tint d = 4;\n\treturn 0;\n}\n';
       const after =
@@ -96,7 +93,7 @@ describe('renderRangePatch', () => {
       const input = baseInput({ files: [modify('m.c', before, after)] });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert
       expect(result.diff).toContain('@@ m.c: int main(void)\n');
@@ -108,7 +105,6 @@ describe('renderRangePatch', () => {
       // Arrange — the second hunk's funcname scan is bounded by the first hunk's
       // start, so it must reach `int g(void)` (sitting between the two hunks) and
       // must not retain the first hunk's `int f(void)` heading.
-      const sut = renderRangePatch;
       const oldLines = [
         'int f(void)',
         '{',
@@ -143,7 +139,7 @@ describe('renderRangePatch', () => {
       });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert
       expect(result.diff).toBe(
@@ -157,7 +153,6 @@ describe('renderRangePatch', () => {
   describe('Given a mode-changing modification, When rendered', () => {
     it('Then the header records the mode change', () => {
       // Arrange
-      const sut = renderRangePatch;
       const change: DiffChange = {
         type: 'modify',
         path: path('s.sh'),
@@ -171,7 +166,7 @@ describe('renderRangePatch', () => {
       });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert
       expect(result.diff).toBe(' ## s.sh (mode change 100644 => 100755) ##\n');
@@ -284,11 +279,10 @@ describe('renderRangePatch', () => {
       },
     ])('Then $label', ({ file, expected }) => {
       // Arrange
-      const sut = renderRangePatch;
       const input = baseInput({ files: [file] });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert
       expect(result.diff).toBe(expected);
@@ -298,11 +292,10 @@ describe('renderRangePatch', () => {
   describe('Given a commit with no diff, When rendered', () => {
     it('Then the diff equals the whole patch and the size is zero', () => {
       // Arrange
-      const sut = renderRangePatch;
       const input = baseInput({ files: [] });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert
       expect(result.diff).toBe(result.patch);
@@ -313,11 +306,10 @@ describe('renderRangePatch', () => {
   describe('Given a file whose new content lacks a trailing newline, When rendered', () => {
     it('Then the no-newline marker follows the changed line', () => {
       // Arrange
-      const sut = renderRangePatch;
       const input = baseInput({ files: [modify('f.txt', 'one\ntwo\n', 'one\nTWO')] });
 
       // Act
-      const result = sut(input);
+      const result = renderRangePatch(input);
 
       // Assert
       expect(result.diff).toContain('+TWO\n \\ No newline at end of file\n');

@@ -23,12 +23,11 @@ describe('correspond', () => {
   describe('Given byte-identical diffs of any size, When corresponded', () => {
     it('Then they exact-match regardless of size', () => {
       // Arrange
-      const sut = correspond;
       const old = [patch('a', ' ## f ##\n@@\n+x\n', 1)];
       const next = [patch('b', ' ## f ##\n@@\n+x\n', 1)];
 
       // Act
-      const result = sut(old, next, 60);
+      const result = correspond(old, next, 60);
 
       // Assert
       expect(result.old[0]?.matching).toBe(0);
@@ -39,12 +38,11 @@ describe('correspond', () => {
   describe('Given two large near-identical patches, When corresponded', () => {
     it('Then they are fuzzy-matched (diff-of-diffs cheaper than create+delete)', () => {
       // Arrange
-      const sut = correspond;
       const old = [patch('a', big('f', '+line 15'), 31)];
       const next = [patch('b', big('f', '+line 15 changed'), 31)];
 
       // Act
-      const result = sut(old, next, 60);
+      const result = correspond(old, next, 60);
 
       // Assert
       expect(result.old[0]?.matching).toBe(0);
@@ -55,12 +53,11 @@ describe('correspond', () => {
   describe('Given two small near-identical patches, When corresponded', () => {
     it('Then the integer creation cost wins and they are not matched', () => {
       // Arrange — diffsize 1 ⇒ creation cost trunc(1*60/100) = 0 < the diff-of-diffs cost
-      const sut = correspond;
       const old = [patch('a', ' ## f ##\n@@\n+aaa\n', 1)];
       const next = [patch('b', ' ## f ##\n@@\n+bbb\n', 1)];
 
       // Act
-      const result = sut(old, next, 60);
+      const result = correspond(old, next, 60);
 
       // Assert
       expect(result.old[0]?.matching).toBe(-1);
@@ -71,7 +68,6 @@ describe('correspond', () => {
   describe('Given a reordered series of exact patches, When corresponded', () => {
     it('Then each patch matches its partner across the reorder', () => {
       // Arrange — old [A,B,C], new [A,C,B]
-      const sut = correspond;
       const a = ' ## a ##\n@@\n+aaa\n';
       const b = ' ## b ##\n@@\n+bbb\n';
       const c = ' ## c ##\n@@\n+ccc\n';
@@ -79,7 +75,7 @@ describe('correspond', () => {
       const next = [patch('a', a, 1), patch('c', c, 1), patch('b', b, 1)];
 
       // Act
-      const result = sut(old, next, 60);
+      const result = correspond(old, next, 60);
 
       // Assert — old positions 0,1,2 map to new positions 0,2,1
       expect(result.old.map((entry) => entry.matching)).toEqual([0, 2, 1]);
@@ -90,13 +86,12 @@ describe('correspond', () => {
   describe('Given duplicate identical diffs on the old side, When corresponded', () => {
     it('Then the highest-indexed duplicate is matched first (git hashmap LIFO)', () => {
       // Arrange
-      const sut = correspond;
       const dup = ' ## f ##\n@@\n+dup\n';
       const old = [patch('a', dup, 1), patch('b', dup, 1)];
       const next = [patch('c', dup, 1)];
 
       // Act
-      const result = sut(old, next, 60);
+      const result = correspond(old, next, 60);
 
       // Assert — old[1] (the later add) matches new[0]; old[0] is a deletion
       expect(result.old[0]?.matching).toBe(-1);
@@ -108,12 +103,11 @@ describe('correspond', () => {
   describe('Given a zero creation factor, When corresponded', () => {
     it('Then non-identical patches never match', () => {
       // Arrange
-      const sut = correspond;
       const old = [patch('a', big('f', '+line 15'), 31)];
       const next = [patch('b', big('f', '+line 15 changed'), 31)];
 
       // Act
-      const result = sut(old, next, 0);
+      const result = correspond(old, next, 0);
 
       // Assert
       expect(result.old[0]?.matching).toBe(-1);
@@ -126,11 +120,10 @@ describe('correspond', () => {
       // Arrange — with no new side the lone old commit is assigned dummy column 0
       // (index >= newCount of 0); the in-range filter must reject it rather than
       // record column 0 as a partner.
-      const sut = correspond;
       const old = [patch('a', ' ## f ##\n@@\n+x\n', 1)];
 
       // Act
-      const result = sut(old, [], 60);
+      const result = correspond(old, [], 60);
 
       // Assert
       expect(result.old).toHaveLength(1);
@@ -142,11 +135,10 @@ describe('correspond', () => {
   describe('Given a new patch but no old patches, When corresponded', () => {
     it('Then the new patch is a creation and stays unmatched', () => {
       // Arrange
-      const sut = correspond;
       const next = [patch('b', ' ## f ##\n@@\n+y\n', 1)];
 
       // Act
-      const result = sut([], next, 60);
+      const result = correspond([], next, 60);
 
       // Assert
       expect(result.new).toHaveLength(1);

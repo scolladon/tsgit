@@ -44,11 +44,8 @@ describe('diffSize', () => {
           'the size counts the header, bounded context, and every deletion for a multi-line deletion inside a long text',
       },
     ])('Then $label', ({ before, after, expected }) => {
-      // Arrange
-      const sut = diffSize;
-
-      // Act
-      const result = sut(before, after);
+      // Arrange + Act
+      const result = diffSize(before, after);
 
       // Assert
       expect(result).toBe(expected);

@@ -11,11 +11,10 @@ describe('computeAssignment', () => {
   describe('Given a 2x2 matrix whose diagonal is cheapest, When assigned', () => {
     it('Then it returns the identity assignment', () => {
       // Arrange
-      const sut = computeAssignment;
       const cost = [0, 9, 9, 0]; // C(0,0)=0 C(1,0)=9 C(0,1)=9 C(1,1)=0
 
       // Act
-      const result = sut(2, cost);
+      const result = computeAssignment(2, cost);
 
       // Assert
       expect(result.columnToRow).toEqual([0, 1]);
@@ -26,11 +25,10 @@ describe('computeAssignment', () => {
   describe('Given a 2x2 matrix whose anti-diagonal is cheapest, When assigned', () => {
     it('Then it swaps the assignment', () => {
       // Arrange
-      const sut = computeAssignment;
       const cost = [9, 0, 0, 9]; // C(0,0)=9 C(1,0)=0 C(0,1)=0 C(1,1)=9
 
       // Act
-      const result = sut(2, cost);
+      const result = computeAssignment(2, cost);
 
       // Assert
       expect(result.columnToRow).toEqual([1, 0]);
@@ -40,11 +38,8 @@ describe('computeAssignment', () => {
 
   describe('Given a column count below two, When assigned', () => {
     it('Then both maps are zero-filled', () => {
-      // Arrange
-      const sut = computeAssignment;
-
-      // Act
-      const result = sut(1, [7]);
+      // Arrange & Act
+      const result = computeAssignment(1, [7]);
 
       // Assert
       expect(result.columnToRow).toEqual([0]);
@@ -54,11 +49,8 @@ describe('computeAssignment', () => {
 
   describe('Given a zero-sized problem, When assigned', () => {
     it('Then both maps are empty', () => {
-      // Arrange
-      const sut = computeAssignment;
-
-      // Act
-      const result = sut(0, []);
+      // Arrange & Act
+      const result = computeAssignment(0, []);
 
       // Assert
       expect(result.columnToRow).toEqual([]);
@@ -69,7 +61,6 @@ describe('computeAssignment', () => {
   describe('Given a 3x3 matrix with a unique optimum, When assigned', () => {
     it('Then it returns that permutation', () => {
       // Arrange
-      const sut = computeAssignment;
       // Cheapest: col0->row1, col1->row2, col2->row0 (each cost 1; any other
       // assignment pays at least one 5). Rows outer, columns inner.
       //              C(0,r) C(1,r) C(2,r)
@@ -86,7 +77,7 @@ describe('computeAssignment', () => {
       ];
 
       // Act
-      const result = sut(3, cost);
+      const result = computeAssignment(3, cost);
 
       // Assert: column0->row1, column1->row2, column2->row0
       expect(result.columnToRow).toEqual([1, 2, 0]);
@@ -96,7 +87,6 @@ describe('computeAssignment', () => {
   describe('Given forbidden COST_MAX cells around a forced zero, When assigned', () => {
     it('Then the forced zero is chosen and forbidden cells are avoided', () => {
       // Arrange — col0 must take row0 (its only finite cell); col1 takes row1.
-      const sut = computeAssignment;
       const cost = [
         0,
         COST_MAX, // row 0: C(0,0)=0      C(1,0)=MAX
@@ -105,7 +95,7 @@ describe('computeAssignment', () => {
       ];
 
       // Act
-      const result = sut(2, cost);
+      const result = computeAssignment(2, cost);
 
       // Assert
       expect(result.columnToRow).toEqual([0, 1]);
@@ -117,7 +107,6 @@ describe('computeAssignment', () => {
       // Arrange — column reduction leaves row 0 free; in the augmenting-row
       // reduction its only non-COST_MAX column is column 0, so no second-smallest
       // candidate exists (git's `j2 < 0` branch).
-      const sut = computeAssignment;
       const cost = [
         5,
         COST_MAX, // row 0: C(0,0)=5    C(1,0)=MAX
@@ -126,7 +115,7 @@ describe('computeAssignment', () => {
       ];
 
       // Act
-      const result = sut(2, cost);
+      const result = computeAssignment(2, cost);
 
       // Assert — col0 takes row0, col1 takes its only cheap row1
       expect(result.columnToRow).toEqual([0, 1]);
@@ -138,7 +127,6 @@ describe('computeAssignment', () => {
       // Arrange — three exact pairs (col i -> row [0,2,1][i]) at cost 0, every
       // other real/dummy cell forbidden, dummy×dummy free. A COST_MAX of INT_MAX
       // would overflow the dual arithmetic and loop forever; 1<<16 does not.
-      const sut = computeAssignment;
       const total = 6;
       const cost = new Array<number>(total * total).fill(0);
       const at = (column: number, row: number, value: number): void => {
@@ -151,7 +139,7 @@ describe('computeAssignment', () => {
       for (let j = 0; j < 3; j++) for (let i = 3; i < 6; i++) at(i, j, COST_MAX);
 
       // Act
-      const result = sut(total, cost);
+      const result = computeAssignment(total, cost);
 
       // Assert — old columns map to their exact rows; dummies absorb the rest
       expect(result.columnToRow.slice(0, 3)).toEqual([0, 2, 1]);
@@ -164,7 +152,6 @@ describe('computeAssignment', () => {
       // a free row sees every column reduced cost >= COST_MAX; findTwoSmallest
       // never records a distinct second smallest, and its `j2 < 0` reset
       // (j2 = j1, u2 = u1) decides where each column lands.
-      const sut = computeAssignment;
       const cost = [
         COST_MAX,
         1,
@@ -185,7 +172,7 @@ describe('computeAssignment', () => {
       ];
 
       // Act
-      const result = sut(4, cost);
+      const result = computeAssignment(4, cost);
 
       // Assert
       expect(result.columnToRow).toEqual([2, 0, 3, 1]);
@@ -199,7 +186,6 @@ describe('computeAssignment', () => {
       // multiple times: the do-while continues while `low !== up` (the set is not
       // yet exhausted). Inverting that continuation to `low === up` stops after
       // one round and yields a different permutation.
-      const sut = computeAssignment;
       const cost = [
         0,
         3,
@@ -240,7 +226,7 @@ describe('computeAssignment', () => {
       ];
 
       // Act
-      const result = sut(6, cost);
+      const result = computeAssignment(6, cost);
 
       // Assert
       expect(result.columnToRow).toEqual([4, 1, 2, 5, 0, 3]);

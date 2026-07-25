@@ -9,10 +9,10 @@ describe('diff error', () => {
       describe('When checking error.data', () => {
         it("Then code is 'INVALID_TREE_FOR_DIFF' and reason preserved", () => {
           // Arrange & Act
-          const sut = invalidTreeForDiff('too many entries');
+          const result = invalidTreeForDiff('too many entries');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_TREE_FOR_DIFF',
             reason: 'too many entries',
           });
@@ -24,10 +24,10 @@ describe('diff error', () => {
       describe('When checking error.data', () => {
         it("Then code is 'INVALID_DIFF_INPUT' and reason preserved", () => {
           // Arrange & Act
-          const sut = invalidDiffInput('duplicate conflict path');
+          const result = invalidDiffInput('duplicate conflict path');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'INVALID_DIFF_INPUT',
             reason: 'duplicate conflict path',
           });
@@ -41,44 +41,45 @@ describe('diff error', () => {
       describe('When checking instanceof Error', () => {
         it('Then returns true', () => {
           // Arrange & Act
-          const sut = invalidTreeForDiff('bad');
+          const result = invalidTreeForDiff('bad');
 
           // Assert
-          expect(sut).toBeInstanceOf(Error);
+          expect(result).toBeInstanceOf(Error);
         });
       });
       describe('When accessing .name', () => {
         it("Then equals 'TsgitError'", () => {
           // Arrange & Act
-          const sut = invalidTreeForDiff('bad');
+          const result = invalidTreeForDiff('bad');
 
           // Assert
-          expect(sut.name).toBe('TsgitError');
+          expect(result.name).toBe('TsgitError');
         });
       });
       describe('When accessing .message', () => {
         it('Then contains the error code', () => {
           // Arrange & Act
-          const sut = invalidTreeForDiff('bad');
+          const result = invalidTreeForDiff('bad');
 
           // Assert
-          expect(sut.message).toContain('INVALID_TREE_FOR_DIFF');
+          expect(result.message).toContain('INVALID_TREE_FOR_DIFF');
         });
         it('Then contains reason text', () => {
           // Arrange & Act
-          const sut = invalidTreeForDiff('over MAX_FLAT_TREE_ENTRIES');
+          const result = invalidTreeForDiff('over MAX_FLAT_TREE_ENTRIES');
 
           // Assert
-          expect(sut.message).toContain('invalid tree for diff: over MAX_FLAT_TREE_ENTRIES');
+          expect(result.message).toContain('invalid tree for diff: over MAX_FLAT_TREE_ENTRIES');
         });
       });
       describe('When switching on data.code in exhaustive switch', () => {
         it('Then all 29 cases handleable', () => {
           // Arrange
-          const sut = invalidTreeForDiff('test');
+          const result = invalidTreeForDiff('test');
 
-          // Act & Assert
-          const data: TsgitErrorData = sut.data;
+          // Act
+          const data: TsgitErrorData = result.data;
+
           // Assert
           assertExhaustiveSwitch(data);
         });

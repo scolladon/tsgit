@@ -60,25 +60,25 @@ function makeDisjoint64Pair(): { readonly src: Uint8Array; readonly dst: Uint8Ar
 describe('similarity', () => {
   describe('Given an exported score constant, When read', () => {
     it.each([
-      { sut: MAX_SCORE, expected: 60000, label: 'MAX_SCORE equals 60000' },
+      { value: MAX_SCORE, expected: 60000, label: 'MAX_SCORE equals 60000' },
       {
-        sut: DEFAULT_RENAME_THRESHOLD,
+        value: DEFAULT_RENAME_THRESHOLD,
         expected: 30000,
         label: 'DEFAULT_RENAME_THRESHOLD equals 30000 (50% of MAX_SCORE)',
       },
       {
-        sut: DEFAULT_BREAK_SCORE,
+        value: DEFAULT_BREAK_SCORE,
         expected: 30000,
         label: 'DEFAULT_BREAK_SCORE equals 30000 (50% of MAX_SCORE)',
       },
       {
-        sut: DEFAULT_MERGE_SCORE,
+        value: DEFAULT_MERGE_SCORE,
         expected: 36000,
         label: 'DEFAULT_MERGE_SCORE equals 36000 (60% of MAX_SCORE)',
       },
-    ])('Then $label', ({ sut, expected }) => {
-      // Arrange + Act / Assert
-      expect(sut).toBe(expected);
+    ])('Then $label', ({ value, expected }) => {
+      // Arrange + Act + Assert
+      expect(value).toBe(expected);
     });
   });
 
@@ -292,14 +292,14 @@ describe('similarity', () => {
         const srcSize = src.length;
 
         // Act
-        const sut = countSpanhashChanges(src, dst);
+        const result = countSpanhashChanges(src, dst);
 
         // Assert — exact srcCopied to kill arithmetic mutants
-        expect(sut.srcCopied).toBe(497);
-        expect(sut.literalAdded).toBe(dst.length - 497);
+        expect(result.srcCopied).toBe(497);
+        expect(result.literalAdded).toBe(dst.length - 497);
 
         // Assert — merge_score reproduces git's M065
-        const mergeScore = Math.trunc(((srcSize - sut.srcCopied) * MAX_SCORE) / srcSize);
+        const mergeScore = Math.trunc(((srcSize - result.srcCopied) * MAX_SCORE) / srcSize);
         expect(Math.trunc((mergeScore * 100) / MAX_SCORE)).toBe(65);
       });
     });
@@ -333,14 +333,14 @@ describe('similarity', () => {
         const srcSize = src.length;
 
         // Act
-        const sut = countSpanhashChanges(src, dst);
+        const result = countSpanhashChanges(src, dst);
 
         // Assert — exact srcCopied to kill arithmetic mutants
-        expect(sut.srcCopied).toBe(1420);
-        expect(sut.literalAdded).toBe(dst.length - 1420);
+        expect(result.srcCopied).toBe(1420);
+        expect(result.literalAdded).toBe(dst.length - 1420);
 
         // Assert — merge_score reproduces git's M060
-        const mergeScore = Math.trunc(((srcSize - sut.srcCopied) * MAX_SCORE) / srcSize);
+        const mergeScore = Math.trunc(((srcSize - result.srcCopied) * MAX_SCORE) / srcSize);
         expect(Math.trunc((mergeScore * 100) / MAX_SCORE)).toBe(60);
       });
     });
@@ -383,10 +383,10 @@ describe('similarity', () => {
         const dstMap = buildChunkMap(dst);
 
         // Act
-        const sut = estimateSimilarityFromMaps(srcMap, src.length, dstMap, dst.length);
+        const result = estimateSimilarityFromMaps(srcMap, src.length, dstMap, dst.length);
 
         // Assert — must match the byte-level scorer exactly
-        expect(sut).toBe(estimateSimilarity(src, dst));
+        expect(result).toBe(estimateSimilarity(src, dst));
       });
     });
   });
@@ -464,11 +464,10 @@ describe('similarity', () => {
         // 'a\nb' (0x61, 0x0a, 0x62): LF flushes first chunk (n=2, hash=12426),
         // then 'b' alone stays as partial (n=1, hash=98)
         // Mutant 2 (flush condition → false): no in-loop flush → single entry after loop (n=3, hash≠12426)
-        const sut = buildChunkMap;
         const data = new Uint8Array([0x61, 0x0a, 0x62]);
 
         // Act
-        const result = sut(data);
+        const result = buildChunkMap(data);
 
         // Assert — kills mutant 2 (flush=false produces 1 entry with a different hash)
         expect(result.size).toBe(2);
@@ -484,11 +483,10 @@ describe('similarity', () => {
         //   then 65th byte processed: accum1=97, accum2=0 → partial flush (hash=97, n=1)
         // Mutant 3 (>= → >): n=64 does NOT trigger flush (64>64=false);
         //   n=65 triggers flush (65>64=true) with all 65 bytes → single entry, different hash
-        const sut = buildChunkMap;
         const data = new Uint8Array(65).fill(0x61);
 
         // Act
-        const result = sut(data);
+        const result = buildChunkMap(data);
 
         // Assert — kills mutant 3: mutant produces 1 entry (all 65 bytes merged into one chunk)
         expect(result.size).toBe(2);
@@ -503,11 +501,10 @@ describe('similarity', () => {
         // Single LF: flushes in-loop (n=1), then n=0 after loop
         // Mutant 6 (n>0 → true): fires even when n=0, adds entry {0: 0} to map → size becomes 2
         // Mutant 7 (n>0 → n>=0): 0>=0=true, same spurious flush → size becomes 2
-        const sut = buildChunkMap;
         const data = new Uint8Array([0x0a]);
 
         // Act
-        const result = sut(data);
+        const result = buildChunkMap(data);
 
         // Assert — kills mutants 6 and 7 (spurious zero-byte entry makes size 2)
         expect(result.size).toBe(1);
@@ -525,11 +522,10 @@ describe('similarity', () => {
         // 'hello world\n' (12 bytes, one LF chunk): srcMap === dstMap in content
         // countSrcCopied: dstCnt > 0 for each key → srcCopied = min(12, 12) = 12
         // Mutant 10 (> → <=): dstCnt <= 0 is false for positive dstCnt → srcCopied = 0 (NOT 12)
-        const sut = countSpanhashChanges;
         const content = enc.encode('hello world\n');
 
         // Act
-        const result = sut(content, content);
+        const result = countSpanhashChanges(content, content);
 
         // Assert — kills mutant 10: with <=, shared entries are skipped → srcCopied=0 ≠ 12
         expect(result.srcCopied).toBe(12);
@@ -549,12 +545,11 @@ describe('similarity', () => {
         //   for non-empty src: guard skips, goes to map path, computes srcCopied=0, literalAdded=0 (same)
         // Mutant 13 (guard → false): skips guard entirely, builds maps → same result for dst-empty
         // Mutant 15 (body → {}): guard fires but returns undefined → result is undefined, not the shape
-        const sut = countSpanhashChanges;
         const src = enc.encode('hello world\n');
         const dst = new Uint8Array(0);
 
         // Act
-        const result = sut(src, dst);
+        const result = countSpanhashChanges(src, dst);
 
         // Assert
         expect(result.srcCopied).toBe(0);
@@ -573,12 +568,11 @@ describe('similarity', () => {
         //   → still fires when src is empty → same result
         // Mutant 13 (guard → false): skips guard, builds maps, srcCopied=0, literalAdded=dstSize → same
         // Mutant 15 (body → {}): guard fires but body is empty → returns undefined → fails shape check
-        const sut = countSpanhashChanges;
         const src = new Uint8Array(0);
         const dst = enc.encode('hello world\n');
 
         // Act
-        const result = sut(src, dst);
+        const result = countSpanhashChanges(src, dst);
 
         // Assert — kills mutant 15 (empty body → undefined instead of the shape)
         expect(result.srcCopied).toBe(0);
@@ -598,12 +592,11 @@ describe('similarity', () => {
         // Mutant 19 (dstSize part → false): `srcSize===0 || false` → false for non-empty src → skips
         //   builds maps, dstMap empty, srcCopied=0, score=0 → same
         // All three appear equivalent — covered by existing test; included here for completeness
-        const sut = estimateSimilarity;
         const src = enc.encode('hello\n');
         const dst = new Uint8Array(0);
 
         // Act
-        const result = sut(src, dst);
+        const result = estimateSimilarity(src, dst);
 
         // Assert
         expect(result).toBe(0);
@@ -621,13 +614,12 @@ describe('similarity', () => {
         // Mutant 21 (guard → false): skips guard, dstMap empty, srcCopied=0, score=0 → same
         // Mutant 22 (dstSize part → false): same as 20
         // All appear equivalent; included for completeness alongside existing tests
-        const sut = estimateSimilarityFromMaps;
         const src = enc.encode('hello\n');
         const srcMap = buildChunkMap(src);
         const emptyMap = new Map<number, number>();
 
         // Act
-        const result = sut(srcMap, src.length, emptyMap, 0);
+        const result = estimateSimilarityFromMaps(srcMap, src.length, emptyMap, 0);
 
         // Assert
         expect(result).toBe(0);

@@ -15,10 +15,10 @@ describe('kindOf', () => {
         [FILE_MODE.GITLINK, 'gitlink'],
       ])('Then mode %s returns kind %s', (mode, expected) => {
         // Arrange + Act
-        const sut = kindOf(mode);
+        const result = kindOf(mode);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -36,10 +36,10 @@ describe('isSameKind', () => {
         [FILE_MODE.GITLINK, FILE_MODE.DIRECTORY, false],
       ])('Then isSameKind(%s, %s) is %s', (a, b, expected) => {
         // Arrange + Act
-        const sut = isSameKind(a, b);
+        const result = isSameKind(a, b);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -75,10 +75,10 @@ describe('isGitlink', () => {
         const mode = FILE_MODE.GITLINK;
 
         // Act
-        const sut = isGitlink(mode);
+        const result = isGitlink(mode);
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -96,10 +96,10 @@ describe('isGitlink', () => {
 
         for (const mode of nonGitlinkModes) {
           // Act
-          const sut = isGitlink(mode);
+          const result = isGitlink(mode);
 
           // Assert
-          expect(sut).toBe(false);
+          expect(result).toBe(false);
         }
       });
     });

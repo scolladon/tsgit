@@ -26,10 +26,10 @@ describe('diffTrees', () => {
     describe('When diffTrees called', () => {
       it('Then returns empty TreeDiff', () => {
         // Arrange & Act
-        const sut = diffTrees(undefined, undefined);
+        const result = diffTrees(undefined, undefined);
 
         // Assert
-        expect(sut).toEqual({ changes: [] });
+        expect(result).toEqual({ changes: [] });
       });
     });
   });
@@ -41,10 +41,10 @@ describe('diffTrees', () => {
         const newTree = tree([entry('foo', FILE_MODE.REGULAR, ID_A)]);
 
         // Act
-        const sut = diffTrees(undefined, newTree);
+        const result = diffTrees(undefined, newTree);
 
         // Assert
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           { type: 'add', newPath: 'foo', newId: ID_A, newMode: FILE_MODE.REGULAR },
         ]);
       });
@@ -58,10 +58,10 @@ describe('diffTrees', () => {
         const oldTree = tree([entry('foo', FILE_MODE.REGULAR, ID_A)]);
 
         // Act
-        const sut = diffTrees(oldTree, undefined);
+        const result = diffTrees(oldTree, undefined);
 
         // Assert
-        expect(sut.changes).toEqual([
+        expect(result.changes).toEqual([
           { type: 'delete', oldPath: 'foo', oldId: ID_A, oldMode: FILE_MODE.REGULAR },
         ]);
       });
@@ -75,10 +75,10 @@ describe('diffTrees', () => {
         const t = tree([entry('foo', FILE_MODE.REGULAR, ID_A)]);
 
         // Act
-        const sut = diffTrees(t, t);
+        const result = diffTrees(t, t);
 
         // Assert
-        expect(sut.changes).toEqual([]);
+        expect(result.changes).toEqual([]);
       });
     });
   });
@@ -156,10 +156,10 @@ describe('diffTrees', () => {
         const newTree = tree([entry(path, newMode, newId)]);
 
         // Act
-        const sut = diffTrees(oldTree, newTree);
+        const result = diffTrees(oldTree, newTree);
 
         // Assert
-        expect(sut.changes).toEqual([{ type, path, oldId, newId, oldMode, newMode }]);
+        expect(result.changes).toEqual([{ type, path, oldId, newId, oldMode, newMode }]);
       });
     });
   });
@@ -178,11 +178,11 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = diffTrees(oldTree, newTree);
+        const result = diffTrees(oldTree, newTree);
 
         // Assert — modify 'a', delete 'b', add 'c' in byte-order
-        expect(sut.changes).toHaveLength(3);
-        expect(sut.changes[0]).toEqual({
+        expect(result.changes).toHaveLength(3);
+        expect(result.changes[0]).toEqual({
           type: 'modify',
           path: 'a',
           oldId: ID_A,
@@ -190,13 +190,13 @@ describe('diffTrees', () => {
           oldMode: FILE_MODE.REGULAR,
           newMode: FILE_MODE.REGULAR,
         });
-        expect(sut.changes[1]).toEqual({
+        expect(result.changes[1]).toEqual({
           type: 'delete',
           oldPath: 'b',
           oldId: ID_B,
           oldMode: FILE_MODE.REGULAR,
         });
-        expect(sut.changes[2]).toEqual({
+        expect(result.changes[2]).toEqual({
           type: 'add',
           newPath: 'c',
           newId: ID_C,
@@ -220,10 +220,10 @@ describe('diffTrees', () => {
         ]);
 
         // Act
-        const sut = diffTrees(oldTree, newTree);
+        const result = diffTrees(oldTree, newTree);
 
         // Assert — sorted primary-key order: 'a' (delete) < 'a-' (add) < 'b' (delete) < 'c' (add)
-        const primaryKeys = sut.changes.map((c) => {
+        const primaryKeys = result.changes.map((c) => {
           if (c.type === 'add') return c.newPath;
           if (c.type === 'delete') return c.oldPath;
           if (c.type === 'rename' || c.type === 'copy') return c.newPath;
@@ -242,12 +242,12 @@ describe('diffTrees', () => {
         const newTree = tree([entry('a', FILE_MODE.DIRECTORY, ID_B)]);
 
         // Act
-        const sut = diffTrees(oldTree, newTree);
+        const result = diffTrees(oldTree, newTree);
 
         // Assert — delete of file 'a' comes before add of dir 'a' (virtual slash appended)
-        expect(sut.changes).toHaveLength(2);
-        expect(sut.changes[0]?.type).toBe('delete');
-        expect(sut.changes[1]?.type).toBe('add');
+        expect(result.changes).toHaveLength(2);
+        expect(result.changes[0]?.type).toBe('delete');
+        expect(result.changes[1]?.type).toBe('add');
       });
     });
   });

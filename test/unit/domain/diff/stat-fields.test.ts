@@ -215,10 +215,9 @@ describe('computeStatFields', () => {
         const old = enc('a  b\n');
         const next = enc('a    b\n');
         // Act
-        const sut = computeStatFields;
-        const result = sut(old, next);
-        const resultUndefined = sut(old, next, undefined);
-        const resultEmpty = sut(old, next, {});
+        const result = computeStatFields(old, next);
+        const resultUndefined = computeStatFields(old, next, undefined);
+        const resultEmpty = computeStatFields(old, next, {});
         // Assert — all three forms must produce the same counts (regression guard)
         expect(resultUndefined).toEqual(result);
         expect(resultEmpty).toEqual(result);
@@ -235,9 +234,11 @@ describe('computeStatFields', () => {
         const keyNone: LineKey = { mode: 'none', ignoreCrAtEol: false };
         const keyAll: LineKey = { mode: 'all', ignoreCrAtEol: false };
         // Act
-        const sut = computeStatFields;
-        const resultNone = sut(old, next, { lineKey: keyNone, ignoreBlankLines: true });
-        const resultAll = sut(old, next, { lineKey: keyAll, ignoreBlankLines: true });
+        const resultNone = computeStatFields(old, next, {
+          lineKey: keyNone,
+          ignoreBlankLines: true,
+        });
+        const resultAll = computeStatFields(old, next, { lineKey: keyAll, ignoreBlankLines: true });
         // Assert — active lineKey determines blank definition
         expect(resultNone).toEqual({ added: 1, deleted: 0, binary: false });
         expect(resultAll).toEqual({ added: 0, deleted: 0, binary: false });

@@ -40,10 +40,10 @@ describe('line-diff — splitLines', () => {
         const bytes = new Uint8Array(0);
 
         // Act
-        const sut = splitLines(bytes);
+        const result = splitLines(bytes);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -68,12 +68,12 @@ describe('line-diff — splitLines', () => {
         },
       ])('Then $label', ({ bytes, lines }) => {
         // Arrange + Act
-        const sut = splitLines(bytes);
+        const result = splitLines(bytes);
 
         // Assert
-        expect(sut).toHaveLength(2);
-        expect(bytesEqual(sut[0]!, lines[0]!)).toBe(true);
-        expect(bytesEqual(sut[1]!, lines[1]!)).toBe(true);
+        expect(result).toHaveLength(2);
+        expect(bytesEqual(result[0]!, lines[0]!)).toBe(true);
+        expect(bytesEqual(result[1]!, lines[1]!)).toBe(true);
       });
     });
   });
@@ -175,10 +175,10 @@ describe('line-diff — isBinary', () => {
       },
     ])('Then $label', ({ bytes, expected }) => {
       // Arrange + Act
-      const sut = isBinary(bytes);
+      const result = isBinary(bytes);
 
       // Assert
-      expect(sut).toBe(expected);
+      expect(result).toBe(expected);
     });
   });
 });
@@ -201,12 +201,12 @@ describe('line-diff — diffLines', () => {
         const bytes = enc('a\nb\nc\n');
 
         // Act
-        const sut = diffLines(bytes, bytes);
+        const result = diffLines(bytes, bytes);
 
         // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toHaveLength(1);
-        expect(sut.hunks[0]).toMatchObject({
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toHaveLength(1);
+        expect(result.hunks[0]).toMatchObject({
           kind: 'common',
           oursStart: 0,
           oursEnd: 3,
@@ -240,11 +240,11 @@ describe('line-diff — diffLines', () => {
         },
       ])('Then $label, degraded false', ({ ours, theirs, hunks }) => {
         // Arrange + Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual(hunks);
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual(hunks);
       });
     });
   });
@@ -284,11 +284,11 @@ describe('line-diff — diffLines', () => {
         },
       ])('Then $label', ({ ours, theirs, summary }) => {
         // Arrange + Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks.map(hunkSummary)).toEqual(summary);
+        expect(result.degraded).toBe(false);
+        expect(result.hunks.map(hunkSummary)).toEqual(summary);
       });
     });
   });
@@ -301,11 +301,11 @@ describe('line-diff — diffLines', () => {
         const theirs = enc('a');
 
         // Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert — different byte sequences on the single line → modify → delete + insert pair
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual([
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
         ]);
@@ -321,11 +321,11 @@ describe('line-diff — diffLines', () => {
         const theirs = enc('a\nX\nc\n');
 
         // Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks.length).toBeGreaterThan(0);
+        expect(result.degraded).toBe(false);
+        expect(result.hunks.length).toBeGreaterThan(0);
       });
     });
   });
@@ -339,11 +339,11 @@ describe('line-diff — diffLines', () => {
         const theirs = new Uint8Array(0);
 
         // Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert
-        expect(sut.degraded).toBe(true);
-        expect(sut.hunks).toEqual([
+        expect(result.degraded).toBe(true);
+        expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
         ]);
       }, 20_000);
@@ -360,11 +360,11 @@ describe('line-diff — diffLines', () => {
         const theirs = enc(Array.from({ length: N }, (_, i) => `l${i}\n`).join(''));
 
         // Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert
-        expect(sut.degraded).toBe(true);
-        expect(sut.hunks).toEqual([
+        expect(result.degraded).toBe(true);
+        expect(result.hunks).toEqual([
           {
             kind: 'theirs-only',
             oursStart: 0,
@@ -385,10 +385,10 @@ describe('line-diff — diffLines', () => {
         const bytes = enc(content);
 
         // Act
-        const sut = diffLines(bytes, bytes);
+        const result = diffLines(bytes, bytes);
 
         // Assert — identical inputs always produce a single common hunk, not degraded
-        expect(sut.degraded).toBe(false);
+        expect(result.degraded).toBe(false);
       }, 30_000);
     });
   });
@@ -402,10 +402,10 @@ describe('line-diff — diffLines', () => {
         const b = enc('b\n'.repeat(half));
 
         // Act
-        const sut = diffLines(a, b);
+        const result = diffLines(a, b);
 
         // Assert
-        expect(sut.degraded).toBe(true);
+        expect(result.degraded).toBe(true);
       });
     });
   });
@@ -421,12 +421,12 @@ describe('line-diff — diffLines', () => {
         const bytes = enc('a\n'.repeat(half));
 
         // Act
-        const sut = diffLines(bytes, bytes);
+        const result = diffLines(bytes, bytes);
 
         // Assert — the sum cap fires before any Myers computation, so the whole-file
         // fallback (ours-only + theirs-only) is used even though the content is identical.
-        expect(sut.degraded).toBe(true);
-        expect(sut.hunks).toEqual([
+        expect(result.degraded).toBe(true);
+        expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: half, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: half, oursEnd: half, theirsStart: 0, theirsEnd: half },
         ]);
@@ -444,10 +444,10 @@ describe('line-diff — diffLines', () => {
         const b = Array.from({ length: 2000 }, (_, i) => `b${i}\n`).join('');
 
         // Act
-        const sut = diffLines(enc(a), enc(b));
+        const result = diffLines(enc(a), enc(b));
 
         // Assert — should degrade due to one of the caps
-        expect(sut.degraded).toBe(true);
+        expect(result.degraded).toBe(true);
         // 90s tolerates Stryker dry-run overhead (~3x slower than vitest direct).
       }, 90_000);
     });
@@ -534,11 +534,11 @@ describe('line-diff — diffLines', () => {
         const theirs = enc('abx');
 
         // Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert — different lengths → not equal → one ours-only and one theirs-only hunk
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual([
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
         ]);
@@ -555,11 +555,11 @@ describe('line-diff — diffLines', () => {
         const bytes = enc('a\nb\nc\nd\n');
 
         // Act
-        const sut = diffLines(bytes, bytes);
+        const result = diffLines(bytes, bytes);
 
         // Assert
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual([
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
           { kind: 'common', oursStart: 0, oursEnd: 4, theirsStart: 0, theirsEnd: 4 },
         ]);
       });
@@ -578,11 +578,11 @@ describe('line-diff — diffLines', () => {
         const theirs = enc(Array.from({ length: N }, (_, i) => `z${i}\n`).join(''));
 
         // Act
-        const sut = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs);
 
         // Assert — at-budget run still completes via real Myers (not the degraded fallback)
-        expect(sut.degraded).toBe(false);
-        expect(sut.hunks).toEqual([
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: M, oursEnd: M, theirsStart: 0, theirsEnd: N },
         ]);
@@ -596,13 +596,12 @@ describe('line-diff — diffLines lineKey option', () => {
     describe('When the file has a whitespace-only changed line and a real changed line, mode all', () => {
       it('Then the ws-only line is common, real line stays as ours-only/theirs-only, raw bytes preserved', () => {
         // Arrange
-        const sut = diffLines;
         const ours = enc('  ws\nreal\n');
         const theirs = enc('    ws\nREAL\n');
         const options: LineDiffOptions = { lineKey: { mode: 'all', ignoreCrAtEol: false } };
 
         // Act
-        const result = sut(ours, theirs, options);
+        const result = diffLines(ours, theirs, options);
 
         // Assert — ws-only line (indices 0) is common; real line (indices 1) is ours-only/theirs-only
         expect(result.degraded).toBe(false);
@@ -620,14 +619,13 @@ describe('line-diff — diffLines lineKey option', () => {
     describe('When diffLines called with no options, empty options, and mode:none — all on a whitespace-different fixture', () => {
       it('Then all three call forms produce identical hunks (default regression guard)', () => {
         // Arrange
-        const sut = diffLines;
         const ours = enc('  ws\nreal\n');
         const theirs = enc('    ws\nreal\n');
 
         // Act
-        const resultNoOpts = sut(ours, theirs);
-        const resultEmptyOpts = sut(ours, theirs, {});
-        const resultNoneKey = sut(ours, theirs, {
+        const resultNoOpts = diffLines(ours, theirs);
+        const resultEmptyOpts = diffLines(ours, theirs, {});
+        const resultNoneKey = diffLines(ours, theirs, {
           lineKey: { mode: 'none', ignoreCrAtEol: false },
         });
 

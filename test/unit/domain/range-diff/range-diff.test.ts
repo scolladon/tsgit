@@ -25,12 +25,11 @@ describe('rangeDiffEntries', () => {
   describe('Given two single-commit series that add the same content under different messages, When run', () => {
     it('Then the commit is matched and reported as changed', () => {
       // Arrange
-      const sut = rangeDiffEntries;
       const old = [addFile('1', 'f.txt', 'hello\n', 'old message')];
       const next = [addFile('2', 'f.txt', 'hello\n', 'new message')];
 
       // Act
-      const result = sut(old, next, 60);
+      const result = rangeDiffEntries(old, next, 60);
 
       // Assert
       expect(result).toHaveLength(1);
@@ -43,12 +42,11 @@ describe('rangeDiffEntries', () => {
   describe('Given series that add unrelated files, When run', () => {
     it('Then the old commit is a deletion and the new commit a creation', () => {
       // Arrange
-      const sut = rangeDiffEntries;
       const old = [addFile('1', 'a.txt', 'aaa\n', 'add a')];
       const next = [addFile('2', 'b.txt', 'bbb\n', 'add b')];
 
       // Act
-      const result = sut(old, next, 60);
+      const result = rangeDiffEntries(old, next, 60);
 
       // Assert
       expect(result.map((entry) => entry.status)).toEqual(['only-old', 'only-new']);
@@ -57,11 +55,8 @@ describe('rangeDiffEntries', () => {
 
   describe('Given two empty series, When run', () => {
     it('Then there are no entries', () => {
-      // Arrange
-      const sut = rangeDiffEntries;
-
-      // Act
-      const result = sut([], [], 60);
+      // Arrange & Act
+      const result = rangeDiffEntries([], [], 60);
 
       // Assert
       expect(result).toEqual([]);

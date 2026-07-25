@@ -48,10 +48,10 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then single RenameChange replaces the pair', () => {
         // Arrange
-        const sut = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
+        const input = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
 
         // Act
-        const result = detectRenames(sut);
+        const result = detectRenames(input);
 
         // Assert
         expect(result.changes).toEqual([
@@ -80,14 +80,14 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then no fold — kept as add+delete', () => {
         // Arrange — both deletes share the same id; add cannot pick one unambiguously
-        const sut = diff([
+        const input = diff([
           deleteChange('a.txt', ID_A),
           deleteChange('b.txt', ID_A),
           addChange('c.txt', ID_A),
         ]);
 
         // Act
-        const result = detectRenames(sut);
+        const result = detectRenames(input);
 
         // Assert — no rename emitted; order preserved by byte-order on primary path
         expect(result.changes).toEqual([
@@ -103,13 +103,13 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then same diff returned', () => {
         // Arrange — add and delete carry different ids
-        const sut = diff([deleteChange('a.txt', ID_A), addChange('b.txt', ID_B)]);
+        const input = diff([deleteChange('a.txt', ID_A), addChange('b.txt', ID_B)]);
 
         // Act
-        const result = detectRenames(sut);
+        const result = detectRenames(input);
 
         // Assert
-        expect(result.changes).toEqual(sut.changes);
+        expect(result.changes).toEqual(input.changes);
       });
     });
   });
@@ -118,7 +118,7 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then rename detected', () => {
         // Arrange — 2 × 2 = 4 ≤ limit 4
-        const sut = diff([
+        const input = diff([
           deleteChange('a', ID_A),
           deleteChange('b', ID_B),
           addChange('c', ID_A),
@@ -126,7 +126,7 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(sut, { limit: 4 });
+        const result = detectRenames(input, { limit: 4 });
 
         // Assert — two renames
         const renames = result.changes.filter((c) => c.type === 'rename');
@@ -139,7 +139,7 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then renames still detected', () => {
         // Arrange — 1 add x 3 deletes = 3 <= 4
-        const sut = diff([
+        const input = diff([
           deleteChange('a', ID_A),
           deleteChange('b', ID_B),
           deleteChange('c', ID_C),
@@ -147,7 +147,7 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(sut, { limit: 4 });
+        const result = detectRenames(input, { limit: 4 });
 
         // Assert — product 3 < limit 4, rename detection proceeds
         const renames = result.changes.filter((c) => c.type === 'rename');
@@ -160,7 +160,7 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then diff returned unchanged', () => {
         // Arrange — 2 × 2 = 4 > limit 3
-        const sut = diff([
+        const input = diff([
           deleteChange('a', ID_A),
           deleteChange('b', ID_B),
           addChange('c', ID_A),
@@ -168,10 +168,10 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(sut, { limit: 3 });
+        const result = detectRenames(input, { limit: 3 });
 
         // Assert — unchanged
-        expect(result).toBe(sut);
+        expect(result).toBe(input);
       });
     });
   });
@@ -180,10 +180,14 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then that id is skipped (ambiguity)', () => {
         // Arrange — cap at 2: two deletes of ID_A are accepted, but an add pointing to ID_A has two candidates
-        const sut = diff([deleteChange('a', ID_A), deleteChange('b', ID_A), addChange('c', ID_A)]);
+        const input = diff([
+          deleteChange('a', ID_A),
+          deleteChange('b', ID_A),
+          addChange('c', ID_A),
+        ]);
 
         // Act
-        const result = detectRenames(sut, { maxSameIdDeletes: 2 });
+        const result = detectRenames(input, { maxSameIdDeletes: 2 });
 
         // Assert — no renames (add has 2 candidates)
         expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
@@ -195,7 +199,7 @@ describe('detectRenames', () => {
     describe('When detectRenames called', () => {
       it('Then that id is pruned and adds remain as add+delete', () => {
         // Arrange — cap at 2: three deletes of ID_A exceed the cap and get pruned from the map
-        const sut = diff([
+        const input = diff([
           deleteChange('a', ID_A),
           deleteChange('b', ID_A),
           deleteChange('c', ID_A),
@@ -203,7 +207,7 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(sut, { maxSameIdDeletes: 2, limit: 1000 });
+        const result = detectRenames(input, { maxSameIdDeletes: 2, limit: 1000 });
 
         // Assert — add is NOT folded (pruned key)
         expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
@@ -217,7 +221,7 @@ describe('detectRenames', () => {
     describe('When compared to byte-order invariant', () => {
       it('Then sorted by primary path key per variant', () => {
         // Arrange — add 'z' at end, rename will take primary key = newPath = 'y'; other change 'x' sorts before.
-        const sut = diff([
+        const input = diff([
           {
             type: 'modify',
             path: 'x' as FilePath,
@@ -232,7 +236,7 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(sut);
+        const result = detectRenames(input);
 
         // Assert — primary-key sort: 'x' (modify) < 'y' (rename newPath) < 'z' (add newPath)
         const keys = result.changes.map((c) => {
@@ -251,10 +255,10 @@ describe('detectRenames', () => {
       it('Then rename found (at boundary)', () => {
         // Arrange — list.length (1) <= maxSameIdDeletes (1) so the key is kept in the map.
         // With the mutation > → >=, list.length (1) >= maxSameIdDeletes (1) would prune → no rename.
-        const sut = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
+        const input = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
 
         // Act
-        const result = detectRenames(sut, { maxSameIdDeletes: 1 });
+        const result = detectRenames(input, { maxSameIdDeletes: 1 });
 
         // Assert
         expect(result.changes).toEqual([
@@ -281,10 +285,10 @@ describe('detectRenames', () => {
         // prune and folds with the add into a rename. The real predicate
         // `1 <= 0 === false` prunes the key, leaving add+delete unfolded.
         // Arrange
-        const sut = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
+        const input = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
 
         // Act
-        const result = detectRenames(sut, { maxSameIdDeletes: 0 });
+        const result = detectRenames(input, { maxSameIdDeletes: 0 });
 
         // Assert — no rename; the pair stays as separate add + delete.
         expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
@@ -300,7 +304,7 @@ describe('detectRenames', () => {
     describe('When sampled', () => {
       it('Then it holds', () => {
         // Arrange
-        const sut = diff([
+        const input = diff([
           deleteChange('a.txt', ID_A),
           deleteChange('other.txt', ID_B),
           addChange('b.txt', ID_A),
@@ -308,7 +312,7 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const once = detectRenames(sut);
+        const once = detectRenames(input);
         const twice = detectRenames(once);
 
         // Assert
@@ -321,7 +325,7 @@ describe('detectRenames', () => {
     describe('When sampled', () => {
       it('Then it holds', () => {
         // Arrange
-        const sut = diff([
+        const input = diff([
           deleteChange('a.txt', ID_A),
           deleteChange('b.txt', ID_B),
           addChange('c.txt', ID_A),
@@ -329,10 +333,10 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(sut);
+        const result = detectRenames(input);
 
         // Assert — all paths in the output must come from input paths
-        const inputPaths = extractPaths(sut.changes);
+        const inputPaths = extractPaths(input.changes);
         const outputPaths = extractPaths(result.changes);
         for (const p of outputPaths) {
           expect(inputPaths.has(p)).toBe(true);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
+import type { LineKey } from '../../../../src/domain/diff/whitespace.js';
 import {
   isBlankLine,
   lineKeyIsActive,
@@ -50,11 +50,9 @@ describe('normalizeLine', () => {
 
     describe('When leading whitespace amount differs (presence irrelevant under all)', () => {
       it('Then drops leading space so x and "  x" are equal keys', () => {
-        // Arrange
-        const sut = normalizeLine;
-        // Act
-        const a = sut(line('x\n'), key);
-        const b = sut(line('  x\n'), key);
+        // Arrange & Act
+        const a = normalizeLine(line('x\n'), key);
+        const b = normalizeLine(line('  x\n'), key);
         // Assert
         expect(a).toEqual(b);
       });
@@ -159,11 +157,9 @@ describe('normalizeLine', () => {
 
     describe('When trailing whitespace is added (EOL1)', () => {
       it('Then drops trailing run so keys are equal', () => {
-        // Arrange
-        const sut = normalizeLine;
-        // Act
-        const a = sut(line('a\n'), key);
-        const b = sut(line('a   \n'), key);
+        // Arrange & Act
+        const a = normalizeLine(line('a\n'), key);
+        const b = normalizeLine(line('a   \n'), key);
         // Assert
         expect(a).toEqual(b);
       });
@@ -225,11 +221,9 @@ describe('normalizeLine', () => {
 
     describe('When a trailing CR is present before the LF terminator', () => {
       it('Then drops the trailing CR as EOL whitespace (CR1 under at-eol)', () => {
-        // Arrange
-        const sut = normalizeLine;
-        // Act
-        const withCr = sut(line('a\r\n'), key);
-        const withoutCr = sut(line('a\n'), key);
+        // Arrange & Act
+        const withCr = normalizeLine(line('a\r\n'), key);
+        const withoutCr = normalizeLine(line('a\n'), key);
         // Assert
         expect(withCr).toEqual(withoutCr);
       });
@@ -242,10 +236,9 @@ describe('normalizeLine', () => {
     describe('When whitespace differs', () => {
       it('Then returns the line unchanged', () => {
         // Arrange
-        const sut = normalizeLine;
         const input = line('a b\n');
         // Act
-        const result = sut(input, key);
+        const result = normalizeLine(input, key);
         // Assert
         expect(result).toEqual(input);
       });
@@ -254,10 +247,9 @@ describe('normalizeLine', () => {
     describe('When a trailing CR precedes the LF terminator', () => {
       it('Then the CR is preserved (none mode never drops the CR)', () => {
         // Arrange — without ignoreCrAtEol the CR is significant content
-        const sut = normalizeLine;
         const input = line('a\r\n');
         // Act
-        const result = sut(input, key);
+        const result = normalizeLine(input, key);
         // Assert
         expect(result).toEqual(enc('a\r\n'));
       });
@@ -269,11 +261,9 @@ describe('normalizeLine', () => {
 
     describe('When a trailing CR is present before the LF (CR1)', () => {
       it('Then drops the trailing CR', () => {
-        // Arrange
-        const sut = normalizeLine;
-        // Act
-        const withCr = sut(line('a\r\n'), key);
-        const withoutCr = sut(line('a\n'), key);
+        // Arrange & Act
+        const withCr = normalizeLine(line('a\r\n'), key);
+        const withoutCr = normalizeLine(line('a\n'), key);
         // Assert
         expect(withCr).toEqual(withoutCr);
       });
@@ -281,11 +271,9 @@ describe('normalizeLine', () => {
 
     describe('When a CR appears mid-line (not at EOL)', () => {
       it('Then the mid-line CR is preserved (CR-narrow)', () => {
-        // Arrange
-        const sut = normalizeLine;
-        // Act
-        const a = sut(line('a\rb\n'), key);
-        const b = sut(line('ab\n'), key);
+        // Arrange & Act
+        const a = normalizeLine(line('a\rb\n'), key);
+        const b = normalizeLine(line('ab\n'), key);
         // Assert
         expect(a).not.toEqual(b);
       });
@@ -326,11 +314,9 @@ describe('normalizeLine', () => {
 
     describe('When trailing whitespace is in an unterminated line', () => {
       it('Then drops trailing whitespace before end of content (D2 support)', () => {
-        // Arrange
-        const sut = normalizeLine;
-        // Act
-        const a = sut(enc('a'), key);
-        const b = sut(enc('a   '), key);
+        // Arrange & Act
+        const a = normalizeLine(enc('a'), key);
+        const b = normalizeLine(enc('a   '), key);
         // Assert
         expect(a).toEqual(b);
       });
@@ -422,10 +408,8 @@ describe('linesEqualUnder', () => {
 
     describe('When only trailing whitespace differs (EOL1)', () => {
       it('Then returns true', () => {
-        // Arrange
-        const sut = linesEqualUnder;
-        // Act
-        const result = sut(line('a\n'), line('a   \n'), key);
+        // Arrange & Act
+        const result = linesEqualUnder(line('a\n'), line('a   \n'), key);
         // Assert
         expect(result).toBe(true);
       });
@@ -433,10 +417,8 @@ describe('linesEqualUnder', () => {
 
     describe('When internal whitespace also differs (W3)', () => {
       it('Then returns false', () => {
-        // Arrange
-        const sut = linesEqualUnder;
-        // Act
-        const result = sut(line('\tbeta gamma\n'), line('  beta  gamma   \n'), key);
+        // Arrange & Act
+        const result = linesEqualUnder(line('\tbeta gamma\n'), line('  beta  gamma   \n'), key);
         // Assert
         expect(result).toBe(false);
       });
@@ -448,10 +430,8 @@ describe('linesEqualUnder', () => {
 
     describe('When trailing whitespace differs', () => {
       it('Then returns false (exact compare)', () => {
-        // Arrange
-        const sut = linesEqualUnder;
-        // Act
-        const result = sut(line('a\n'), line('a   \n'), key);
+        // Arrange & Act
+        const result = linesEqualUnder(line('a\n'), line('a   \n'), key);
         // Assert
         expect(result).toBe(false);
       });
@@ -488,10 +468,8 @@ describe('resolveLineKey', () => {
 
   describe('Given ignoreCrAtEol is true, When resolveLineKey runs', () => {
     it('Then ignoreCrAtEol is true on the key', () => {
-      // Arrange
-      const sut = resolveLineKey;
-      // Act
-      const result = sut({ ignoreCrAtEol: true });
+      // Arrange & Act
+      const result = resolveLineKey({ ignoreCrAtEol: true });
       // Assert
       expect(result.ignoreCrAtEol).toBe(true);
     });
@@ -499,10 +477,8 @@ describe('resolveLineKey', () => {
 
   describe('Given ignoreCrAtEol is absent, When resolveLineKey runs', () => {
     it('Then ignoreCrAtEol is false on the key', () => {
-      // Arrange
-      const sut = resolveLineKey;
-      // Act
-      const result = sut({});
+      // Arrange & Act
+      const result = resolveLineKey({});
       // Assert
       expect(result.ignoreCrAtEol).toBe(false);
     });
@@ -510,10 +486,8 @@ describe('resolveLineKey', () => {
 
   describe('Given ignoreBlankLines is set, When resolveLineKey runs', () => {
     it('Then ignoreBlankLines does NOT appear on the returned LineKey', () => {
-      // Arrange
-      const sut = resolveLineKey;
-      // Act
-      const result = sut({ ignoreBlankLines: true });
+      // Arrange & Act
+      const result = resolveLineKey({ ignoreBlankLines: true });
       // Assert
       // LineKey only has mode and ignoreCrAtEol
       expect(Object.keys(result).sort()).toEqual(['ignoreCrAtEol', 'mode']);
@@ -522,31 +496,38 @@ describe('resolveLineKey', () => {
 });
 
 describe('lineKeyIsActive', () => {
-  const modes: ReadonlyArray<WhitespaceMode> = ['all', 'change', 'at-eol', 'none'];
-
-  for (const mode of modes) {
-    describe(`Given mode '${mode}' and ignoreCrAtEol false, When lineKeyIsActive runs`, () => {
-      it(`Then ${mode !== 'none' ? 'returns true' : 'returns false'}`, () => {
+  describe('Given a lineKey mode with ignoreCrAtEol false', () => {
+    describe('When lineKeyIsActive runs', () => {
+      it.each([
+        { mode: 'all' as const, expected: true, label: "mode 'all' returns true" },
+        { mode: 'change' as const, expected: true, label: "mode 'change' returns true" },
+        { mode: 'at-eol' as const, expected: true, label: "mode 'at-eol' returns true" },
+        { mode: 'none' as const, expected: false, label: "mode 'none' returns false" },
+      ])('Then $label', ({ mode, expected }) => {
         // Arrange
-        const sut = lineKeyIsActive;
         const key: LineKey = { mode, ignoreCrAtEol: false };
+
         // Act
-        const result = sut(key);
+        const result = lineKeyIsActive(key);
+
         // Assert
-        expect(result).toBe(mode !== 'none');
+        expect(result).toBe(expected);
       });
     });
-  }
+  });
 
-  describe("Given mode 'none' and ignoreCrAtEol true, When lineKeyIsActive runs", () => {
-    it('Then returns true because ignoreCrAtEol alone activates the key', () => {
-      // Arrange
-      const sut = lineKeyIsActive;
-      const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
-      // Act
-      const result = sut(key);
-      // Assert
-      expect(result).toBe(true);
+  describe("Given mode 'none' and ignoreCrAtEol true", () => {
+    describe('When lineKeyIsActive runs', () => {
+      it('Then returns true because ignoreCrAtEol alone activates the key', () => {
+        // Arrange
+        const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
+
+        // Act
+        const result = lineKeyIsActive(key);
+
+        // Assert
+        expect(result).toBe(true);
+      });
     });
   });
 });
@@ -555,10 +536,9 @@ describe('NONE_KEY', () => {
   describe('Given the constant, When normalizeLine is called on a line with a trailing CR', () => {
     it('Then the CR is preserved (ignoreCrAtEol is false)', () => {
       // Arrange
-      const sut = normalizeLine;
       const input = line('a\r\n');
       // Act
-      const result = sut(input, NONE_KEY);
+      const result = normalizeLine(input, NONE_KEY);
       // Assert
       expect(result).toEqual(enc('a\r\n'));
     });
@@ -571,10 +551,8 @@ describe('isBlankLine', () => {
 
     describe('When the line normalizes to empty', () => {
       it('Then a spaces-only line is blank', () => {
-        // Arrange
-        const sut = isBlankLine;
-        // Act
-        const result = sut(line('   \n'), key);
+        // Arrange & Act
+        const result = isBlankLine(line('   \n'), key);
         // Assert
         expect(result).toBe(true);
       });
@@ -582,10 +560,8 @@ describe('isBlankLine', () => {
 
     describe('When the line has a single non-whitespace char', () => {
       it('Then it is not blank (content length is 1, not 0)', () => {
-        // Arrange
-        const sut = isBlankLine;
-        // Act
-        const result = sut(line('a\n'), key);
+        // Arrange & Act
+        const result = isBlankLine(line('a\n'), key);
         // Assert
         expect(result).toBe(false);
       });

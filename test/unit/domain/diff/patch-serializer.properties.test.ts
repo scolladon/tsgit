@@ -214,6 +214,34 @@ describe('patch-serializer (properties)', () => {
           { numRuns: 100 },
         );
       });
+
+      it('Then totals across hunks match diffLines edit counts', () => {
+        fc.assert(
+          fc.property(arbTextStream(), arbTextStream(), (oldText, newText) => {
+            // Arrange — ours = old, theirs = new (matches renderModifyBlock's mapping)
+            const oldBytes = utf8.encode(oldText);
+            const newBytes = utf8.encode(newText);
+            const ld = diffLines(oldBytes, newBytes);
+            let expectedDeletes = 0;
+            let expectedInserts = 0;
+            for (const hunk of ld.hunks) {
+              if (hunk.kind === 'ours-only') expectedDeletes += hunk.oursEnd - hunk.oursStart;
+              if (hunk.kind === 'theirs-only') expectedInserts += hunk.theirsEnd - hunk.theirsStart;
+            }
+
+            // Act
+            const text = renderPatch([modify(oldText, newText)]);
+            const hunks = parsePatch(text);
+            const totalDeletes = hunks.reduce((sum, h) => sum + h.body.deleteLines, 0);
+            const totalInserts = hunks.reduce((sum, h) => sum + h.body.insertLines, 0);
+
+            // Assert
+            expect(totalDeletes).toBe(expectedDeletes);
+            expect(totalInserts).toBe(expectedInserts);
+          }),
+          { numRuns: 100 },
+        );
+      });
     });
   });
 
@@ -313,38 +341,6 @@ describe('patch-serializer (properties)', () => {
                 expect(block.some((line) => line.startsWith('@@ '))).toBe(false);
               }
             }
-          }),
-          { numRuns: 100 },
-        );
-      });
-    });
-  });
-
-  describe('Given two arbitrary ASCII text streams', () => {
-    describe('When renderPatch emits a modify block', () => {
-      it('Then totals across hunks match diffLines edit counts', () => {
-        fc.assert(
-          fc.property(arbTextStream(), arbTextStream(), (oldText, newText) => {
-            // Arrange — ours = old, theirs = new (matches renderModifyBlock's mapping)
-            const oldBytes = utf8.encode(oldText);
-            const newBytes = utf8.encode(newText);
-            const ld = diffLines(oldBytes, newBytes);
-            let expectedDeletes = 0;
-            let expectedInserts = 0;
-            for (const hunk of ld.hunks) {
-              if (hunk.kind === 'ours-only') expectedDeletes += hunk.oursEnd - hunk.oursStart;
-              if (hunk.kind === 'theirs-only') expectedInserts += hunk.theirsEnd - hunk.theirsStart;
-            }
-
-            // Act
-            const text = renderPatch([modify(oldText, newText)]);
-            const hunks = parsePatch(text);
-            const totalDeletes = hunks.reduce((sum, h) => sum + h.body.deleteLines, 0);
-            const totalInserts = hunks.reduce((sum, h) => sum + h.body.insertLines, 0);
-
-            // Assert
-            expect(totalDeletes).toBe(expectedDeletes);
-            expect(totalInserts).toBe(expectedInserts);
           }),
           { numRuns: 100 },
         );

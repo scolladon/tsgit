@@ -7,10 +7,10 @@ describe('comparePaths', () => {
     describe('When comparePaths called', () => {
       it('Then returns 0', () => {
         // Arrange & Act
-        const sut = comparePaths('foo' as FilePath, 'foo' as FilePath);
+        const result = comparePaths('foo' as FilePath, 'foo' as FilePath);
 
         // Assert
-        expect(sut).toBe(0);
+        expect(result).toBe(0);
       });
     });
   });
@@ -19,10 +19,10 @@ describe('comparePaths', () => {
     describe('When comparePaths called', () => {
       it('Then returns negative', () => {
         // Arrange & Act
-        const sut = comparePaths('a' as FilePath, 'b' as FilePath);
+        const result = comparePaths('a' as FilePath, 'b' as FilePath);
 
         // Assert
-        expect(sut).toBeLessThan(0);
+        expect(result).toBeLessThan(0);
       });
     });
   });
@@ -31,10 +31,10 @@ describe('comparePaths', () => {
     describe('When comparePaths called', () => {
       it('Then returns positive', () => {
         // Arrange & Act
-        const sut = comparePaths('b' as FilePath, 'a' as FilePath);
+        const result = comparePaths('b' as FilePath, 'a' as FilePath);
 
         // Assert
-        expect(sut).toBeGreaterThan(0);
+        expect(result).toBeGreaterThan(0);
       });
     });
   });
@@ -44,10 +44,10 @@ describe('comparePaths', () => {
       it('Then compares by byte order not codepoint', () => {
         // Arrange & Act
         // U+00E9 (é) encodes as 0xC3 0xA9 in UTF-8, which is > 0x7A ('z')
-        const sut = comparePaths('z' as FilePath, 'é' as FilePath);
+        const result = comparePaths('z' as FilePath, 'é' as FilePath);
 
         // Assert
-        expect(sut).toBeLessThan(0);
+        expect(result).toBeLessThan(0);
       });
     });
   });
@@ -65,10 +65,10 @@ describe('sortByPath', () => {
         ];
 
         // Act
-        const sut = sortByPath(items, (i) => i.path);
+        const result = sortByPath(items, (i) => i.path);
 
         // Assert
-        expect(sut.map((i) => i.name)).toEqual(['a', 'b', 'c']);
+        expect(result.map((i) => i.name)).toEqual(['a', 'b', 'c']);
       });
     });
   });
@@ -77,10 +77,10 @@ describe('sortByPath', () => {
     describe('When sortByPath called', () => {
       it('Then returns empty array', () => {
         // Arrange & Act
-        const sut = sortByPath([], (i: { path: FilePath }) => i.path);
+        const result = sortByPath([], (i: { path: FilePath }) => i.path);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
