@@ -76,20 +76,31 @@ Commit message (via commitlint):
 
 ### Benchmarking
 
-`npm run test:bench` runs every scenario in `test/bench/`. The small
-scenarios build their fixtures inline; the **scaled** scenarios
-(`*-scale.bench.ts`) read a cached fixture instead.
+`npm run test:bench` runs every scenario in `test/bench/`. Hot-path
+operations (`log`, `status`, `pack-read`, `blame`, `describe`, `name-rev`)
+each run at three **packed, cached** size tiers — small (~50 commits / ~200
+blobs), medium (5k / 20k), and large (50k / 200k) — via the shared
+`tieredScenario` helper, so tiers differ only in size, not storage shape.
+Non-hot operations (`show`, `diff`, `cat-file`, `rev-parse`, `commit`, `add`,
+`merge`) get a medium-only bench. A dedicated `loose-read.bench.ts`
+micro-scenario keeps the loose-object read path covered outside the tiering.
 
 - **Pre-warm the cache first:** `npm run bench:fixture -- medium` builds a
   5k-commit / 20k-blob repo under `~/.cache/tsgit-bench` (one-time, ~5 s;
-  later runs are cache hits). The scaled benches `skipIf` the fixture is
-  absent, so a cold run without `git` on `PATH` skips cleanly.
-- **Large fixture:** set `TSGIT_BENCH_LARGE=1` to point the scaled benches at
-  the 50k-commit / 200k-blob repo (`npm run bench:fixture -- large` first).
-  Opt-in only — it never runs in CI.
+  later runs are cache hits). The tiered benches skip cleanly when a fixture
+  is unavailable, so a cold run without `git` on `PATH` skips cleanly. The
+  small tier is cheap enough (~50 commits) to generate inline on first run —
+  `bench:fixture` does not take a `small` argument.
+- **Large fixture:** set `TSGIT_BENCH_LARGE=1` to also run the large tier of
+  every hot-path bench, pointed at the 50k-commit / 200k-blob repo
+  (`npm run bench:fixture -- large` first). Opt-in only — it never runs in
+  CI.
 - **Profiling:** `npm run profile` captures V8 CPU profiles for the `log`,
   `status`, and `pack-read` hot paths against the medium fixture, writing
   digests to `reports/profiles/` (git-ignored).
+- **CI regression gate:** `tooling/bench-check.ts` is hot-path-scoped — it
+  compares only the operations listed in `docs/perf/hot-paths.json`, across
+  every CI-run tier (small + medium; large is env-gated off in CI).
 
 ### Cross-adapter parity (Phase 19.5)
 

@@ -1,7 +1,9 @@
 /**
- * Scaled bench: `repo.describe()` on a deep history with an annotated tag ten
+ * Tiered bench: `repo.describe()` on a deep history with an annotated tag ten
  * commits below HEAD — pins the early-termination win (O(distance) traversal
- * instead of O(history)). tsgit-only: isomorphic-git has no describe.
+ * instead of O(history)) at each fixture tier. tsgit-only: isomorphic-git has
+ * no describe. describe early-terminates at `HEAD~10`, so cost stays
+ * O(distance) at every tier (small's 50 commits comfortably clears 10).
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -9,7 +11,7 @@ import { promisify } from 'node:util';
 import { afterAll } from 'vitest';
 
 import { openRepository } from '../../src/index.node.js';
-import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
+import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,10 +38,8 @@ const ensureNearTag = async (cwd: string): Promise<void> => {
   );
 };
 
-const ctx = await resolveScaledContext();
-
-scaledScenario(
-  ctx,
+await tieredScenario(
+  MULTI_TIERS,
   'When describe() resolves a near tag, Then the walk stops at the covered path',
   async (fixture) => {
     await ensureNearTag(fixture.cwd);

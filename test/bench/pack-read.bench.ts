@@ -1,11 +1,8 @@
 /**
- * Scaled bench: `readBlob` against the medium fixture's pack (20k objects in
- * one pack — or the large 200k-object pack under `TSGIT_BENCH_LARGE`).
- *
- * Cold reads a fresh repository per call, paying full pack-index fanout +
- * inflate cost; warm reuses one repository so the LRU delta-base cache hits.
- * A single representative blob suffices — the cold path already exercises the
- * whole pack reader, so distinct ids would not change what is measured.
+ * Tiered bench: `readBlob()` reading a packed blob at each fixture tier —
+ * cold (fresh repository per call, no LRU hits) and warm (one repository,
+ * primed once). A large-only spread scenario (env-gated) additionally reads
+ * several objects spanning many pack-index fanout buckets in one call.
  */
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -17,13 +14,12 @@ import { afterAll } from 'vitest';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
+import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
 const execFileAsync = promisify(execFile);
 
-const ctx = await resolveScaledContext();
-
-scaledScenario(
-  ctx,
+await tieredScenario(
+  MULTI_TIERS,
   'When readBlob() reads from a cold pack, Then compare tsgit against isomorphic-git',
   (fixture) => {
     const blobId = fixture.firstBlobId as ObjectId;
@@ -44,8 +40,8 @@ scaledScenario(
   },
 );
 
-scaledScenario(
-  ctx,
+await tieredScenario(
+  MULTI_TIERS,
   'When readBlob() reads from a warm pack, Then compare tsgit against isomorphic-git',
   async (fixture) => {
     const repo = await openRepository({ cwd: fixture.cwd });
@@ -99,8 +95,9 @@ const resolveSpreadIds = async (cwd: string): Promise<ReadonlyArray<ObjectId>> =
 // (env unset) never registers it and the ~500 MB large fixture never
 // generates there.
 if (process.env.TSGIT_BENCH_LARGE !== undefined) {
+  const spreadCtx = await resolveScaledContext(MULTI_TIERS.large);
   scaledScenario(
-    ctx,
+    spreadCtx,
     'When readBlob() reads a spread of objects across a cold large pack, Then measure tsgit',
     async (fixture) => {
       const spread = await resolveSpreadIds(fixture.cwd);

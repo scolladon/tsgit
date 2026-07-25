@@ -514,7 +514,9 @@ jobs:
     # Informative only — a flagged regression is a prompt to look, never a
     # merge gate. Same-runner benchmarking measures too much noise to block on.
     # Compares per-scenario median-ms, asymmetric (improvements never flag),
-    # tsgit-scoped (isomorphic-git rows excluded), threshold N ≈ 10%.
+    # hot-path-scoped (all CI-run tiers) — only the operations listed in
+    # docs/perf/hot-paths.json, across every tier this job runs (small +
+    # medium; large stays env-gated off), threshold N ≈ 10%.
     continue-on-error: true
     permissions:
       pull-requests: write

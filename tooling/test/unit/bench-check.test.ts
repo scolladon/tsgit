@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
-
-import type { SnapshotEntry } from '../../bench-to-snapshot.js';
 import {
   compareToBaseline,
   DEFAULT_THRESHOLD_PCT,
   escapeCell,
   gatedEntries,
+  hotGatedEntries,
+  operationOf,
+  parseHotOperations,
   resolveThresholdPct,
 } from '../../bench-check.js';
+import type { SnapshotEntry } from '../../bench-to-snapshot.js';
 
 const entry = (name: string, value: number): SnapshotEntry => ({ name, unit: 'ms', value });
 
@@ -376,6 +378,213 @@ describe('escapeCell', () => {
 
         // Assert — a two-backtick, space-padded fence keeps the embedded backtick inert
         expect(result).toBe('`` a`b ``');
+      });
+    });
+  });
+});
+
+describe('operationOf', () => {
+  describe('Given a key from a hot tiered bench file', () => {
+    describe('When operationOf runs', () => {
+      it('Then it extracts the log operation from the bench basename', () => {
+        // Arrange
+        const sut = operationOf;
+
+        // Act
+        const result = sut('test/bench/log.bench.ts > When log() walks every commit > tsgit');
+
+        // Assert
+        expect(result).toBe('log');
+      });
+
+      it('Then it extracts the pack-read operation from a hyphenated basename', () => {
+        // Arrange
+        const sut = operationOf;
+
+        // Act
+        const result = sut(
+          'test/bench/pack-read.bench.ts > When readBlob() reads from a cold pack > tsgit',
+        );
+
+        // Assert
+        expect(result).toBe('pack-read');
+      });
+    });
+  });
+
+  describe('Given a key whose leading segment does not end in .bench.ts', () => {
+    describe('When operationOf runs', () => {
+      it('Then it returns an empty string', () => {
+        // Arrange
+        const sut = operationOf;
+
+        // Act
+        const result = sut('weird > tsgit');
+
+        // Assert
+        expect(result).toBe('');
+      });
+    });
+  });
+});
+
+describe('hotGatedEntries', () => {
+  const hot = ['log', 'pack-read'];
+
+  describe('Given a tsgit entry whose operation is in the hot list', () => {
+    describe('When hotGatedEntries filters', () => {
+      it('Then the entry survives', () => {
+        // Arrange
+        const entries = [entry('test/bench/log.bench.ts > Given a repo > tsgit', 10)];
+        const sut = hotGatedEntries;
+
+        // Act
+        const result = sut(entries, hot);
+
+        // Assert
+        expect(result).toEqual(entries);
+      });
+    });
+  });
+
+  describe('Given tsgit entries whose operation is not in the hot list', () => {
+    describe('When hotGatedEntries filters', () => {
+      it('Then the entries are dropped', () => {
+        // Arrange
+        const entries = [
+          entry('test/bench/show.bench.ts > Given a repo > tsgit', 10),
+          entry('test/bench/status-dirty.bench.ts > Given a dirty tree > tsgit', 10),
+        ];
+        const sut = hotGatedEntries;
+
+        // Act
+        const result = sut(entries, hot);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an isomorphic-git entry whose operation is in the hot list', () => {
+    describe('When hotGatedEntries filters', () => {
+      it('Then the entry is dropped by the tsgit-suffix guard before the hot filter', () => {
+        // Arrange
+        const entries = [
+          entry('test/bench/pack-read.bench.ts > Given a repo > isomorphic-git', 10),
+        ];
+        const sut = hotGatedEntries;
+
+        // Act
+        const result = sut(entries, hot);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('parseHotOperations', () => {
+  describe('Given a valid registry object', () => {
+    describe('When parseHotOperations runs', () => {
+      it('Then it returns the hotOperations array', () => {
+        // Arrange
+        const sut = parseHotOperations;
+
+        // Act
+        const result = sut({ hotOperations: ['log', 'status'] });
+
+        // Assert
+        expect(result).toEqual(['log', 'status']);
+      });
+    });
+  });
+
+  describe('Given a registry object missing hotOperations', () => {
+    describe('When parseHotOperations runs', () => {
+      it('Then it throws with the specific missing-field message', () => {
+        // Arrange
+        const sut = parseHotOperations;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut({});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe(
+          'hot-paths.json: "hotOperations" must be an array of operation strings',
+        );
+      });
+    });
+  });
+
+  describe('Given hotOperations that is not an array', () => {
+    describe('When parseHotOperations runs', () => {
+      it('Then it throws with the specific type message', () => {
+        // Arrange
+        const sut = parseHotOperations;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut({ hotOperations: 'log' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe(
+          'hot-paths.json: "hotOperations" must be an array of operation strings',
+        );
+      });
+    });
+  });
+
+  describe('Given hotOperations containing a non-string element', () => {
+    describe('When parseHotOperations runs', () => {
+      it('Then it throws with the specific type message', () => {
+        // Arrange
+        const sut = parseHotOperations;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut({ hotOperations: ['log', 42] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe(
+          'hot-paths.json: "hotOperations" must be an array of operation strings',
+        );
+      });
+    });
+  });
+
+  describe('Given a null registry (a literal null JSON file)', () => {
+    describe('When parseHotOperations runs', () => {
+      it('Then it throws with the specific type message', () => {
+        // Arrange
+        const sut = parseHotOperations;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut(null);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe(
+          'hot-paths.json: "hotOperations" must be an array of operation strings',
+        );
       });
     });
   });
