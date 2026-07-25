@@ -254,12 +254,15 @@ describe('push — config + refspec guards', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
+
+        // Act
         let caught: unknown;
         try {
           await push(ctx);
         } catch (err) {
           caught = err;
         }
+
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data as { code: string };
@@ -544,13 +547,13 @@ describe('push — happy path', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport });
+        const result = await push({ ...ctx, transport });
 
         // Assert
-        expect(sut.remote).toBe('origin');
-        expect(sut.url).toBe('https://example.com/r.git');
-        expect(sut.pushedRefs).toHaveLength(1);
-        expect(sut.pushedRefs[0]).toMatchObject({
+        expect(result.remote).toBe('origin');
+        expect(result.url).toBe('https://example.com/r.git');
+        expect(result.pushedRefs).toHaveLength(1);
+        expect(result.pushedRefs[0]).toMatchObject({
           name: 'refs/heads/main',
           status: 'ok',
           newId: tip.id,
@@ -575,10 +578,10 @@ describe('push — happy path', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport });
+        const result = await push({ ...ctx, transport });
 
         // Assert
-        expect(sut.pushedRefs).toEqual([]);
+        expect(result.pushedRefs).toEqual([]);
         // Exactly one HTTP call — the discovery GET. No POST.
         expect(requests).toHaveLength(1);
         expect(requests[0]?.method).toBe('GET');
@@ -666,11 +669,11 @@ describe('push — server responses', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport });
+        const result = await push({ ...ctx, transport });
 
         // Assert
-        expect(sut.pushedRefs).toHaveLength(1);
-        expect(sut.pushedRefs[0]).toMatchObject({
+        expect(result.pushedRefs).toHaveLength(1);
+        expect(result.pushedRefs[0]).toMatchObject({
           status: 'rejected',
           reason: 'pre-receive hook declined',
         });
@@ -758,10 +761,10 @@ describe('push — force / non-fast-forward', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { force: true });
+        const result = await push({ ...ctx, transport }, { force: true });
 
         // Assert
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
       });
     });
   });
@@ -783,13 +786,13 @@ describe('push — force / non-fast-forward', () => {
         });
 
         // Act
-        const sut = await push(
+        const result = await push(
           { ...ctx, transport },
           { refspecs: ['+refs/heads/main:refs/heads/main'] },
         );
 
         // Assert
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
       });
     });
   });
@@ -817,10 +820,10 @@ describe('push — force-with-lease', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { forceWithLease: 'auto' });
+        const result = await push({ ...ctx, transport }, { forceWithLease: 'auto' });
 
         // Assert
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
       });
     });
   });
@@ -889,11 +892,11 @@ describe('push — force-with-lease', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { forceWithLease: branchA.id });
+        const result = await push({ ...ctx, transport }, { forceWithLease: branchA.id });
 
         // Assert — request body MUST carry `<serverTip> <localTip> ref`.
         // Pins toRefUpdate.oldId === m.remoteOid (server tip), not m.localOid.
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
         const body = requestBodies[0];
         expect(body).toBeDefined();
         const decoded = new TextDecoder().decode(body);
@@ -993,10 +996,10 @@ describe('push — delete refspec', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
+        const result = await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
 
         // Assert
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
         const body = requestBodies[0];
         expect(body).toBeDefined();
         // The pkt-line update is `<oldId> 0000...0000 refs/heads/feature\0<caps>`
@@ -1092,10 +1095,10 @@ describe('push — side-band response', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport });
+        const result = await push({ ...ctx, transport });
 
         // Assert
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
       });
     });
   });
@@ -1147,11 +1150,11 @@ describe('push — side-band response', () => {
         const { reporter, events } = recordingProgress();
 
         // Act
-        const sut = await push(withProgress({ ...ctx, transport }, reporter));
+        const result = await push(withProgress({ ...ctx, transport }, reporter));
 
         // Assert — push succeeds AND a sanitized progress update reached the
         // reporter under op === 'push:upload'.
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
         const progressUpdates = events.filter((e) => e.kind === 'update' && e.op === 'push:upload');
         expect(progressUpdates.length).toBeGreaterThan(0);
         const last = progressUpdates[progressUpdates.length - 1];
@@ -1265,34 +1268,7 @@ describe('push — progress reporting', () => {
         expect(events[0]).toEqual({ kind: 'start', op: 'push:enumerate-objects' });
         expect(events[events.length - 1]).toEqual({ kind: 'end', op: 'push:enumerate-objects' });
       });
-    });
-  });
 
-  describe('Given a push that fails before discovery (no remote)', () => {
-    describe('When run', () => {
-      it('Then end still fires after start', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
-        const { reporter, events } = recordingProgress();
-
-        // Act
-        try {
-          await push(withProgress(ctx, reporter));
-        } catch {
-          // expected
-        }
-
-        // Assert — start/end balanced.
-        const startCount = events.filter((e) => e.kind === 'start').length;
-        const endCount = events.filter((e) => e.kind === 'end').length;
-        expect(endCount).toBe(startCount);
-      });
-    });
-  });
-
-  describe('Given a successful push', () => {
-    describe('When run', () => {
       it("Then start/end pair fires with op === 'push:upload'", async () => {
         // Arrange — pins the push:upload bracket in postReceivePack; without
         // its `finally { ctx.progress.end(...) }` the end event never fires.
@@ -1315,6 +1291,29 @@ describe('push — progress reporting', () => {
         const upload = events.filter((e) => e.op === 'push:upload');
         expect(upload.filter((e) => e.kind === 'start')).toHaveLength(1);
         expect(upload.filter((e) => e.kind === 'end')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a push that fails before discovery (no remote)', () => {
+    describe('When run', () => {
+      it('Then end still fires after start', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const { reporter, events } = recordingProgress();
+
+        // Act
+        try {
+          await push(withProgress(ctx, reporter));
+        } catch {
+          // expected
+        }
+
+        // Assert — start/end balanced.
+        const startCount = events.filter((e) => e.kind === 'start').length;
+        const endCount = events.filter((e) => e.kind === 'end').length;
+        expect(endCount).toBe(startCount);
       });
     });
   });
@@ -1485,11 +1484,11 @@ describe('push — explicit empty refspecs', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { refspecs: [] });
+        const result = await push({ ...ctx, transport }, { refspecs: [] });
 
         // Assert — current branch was pushed, not an empty no-op.
-        expect(sut.pushedRefs).toHaveLength(1);
-        expect(sut.pushedRefs[0]).toMatchObject({ name: 'refs/heads/main', status: 'ok' });
+        expect(result.pushedRefs).toHaveLength(1);
+        expect(result.pushedRefs[0]).toMatchObject({ name: 'refs/heads/main', status: 'ok' });
       });
     });
   });
@@ -1536,13 +1535,13 @@ describe('push — matching mode', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport });
+        const result = await push({ ...ctx, transport });
 
         // Assert — both advertised heads resolved and pushed (order-independent).
-        expect(sut.pushedRefs).toHaveLength(2);
-        const names = sut.pushedRefs.map((r) => r.name).sort();
+        expect(result.pushedRefs).toHaveLength(2);
+        const names = result.pushedRefs.map((r) => r.name).sort();
         expect(names).toEqual(['refs/heads/feature', 'refs/heads/main']);
-        for (const pushed of sut.pushedRefs) expect(pushed.status).toBe('ok');
+        for (const pushed of result.pushedRefs) expect(pushed.status).toBe('ok');
       });
     });
   });
@@ -1702,10 +1701,13 @@ describe('push — tag refspec tracking cache', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { refspecs: ['refs/tags/v1:refs/tags/v1'] });
+        const result = await push(
+          { ...ctx, transport },
+          { refspecs: ['refs/tags/v1:refs/tags/v1'] },
+        );
 
         // Assert — the tag was accepted, but no tracking cache entry exists.
-        expect(sut.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.status).toBe('ok');
         const remotesDirExists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes`);
         expect(remotesDirExists).toBe(false);
       });
@@ -1766,10 +1768,10 @@ describe('push — signed', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { signed: 'yes' });
+        const result = await push({ ...ctx, transport }, { signed: 'yes' });
 
         // Assert
-        expect(sut.pushedRefs[0]).toMatchObject({
+        expect(result.pushedRefs[0]).toMatchObject({
           name: 'refs/heads/main',
           status: 'ok',
           newId: tip.id,
@@ -1830,10 +1832,10 @@ describe('push — signed', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { signed: 'if-asked' });
+        const result = await push({ ...ctx, transport }, { signed: 'if-asked' });
 
         // Assert
-        expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
+        expect(result.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
         const body = new TextDecoder().decode(requestBodies[0]);
         expect(body).not.toContain('push-cert');
       });
@@ -1905,10 +1907,10 @@ describe('push — signed', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport });
+        const result = await push({ ...ctx, transport });
 
         // Assert
-        expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
+        expect(result.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
       });
     });
 
@@ -2121,10 +2123,10 @@ describe('push — signed', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport }, { signed: 'no' });
+        const result = await push({ ...ctx, transport }, { signed: 'no' });
 
         // Assert
-        expect(sut.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
+        expect(result.pushedRefs[0]).toMatchObject({ status: 'ok', newId: tip.id });
       });
     });
   });
@@ -2285,10 +2287,10 @@ describe('push — hooks', () => {
         });
 
         // Act
-        const sut = await push({ ...ctx, transport, hooks }, { noVerify: true });
+        const result = await push({ ...ctx, transport, hooks }, { noVerify: true });
 
         // Assert
-        expect(sut.pushedRefs).toHaveLength(1);
+        expect(result.pushedRefs).toHaveLength(1);
       });
     });
   });
