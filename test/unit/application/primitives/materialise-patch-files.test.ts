@@ -90,10 +90,10 @@ describe('materialisePatchFiles', () => {
         });
 
         // Act
-        const sut = await materialisePatchFiles(ctx, changes);
+        const result = await materialisePatchFiles(ctx, changes);
 
         // Assert — every result hydrated, peak in-flight obeyed the bound.
-        expect(sut).toHaveLength(80);
+        expect(result).toHaveLength(80);
         expect(peak).toBeGreaterThan(0);
         expect(peak).toBeLessThanOrEqual(32);
       });
@@ -135,17 +135,17 @@ describe('materialisePatchFiles', () => {
         ];
 
         // Act
-        const sut = await materialisePatchFiles(ctx, changes);
+        const result = await materialisePatchFiles(ctx, changes);
 
         // Assert
-        expect(sut).toHaveLength(3);
-        expect(sut[0]?.newContent).toEqual(utf8.encode('added content\n'));
-        expect(sut[0]?.oldContent).toBeUndefined();
-        expect(sut[1]?.oldContent).toEqual(utf8.encode('deleted content\n'));
-        expect(sut[1]?.newContent).toBeUndefined();
+        expect(result).toHaveLength(3);
+        expect(result[0]?.newContent).toEqual(utf8.encode('added content\n'));
+        expect(result[0]?.oldContent).toBeUndefined();
+        expect(result[1]?.oldContent).toEqual(utf8.encode('deleted content\n'));
+        expect(result[1]?.newContent).toBeUndefined();
         // Pure rename — no content is loaded for either side.
-        expect(sut[2]?.oldContent).toBeUndefined();
-        expect(sut[2]?.newContent).toBeUndefined();
+        expect(result[2]?.oldContent).toBeUndefined();
+        expect(result[2]?.newContent).toBeUndefined();
       });
     });
   });
@@ -168,14 +168,14 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — reference identity proves the short-circuit ran without
         // coupling to a specific number of internal readBlob calls. A future
         // refactor that batches reads (e.g. via catFileBatch) keeps the
         // aliasing semantics that consumers actually depend on.
-        expect(sut.oldContent).toBe(sut.newContent);
-        expect(sut.oldContent).toEqual(utf8.encode('echo hi\n'));
+        expect(result.oldContent).toBe(result.newContent);
+        expect(result.oldContent).toEqual(utf8.encode('echo hi\n'));
       });
     });
   });
@@ -197,11 +197,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert
-        expect(sut.oldContent).toEqual(utf8.encode('old\n'));
-        expect(sut.newContent).toEqual(utf8.encode('new\n'));
+        expect(result.oldContent).toEqual(utf8.encode('old\n'));
+        expect(result.newContent).toEqual(utf8.encode('new\n'));
       });
     });
   });
@@ -223,11 +223,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert
-        expect(sut.oldContent).toEqual(utf8.encode('plain text\n'));
-        expect(sut.newContent).toEqual(utf8.encode('/target/path'));
+        expect(result.oldContent).toEqual(utf8.encode('plain text\n'));
+        expect(result.newContent).toEqual(utf8.encode('/target/path'));
       });
     });
   });
@@ -251,11 +251,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — both sides loaded
-        expect(sut.oldContent).toEqual(utf8.encode('original content\n'));
-        expect(sut.newContent).toEqual(utf8.encode('modified content\n'));
+        expect(result.oldContent).toEqual(utf8.encode('original content\n'));
+        expect(result.newContent).toEqual(utf8.encode('modified content\n'));
       });
     });
   });
@@ -278,11 +278,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — no blob content loaded for a pure rename
-        expect(sut.oldContent).toBeUndefined();
-        expect(sut.newContent).toBeUndefined();
+        expect(result.oldContent).toBeUndefined();
+        expect(result.newContent).toBeUndefined();
       });
     });
   });
@@ -306,11 +306,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — both sides loaded
-        expect(sut.oldContent).toEqual(utf8.encode('source content\n'));
-        expect(sut.newContent).toEqual(utf8.encode('copied content\n'));
+        expect(result.oldContent).toEqual(utf8.encode('source content\n'));
+        expect(result.newContent).toEqual(utf8.encode('copied content\n'));
       });
     });
   });
@@ -333,11 +333,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — no blob content loaded for an exact copy
-        expect(sut.oldContent).toBeUndefined();
-        expect(sut.newContent).toBeUndefined();
+        expect(result.oldContent).toBeUndefined();
+        expect(result.newContent).toBeUndefined();
       });
     });
   });
@@ -356,11 +356,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert
-        expect(sut.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
-        expect(sut.oldContent).toBeUndefined();
+        expect(result.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(result.oldContent).toBeUndefined();
       });
     });
   });
@@ -379,11 +379,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert
-        expect(sut.oldContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
-        expect(sut.newContent).toBeUndefined();
+        expect(result.oldContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(result.newContent).toBeUndefined();
       });
     });
   });
@@ -405,11 +405,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — oids differ so same-id short-circuit is not taken
-        expect(sut.oldContent).toEqual(utf8.encode(`Subproject commit ${oldGitlinkOid}\n`));
-        expect(sut.newContent).toEqual(utf8.encode(`Subproject commit ${newGitlinkOid}\n`));
+        expect(result.oldContent).toEqual(utf8.encode(`Subproject commit ${oldGitlinkOid}\n`));
+        expect(result.newContent).toEqual(utf8.encode(`Subproject commit ${newGitlinkOid}\n`));
       });
     });
   });
@@ -431,11 +431,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert
-        expect(sut.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
-        expect(sut.oldContent).toEqual(utf8.encode('regular content\n'));
+        expect(result.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(result.oldContent).toEqual(utf8.encode('regular content\n'));
       });
     });
   });
@@ -457,11 +457,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert
-        expect(sut.oldContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
-        expect(sut.newContent).toEqual(utf8.encode('regular content\n'));
+        expect(result.oldContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
+        expect(result.newContent).toEqual(utf8.encode('regular content\n'));
       });
     });
   });
@@ -642,11 +642,11 @@ describe('materialiseOne', () => {
         };
 
         // Act — no applyTextconv option: raw path
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — raw bytes returned unchanged even though ctx.command is present
-        expect(sut.oldContent).toEqual(utf8.encode('hello world\n'));
-        expect(sut.newContent).toEqual(utf8.encode('hello there\n'));
+        expect(result.oldContent).toEqual(utf8.encode('hello world\n'));
+        expect(result.newContent).toEqual(utf8.encode('hello there\n'));
       });
     });
 
@@ -706,11 +706,11 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const sut = await materialiseOne(ctx, change);
+        const result = await materialiseOne(ctx, change);
 
         // Assert — raw bytes returned unchanged (no textconv)
-        expect(sut.oldContent).toEqual(utf8.encode('hello world\n'));
-        expect(sut.newContent).toEqual(utf8.encode('hello there\n'));
+        expect(result.oldContent).toEqual(utf8.encode('hello world\n'));
+        expect(result.newContent).toEqual(utf8.encode('hello there\n'));
       });
     });
   });

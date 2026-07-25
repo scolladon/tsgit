@@ -51,10 +51,9 @@ describe('findWouldOverwrite', () => {
         // Arrange
         const ctx = createMemoryContext();
         await work(ctx, 'new.txt', 'squatting\n');
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(ctx, set('new.txt'), indexOf([]));
+        const result = await findWouldOverwrite(ctx, set('new.txt'), indexOf([]));
 
         // Assert
         expect(result.untracked).toEqual(['new.txt']);
@@ -71,10 +70,9 @@ describe('findWouldOverwrite', () => {
         const committed = await blob(ctx, 'committed\n');
         await work(ctx, 'tracked.txt', 'dirty\n');
         await work(ctx, 'untracked.txt', 'squatting\n');
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(
+        const result = await findWouldOverwrite(
           ctx,
           set('tracked.txt', 'untracked.txt'),
           indexOf([entryOf('tracked.txt', committed)]),
@@ -95,10 +93,13 @@ describe('findWouldOverwrite', () => {
         const ctx = createMemoryContext();
         const committed = await blob(ctx, 'committed\n');
         await work(ctx, 'f.txt', 'dirty\n');
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(ctx, set('f.txt'), indexOf([entryOf('f.txt', committed)]));
+        const result = await findWouldOverwrite(
+          ctx,
+          set('f.txt'),
+          indexOf([entryOf('f.txt', committed)]),
+        );
 
         // Assert
         expect(result.localChanges).toEqual(['f.txt']);
@@ -117,10 +118,9 @@ describe('findWouldOverwrite', () => {
         await work(ctx, 'zebra', 'dirty\n');
         await work(ctx, 'alpha', 'dirty\n');
         await work(ctx, 'mango', 'dirty\n');
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(
+        const result = await findWouldOverwrite(
           ctx,
           set('zebra', 'alpha', 'mango'),
           indexOf([
@@ -144,10 +144,9 @@ describe('findWouldOverwrite', () => {
         await work(ctx, 'zebra', 'squat\n');
         await work(ctx, 'alpha', 'squat\n');
         await work(ctx, 'mango', 'squat\n');
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(ctx, set('zebra', 'alpha', 'mango'), indexOf([]));
+        const result = await findWouldOverwrite(ctx, set('zebra', 'alpha', 'mango'), indexOf([]));
 
         // Assert
         expect(result.untracked).toEqual(['alpha', 'mango', 'zebra']);
@@ -160,10 +159,9 @@ describe('findWouldOverwrite', () => {
       it('Then both classes are empty', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(ctx, set(), indexOf([]));
+        const result = await findWouldOverwrite(ctx, set(), indexOf([]));
 
         // Assert
         expect(result.localChanges).toEqual([]);
@@ -179,10 +177,13 @@ describe('findWouldOverwrite', () => {
         const ctx = createMemoryContext();
         const committed = await blob(ctx, 'clean\n');
         await work(ctx, 'f.txt', 'clean\n');
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(ctx, set('f.txt'), indexOf([entryOf('f.txt', committed)]));
+        const result = await findWouldOverwrite(
+          ctx,
+          set('f.txt'),
+          indexOf([entryOf('f.txt', committed)]),
+        );
 
         // Assert
         expect(result.localChanges).toEqual([]);
@@ -196,10 +197,9 @@ describe('findWouldOverwrite', () => {
       it('Then it is reported in neither class', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const sut = findWouldOverwrite;
 
         // Act
-        const result = await sut(ctx, set('ghost.txt'), indexOf([]));
+        const result = await findWouldOverwrite(ctx, set('ghost.txt'), indexOf([]));
 
         // Assert
         expect(result.localChanges).toEqual([]);

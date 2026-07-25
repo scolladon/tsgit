@@ -54,14 +54,13 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then returns structured midpoint at c[4] with correct counts', async () => {
         // Arrange
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const commits = await buildLinear(ctx, 10);
         const good = commits[0]!;
         const bad = commits[9]!;
 
         // Act
-        const result = await sut(ctx, [good], bad);
+        const result = await bisectMidpoint(ctx, [good], bad);
 
         // Assert — 9 candidates {c[1]..c[9]}; fill-phase fires at c[4] (weight=4,
         // approxHalfway(4,9): 2*4−9=−1 ∈ [−1,1] → early return before tie-break)
@@ -79,14 +78,13 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then returns a single-candidate result with remainingIfGood=-1', async () => {
         // Arrange
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const commits = await buildLinear(ctx, 2);
         const good = commits[0]!;
         const bad = commits[1]!;
 
         // Act
-        const result = await sut(ctx, [good], bad);
+        const result = await bisectMidpoint(ctx, [good], bad);
 
         // Assert — 1 candidate {c[1]}; reaches=1 → remainingIfGood=-1 faithful passthrough
         expect(result).not.toBeUndefined();
@@ -103,14 +101,13 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then returns undefined (empty candidate set)', async () => {
         // Arrange — good=c[1] (descendant of bad=c[0]) → c[0] reachable from good
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const commits = await buildLinear(ctx, 2);
         const good = commits[1]!;
         const bad = commits[0]!;
 
         // Act
-        const result = await sut(ctx, [good], bad);
+        const result = await bisectMidpoint(ctx, [good], bad);
 
         // Assert
         expect(result).toBeUndefined();
@@ -122,13 +119,12 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then candidate set is everything reachable from bad', async () => {
         // Arrange — 3-commit linear chain: root→mid→bad; no good → all 3 are candidates
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const commits = await buildLinear(ctx, 3);
         const bad = commits[2]!;
 
         // Act — empty good array: candidates = {root, mid, bad}
-        const result = await sut(ctx, [], bad);
+        const result = await bisectMidpoint(ctx, [], bad);
 
         // Assert — all=3, fill fires at mid (weight=2, approxHalfway(2,3)=1 ∈ {-1,0,1})
         expect(result).not.toBeUndefined();
@@ -145,7 +141,6 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs with good=A, bad=D', () => {
       it('Then returns B as midpoint (older sibling wins tie, candidateCount=3)', async () => {
         // Arrange
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
         const a = await commitAt(ctx, treeId, 100, []);
@@ -154,7 +149,7 @@ describe('bisectMidpoint', () => {
         const d = await commitAt(ctx, treeId, 104, [b, c]);
 
         // Act — candidates: {B, C, D} = 3; B weight=1, C weight=1, D weight=3
-        const result = await sut(ctx, [a], d);
+        const result = await bisectMidpoint(ctx, [a], d);
 
         // Assert — B wins (older → date-asc puts B before C → B first in list → wins tie)
         expect(result).not.toBeUndefined();
@@ -178,7 +173,6 @@ describe('bisectMidpoint', () => {
         // resolved only by which one is FIRST in the oldest-first candidate list, which
         // in turn depends on the heap's pop order (FIFO on equal dates, date order
         // otherwise) — exactly the `less` tie-break under test.
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
         const root = await commitAt(ctx, treeId, 100, []);
@@ -192,7 +186,7 @@ describe('bisectMidpoint', () => {
         // Act — candidates = {n1,n2,n3,n4,n0,bad} = 6; no merge/fill early-return fires
         // (n4's weight=4 misses the band, n1/n2's weight=2 misses it too) so the winner
         // comes from bestBisection's list-order tie-break among the weight=2 trio.
-        const result = await sut(ctx, [root], bad);
+        const result = await bisectMidpoint(ctx, [root], bad);
 
         // Assert
         expect(result).not.toBeUndefined();
@@ -214,7 +208,6 @@ describe('bisectMidpoint', () => {
         // so the winner is decided purely by which weight-1 leaf lands first in the
         // oldest-first candidate list — which the heap's equal-date FIFO tie-break fixes.
         // Real git (rev-list --bisect) selects the SECOND parent here, so p2 must win.
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
         const root = await commitAt(ctx, treeId, 100, []);
@@ -235,7 +228,7 @@ describe('bisectMidpoint', () => {
         const bad = await commitAt(ctx, treeId, 300, [p1, p2]);
 
         // Act — candidates = {p1,p2,bad}; tie between p1 and p2 resolved by list order
-        const result = await sut(ctx, [root], bad);
+        const result = await bisectMidpoint(ctx, [root], bad);
 
         // Assert — p2 (second enqueued, popped last among the equal-date pair, first in
         // the reversed oldest-first list) wins; under FIFO→LIFO flip p1 would win instead
@@ -253,7 +246,6 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then excludes all good-reachable commits from candidates', async () => {
         // Arrange: root → A(ts=101) and root → B(ts=102) are both good; bad=C(ts=103)→[A,B]
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
         const root = await commitAt(ctx, treeId, 100, []);
@@ -262,7 +254,7 @@ describe('bisectMidpoint', () => {
         const c = await commitAt(ctx, treeId, 103, [a, b]);
 
         // Act — candidates = bad-reachable minus good-reachable = {C} only
-        const result = await sut(ctx, [a, b], c);
+        const result = await bisectMidpoint(ctx, [a, b], c);
 
         // Assert
         expect(result).not.toBeUndefined();
@@ -278,7 +270,6 @@ describe('bisectMidpoint', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then throws INVALID_WALK_INPUT', async () => {
         // Arrange
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const blobId = await writeObject(ctx, {
           type: 'blob',
@@ -288,18 +279,22 @@ describe('bisectMidpoint', () => {
         const treeId = await emptyTree(ctx);
         const good = await commitAt(ctx, treeId, 100, []);
 
-        // Act + Assert
+        // Act
+        let caught: unknown;
         try {
-          await sut(ctx, [good], blobId as ObjectId);
+          await bisectMidpoint(ctx, [good], blobId as ObjectId);
           expect.fail('should have thrown');
         } catch (err) {
-          expect(err).toBeInstanceOf(TsgitError);
-          const tErr = err as TsgitError;
-          expect(tErr.data.code).toBe('INVALID_WALK_INPUT');
-          expect(tErr.data.code === 'INVALID_WALK_INPUT' && tErr.data.reason).toBe(
-            `bisectMidpoint: ${blobId} is not a commit`,
-          );
+          caught = err;
         }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const tErr = caught as TsgitError;
+        expect(tErr.data.code).toBe('INVALID_WALK_INPUT');
+        expect(tErr.data.code === 'INVALID_WALK_INPUT' && tErr.data.reason).toBe(
+          `bisectMidpoint: ${blobId} is not a commit`,
+        );
       });
     });
   });
@@ -309,7 +304,6 @@ describe('bisectMidpoint', () => {
       it('Then shared ancestor is counted once — candidateCount=4 (not 5)', async () => {
         // Arrange: root (good) → shared(ts=101) → pa(ts=102), pb(ts=103) → bad(ts=104)
         // shared is reachable from both pa and pb; without walk-dedup it would appear twice.
-        const sut = bisectMidpoint;
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
         const root = await commitAt(ctx, treeId, 100, []);
@@ -319,7 +313,7 @@ describe('bisectMidpoint', () => {
         const bad = await commitAt(ctx, treeId, 104, [pa, pb]);
 
         // Act — candidates = {shared, pa, pb, bad}; root is good-reachable
-        const result = await sut(ctx, [root], bad);
+        const result = await bisectMidpoint(ctx, [root], bad);
 
         // Assert — shared must appear exactly once in the walk
         expect(result).not.toBeUndefined();

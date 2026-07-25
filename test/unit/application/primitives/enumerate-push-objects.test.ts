@@ -104,10 +104,12 @@ describe('enumeratePushObjects', () => {
         const tip = await seedCommit(ctx, undefined, 'hello');
 
         // Act
-        const sut = await collect(enumeratePushObjects(ctx, { wants: [tip.commitId], haves: [] }));
+        const result = await collect(
+          enumeratePushObjects(ctx, { wants: [tip.commitId], haves: [] }),
+        );
 
         // Assert — three distinct ids in the closure.
-        const set = new Set(sut);
+        const set = new Set(result);
         expect(set.size).toBe(3);
         expect(set.has(tip.commitId)).toBe(true);
         expect(set.has(tip.treeId)).toBe(true);
@@ -126,19 +128,19 @@ describe('enumeratePushObjects', () => {
         const tip = await seedCommit(ctx, parent.commitId, 'gen-2');
 
         // Act
-        const sut = await collect(
+        const result = await collect(
           enumeratePushObjects(ctx, { wants: [tip.commitId], haves: [parent.commitId] }),
         );
 
         // Assert — only the tip commit + its tree + its blob.
-        expect(sut).toContain(tip.commitId);
-        expect(sut).toContain(tip.treeId);
-        expect(sut).toContain(tip.blobId);
-        expect(sut).not.toContain(parent.commitId);
-        expect(sut).not.toContain(parent.treeId);
+        expect(result).toContain(tip.commitId);
+        expect(result).toContain(tip.treeId);
+        expect(result).toContain(tip.blobId);
+        expect(result).not.toContain(parent.commitId);
+        expect(result).not.toContain(parent.treeId);
         // Their blob WOULD also be excluded since the trees differ (different
         // content per generation produces different blob oids).
-        expect(sut).not.toContain(parent.blobId);
+        expect(result).not.toContain(parent.blobId);
       });
     });
   });
@@ -151,7 +153,7 @@ describe('enumeratePushObjects', () => {
         const tip = await seedCommit(ctx, undefined, 'solo');
 
         // Act
-        const sut = await collect(
+        const result = await collect(
           enumeratePushObjects(ctx, {
             wants: [tip.commitId, tip.commitId],
             haves: [],
@@ -159,7 +161,7 @@ describe('enumeratePushObjects', () => {
         );
 
         // Assert
-        expect(new Set(sut).size).toBe(sut.length);
+        expect(new Set(result).size).toBe(result.length);
       });
     });
   });
@@ -203,11 +205,11 @@ describe('enumeratePushObjects', () => {
         const commitId = await writeObject(ctx, commit);
 
         // Act
-        const sut = await collect(enumeratePushObjects(ctx, { wants: [commitId], haves: [] }));
+        const result = await collect(enumeratePushObjects(ctx, { wants: [commitId], haves: [] }));
 
         // Assert — submodule oid is NOT in the stream, blob IS.
-        expect(sut).not.toContain(submoduleOid);
-        expect(sut).toContain(blobId);
+        expect(result).not.toContain(submoduleOid);
+        expect(result).toContain(blobId);
       });
     });
   });
@@ -277,13 +279,13 @@ describe('enumeratePushObjects', () => {
 
         // Act — supply the TAG oid as a want; the walker must record the tag
         // and follow its target to the commit.
-        const sut = await collect(enumeratePushObjects(ctx, { wants: [tagId], haves: [] }));
+        const result = await collect(enumeratePushObjects(ctx, { wants: [tagId], haves: [] }));
 
         // Assert — tag oid + commit + tree + blob all in the stream.
-        expect(sut).toContain(tagId);
-        expect(sut).toContain(tip.commitId);
-        expect(sut).toContain(tip.treeId);
-        expect(sut).toContain(tip.blobId);
+        expect(result).toContain(tagId);
+        expect(result).toContain(tip.commitId);
+        expect(result).toContain(tip.treeId);
+        expect(result).toContain(tip.blobId);
       });
     });
   });
@@ -309,13 +311,13 @@ describe('enumeratePushObjects', () => {
         const childId = await writeCommitForTree(ctx, treeId, parentId, 'gen-2');
 
         // Act
-        const sut = await collect(enumeratePushObjects(ctx, { wants: [childId], haves: [] }));
+        const result = await collect(enumeratePushObjects(ctx, { wants: [childId], haves: [] }));
 
         // Assert — both commits yielded, tree and blob each appear exactly once.
-        expect(sut).toContain(parentId);
-        expect(sut).toContain(childId);
-        expect(sut.filter((id) => id === treeId)).toHaveLength(1);
-        expect(sut.filter((id) => id === blobId)).toHaveLength(1);
+        expect(result).toContain(parentId);
+        expect(result).toContain(childId);
+        expect(result.filter((id) => id === treeId)).toHaveLength(1);
+        expect(result.filter((id) => id === blobId)).toHaveLength(1);
       });
     });
   });
@@ -340,13 +342,13 @@ describe('enumeratePushObjects', () => {
         const tipId = await writeCommitForTree(ctx, treeId, missingParent, 'tip');
 
         // Act
-        const sut = await collect(enumeratePushObjects(ctx, { wants: [tipId], haves: [] }));
+        const result = await collect(enumeratePushObjects(ctx, { wants: [tipId], haves: [] }));
 
         // Assert — closure resolved despite the missing parent.
-        expect(sut).toContain(tipId);
-        expect(sut).toContain(treeId);
-        expect(sut).toContain(blobId);
-        expect(sut).not.toContain(missingParent);
+        expect(result).toContain(tipId);
+        expect(result).toContain(treeId);
+        expect(result).toContain(blobId);
+        expect(result).not.toContain(missingParent);
       });
     });
   });
@@ -408,11 +410,11 @@ describe('enumeratePushObjects', () => {
         const commitId = await writeCommitForTree(ctx, rootTreeId, undefined, 'with subdir');
 
         // Act
-        const sut = await collect(enumeratePushObjects(ctx, { wants: [commitId], haves: [] }));
+        const result = await collect(enumeratePushObjects(ctx, { wants: [commitId], haves: [] }));
 
         // Assert — both the subtree and its nested blob are in the closure.
-        expect(sut).toContain(subTreeId);
-        expect(sut).toContain(nestedBlobId);
+        expect(result).toContain(subTreeId);
+        expect(result).toContain(nestedBlobId);
       });
     });
   });
@@ -453,14 +455,16 @@ describe('enumeratePushObjects', () => {
         const deepestTag = tagIds[0] as ObjectId;
 
         // Act — push the outermost tag (17 deep).
-        const sut = await collect(enumeratePushObjects(ctx, { wants: [outermostTag], haves: [] }));
+        const result = await collect(
+          enumeratePushObjects(ctx, { wants: [outermostTag], haves: [] }),
+        );
 
         // Assert — exactly 16 tags recorded; deepest tag, commit and blob excluded.
-        expect(sut).toContain(outermostTag);
-        expect(sut).not.toContain(deepestTag);
-        expect(sut).not.toContain(tip.commitId);
-        expect(sut).not.toContain(tip.blobId);
-        expect(sut).toHaveLength(16);
+        expect(result).toContain(outermostTag);
+        expect(result).not.toContain(deepestTag);
+        expect(result).not.toContain(tip.commitId);
+        expect(result).not.toContain(tip.blobId);
+        expect(result).toHaveLength(16);
       });
     });
   });

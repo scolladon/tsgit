@@ -16,7 +16,7 @@ describe('composition laws', () => {
   describe('Given the law "writeObject ∘ readObject is identity for blobs (property)"', () => {
     describe('When evaluated', () => {
       it('Then it holds', async () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         await fc.assert(
           fc.asyncProperty(fc.uint8Array({ maxLength: 64 }), async (bytes) => {
             const ctx = await buildSeededContext();
@@ -38,7 +38,7 @@ describe('composition laws', () => {
   describe('Given the law "updateRef ∘ resolveRef returns the same id"', () => {
     describe('When evaluated', () => {
       it('Then it holds', async () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         await fc.assert(
           fc.asyncProperty(
             fc.string({
@@ -77,6 +77,8 @@ describe('composition laws', () => {
           content: new Uint8Array([2]),
           id: '' as ObjectId,
         } satisfies Blob);
+
+        // Act
         const idA = await writeTree(ctx, [
           { name: 'a', mode: '100644' as FileMode, id: b1 },
           { name: 'b', mode: '100644' as FileMode, id: b2 },
@@ -85,6 +87,7 @@ describe('composition laws', () => {
           { name: 'b', mode: '100644' as FileMode, id: b2 },
           { name: 'a', mode: '100644' as FileMode, id: b1 },
         ]);
+
         // Assert
         expect(idA).toBe(idB);
       });
@@ -97,9 +100,12 @@ describe('composition laws', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const emptyId = await writeTree(ctx, []);
-        const sut = await diffTrees(ctx, emptyId, emptyId);
+
+        // Act
+        const result = await diffTrees(ctx, emptyId, emptyId);
+
         // Assert
-        expect(sut.changes).toEqual([]);
+        expect(result.changes).toEqual([]);
       });
     });
   });
@@ -115,8 +121,11 @@ describe('composition laws', () => {
           id: '' as ObjectId,
         } satisfies Blob);
         const entries = [{ name: 'f', mode: '100644' as FileMode, id: b1 }];
+
+        // Act
         const id = await writeTree(ctx, entries);
         const tree = await readTree(ctx, id);
+
         // Assert
         expect(tree.entries.length).toBe(1);
         expect(tree.entries[0]?.name).toBe('f');

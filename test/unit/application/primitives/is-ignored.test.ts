@@ -24,14 +24,14 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('foo.log') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('foo.log') }]);
 
         // Assert
-        expect(sut?.ignored).toBe(true);
-        expect(sut?.source?.kind).toBe('gitignore');
-        expect(sut?.source?.basedir).toBe('');
-        expect(sut?.source?.line).toBe(1);
-        expect(sut?.source?.pattern).toBe('*.log');
+        expect(result?.ignored).toBe(true);
+        expect(result?.source?.kind).toBe('gitignore');
+        expect(result?.source?.basedir).toBe('');
+        expect(result?.source?.line).toBe(1);
+        expect(result?.source?.pattern).toBe('*.log');
       });
     });
   });
@@ -44,14 +44,14 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '# header\n*.cache\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('sub/foo.cache') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('sub/foo.cache') }]);
 
         // Assert
-        expect(sut?.ignored).toBe(true);
-        expect(sut?.source?.kind).toBe('gitignore');
-        expect(sut?.source?.basedir).toBe('sub');
-        expect(sut?.source?.line).toBe(2);
-        expect(sut?.source?.pattern).toBe('*.cache');
+        expect(result?.ignored).toBe(true);
+        expect(result?.source?.kind).toBe('gitignore');
+        expect(result?.source?.basedir).toBe('sub');
+        expect(result?.source?.line).toBe(2);
+        expect(result?.source?.pattern).toBe('*.cache');
       });
     });
   });
@@ -66,13 +66,13 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/b/.gitignore`, '*.log\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('a/b/foo.log') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('a/b/foo.log') }]);
 
         // Assert
-        expect(sut?.ignored).toBe(true);
-        expect(sut?.source?.basedir).toBe('a/b');
-        expect(sut?.source?.line).toBe(1);
-        expect(sut?.source?.pattern).toBe('*.log');
+        expect(result?.ignored).toBe(true);
+        expect(result?.source?.basedir).toBe('a/b');
+        expect(result?.source?.line).toBe(1);
+        expect(result?.source?.pattern).toBe('*.log');
       });
     });
   });
@@ -85,11 +85,11 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('keep.txt') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('keep.txt') }]);
 
         // Assert
-        expect(sut?.ignored).toBe(false);
-        expect(sut?.source).toBeUndefined();
+        expect(result?.ignored).toBe(false);
+        expect(result?.source).toBeUndefined();
       });
     });
   });
@@ -102,11 +102,11 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n!keep.log\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('keep.log') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('keep.log') }]);
 
         // Assert
-        expect(sut?.ignored).toBe(false);
-        expect(sut?.source).toBeUndefined();
+        expect(result?.ignored).toBe(false);
+        expect(result?.source).toBeUndefined();
       });
     });
   });
@@ -119,11 +119,11 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build/\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('build'), isDirectory: true }]);
+        const [result] = await isIgnored(ctx, [{ path: path('build'), isDirectory: true }]);
 
         // Assert
-        expect(sut?.ignored).toBe(true);
-        expect(sut?.source?.pattern).toBe('build/');
+        expect(result?.ignored).toBe(true);
+        expect(result?.source?.pattern).toBe('build/');
       });
     });
   });
@@ -136,13 +136,13 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build/\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('build') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('build') }]);
 
         // Assert — pins both the verdict AND the absence of source: a mutant
         // that returns a stale source from a prior iteration would survive
         // a verdict-only assertion.
-        expect(sut?.ignored).toBe(false);
-        expect(sut?.source).toBeUndefined();
+        expect(result?.ignored).toBe(false);
+        expect(result?.source).toBeUndefined();
       });
     });
   });
@@ -155,11 +155,11 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'secret.txt\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('secret.txt') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('secret.txt') }]);
 
         // Assert
-        expect(sut?.ignored).toBe(true);
-        expect(sut?.source?.kind).toBe('info');
+        expect(result?.ignored).toBe(true);
+        expect(result?.source?.kind).toBe('info');
       });
     });
   });
@@ -179,11 +179,11 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8('/repo/home/.gitignore_global', '*.swp\n');
 
         // Act
-        const [sut] = await isIgnored(ctx, [{ path: path('foo.swp') }]);
+        const [result] = await isIgnored(ctx, [{ path: path('foo.swp') }]);
 
         // Assert
-        expect(sut?.ignored).toBe(true);
-        expect(sut?.source?.kind).toBe('global');
+        expect(result?.ignored).toBe(true);
+        expect(result?.source?.kind).toBe('global');
       });
     });
   });
@@ -212,10 +212,10 @@ describe('isIgnored', () => {
         const wrappedCtx = { ...ctx, fs: wrappedFs };
 
         // Act
-        const sut = await isIgnored(wrappedCtx, []);
+        const result = await isIgnored(wrappedCtx, []);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
         expect(touchedFs).toBe(false);
       });
     });
@@ -255,15 +255,15 @@ describe('isIgnored', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
 
         // Act
-        const sut = await isIgnored(ctx, [
+        const result = await isIgnored(ctx, [
           { path: path('a.log') },
           { path: path('b.txt') },
           { path: path('c.log') },
         ]);
 
         // Assert
-        expect(sut.map((r) => r.ignored)).toEqual([true, false, true]);
-        expect(sut.map((r) => r.path)).toEqual(['a.log', 'b.txt', 'c.log']);
+        expect(result.map((r) => r.ignored)).toEqual([true, false, true]);
+        expect(result.map((r) => r.path)).toEqual(['a.log', 'b.txt', 'c.log']);
       });
     });
   });

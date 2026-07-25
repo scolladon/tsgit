@@ -57,16 +57,13 @@ describe('config-read valueless key grammar properties', () => {
   describe('Given an arbitrary valid key', () => {
     describe('When parseIniSections parses [s]\\n\\t<key>\\n', () => {
       it('Then exactly one entry { key, value: null } is recorded (grammar totality)', () => {
-        // Arrange
-        const sut = parseIniSections;
-
         // Act + Assert — fast-check invokes the predicate per sample;
         // each call wraps an arbitrary key in a section, parses, and
         // asserts exactly one valueless entry is recorded.
         fc.assert(
           fc.property(arbValidKey(), (key) => {
             const text = `[s]\n\t${key}\n`;
-            const sections = sut(text);
+            const sections = parseIniSections(text);
             expect(sections).toHaveLength(1);
             const entries = sections[0]?.entries;
             expect(entries).toHaveLength(1);
@@ -81,16 +78,13 @@ describe('config-read valueless key grammar properties', () => {
   describe('Given an arbitrary valid key with a junk character appended', () => {
     describe('When parseIniSections parses [s]\\n<key><junk>\\n', () => {
       it('Then CONFIG_PARSE_ERROR is thrown with .data.line === 2 (negative grammar)', () => {
-        // Arrange
-        const sut = parseIniSections;
-
         // Act + Assert — fast-check invokes the predicate per sample;
         // each call builds a junk line, attempts a parse, and asserts the error.
         fc.assert(
           fc.property(arbValidKey(), arbJunkChar(), (key, junk) => {
             const text = `[s]\n${key}${junk}\n`;
             try {
-              sut(text);
+              parseIniSections(text);
               return false;
             } catch (err) {
               if (!(err instanceof TsgitError)) throw err;
@@ -125,9 +119,6 @@ describe('config-read same-line and orphan grammar properties', () => {
   describe('Given an arbitrary header identity, a valid key, and a safe value', () => {
     describe('When parseIniSections parses the header with a same-line entry', () => {
       it('Then the section records the key/value (round-trip), and the no-`=` form records null', () => {
-        // Arrange
-        const sut = parseIniSections;
-
         // Act + Assert
         fc.assert(
           fc.property(
@@ -136,14 +127,14 @@ describe('config-read same-line and orphan grammar properties', () => {
             arbSafeValue(),
             ({ section, subsection }, key, value) => {
               const header = headerText(section, subsection);
-              const valued = sut(`${header} ${key} = ${value}\n`);
+              const valued = parseIniSections(`${header} ${key} = ${value}\n`);
               expect(valued).toHaveLength(1);
               expect(valued[0]).toEqual({
                 section,
                 subsection,
                 entries: [{ key, value }],
               });
-              const valueless = sut(`${header} ${key}\n`);
+              const valueless = parseIniSections(`${header} ${key}\n`);
               expect(valueless).toHaveLength(1);
               expect(valueless[0]).toEqual({
                 section,
@@ -163,7 +154,6 @@ describe('config-read same-line and orphan grammar properties', () => {
       it('Then it either records the key or throws exactly CONFIG_PARSE_ERROR (totality)', () => {
         // Arrange — partition over first-char-alpha vs the alnum-dash body set,
         // mixed with junk so both the accept and reject arms are exercised.
-        const sut = parseIniSections;
         const arbKeyChar = fc
           .integer({ min: 0x21, max: 0x7e })
           .map((cp) => String.fromCodePoint(cp));
@@ -175,7 +165,7 @@ describe('config-read same-line and orphan grammar properties', () => {
         fc.assert(
           fc.property(arbScannedLine, (raw) => {
             try {
-              const result = sut(`[a]\n\t${raw}\n`);
+              const result = parseIniSections(`[a]\n\t${raw}\n`);
               // `raw` may itself be a valid header (e.g. `[b]`), yielding a
               // second indented section; totality only requires well-shaped
               // entries across every section, never a fixed section count.
@@ -201,7 +191,6 @@ describe('config-read same-line and orphan grammar properties', () => {
       it('Then the section structure is stable (idempotence)', () => {
         // Arrange — a small renderer that emits the canonical `[s]\n\tkey = v`
         // (or bare orphan) shape, then proves re-parsing is a fixpoint.
-        const sut = parseIniSections;
         const rerender = (sections: ReturnType<typeof parseIniSections>): string =>
           sections
             .map((s) => {
@@ -234,8 +223,8 @@ describe('config-read same-line and orphan grammar properties', () => {
         // Act + Assert
         fc.assert(
           fc.property(arbInput, (input) => {
-            const once = sut(input);
-            const twice = sut(rerender(once));
+            const once = parseIniSections(input);
+            const twice = parseIniSections(rerender(once));
             expect(twice).toEqual(once);
           }),
           { numRuns: 100 },
@@ -261,7 +250,6 @@ describe('config-read section-name totality property', () => {
     describe('When scanHeaderPrefix and parseIniSections classify it', () => {
       it('Then it is recognised as a header OR refused with CONFIG_PARSE_ERROR, never silently section-absent', () => {
         // Arrange
-        const sut = scanHeaderPrefix;
         const arbBracketedLine = fc
           .array(arbSectionNameChar(), { minLength: 0, maxLength: 8 })
           .map((chars) => `[${chars.join('')}]`);
@@ -271,7 +259,7 @@ describe('config-read section-name totality property', () => {
         // grammar is total and no bracketed line silently drops to section-absent.
         fc.assert(
           fc.property(arbBracketedLine, (line) => {
-            if (sut(line).parse.kind === 'header') return;
+            if (scanHeaderPrefix(line).parse.kind === 'header') return;
             try {
               parseIniSections(`${line}\n`);
               return false;

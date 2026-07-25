@@ -69,10 +69,10 @@ describe('compareWorkingTreeEntry', () => {
         await ctx.fs.rm(work(ctx, 'a.txt'));
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, entry);
+        const result = await compareWorkingTreeEntry(ctx, entry);
 
         // Assert
-        expect(sut).toBe('absent');
+        expect(result).toBe('absent');
       });
     });
   });
@@ -84,10 +84,10 @@ describe('compareWorkingTreeEntry', () => {
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, entry);
+        const result = await compareWorkingTreeEntry(ctx, entry);
 
         // Assert
-        expect(sut).toBe('unchanged');
+        expect(result).toBe('unchanged');
       });
     });
   });
@@ -100,10 +100,10 @@ describe('compareWorkingTreeEntry', () => {
         await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, entry);
+        const result = await compareWorkingTreeEntry(ctx, entry);
 
         // Assert
-        expect(sut).toBe('modified');
+        expect(result).toBe('modified');
       });
     });
   });
@@ -117,10 +117,10 @@ describe('compareWorkingTreeEntry', () => {
         const executableEntry: IndexEntry = { ...entry, mode: '100755' };
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, executableEntry);
+        const result = await compareWorkingTreeEntry(ctx, executableEntry);
 
         // Assert
-        expect(sut).toBe('mode-changed');
+        expect(result).toBe('mode-changed');
       });
     });
   });
@@ -135,10 +135,10 @@ describe('compareWorkingTreeEntry', () => {
         const executableEntry: IndexEntry = { ...entry, mode: '100755' };
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, executableEntry);
+        const result = await compareWorkingTreeEntry(ctx, executableEntry);
 
         // Assert
-        expect(sut).toBe('modified');
+        expect(result).toBe('modified');
       });
     });
   });
@@ -151,10 +151,10 @@ describe('compareWorkingTreeEntry', () => {
         const symlinkEntry: IndexEntry = { ...entry, mode: '120000' };
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, symlinkEntry);
+        const result = await compareWorkingTreeEntry(ctx, symlinkEntry);
 
         // Assert
-        expect(sut).toBe('type-changed');
+        expect(result).toBe('type-changed');
       });
     });
 
@@ -165,10 +165,10 @@ describe('compareWorkingTreeEntry', () => {
         const regularEntry: IndexEntry = { ...entry, mode: '100644' };
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, regularEntry);
+        const result = await compareWorkingTreeEntry(ctx, regularEntry);
 
         // Assert
-        expect(sut).toBe('type-changed');
+        expect(result).toBe('type-changed');
       });
     });
   });
@@ -185,7 +185,7 @@ describe('compareWorkingTreeEntry', () => {
           ];
           const cleanVariants: ReadonlyArray<WorkingTreeComparison> = ['unchanged', 'absent'];
 
-          // Act / Assert
+          // Act & Assert
           for (const variant of modifiedVariants) {
             expect(isWorkingTreeModified(variant)).toBe(true);
           }
@@ -215,10 +215,10 @@ describe('compareWorkingTreeEntry', () => {
         };
 
         // Act
-        const sut = await compareWorkingTreeEntry(failingReadCtx, entry);
+        const result = await compareWorkingTreeEntry(failingReadCtx, entry);
 
         // Assert
-        expect(sut).toBe('modified');
+        expect(result).toBe('modified');
       });
     });
   });
@@ -230,10 +230,10 @@ describe('compareWorkingTreeEntry', () => {
         const { ctx, entry } = await seedSymlink('link', 'target-a');
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, entry);
+        const result = await compareWorkingTreeEntry(ctx, entry);
 
         // Assert
-        expect(sut).toBe('unchanged');
+        expect(result).toBe('unchanged');
       });
     });
   });
@@ -247,10 +247,10 @@ describe('compareWorkingTreeEntry', () => {
         await ctx.fs.symlink('target-b', work(ctx, 'link'));
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, entry);
+        const result = await compareWorkingTreeEntry(ctx, entry);
 
         // Assert
-        expect(sut).toBe('modified');
+        expect(result).toBe('modified');
       });
     });
   });
@@ -270,10 +270,10 @@ describe('compareWorkingTreeEntry', () => {
         };
 
         // Act
-        const sut = await compareWorkingTreeEntry(ctx, gitlinkEntry);
+        const result = await compareWorkingTreeEntry(ctx, gitlinkEntry);
 
         // Assert
-        expect(sut).toBe('modified');
+        expect(result).toBe('modified');
       });
     });
   });
@@ -288,11 +288,11 @@ describe('compareWorkingTreeDelta', () => {
         await ctx.fs.rm(work(ctx, 'a.txt'));
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, entry);
+        const result = await compareWorkingTreeDelta(ctx, entry);
 
         // Assert — no working file exists, so there is no mode to report.
-        expect(sut).toEqual({ status: 'absent' });
-        expect(sut.worktreeMode).toBeUndefined();
+        expect(result).toEqual({ status: 'absent' });
+        expect(result.worktreeMode).toBeUndefined();
       });
     });
   });
@@ -304,10 +304,10 @@ describe('compareWorkingTreeDelta', () => {
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, entry);
+        const result = await compareWorkingTreeDelta(ctx, entry);
 
         // Assert
-        expect(sut).toEqual({ status: 'unchanged', worktreeMode: '100644' });
+        expect(result).toEqual({ status: 'unchanged', worktreeMode: '100644' });
       });
     });
   });
@@ -320,10 +320,10 @@ describe('compareWorkingTreeDelta', () => {
         await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, entry);
+        const result = await compareWorkingTreeDelta(ctx, entry);
 
         // Assert
-        expect(sut).toEqual({ status: 'modified', worktreeMode: '100644' });
+        expect(result).toEqual({ status: 'modified', worktreeMode: '100644' });
       });
     });
   });
@@ -336,10 +336,10 @@ describe('compareWorkingTreeDelta', () => {
         const executableEntry: IndexEntry = { ...entry, mode: '100755' };
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, executableEntry);
+        const result = await compareWorkingTreeDelta(ctx, executableEntry);
 
         // Assert
-        expect(sut).toEqual({ status: 'mode-changed', worktreeMode: '100644' });
+        expect(result).toEqual({ status: 'mode-changed', worktreeMode: '100644' });
       });
     });
   });
@@ -352,10 +352,10 @@ describe('compareWorkingTreeDelta', () => {
         const symlinkEntry: IndexEntry = { ...entry, mode: '120000' };
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, symlinkEntry);
+        const result = await compareWorkingTreeDelta(ctx, symlinkEntry);
 
         // Assert
-        expect(sut).toEqual({ status: 'type-changed', worktreeMode: '100644' });
+        expect(result).toEqual({ status: 'type-changed', worktreeMode: '100644' });
       });
     });
   });
@@ -367,10 +367,10 @@ describe('compareWorkingTreeDelta', () => {
         const { ctx, entry } = await seedSymlink('link', 'target-a');
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, entry);
+        const result = await compareWorkingTreeDelta(ctx, entry);
 
         // Assert
-        expect(sut).toEqual({ status: 'unchanged', worktreeMode: '120000' });
+        expect(result).toEqual({ status: 'unchanged', worktreeMode: '120000' });
       });
     });
   });
@@ -384,10 +384,10 @@ describe('compareWorkingTreeDelta', () => {
         await ctx.fs.symlink('target-b', work(ctx, 'link'));
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, entry);
+        const result = await compareWorkingTreeDelta(ctx, entry);
 
         // Assert
-        expect(sut).toEqual({ status: 'modified', worktreeMode: '120000' });
+        expect(result).toEqual({ status: 'modified', worktreeMode: '120000' });
       });
     });
   });
@@ -446,10 +446,10 @@ describe('compareWorkingTreeDelta', () => {
         const provider = await buildAttributeProvider(ctx);
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, entry, provider);
+        const result = await compareWorkingTreeDelta(ctx, entry, provider);
 
         // Assert — clean(smudged) == staged OID => unchanged
-        expect(sut.status).toBe('unchanged');
+        expect(result.status).toBe('unchanged');
       });
     });
   });
@@ -466,10 +466,10 @@ describe('compareWorkingTreeDelta', () => {
         const provider = await buildAttributeProvider(ctx);
 
         // Act
-        const sut = await compareWorkingTreeDelta(ctx, entry, provider);
+        const result = await compareWorkingTreeDelta(ctx, entry, provider);
 
         // Assert
-        expect(sut.status).toBe('modified');
+        expect(result.status).toBe('modified');
       });
     });
   });
@@ -495,10 +495,10 @@ describe('compareWorkingTreeDelta', () => {
         };
 
         // Act
-        const sut = await compareWorkingTreeDelta(noRunnerCtx, entry, provider);
+        const result = await compareWorkingTreeDelta(noRunnerCtx, entry, provider);
 
         // Assert — no runner -> raw path -> smudged bytes hash != cleaned OID -> modified
-        expect(sut.status).toBe('modified');
+        expect(result.status).toBe('modified');
       });
     });
   });
@@ -522,10 +522,10 @@ describe('compareWorkingTreeDelta', () => {
         const provider = await buildAttributeProvider(ctx);
 
         // Act — worktree symlink target unchanged; should be unchanged (raw)
-        const sut = await compareWorkingTreeDelta(ctx, symEntry, provider);
+        const result = await compareWorkingTreeDelta(ctx, symEntry, provider);
 
         // Assert — symlink target hashed raw (not cleaned) => unchanged
-        expect(sut.status).toBe('unchanged');
+        expect(result.status).toBe('unchanged');
       });
     });
   });

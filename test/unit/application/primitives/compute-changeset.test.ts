@@ -47,11 +47,8 @@ describe('computeChangeset', () => {
   describe('Given an empty index and empty target tree', () => {
     describe('When computeChangeset runs', () => {
       it('Then returns no entries', () => {
-        // Arrange
-        const sut = computeChangeset;
-
-        // Act
-        const result = sut(makeIndex([]), []);
+        // Arrange & Act
+        const result = computeChangeset(makeIndex([]), []);
 
         // Assert
         expect(result.entries).toEqual([]);
@@ -63,11 +60,8 @@ describe('computeChangeset', () => {
   describe('Given an empty index and a tree with one blob', () => {
     describe('When computeChangeset runs', () => {
       it('Then emits one add', () => {
-        // Arrange
-        const sut = computeChangeset;
-
-        // Act
-        const result = sut(makeIndex([]), [makeTreeEntry('foo.txt', OID_A)]);
+        // Arrange & Act
+        const result = computeChangeset(makeIndex([]), [makeTreeEntry('foo.txt', OID_A)]);
 
         // Assert
         expect(result.entries).toHaveLength(1);
@@ -87,11 +81,8 @@ describe('computeChangeset', () => {
   describe('Given an index with one entry and empty target tree', () => {
     describe('When computeChangeset runs', () => {
       it('Then emits one delete', () => {
-        // Arrange
-        const sut = computeChangeset;
-
-        // Act
-        const result = sut(makeIndex([makeEntry('foo.txt', OID_A)]), []);
+        // Arrange & Act
+        const result = computeChangeset(makeIndex([makeEntry('foo.txt', OID_A)]), []);
 
         // Assert
         expect(result.entries).toHaveLength(1);
@@ -111,11 +102,8 @@ describe('computeChangeset', () => {
   describe('Given an index entry and target entry with the same oid and mode', () => {
     describe('When computeChangeset runs', () => {
       it('Then emits one noop', () => {
-        // Arrange
-        const sut = computeChangeset;
-
-        // Act
-        const result = sut(makeIndex([makeEntry('foo.txt', OID_A)]), [
+        // Arrange & Act
+        const result = computeChangeset(makeIndex([makeEntry('foo.txt', OID_A)]), [
           makeTreeEntry('foo.txt', OID_A),
         ]);
 
@@ -130,11 +118,8 @@ describe('computeChangeset', () => {
   describe('Given an index entry and a target entry with a different oid', () => {
     describe('When computeChangeset runs', () => {
       it('Then emits one update', () => {
-        // Arrange
-        const sut = computeChangeset;
-
-        // Act
-        const result = sut(makeIndex([makeEntry('foo.txt', OID_A)]), [
+        // Arrange & Act
+        const result = computeChangeset(makeIndex([makeEntry('foo.txt', OID_A)]), [
           makeTreeEntry('foo.txt', OID_B),
         ]);
 
@@ -155,13 +140,11 @@ describe('computeChangeset', () => {
   describe('Given an index entry and a target entry with same oid but different mode', () => {
     describe('When computeChangeset runs', () => {
       it('Then emits one update', () => {
-        // Arrange
-        const sut = computeChangeset;
-
-        // Act — mode-only flip (regular → executable)
-        const result = sut(makeIndex([makeEntry('foo.sh', OID_A, FILE_MODE.REGULAR)]), [
-          makeTreeEntry('foo.sh', OID_A, FILE_MODE.EXECUTABLE),
-        ]);
+        // Arrange & Act — mode-only flip (regular → executable)
+        const result = computeChangeset(
+          makeIndex([makeEntry('foo.sh', OID_A, FILE_MODE.REGULAR)]),
+          [makeTreeEntry('foo.sh', OID_A, FILE_MODE.EXECUTABLE)],
+        );
 
         // Assert
         expect(result.entries[0]?.kind).toBe('update');
@@ -176,7 +159,6 @@ describe('computeChangeset', () => {
     describe('When computeChangeset runs', () => {
       it('Then result entries are sorted by path', () => {
         // Arrange
-        const sut = computeChangeset;
         const index = makeIndex([
           makeEntry('b.txt', OID_A),
           makeEntry('a.txt', OID_A),
@@ -189,7 +171,7 @@ describe('computeChangeset', () => {
         ];
 
         // Act
-        const result = sut(index, tree);
+        const result = computeChangeset(index, tree);
 
         // Assert — sorted paths regardless of input order
         expect(result.entries.map((e) => e.path)).toEqual(['a.txt', 'b.txt', 'c.txt', 'd.txt']);
@@ -202,14 +184,15 @@ describe('computeChangeset', () => {
     describe('When computeChangeset runs', () => {
       it('Then ignores the non-stage-0 entry', () => {
         // Arrange
-        const sut = computeChangeset;
         const stagedConflict: IndexEntry = {
           ...makeEntry('conflict.txt', OID_A),
           flags: { ...STAGE0_FLAGS, stage: 2 },
         };
 
         // Act
-        const result = sut(makeIndex([stagedConflict]), [makeTreeEntry('conflict.txt', OID_A)]);
+        const result = computeChangeset(makeIndex([stagedConflict]), [
+          makeTreeEntry('conflict.txt', OID_A),
+        ]);
 
         // Assert — the non-stage-0 entry is invisible to the changeset; the target tree entry becomes an `add`
         expect(result.entries).toHaveLength(1);
@@ -221,11 +204,8 @@ describe('computeChangeset', () => {
   describe('Given symlinks and gitlinks in the target tree', () => {
     describe('When computeChangeset runs', () => {
       it('Then preserves the mode through entries', () => {
-        // Arrange
-        const sut = computeChangeset;
-
-        // Act
-        const result = sut(makeIndex([]), [
+        // Arrange & Act
+        const result = computeChangeset(makeIndex([]), [
           makeTreeEntry('link', OID_A, FILE_MODE.SYMLINK),
           makeTreeEntry('submodule', OID_B, FILE_MODE.GITLINK),
         ]);

@@ -30,6 +30,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         const id = await createCommit(ctx, {
           tree,
           parents: [],
@@ -38,6 +40,7 @@ describe('createCommit', () => {
           message: 'initial',
         });
         const read = await readObject(ctx, id);
+
         // Assert
         expect(read.type).toBe('commit');
         expect((read as Commit).data.message).toMatch(/^initial/);
@@ -51,6 +54,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         try {
           await createCommit(ctx, {
             tree,
@@ -76,6 +81,8 @@ describe('createCommit', () => {
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
         const msg = 'x'.repeat(16 * 1024 * 1024 - 1);
+
+        // Act
         const id = await createCommit(ctx, {
           tree,
           parents: [],
@@ -83,6 +90,7 @@ describe('createCommit', () => {
           committer: AUTHOR,
           message: msg,
         });
+
         // Assert
         expect(id).toMatch(/^[0-9a-f]{40}$/);
       });
@@ -96,6 +104,8 @@ describe('createCommit', () => {
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
         const msg = 'x'.repeat(16 * 1024 * 1024);
+
+        // Act
         const id = await createCommit(ctx, {
           tree,
           parents: [],
@@ -103,6 +113,7 @@ describe('createCommit', () => {
           committer: AUTHOR,
           message: msg,
         });
+
         // Assert
         expect(id).toMatch(/^[0-9a-f]{40}$/);
       });
@@ -116,6 +127,8 @@ describe('createCommit', () => {
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
         const msg = 'x'.repeat(16 * 1024 * 1024 + 1);
+
+        // Act
         try {
           await createCommit(ctx, {
             tree,
@@ -140,6 +153,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         try {
           await createCommit(ctx, {
             tree,
@@ -164,6 +179,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         try {
           await createCommit(ctx, {
             tree,
@@ -187,6 +204,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         try {
           await createCommit(ctx, {
             tree,
@@ -244,6 +263,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         try {
           await createCommit(ctx, {
             tree,
@@ -276,6 +297,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         try {
           await createCommit(ctx, {
             tree,
@@ -301,6 +324,8 @@ describe('createCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         const id = await createCommit(ctx, {
           tree,
           parents: [],
@@ -309,6 +334,7 @@ describe('createCommit', () => {
           message: 'm',
           extraHeaders: [{ key: 'mergetag', value: 'a clean value with no separator' }],
         });
+
         // Assert
         expect(id).toMatch(/^[0-9a-f]{40}$/);
       });
@@ -325,6 +351,8 @@ describe('createCommit', () => {
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
         const sig = '-----BEGIN PGP-----\nfake-base64-sig\n-----END PGP-----';
+
+        // Act
         const id = await createCommit(ctx, {
           tree,
           parents: [],
@@ -334,6 +362,7 @@ describe('createCommit', () => {
           gpgSignature: sig,
         });
         const read = await readObject(ctx, id);
+
         // Assert
         if (read.type !== 'commit') expect.unreachable();
         expect(read.data.gpgSignature).toBe(sig);
@@ -351,6 +380,8 @@ describe('createCommit', () => {
         // does.
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
+
+        // Act
         const id = await createCommit(ctx, {
           tree,
           parents: [],
@@ -359,6 +390,7 @@ describe('createCommit', () => {
           message: 'unsigned',
         });
         const read = await readObject(ctx, id);
+
         // Assert
         if (read.type !== 'commit') expect.unreachable();
         expect('gpgSignature' in read.data).toBe(false);

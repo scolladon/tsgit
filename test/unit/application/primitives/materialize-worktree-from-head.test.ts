@@ -62,12 +62,12 @@ describe('Given a freshly-cloned gitdir whose HEAD points at a commit', () => {
       // Arrange
       const { ctx } = await seedHeadCommit();
       // Act
-      const sut = await materializeWorktreeFromHead(ctx);
+      const result = await materializeWorktreeFromHead(ctx);
       // Assert
       expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('hello\n');
       expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/dir/nested`)).toBe('deep\n');
-      expect(sut.written).toBe(2);
-      expect(sut.deleted).toBe(0);
+      expect(result.written).toBe(2);
+      expect(result.deleted).toBe(0);
     });
 
     it('Then it writes the module index recording both tree paths', async () => {
@@ -121,10 +121,10 @@ describe('Given a freshly-cloned gitdir whose HEAD points at a commit', () => {
       const { ctx } = await seedHeadCommit();
       await materializeWorktreeFromHead(ctx);
       // Act
-      const sut = await materializeWorktreeFromHead(ctx);
+      const result = await materializeWorktreeFromHead(ctx);
       // Assert
-      expect(sut.written).toBe(0);
-      expect(sut.deleted).toBe(0);
+      expect(result.written).toBe(0);
+      expect(result.deleted).toBe(0);
     });
   });
 });

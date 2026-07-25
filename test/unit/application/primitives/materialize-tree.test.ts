@@ -73,10 +73,9 @@ describe('materializeTree', () => {
           { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
         ];
         const treeId = await writeTree(ctx, treeEntries);
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
         });
@@ -100,10 +99,9 @@ describe('materializeTree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/old.txt`, new TextEncoder().encode('soon-gone'));
         const treeId = await writeTree(ctx, []);
         const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry('old.txt', blobId)] };
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           force: true,
@@ -135,10 +133,9 @@ describe('materializeTree', () => {
         };
         // Simulate a locally-modified file: index says 'committed', disk says 'dirty'.
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('dirty'));
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: indexWithMatch,
           force: true,
@@ -175,10 +172,9 @@ describe('materializeTree', () => {
           entries: [makeIndexEntry('a.txt', blobId)],
         };
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('committed'));
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: indexWithMatch,
           force: false,
@@ -207,10 +203,9 @@ describe('materializeTree', () => {
           entries: [makeIndexEntry('a.txt', blobId)],
         };
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('dirty'));
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: indexWithMatch,
           force: true,
@@ -251,10 +246,9 @@ describe('materializeTree', () => {
             makeIndexEntry('c.txt', idC),
           ],
         };
-        const sut = materializeTree;
 
         // Act
-        await sut(ctxWithProgress, {
+        await materializeTree(ctxWithProgress, {
           targetTree: treeId,
           currentIndex: indexWithAllMatches,
           force: true,
@@ -292,10 +286,9 @@ describe('materializeTree', () => {
           ...EMPTY_INDEX,
           entries: [makeIndexEntry('conflict.txt', idConflict, 2)],
         };
-        const sut = materializeTree;
 
         // Act — restore only 'a.txt'; 'conflict.txt' is out of scope.
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           paths: new Set(['a.txt' as FilePath]),
@@ -324,10 +317,9 @@ describe('materializeTree', () => {
           ...EMPTY_INDEX,
           entries: [makeIndexEntry('keep.txt', idKeep)],
         };
-        const sut = materializeTree;
 
         // Act — restore only 'a.txt'; 'keep.txt' is out of scope and must persist.
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           paths: new Set(['a.txt' as FilePath]),
@@ -357,10 +349,9 @@ describe('materializeTree', () => {
           ...EMPTY_INDEX,
           entries: [makeIndexEntry('a.txt', idOld)],
         };
-        const sut = materializeTree;
 
         // Act — restore 'a.txt', which is also present in the index.
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           force: true,
@@ -391,10 +382,9 @@ describe('materializeTree', () => {
           { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
           { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
         ]);
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
         });
@@ -423,10 +413,9 @@ describe('materializeTree', () => {
           ...EMPTY_INDEX,
           entries: [makeIndexEntry('z.txt', idZ)],
         };
-        const sut = materializeTree;
 
         // Act — restore only 'm.txt'; 'z.txt' is preserved out of scope.
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           paths: new Set(['m.txt' as FilePath]),
@@ -452,12 +441,11 @@ describe('materializeTree', () => {
         const treeId = await writeTree(ctx, [
           { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
         ]);
-        const sut = materializeTree;
 
         // Act / Assert
         let captured: unknown;
         try {
-          await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+          await materializeTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
         } catch (error) {
           captured = error;
         }
@@ -494,10 +482,9 @@ describe('materializeTree', () => {
         const treeId = await writeTree(ctx, [
           { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
         ]);
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
           force: true,
@@ -522,10 +509,9 @@ describe('materializeTree', () => {
           { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
           { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
         ]);
-        const sut = materializeTree;
 
         // Act — restore only 'a.txt'
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
           paths: new Set(['a.txt' as FilePath]),
@@ -551,10 +537,9 @@ describe('materializeTree', () => {
           { dir: 'docs', name: 'b.txt', id: idB },
           { dir: 'src', name: 'a.txt', id: idA },
         ]);
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
           sparse: (path) => path.startsWith('src/'),
@@ -603,10 +588,9 @@ describe('materializeTree', () => {
           { dir: 'src', name: 'a.txt', id: idA },
         ]);
         const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry('docs/b.txt', idB)] };
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           sparse: (path) => path.startsWith('src/'),
@@ -637,10 +621,9 @@ describe('materializeTree', () => {
           ...EMPTY_INDEX,
           entries: [{ ...skipped, flags: { ...STAGE0_FLAGS, skipWorktree: true } }],
         };
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: index,
           sparse: (path) => path.startsWith('src/'),
@@ -668,10 +651,9 @@ describe('materializeTree', () => {
           { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
           { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
         ]);
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
           sparse: () => true,
@@ -700,10 +682,9 @@ describe('materializeTree', () => {
           { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
           { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
         ]);
-        const sut = materializeTree;
 
         // Act
-        const result = await sut(ctx, {
+        const result = await materializeTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
           paths: new Set(['a.txt' as FilePath]),

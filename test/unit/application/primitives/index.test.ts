@@ -87,8 +87,11 @@ describe('primitives barrel', () => {
           'writeTree',
         ];
         for (const name of names) {
+          // Act
+          const value = (primitives as Record<string, unknown>)[name];
+
           // Assert
-          expect(typeof (primitives as Record<string, unknown>)[name]).toBe('function');
+          expect(typeof value).toBe('function');
         }
       });
     });
@@ -177,7 +180,10 @@ describe('primitives barrel', () => {
           'writeSparsePatternText',
           'writeTree',
         ]);
+
+        // Act
         const actual = new Set(Object.keys(primitives));
+
         // Assert
         expect(actual).toEqual(expected);
       });

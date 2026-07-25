@@ -119,7 +119,7 @@ describe('object-resolver', () => {
         const ctx = await buildSeededContext();
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert
+        // Act
         try {
           await resolveObject(ctx, registry, 'f'.repeat(40) as ObjectId, true);
           // Assert
@@ -141,7 +141,7 @@ describe('object-resolver', () => {
         const ctx = await buildSeededContext({ signal: controller.signal });
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert
+        // Act
         try {
           await resolveObject(ctx, registry, 'a'.repeat(40) as ObjectId, true);
           // Assert
@@ -193,7 +193,7 @@ describe('object-resolver', () => {
         await ctx.fs.write(loosePath, compressed);
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert
+        // Act
         try {
           await resolveObject(ctx, registry, fakeId, true);
           // Assert
@@ -332,10 +332,10 @@ describe('object-resolver', () => {
           await resolveObject(ctx, registry, baseId as ObjectId, false);
 
           // Act — exact boundary cap=5, base size=5 → accept.
-          const sut = await resolveObject(ctx, registry, deltaId as ObjectId, false, 5);
+          const result = await resolveObject(ctx, registry, deltaId as ObjectId, false, 5);
 
           // Assert
-          expect(sut.type).toBe('blob');
+          expect(result.type).toBe('blob');
         });
       });
     });
@@ -405,7 +405,7 @@ describe('object-resolver', () => {
           const deltaId = ids[1] as ObjectId;
           const registry = createPackRegistry(ctx);
 
-          // Act / Assert — cap rejects on the base, not the target.
+          // Act — cap rejects on the base, not the target.
           try {
             await resolveObject(ctx, registry, deltaId, false, 4);
             // Assert
@@ -443,12 +443,13 @@ describe('object-resolver', () => {
           const deltaId = ids[1] as ObjectId;
           const registry = createPackRegistry(ctx);
 
-          // Act / Assert
+          // Act
           try {
             await resolveObject(ctx, registry, deltaId, false, 4);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
+            // Assert
             expect(data.code).toBe('OBJECT_TOO_LARGE');
             if (data.code !== 'OBJECT_TOO_LARGE') {
               expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
@@ -810,12 +811,13 @@ describe('object-resolver', () => {
           };
           const sut = resolveObject;
 
-          // Act / Assert
+          // Act
           try {
             await sut(ctx, registry, targetId, false);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
+            // Assert
             expect(data.code).toBe('INVALID_PACK_INDEX');
             if (data.code !== 'INVALID_PACK_INDEX') {
               expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
@@ -868,12 +870,13 @@ describe('object-resolver', () => {
           };
           const sut = resolveObject;
 
-          // Act / Assert
+          // Act
           try {
             await sut(ctx, registry, targetId, false);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
+            // Assert
             expect(data.code).toBe('INVALID_PACK_INDEX');
             if (data.code !== 'INVALID_PACK_INDEX') {
               expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
@@ -922,12 +925,13 @@ describe('object-resolver', () => {
           };
           const sut = resolveObject;
 
-          // Act / Assert
+          // Act
           try {
             await sut(ctx, registry, targetId, false);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
+            // Assert
             expect(data.code).toBe('INVALID_PACK_INDEX');
             if (data.code !== 'INVALID_PACK_INDEX') {
               expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
@@ -1006,7 +1010,7 @@ describe('object-resolver', () => {
         ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert
+        // Act
         try {
           await resolveObject(ctx, registry, deltaId as ObjectId, false);
           // Assert
@@ -1042,7 +1046,7 @@ describe('object-resolver', () => {
         ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert
+        // Act
         try {
           await resolveObject(ctx, registry, deltaId as ObjectId, false);
           // Assert
@@ -1070,7 +1074,7 @@ describe('object-resolver', () => {
         const tipId = ids.at(-1)! as ObjectId;
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert
+        // Act
         try {
           await resolveObject(ctx, registry, tipId, false);
           throw new Error('should not reach here');
@@ -1105,7 +1109,7 @@ describe('object-resolver', () => {
         ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
         const registry = createPackRegistry(ctx);
 
-        // Act / Assert
+        // Act
         try {
           await resolveObject(ctx, registry, deltaId as ObjectId, false);
           // Assert
@@ -1144,7 +1148,7 @@ describe('object-resolver', () => {
           ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
           const registry = createPackRegistry(ctx);
 
-          // Act / Assert — cap = 4, far below the 14-byte poisoned buffer.
+          // Act — cap = 4, far below the 14-byte poisoned buffer.
           try {
             await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
             // Assert
@@ -1186,7 +1190,7 @@ describe('object-resolver', () => {
           ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
           const registry = createPackRegistry(ctx);
 
-          // Act / Assert — cap = 4, content size 20 > 4.
+          // Act — cap = 4, content size 20 > 4.
           try {
             await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
             // Assert
@@ -1225,7 +1229,7 @@ describe('object-resolver', () => {
           const targetId = 'a'.repeat(40) as ObjectId;
           const registry = await stubRegistry(ctx, [{ id: targetId, packPath, offset: 12 }]);
 
-          // Act / Assert
+          // Act
           try {
             await resolveObject(ctx, registry, targetId, false);
             // Assert
@@ -1260,7 +1264,7 @@ describe('object-resolver', () => {
           const targetId = 'a'.repeat(40) as ObjectId;
           const registry = await stubRegistry(ctx, [{ id: targetId, packPath, offset: 12 }]);
 
-          // Act / Assert — walker does not short-circuit at 0; nextOffsetForEntry
+          // Act — walker does not short-circuit at 0; nextOffsetForEntry
           // rejects offset 0 as absent from the sorted index.
           try {
             await resolveObject(ctx, registry, targetId, false);
@@ -1298,7 +1302,7 @@ describe('object-resolver', () => {
         const targetId = 'a'.repeat(40) as ObjectId;
         const registry = await stubRegistry(ctx, [{ id: targetId, packPath, offset: 12 }]);
 
-        // Act / Assert — cap 4, actual inflated content 40 bytes.
+        // Act — cap 4, actual inflated content 40 bytes.
         try {
           await resolveObject(ctx, registry, targetId, false, 4);
           // Assert

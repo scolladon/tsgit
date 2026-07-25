@@ -107,10 +107,8 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('hello world'));
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(ctx, {
+        const result = await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('foo.txt', id)]),
           force: false,
           workdir: WORKDIR,
@@ -135,10 +133,8 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(ctx, {
+        const result = await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('run.sh', id, FILE_MODE.EXECUTABLE)]),
           force: false,
           workdir: WORKDIR,
@@ -146,6 +142,29 @@ describe('applyChangeset', () => {
 
         // Assert
         expect(result.writtenEntries[0]?.mode).toBe(FILE_MODE.EXECUTABLE);
+      });
+
+      it('Then chmods the file to 0o755', async () => {
+        // Arrange — capture the mode argument passed to chmod
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
+        const chmodMode = vi.fn<(path: string, mode: number) => Promise<void>>(
+          async () => undefined,
+        );
+        const wrappedCtx: Context = {
+          ...ctx,
+          fs: { ...ctx.fs, chmod: chmodMode },
+        };
+
+        // Act
+        await applyChangeset(wrappedCtx, {
+          changeset: makeChangeset([makeAdd('run.sh', id, FILE_MODE.EXECUTABLE)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(chmodMode).toHaveBeenCalledWith(`${WORKDIR}/run.sh`, 0o755);
       });
     });
   });
@@ -156,10 +175,8 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('../target.txt'));
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('link', id, FILE_MODE.SYMLINK)]),
           force: false,
           workdir: WORKDIR,
@@ -176,10 +193,8 @@ describe('applyChangeset', () => {
       it('Then creates an empty directory placeholder', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('sub', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK)]),
           force: false,
           workdir: WORKDIR,
@@ -199,10 +214,8 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('soon-gone'));
         await ctx.fs.write(`${WORKDIR}/doomed.txt`, new TextEncoder().encode('soon-gone'));
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(ctx, {
+        const result = await applyChangeset(ctx, {
           changeset: makeChangeset([makeDelete('doomed.txt', id)]),
           force: true,
           workdir: WORKDIR,
@@ -224,11 +237,9 @@ describe('applyChangeset', () => {
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
         // working tree has LOCAL MOD (not the original content)
         await ctx.fs.write(`${WORKDIR}/mod.txt`, new TextEncoder().encode('local-edit'));
-        const sut = applyChangeset;
-
-        // Act + Assert
+        // Act
         try {
-          await sut(ctx, {
+          await applyChangeset(ctx, {
             changeset: makeChangeset([makeUpdate('mod.txt', oldId, newId)]),
             force: false,
             workdir: WORKDIR,
@@ -255,10 +266,8 @@ describe('applyChangeset', () => {
         const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
         await ctx.fs.write(`${WORKDIR}/mod.txt`, new TextEncoder().encode('local-edit'));
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeUpdate('mod.txt', oldId, newId)]),
           force: true,
           workdir: WORKDIR,
@@ -277,11 +286,9 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('new'));
         await ctx.fs.write(`${WORKDIR}/clash.txt`, new TextEncoder().encode('local'));
-        const sut = applyChangeset;
-
-        // Act + Assert
+        // Act
         try {
-          await sut(ctx, {
+          await applyChangeset(ctx, {
             changeset: makeChangeset([makeAdd('clash.txt', id)]),
             force: false,
             workdir: WORKDIR,
@@ -303,7 +310,6 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('original'));
         await ctx.fs.write(`${WORKDIR}/secret.txt`, new TextEncoder().encode('original'));
-        const sut = applyChangeset;
         const wrappedCtx = {
           ...ctx,
           fs: {
@@ -317,9 +323,9 @@ describe('applyChangeset', () => {
           },
         };
 
-        // Act + Assert
+        // Act
         try {
-          await sut(wrappedCtx, {
+          await applyChangeset(wrappedCtx, {
             changeset: makeChangeset([
               {
                 kind: 'update',
@@ -358,10 +364,8 @@ describe('applyChangeset', () => {
           previousId: id,
           previousMode: FILE_MODE.REGULAR,
         };
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(ctx, {
+        const result = await applyChangeset(ctx, {
           changeset: makeChangeset([noop]),
           force: false,
           workdir: WORKDIR,
@@ -372,6 +376,36 @@ describe('applyChangeset', () => {
         expect(result.deleted).toBe(0);
         expect(result.writtenEntries).toHaveLength(0);
       });
+
+      it('Then does not report progress for it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('untouched'));
+        await ctx.fs.write(`${WORKDIR}/keep.txt`, new TextEncoder().encode('untouched'));
+        const progressUpdate = vi.fn();
+        const wrappedCtx: Context = {
+          ...ctx,
+          progress: { ...ctx.progress, update: progressUpdate },
+        };
+        const noop: ChangesetEntry = {
+          kind: 'noop',
+          path: 'keep.txt' as FilePath,
+          mode: FILE_MODE.REGULAR,
+          id,
+          previousId: id,
+          previousMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        await applyChangeset(wrappedCtx, {
+          changeset: makeChangeset([noop]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(progressUpdate).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -381,10 +415,8 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('joined'));
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('nested.txt', id)]),
           force: false,
           workdir: '/repo/',
@@ -418,10 +450,8 @@ describe('applyChangeset', () => {
             },
           },
         };
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(wrappedCtx, {
+        const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeUpdate('gone.txt', oldId, newId)]),
           force: false,
           workdir: WORKDIR,
@@ -451,10 +481,8 @@ describe('applyChangeset', () => {
               p === `${WORKDIR}/phantom.txt` ? false : ctx.fs.exists(p),
           },
         };
-        const sut = applyChangeset;
-
-        // Act + Assert — exists()=false short-circuits to non-dirty; no throw despite mismatching bytes
-        const result = await sut(wrappedCtx, {
+        // Act — exists()=false short-circuits to non-dirty; no throw despite mismatching bytes
+        const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeUpdate('phantom.txt', oldId, newId)]),
           force: false,
           workdir: WORKDIR,
@@ -472,11 +500,9 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const oldId = await writeBlob(ctx, new TextEncoder().encode('committed'));
         await ctx.fs.write(`${WORKDIR}/del.txt`, new TextEncoder().encode('local-edit'));
-        const sut = applyChangeset;
-
-        // Act + Assert
+        // Act
         try {
-          await sut(ctx, {
+          await applyChangeset(ctx, {
             changeset: makeChangeset([makeDelete('del.txt', oldId)]),
             force: false,
             workdir: WORKDIR,
@@ -501,10 +527,8 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('./elsewhere'));
         await ctx.fs.write(`${WORKDIR}/lnk`, new TextEncoder().encode('stale-regular-file'));
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('lnk', id, FILE_MODE.SYMLINK)]),
           force: true,
           workdir: WORKDIR,
@@ -529,10 +553,8 @@ describe('applyChangeset', () => {
           ...ctx,
           fs: { ...ctx.fs, chmod: chmodMode },
         };
-        const sut = applyChangeset;
-
         // Act
-        await sut(wrappedCtx, {
+        await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeAdd('plain.txt', id, FILE_MODE.REGULAR)]),
           force: false,
           workdir: WORKDIR,
@@ -540,34 +562,6 @@ describe('applyChangeset', () => {
 
         // Assert
         expect(chmodMode).toHaveBeenCalledWith(`${WORKDIR}/plain.txt`, 0o644);
-      });
-    });
-  });
-
-  describe('Given an add entry with executable mode', () => {
-    describe('When applyChangeset runs', () => {
-      it('Then chmods the file to 0o755', async () => {
-        // Arrange — capture the mode argument passed to chmod
-        const ctx = await buildSeededContext();
-        const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
-        const chmodMode = vi.fn<(path: string, mode: number) => Promise<void>>(
-          async () => undefined,
-        );
-        const wrappedCtx: Context = {
-          ...ctx,
-          fs: { ...ctx.fs, chmod: chmodMode },
-        };
-        const sut = applyChangeset;
-
-        // Act
-        await sut(wrappedCtx, {
-          changeset: makeChangeset([makeAdd('run.sh', id, FILE_MODE.EXECUTABLE)]),
-          force: false,
-          workdir: WORKDIR,
-        });
-
-        // Assert
-        expect(chmodMode).toHaveBeenCalledWith(`${WORKDIR}/run.sh`, 0o755);
       });
     });
   });
@@ -592,10 +586,8 @@ describe('applyChangeset', () => {
             lstat: async (p: string): Promise<FileStat> => fakeStat(await ctx.fs.lstat(p)),
           },
         };
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(wrappedCtx, {
+        const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeAdd('timed.txt', id)]),
           force: false,
           workdir: WORKDIR,
@@ -627,10 +619,8 @@ describe('applyChangeset', () => {
             },
           },
         };
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(wrappedCtx, {
+        const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeAdd('no-ns.txt', id)]),
           force: false,
           workdir: WORKDIR,
@@ -650,10 +640,8 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('flagged'));
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(ctx, {
+        const result = await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('flagged.txt', id)]),
           force: false,
           workdir: WORKDIR,
@@ -666,10 +654,8 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('extflag'));
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(ctx, {
+        const result = await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('extflag.txt', id)]),
           force: false,
           workdir: WORKDIR,
@@ -688,10 +674,8 @@ describe('applyChangeset', () => {
         // Arrange — no file on disk for the delete target
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('phantom'));
-        const sut = applyChangeset;
-
         // Act
-        const result = await sut(ctx, {
+        const result = await applyChangeset(ctx, {
           changeset: makeChangeset([makeDelete('absent.txt', id)]),
           force: true,
           workdir: WORKDIR,
@@ -699,41 +683,6 @@ describe('applyChangeset', () => {
 
         // Assert — rm on a missing path would throw FILE_NOT_FOUND; the guard prevents it
         expect(result.deleted).toBe(1);
-      });
-    });
-  });
-
-  describe('Given a noop entry', () => {
-    describe('When applyChangeset runs', () => {
-      it('Then does not report progress for it', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const id = await writeBlob(ctx, new TextEncoder().encode('untouched'));
-        await ctx.fs.write(`${WORKDIR}/keep.txt`, new TextEncoder().encode('untouched'));
-        const progressUpdate = vi.fn();
-        const wrappedCtx: Context = {
-          ...ctx,
-          progress: { ...ctx.progress, update: progressUpdate },
-        };
-        const noop: ChangesetEntry = {
-          kind: 'noop',
-          path: 'keep.txt' as FilePath,
-          mode: FILE_MODE.REGULAR,
-          id,
-          previousId: id,
-          previousMode: FILE_MODE.REGULAR,
-        };
-        const sut = applyChangeset;
-
-        // Act
-        await sut(wrappedCtx, {
-          changeset: makeChangeset([noop]),
-          force: false,
-          workdir: WORKDIR,
-        });
-
-        // Assert
-        expect(progressUpdate).not.toHaveBeenCalled();
       });
     });
   });
@@ -754,11 +703,9 @@ describe('applyChangeset', () => {
         for (const name of [cjk, emoji, bmp]) {
           await ctx.fs.write(`${WORKDIR}/${name}`, new TextEncoder().encode('local-edit'));
         }
-        const sut = applyChangeset;
-
-        // Act + Assert
+        // Act
         try {
-          await sut(ctx, {
+          await applyChangeset(ctx, {
             // Entry order = UTF-16 ascending (cjk, emoji, bmp).
             changeset: makeChangeset([
               makeUpdate(cjk, oldId, newId),
@@ -795,11 +742,9 @@ describe('applyChangeset', () => {
         for (const name of [cjk, emoji, bmp]) {
           await ctx.fs.write(`${WORKDIR}/${name}`, new TextEncoder().encode('squatter'));
         }
-        const sut = applyChangeset;
-
-        // Act + Assert
+        // Act
         try {
-          await sut(ctx, {
+          await applyChangeset(ctx, {
             changeset: makeChangeset([makeAdd(cjk, id), makeAdd(emoji, id), makeAdd(bmp, id)]),
             force: false,
             workdir: WORKDIR,
@@ -833,10 +778,8 @@ describe('applyChangeset', () => {
           ...ctx,
           progress: { ...ctx.progress, update: progressUpdate },
         };
-        const sut = applyChangeset;
-
         // Act
-        await sut(wrappedCtx, {
+        await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeAdd('new.txt', addId), makeDelete('old.txt', delId)]),
           force: true,
           workdir: WORKDIR,
@@ -862,10 +805,8 @@ describe('applyChangeset', () => {
           ...ctx,
           progress: { ...ctx.progress, update: progressUpdate },
         };
-        const sut = applyChangeset;
-
         // Act
-        await sut(wrappedCtx, {
+        await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeAdd('ticked.txt', id)]),
           force: false,
           workdir: WORKDIR,
@@ -887,10 +828,8 @@ describe('applyChangeset', () => {
         const id = await writeBlob(ctx, content);
         const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('stream.txt', id, FILE_MODE.REGULAR)]),
           force: false,
           workdir: WORKDIR,
@@ -920,10 +859,8 @@ describe('applyChangeset', () => {
           async () => undefined,
         );
         const wrappedCtx: Context = { ...ctx, fs: { ...ctx.fs, chmod: chmodSpy } };
-        const sut = applyChangeset;
-
         // Act
-        await sut(wrappedCtx, {
+        await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeAdd('exec.sh', id, FILE_MODE.EXECUTABLE)]),
           force: false,
           workdir: WORKDIR,
@@ -949,10 +886,8 @@ describe('applyChangeset', () => {
         const id = await writeBlob(ctx, new TextEncoder().encode(target));
         const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('sym.link', id, FILE_MODE.SYMLINK)]),
           force: false,
           workdir: WORKDIR,
@@ -976,10 +911,8 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('sub', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK)]),
           force: false,
           workdir: WORKDIR,
@@ -1031,10 +964,8 @@ describe('applyChangeset', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, filterConfig);
         const runner = new FakeSmudgeRunner(exitCode, lowercase);
         const enrichedCtx: Context = { ...ctx, command: runner };
-        const sut = applyChangeset;
-
         // Act
-        await sut(enrichedCtx, {
+        await applyChangeset(enrichedCtx, {
           changeset: makeChangeset([makeAdd('a.y', id)]),
           force: false,
           workdir: WORKDIR,
@@ -1064,10 +995,8 @@ describe('applyChangeset', () => {
         const enrichedCtx: Context = { ...ctx, command: runner };
         const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
-        const sut = applyChangeset;
-
         // Act
-        await sut(enrichedCtx, {
+        await applyChangeset(enrichedCtx, {
           changeset: makeChangeset([makeAdd('a.y', id)]),
           force: false,
           workdir: WORKDIR,
@@ -1100,12 +1029,10 @@ describe('applyChangeset', () => {
         );
         const runner = new FakeSmudgeRunner(1);
         const enrichedCtx: Context = { ...ctx, command: runner };
-        const sut = applyChangeset;
-
-        // Act + Assert — must throw
+        // Act — must throw
         let caught: unknown;
         try {
-          await sut(enrichedCtx, {
+          await applyChangeset(enrichedCtx, {
             changeset: makeChangeset([makeAdd('a.y', id)]),
             force: false,
             workdir: WORKDIR,
@@ -1143,10 +1070,8 @@ describe('applyChangeset', () => {
         );
         const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
-        const sut = applyChangeset;
-
         // Act — ctx has no command
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('a.y', id)]),
           force: false,
           workdir: WORKDIR,
@@ -1171,10 +1096,8 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('unfiltered'));
         const buildProviderSpy = vi.spyOn(readGitattributesMod, 'buildAttributeProvider');
-        const sut = applyChangeset;
-
         // Act
-        await sut(ctx, {
+        await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('plain.txt', id)]),
           force: false,
           workdir: WORKDIR,
@@ -1200,10 +1123,8 @@ describe('applyChangeset', () => {
         );
         const runner = new FakeSmudgeRunner(0, lowercase);
         const enrichedCtx: Context = { ...ctx, command: runner };
-        const sut = applyChangeset;
-
         // Act
-        await sut(enrichedCtx, {
+        await applyChangeset(enrichedCtx, {
           changeset: makeChangeset([makeAdd('sub', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK)]),
           force: false,
           workdir: WORKDIR,
@@ -1231,10 +1152,8 @@ describe('applyChangeset', () => {
         );
         const runner = new FakeSmudgeRunner(0, lowercase);
         const enrichedCtx: Context = { ...ctx, command: runner };
-        const sut = applyChangeset;
-
         // Act
-        await sut(enrichedCtx, {
+        await applyChangeset(enrichedCtx, {
           changeset: makeChangeset([makeAdd('a.link', id, FILE_MODE.SYMLINK)]),
           force: false,
           workdir: WORKDIR,

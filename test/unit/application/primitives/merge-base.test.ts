@@ -103,10 +103,10 @@ describe('mergeBase', () => {
         const [c0] = await buildLinear(ctx, 1);
 
         // Act
-        const sut = await mergeBase(ctx, [c0!]);
+        const result = await mergeBase(ctx, [c0!]);
 
         // Assert
-        expect(sut).toEqual([c0]);
+        expect(result).toEqual([c0]);
       });
     });
   });
@@ -119,10 +119,10 @@ describe('mergeBase', () => {
         const [c0] = await buildLinear(ctx, 1);
 
         // Act
-        const sut = await mergeBase(ctx, [c0!, c0!]);
+        const result = await mergeBase(ctx, [c0!, c0!]);
 
         // Assert
-        expect(sut).toEqual([c0]);
+        expect(result).toEqual([c0]);
       });
     });
   });
@@ -136,11 +136,11 @@ describe('mergeBase', () => {
         const { child, parent } = await buildChildAfterParent(ctx);
 
         // Act
-        const sut = await mergeBase(ctx, [child, child]);
+        const result = await mergeBase(ctx, [child, child]);
 
         // Assert
-        expect(sut).toEqual([child]);
-        expect(sut).not.toContain(parent);
+        expect(result).toEqual([child]);
+        expect(result).not.toContain(parent);
       });
     });
   });
@@ -153,10 +153,10 @@ describe('mergeBase', () => {
         const [, b, , d] = await buildLinear(ctx, 4);
 
         // Act
-        const sut = await mergeBase(ctx, [d!, b!]);
+        const result = await mergeBase(ctx, [d!, b!]);
 
         // Assert
-        expect(sut).toEqual([b]);
+        expect(result).toEqual([b]);
       });
     });
   });
@@ -169,10 +169,10 @@ describe('mergeBase', () => {
         const [a, , c] = await buildLinear(ctx, 3);
 
         // Act
-        const sut = await mergeBase(ctx, [c!, a!]);
+        const result = await mergeBase(ctx, [c!, a!]);
 
         // Assert
-        expect(sut).toEqual([a]);
+        expect(result).toEqual([a]);
       });
     });
 
@@ -183,10 +183,10 @@ describe('mergeBase', () => {
         const [a, , c] = await buildLinear(ctx, 3);
 
         // Act
-        const sut = await mergeBase(ctx, [c!, a!], { all: true });
+        const result = await mergeBase(ctx, [c!, a!], { all: true });
 
         // Assert
-        expect(sut).toEqual([a]);
+        expect(result).toEqual([a]);
       });
     });
   });
@@ -199,10 +199,10 @@ describe('mergeBase', () => {
         const { a, b, c } = await buildDiamond(ctx);
 
         // Act
-        const sut = await mergeBase(ctx, [b, c]);
+        const result = await mergeBase(ctx, [b, c]);
 
         // Assert
-        expect(sut).toEqual([a]);
+        expect(result).toEqual([a]);
       });
     });
   });
@@ -216,11 +216,11 @@ describe('mergeBase', () => {
         const [smaller] = [b, c].sort() as [ObjectId, ObjectId];
 
         // Act
-        const sut = await mergeBase(ctx, [d, e]);
+        const result = await mergeBase(ctx, [d, e]);
 
         // Assert
-        expect(sut).toEqual([smaller]);
-        expect(sut).not.toContain(a);
+        expect(result).toEqual([smaller]);
+        expect(result).not.toContain(a);
       });
     });
 
@@ -232,11 +232,11 @@ describe('mergeBase', () => {
         const expected = [b, c].sort();
 
         // Act
-        const sut = await mergeBase(ctx, [d, e], { all: true });
+        const result = await mergeBase(ctx, [d, e], { all: true });
 
         // Assert
-        expect(sut).toEqual(expected);
-        expect(sut).not.toContain(a);
+        expect(result).toEqual(expected);
+        expect(result).not.toContain(a);
       });
     });
   });
@@ -251,10 +251,10 @@ describe('mergeBase', () => {
         const y = await commitWith(ctx, treeId, 2, []);
 
         // Act
-        const sut = await mergeBase(ctx, [x, y]);
+        const result = await mergeBase(ctx, [x, y]);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
 
@@ -267,10 +267,10 @@ describe('mergeBase', () => {
         const y = await commitWith(ctx, treeId, 2, []);
 
         // Act
-        const sut = await mergeBase(ctx, [x, y], { all: true });
+        const result = await mergeBase(ctx, [x, y], { all: true });
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -282,7 +282,7 @@ describe('mergeBase', () => {
         const ctx = await buildSeededContext();
         const sut = mergeBase;
 
-        // Act + Assert
+        // Act
         try {
           await sut(ctx, []);
           throw new Error('expected throw');
@@ -308,10 +308,10 @@ describe('mergeBase', () => {
         const [c0] = await buildLinear(ctx, 1);
 
         // Act
-        const sut = await mergeBase(ctx, [treeId, c0!]);
+        const result = await mergeBase(ctx, [treeId, c0!]);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -330,12 +330,12 @@ describe('mergeBase', () => {
         const y = await commitWith(ctx, treeId, 5, [c]);
 
         // Act
-        const sut = await mergeBase(ctx, [x, y], { all: true });
+        const result = await mergeBase(ctx, [x, y], { all: true });
 
         // Assert
-        expect(sut).toEqual([c]);
-        expect(sut).not.toContain(b);
-        expect(sut).not.toContain(a);
+        expect(result).toEqual([c]);
+        expect(result).not.toContain(b);
+        expect(result).not.toContain(a);
       });
     });
   });
@@ -353,10 +353,10 @@ describe('mergeBase', () => {
         const c = await commitWith(ctx, treeId, 20, [a]);
 
         // Act
-        const sut = await mergeBase(ctx, [b, c]);
+        const result = await mergeBase(ctx, [b, c]);
 
         // Assert
-        expect(sut).toEqual([a]);
+        expect(result).toEqual([a]);
       });
     });
   });
@@ -386,10 +386,10 @@ describe('mergeBase', () => {
         });
 
         // Act
-        const sut = await mergeBase(ctx, [b, c]);
+        const result = await mergeBase(ctx, [b, c]);
 
         // Assert
-        expect(sut).toEqual([a]);
+        expect(result).toEqual([a]);
       });
     });
   });
@@ -406,10 +406,10 @@ describe('mergeBase', () => {
         const d = await commitWith(ctx, treeId, 4, [root]);
 
         // Act
-        const sut = await mergeBase(ctx, [b, c, d], { octopus: true });
+        const result = await mergeBase(ctx, [b, c, d], { octopus: true });
 
         // Assert
-        expect(sut).toEqual([root]);
+        expect(result).toEqual([root]);
       });
     });
   });
@@ -422,10 +422,10 @@ describe('mergeBase', () => {
         const [c0] = await buildLinear(ctx, 1);
 
         // Act
-        const sut = await mergeBase(ctx, [c0!], { octopus: true });
+        const result = await mergeBase(ctx, [c0!], { octopus: true });
 
         // Assert
-        expect(sut).toEqual([c0]);
+        expect(result).toEqual([c0]);
       });
     });
   });
@@ -439,10 +439,10 @@ describe('mergeBase', () => {
         const expected = [b, c].sort();
 
         // Act
-        const sut = await mergeBase(ctx, [d, e], { octopus: true, all: true });
+        const result = await mergeBase(ctx, [d, e], { octopus: true, all: true });
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
 
@@ -454,10 +454,10 @@ describe('mergeBase', () => {
         const [smaller] = [b, c].sort() as [ObjectId, ObjectId];
 
         // Act
-        const sut = await mergeBase(ctx, [d, e], { octopus: true });
+        const result = await mergeBase(ctx, [d, e], { octopus: true });
 
         // Assert
-        expect(sut).toEqual([smaller]);
+        expect(result).toEqual([smaller]);
       });
     });
   });
@@ -472,10 +472,10 @@ describe('mergeBase', () => {
         const y = await commitWith(ctx, treeId, 2, []);
 
         // Act
-        const sut = await mergeBase(ctx, [x, y], { octopus: true });
+        const result = await mergeBase(ctx, [x, y], { octopus: true });
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -490,11 +490,11 @@ describe('mergeBase', () => {
         const { a, c, d, e } = await buildCrissCross(ctx);
 
         // Act
-        const sut = await mergeBase(ctx, [d, e, c], { octopus: true, all: true });
+        const result = await mergeBase(ctx, [d, e, c], { octopus: true, all: true });
 
         // Assert
-        expect(sut).toEqual([c]);
-        expect(sut).not.toContain(a);
+        expect(result).toEqual([c]);
+        expect(result).not.toContain(a);
       });
     });
   });
