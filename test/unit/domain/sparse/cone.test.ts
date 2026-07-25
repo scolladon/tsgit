@@ -45,11 +45,11 @@ describe('buildConeSpec', () => {
         },
       ])('Then $label', ({ dirs, recursive, parents }) => {
         // Arrange + Act
-        const sut = buildConeSpec(dirs);
+        const result = buildConeSpec(dirs);
 
         // Assert
-        expect([...sut.recursive].sort()).toEqual(recursive);
-        expect([...sut.parents].sort()).toEqual(parents);
+        expect([...result.recursive].sort()).toEqual(recursive);
+        expect([...result.parents].sort()).toEqual(parents);
       });
     });
   });
@@ -78,10 +78,10 @@ describe('buildConeSpec', () => {
         { dirs: ['src//'], recursive: ['src'], label: 'every trailing slash is stripped' },
       ])('Then $label', ({ dirs, recursive }) => {
         // Arrange + Act
-        const sut = buildConeSpec(dirs);
+        const result = buildConeSpec(dirs);
 
         // Assert
-        expect([...sut.recursive]).toEqual(recursive);
+        expect([...result.recursive]).toEqual(recursive);
       });
     });
   });
@@ -257,10 +257,10 @@ describe('serializeCone', () => {
     describe('When serialized', () => {
       it("Then it emits git's exact cone-file text", () => {
         // Arrange
-        const sut = buildConeSpec(['src/app', 'docs']);
+        const cone = buildConeSpec(['src/app', 'docs']);
 
         // Act
-        const result = serializeCone(sut);
+        const result = serializeCone(cone);
 
         // Assert
         expect(result).toBe('/*\n!/*/\n/docs/\n/src/\n!/src/*/\n/src/app/\n');
@@ -272,10 +272,10 @@ describe('serializeCone', () => {
     describe('When serialized', () => {
       it('Then no negated wildcard line is emitted', () => {
         // Arrange
-        const sut = buildConeSpec(['docs']);
+        const cone = buildConeSpec(['docs']);
 
         // Act
-        const result = serializeCone(sut);
+        const result = serializeCone(cone);
 
         // Assert
         expect(result).toBe('/*\n!/*/\n/docs/\n');
@@ -293,12 +293,12 @@ describe('parseCone', () => {
         const text = serializeCone(original);
 
         // Act
-        const sut = parseCone(text);
+        const result = parseCone(text);
 
         // Assert
-        expect(sut).toBeDefined();
-        expect([...(sut as ConeSpec).recursive].sort()).toEqual(['docs', 'src/app']);
-        expect([...(sut as ConeSpec).parents].sort()).toEqual(['src']);
+        expect(result).toBeDefined();
+        expect([...(result as ConeSpec).recursive].sort()).toEqual(['docs', 'src/app']);
+        expect([...(result as ConeSpec).parents].sort()).toEqual(['src']);
       });
     });
   });
@@ -310,11 +310,11 @@ describe('parseCone', () => {
         const text = '/*\n!/*/\n/docs/\n\n';
 
         // Act
-        const sut = parseCone(text);
+        const result = parseCone(text);
 
         // Assert
-        expect(sut).toBeDefined();
-        expect([...(sut as ConeSpec).recursive]).toEqual(['docs']);
+        expect(result).toBeDefined();
+        expect([...(result as ConeSpec).recursive]).toEqual(['docs']);
       });
     });
   });
@@ -356,10 +356,10 @@ describe('parseCone', () => {
         },
       ])('Then $label', ({ text }) => {
         // Arrange + Act
-        const sut = parseCone(text);
+        const result = parseCone(text);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -371,11 +371,11 @@ describe('parseCone', () => {
         const text = '/*\n!/*/\n/src/\n';
 
         // Act
-        const sut = parseCone(text);
+        const result = parseCone(text);
 
         // Assert
-        expect([...(sut as ConeSpec).recursive]).toEqual(['src']);
-        expect([...(sut as ConeSpec).parents]).toEqual([]);
+        expect([...(result as ConeSpec).recursive]).toEqual(['src']);
+        expect([...(result as ConeSpec).parents]).toEqual([]);
       });
     });
   });
@@ -388,12 +388,12 @@ describe('parseCone', () => {
         const text = '/*\r\n!/*/\r\n/src/\r\n!/src/*/\r\n/src/app/\r\n';
 
         // Act
-        const sut = parseCone(text);
+        const result = parseCone(text);
 
         // Assert
-        expect(sut).toBeDefined();
-        expect([...(sut as ConeSpec).recursive]).toEqual(['src/app']);
-        expect([...(sut as ConeSpec).parents]).toEqual(['src']);
+        expect(result).toBeDefined();
+        expect([...(result as ConeSpec).recursive]).toEqual(['src/app']);
+        expect([...(result as ConeSpec).parents]).toEqual(['src']);
       });
     });
   });
@@ -408,10 +408,10 @@ describe('parseCone', () => {
         const text = '/*\n!/*/\n/sr\rc/\n';
 
         // Act
-        const sut = parseCone(text);
+        const result = parseCone(text);
 
         // Assert — the inner CR is part of the recursive directory name.
-        expect([...(sut as ConeSpec).recursive]).toEqual(['sr\rc']);
+        expect([...(result as ConeSpec).recursive]).toEqual(['sr\rc']);
       });
     });
   });

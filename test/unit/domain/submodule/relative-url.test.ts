@@ -53,12 +53,10 @@ describe('Given a relative submodule URL and a base remote URL', () => {
     });
 
     it('Then over-popping until the base is a bare dot refuses', () => {
-      // Arrange
-      const sut = relativeUrl;
-      // Act
+      // Arrange & Act
       let thrown: unknown;
       try {
-        sut('https://h.x/super.git', '../../../../../../sub');
+        relativeUrl('https://h.x/super.git', '../../../../../../sub');
       } catch (err) {
         thrown = err;
       }
@@ -139,12 +137,10 @@ describe('Given a relative submodule URL and a base remote URL', () => {
     });
 
     it('Then over-popping a relative base past its root refuses', () => {
-      // Arrange
-      const sut = relativeUrl;
-      // Act
+      // Arrange & Act
       let thrown: unknown;
       try {
-        sut('.', '../../x');
+        relativeUrl('.', '../../x');
       } catch (err) {
         thrown = err;
       }
@@ -159,12 +155,10 @@ describe('Given a relative submodule URL and a base remote URL', () => {
     });
 
     it('Then a base starting with `../` over-popped past its root refuses', () => {
-      // Arrange
-      const sut = relativeUrl;
-      // Act
+      // Arrange & Act
       let thrown: unknown;
       try {
-        sut('../a', '../../sub');
+        relativeUrl('../a', '../../sub');
       } catch (err) {
         thrown = err;
       }

@@ -60,11 +60,7 @@ describe('parse-gitignore properties', () => {
           { numRuns: 100 },
         );
       });
-    });
-  });
 
-  describe('Given an arbitrary list of pattern lines', () => {
-    describe('When parsed', () => {
       it('Then the count of directory-only rules equals the count of input lines ending with `/`', () => {
         // Arrange + Act + Assert
         const arbPatternLines = fc.array(arbGitignorePattern(), { minLength: 0, maxLength: 8 });

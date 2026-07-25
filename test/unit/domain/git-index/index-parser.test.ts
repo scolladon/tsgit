@@ -102,12 +102,12 @@ describe('parseIndex', () => {
         const input = buildTestIndex([]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.version).toBe(2);
-        expect(sut.entries).toHaveLength(0);
-        expect(sut.extensions).toHaveLength(0);
+        expect(result.version).toBe(2);
+        expect(result.entries).toHaveLength(0);
+        expect(result.extensions).toHaveLength(0);
       });
     });
   });
@@ -128,11 +128,11 @@ describe('parseIndex', () => {
         ]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.entries).toHaveLength(1);
-        const entry = sut.entries[0]!;
+        expect(result.entries).toHaveLength(1);
+        const entry = result.entries[0]!;
         expect(entry.path).toBe('hello.txt');
         expect(entry.id).toBe(SHA_A);
         expect(entry.ctimeSeconds).toBe(1000);
@@ -167,13 +167,13 @@ describe('parseIndex', () => {
         ]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.entries).toHaveLength(3);
-        expect(sut.entries[0]?.path).toBe('a.txt');
-        expect(sut.entries[1]?.path).toBe('b.txt');
-        expect(sut.entries[2]?.path).toBe('c.txt');
+        expect(result.entries).toHaveLength(3);
+        expect(result.entries[0]?.path).toBe('a.txt');
+        expect(result.entries[1]?.path).toBe('b.txt');
+        expect(result.entries[2]?.path).toBe('c.txt');
       });
     });
   });
@@ -188,11 +188,11 @@ describe('parseIndex', () => {
         ]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.entries[0]?.path).toBe('z.txt');
-        expect(sut.entries[1]?.path).toBe('a.txt');
+        expect(result.entries[0]?.path).toBe('z.txt');
+        expect(result.entries[1]?.path).toBe('a.txt');
       });
     });
   });
@@ -205,12 +205,12 @@ describe('parseIndex', () => {
         const input = buildTestIndex([], [{ signature: 'TREE', data: extData }]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.extensions).toHaveLength(1);
-        expect(sut.extensions[0]?.signature).toBe('TREE');
-        expect(sut.extensions[0]?.data).toEqual(extData);
+        expect(result.extensions).toHaveLength(1);
+        expect(result.extensions[0]?.signature).toBe('TREE');
+        expect(result.extensions[0]?.data).toEqual(extData);
       });
     });
   });
@@ -319,10 +319,10 @@ describe('parseIndex', () => {
         buf.set(pathBytes, 12 + 62);
 
         // Act
-        const sut = parseIndex(buf);
+        const result = parseIndex(buf);
 
         // Assert
-        expect(sut.entries[0]?.path).toBe(longPath);
+        expect(result.entries[0]?.path).toBe(longPath);
       });
     });
   });
@@ -538,10 +538,10 @@ describe('parseIndex', () => {
         const input = buildTestIndex([{ path: 'conflict.txt', sha: SHA_A, stage: 2 }]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.entries[0]?.flags.stage).toBe(2);
+        expect(result.entries[0]?.flags.stage).toBe(2);
       });
     });
   });
@@ -553,10 +553,10 @@ describe('parseIndex', () => {
         const input = buildTestIndex([{ path: 'assumed.txt', sha: SHA_A, assumeValid: true }]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.entries[0]?.flags.assumeValid).toBe(true);
+        expect(result.entries[0]?.flags.assumeValid).toBe(true);
       });
     });
   });
@@ -636,14 +636,14 @@ describe('parseIndex', () => {
         );
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.extensions).toHaveLength(2);
-        expect(sut.extensions[0]?.signature).toBe('TREE');
-        expect(sut.extensions[0]?.data).toEqual(ext1Data);
-        expect(sut.extensions[1]?.signature).toBe('REUC');
-        expect(sut.extensions[1]?.data).toEqual(ext2Data);
+        expect(result.extensions).toHaveLength(2);
+        expect(result.extensions[0]?.signature).toBe('TREE');
+        expect(result.extensions[0]?.data).toEqual(ext1Data);
+        expect(result.extensions[1]?.signature).toBe('REUC');
+        expect(result.extensions[1]?.data).toEqual(ext2Data);
       });
     });
   });
@@ -655,11 +655,11 @@ describe('parseIndex', () => {
         const input = buildTestIndex([], [{ signature: '{bcd', data: new Uint8Array([1]) }]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.extensions).toHaveLength(1);
-        expect(sut.extensions[0]?.signature).toBe('{bcd');
+        expect(result.extensions).toHaveLength(1);
+        expect(result.extensions[0]?.signature).toBe('{bcd');
       });
     });
   });
@@ -691,11 +691,11 @@ describe('parseIndex', () => {
         const input = buildTestIndex([{ path: 'a', sha: SHA_A }]);
 
         // Act — this should parse successfully
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.entries).toHaveLength(1);
-        expect(sut.entries[0]?.path).toBe('a');
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.path).toBe('a');
       });
     });
   });
@@ -721,12 +721,12 @@ describe('parseIndex', () => {
         buf.fill(0x42, 20, 20 + extSize);
 
         // Act
-        const sut = parseIndex(buf);
+        const result = parseIndex(buf);
 
         // Assert
-        expect(sut.extensions).toHaveLength(1);
-        expect(sut.extensions[0]?.signature).toBe('TREE');
-        expect(sut.extensions[0]?.data.length).toBe(extSize);
+        expect(result.extensions).toHaveLength(1);
+        expect(result.extensions[0]?.signature).toBe('TREE');
+        expect(result.extensions[0]?.data.length).toBe(extSize);
       });
     });
   });
@@ -978,10 +978,10 @@ describe('parseIndex', () => {
         buf.set(pathBytes, 12 + 62);
 
         // Act
-        const sut = parseIndex(buf);
+        const result = parseIndex(buf);
 
         // Assert — exactly the first 3 bytes, proving nameLength was used.
-        expect(sut.entries[0]?.path).toBe('abc');
+        expect(result.entries[0]?.path).toBe('abc');
       });
     });
   });
@@ -1094,12 +1094,12 @@ describe('parseIndex — index v3 extended flags', () => {
         ]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.version).toBe(3);
-        expect(sut.entries).toHaveLength(1);
-        const entry = sut.entries[0]!;
+        expect(result.version).toBe(3);
+        expect(result.entries).toHaveLength(1);
+        const entry = result.entries[0]!;
         expect(entry.path).toBe(path);
         expect(entry.flags.skipWorktree).toBe(expectSkipWorktree);
         expect(entry.flags.intentToAdd).toBe(expectIntentToAdd);
@@ -1120,15 +1120,15 @@ describe('parseIndex — index v3 extended flags', () => {
         ]);
 
         // Act
-        const sut = parseIndex(input);
+        const result = parseIndex(input);
 
         // Assert
-        expect(sut.entries).toHaveLength(2);
-        expect(sut.entries[0]?.path).toBe('a-skip.txt');
-        expect(sut.entries[0]?.flags.skipWorktree).toBe(true);
-        expect(sut.entries[1]?.path).toBe('b-normal.txt');
-        expect(sut.entries[1]?.id).toBe(SHA_B);
-        expect(sut.entries[1]?.flags.skipWorktree).toBe(false);
+        expect(result.entries).toHaveLength(2);
+        expect(result.entries[0]?.path).toBe('a-skip.txt');
+        expect(result.entries[0]?.flags.skipWorktree).toBe(true);
+        expect(result.entries[1]?.path).toBe('b-normal.txt');
+        expect(result.entries[1]?.id).toBe(SHA_B);
+        expect(result.entries[1]?.flags.skipWorktree).toBe(false);
       });
     });
   });

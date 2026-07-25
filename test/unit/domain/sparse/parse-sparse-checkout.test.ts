@@ -41,11 +41,11 @@ describe('parseSparseCheckout', () => {
         },
       ])('Then $label', ({ text, coneRequested, mode, degraded }) => {
         // Arrange + Act
-        const sut = parseSparseCheckout(text, coneRequested);
+        const result = parseSparseCheckout(text, coneRequested);
 
         // Assert
-        expect(sut.spec.mode).toBe(mode);
-        expect(sut.degraded).toBe(degraded);
+        expect(result.spec.mode).toBe(mode);
+        expect(result.degraded).toBe(degraded);
       });
     });
   });
@@ -57,12 +57,12 @@ describe('parseSparseCheckout', () => {
         const text = '# comment\n\n/src/\n';
 
         // Act
-        const sut = parseSparseCheckout(text, false);
+        const result = parseSparseCheckout(text, false);
 
         // Assert
-        expect(sut.spec).toMatchObject({ mode: 'no-cone' });
-        if (sut.spec.mode === 'no-cone') {
-          expect(sut.spec.rules).toHaveLength(1);
+        expect(result.spec).toMatchObject({ mode: 'no-cone' });
+        if (result.spec.mode === 'no-cone') {
+          expect(result.spec.rules).toHaveLength(1);
         }
       });
     });
@@ -75,10 +75,10 @@ describe('parseSparseCheckout', () => {
         const text = '/'.concat('a'.repeat(MAX_SPARSE_PATTERN_BYTES - 1));
 
         // Act
-        const sut = parseSparseCheckout(text, false);
+        const result = parseSparseCheckout(text, false);
 
         // Assert
-        expect(sut.spec.mode).toBe('no-cone');
+        expect(result.spec.mode).toBe('no-cone');
       });
     });
   });
@@ -115,10 +115,10 @@ describe('parseSparseCheckout', () => {
         const text = Array.from({ length: MAX_SPARSE_PATTERNS }, () => '/src/').join('\n');
 
         // Act
-        const sut = parseSparseCheckout(text, false);
+        const result = parseSparseCheckout(text, false);
 
         // Assert
-        expect(sut.spec.mode).toBe('no-cone');
+        expect(result.spec.mode).toBe('no-cone');
       });
     });
   });
@@ -135,12 +135,12 @@ describe('parseSparseCheckout', () => {
         const text = [...filler, '/src/'].join('\n');
 
         // Act
-        const sut = parseSparseCheckout(text, false);
+        const result = parseSparseCheckout(text, false);
 
         // Assert — exactly one effective rule survives the blank/comment filler.
-        expect(sut.spec.mode).toBe('no-cone');
-        if (sut.spec.mode === 'no-cone') {
-          expect(sut.spec.rules).toHaveLength(1);
+        expect(result.spec.mode).toBe('no-cone');
+        if (result.spec.mode === 'no-cone') {
+          expect(result.spec.rules).toHaveLength(1);
         }
       });
     });
@@ -155,12 +155,12 @@ describe('parseSparseCheckout', () => {
         const text = ['', '# header', ...reals, ''].join('\n');
 
         // Act
-        const sut = parseSparseCheckout(text, false);
+        const result = parseSparseCheckout(text, false);
 
         // Assert
-        expect(sut.spec.mode).toBe('no-cone');
-        if (sut.spec.mode === 'no-cone') {
-          expect(sut.spec.rules).toHaveLength(MAX_SPARSE_PATTERNS);
+        expect(result.spec.mode).toBe('no-cone');
+        if (result.spec.mode === 'no-cone') {
+          expect(result.spec.rules).toHaveLength(MAX_SPARSE_PATTERNS);
         }
       });
     });

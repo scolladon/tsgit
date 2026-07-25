@@ -30,10 +30,10 @@ describe('parseIndex trailerSha', () => {
         const bytes = buildMinimalIndex(TRAILER_BYTES);
 
         // Act
-        const sut = parseIndex(bytes);
+        const result = parseIndex(bytes);
 
         // Assert
-        expect(sut.trailerSha).toEqual(TRAILER_BYTES);
+        expect(result.trailerSha).toEqual(TRAILER_BYTES);
       });
 
       it('Then trailerSha is the last 20 bytes of the input buffer', () => {
@@ -41,10 +41,10 @@ describe('parseIndex trailerSha', () => {
         const bytes = buildMinimalIndex(TRAILER_BYTES);
 
         // Act
-        const sut = parseIndex(bytes);
+        const result = parseIndex(bytes);
 
         // Assert
-        expect(sut.trailerSha).toEqual(bytes.slice(bytes.length - 20));
+        expect(result.trailerSha).toEqual(bytes.slice(bytes.length - 20));
       });
     });
   });
@@ -59,13 +59,13 @@ describe('parseIndex trailerSha', () => {
         const indexB = buildMinimalIndex(trailerB);
 
         // Act
-        const sutA = parseIndex(indexA);
-        const sutB = parseIndex(indexB);
+        const resultA = parseIndex(indexA);
+        const resultB = parseIndex(indexB);
 
         // Assert
-        expect(sutA.trailerSha).toEqual(trailerA);
-        expect(sutB.trailerSha).toEqual(trailerB);
-        expect(sutA.trailerSha).not.toEqual(sutB.trailerSha);
+        expect(resultA.trailerSha).toEqual(trailerA);
+        expect(resultB.trailerSha).toEqual(trailerB);
+        expect(resultA.trailerSha).not.toEqual(resultB.trailerSha);
       });
     });
   });
@@ -77,11 +77,11 @@ describe('parseIndex trailerSha', () => {
         const bytes = buildMinimalIndex(TRAILER_BYTES);
 
         // Act
-        const sut = parseIndex(bytes);
+        const result = parseIndex(bytes);
         bytes.set(new Uint8Array(20).fill(0xff), bytes.length - 20);
 
         // Assert
-        expect(sut.trailerSha).toEqual(TRAILER_BYTES);
+        expect(result.trailerSha).toEqual(TRAILER_BYTES);
       });
     });
   });

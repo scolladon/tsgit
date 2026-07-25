@@ -22,10 +22,10 @@ describe('resolveAttribute', () => {
         const sources: ReadonlyArray<AttributeSource> = [];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toBe('unspecified');
+        expect(result).toBe('unspecified');
       });
     });
   });
@@ -37,10 +37,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.txt merge=custom')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toEqual({ set: 'custom' });
+        expect(result).toEqual({ set: 'custom' });
       });
     });
   });
@@ -52,10 +52,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.bin merge=custom')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toBe('unspecified');
+        expect(result).toBe('unspecified');
       });
     });
   });
@@ -67,10 +67,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.txt merge=first\na.txt -merge')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -82,10 +82,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.txt merge=high'), sourceAt('', '*.txt merge=low')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toEqual({ set: 'high' });
+        expect(result).toEqual({ set: 'high' });
       });
     });
   });
@@ -97,10 +97,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.txt text'), sourceAt('', '*.txt merge=low')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toEqual({ set: 'low' });
+        expect(result).toEqual({ set: 'low' });
       });
     });
   });
@@ -112,10 +112,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.txt !merge'), sourceAt('', '*.txt merge=low')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toBe('unspecified');
+        expect(result).toBe('unspecified');
       });
     });
   });
@@ -127,10 +127,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('a/b', '*.txt merge=sub')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a/b/c.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a/b/c.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toEqual({ set: 'sub' });
+        expect(result).toEqual({ set: 'sub' });
       });
     });
 
@@ -140,10 +140,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('a/b', '*.txt merge=sub')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a/x.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a/x.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toBe('unspecified');
+        expect(result).toBe('unspecified');
       });
     });
 
@@ -154,10 +154,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('a/b', 'x/c.txt merge=anchored')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a/b/x/c.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a/b/x/c.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toEqual({ set: 'anchored' });
+        expect(result).toEqual({ set: 'anchored' });
       });
     });
   });
@@ -169,10 +169,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '* merge=keep\n* text')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.txt', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toEqual({ set: 'keep' });
+        expect(result).toEqual({ set: 'keep' });
       });
     });
   });
@@ -184,10 +184,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.bin binary')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.bin', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.bin', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -199,10 +199,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.bin binary merge=custom')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.bin', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.bin', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toEqual({ set: 'custom' });
+        expect(result).toEqual({ set: 'custom' });
       });
     });
   });
@@ -214,10 +214,10 @@ describe('resolveAttribute', () => {
         const sources = [sourceAt('', '*.bin merge=custom binary')];
 
         // Act
-        const sut = resolveAttribute(sources, 'a.bin', 'merge', BUILTIN_MACROS);
+        const result = resolveAttribute(sources, 'a.bin', 'merge', BUILTIN_MACROS);
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -231,13 +231,13 @@ describe('expandAttributes', () => {
         const { rules } = parseGitattributes('*.bin binary');
 
         // Act
-        const sut = expandAttributes(rules[0]!.attributes, BUILTIN_MACROS);
+        const result = expandAttributes(rules[0]!.attributes, BUILTIN_MACROS);
 
         // Assert
-        expect(sut.get('merge')).toBe(false);
-        expect(sut.get('diff')).toBe(false);
-        expect(sut.get('text')).toBe(false);
-        expect(sut.get('binary')).toBe(true);
+        expect(result.get('merge')).toBe(false);
+        expect(result.get('diff')).toBe(false);
+        expect(result.get('text')).toBe(false);
+        expect(result.get('binary')).toBe(true);
       });
     });
   });
@@ -249,10 +249,10 @@ describe('expandAttributes', () => {
         const { rules } = parseGitattributes('*.txt merge=custom');
 
         // Act
-        const sut = expandAttributes(rules[0]!.attributes, BUILTIN_MACROS);
+        const result = expandAttributes(rules[0]!.attributes, BUILTIN_MACROS);
 
         // Assert
-        expect([...sut]).toEqual([['merge', { set: 'custom' }]]);
+        expect([...result]).toEqual([['merge', { set: 'custom' }]]);
       });
     });
   });
@@ -264,11 +264,11 @@ describe('expandAttributes', () => {
         const { rules } = parseGitattributes('*.x -binary');
 
         // Act
-        const sut = expandAttributes(rules[0]!.attributes, BUILTIN_MACROS);
+        const result = expandAttributes(rules[0]!.attributes, BUILTIN_MACROS);
 
         // Assert — `-binary` unsets the macro attribute without expanding it.
-        expect(sut.get('binary')).toBe(false);
-        expect(sut.get('merge')).toBeUndefined();
+        expect(result.get('binary')).toBe(false);
+        expect(result.get('merge')).toBeUndefined();
       });
     });
   });
@@ -282,11 +282,11 @@ describe('buildMacroRegistry', () => {
         const { macros } = parseGitattributes('[attr]docs merge=union diff');
 
         // Act
-        const sut = buildMacroRegistry(macros);
+        const result = buildMacroRegistry(macros);
 
         // Assert
-        expect(sut.get('binary')?.get('merge')).toBe(false);
-        expect(sut.get('docs')?.get('merge')).toEqual({ set: 'union' });
+        expect(result.get('binary')?.get('merge')).toBe(false);
+        expect(result.get('docs')?.get('merge')).toEqual({ set: 'union' });
       });
     });
 
@@ -296,10 +296,10 @@ describe('buildMacroRegistry', () => {
         const { macros } = parseGitattributes('[attr]binary merge=keep');
 
         // Act
-        const sut = buildMacroRegistry(macros);
+        const result = buildMacroRegistry(macros);
 
         // Assert
-        expect(sut.get('binary')?.get('merge')).toEqual({ set: 'keep' });
+        expect(result.get('binary')?.get('merge')).toEqual({ set: 'keep' });
       });
     });
   });

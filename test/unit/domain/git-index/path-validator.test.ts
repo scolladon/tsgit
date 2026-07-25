@@ -22,7 +22,7 @@ describe('validateIndexPath', () => {
         // Arrange
         const path = 'src/domain/file.ts';
 
-        // Act + Assert — must not throw.
+        // Assert
         expect(() => validateIndexPath(path, 0)).not.toThrow();
       });
     });
@@ -101,7 +101,7 @@ describe('validateIndexPath', () => {
         // pins the upper edge so a widened control range would be caught.
         const path = `a${String.fromCharCode(0xa0)}b`;
 
-        // Act + Assert
+        // Assert
         expect(() => validateIndexPath(path, 0)).not.toThrow();
       });
     });

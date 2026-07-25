@@ -10,10 +10,10 @@ describe('matchesPathspec', () => {
     describe('When matched against any path', () => {
       it('Then returns false', () => {
         // Arrange
-        const sut = matchesPathspec([], path('foo.ts'));
+        const result = matchesPathspec([], path('foo.ts'));
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -22,12 +22,12 @@ describe('matchesPathspec', () => {
     describe('When matched', () => {
       it('Then matches the exact path AND descendants', () => {
         // Arrange
-        const sut = compilePathspec(['src/foo.ts']);
+        const spec = compilePathspec(['src/foo.ts']);
 
         // Assert
-        expect(matchesPathspec(sut, path('src/foo.ts'))).toBe(true);
-        expect(matchesPathspec(sut, path('src/foo.ts/inner'))).toBe(true);
-        expect(matchesPathspec(sut, path('src/other.ts'))).toBe(false);
+        expect(matchesPathspec(spec, path('src/foo.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('src/foo.ts/inner'))).toBe(true);
+        expect(matchesPathspec(spec, path('src/other.ts'))).toBe(false);
       });
     });
   });
@@ -36,13 +36,13 @@ describe('matchesPathspec', () => {
     describe('When matched', () => {
       it('Then matches at any depth', () => {
         // Arrange
-        const sut = compilePathspec(['*.ts']);
+        const spec = compilePathspec(['*.ts']);
 
         // Assert
-        expect(matchesPathspec(sut, path('foo.ts'))).toBe(true);
-        expect(matchesPathspec(sut, path('src/foo.ts'))).toBe(true);
-        expect(matchesPathspec(sut, path('src/a/b.ts'))).toBe(true);
-        expect(matchesPathspec(sut, path('foo.tsx'))).toBe(false);
+        expect(matchesPathspec(spec, path('foo.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('src/foo.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('src/a/b.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('foo.tsx'))).toBe(false);
       });
     });
   });
@@ -51,12 +51,12 @@ describe('matchesPathspec', () => {
     describe('When matched', () => {
       it('Then matches under "src/" only', () => {
         // Arrange
-        const sut = compilePathspec(['src/**']);
+        const spec = compilePathspec(['src/**']);
 
         // Assert
-        expect(matchesPathspec(sut, path('src/foo'))).toBe(true);
-        expect(matchesPathspec(sut, path('src/a/b'))).toBe(true);
-        expect(matchesPathspec(sut, path('other/src/foo'))).toBe(false);
+        expect(matchesPathspec(spec, path('src/foo'))).toBe(true);
+        expect(matchesPathspec(spec, path('src/a/b'))).toBe(true);
+        expect(matchesPathspec(spec, path('other/src/foo'))).toBe(false);
       });
     });
   });
@@ -65,13 +65,13 @@ describe('matchesPathspec', () => {
     describe('When matched', () => {
       it('Then test files are excluded', () => {
         // Arrange
-        const sut = compilePathspec(['*.ts', '!*.test.ts']);
+        const spec = compilePathspec(['*.ts', '!*.test.ts']);
 
         // Assert
-        expect(matchesPathspec(sut, path('foo.ts'))).toBe(true);
-        expect(matchesPathspec(sut, path('foo.test.ts'))).toBe(false);
-        expect(matchesPathspec(sut, path('src/a.ts'))).toBe(true);
-        expect(matchesPathspec(sut, path('src/a.test.ts'))).toBe(false);
+        expect(matchesPathspec(spec, path('foo.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('foo.test.ts'))).toBe(false);
+        expect(matchesPathspec(spec, path('src/a.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('src/a.test.ts'))).toBe(false);
       });
     });
   });
@@ -80,11 +80,11 @@ describe('matchesPathspec', () => {
     describe('When matched', () => {
       it('Then nothing matches (starting state is false)', () => {
         // Arrange
-        const sut = compilePathspec(['!*.ts']);
+        const spec = compilePathspec(['!*.ts']);
 
         // Assert
-        expect(matchesPathspec(sut, path('foo.ts'))).toBe(false);
-        expect(matchesPathspec(sut, path('other.md'))).toBe(false);
+        expect(matchesPathspec(spec, path('foo.ts'))).toBe(false);
+        expect(matchesPathspec(spec, path('other.md'))).toBe(false);
       });
     });
   });
@@ -93,10 +93,10 @@ describe('matchesPathspec', () => {
     describe('When matched', () => {
       it('Then the last matching rule wins → all .ts is selected', () => {
         // Arrange
-        const sut = compilePathspec(['!*.ts', '*.ts']);
+        const spec = compilePathspec(['!*.ts', '*.ts']);
 
         // Assert
-        expect(matchesPathspec(sut, path('foo.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('foo.ts'))).toBe(true);
       });
     });
   });
@@ -105,11 +105,11 @@ describe('matchesPathspec', () => {
     describe('When matched against keep.test.ts', () => {
       it('Then last rule re-includes it', () => {
         // Arrange
-        const sut = compilePathspec(['*.ts', '!*.test.ts', 'keep.test.ts']);
+        const spec = compilePathspec(['*.ts', '!*.test.ts', 'keep.test.ts']);
 
         // Assert
-        expect(matchesPathspec(sut, path('keep.test.ts'))).toBe(true);
-        expect(matchesPathspec(sut, path('other.test.ts'))).toBe(false);
+        expect(matchesPathspec(spec, path('keep.test.ts'))).toBe(true);
+        expect(matchesPathspec(spec, path('other.test.ts'))).toBe(false);
       });
     });
   });

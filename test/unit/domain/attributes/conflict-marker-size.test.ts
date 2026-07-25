@@ -18,10 +18,10 @@ describe('resolveMarkerSize', () => {
         ['2147483647', 2147483647],
       ])('Then `%s` yields %i', (raw, expected) => {
         // Arrange
-        const sut: AttributeValue = { set: raw };
+        const attributeValue: AttributeValue = { set: raw };
 
         // Act
-        const result = resolveMarkerSize(sut);
+        const result = resolveMarkerSize(attributeValue);
 
         // Assert
         expect(result).toBe(expected);
@@ -43,10 +43,10 @@ describe('resolveMarkerSize', () => {
         ['  5'],
       ])('Then `%s` falls back to the default 7', (raw) => {
         // Arrange
-        const sut: AttributeValue = { set: raw };
+        const attributeValue: AttributeValue = { set: raw };
 
         // Act
-        const result = resolveMarkerSize(sut);
+        const result = resolveMarkerSize(attributeValue);
 
         // Assert
         expect(result).toBe(DEFAULT_CONFLICT_MARKER_SIZE);
@@ -58,9 +58,9 @@ describe('resolveMarkerSize', () => {
     describe('When resolved', () => {
       it.each<[AttributeValue]>([[true], [false], ['unspecified']])(
         'Then it falls back to the default 7',
-        (sut) => {
+        (attributeValue) => {
           // Act
-          const result = resolveMarkerSize(sut);
+          const result = resolveMarkerSize(attributeValue);
 
           // Assert
           expect(result).toBe(DEFAULT_CONFLICT_MARKER_SIZE);

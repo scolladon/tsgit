@@ -43,12 +43,12 @@ describe('compileGlob', () => {
     describe('When compiled', () => {
       it('Then matches only the exact path', () => {
         // Arrange
-        const sut = compileGlob('src', { anchored: true });
+        const result = compileGlob('src', { anchored: true });
 
         // Assert
-        expect(sut.test('src')).toBe(true);
-        expect(sut.test('src/foo')).toBe(false);
-        expect(sut.test('other')).toBe(false);
+        expect(result.test('src')).toBe(true);
+        expect(result.test('src/foo')).toBe(false);
+        expect(result.test('other')).toBe(false);
       });
     });
   });
@@ -58,12 +58,12 @@ describe('compileGlob', () => {
       it('Then it does NOT match (the `^` anchor is present)', () => {
         // Arrange — without the leading `^` the regex would be `src$`, which matches
         // any string ending in `src`. The anchor must reject a prefixed path.
-        const sut = compileGlob('src', { anchored: true });
+        const result = compileGlob('src', { anchored: true });
 
         // Act / Assert
-        expect(sut.test('vendorsrc')).toBe(false);
-        expect(sut.test('a/src')).toBe(false);
-        expect(sut.test('src')).toBe(true);
+        expect(result.test('vendorsrc')).toBe(false);
+        expect(result.test('a/src')).toBe(false);
+        expect(result.test('src')).toBe(true);
       });
     });
   });
@@ -72,14 +72,14 @@ describe('compileGlob', () => {
     describe('When compiled', () => {
       it('Then matches the path AND any descendant', () => {
         // Arrange
-        const sut = compileGlob('src', { anchored: true, withDirSuffix: true });
+        const result = compileGlob('src', { anchored: true, withDirSuffix: true });
 
         // Assert
-        expect(sut.test('src')).toBe(true);
-        expect(sut.test('src/foo')).toBe(true);
-        expect(sut.test('src/a/b/c')).toBe(true);
-        expect(sut.test('other')).toBe(false);
-        expect(sut.test('src-other')).toBe(false);
+        expect(result.test('src')).toBe(true);
+        expect(result.test('src/foo')).toBe(true);
+        expect(result.test('src/a/b/c')).toBe(true);
+        expect(result.test('other')).toBe(false);
+        expect(result.test('src-other')).toBe(false);
       });
     });
   });
@@ -88,13 +88,13 @@ describe('compileGlob', () => {
     describe('When compiled', () => {
       it('Then matches files at any depth', () => {
         // Arrange
-        const sut = compileGlob('*.ts', { anchored: false });
+        const result = compileGlob('*.ts', { anchored: false });
 
         // Assert
-        expect(sut.test('foo.ts')).toBe(true);
-        expect(sut.test('src/foo.ts')).toBe(true);
-        expect(sut.test('foo.tsx')).toBe(false);
-        expect(sut.test('foo')).toBe(false);
+        expect(result.test('foo.ts')).toBe(true);
+        expect(result.test('src/foo.ts')).toBe(true);
+        expect(result.test('foo.tsx')).toBe(false);
+        expect(result.test('foo')).toBe(false);
       });
     });
   });
@@ -103,11 +103,11 @@ describe('compileGlob', () => {
     describe('When matched against a path with a slash inside the segment', () => {
       it('Then it does NOT match (single `*` excludes `/`)', () => {
         // Arrange
-        const sut = compileGlob('a*c', { anchored: true });
+        const result = compileGlob('a*c', { anchored: true });
 
         // Assert
-        expect(sut.test('abc')).toBe(true);
-        expect(sut.test('a/c')).toBe(false);
+        expect(result.test('abc')).toBe(true);
+        expect(result.test('a/c')).toBe(false);
       });
     });
   });
@@ -116,13 +116,13 @@ describe('compileGlob', () => {
     describe('When matched', () => {
       it('Then it spans path segments', () => {
         // Arrange
-        const sut = compileGlob('a/**/c', { anchored: true });
+        const result = compileGlob('a/**/c', { anchored: true });
 
         // Assert
-        expect(sut.test('a/c')).toBe(true);
-        expect(sut.test('a/b/c')).toBe(true);
-        expect(sut.test('a/b/d/c')).toBe(true);
-        expect(sut.test('a/d')).toBe(false);
+        expect(result.test('a/c')).toBe(true);
+        expect(result.test('a/b/c')).toBe(true);
+        expect(result.test('a/b/d/c')).toBe(true);
+        expect(result.test('a/d')).toBe(false);
       });
     });
   });
@@ -131,13 +131,13 @@ describe('compileGlob', () => {
     describe('When matched', () => {
       it('Then it matches exactly one non-`/` byte (not zero, not many)', () => {
         // Arrange
-        const sut = compileGlob('a?c', { anchored: true });
+        const result = compileGlob('a?c', { anchored: true });
 
         // Assert
-        expect(sut.test('abc')).toBe(true);
-        expect(sut.test('ac')).toBe(false);
-        expect(sut.test('abbc')).toBe(false);
-        expect(sut.test('a/c')).toBe(false);
+        expect(result.test('abc')).toBe(true);
+        expect(result.test('ac')).toBe(false);
+        expect(result.test('abbc')).toBe(false);
+        expect(result.test('a/c')).toBe(false);
       });
     });
   });
@@ -146,17 +146,17 @@ describe('compileGlob', () => {
     describe('When matched', () => {
       it('Then it spans zero-or-more segments AND does NOT match within a segment (kills the `.*` regex bug)', () => {
         // Arrange
-        const sut = compileGlob('a/**/c', { anchored: true });
+        const result = compileGlob('a/**/c', { anchored: true });
 
         // Assert
-        expect(sut.test('a/c')).toBe(true);
-        expect(sut.test('a/b/c')).toBe(true);
-        expect(sut.test('a/b/d/c')).toBe(true);
+        expect(result.test('a/c')).toBe(true);
+        expect(result.test('a/b/c')).toBe(true);
+        expect(result.test('a/b/d/c')).toBe(true);
         // The bug case: `a/xc` is `a` followed by a single segment `xc`.
         // The original `.*` regex compiled `^a/.*c$`, which matched this
         // path. The corrected `(.*/)?` regex requires at least one trailing
         // `/` between `a/` and `c`, so this must NOT match.
-        expect(sut.test('a/xc')).toBe(false);
+        expect(result.test('a/xc')).toBe(false);
       });
     });
   });
@@ -165,11 +165,11 @@ describe('compileGlob', () => {
     describe('When compiled', () => {
       it('Then they are escaped (literal match)', () => {
         // Arrange
-        const sut = compileGlob('foo.bar', { anchored: true });
+        const result = compileGlob('foo.bar', { anchored: true });
 
         // Assert
-        expect(sut.test('foo.bar')).toBe(true);
-        expect(sut.test('fooXbar')).toBe(false);
+        expect(result.test('foo.bar')).toBe(true);
+        expect(result.test('fooXbar')).toBe(false);
       });
     });
   });
@@ -178,11 +178,11 @@ describe('compileGlob', () => {
     describe('When compiled in v1', () => {
       it('Then the brackets are escaped (literal match — character classes not supported)', () => {
         // Arrange
-        const sut = compileGlob('[abc]', { anchored: true });
+        const result = compileGlob('[abc]', { anchored: true });
 
         // Assert
-        expect(sut.test('[abc]')).toBe(true);
-        expect(sut.test('a')).toBe(false);
+        expect(result.test('[abc]')).toBe(true);
+        expect(result.test('a')).toBe(false);
       });
     });
   });
@@ -191,12 +191,12 @@ describe('compileGlob', () => {
     describe('When compiled', () => {
       it('Then the pattern matches at any depth via the (^|.*/) prefix', () => {
         // Arrange
-        const sut = compileGlob('foo', { anchored: false });
+        const result = compileGlob('foo', { anchored: false });
 
         // Assert
-        expect(sut.test('foo')).toBe(true);
-        expect(sut.test('a/foo')).toBe(true);
-        expect(sut.test('a/b/foo')).toBe(true);
+        expect(result.test('foo')).toBe(true);
+        expect(result.test('a/foo')).toBe(true);
+        expect(result.test('a/b/foo')).toBe(true);
       });
     });
   });
@@ -208,13 +208,13 @@ describe('compileGlob', () => {
         // pattern matches a whole leading segment, never a substring inside one.
         // A mutant replacing that prefix with `''` yields `bar$`, which matches
         // `foobar`; this assertion fails under that mutant.
-        const sut = compileGlob('bar', { anchored: false });
+        const result = compileGlob('bar', { anchored: false });
 
         // Act / Assert
-        expect(sut.test('foobar')).toBe(false);
+        expect(result.test('foobar')).toBe(false);
         // Balance: the legitimate segment matches must still hold.
-        expect(sut.test('bar')).toBe(true);
-        expect(sut.test('x/bar')).toBe(true);
+        expect(result.test('bar')).toBe(true);
+        expect(result.test('x/bar')).toBe(true);
       });
     });
   });
@@ -223,13 +223,13 @@ describe('compileGlob', () => {
     describe('When matched at depth', () => {
       it('Then matches at any segment AND rejects non-matching extensions', () => {
         // Arrange
-        const sut = compileGlob('*.ts', { anchored: false });
+        const result = compileGlob('*.ts', { anchored: false });
 
         // Assert
-        expect(sut.test('a.ts')).toBe(true);
-        expect(sut.test('src/a.ts')).toBe(true);
-        expect(sut.test('src/a/b.ts')).toBe(true);
-        expect(sut.test('src/a.js')).toBe(false);
+        expect(result.test('a.ts')).toBe(true);
+        expect(result.test('src/a.ts')).toBe(true);
+        expect(result.test('src/a/b.ts')).toBe(true);
+        expect(result.test('src/a.js')).toBe(false);
       });
     });
   });
@@ -238,11 +238,11 @@ describe('compileGlob', () => {
     describe('When matched', () => {
       it('Then only the empty string matches', () => {
         // Arrange — a zero-token pattern: the base layer must accept exactly j===0.
-        const sut = compileGlob('', { anchored: true });
+        const result = compileGlob('', { anchored: true });
 
         // Act / Assert
-        expect(sut.test('')).toBe(true);
-        expect(sut.test('a')).toBe(false);
+        expect(result.test('')).toBe(true);
+        expect(result.test('a')).toBe(false);
       });
     });
   });
@@ -252,11 +252,11 @@ describe('compileGlob', () => {
       it('Then it matches a zero-length run (not only non-empty runs)', () => {
         // Arrange — `a*` must match bare `a`; a mutant forcing `*` to consume at
         // least one char would reject it.
-        const sut = compileGlob('a*', { anchored: true });
+        const result = compileGlob('a*', { anchored: true });
 
         // Act / Assert
-        expect(sut.test('a')).toBe(true);
-        expect(sut.test('abc')).toBe(true);
+        expect(result.test('a')).toBe(true);
+        expect(result.test('abc')).toBe(true);
       });
     });
   });
@@ -266,12 +266,12 @@ describe('compileGlob', () => {
       it('Then it spans `/` within a segment run', () => {
         // Arrange — `a**z` compiles to [literal a, star-star, literal z]; the
         // star-star run spans slashes, unlike a single `*`.
-        const sut = compileGlob('a**z', { anchored: true });
+        const result = compileGlob('a**z', { anchored: true });
 
         // Act / Assert
-        expect(sut.test('a/x/z')).toBe(true);
-        expect(sut.test('axyz')).toBe(true);
-        expect(sut.test('az')).toBe(true);
+        expect(result.test('a/x/z')).toBe(true);
+        expect(result.test('axyz')).toBe(true);
+        expect(result.test('az')).toBe(true);
         // A single-star `a*z` would reject the slash-crossing case.
         expect(compileGlob('a*z', { anchored: true }).test('a/x/z')).toBe(false);
       });
@@ -283,11 +283,11 @@ describe('compileGlob', () => {
       it('Then it behaves as `**` followed by `*`', () => {
         // Arrange — `***` scans to [star-star, star]; both span freely so the
         // pair matches any run, slashes included.
-        const sut = compileGlob('a***z', { anchored: true });
+        const result = compileGlob('a***z', { anchored: true });
 
         // Act / Assert
-        expect(sut.test('a/x/z')).toBe(true);
-        expect(sut.test('az')).toBe(true);
+        expect(result.test('a/x/z')).toBe(true);
+        expect(result.test('az')).toBe(true);
       });
     });
   });
@@ -297,11 +297,11 @@ describe('compileGlob', () => {
       it('Then the empty remainder still matches', () => {
         // Arrange — `a**` ends in star-star; its layer at the path end must accept
         // an empty remaining run.
-        const sut = compileGlob('a**', { anchored: true });
+        const result = compileGlob('a**', { anchored: true });
 
         // Act / Assert
-        expect(sut.test('a')).toBe(true);
-        expect(sut.test('a/b/c')).toBe(true);
+        expect(result.test('a')).toBe(true);
+        expect(result.test('a/b/c')).toBe(true);
       });
     });
   });
@@ -311,11 +311,11 @@ describe('compileGlob', () => {
       it('Then it does NOT match', () => {
         // Arrange — `a**b` must reject `a`: star-star matches the empty run, but
         // the trailing `b` then has nothing to match.
-        const sut = compileGlob('a**b', { anchored: true });
+        const result = compileGlob('a**b', { anchored: true });
 
         // Act / Assert
-        expect(sut.test('a')).toBe(false);
-        expect(sut.test('ab')).toBe(true);
+        expect(result.test('a')).toBe(false);
+        expect(result.test('ab')).toBe(true);
       });
     });
   });
@@ -334,11 +334,14 @@ describe('compileGlob', () => {
     describe('Given any pattern and any line-terminator-free path', () => {
       describe('When matched', () => {
         it('Then the linear matcher agrees with the regex oracle', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(arbPattern, arbPath, arbOptions, (pattern, path, options) => {
+              // Act
               const linear = compileGlob(pattern, options).test(path);
               const oracle = oracleRegex(pattern, options).test(path);
+
+              // Assert
               expect(linear).toBe(oracle);
             }),
             { numRuns: 1000 },
@@ -362,10 +365,10 @@ describe('containsGlob', () => {
         ['[abc]', false],
       ])('Then returns %s (no character-class detection in v1)', (input, expected) => {
         // Arrange
-        const sut = containsGlob(input);
+        const result = containsGlob(input);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

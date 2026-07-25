@@ -13,11 +13,11 @@ describe('worktree errors', () => {
     describe('When constructed', () => {
       it('Then carries the code and path', () => {
         // Arrange + Act
-        const sut = worktreePathExists('/abs/wt');
+        const result = worktreePathExists('/abs/wt');
 
         // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect(sut.data).toEqual({ code: 'WORKTREE_PATH_EXISTS', path: '/abs/wt' });
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'WORKTREE_PATH_EXISTS', path: '/abs/wt' });
       });
     });
   });
@@ -26,10 +26,10 @@ describe('worktree errors', () => {
     describe('When constructed', () => {
       it('Then carries the code, branch and path', () => {
         // Arrange + Act
-        const sut = branchCheckedOut('refs/heads/main', '/abs/wt');
+        const result = branchCheckedOut('refs/heads/main', '/abs/wt');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'BRANCH_CHECKED_OUT',
           branch: 'refs/heads/main',
           path: '/abs/wt',
@@ -42,10 +42,10 @@ describe('worktree errors', () => {
     describe('When constructed', () => {
       it('Then carries the code, path and reason', () => {
         // Arrange + Act
-        const sut = worktreeLocked('/abs/wt', 'in use');
+        const result = worktreeLocked('/abs/wt', 'in use');
 
         // Assert
-        expect(sut.data).toEqual({ code: 'WORKTREE_LOCKED', path: '/abs/wt', reason: 'in use' });
+        expect(result.data).toEqual({ code: 'WORKTREE_LOCKED', path: '/abs/wt', reason: 'in use' });
       });
     });
   });
@@ -54,10 +54,10 @@ describe('worktree errors', () => {
     describe('When constructed', () => {
       it('Then carries the code and path', () => {
         // Arrange + Act
-        const sut = worktreeDirty('/abs/wt');
+        const result = worktreeDirty('/abs/wt');
 
         // Assert
-        expect(sut.data).toEqual({ code: 'WORKTREE_DIRTY', path: '/abs/wt' });
+        expect(result.data).toEqual({ code: 'WORKTREE_DIRTY', path: '/abs/wt' });
       });
     });
   });
@@ -66,10 +66,10 @@ describe('worktree errors', () => {
     describe('When constructed', () => {
       it('Then carries the code and path', () => {
         // Arrange + Act
-        const sut = notAWorktree('/abs/wt');
+        const result = notAWorktree('/abs/wt');
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NOT_A_WORKTREE', path: '/abs/wt' });
+        expect(result.data).toEqual({ code: 'NOT_A_WORKTREE', path: '/abs/wt' });
       });
     });
   });

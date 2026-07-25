@@ -7,10 +7,10 @@ describe('worktreeAdminId', () => {
     describe('When worktreeAdminId runs', () => {
       it('Then returns the basename unchanged', () => {
         // Arrange
-        const sut = new Set<string>();
+        const taken = new Set<string>();
 
         // Act
-        const result = worktreeAdminId('shared', sut);
+        const result = worktreeAdminId('shared', taken);
 
         // Assert
         expect(result).toBe('shared');
@@ -22,10 +22,10 @@ describe('worktreeAdminId', () => {
     describe('When worktreeAdminId runs', () => {
       it('Then appends the first free integer', () => {
         // Arrange
-        const sut = new Set(['shared']);
+        const taken = new Set(['shared']);
 
         // Act
-        const result = worktreeAdminId('shared', sut);
+        const result = worktreeAdminId('shared', taken);
 
         // Assert
         expect(result).toBe('shared1');
@@ -37,10 +37,10 @@ describe('worktreeAdminId', () => {
     describe('When worktreeAdminId runs', () => {
       it('Then appends the next free integer', () => {
         // Arrange
-        const sut = new Set(['shared', 'shared1']);
+        const taken = new Set(['shared', 'shared1']);
 
         // Act
-        const result = worktreeAdminId('shared', sut);
+        const result = worktreeAdminId('shared', taken);
 
         // Assert
         expect(result).toBe('shared2');
@@ -52,10 +52,10 @@ describe('worktreeAdminId', () => {
     describe('When worktreeAdminId runs', () => {
       it('Then prefers the bare basename', () => {
         // Arrange
-        const sut = new Set(['shared1']);
+        const taken = new Set(['shared1']);
 
         // Act
-        const result = worktreeAdminId('shared', sut);
+        const result = worktreeAdminId('shared', taken);
 
         // Assert
         expect(result).toBe('shared');
@@ -72,8 +72,8 @@ describe('worktreeAdminId', () => {
             fc.string({ minLength: 1, maxLength: 8 }),
             fc.array(fc.string({ minLength: 1, maxLength: 12 }), { maxLength: 20 }),
             (basename, takenList) => {
-              const sut = new Set(takenList);
-              expect(sut.has(worktreeAdminId(basename, sut))).toBe(false);
+              const taken = new Set(takenList);
+              expect(taken.has(worktreeAdminId(basename, taken))).toBe(false);
             },
           ),
         );

@@ -97,10 +97,10 @@ describe('matchInStack', () => {
         },
       ])('Then $label', ({ stack, filePath, isDir, expected }) => {
         // Arrange + Act
-        const sut = matchInStack(stack, path(filePath), isDir);
+        const result = matchInStack(stack, path(filePath), isDir);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -176,12 +176,12 @@ describe('matchInStackVerbose', () => {
         },
       ])('Then $label', ({ stack, filePath, isDir, verdict, expectedLevel, ruleIndex }) => {
         // Arrange + Act
-        const sut = matchInStackVerbose(stack, path(filePath), isDir);
+        const result = matchInStackVerbose(stack, path(filePath), isDir);
 
         // Assert
-        expect(sut.verdict).toBe(verdict);
-        expect(sut.level).toBe(expectedLevel);
-        expect(sut.ruleIndex).toBe(ruleIndex);
+        expect(result.verdict).toBe(verdict);
+        expect(result.level).toBe(expectedLevel);
+        expect(result.ruleIndex).toBe(ruleIndex);
       });
     });
   });
@@ -198,11 +198,11 @@ describe('matchInStackVerbose', () => {
         };
 
         // Act
-        const sut = matchInStackVerbose([info], path('secret.txt'), false);
+        const result = matchInStackVerbose([info], path('secret.txt'), false);
 
         // Assert
-        expect(sut.verdict).toBe('ignored');
-        expect(sut.level?.kind).toBe('info');
+        expect(result.verdict).toBe('ignored');
+        expect(result.level?.kind).toBe('info');
       });
     });
   });

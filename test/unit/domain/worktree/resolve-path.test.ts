@@ -12,11 +12,8 @@ describe('worktreePathBasename', () => {
         { path: '/a/b/', expected: 'b', label: 'trailing empties are ignored' },
         { path: '/', expected: '', label: 'it returns the empty string' },
       ])('Then $label', ({ path, expected }) => {
-        // Arrange
-        const sut = worktreePathBasename;
-
-        // Act
-        const result = sut(path);
+        // Arrange & Act
+        const result = worktreePathBasename(path);
 
         // Assert
         expect(result).toBe(expected);
@@ -36,11 +33,8 @@ describe('resolveWorktreePath', () => {
         { cwd: '/a', input: '../../wt', expected: '/wt', label: 'it never pops below the root' },
         { cwd: '/a//b', input: 'c', expected: '/a/b/c', label: 'empty segments are collapsed' },
       ])('Then $label', ({ cwd, input, expected }) => {
-        // Arrange
-        const sut = resolveWorktreePath;
-
-        // Act
-        const result = sut(cwd, input);
+        // Arrange & Act
+        const result = resolveWorktreePath(cwd, input);
 
         // Assert
         expect(result).toBe(expected);
