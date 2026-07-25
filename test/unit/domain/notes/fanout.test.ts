@@ -90,11 +90,10 @@ describe('Given the notes fanout heuristic', () => {
       },
     ])('Then $label', ({ buildNode, n, fanout, expected }) => {
       // Arrange
-      const sut = determineFanout;
       const node = buildNode();
 
       // Act
-      const result = sut(node, n, fanout);
+      const result = determineFanout(node, n, fanout);
 
       // Assert
       expect(result).toBe(expected);
@@ -123,11 +122,8 @@ describe('Given an annotated oid path constructor', () => {
         expected: `ab/cd/${'e'.repeat(36)}`,
       },
     ])('Then $label', ({ fanout, expected }) => {
-      // Arrange
-      const sut = constructPathWithFanout;
-
-      // Act
-      const result = sut(key, fanout);
+      // Arrange & Act
+      const result = constructPathWithFanout(key, fanout);
 
       // Assert
       expect(result).toBe(expected);
@@ -138,10 +134,8 @@ describe('Given an annotated oid path constructor', () => {
 describe('Given a fanout path parser', () => {
   describe('When the path carries directory components', () => {
     it('Then it strips the separators back to the full-hex oid', () => {
-      // Arrange
-      const sut = parseFanoutPath;
-      // Act
-      const result = sut(`ab/cd/${'e'.repeat(36)}`);
+      // Arrange & Act
+      const result = parseFanoutPath(`ab/cd/${'e'.repeat(36)}`);
       // Assert
       expect(result).toBe(`abcd${'e'.repeat(36)}`);
     });
@@ -149,10 +143,8 @@ describe('Given a fanout path parser', () => {
 
   describe('When the path is already flat', () => {
     it('Then it returns the same oid', () => {
-      // Arrange
-      const sut = parseFanoutPath;
-      // Act
-      const result = sut('a'.repeat(40));
+      // Arrange & Act
+      const result = parseFanoutPath('a'.repeat(40));
       // Assert
       expect(result).toBe('a'.repeat(40));
     });
@@ -162,10 +154,8 @@ describe('Given a fanout path parser', () => {
 describe('Given a subtree prefix path constructor', () => {
   describe('When the prefix is one byte', () => {
     it('Then it returns the single two-hex component', () => {
-      // Arrange
-      const sut = constructSubtreePath;
-      // Act
-      const result = sut('ab');
+      // Arrange & Act
+      const result = constructSubtreePath('ab');
       // Assert
       expect(result).toBe('ab');
     });
@@ -173,10 +163,8 @@ describe('Given a subtree prefix path constructor', () => {
 
   describe('When the prefix is two bytes', () => {
     it('Then it joins the two-hex components with a separator', () => {
-      // Arrange
-      const sut = constructSubtreePath;
-      // Act
-      const result = sut('abcd');
+      // Arrange & Act
+      const result = constructSubtreePath('abcd');
       // Assert
       expect(result).toBe('ab/cd');
     });

@@ -46,10 +46,10 @@ describe('serializeReflogLine', () => {
     describe('When serializing', () => {
       it('Then produces an LF-terminated old/new/identity TAB message line', () => {
         // Arrange
-        const sut = ENTRY;
+        const entry = ENTRY;
 
         // Act
-        const line = serializeReflogLine(sut);
+        const line = serializeReflogLine(entry);
 
         // Assert
         expect(line).toBe(
@@ -63,14 +63,14 @@ describe('serializeReflogLine', () => {
     describe('When serializing', () => {
       it('Then the old field is 40 zeros', () => {
         // Arrange
-        const sut: ReflogEntry = {
+        const entry: ReflogEntry = {
           ...ENTRY,
           oldId: ZERO_OID,
           message: 'commit (initial): add readme',
         };
 
         // Act
-        const line = serializeReflogLine(sut);
+        const line = serializeReflogLine(entry);
 
         // Assert
         expect(line.startsWith(`${ZERO_OID} ${OID_B} `)).toBe(true);
@@ -83,10 +83,10 @@ describe('serializeReflogLine', () => {
       it('Then no TAB is written before the line feed', () => {
         // Arrange — git appends the TAB + message only when the message is
         // non-empty (`if (msg && *msg)`); an empty message ends at the timezone.
-        const sut: ReflogEntry = { ...ENTRY, message: '' };
+        const entry: ReflogEntry = { ...ENTRY, message: '' };
 
         // Act
-        const line = serializeReflogLine(sut);
+        const line = serializeReflogLine(entry);
 
         // Assert
         expect(line.endsWith('+0000\n')).toBe(true);
@@ -102,10 +102,10 @@ describe('serializeReflogLine', () => {
         { message: 'first\rsecond', label: 'a CR' },
       ])('Then throws INVALID_REFLOG_ENTRY for $label', ({ message }) => {
         // Arrange
-        const sut: ReflogEntry = { ...ENTRY, message };
+        const entry: ReflogEntry = { ...ENTRY, message };
 
         // Act & Assert
-        expectInvalidReflogEntry(() => serializeReflogLine(sut), 'message contains a line break');
+        expectInvalidReflogEntry(() => serializeReflogLine(entry), 'message contains a line break');
       });
     });
   });
@@ -116,10 +116,10 @@ describe('parseReflogLine', () => {
     describe('When parsing', () => {
       it('Then returns the entry with all fields', () => {
         // Arrange
-        const sut = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\tcommit: second`;
+        const line = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\tcommit: second`;
 
         // Act
-        const entry = parseReflogLine(sut);
+        const entry = parseReflogLine(line);
 
         // Assert
         expect(entry).toEqual(ENTRY);
@@ -131,10 +131,10 @@ describe('parseReflogLine', () => {
     describe('When parsing', () => {
       it('Then message is the empty string', () => {
         // Arrange
-        const sut = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\t`;
+        const line = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\t`;
 
         // Act
-        const entry = parseReflogLine(sut);
+        const entry = parseReflogLine(line);
 
         // Assert
         expect(entry.message).toBe('');
@@ -146,10 +146,10 @@ describe('parseReflogLine', () => {
     describe('When parsing', () => {
       it('Then the whole message after TAB is kept', () => {
         // Arrange
-        const sut = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\tmerge topic: Fast-forward`;
+        const line = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\tmerge topic: Fast-forward`;
 
         // Act
-        const entry = parseReflogLine(sut);
+        const entry = parseReflogLine(line);
 
         // Assert
         expect(entry.message).toBe('merge topic: Fast-forward');
@@ -161,10 +161,10 @@ describe('parseReflogLine', () => {
     describe('When parsing', () => {
       it('Then the identity round-trips', () => {
         // Arrange
-        const sut = `${OID_A} ${OID_B} Ada Augusta Lovelace <ada@example.com> 1716240000 +0000\tx`;
+        const line = `${OID_A} ${OID_B} Ada Augusta Lovelace <ada@example.com> 1716240000 +0000\tx`;
 
         // Act
-        const entry = parseReflogLine(sut);
+        const entry = parseReflogLine(line);
 
         // Assert
         expect(entry.identity.name).toBe('Ada Augusta Lovelace');
@@ -177,10 +177,10 @@ describe('parseReflogLine', () => {
       it('Then the message is empty', () => {
         // Arrange — git writes an empty-message reflog entry with no TAB; the
         // committer runs to the end of the line.
-        const sut = `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000`;
+        const line = `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000`;
 
         // Act
-        const entry = parseReflogLine(sut);
+        const entry = parseReflogLine(line);
 
         // Assert
         expect(entry.message).toBe('');
@@ -220,11 +220,8 @@ describe('parseReflogLine', () => {
           label: 'an unparseable identity (no angle-bracketed email)',
         },
       ])('Then throws INVALID_REFLOG_ENTRY for $label', ({ line, reason }) => {
-        // Arrange
-        const sut = line;
-
-        // Act & Assert
-        expectInvalidReflogEntry(() => parseReflogLine(sut), reason);
+        // Arrange & Act & Assert
+        expectInvalidReflogEntry(() => parseReflogLine(line), reason);
       });
     });
   });
@@ -237,10 +234,10 @@ describe('parseReflog', () => {
         // Arrange
         const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
         const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
-        const sut = `${serializeReflogLine(first)}${serializeReflogLine(second)}`;
+        const content = `${serializeReflogLine(first)}${serializeReflogLine(second)}`;
 
         // Act
-        const entries = parseReflog(sut);
+        const entries = parseReflog(content);
 
         // Assert
         expect(entries).toEqual([first, second]);
@@ -252,10 +249,10 @@ describe('parseReflog', () => {
     describe('When parsing', () => {
       it('Then the blank line is tolerated', () => {
         // Arrange
-        const sut = `${serializeReflogLine(ENTRY)}`;
+        const content = `${serializeReflogLine(ENTRY)}`;
 
         // Act
-        const entries = parseReflog(sut);
+        const entries = parseReflog(content);
 
         // Assert
         expect(entries).toEqual([ENTRY]);
@@ -267,10 +264,10 @@ describe('parseReflog', () => {
     describe('When parsing', () => {
       it('Then returns an empty array', () => {
         // Arrange
-        const sut = '';
+        const content = '';
 
         // Act
-        const entries = parseReflog(sut);
+        const entries = parseReflog(content);
 
         // Assert
         expect(entries).toEqual([]);
@@ -284,10 +281,10 @@ describe('parseReflog', () => {
         // Arrange — a tab-less garbage line is now read as an empty-message
         // entry, so it fails on the misplaced field separator (too short for
         // the index-40 space) rather than a missing tab.
-        const sut = `${serializeReflogLine(ENTRY)}garbage line\n`;
+        const content = `${serializeReflogLine(ENTRY)}garbage line\n`;
 
         // Act & Assert
-        expectInvalidReflogEntry(() => parseReflog(sut), 'misplaced field separator');
+        expectInvalidReflogEntry(() => parseReflog(content), 'misplaced field separator');
       });
     });
   });
@@ -318,11 +315,8 @@ describe('sanitizeReflogMessage', () => {
           label: 'a CRLF sequence collapses to a single space',
         },
       ])('Then $label', ({ message, expected }) => {
-        // Arrange
-        const sut = message;
-
-        // Act
-        const result = sanitizeReflogMessage(sut);
+        // Arrange & Act
+        const result = sanitizeReflogMessage(message);
 
         // Assert
         expect(result).toBe(expected);
@@ -364,12 +358,12 @@ describe('reflog line round-trip property', () => {
       it('Then the entry is recovered', () => {
         // Arrange
         fc.assert(
-          fc.property(arbEntry, (sut) => {
+          fc.property(arbEntry, (entry) => {
             // Act
-            const recovered = parseReflogLine(serializeReflogLine(sut).replace(/\n$/, ''));
+            const recovered = parseReflogLine(serializeReflogLine(entry).replace(/\n$/, ''));
 
             // Assert
-            expect(recovered).toEqual(sut);
+            expect(recovered).toEqual(entry);
           }),
         );
       });

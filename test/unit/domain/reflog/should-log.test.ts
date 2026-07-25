@@ -31,10 +31,10 @@ describe('shouldAutocreateReflog', () => {
           },
         ])('Then $label', ({ ref, cfg }) => {
           // Arrange / Act
-          const sut = shouldAutocreateReflog(ref, cfg);
+          const result = shouldAutocreateReflog(ref, cfg);
 
           // Assert
-          expect(sut).toBe(true);
+          expect(result).toBe(true);
         });
       });
     });
@@ -51,10 +51,10 @@ describe('shouldAutocreateReflog', () => {
           const cfg: LogAllRefUpdates = { logAllRefUpdates: false };
 
           // Act
-          const sut = shouldAutocreateReflog(ref, cfg);
+          const result = shouldAutocreateReflog(ref, cfg);
 
           // Assert
-          expect(sut).toBe(false);
+          expect(result).toBe(false);
         });
       });
     });
@@ -108,10 +108,10 @@ describe('shouldAutocreateReflog', () => {
           },
         ])('Then $label', ({ ref, cfg, expected }) => {
           // Arrange / Act
-          const sut = shouldAutocreateReflog(ref, cfg);
+          const result = shouldAutocreateReflog(ref, cfg);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -138,10 +138,10 @@ describe('shouldAutocreateReflog', () => {
           },
         ])('Then $label', ({ cfg, expected }) => {
           // Arrange / Act
-          const sut = shouldAutocreateReflog(BRANCH, cfg);
+          const result = shouldAutocreateReflog(BRANCH, cfg);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });

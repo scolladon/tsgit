@@ -21,14 +21,12 @@ const countNotes = (trie: NotesTrie): number =>
 describe('Given the fanout path codec', () => {
   describe('When an oid is laid out at an arbitrary fanout', () => {
     it('Then parsing the constructed path recovers the oid', () => {
-      // Arrange
-      const sut = constructPathWithFanout;
-      // Act / Assert
+      // Arrange + Act + Assert
       fc.assert(
         fc.property(
           arbOid(),
           arbFanout(),
-          (oid, fanout) => parseFanoutPath(sut(oid, fanout)) === oid,
+          (oid, fanout) => parseFanoutPath(constructPathWithFanout(oid, fanout)) === oid,
         ),
         { numRuns: 200 },
       );
@@ -39,12 +37,10 @@ describe('Given the fanout path codec', () => {
 describe('Given a well-formed root notes tree', () => {
   describe('When it is loaded', () => {
     it('Then loading is total, preserves non-note entries, and keeps every note', () => {
-      // Arrange
-      const sut = loadTrieRoot;
-      // Act / Assert
+      // Arrange + Act + Assert
       fc.assert(
         fc.property(arbRootEntries(), (spec) => {
-          const trie = sut(spec.entries);
+          const trie = loadTrieRoot(spec.entries);
           expect(countNotes(trie)).toBe(spec.noteCount);
           expect(trie.preserved).toEqual(spec.preserved);
         }),
@@ -58,16 +54,15 @@ describe('Given a sequence of distinct notes inserted into an empty trie', () =>
   describe('When the trie is planned for writing', () => {
     it('Then it emits exactly one entry per inserted note', () => {
       // Arrange
-      const sut = planWrite;
       const read = vi.fn<SubtreeReader>();
-      // Act / Assert
+      // Act + Assert
       return fc.assert(
         fc.asyncProperty(arbDistinctOids(), async (oids) => {
           let trie = createEmptyTrie();
           for (const oid of oids) {
             trie = await insert(trie, oid, oid, read);
           }
-          const plan = await sut(trie, read);
+          const plan = await planWrite(trie, read);
           expect(read).not.toHaveBeenCalled();
           return plan.entries.length === oids.length;
         }),

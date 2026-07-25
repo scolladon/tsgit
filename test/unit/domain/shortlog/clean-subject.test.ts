@@ -77,11 +77,8 @@ describe('cleanShortlogSubject', () => {
         },
         { input: '', expected: '', label: 'an empty message leaves the subject empty' },
       ])('Then $label', ({ input, expected }) => {
-        // Arrange
-        const sut = cleanShortlogSubject;
-
-        // Act
-        const result = sut(input);
+        // Arrange & Act
+        const result = cleanShortlogSubject(input);
 
         // Assert
         expect(result).toBe(expected);

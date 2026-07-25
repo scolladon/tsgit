@@ -16,10 +16,10 @@ describe('validateRefName', () => {
           { name: 'refs/heads/feature/my-branch', label: 'returns RefName' },
         ])('Then `$name` $label', ({ name }) => {
           // Arrange & Act
-          const sut = validateRefName(name);
+          const result = validateRefName(name);
 
           // Assert
-          expect(sut).toBe(name);
+          expect(result).toBe(name);
         });
       });
     });
@@ -168,11 +168,11 @@ describe('validateRefName', () => {
     describe('Given any arbRefName', () => {
       describe('When validating', () => {
         it('Then it is accepted', () => {
-          // Arrange + Assert
+          // Arrange + Act + Assert
           fc.assert(
             fc.property(arbRefName(), (name) => {
-              const sut = validateRefName(name);
-              expect(sut).toBe(name);
+              const result = validateRefName(name);
+              expect(result).toBe(name);
             }),
           );
         });
@@ -182,7 +182,7 @@ describe('validateRefName', () => {
     describe('Given any string accepted by validateRefName', () => {
       describe('When inspecting', () => {
         it('Then it contains no forbidden patterns', () => {
-          // Arrange + Assert
+          // Arrange + Act + Assert
           fc.assert(
             fc.property(
               fc.string({ minLength: 1, maxLength: 50 }).filter((s) => {
@@ -227,7 +227,7 @@ describe('validateRefName', () => {
       describe('When validating', () => {
         for (const [label, code] of overrides) {
           it(`Then ${label} throws INVALID_REF /forbidden Unicode override/`, () => {
-            // Arrange
+            // Arrange & Act & Assert
             try {
               validateRefName(`refs/heads/bad${String.fromCharCode(code)}name`);
               // Assert
@@ -247,10 +247,10 @@ describe('validateRefName', () => {
     describe('Given a ref name with no overrides', () => {
       describe('When validating', () => {
         it('Then succeeds (baseline accept)', () => {
-          // Arrange
-          const sut = validateRefName('refs/heads/main');
+          // Arrange & Act
+          const result = validateRefName('refs/heads/main');
           // Assert
-          expect(sut).toBe('refs/heads/main');
+          expect(result).toBe('refs/heads/main');
         });
       });
     });
@@ -266,10 +266,10 @@ describe('validateRefName', () => {
       describe('When validating', () => {
         for (const [label, code] of negatives) {
           it(`Then ${label} succeeds`, () => {
-            // Arrange
-            const sut = validateRefName(`refs/heads/ok${String.fromCharCode(code)}name`);
+            // Arrange & Act
+            const result = validateRefName(`refs/heads/ok${String.fromCharCode(code)}name`);
             // Assert
-            expect(sut).toContain('refs/heads/');
+            expect(result).toContain('refs/heads/');
           });
         }
       });
@@ -281,11 +281,8 @@ describe('isSafeRefName', () => {
   describe("Given 'refs/heads/main'", () => {
     describe('When checking safety', () => {
       it('Then it returns true', () => {
-        // Arrange
-        const sut = isSafeRefName;
-
-        // Act
-        const result = sut('refs/heads/main');
+        // Arrange & Act
+        const result = isSafeRefName('refs/heads/main');
 
         // Assert
         expect(result).toBe(true);
@@ -296,11 +293,8 @@ describe('isSafeRefName', () => {
   describe("Given 'refs/heads/../../../config'", () => {
     describe('When checking safety', () => {
       it('Then it returns false', () => {
-        // Arrange
-        const sut = isSafeRefName;
-
-        // Act
-        const result = sut('refs/heads/../../../config');
+        // Arrange & Act
+        const result = isSafeRefName('refs/heads/../../../config');
 
         // Assert
         expect(result).toBe(false);

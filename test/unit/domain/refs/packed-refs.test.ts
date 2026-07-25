@@ -17,10 +17,10 @@ describe('parsePackedRefs', () => {
     describe('When parsing', () => {
       it("Then returns empty entries, peeling='none', sorted=false", () => {
         // Arrange & Act
-        const sut = parsePackedRefs('');
+        const result = parsePackedRefs('');
 
         // Assert
-        expect(sut).toEqual({ entries: [], peeling: 'none', sorted: false });
+        expect(result).toEqual({ entries: [], peeling: 'none', sorted: false });
       });
     });
   });
@@ -60,11 +60,11 @@ describe('parsePackedRefs', () => {
         },
       ] as const)('Then $label', ({ content, peeling, sorted }) => {
         // Arrange & Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.peeling).toBe(peeling);
-        expect(sut.sorted).toBe(sorted);
+        expect(result.peeling).toBe(peeling);
+        expect(result.sorted).toBe(sorted);
       });
     });
   });
@@ -76,12 +76,12 @@ describe('parsePackedRefs', () => {
         const content = `# pack-refs with:\n${'a'.repeat(40)} refs/heads/main\n`;
 
         // Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.peeling).toBe('none');
-        expect(sut.sorted).toBe(false);
-        expect(sut.entries).toHaveLength(1);
+        expect(result.peeling).toBe('none');
+        expect(result.sorted).toBe(false);
+        expect(result.entries).toHaveLength(1);
       });
     });
   });
@@ -99,13 +99,13 @@ describe('parsePackedRefs', () => {
         ].join('\n');
 
         // Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.entries).toHaveLength(3);
-        expect(sut.entries[0]).toEqual({ name: 'refs/heads/main', id: SHA1 });
-        expect(sut.entries[1]).toEqual({ name: 'refs/heads/develop', id: SHA2 });
-        expect(sut.entries[2]).toEqual({ name: 'refs/tags/v1.0', id: SHA3 });
+        expect(result.entries).toHaveLength(3);
+        expect(result.entries[0]).toEqual({ name: 'refs/heads/main', id: SHA1 });
+        expect(result.entries[1]).toEqual({ name: 'refs/heads/develop', id: SHA2 });
+        expect(result.entries[2]).toEqual({ name: 'refs/tags/v1.0', id: SHA3 });
       });
     });
   });
@@ -122,10 +122,10 @@ describe('parsePackedRefs', () => {
         ].join('\n');
 
         // Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.entries[0]).toEqual({ name: 'refs/tags/v1.0', id: SHA1, peeled: SHA4 });
+        expect(result.entries[0]).toEqual({ name: 'refs/tags/v1.0', id: SHA1, peeled: SHA4 });
       });
     });
   });
@@ -137,10 +137,10 @@ describe('parsePackedRefs', () => {
         const content = `${SHA1} refs/heads/main\n`;
 
         // Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.entries[0]?.peeled).toBeUndefined();
+        expect(result.entries[0]?.peeled).toBeUndefined();
       });
     });
   });
@@ -152,11 +152,11 @@ describe('parsePackedRefs', () => {
         const content = [`${SHA1} refs/tags/v1.0`, `^${SHA4}`, ''].join('\n');
 
         // Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.peeling).toBe('none');
-        expect(sut.entries[0]?.peeled).toBe(SHA4);
+        expect(result.peeling).toBe('none');
+        expect(result.entries[0]?.peeled).toBe(SHA4);
       });
     });
   });
@@ -173,10 +173,10 @@ describe('parsePackedRefs', () => {
         ].join('\n');
 
         // Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.entries).toHaveLength(1);
+        expect(result.entries).toHaveLength(1);
       });
     });
   });
@@ -275,12 +275,12 @@ describe('parsePackedRefs', () => {
         const content = `${'a'.repeat(40)} refs/heads/main\n`;
 
         // Act
-        const sut = parsePackedRefs(content);
+        const result = parsePackedRefs(content);
 
         // Assert
-        expect(sut.sorted).toBe(false);
-        expect(sut.peeling).toBe('none');
-        expect(sut.entries).toHaveLength(1);
+        expect(result.sorted).toBe(false);
+        expect(result.peeling).toBe('none');
+        expect(result.entries).toHaveLength(1);
       });
     });
   });
@@ -301,10 +301,10 @@ describe('serializePackedRefs', () => {
         };
 
         // Act
-        const sut = serializePackedRefs(refs);
+        const result = serializePackedRefs(refs);
 
         // Assert
-        const lines = sut.split('\n');
+        const lines = result.split('\n');
         expect(lines[1]).toContain('refs/heads/main');
         expect(lines[2]).toContain('refs/tags/v1.0');
       });
@@ -322,11 +322,11 @@ describe('serializePackedRefs', () => {
         };
 
         // Act
-        const sut = serializePackedRefs(refs);
+        const result = serializePackedRefs(refs);
 
         // Assert
-        expect(sut).toContain('# pack-refs with: peeled sorted');
-        expect(sut).toContain(`^${SHA4}`);
+        expect(result).toContain('# pack-refs with: peeled sorted');
+        expect(result).toContain(`^${SHA4}`);
       });
     });
   });
@@ -345,10 +345,10 @@ describe('serializePackedRefs', () => {
         };
 
         // Act
-        const sut = serializePackedRefs(refs);
+        const result = serializePackedRefs(refs);
 
         // Assert
-        const refLines = sut.split('\n').filter((l) => !l.startsWith('#') && l !== '');
+        const refLines = result.split('\n').filter((l) => !l.startsWith('#') && l !== '');
         expect(refLines).toHaveLength(2);
       });
     });
@@ -369,10 +369,10 @@ describe('serializePackedRefs', () => {
         };
 
         // Act
-        const sut = serializePackedRefs(refs);
+        const result = serializePackedRefs(refs);
 
         // Assert
-        const refLines = sut.split('\n').filter((l) => !l.startsWith('#') && l !== '');
+        const refLines = result.split('\n').filter((l) => !l.startsWith('#') && l !== '');
         expect(refLines[0]).toBe(`${SHA1} refs/heads/main`);
         expect(refLines[1]).toBe(`${SHA2} refs/heads/main`);
       });
@@ -390,10 +390,10 @@ describe('serializePackedRefs', () => {
         };
 
         // Act
-        const sut = serializePackedRefs(refs);
+        const result = serializePackedRefs(refs);
 
         // Assert
-        const headerLine = sut.split('\n')[0];
+        const headerLine = result.split('\n')[0];
         // Canonical git emits a trailing space after the trait list; tsgit
         // matches that for byte-identical interop (ADR-140).
         expect(headerLine).toBe('# pack-refs with: peeled fully-peeled ');
@@ -412,10 +412,10 @@ describe('serializePackedRefs', () => {
         };
 
         // Act
-        const sut = serializePackedRefs(refs);
+        const result = serializePackedRefs(refs);
 
         // Assert — header line should have no traits after the prefix
-        const headerLine = sut.split('\n')[0];
+        const headerLine = result.split('\n')[0];
         expect(headerLine).toBe('# pack-refs with:');
       });
     });
@@ -428,10 +428,10 @@ describe('serializePackedRefs', () => {
         const refs: PackedRefs = { entries: [], peeling: 'none', sorted: false };
 
         // Act
-        const sut = serializePackedRefs(refs);
+        const result = serializePackedRefs(refs);
 
         // Assert
-        expect(sut).toBe('');
+        expect(result).toBe('');
       });
     });
   });
@@ -454,11 +454,11 @@ describe('roundtrip', () => {
 
         // Act
         const serialized = serializePackedRefs(original);
-        const sut = parsePackedRefs(serialized);
+        const result = parsePackedRefs(serialized);
 
         // Assert
-        expect(sut.peeling).toBe('fully');
-        expect(sut.sorted).toBe(true);
+        expect(result.peeling).toBe('fully');
+        expect(result.sorted).toBe(true);
         const sorted = [...original.entries].sort((a, b) =>
           (a.name as string) < (b.name as string)
             ? -1
@@ -466,7 +466,7 @@ describe('roundtrip', () => {
               ? 1
               : 0,
         );
-        expect(sut.entries).toEqual(sorted);
+        expect(result.entries).toEqual(sorted);
       });
     });
   });
@@ -474,7 +474,7 @@ describe('roundtrip', () => {
   describe('Given arbitrary entries', () => {
     describe('When serializing then parsing', () => {
       it('Then all entries preserved', () => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         fc.assert(
           fc.property(
             fc.array(

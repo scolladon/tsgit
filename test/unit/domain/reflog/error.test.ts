@@ -16,10 +16,10 @@ describe('reflog error', () => {
       describe('When checking error.data', () => {
         it('Then code is INVALID_REFLOG_ENTRY and reason matches', () => {
           // Arrange & Act
-          const sut = invalidReflogEntry('missing tab');
+          const result = invalidReflogEntry('missing tab');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_REFLOG_ENTRY', reason: 'missing tab' });
+          expect(result.data).toEqual({ code: 'INVALID_REFLOG_ENTRY', reason: 'missing tab' });
         });
       });
     });
@@ -28,10 +28,10 @@ describe('reflog error', () => {
       describe('When checking error.data', () => {
         it('Then code is REFLOG_NOT_FOUND and ref matches', () => {
           // Arrange & Act
-          const sut = reflogNotFound(HEAD);
+          const result = reflogNotFound(HEAD);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'REFLOG_NOT_FOUND', ref: HEAD });
+          expect(result.data).toEqual({ code: 'REFLOG_NOT_FOUND', ref: HEAD });
         });
       });
     });
@@ -40,10 +40,10 @@ describe('reflog error', () => {
       describe('When checking error.data', () => {
         it('Then code, ref, requested, available match', () => {
           // Arrange & Act
-          const sut = reflogEntryOutOfRange(HEAD, 5, 2);
+          const result = reflogEntryOutOfRange(HEAD, 5, 2);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'REFLOG_ENTRY_OUT_OF_RANGE',
             ref: HEAD,
             requested: 5,
@@ -59,19 +59,19 @@ describe('reflog error', () => {
       describe('When checking instanceof Error', () => {
         it('Then returns true', () => {
           // Arrange & Act
-          const sut = invalidReflogEntry('bad');
+          const result = invalidReflogEntry('bad');
 
           // Assert
-          expect(sut).toBeInstanceOf(Error);
+          expect(result).toBeInstanceOf(Error);
         });
       });
       describe('When accessing .name', () => {
         it("Then equals 'TsgitError'", () => {
           // Arrange & Act
-          const sut = invalidReflogEntry('bad');
+          const result = invalidReflogEntry('bad');
 
           // Assert
-          expect(sut.name).toBe('TsgitError');
+          expect(result.name).toBe('TsgitError');
         });
       });
     });
@@ -82,10 +82,10 @@ describe('reflog error', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with reason', () => {
           // Arrange & Act
-          const sut = invalidReflogEntry('missing tab separator');
+          const result = invalidReflogEntry('missing tab separator');
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'INVALID_REFLOG_ENTRY: invalid reflog entry: missing tab separator',
           );
         });
@@ -96,10 +96,10 @@ describe('reflog error', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with ref', () => {
           // Arrange & Act
-          const sut = reflogNotFound(HEAD);
+          const result = reflogNotFound(HEAD);
 
           // Assert
-          expect(sut.message).toBe('REFLOG_NOT_FOUND: reflog not found: HEAD');
+          expect(result.message).toBe('REFLOG_NOT_FOUND: reflog not found: HEAD');
         });
       });
     });
@@ -108,10 +108,10 @@ describe('reflog error', () => {
       describe('When reading message', () => {
         it('Then equals the documented format with ref, requested and available', () => {
           // Arrange & Act
-          const sut = reflogEntryOutOfRange(HEAD, 5, 2);
+          const result = reflogEntryOutOfRange(HEAD, 5, 2);
 
           // Assert
-          expect(sut.message).toBe(
+          expect(result.message).toBe(
             'REFLOG_ENTRY_OUT_OF_RANGE: reflog entry out of range: ref=HEAD requested=5 available=2',
           );
         });
@@ -124,10 +124,10 @@ describe('reflog error', () => {
       describe('When switching on data.code in exhaustive switch', () => {
         it('Then it is handleable', () => {
           // Arrange
-          const sut = invalidReflogEntry('test');
+          const result = invalidReflogEntry('test');
 
           // Act & Assert
-          const data: TsgitErrorData = sut.data;
+          const data: TsgitErrorData = result.data;
           // Assert
           assertExhaustiveSwitch(data);
         });
@@ -145,9 +145,9 @@ describe('reflog error', () => {
           ];
 
           // Act & Assert
-          for (const sut of cases) {
+          for (const result of cases) {
             // Assert
-            expect(sut.message).not.toContain('[object Object]');
+            expect(result.message).not.toContain('[object Object]');
           }
         });
       });

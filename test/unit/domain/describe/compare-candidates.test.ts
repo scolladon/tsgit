@@ -19,10 +19,10 @@ describe('compareCandidates', () => {
         const far = candidate(3, 0);
 
         // Act
-        const sut = compareCandidates(near, far);
+        const result = compareCandidates(near, far);
 
         // Assert
-        expect(sut).toBeLessThan(0);
+        expect(result).toBeLessThan(0);
       });
     });
   });
@@ -35,10 +35,10 @@ describe('compareCandidates', () => {
         const later = candidate(2, 4);
 
         // Act
-        const sut = compareCandidates(earlier, later);
+        const result = compareCandidates(earlier, later);
 
         // Assert
-        expect(sut).toBeLessThan(0);
+        expect(result).toBeLessThan(0);
       });
     });
   });
@@ -51,10 +51,10 @@ describe('compareCandidates', () => {
         const b = candidate(2, 3);
 
         // Act
-        const sut = compareCandidates(a, b);
+        const result = compareCandidates(a, b);
 
         // Assert
-        expect(sut).toBe(0);
+        expect(result).toBe(0);
       });
     });
   });

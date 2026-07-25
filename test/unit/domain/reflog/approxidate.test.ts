@@ -38,11 +38,8 @@ describe('parseApproxidate', () => {
           },
           { input: 'NOW', expected: NOW, label: 'matching is case-insensitive' },
         ])('Then $label', ({ input, expected }) => {
-          // Arrange
-          const sut = parseApproxidate;
-
-          // Act
-          const result = sut(input, NOW);
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
 
           // Assert
           expect(result).toBe(expected);
@@ -129,11 +126,8 @@ describe('parseApproxidate', () => {
             label: 'the literal year 99 AD is used (not 1999)',
           },
         ])('Then $label', ({ input, expected }) => {
-          // Arrange
-          const sut = parseApproxidate;
-
-          // Act
-          const result = sut(input, NOW);
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
 
           // Assert
           expect(result).toBe(expected);
@@ -180,11 +174,8 @@ describe('parseApproxidate', () => {
             label: 'an ISO date followed by non-date text is rejected (anchored to the end)',
           },
         ])('Then $label', ({ input }) => {
-          // Arrange
-          const sut = parseApproxidate;
-
-          // Act
-          const result = sut(input, NOW);
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
 
           // Assert
           expect(result).toBeUndefined();
@@ -209,11 +200,8 @@ describe('parseApproxidate', () => {
             label: 'returns now minus one day (singular unit)',
           },
         ])('Then $label', ({ input, expected }) => {
-          // Arrange
-          const sut = parseApproxidate;
-
-          // Act
-          const result = sut(input, NOW);
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
 
           // Assert
           expect(result).toBe(expected);
@@ -303,11 +291,11 @@ describe('parseApproxidate', () => {
           },
           { input: '1 year ago', expected: NOW - YEAR, label: 'subtracts a 365-day year' },
         ])('Then $label', ({ input, expected }) => {
-          // Arrange
-          const sut = parseApproxidate(input, NOW);
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -324,11 +312,11 @@ describe('parseApproxidate', () => {
           { input: 'monday', label: 'a weekday name (unsupported form)' },
           { input: '1779710400', label: 'a bare integer' },
         ])('Then returns undefined for $label', ({ input }) => {
-          // Arrange
-          const sut = parseApproxidate(input, NOW);
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });

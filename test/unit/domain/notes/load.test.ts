@@ -21,10 +21,8 @@ describe('Given a root notes tree to load', () => {
     ];
 
     it('Then the blob becomes a note in its nibble slot', () => {
-      // Arrange
-      const sut = loadTrieRoot;
-      // Act
-      const result = sut(entries);
+      // Arrange & Act
+      const result = loadTrieRoot(entries);
       // Assert
       expect(result.slots[1]).toEqual({
         kind: 'note',
@@ -34,19 +32,15 @@ describe('Given a root notes tree to load', () => {
     });
 
     it('Then the two-hex directory becomes a lazy subtree placeholder', () => {
-      // Arrange
-      const sut = loadTrieRoot;
-      // Act
-      const result = sut(entries);
+      // Arrange & Act
+      const result = loadTrieRoot(entries);
       // Assert
       expect(result.slots[2]).toEqual({ kind: 'subtree', prefix: '2a', oid: subtreeOid });
     });
 
     it('Then the non-note entries are preserved verbatim in order', () => {
-      // Arrange
-      const sut = loadTrieRoot;
-      // Act
-      const result = sut(entries);
+      // Arrange & Act
+      const result = loadTrieRoot(entries);
       // Assert
       expect(result.preserved).toEqual([
         { mode: FILE_MODE.REGULAR, name: 'README', id: readmeId },
@@ -66,10 +60,8 @@ describe('Given a root notes tree to load', () => {
     ];
 
     it('Then they split into an internal node keyed by their second nibble', () => {
-      // Arrange
-      const sut = loadTrieRoot;
-      // Act
-      const result = sut(entries);
+      // Arrange & Act
+      const result = loadTrieRoot(entries);
       // Assert
       const branch = result.slots[10] as InternalSlot;
       expect(branch.kind).toBe('internal');
@@ -84,10 +76,9 @@ describe('Given a lazy subtree placeholder', () => {
   describe('When the root tree is loaded', () => {
     it('Then loading never reads the subtree contents', () => {
       // Arrange
-      const sut = loadTrieRoot;
       const read = vi.fn();
       // Act
-      sut([{ mode: FILE_MODE.DIRECTORY, name: '2a', id: oid('b') }]);
+      loadTrieRoot([{ mode: FILE_MODE.DIRECTORY, name: '2a', id: oid('b') }]);
       // Assert
       expect(read).not.toHaveBeenCalled();
     });
@@ -96,14 +87,13 @@ describe('Given a lazy subtree placeholder', () => {
   describe('When it is unpacked on demand', () => {
     it('Then its entries are classified at the consumed prefix', async () => {
       // Arrange
-      const sut = unpackSubtree;
       const subtreeOid = oid('f');
       const noteBlob = oid('a');
       const read = vi.fn(async () => [
         { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: noteBlob },
       ]);
       // Act
-      const result = await sut({ kind: 'subtree', prefix: 'ab', oid: subtreeOid }, read);
+      const result = await unpackSubtree({ kind: 'subtree', prefix: 'ab', oid: subtreeOid }, read);
       // Assert
       expect(read).toHaveBeenCalledWith(subtreeOid);
       expect(result.slots[0]).toEqual({

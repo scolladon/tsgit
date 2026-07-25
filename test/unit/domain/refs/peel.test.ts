@@ -24,10 +24,10 @@ describe('peelOneLevel', () => {
         };
 
         // Act
-        const sut = peelOneLevel(tag);
+        const result = peelOneLevel(tag);
 
         // Assert
-        expect(sut).toEqual({ type: 'commit', id: SHA2 });
+        expect(result).toEqual({ type: 'commit', id: SHA2 });
       });
     });
   });
@@ -50,10 +50,10 @@ describe('peelOneLevel', () => {
         };
 
         // Act
-        const sut = peelOneLevel(commit);
+        const result = peelOneLevel(commit);
 
         // Assert
-        expect(sut).toEqual({ type: 'tree', id: SHA3 });
+        expect(result).toEqual({ type: 'tree', id: SHA3 });
       });
     });
   });
@@ -69,10 +69,10 @@ describe('peelOneLevel', () => {
         };
 
         // Act
-        const sut = peelOneLevel(blob);
+        const result = peelOneLevel(blob);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -88,10 +88,10 @@ describe('peelOneLevel', () => {
         };
 
         // Act
-        const sut = peelOneLevel(tree);
+        const result = peelOneLevel(tree);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });

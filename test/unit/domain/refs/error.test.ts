@@ -9,10 +9,10 @@ describe('refs error', () => {
       describe('When checking error.data', () => {
         it("Then code is 'INVALID_REF' and reason matches", () => {
           // Arrange & Act
-          const sut = invalidRef('bad sha');
+          const result = invalidRef('bad sha');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_REF', reason: 'bad sha' });
+          expect(result.data).toEqual({ code: 'INVALID_REF', reason: 'bad sha' });
         });
       });
     });
@@ -21,10 +21,10 @@ describe('refs error', () => {
       describe('When checking error.data', () => {
         it("Then code is 'INVALID_PACKED_REFS' and reason matches", () => {
           // Arrange & Act
-          const sut = invalidPackedRefs('corrupt line');
+          const result = invalidPackedRefs('corrupt line');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_PACKED_REFS', reason: 'corrupt line' });
+          expect(result.data).toEqual({ code: 'INVALID_PACKED_REFS', reason: 'corrupt line' });
         });
       });
     });
@@ -35,37 +35,37 @@ describe('refs error', () => {
       describe('When checking instanceof Error', () => {
         it('Then returns true', () => {
           // Arrange & Act
-          const sut = invalidRef('bad');
+          const result = invalidRef('bad');
 
           // Assert
-          expect(sut).toBeInstanceOf(Error);
+          expect(result).toBeInstanceOf(Error);
         });
       });
       describe('When accessing .name', () => {
         it("Then equals 'TsgitError'", () => {
           // Arrange & Act
-          const sut = invalidRef('bad');
+          const result = invalidRef('bad');
 
           // Assert
-          expect(sut.name).toBe('TsgitError');
+          expect(result.name).toBe('TsgitError');
         });
       });
       describe('When accessing .message', () => {
         it('Then contains the error code', () => {
           // Arrange & Act
-          const sut = invalidRef('bad');
+          const result = invalidRef('bad');
 
           // Assert
-          expect(sut.message).toContain('INVALID_REF');
+          expect(result.message).toContain('INVALID_REF');
         });
       });
       describe('When switching on data.code in exhaustive switch', () => {
         it('Then all 29 cases handleable', () => {
           // Arrange
-          const sut = invalidRef('test');
+          const result = invalidRef('test');
 
           // Act & Assert
-          const data: TsgitErrorData = sut.data;
+          const data: TsgitErrorData = result.data;
           // Assert
           assertExhaustiveSwitch(data);
         });
