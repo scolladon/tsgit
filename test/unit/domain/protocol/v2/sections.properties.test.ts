@@ -83,17 +83,14 @@ const decodeAll = (bytes: Uint8Array): Promise<PktLine[]> =>
 describe('Given an arbitrary command name, arg list, and payload set', () => {
   describe('When encodeCommandRequest is built and decoded', () => {
     it('Then the decoded frames reproduce command-header ∘ delim ∘ args ∘ flush', async () => {
-      // Arrange
-      const sut = encodeCommandRequest;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(
           commandArb(),
           argsArb(),
           payloadsArb(),
           async (command, args, payloads) => {
-            const bytes = sut(command, args, payloads);
+            const bytes = encodeCommandRequest(command, args, payloads);
             const lines = await decodeAll(bytes);
 
             expect(lines[0]).toEqual({
@@ -134,16 +131,13 @@ describe('Given an arbitrary command name, arg list, and payload set', () => {
 describe('Given an arbitrary set of known sections and their data lines', () => {
   describe('When serialized to pkt-lines and parsed back via readSections', () => {
     it('Then each section name and its line list round-trip exactly', async () => {
-      // Arrange
-      const sut = readSections;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(sectionFixturesArb(), async (fixtures) => {
           const bytes = buildSectionsStream(fixtures);
           const stream = decodePktStream(asyncBytes([bytes]), { v2: true });
 
-          const collected = await drainSections(sut(stream));
+          const collected = await drainSections(readSections(stream));
 
           expect(collected).toEqual(fixtures);
         }),

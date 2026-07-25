@@ -14,15 +14,14 @@ const REF_MAIN = RefName.from('refs/heads/main');
 const REF_FEATURE = RefName.from('refs/heads/feature');
 const REF_HEAD = RefName.from('HEAD');
 
-describe('Given serializeBundleHeader', () => {
-  describe('When called with no prerequisites and one ref', () => {
+describe('serializeBundleHeader', () => {
+  describe('Given no prerequisites and one ref, When serialized', () => {
     it('Then emits magic, ref line and blank line', () => {
       // Arrange
-      const sut = serializeBundleHeader;
       const refs: ReadonlyArray<BundleRef> = [{ oid: OID_B, name: REF_MAIN }];
 
       // Act
-      const result = sut({ version: 2, prerequisites: [], refs });
+      const result = serializeBundleHeader({ version: 2, prerequisites: [], refs });
 
       // Assert
       const expected = new TextEncoder().encode(`# v2 git bundle\n${OID_B} refs/heads/main\n\n`);
@@ -30,10 +29,9 @@ describe('Given serializeBundleHeader', () => {
     });
   });
 
-  describe('When called with prerequisites in reverse oid order', () => {
+  describe('Given prerequisites in reverse oid order, When serialized', () => {
     it('Then prerequisite lines are sorted by oid ascending', () => {
       // Arrange
-      const sut = serializeBundleHeader;
       const prerequisites: ReadonlyArray<BundlePrerequisite> = [
         { oid: OID_C, comment: 'third commit' },
         { oid: OID_A, comment: 'first commit' },
@@ -41,7 +39,7 @@ describe('Given serializeBundleHeader', () => {
       const refs: ReadonlyArray<BundleRef> = [{ oid: OID_D, name: REF_MAIN }];
 
       // Act
-      const result = sut({ version: 2, prerequisites, refs });
+      const result = serializeBundleHeader({ version: 2, prerequisites, refs });
 
       // Assert
       const expected = new TextEncoder().encode(
@@ -58,17 +56,16 @@ describe('Given serializeBundleHeader', () => {
     });
   });
 
-  describe('When called with multiple refs', () => {
+  describe('Given multiple refs, When serialized', () => {
     it('Then ref lines preserve input order without sorting', () => {
       // Arrange
-      const sut = serializeBundleHeader;
       const refs: ReadonlyArray<BundleRef> = [
         { oid: OID_B, name: REF_MAIN },
         { oid: OID_A, name: REF_FEATURE },
       ];
 
       // Act
-      const result = sut({ version: 2, prerequisites: [], refs });
+      const result = serializeBundleHeader({ version: 2, prerequisites: [], refs });
 
       // Assert
       const text = new TextDecoder().decode(result);
@@ -81,14 +78,13 @@ describe('Given serializeBundleHeader', () => {
     });
   });
 
-  describe('When called with HEAD ref', () => {
+  describe('Given a HEAD ref, When serialized', () => {
     it('Then HEAD is emitted as a ref line', () => {
       // Arrange
-      const sut = serializeBundleHeader;
       const refs: ReadonlyArray<BundleRef> = [{ oid: OID_B, name: REF_HEAD }];
 
       // Act
-      const result = sut({ version: 2, prerequisites: [], refs });
+      const result = serializeBundleHeader({ version: 2, prerequisites: [], refs });
 
       // Assert
       const text = new TextDecoder().decode(result);
@@ -96,10 +92,9 @@ describe('Given serializeBundleHeader', () => {
     });
   });
 
-  describe('When called with a full header (prerequisites + refs)', () => {
+  describe('Given a full header (prerequisites + refs), When serialized', () => {
     it('Then bytes match the exact expected format: magic, sorted prereqs, refs, blank', () => {
       // Arrange
-      const sut = serializeBundleHeader;
       const prerequisites: ReadonlyArray<BundlePrerequisite> = [
         { oid: OID_B, comment: 'second' },
         { oid: OID_A, comment: 'first' },
@@ -110,7 +105,7 @@ describe('Given serializeBundleHeader', () => {
       ];
 
       // Act
-      const result = sut({ version: 2, prerequisites, refs });
+      const result = serializeBundleHeader({ version: 2, prerequisites, refs });
 
       // Assert
       const text = new TextDecoder().decode(result);
@@ -120,15 +115,14 @@ describe('Given serializeBundleHeader', () => {
     });
   });
 
-  describe('When called with version 3 (unsupported)', () => {
+  describe('Given version 3 (unsupported), When serialized', () => {
     it('Then throws BUNDLE_UNSUPPORTED_VERSION with version 3', () => {
       // Arrange
-      const sut = serializeBundleHeader;
+      let thrown: unknown;
 
       // Act
-      let thrown: unknown;
       try {
-        sut({ version: 3, prerequisites: [], refs: [] });
+        serializeBundleHeader({ version: 3, prerequisites: [], refs: [] });
       } catch (err) {
         thrown = err;
       }

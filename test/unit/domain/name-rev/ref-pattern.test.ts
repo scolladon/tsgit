@@ -6,10 +6,10 @@ describe('matchRefGlob', () => {
     describe('When matching', () => {
       it('Then `*` crosses slashes', () => {
         // Arrange + Act
-        const sut = matchRefGlob('refs/tags/*', 'refs/tags/rel/v1');
+        const result = matchRefGlob('refs/tags/*', 'refs/tags/rel/v1');
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -38,10 +38,10 @@ describe('matchRefGlob', () => {
     describe('When matching', () => {
       it('Then the match is anchored at both ends', () => {
         // Arrange + Act
-        const sut = matchRefGlob('tags/*', 'refs/tags/x');
+        const result = matchRefGlob('tags/*', 'refs/tags/x');
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });

@@ -59,11 +59,8 @@ describe('buildV2FetchRequest', () => {
   describe('Given wants, haves, args, and done', () => {
     describe('When buildV2FetchRequest builds the request', () => {
       it('Then it emits command=fetch, delim, ofs-delta, include-tag, want lines, have lines, done, flush — and no thin-pack/no-progress', async () => {
-        // Arrange
-        const sut = buildV2FetchRequest;
-
-        // Act
-        const bytes = sut({
+        // Arrange & Act
+        const bytes = buildV2FetchRequest({
           wants: [OID1, OID2],
           haves: [OID3],
           args: ['ofs-delta', 'include-tag'],
@@ -94,11 +91,8 @@ describe('buildV2FetchRequest', () => {
   describe('Given wants only, with haves, args, and done all omitted', () => {
     describe('When buildV2FetchRequest builds the request', () => {
       it('Then it emits only the command header, delim, want lines, and flush', async () => {
-        // Arrange
-        const sut = buildV2FetchRequest;
-
-        // Act
-        const bytes = sut({ wants: [OID1], haves: [] });
+        // Arrange & Act
+        const bytes = buildV2FetchRequest({ wants: [OID1], haves: [] });
         const lines = await decodeAll(bytes);
 
         // Assert
@@ -133,13 +127,13 @@ describe('parseV2FetchResponse', () => {
         );
 
         // Act
-        const sut = await parseV2FetchResponse(stream);
-        const packChunks = await collect(sut.packBody);
+        const result = await parseV2FetchResponse(stream);
+        const packChunks = await collect(result.packBody);
 
         // Assert
-        expect(sut.acks).toEqual([{ id: OID1, status: 'ack' }]);
-        expect(sut.ready).toBe(true);
-        expect(sut.nak).toBe(false);
+        expect(result.acks).toEqual([{ id: OID1, status: 'ack' }]);
+        expect(result.ready).toBe(true);
+        expect(result.nak).toBe(false);
         expect(packChunks).toEqual([bytesOf('PACK-DATA')]);
       });
     });
@@ -154,12 +148,12 @@ describe('parseV2FetchResponse', () => {
         );
 
         // Act
-        const sut = await parseV2FetchResponse(stream);
-        const packChunks = await collect(sut.packBody);
+        const result = await parseV2FetchResponse(stream);
+        const packChunks = await collect(result.packBody);
 
         // Assert
-        expect(sut.acks).toEqual([]);
-        expect(sut.ready).toBe(false);
+        expect(result.acks).toEqual([]);
+        expect(result.ready).toBe(false);
         expect(packChunks).toEqual([bytesOf('PACK-DATA')]);
       });
     });
@@ -182,11 +176,11 @@ describe('parseV2FetchResponse', () => {
         );
 
         // Act
-        const sut = await parseV2FetchResponse(stream);
+        const result = await parseV2FetchResponse(stream);
 
         // Assert
-        expect(sut.shallow).toEqual([OID1]);
-        expect(sut.unshallow).toEqual([OID2]);
+        expect(result.shallow).toEqual([OID1]);
+        expect(result.unshallow).toEqual([OID2]);
       });
     });
   });
@@ -200,12 +194,12 @@ describe('parseV2FetchResponse', () => {
         );
 
         // Act
-        const sut = await parseV2FetchResponse(stream);
-        const packChunks = await collect(sut.packBody);
+        const result = await parseV2FetchResponse(stream);
+        const packChunks = await collect(result.packBody);
 
         // Assert
-        expect(sut.nak).toBe(true);
-        expect(sut.ready).toBe(false);
+        expect(result.nak).toBe(true);
+        expect(result.ready).toBe(false);
         expect(packChunks).toEqual([]);
       });
     });
@@ -228,10 +222,10 @@ describe('parseV2FetchResponse', () => {
         );
 
         // Act
-        const sut = await parseV2FetchResponse(stream);
+        const result = await parseV2FetchResponse(stream);
 
         // Assert
-        expect(sut.wantedRefs).toEqual([
+        expect(result.wantedRefs).toEqual([
           { id: OID3, name: 'refs/heads/main' },
           { id: OID4, name: 'refs/heads/feature' },
         ]);
@@ -250,10 +244,10 @@ describe('parseV2FetchResponse', () => {
         );
 
         // Act
-        const sut = await parseV2FetchResponse(stream);
+        const result = await parseV2FetchResponse(stream);
 
         // Assert
-        expect(sut.wantedRefs).toEqual([{ id: OID3, name: 'refs/heads/wei\nrd' }]);
+        expect(result.wantedRefs).toEqual([{ id: OID3, name: 'refs/heads/wei\nrd' }]);
       });
     });
   });

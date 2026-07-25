@@ -60,11 +60,12 @@ describe('encodeCommandRequest', () => {
   describe('Given a command, args, and payloads', () => {
     describe('When encodeCommandRequest builds the request', () => {
       it('Then it emits command header, delim, args, flush in order', async () => {
-        // Arrange
-        const sut = encodeCommandRequest;
-
-        // Act
-        const bytes = sut('ls-refs', ['symrefs', 'peel'], [bytesOf('ref-prefix HEAD\n')]);
+        // Arrange & Act
+        const bytes = encodeCommandRequest(
+          'ls-refs',
+          ['symrefs', 'peel'],
+          [bytesOf('ref-prefix HEAD\n')],
+        );
         const lines = await decodeAll(bytes);
 
         // Assert
@@ -149,10 +150,10 @@ describe('readSections', () => {
         const stream = buildStream();
 
         // Act
-        const sut = await collectSections(decodePktStream(stream, { v2: true }));
+        const result = await collectSections(decodePktStream(stream, { v2: true }));
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -164,16 +165,16 @@ describe('readSections', () => {
         const stream = asyncOf([concatBytes(pktBytes('bogus\n'), FLUSH)]);
 
         // Act
-        let sut: unknown;
+        let caught: unknown;
         try {
           await collectSections(decodePktStream(stream, { v2: true }));
         } catch (e) {
-          sut = e;
+          caught = e;
         }
 
         // Assert
-        expect(sut).toBeInstanceOf(TsgitError);
-        expect((sut as TsgitError).data).toEqual({
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
           code: 'UNEXPECTED_V2_SECTION',
           section: 'bogus',
         });

@@ -31,10 +31,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is INVALID_PKT_LENGTH and value preserved', () => {
           // Arrange & Act
-          const sut = invalidPktLength('xxxx');
+          const result = invalidPktLength('xxxx');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: 'xxxx' });
+          expect(result.data).toEqual({ code: 'INVALID_PKT_LENGTH', value: 'xxxx' });
         });
       });
     });
@@ -43,10 +43,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is PKT_LENGTH_RESERVED and value preserved', () => {
           // Arrange & Act
-          const sut = pktLengthReserved(1);
+          const result = pktLengthReserved(1);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 1 });
+          expect(result.data).toEqual({ code: 'PKT_LENGTH_RESERVED', value: 1 });
         });
       });
     });
@@ -55,10 +55,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is PKT_TOO_LARGE and value preserved', () => {
           // Arrange & Act
-          const sut = pktTooLarge(65521);
+          const result = pktTooLarge(65521);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'PKT_TOO_LARGE', value: 65521 });
+          expect(result.data).toEqual({ code: 'PKT_TOO_LARGE', value: 65521 });
         });
       });
     });
@@ -67,10 +67,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is PKT_TRUNCATED and remaining preserved', () => {
           // Arrange & Act
-          const sut = pktTruncated(2);
+          const result = pktTruncated(2);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 2 });
+          expect(result.data).toEqual({ code: 'PKT_TRUNCATED', remaining: 2 });
         });
       });
     });
@@ -79,10 +79,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is INVALID_BASE_URL and reason preserved', () => {
           // Arrange & Act
-          const sut = invalidBaseUrl('fragment');
+          const result = invalidBaseUrl('fragment');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_BASE_URL', reason: 'fragment' });
+          expect(result.data).toEqual({ code: 'INVALID_BASE_URL', reason: 'fragment' });
         });
       });
     });
@@ -91,10 +91,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code, expected, actual populated', () => {
           // Arrange & Act
-          const sut = missingServiceHeader('git-upload-pack', 'git-receive-pack');
+          const result = missingServiceHeader('git-upload-pack', 'git-receive-pack');
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'MISSING_SERVICE_HEADER',
             expected: 'git-upload-pack',
             actual: 'git-receive-pack',
@@ -107,10 +107,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is MISSING_CAPABILITIES', () => {
           // Arrange & Act
-          const sut = missingCapabilities();
+          const result = missingCapabilities();
 
           // Assert
-          expect(sut.data).toEqual({ code: 'MISSING_CAPABILITIES' });
+          expect(result.data).toEqual({ code: 'MISSING_CAPABILITIES' });
         });
       });
     });
@@ -119,10 +119,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is INVALID_REF_LINE and line preserved', () => {
           // Arrange & Act
-          const sut = invalidRefLine('bad');
+          const result = invalidRefLine('bad');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_REF_LINE', line: 'bad' });
+          expect(result.data).toEqual({ code: 'INVALID_REF_LINE', line: 'bad' });
         });
       });
     });
@@ -131,10 +131,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is DUPLICATE_REF and name preserved', () => {
           // Arrange & Act
-          const sut = duplicateRef('refs/heads/main');
+          const result = duplicateRef('refs/heads/main');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'DUPLICATE_REF', name: 'refs/heads/main' });
+          expect(result.data).toEqual({ code: 'DUPLICATE_REF', name: 'refs/heads/main' });
         });
       });
     });
@@ -143,10 +143,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is INVALID_SIDEBAND_CHANNEL and channel preserved', () => {
           // Arrange & Act
-          const sut = invalidSidebandChannel(4);
+          const result = invalidSidebandChannel(4);
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 4 });
+          expect(result.data).toEqual({ code: 'INVALID_SIDEBAND_CHANNEL', channel: 4 });
         });
       });
     });
@@ -155,10 +155,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is SIDEBAND_FATAL and message preserved', () => {
           // Arrange & Act
-          const sut = sidebandFatal('repo not found');
+          const result = sidebandFatal('repo not found');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'repo not found' });
+          expect(result.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'repo not found' });
         });
       });
     });
@@ -167,10 +167,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is UNKNOWN_ACK_STATUS and value preserved', () => {
           // Arrange & Act
-          const sut = unknownAckStatus('bogus');
+          const result = unknownAckStatus('bogus');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'UNKNOWN_ACK_STATUS', value: 'bogus' });
+          expect(result.data).toEqual({ code: 'UNKNOWN_ACK_STATUS', value: 'bogus' });
         });
       });
     });
@@ -179,10 +179,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is INVALID_REPORT_STATUS and line preserved', () => {
           // Arrange & Act
-          const sut = invalidReportStatus('weird');
+          const result = invalidReportStatus('weird');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'INVALID_REPORT_STATUS', line: 'weird' });
+          expect(result.data).toEqual({ code: 'INVALID_REPORT_STATUS', line: 'weird' });
         });
       });
     });
@@ -191,10 +191,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is EMPTY_WANTS', () => {
           // Arrange & Act
-          const sut = emptyWants();
+          const result = emptyWants();
 
           // Assert
-          expect(sut.data).toEqual({ code: 'EMPTY_WANTS' });
+          expect(result.data).toEqual({ code: 'EMPTY_WANTS' });
         });
       });
     });
@@ -203,10 +203,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is EMPTY_RECEIVE_UPDATES', () => {
           // Arrange & Act
-          const sut = emptyReceiveUpdates();
+          const result = emptyReceiveUpdates();
 
           // Assert
-          expect(sut.data).toEqual({ code: 'EMPTY_RECEIVE_UPDATES' });
+          expect(result.data).toEqual({ code: 'EMPTY_RECEIVE_UPDATES' });
         });
       });
     });
@@ -215,10 +215,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code, count, and limit are preserved', () => {
           // Arrange & Act
-          const sut = tooManyAdvertisedRefs(500_001, 500_000);
+          const result = tooManyAdvertisedRefs(500_001, 500_000);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'TOO_MANY_ADVERTISED_REFS',
             count: 500_001,
             limit: 500_000,
@@ -231,11 +231,11 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is UNEXPECTED_V2_SECTION and section preserved', () => {
           // Arrange & Act
-          const sut = unexpectedV2Section('wanted-refs');
+          const result = unexpectedV2Section('wanted-refs');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'UNEXPECTED_V2_SECTION', section: 'wanted-refs' });
-          expect(sut.message).toContain('wanted-refs');
+          expect(result.data).toEqual({ code: 'UNEXPECTED_V2_SECTION', section: 'wanted-refs' });
+          expect(result.message).toContain('wanted-refs');
         });
       });
     });
@@ -244,11 +244,11 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code is V2_COMMAND_UNSUPPORTED and command preserved', () => {
           // Arrange & Act
-          const sut = v2CommandUnsupported('fetch');
+          const result = v2CommandUnsupported('fetch');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' });
-          expect(sut.message).toContain('fetch');
+          expect(result.data).toEqual({ code: 'V2_COMMAND_UNSUPPORTED', command: 'fetch' });
+          expect(result.message).toContain('fetch');
         });
       });
     });
@@ -257,10 +257,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code, section, count, and limit are preserved', () => {
           // Arrange & Act
-          const sut = tooManySectionEntries('wanted-refs', 500_001, 500_000);
+          const result = tooManySectionEntries('wanted-refs', 500_001, 500_000);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'TOO_MANY_SECTION_ENTRIES',
             section: 'wanted-refs',
             count: 500_001,
@@ -274,10 +274,10 @@ describe('domain protocol error', () => {
       describe('When checking data', () => {
         it('Then code and format are preserved', () => {
           // Arrange & Act
-          const sut = unsupportedObjectFormat('sha256');
+          const result = unsupportedObjectFormat('sha256');
 
           // Assert
-          expect(sut.data).toEqual({ code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' });
+          expect(result.data).toEqual({ code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' });
         });
       });
     });
@@ -375,23 +375,23 @@ describe('domain protocol error', () => {
       ],
     ];
 
-    describe('Given protocol error %j', () => {
+    describe('Given a protocol error variant', () => {
       describe('When TsgitError(...).message is read', () => {
         it.each(cases)('Then it equals the documented format', (data, expected) => {
           // Arrange & Act
-          const sut = new TsgitError(data);
+          const result = new TsgitError(data);
 
           // Assert
-          expect(sut.message).toBe(expected);
+          expect(result.message).toBe(expected);
         });
       });
       describe('When checking .data.code', () => {
         it.each(cases)('Then it strictly equals the variant literal', (data) => {
           // Arrange & Act
-          const sut = new TsgitError(data);
+          const result = new TsgitError(data);
 
           // Assert
-          expect(sut.data.code).toBe(data.code);
+          expect(result.data.code).toBe(data.code);
         });
       });
     });

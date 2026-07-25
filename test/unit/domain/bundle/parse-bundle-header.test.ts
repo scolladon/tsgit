@@ -10,16 +10,15 @@ function encode(text: string): Uint8Array {
   return new TextEncoder().encode(text);
 }
 
-describe('Given parseBundleHeader', () => {
-  describe('When given a valid v2 bundle with no prerequisites', () => {
+describe('parseBundleHeader', () => {
+  describe('Given a valid v2 bundle with no prerequisites, When parsed', () => {
     it('Then returns version 2, sha1, no prerequisites, and correct packOffset', () => {
       // Arrange
-      const sut = parseBundleHeader;
       const header = `# v2 git bundle\n${OID_A} refs/heads/main\n\n`;
       const bytes = encode(header);
 
       // Act
-      const result = sut(bytes, 'test.bundle');
+      const result = parseBundleHeader(bytes, 'test.bundle');
 
       // Assert
       expect(result.version).toBe(2);
@@ -30,10 +29,9 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
-  describe('When given a valid v2 bundle with prerequisites and refs', () => {
+  describe('Given a valid v2 bundle with prerequisites and refs, When parsed', () => {
     it('Then parses prerequisites and refs correctly with correct packOffset', () => {
       // Arrange
-      const sut = parseBundleHeader;
       const header = `# v2 git bundle\n-${OID_A} first commit\n${OID_B} refs/heads/main\n\n`;
       const packBytes = new Uint8Array([0x50, 0x41, 0x43, 0x4b]); // 'PACK'
       const allBytes = new Uint8Array(encode(header).length + packBytes.length);
@@ -41,7 +39,7 @@ describe('Given parseBundleHeader', () => {
       allBytes.set(packBytes, encode(header).length);
 
       // Act
-      const result = sut(allBytes, 'test.bundle');
+      const result = parseBundleHeader(allBytes, 'test.bundle');
 
       // Assert
       expect(result.version).toBe(2);
@@ -51,10 +49,9 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
-  describe('When given bytes with pack data after the header', () => {
+  describe('Given bytes with pack data after the header, When parsed', () => {
     it('Then packOffset points to the byte immediately after the blank line', () => {
       // Arrange
-      const sut = parseBundleHeader;
       const header = `# v2 git bundle\n${OID_A} HEAD\n\n`;
       const extra = encode('PACK some pack data here');
       const bytes = new Uint8Array(encode(header).length + extra.length);
@@ -62,7 +59,7 @@ describe('Given parseBundleHeader', () => {
       bytes.set(extra, encode(header).length);
 
       // Act
-      const result = sut(bytes, 'x.bundle');
+      const result = parseBundleHeader(bytes, 'x.bundle');
 
       // Assert
       expect(result.packOffset).toBe(encode(header).length);
@@ -73,7 +70,7 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
-  describe('When parsed with a malformed or unsupported header', () => {
+  describe('Given a malformed or unsupported header, When parsed', () => {
     it.each([
       {
         label: 'the magic line is not a bundle magic',
@@ -165,12 +162,9 @@ describe('Given parseBundleHeader', () => {
         expected: { code: 'BUNDLE_BAD_HEADER', reason: 'malformed-header' },
       },
     ])('Then throws because $label', ({ bytes, expected }) => {
-      // Arrange
-      const sut = parseBundleHeader;
-
-      // Act + Assert
+      // Arrange + Act + Assert
       try {
-        sut(bytes, 'test.bundle');
+        parseBundleHeader(bytes, 'test.bundle');
         expect.fail('should have thrown');
       } catch (err: unknown) {
         expect((err as { data: Record<string, unknown> }).data).toMatchObject(expected);
@@ -178,46 +172,43 @@ describe('Given parseBundleHeader', () => {
     });
   });
 
-  describe('When given a v2 bundle with HEAD ref line', () => {
+  describe('Given a v2 bundle with a HEAD ref line, When parsed', () => {
     it('Then parses HEAD as the ref name', () => {
       // Arrange
-      const sut = parseBundleHeader;
       const header = `# v2 git bundle\n${OID_A} HEAD\n\n`;
       const bytes = encode(header);
 
       // Act
-      const result = sut(bytes, 'head.bundle');
+      const result = parseBundleHeader(bytes, 'head.bundle');
 
       // Assert
       expect(result.refs).toEqual([{ oid: OID_A, name: RefName.from('HEAD') }]);
     });
   });
 
-  describe('When a prerequisite line has no space (oid only, no comment)', () => {
+  describe('Given a prerequisite line with no space (oid only, no comment), When parsed', () => {
     it('Then parses the prerequisite with an empty comment', () => {
       // Arrange
-      const sut = parseBundleHeader;
       const bytes = encode(
         `# v2 git bundle\n-${'a'.repeat(40)}\n${'b'.repeat(40)} refs/heads/main\n\n`,
       );
 
       // Act
-      const result = sut(bytes, 'no-comment-prereq.bundle');
+      const result = parseBundleHeader(bytes, 'no-comment-prereq.bundle');
 
       // Assert
       expect(result.prerequisites).toEqual([{ oid: OID_A, comment: '' }]);
     });
   });
 
-  describe('When a ref line has a valid oid and a refname ending with @', () => {
+  describe('Given a ref line with a valid oid and a refname ending with @, When parsed', () => {
     it('Then parses successfully without throwing', () => {
       // Arrange — a refname ending in @ is valid; the startsWith('@') guard at the
       // line-type dispatch only fires when the WHOLE line starts with @.
-      const sut = parseBundleHeader;
       const bytes = encode(`# v2 git bundle\n${'a'.repeat(40)} refs/heads/main@\n\n`);
 
       // Act
-      const result = sut(bytes, 'at-suffix.bundle');
+      const result = parseBundleHeader(bytes, 'at-suffix.bundle');
 
       // Assert
       expect(result.refs).toHaveLength(1);

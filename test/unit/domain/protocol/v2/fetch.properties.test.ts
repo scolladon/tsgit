@@ -81,10 +81,7 @@ const buildFetchResponseStream = (
 describe('Given arbitrary wants, haves, args, and done', () => {
   describe('When buildV2FetchRequest builds the request and the bytes are decoded', () => {
     it('Then it always yields command=fetch, delim, arg-lines, want lines, have lines, done iff requested, and flush', async () => {
-      // Arrange
-      const sut = buildV2FetchRequest;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(
           wantsArb(),
@@ -92,7 +89,7 @@ describe('Given arbitrary wants, haves, args, and done', () => {
           argsArb(),
           doneArb(),
           async (wants, haves, args, done) => {
-            const bytes = sut({ wants, haves, args, done });
+            const bytes = buildV2FetchRequest({ wants, haves, args, done });
             const lines = await decodeAll(bytes);
 
             expect(lines[0]).toEqual({ kind: 'data', payload: bytesOf('command=fetch\n') });
@@ -130,10 +127,7 @@ describe('Given arbitrary wants, haves, args, and done', () => {
 describe('Given an arbitrary permutation of the optional acknowledgments/shallow-info/wanted-refs sections ahead of a packfile section', () => {
   describe('When parseV2FetchResponse aggregates the sections', () => {
     it('Then acks, shallow, wanted-refs, and the pack body are the same regardless of section order', async () => {
-      // Arrange
-      const sut = parseV2FetchResponse;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(
           fc.shuffledSubarray(
@@ -143,7 +137,7 @@ describe('Given an arbitrary permutation of the optional acknowledgments/shallow
           async (sectionOrder) => {
             const stream = buildFetchResponseStream(sectionOrder);
 
-            const result = await sut(stream);
+            const result = await parseV2FetchResponse(stream);
             const packChunks = await collect(result.packBody);
 
             expect(result.nak).toBe(sectionOrder.includes('acknowledgments'));

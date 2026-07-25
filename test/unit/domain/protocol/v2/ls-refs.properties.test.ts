@@ -101,16 +101,13 @@ const expectedAdvertisement = (
 describe('Given an arbitrary set of refs and a head mode', () => {
   describe('When serialized to ls-refs response bytes and parsed', () => {
     it('Then the resulting Advertisement round-trips (refs/peeled/head, modulo the HEAD symref-target wire oid)', async () => {
-      // Arrange
-      const sut = parseLsRefsResponse;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(
           refFixturesArb().chain((refs) => fc.tuple(fc.constant(refs), headFixtureArb(refs))),
           async ([refs, head]) => {
             const stream = serializeLsRefsResponse(refs, head);
-            const result = await sut(stream);
+            const result = await parseLsRefsResponse(stream);
             expect(result).toEqual(expectedAdvertisement(refs, head));
           },
         ),
@@ -123,17 +120,14 @@ describe('Given an arbitrary set of refs and a head mode', () => {
 describe('Given arbitrary ls-refs request options', () => {
   describe('When buildLsRefsRequest builds the request and the bytes are decoded', () => {
     it('Then the body carries exactly symrefs, peel, and one ref-prefix line per prefix, in order', async () => {
-      // Arrange
-      const sut = buildLsRefsRequest;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(
           fc.boolean(),
           fc.boolean(),
           fc.array(fc.stringMatching(/^[a-zA-Z0-9/_-]{1,12}$/), { minLength: 0, maxLength: 4 }),
           async (symrefs, peel, refPrefixes) => {
-            const bytes = sut({ symrefs, peel, refPrefixes });
+            const bytes = buildLsRefsRequest({ symrefs, peel, refPrefixes });
             const lines = await decodeAll(bytes);
 
             const expectedBody: string[] = [];

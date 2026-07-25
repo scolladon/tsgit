@@ -107,10 +107,10 @@ describe('buildDiscoveryUrl', () => {
         },
       ])('Then $label', ({ url, expected }) => {
         // Arrange & Act
-        const sut = buildDiscoveryUrl(url, 'git-upload-pack');
+        const result = buildDiscoveryUrl(url, 'git-upload-pack');
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -207,16 +207,16 @@ describe('parseAdvertisedRefs — happy path', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.capabilities).toEqual(['multi_ack_detailed', 'side-band-64k']);
-        expect(sut.refs).toHaveLength(2);
-        expect(sut.head?.name).toBe('HEAD');
-        expect(sut.head?.id).toBe(OID1);
+        expect(result.capabilities).toEqual(['multi_ack_detailed', 'side-band-64k']);
+        expect(result.refs).toHaveLength(2);
+        expect(result.head?.name).toBe('HEAD');
+        expect(result.head?.id).toBe(OID1);
       });
     });
   });
@@ -234,7 +234,7 @@ describe('parseAdvertisedRefs — servicePrologue option', () => {
         ]);
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
           {
@@ -243,10 +243,10 @@ describe('parseAdvertisedRefs — servicePrologue option', () => {
         );
 
         // Assert
-        expect(sut.capabilities).toEqual(['multi_ack_detailed', 'side-band-64k']);
-        expect(sut.refs).toHaveLength(2);
-        expect(sut.head?.name).toBe('HEAD');
-        expect(sut.head?.id).toBe(OID1);
+        expect(result.capabilities).toEqual(['multi_ack_detailed', 'side-band-64k']);
+        expect(result.refs).toHaveLength(2);
+        expect(result.head?.name).toBe('HEAD');
+        expect(result.head?.id).toBe(OID1);
       });
     });
   });
@@ -260,7 +260,7 @@ describe('parseAdvertisedRefs — servicePrologue option', () => {
         const body = encodePktStream([bytesOf(`${zero} capabilities^{}\0report-status\n`)]);
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
           {
@@ -269,10 +269,10 @@ describe('parseAdvertisedRefs — servicePrologue option', () => {
         );
 
         // Assert
-        expect(sut.capabilities).toEqual(['report-status']);
-        expect(sut.refs).toHaveLength(1);
-        expect(sut.refs[0]?.name).toBe('capabilities^{}');
-        expect(sut.head).toBeUndefined();
+        expect(result.capabilities).toEqual(['report-status']);
+        expect(result.refs).toHaveLength(1);
+        expect(result.refs[0]?.name).toBe('capabilities^{}');
+        expect(result.head).toBeUndefined();
       });
     });
   });
@@ -542,14 +542,14 @@ describe('parseAdvertisedRefs — SHA_ANY_RE anchor boundaries', () => {
         const body = concat(headerStream, refStream);
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.refs).toHaveLength(1);
-        expect(sut.refs[0]?.id).toBe(sha256Id);
+        expect(result.refs).toHaveLength(1);
+        expect(result.refs[0]?.id).toBe(sha256Id);
       });
     });
   });
@@ -613,14 +613,14 @@ describe('parseAdvertisedRefs — empty advertisement', () => {
         const body = concat(headerStream, refStream);
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.capabilities).toEqual([]);
-        expect(sut.refs).toEqual([]);
+        expect(result.capabilities).toEqual([]);
+        expect(result.refs).toEqual([]);
       });
     });
   });
@@ -692,16 +692,16 @@ describe('parseAdvertisedRefs — peeled tags', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.refs).toHaveLength(1);
-        expect(sut.refs[0]?.name).toBe('refs/tags/v1');
-        expect(sut.refs[0]?.id).toBe(OID2);
-        expect(sut.refs[0]?.peeled).toBe(OID3);
+        expect(result.refs).toHaveLength(1);
+        expect(result.refs[0]?.name).toBe('refs/tags/v1');
+        expect(result.refs[0]?.id).toBe(OID2);
+        expect(result.refs[0]?.peeled).toBe(OID3);
       });
     });
   });
@@ -719,14 +719,14 @@ describe('parseAdvertisedRefs — symref HEAD without direct HEAD ref', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.head?.name).toBe('HEAD');
-        expect(sut.head?.id).toBe(OID1);
+        expect(result.head?.name).toBe('HEAD');
+        expect(result.head?.id).toBe(OID1);
       });
     });
   });
@@ -742,13 +742,13 @@ describe('parseAdvertisedRefs — symref HEAD without direct HEAD ref', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.head).toBeUndefined();
+        expect(result.head).toBeUndefined();
       });
     });
   });
@@ -764,13 +764,13 @@ describe('parseAdvertisedRefs — symref HEAD without direct HEAD ref', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.head).toBeUndefined();
+        expect(result.head).toBeUndefined();
       });
     });
   });
@@ -791,14 +791,14 @@ describe('parseAdvertisedRefs — symref HEAD with direct HEAD ref', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.head?.name).toBe('HEAD');
-        expect(sut.refs.find((r) => r.name === 'refs/heads/main')).toBeDefined();
+        expect(result.head?.name).toBe('HEAD');
+        expect(result.refs.find((r) => r.name === 'refs/heads/main')).toBeDefined();
       });
     });
   });
@@ -812,13 +812,13 @@ describe('buildUploadPackRequest', () => {
     describe('When built', () => {
       it('Then bytes contain "want <oid> caps" + flush + "done"', async () => {
         // Arrange & Act
-        const sut = buildUploadPackRequest({
+        const result = buildUploadPackRequest({
           wants: [OID1],
           haves: [],
           capabilities: ['multi_ack_detailed', 'side-band-64k'],
           done: true,
         });
-        const lines = await decodeAll(sut);
+        const lines = await decodeAll(result);
 
         // Assert
         expect(lines).toHaveLength(3);
@@ -841,13 +841,13 @@ describe('buildUploadPackRequest', () => {
     describe('When built', () => {
       it('Then capabilities appear only on the first want line', async () => {
         // Arrange & Act
-        const sut = buildUploadPackRequest({
+        const result = buildUploadPackRequest({
           wants: [OID1, OID2],
           haves: [],
           capabilities: ['side-band-64k'],
           done: true,
         });
-        const lines = await decodeAll(sut);
+        const lines = await decodeAll(result);
 
         // Assert
         const dataLines = lines.filter(
@@ -864,12 +864,12 @@ describe('buildUploadPackRequest', () => {
     describe('When built', () => {
       it('Then bytes include have lines and a trailing flush (multi-round)', async () => {
         // Arrange & Act
-        const sut = buildUploadPackRequest({
+        const result = buildUploadPackRequest({
           wants: [OID1],
           haves: [OID2, OID3],
           capabilities: ['side-band-64k'],
         });
-        const lines = await decodeAll(sut);
+        const lines = await decodeAll(result);
 
         // Assert — kinds in order: data(want), flush, data(have), data(have), flush
         const kinds = lines.map((l) => l.kind);
@@ -888,13 +888,13 @@ describe('buildUploadPackRequest', () => {
     describe('When built', () => {
       it('Then includes "deepen <n>" line before the flush', async () => {
         // Arrange & Act
-        const sut = buildUploadPackRequest({
+        const result = buildUploadPackRequest({
           wants: [OID1],
           haves: [],
           capabilities: [],
           depth: 5,
         });
-        const lines = await decodeAll(sut);
+        const lines = await decodeAll(result);
 
         // Assert
         const dec = new TextDecoder();
@@ -910,14 +910,14 @@ describe('buildUploadPackRequest', () => {
     describe('When built', () => {
       it('Then includes a "filter <spec>" line before the flush', async () => {
         // Arrange & Act
-        const sut = buildUploadPackRequest({
+        const result = buildUploadPackRequest({
           wants: [OID1],
           haves: [],
           capabilities: ['filter'],
           filter: 'blob:none',
           done: true,
         });
-        const lines = await decodeAll(sut);
+        const lines = await decodeAll(result);
 
         // Assert
         const dec = new TextDecoder();
@@ -934,12 +934,12 @@ describe('buildUploadPackRequest', () => {
     describe('When built', () => {
       it('Then emits no filter line', async () => {
         // Arrange & Act
-        const sut = buildUploadPackRequest({
+        const result = buildUploadPackRequest({
           wants: [OID1],
           haves: [],
           capabilities: [],
         });
-        const lines = await decodeAll(sut);
+        const lines = await decodeAll(result);
 
         // Assert
         const dec = new TextDecoder();
@@ -955,14 +955,14 @@ describe('buildUploadPackRequest', () => {
     describe('When built', () => {
       it('Then the filter line follows the deepen line', async () => {
         // Arrange & Act
-        const sut = buildUploadPackRequest({
+        const result = buildUploadPackRequest({
           wants: [OID1],
           haves: [],
           capabilities: [],
           depth: 1,
           filter: 'tree:0',
         });
-        const lines = await decodeAll(sut);
+        const lines = await decodeAll(result);
 
         // Assert
         const dec = new TextDecoder();
@@ -1254,11 +1254,11 @@ describe('parseShallowResponse', () => {
         const iter = asyncOf<PktLine>([{ kind: 'flush' }])[Symbol.asyncIterator]();
 
         // Act
-        const sut = await parseShallowResponse(iter);
+        const result = await parseShallowResponse(iter);
 
         // Assert
-        expect(sut.shallow).toEqual([]);
-        expect(sut.unshallow).toEqual([]);
+        expect(result.shallow).toEqual([]);
+        expect(result.unshallow).toEqual([]);
         expect((await iter.next()).done).toBe(true);
       });
     });
@@ -1273,11 +1273,11 @@ describe('parseShallowResponse', () => {
         ]();
 
         // Act
-        const sut = await parseShallowResponse(iter);
+        const result = await parseShallowResponse(iter);
 
         // Assert
-        expect(sut.shallow).toEqual([OID1]);
-        expect(sut.unshallow).toEqual([]);
+        expect(result.shallow).toEqual([OID1]);
+        expect(result.unshallow).toEqual([]);
         // Iterator is past the flush — next read is end-of-stream.
         expect((await iter.next()).done).toBe(true);
       });
@@ -1296,11 +1296,11 @@ describe('parseShallowResponse', () => {
         ])[Symbol.asyncIterator]();
 
         // Act
-        const sut = await parseShallowResponse(iter);
+        const result = await parseShallowResponse(iter);
 
         // Assert
-        expect(sut.shallow).toEqual([OID1, OID2]);
-        expect(sut.unshallow).toEqual([OID3]);
+        expect(result.shallow).toEqual([OID1, OID2]);
+        expect(result.unshallow).toEqual([OID3]);
       });
     });
   });
@@ -1471,11 +1471,11 @@ describe('parseShallowResponse', () => {
         ]();
 
         // Act
-        const sut = await parseShallowResponse(iter);
+        const result = await parseShallowResponse(iter);
 
         // Assert
-        expect(sut.shallow).toEqual([OID1]);
-        expect(sut.unshallow).toEqual([]);
+        expect(result.shallow).toEqual([OID1]);
+        expect(result.unshallow).toEqual([]);
       });
     });
   });
@@ -1625,14 +1625,14 @@ describe('parseAdvertisedRefs — symref capability lookup', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.head?.name).toBe('HEAD');
-        expect(sut.head?.id).toBe(OID1);
+        expect(result.head?.name).toBe('HEAD');
+        expect(result.head?.id).toBe(OID1);
       });
     });
   });

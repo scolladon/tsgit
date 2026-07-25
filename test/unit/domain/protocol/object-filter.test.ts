@@ -74,10 +74,8 @@ describe('parseObjectFilter', () => {
           label: 'returns the full depth for a multi-digit tree depth',
         },
       ])('Then $label', ({ spec, expected }) => {
-        // Arrange
-        const sut = parseObjectFilter;
-        // Act
-        const result = sut(spec);
+        // Arrange & Act
+        const result = parseObjectFilter(spec);
         // Assert
         expect(result).toEqual(expected);
       });
@@ -122,7 +120,7 @@ describe('parseObjectFilter', () => {
           label: 'a tree depth beyond MAX_SAFE_INTEGER',
         },
       ])('Then throws INVALID_FILTER_SPEC ($reason) for $label', ({ spec, reason }) => {
-        // Arrange + Assert
+        // Arrange + Act + Assert
         expectInvalid(spec, reason);
       });
     });
@@ -149,25 +147,25 @@ describe('formatObjectFilter', () => {
           label: 'renders the depth',
         },
       ])('Then $label', ({ filter, expected }) => {
-        // Arrange
-        const sut = formatObjectFilter;
-        // Act
-        const result = sut(filter);
+        // Arrange & Act
+        const result = formatObjectFilter(filter);
         // Assert
         expect(result).toBe(expected);
       });
     });
   });
 
-  it.each<string>(['blob:none', 'blob:limit=1k', 'blob:limit=2M', 'tree:0', 'tree:7'])(
-    'Given %s, When parsed then formatted then re-parsed, Then the filter is stable',
-    (spec: string) => {
-      // Arrange
-      const first: ObjectFilter = parseObjectFilter(spec);
-      // Act
-      const reparsed = parseObjectFilter(formatObjectFilter(first));
-      // Assert
-      expect(reparsed).toEqual(first);
-    },
-  );
+  describe('Given a filter spec, When parsed then formatted then re-parsed', () => {
+    it.each<string>(['blob:none', 'blob:limit=1k', 'blob:limit=2M', 'tree:0', 'tree:7'])(
+      'Then the filter is stable for %s',
+      (spec: string) => {
+        // Arrange
+        const first: ObjectFilter = parseObjectFilter(spec);
+        // Act
+        const reparsed = parseObjectFilter(formatObjectFilter(first));
+        // Assert
+        expect(reparsed).toEqual(first);
+      },
+    );
+  });
 });

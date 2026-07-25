@@ -31,10 +31,7 @@ const buildAdvertisementLines = (
 describe('Given an arbitrary agent, command set, and fetch feature set', () => {
   describe('When serialized to a v2 capability advertisement and parsed via parseV2Capabilities', () => {
     it('Then the parsed command set and fetch feature set map 1:1 to the input', async () => {
-      // Arrange
-      const sut = parseV2Capabilities;
-
-      // Act & Assert
+      // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(
           fc.option(agentArb(), { nil: undefined }),
@@ -44,7 +41,7 @@ describe('Given an arbitrary agent, command set, and fetch feature set', () => {
             const effectiveFeatures = commands.includes('fetch') ? fetchFeatures : [];
             const lines = buildAdvertisementLines(agent, commands, effectiveFeatures);
 
-            const result = await sut(streamOf(lines));
+            const result = await parseV2Capabilities(streamOf(lines));
 
             expect(result.version).toBe(2);
             expect(result.agent).toBe(agent);

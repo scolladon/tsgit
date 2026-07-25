@@ -41,22 +41,22 @@ describe('upload-pack integration — discovery', () => {
         });
 
         // Act
-        const sut = await parseAdvertisedRefs(
+        const result = await parseAdvertisedRefs(
           decodePktStream(asyncBytes([body])),
           'git-upload-pack',
         );
 
         // Assert
-        expect(sut.capabilities).toEqual([
+        expect(result.capabilities).toEqual([
           'multi_ack_detailed',
           'side-band-64k',
           'symref=HEAD:refs/heads/main',
         ]);
-        expect(sut.refs).toHaveLength(3);
-        const tag = sut.refs.find((r) => r.name === 'refs/tags/v1');
+        expect(result.refs).toHaveLength(3);
+        const tag = result.refs.find((r) => r.name === 'refs/tags/v1');
         expect(tag?.peeled).toBe(ObjectId.from(OID3));
-        expect(sut.head?.name).toBe('HEAD');
-        expect(sut.head?.id).toBe(ObjectId.from(OID1));
+        expect(result.head?.name).toBe('HEAD');
+        expect(result.head?.id).toBe(ObjectId.from(OID1));
       });
     });
   });
