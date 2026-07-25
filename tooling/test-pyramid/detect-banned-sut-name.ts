@@ -41,7 +41,7 @@ export const detectBannedSutName = (
   const detector = buildDetector(heuristic.banned);
   const findings: BannedSutFinding[] = [];
   for (const file of files) {
-    if (classifyTestFile(manifest, file.path) !== heuristic.tier) continue;
+    if (!heuristic.tiers.includes(classifyTestFile(manifest, file.path))) continue;
     const blocks = scanItBlocks(file.source);
     for (const block of blocks) {
       if (block.isSkipped) continue;

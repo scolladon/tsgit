@@ -32,11 +32,11 @@ const VALID_MANIFEST = {
       threshold: 0,
     },
     underAssertedUnit: {
-      tier: 'unit',
+      tiers: ['unit'],
       minAssertionsPerTest: 1,
     },
     gwtTitle: {
-      tier: 'unit',
+      tiers: ['unit'],
       describeGiven: '^Given .+$',
       describeWhen: '^When .+$',
       describeCombined: '^Given .+?, When .+$',
@@ -44,19 +44,19 @@ const VALID_MANIFEST = {
       legacyItGwt: '^Given .+?, When .+?, Then .+$',
     },
     aaaBody: {
-      tier: 'unit',
+      tiers: ['unit'],
       required: ['Arrange', 'Assert'],
     },
     sutNaming: {
-      tier: 'unit',
+      tiers: ['unit'],
       banned: ['subject', 'objectUnderTest', 'systemUnderTest', 'cut'],
     },
     bareClassToThrow: {
-      tier: 'unit',
+      tiers: ['unit'],
       regex: '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)',
     },
     emptyAaaSection: {
-      tier: 'unit',
+      tiers: ['unit'],
     },
     integrationProof: {
       tier: 'integration',
@@ -408,7 +408,7 @@ describe('parseManifest', () => {
         ...VALID_MANIFEST,
         heuristics: {
           ...VALID_MANIFEST.heuristics,
-          underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 1.5 },
+          underAssertedUnit: { tiers: ['unit'], minAssertionsPerTest: 1.5 },
         },
       };
       const raw = JSON.stringify(broken);
@@ -432,7 +432,7 @@ describe('parseManifest', () => {
         ...VALID_MANIFEST,
         heuristics: {
           ...VALID_MANIFEST.heuristics,
-          underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 0 },
+          underAssertedUnit: { tiers: ['unit'], minAssertionsPerTest: 0 },
         },
       };
       const raw = JSON.stringify(broken);
@@ -713,7 +713,7 @@ describe('parseManifest', () => {
         ...VALID_MANIFEST,
         heuristics: {
           ...VALID_MANIFEST.heuristics,
-          underAssertedUnit: { tier: 'phantom', minAssertionsPerTest: 1 },
+          underAssertedUnit: { tiers: ['phantom'], minAssertionsPerTest: 1 },
         },
       };
       const raw = JSON.stringify(broken);
@@ -731,13 +731,13 @@ describe('parseManifest', () => {
       expect(caught?.message).toContain('unknown tier');
     });
 
-    it('Given underAssertedUnit with empty tier string, When parsed, Then throws naming tier', () => {
+    it('Given underAssertedUnit with an empty tiers array, When parsed, Then throws naming tiers', () => {
       // Arrange
       const broken = {
         ...VALID_MANIFEST,
         heuristics: {
           ...VALID_MANIFEST.heuristics,
-          underAssertedUnit: { tier: '', minAssertionsPerTest: 1 },
+          underAssertedUnit: { tiers: [], minAssertionsPerTest: 1 },
         },
       };
       const raw = JSON.stringify(broken);
@@ -751,7 +751,48 @@ describe('parseManifest', () => {
       }
 
       // Assert
-      expect(caught?.message).toContain('tier must be a non-empty string');
+      expect(caught?.message).toContain('tiers must be a non-empty array of strings');
+    });
+
+    it('Given underAssertedUnit with a tiers entry that is an empty string, When parsed, Then throws naming the entry', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          underAssertedUnit: { tiers: [''], minAssertionsPerTest: 1 },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('tiers entry must be a non-empty string');
+    });
+
+    it('Given underAssertedUnit with tiers naming both unit and integration, When parsed, Then heuristics.underAssertedUnit.tiers preserves both', () => {
+      // Arrange
+      const broken = {
+        ...VALID_MANIFEST,
+        heuristics: {
+          ...VALID_MANIFEST.heuristics,
+          underAssertedUnit: { tiers: ['unit', 'integration'], minAssertionsPerTest: 1 },
+        },
+      };
+      const raw = JSON.stringify(broken);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.heuristics.underAssertedUnit.tiers).toEqual(['unit', 'integration']);
     });
 
     it('Given a top-level non-object JSON value (a number), When parsed, Then throws "top-level value must be an object"', () => {
@@ -887,7 +928,7 @@ describe('parseManifest', () => {
       // Arrange
       const raw = JSON.stringify(
         replaceHeuristic(VALID_MANIFEST, 'gwtTitle', {
-          tier: 'unit',
+          tiers: ['unit'],
           describeGiven: '[',
           describeWhen: '^When .+$',
           describeCombined: '^Given .+?, When .+$',
@@ -912,7 +953,7 @@ describe('parseManifest', () => {
       // Arrange
       const raw = JSON.stringify(
         replaceHeuristic(VALID_MANIFEST, 'gwtTitle', {
-          tier: 'unit',
+          tiers: ['unit'],
           describeGiven: '^Given .+$',
           describeWhen: '^When .+$',
           describeCombined: '^Given .+?, When .+$',
@@ -937,7 +978,7 @@ describe('parseManifest', () => {
       // Arrange
       const raw = JSON.stringify(
         replaceHeuristic(VALID_MANIFEST, 'aaaBody', {
-          tier: 'unit',
+          tiers: ['unit'],
           required: ['Arrange', 'Bogus'],
         }),
       );
@@ -957,7 +998,7 @@ describe('parseManifest', () => {
     it('Given aaaBody required as an empty array, When parsed, Then throws naming required', () => {
       // Arrange
       const raw = JSON.stringify(
-        replaceHeuristic(VALID_MANIFEST, 'aaaBody', { tier: 'unit', required: [] }),
+        replaceHeuristic(VALID_MANIFEST, 'aaaBody', { tiers: ['unit'], required: [] }),
       );
 
       // Act
@@ -976,7 +1017,7 @@ describe('parseManifest', () => {
       // Arrange
       const raw = JSON.stringify(
         replaceHeuristic(VALID_MANIFEST, 'aaaBody', {
-          tier: 'unit',
+          tiers: ['unit'],
           required: ['Arrange', 'Arrange'],
         }),
       );
@@ -996,7 +1037,7 @@ describe('parseManifest', () => {
     it('Given sutNaming with an empty banned list, When parsed, Then throws naming banned', () => {
       // Arrange
       const raw = JSON.stringify(
-        replaceHeuristic(VALID_MANIFEST, 'sutNaming', { tier: 'unit', banned: [] }),
+        replaceHeuristic(VALID_MANIFEST, 'sutNaming', { tiers: ['unit'], banned: [] }),
       );
 
       // Act
@@ -1015,7 +1056,7 @@ describe('parseManifest', () => {
       // Arrange
       const raw = JSON.stringify(
         replaceHeuristic(VALID_MANIFEST, 'sutNaming', {
-          tier: 'unit',
+          tiers: ['unit'],
           banned: ['ok', '1nope'],
         }),
       );
@@ -1036,7 +1077,7 @@ describe('parseManifest', () => {
       // Arrange
       const raw = JSON.stringify(
         replaceHeuristic(VALID_MANIFEST, 'sutNaming', {
-          tier: 'unit',
+          tiers: ['unit'],
           banned: ['x', 'x'],
         }),
       );
@@ -1073,7 +1114,7 @@ describe('parseManifest', () => {
       // Arrange
       const raw = JSON.stringify(
         replaceHeuristic(VALID_MANIFEST, 'bareClassToThrow', {
-          tier: 'ghost',
+          tiers: ['ghost'],
           regex: '.+',
         }),
       );
@@ -1157,7 +1198,7 @@ describe('parseManifest', () => {
     it('Given emptyAaaSection with an unknown tier, When parsed, Then throws naming the tier', () => {
       // Arrange
       const raw = JSON.stringify(
-        replaceHeuristic(VALID_MANIFEST, 'emptyAaaSection', { tier: 'ghost' }),
+        replaceHeuristic(VALID_MANIFEST, 'emptyAaaSection', { tiers: ['ghost'] }),
       );
 
       // Act

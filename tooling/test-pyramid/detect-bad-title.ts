@@ -91,7 +91,7 @@ export const detectBadTitle = (
     gwt.describeCombinedRe.test(title);
 
   for (const file of files) {
-    if (classifyTestFile(manifest, file.path) !== gwt.tier) continue;
+    if (!gwt.tiers.includes(classifyTestFile(manifest, file.path))) continue;
     const its = scanItBlocks(file.source);
     if (its.length === 0) continue;
     const describes = scanDescribeBlocks(file.source);

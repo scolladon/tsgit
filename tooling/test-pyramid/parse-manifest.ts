@@ -25,14 +25,14 @@ export interface OverMockedHeuristic {
 }
 
 export interface UnderAssertedHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly minAssertionsPerTest: number;
 }
 
 export type AaaMarker = 'Arrange' | 'Act' | 'Assert';
 
 export interface GwtTitleHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   // Raw patterns kept for diagnostics; compiled forms are the runtime path.
   readonly describeGiven: string;
   readonly describeWhen: string;
@@ -48,23 +48,23 @@ export interface GwtTitleHeuristic {
 }
 
 export interface AaaBodyHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly required: ReadonlyArray<AaaMarker>;
 }
 
 export interface SutNamingHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly banned: ReadonlyArray<string>;
 }
 
 export interface BareClassThrowHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
   readonly regex: string;
   readonly compiledRegex: RegExp;
 }
 
 export interface EmptyAaaSectionHeuristic {
-  readonly tier: TierName;
+  readonly tiers: ReadonlyArray<TierName>;
 }
 
 export const DIRECTORY_CLASSES = ['root', 'network/', 'posix-only/', 'win-only/'] as const;
@@ -184,6 +184,27 @@ const requireTier = (
   return raw;
 };
 
+const requireTiers = (
+  raw: unknown,
+  field: string,
+  tierNames: ReadonlySet<TierName>,
+): ReadonlyArray<TierName> => {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return fail(`${field} tiers must be a non-empty array of strings`);
+  }
+  const tiers: TierName[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return fail(`${field} tiers entry must be a non-empty string`);
+    }
+    if (!tierNames.has(entry)) {
+      return fail(`${field} references unknown tier "${entry}"`);
+    }
+    tiers.push(entry);
+  }
+  return tiers;
+};
+
 const requireRegexPattern = (raw: unknown, field: string): string => {
   if (typeof raw !== 'string' || raw.length === 0) {
     return fail(`${field} regex must be a non-empty string`);
@@ -219,7 +240,7 @@ const parseUnderAsserted = (
   if (!isObject(raw)) {
     return fail('underAssertedUnit must be an object');
   }
-  const tier = requireTier(raw.tier, 'underAssertedUnit', tierNames);
+  const tiers = requireTiers(raw.tiers, 'underAssertedUnit', tierNames);
   const { minAssertionsPerTest } = raw;
   if (
     typeof minAssertionsPerTest !== 'number' ||
@@ -228,7 +249,7 @@ const parseUnderAsserted = (
   ) {
     return fail('underAssertedUnit minAssertionsPerTest must be an integer >= 1');
   }
-  return { tier, minAssertionsPerTest };
+  return { tiers, minAssertionsPerTest };
 };
 
 const parseGwtTitle = (
@@ -238,7 +259,7 @@ const parseGwtTitle = (
   if (!isObject(raw)) {
     return fail('gwtTitle must be an object');
   }
-  const tier = requireTier(raw.tier, 'gwtTitle', tierNames);
+  const tiers = requireTiers(raw.tiers, 'gwtTitle', tierNames);
   const describeGiven = requireRegexPattern(raw.describeGiven, 'gwtTitle.describeGiven');
   const describeWhen = requireRegexPattern(raw.describeWhen, 'gwtTitle.describeWhen');
   const describeCombined = requireRegexPattern(
@@ -248,7 +269,7 @@ const parseGwtTitle = (
   const itThen = requireRegexPattern(raw.itThen, 'gwtTitle.itThen');
   const legacyItGwt = requireRegexPattern(raw.legacyItGwt, 'gwtTitle.legacyItGwt');
   return {
-    tier,
+    tiers,
     describeGiven,
     describeWhen,
     describeCombined,
@@ -269,7 +290,7 @@ const parseAaaBody = (
   if (!isObject(raw)) {
     return fail('aaaBody must be an object');
   }
-  const tier = requireTier(raw.tier, 'aaaBody', tierNames);
+  const tiers = requireTiers(raw.tiers, 'aaaBody', tierNames);
   const { required } = raw;
   if (!Array.isArray(required) || required.length === 0) {
     return fail('aaaBody required must be a non-empty array');
@@ -287,7 +308,7 @@ const parseAaaBody = (
     seen.add(marker);
     markers.push(marker);
   }
-  return { tier, required: markers };
+  return { tiers, required: markers };
 };
 
 const parseSutNaming = (
@@ -297,7 +318,7 @@ const parseSutNaming = (
   if (!isObject(raw)) {
     return fail('sutNaming must be an object');
   }
-  const tier = requireTier(raw.tier, 'sutNaming', tierNames);
+  const tiers = requireTiers(raw.tiers, 'sutNaming', tierNames);
   const { banned } = raw;
   if (!Array.isArray(banned) || banned.length === 0) {
     return fail('sutNaming banned must be a non-empty array');
@@ -317,7 +338,7 @@ const parseSutNaming = (
     seen.add(entry);
     aliases.push(entry);
   }
-  return { tier, banned: aliases };
+  return { tiers, banned: aliases };
 };
 
 const parseBareClassThrow = (
@@ -327,9 +348,9 @@ const parseBareClassThrow = (
   if (!isObject(raw)) {
     return fail('bareClassToThrow must be an object');
   }
-  const tier = requireTier(raw.tier, 'bareClassToThrow', tierNames);
+  const tiers = requireTiers(raw.tiers, 'bareClassToThrow', tierNames);
   const regex = requireRegexPattern(raw.regex, 'bareClassToThrow');
-  return { tier, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow', 'g') };
+  return { tiers, regex, compiledRegex: compileRegex(regex, 'bareClassToThrow', 'g') };
 };
 
 const parseEmptyAaaSection = (
@@ -339,8 +360,8 @@ const parseEmptyAaaSection = (
   if (!isObject(raw)) {
     return fail('emptyAaaSection must be an object');
   }
-  const tier = requireTier(raw.tier, 'emptyAaaSection', tierNames);
-  return { tier };
+  const tiers = requireTiers(raw.tiers, 'emptyAaaSection', tierNames);
+  return { tiers };
 };
 
 const DIRECTORY_CLASS_SET: ReadonlySet<string> = new Set<string>(DIRECTORY_CLASSES);

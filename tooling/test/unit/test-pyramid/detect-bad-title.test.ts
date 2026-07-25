@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { detectBadTitle } from '../../../test-pyramid/detect-bad-title.js';
+import type { PyramidManifest } from '../../../test-pyramid/parse-manifest.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();
@@ -263,6 +264,31 @@ describe('Given an integration test file with a non-GWT leaf', () => {
 
       // Assert
       expect(sut).toEqual([]);
+    });
+  });
+});
+
+describe('Given a heuristic scoped to tiers unit and integration', () => {
+  describe('When both a unit and an integration file carry a non-GWT leaf', () => {
+    it('Then both files are flagged', () => {
+      // Arrange
+      const multiTier: PyramidManifest = {
+        ...MANIFEST,
+        heuristics: {
+          ...MANIFEST.heuristics,
+          gwtTitle: { ...MANIFEST.heuristics.gwtTitle, tiers: ['unit', 'integration'] },
+        },
+      };
+      const source = `it('plain title', () => { expect(1).toBe(1); });`;
+
+      // Act
+      const sut = detectBadTitle(multiTier, [
+        file('test/unit/a.test.ts', source),
+        file('test/integration/b.test.ts', source),
+      ]);
+
+      // Assert
+      expect(sut.map((f) => f.path)).toEqual(['test/integration/b.test.ts', 'test/unit/a.test.ts']);
     });
   });
 });

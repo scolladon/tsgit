@@ -131,11 +131,11 @@ export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest
         threshold: 0,
       },
       underAssertedUnit: {
-        tier: 'unit',
+        tiers: ['unit'],
         minAssertionsPerTest: overrides.underAssertedMin ?? 1,
       },
       gwtTitle: {
-        tier: 'unit',
+        tiers: ['unit'],
         describeGiven,
         describeWhen,
         describeCombined,
@@ -148,20 +148,20 @@ export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest
         legacyItGwtRe: new RegExp(legacyItGwt),
       },
       aaaBody: {
-        tier: 'unit',
+        tiers: ['unit'],
         required: overrides.aaaRequired ?? ['Arrange', 'Assert'],
       },
       sutNaming: {
-        tier: 'unit',
+        tiers: ['unit'],
         banned: overrides.sutBanned ?? ['subject', 'objectUnderTest', 'systemUnderTest', 'cut'],
       },
       bareClassToThrow: {
-        tier: 'unit',
+        tiers: ['unit'],
         regex: bareClassRegex,
         compiledRegex: new RegExp(bareClassRegex, 'g'),
       },
       emptyAaaSection: {
-        tier: 'unit',
+        tiers: ['unit'],
       },
       integrationProof: ((): PyramidManifest['heuristics']['integrationProof'] => {
         const ip = overrides.integrationProof ?? {};

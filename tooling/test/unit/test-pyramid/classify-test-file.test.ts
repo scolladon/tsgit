@@ -114,6 +114,75 @@ describe('classifyTestFile', () => {
     });
   });
 
+  describe("Given a manifest defining a parity tier", () => {
+    describe("When classifying a path under test/parity", () => {
+      it('Then returns "parity"', () => {
+    // Arrange
+    const withParity: PyramidManifest = {
+      ...MANIFEST,
+      tiers: [
+        ...MANIFEST.tiers,
+        { name: 'parity', glob: 'test/parity/**/*.test.ts', target: 0, warnBelow: 0, warnAbove: null },
+      ],
+    };
+
+    // Act
+    const sut = classifyTestFile(withParity, 'test/parity/node.test.ts');
+
+    // Assert
+    expect(sut).toBe('parity');
+  });
+    });
+  });
+
+  describe("Given a manifest defining a runtime-parity tier", () => {
+    describe("When classifying a path under test/runtime-parity", () => {
+      it('Then returns "runtime-parity"', () => {
+    // Arrange
+    const withRuntimeParity: PyramidManifest = {
+      ...MANIFEST,
+      tiers: [
+        ...MANIFEST.tiers,
+        {
+          name: 'runtime-parity',
+          glob: 'test/runtime-parity/**/*.test.ts',
+          target: 0,
+          warnBelow: 0,
+          warnAbove: null,
+        },
+      ],
+    };
+
+    // Act
+    const sut = classifyTestFile(withRuntimeParity, 'test/runtime-parity/deno/parity-node.test.ts');
+
+    // Assert
+    expect(sut).toBe('runtime-parity');
+  });
+    });
+  });
+
+  describe("Given a manifest defining a perf tier", () => {
+    describe("When classifying a path under test/perf", () => {
+      it('Then returns "perf"', () => {
+    // Arrange
+    const withPerf: PyramidManifest = {
+      ...MANIFEST,
+      tiers: [
+        ...MANIFEST.tiers,
+        { name: 'perf', glob: 'test/perf/**/*.test.ts', target: 0, warnBelow: 0, warnAbove: null },
+      ],
+    };
+
+    // Act
+    const sut = classifyTestFile(withPerf, 'test/perf/domain/pathspec/compile-glob.perf.test.ts');
+
+    // Assert
+    expect(sut).toBe('perf');
+  });
+    });
+  });
+
   describe("Given a manifest with overlapping tier globs", () => {
     describe("When classifying", () => {
       it('Then returns the first matching tier', () => {

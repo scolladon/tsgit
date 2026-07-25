@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { detectMissingAaa } from '../../../test-pyramid/detect-missing-aaa.js';
+import type { PyramidManifest } from '../../../test-pyramid/parse-manifest.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();
@@ -120,6 +121,27 @@ describe('detectMissingAaa', () => {
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a heuristic scoped to tiers unit and integration, When both a unit and an integration file are missing markers, Then both are flagged', () => {
+    // Arrange
+    const multiTier: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        aaaBody: { ...MANIFEST.heuristics.aaaBody, tiers: ['unit', 'integration'] },
+      },
+    };
+    const source = `it('whatever', () => { expect(1).toBe(1); });`;
+
+    // Act
+    const sut = detectMissingAaa(multiTier, [
+      file('test/unit/a.test.ts', source),
+      file('test/integration/b.test.ts', source),
+    ]);
+
+    // Assert
+    expect(sut.map((f) => f.path)).toEqual(['test/integration/b.test.ts', 'test/unit/a.test.ts']);
   });
 
   it('Given a stricter manifest requiring Arrange + Act + Assert, When only Arrange + Assert are present, Then Act is reported missing', () => {

@@ -43,25 +43,25 @@ const buildManifest = (overrides: ManifestOverrides = {}): Record<string, unknow
       regex: '\\bvi\\.(mock|fn|spyOn|stubGlobal|stubEnv)\\s*\\(',
       threshold: 0,
     },
-    underAssertedUnit: { tier: 'unit', minAssertionsPerTest: 1 },
+    underAssertedUnit: { tiers: ['unit'], minAssertionsPerTest: 1 },
     gwtTitle: {
-      tier: 'unit',
+      tiers: ['unit'],
       describeGiven: '^Given .+$',
       describeWhen: '^When .+$',
       describeCombined: '^Given .+?, When .+$',
       itThen: '^Then .+$',
       legacyItGwt: '^Given .+?, When .+?, Then .+$',
     },
-    aaaBody: { tier: 'unit', required: ['Arrange', 'Assert'] },
+    aaaBody: { tiers: ['unit'], required: ['Arrange', 'Assert'] },
     sutNaming: {
-      tier: 'unit',
+      tiers: ['unit'],
       banned: ['subject', 'objectUnderTest', 'systemUnderTest', 'cut'],
     },
     bareClassToThrow: {
-      tier: 'unit',
+      tiers: ['unit'],
       regex: '\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)',
     },
-    emptyAaaSection: { tier: 'unit' },
+    emptyAaaSection: { tiers: ['unit'] },
     integrationProof: {
       tier: 'integration',
       buckets: [

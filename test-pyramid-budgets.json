@@ -21,6 +21,27 @@
       "target": 5,
       "warnBelow": 3,
       "warnAbove": null
+    },
+    {
+      "name": "parity",
+      "glob": "test/parity/**/*.test.ts",
+      "target": 0,
+      "warnBelow": 0,
+      "warnAbove": null
+    },
+    {
+      "name": "runtime-parity",
+      "glob": "test/runtime-parity/**/*.test.ts",
+      "target": 0,
+      "warnBelow": 0,
+      "warnAbove": null
+    },
+    {
+      "name": "perf",
+      "glob": "test/perf/**/*.test.ts",
+      "target": 0,
+      "warnBelow": 0,
+      "warnAbove": null
     }
   ],
   "heuristics": {
@@ -30,11 +51,11 @@
       "threshold": 0
     },
     "underAssertedUnit": {
-      "tier": "unit",
+      "tiers": ["unit"],
       "minAssertionsPerTest": 1
     },
     "gwtTitle": {
-      "tier": "unit",
+      "tiers": ["unit"],
       "describeGiven": "^Given .+$",
       "describeWhen": "^When .+$",
       "describeCombined": "^Given .+?, When .+$",
@@ -42,19 +63,19 @@
       "legacyItGwt": "^Given .+?, When .+?, Then .+$"
     },
     "aaaBody": {
-      "tier": "unit",
+      "tiers": ["unit"],
       "required": ["Arrange", "Assert"]
     },
     "sutNaming": {
-      "tier": "unit",
+      "tiers": ["unit"],
       "banned": ["subject", "objectUnderTest", "systemUnderTest", "cut"]
     },
     "bareClassToThrow": {
-      "tier": "unit",
+      "tiers": ["unit"],
       "regex": "\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)"
     },
     "emptyAaaSection": {
-      "tier": "unit"
+      "tiers": ["unit"]
     },
     "integrationProof": {
       "tier": "integration",

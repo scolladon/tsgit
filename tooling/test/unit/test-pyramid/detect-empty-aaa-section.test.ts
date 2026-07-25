@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { detectEmptyAaaSection } from '../../../test-pyramid/detect-empty-aaa-section.js';
+import type { PyramidManifest } from '../../../test-pyramid/parse-manifest.js';
 import { makeManifest } from './manifest-fixture.js';
 
 const MANIFEST = makeManifest();
@@ -132,6 +133,27 @@ describe('detectEmptyAaaSection', () => {
 
     // Assert
     expect(sut).toEqual([]);
+  });
+
+  it('Given a heuristic scoped to tiers unit and integration, When both a unit and an integration file have an empty Arrange section, Then both are flagged', () => {
+    // Arrange
+    const multiTier: PyramidManifest = {
+      ...MANIFEST,
+      heuristics: {
+        ...MANIFEST.heuristics,
+        emptyAaaSection: { tiers: ['unit', 'integration'] },
+      },
+    };
+    const source = `\nit('whatever', () => {\n  // Arrange\n  // Assert\n  expect(1).toBe(1);\n});\n`;
+
+    // Act
+    const sut = detectEmptyAaaSection(multiTier, [
+      file('test/unit/a.test.ts', source),
+      file('test/integration/b.test.ts', source),
+    ]);
+
+    // Assert
+    expect(sut.map((f) => f.path)).toEqual(['test/integration/b.test.ts', 'test/unit/a.test.ts']);
   });
 
   it('Given findings across multiple files, When scanned, Then sorted by path then by line', () => {
