@@ -12,22 +12,22 @@ async function* empty(): AsyncIterable<never> {}
 
 describe('toArray', () => {
   describe('Given an empty source', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it('Then [] is returned', async () => {
         // Arrange
         const source = empty();
 
         // Act
-        const sut = await toArray(source);
+        const result = await toArray(source);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
 
   describe('Given a source yielding [0,1,2]', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it('Then [0,1,2] is returned', async () => {
         // Arrange — build expectation manually via for-await (floor test)
         const source = range(3);
@@ -37,16 +37,16 @@ describe('toArray', () => {
         }
 
         // Act
-        const sut = await toArray(source);
+        const result = await toArray(source);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });
 
   describe('Given a source that throws mid-iteration', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it('Then the promise rejects and no partial array is observable', async () => {
         // Arrange
         const source = throwingAt(3, 10);
@@ -58,7 +58,7 @@ describe('toArray', () => {
   });
 
   describe('Given a source of 5 items and limit = 3', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it('Then RangeError matches /exceeded limit of 3/', async () => {
         // Arrange
         const source = range(5);
@@ -77,7 +77,7 @@ describe('toArray', () => {
   });
 
   describe('Given a limit that does not throw', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it.each([
         {
           sourceFactory: () => range(3),
@@ -102,16 +102,16 @@ describe('toArray', () => {
         const source = sourceFactory();
 
         // Act
-        const sut = await toArray(source, limit);
+        const result = await toArray(source, limit);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });
 
   describe('Given a one-item source and limit = 0', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it('Then RangeError /exceeded limit of 0/', async () => {
         // Arrange
         const source = range(1);
@@ -130,7 +130,7 @@ describe('toArray', () => {
   });
 
   describe('Given limit = -1', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it('Then RangeError /non-negative/', async () => {
         // Arrange
         const source = empty();
@@ -149,7 +149,7 @@ describe('toArray', () => {
   });
 
   describe('Given limit = NaN', () => {
-    describe('When sut is awaited', () => {
+    describe('When awaited', () => {
       it('Then RangeError /non-negative/', async () => {
         // Arrange
         const source = empty();

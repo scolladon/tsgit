@@ -6,11 +6,11 @@ describe('pipe', () => {
   describe('Given no functions', () => {
     describe('When pipe(42) is called', () => {
       it('Then it returns 42', () => {
-        // Arrange / Act
-        const sut = pipe(42);
+        // Arrange & Act
+        const result = pipe(42);
 
         // Assert
-        expect(sut).toBe(42);
+        expect(result).toBe(42);
       });
     });
   });
@@ -22,10 +22,10 @@ describe('pipe', () => {
         const f = (n: number): number => n + 1;
 
         // Act
-        const sut = pipe(3, f);
+        const result = pipe(3, f);
 
         // Assert
-        expect(sut).toBe(4);
+        expect(result).toBe(4);
       });
     });
   });
@@ -38,10 +38,10 @@ describe('pipe', () => {
         const g = (n: number): string => `v=${n}`;
 
         // Act
-        const sut = pipe(3, f, g);
+        const result = pipe(3, f, g);
 
         // Assert
-        expect(sut).toBe('v=4');
+        expect(result).toBe('v=4');
       });
     });
   });
@@ -54,11 +54,11 @@ describe('pipe', () => {
         const receiver = vi.fn((v: Promise<number>) => v);
 
         // Act
-        const sut = pipe(3, asyncFn, receiver);
+        const result = pipe(3, asyncFn, receiver);
 
         // Assert
         expect(receiver).toHaveBeenCalledTimes(1);
-        expect(sut).toBeInstanceOf(Promise);
+        expect(result).toBeInstanceOf(Promise);
       });
     });
   });
@@ -88,10 +88,10 @@ describe('pipe', () => {
         const add = (n: number): number => n + 1;
 
         // Act
-        const sut = pipe(0, add, add, add, add, add, add, add, add, add);
+        const result = pipe(0, add, add, add, add, add, add, add, add, add);
 
         // Assert
-        expect(sut).toBe(9);
+        expect(result).toBe(9);
       });
     });
   });
@@ -108,10 +108,10 @@ describe('pipe', () => {
         ) => number;
 
         // Act — cast-based escape hatch, exercises rest-parameter path with >9 args
-        const sut = pipeUntyped(0, ...tenFns);
+        const result = pipeUntyped(0, ...tenFns);
 
         // Assert
-        expect(sut).toBe(10);
+        expect(result).toBe(10);
       });
     });
   });
@@ -123,10 +123,10 @@ describe('pipe', () => {
         const empty: [] = [];
 
         // Act — forces the reduce over a zero-length rest array (distinct from overload-1 match)
-        const sut = pipe(7, ...(empty as []));
+        const result = pipe(7, ...(empty as []));
 
         // Assert
-        expect(sut).toBe(7);
+        expect(result).toBe(7);
       });
     });
   });

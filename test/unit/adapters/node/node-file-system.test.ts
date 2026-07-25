@@ -421,10 +421,10 @@ describe('NodeFileSystem', () => {
         describe('When resolving', () => {
           it('Then joins with rootDir', () => {
             // Arrange & Act
-            const sut = toAbsolute('relative.txt', '/root');
+            const result = toAbsolute('relative.txt', '/root');
 
             // Assert
-            expect(sut).toBe(nodePath.join('/root', 'relative.txt'));
+            expect(result).toBe(nodePath.join('/root', 'relative.txt'));
           });
         });
       });
@@ -433,10 +433,10 @@ describe('NodeFileSystem', () => {
         describe('When resolving', () => {
           it('Then returns path unchanged', () => {
             // Arrange & Act
-            const sut = toAbsolute('/already/absolute.txt', '/root');
+            const result = toAbsolute('/already/absolute.txt', '/root');
 
             // Assert
-            expect(sut).toBe('/already/absolute.txt');
+            expect(result).toBe('/already/absolute.txt');
           });
         });
       });
@@ -545,11 +545,11 @@ describe('NodeFileSystem', () => {
       describe('Given a generic Error without code', () => {
         describe('When checking', () => {
           it('Then returns false', () => {
-            // Arrange
-            const sut = isErrnoException(new Error('plain'));
+            // Arrange & Act
+            const result = isErrnoException(new Error('plain'));
 
             // Assert
-            expect(sut).toBe(false);
+            expect(result).toBe(false);
           });
         });
       });
@@ -557,11 +557,11 @@ describe('NodeFileSystem', () => {
       describe('Given an errno-like error', () => {
         describe('When checking', () => {
           it('Then returns true', () => {
-            // Arrange
-            const sut = isErrnoException(makeErrnoError('ENOENT'));
+            // Arrange & Act
+            const result = isErrnoException(makeErrnoError('ENOENT'));
 
             // Assert
-            expect(sut).toBe(true);
+            expect(result).toBe(true);
           });
         });
       });
@@ -569,11 +569,11 @@ describe('NodeFileSystem', () => {
       describe('Given a non-Error value', () => {
         describe('When checking', () => {
           it('Then returns false', () => {
-            // Arrange
-            const sut = isErrnoException('not an error');
+            // Arrange & Act
+            const result = isErrnoException('not an error');
 
             // Assert
-            expect(sut).toBe(false);
+            expect(result).toBe(false);
           });
         });
       });
@@ -668,11 +668,11 @@ describe('NodeFileSystem', () => {
             const err = makeErrnoError(code);
 
             // Act
-            const sut = mapErrno(err, path);
+            const result = mapErrno(err, path);
 
             // Assert
-            expect(sut.data.code).toBe(expectedCode);
-            extra?.(sut.data);
+            expect(result.data.code).toBe(expectedCode);
+            extra?.(result.data);
           });
         });
       });
@@ -814,11 +814,11 @@ describe('NodeFileSystem', () => {
       describe('Given successful op', () => {
         describe('When running', () => {
           it('Then returns the op result', async () => {
-            // Arrange
-            const sut = await runFs(async () => 42, '/ok');
+            // Arrange & Act
+            const result = await runFs(async () => 42, '/ok');
 
             // Assert
-            expect(sut).toBe(42);
+            expect(result).toBe(42);
           });
         });
       });
@@ -834,10 +834,10 @@ describe('NodeFileSystem', () => {
             const nonExistent = nodePath.join(real, 'deep', 'missing.txt');
 
             // Act
-            const sut = await realpathNearestExisting(nonExistent);
+            const result = await realpathNearestExisting(nonExistent);
 
             // Assert
-            expect(sut).toBe(nonExistent);
+            expect(result).toBe(nonExistent);
 
             // Cleanup
             await fsPromises.rm(tempRoot, { recursive: true, force: true });
@@ -848,14 +848,14 @@ describe('NodeFileSystem', () => {
       describe('Given fully non-existent path', () => {
         describe('When resolving', () => {
           it('Then returns root joined with every non-existent segment (loop-exhausted branch)', async () => {
-            // Arrange
-            const sut = await realpathNearestExisting('/totally/made/up/path/doesnotexist');
+            // Arrange & Act
+            const result = await realpathNearestExisting('/totally/made/up/path/doesnotexist');
 
             // Assert — original joins realpath('/')='/' with every segment; a mutant that returns
             // root only (ConditionalExpression → false) would drop the tail entirely.
             const root = await fsPromises.realpath('/');
             const expected = nodePath.join(root, 'totally', 'made', 'up', 'path', 'doesnotexist');
-            expect(sut).toBe(expected);
+            expect(result).toBe(expected);
           });
         });
       });
@@ -863,12 +863,12 @@ describe('NodeFileSystem', () => {
       describe('Given the root path itself', () => {
         describe('When resolving', () => {
           it('Then returns the realpath of root (empty-segments branch)', async () => {
-            // Arrange
-            const sut = await realpathNearestExisting('/');
+            // Arrange & Act
+            const result = await realpathNearestExisting('/');
 
             // Assert
             const root = await fsPromises.realpath('/');
-            expect(sut).toBe(root);
+            expect(result).toBe(root);
           });
         });
       });
@@ -889,10 +889,10 @@ describe('NodeFileSystem', () => {
             const nonExistentLeaf = nodePath.join(linkDir, 'missing.txt');
 
             // Act
-            const sut = await realpathNearestExisting(nonExistentLeaf);
+            const result = await realpathNearestExisting(nonExistentLeaf);
 
             // Assert — prefix realpath substitutes link-to-actual → actual
-            expect(sut).toBe(nodePath.join(actualDir, 'missing.txt'));
+            expect(result).toBe(nodePath.join(actualDir, 'missing.txt'));
 
             // Cleanup
             await fsPromises.rm(tempRoot, { recursive: true, force: true });
@@ -931,12 +931,12 @@ describe('NodeFileSystem', () => {
       describe('Given stat with ctimeNs and mtimeNs', () => {
         describe('When mapping', () => {
           it('Then result includes the ns fields', () => {
-            // Arrange
-            const sut = mapStat(makeBigIntStat());
+            // Arrange & Act
+            const result = mapStat(makeBigIntStat());
 
             // Assert
-            expect(sut.ctimeNs).toBe(BigInt(1_000_000_000));
-            expect(sut.mtimeNs).toBe(BigInt(2_000_000_000));
+            expect(result.ctimeNs).toBe(BigInt(1_000_000_000));
+            expect(result.mtimeNs).toBe(BigInt(2_000_000_000));
           });
         });
       });
@@ -947,12 +947,14 @@ describe('NodeFileSystem', () => {
             // Arrange — build a stat-shaped object without ns fields (must omit rather than assign undefined under exactOptionalPropertyTypes)
             const base = makeBigIntStat();
             const { ctimeNs: _omitCtime, mtimeNs: _omitMtime, ...rest } = base;
-            const sut = mapStat(rest);
+
+            // Act
+            const result = mapStat(rest);
 
             // Assert
-            expect(sut.ctimeNs).toBeUndefined();
-            expect(sut.mtimeNs).toBeUndefined();
-            expect(sut.size).toBe(42);
+            expect(result.ctimeNs).toBeUndefined();
+            expect(result.mtimeNs).toBeUndefined();
+            expect(result.size).toBe(42);
           });
         });
       });
@@ -1007,11 +1009,8 @@ describe('NodeFileSystem', () => {
             label: 'a Windows host with a TsgitError of unrelated kind returns false',
           },
         ])('Then $label', ({ err, policy, expected }) => {
-          // Arrange
-          const sut = isWindowsSymlinkRefusal;
-
-          // Act
-          const result = sut(err, policy);
+          // Arrange & Act
+          const result = isWindowsSymlinkRefusal(err, policy);
 
           // Assert
           expect(result).toBe(expected);
@@ -1092,11 +1091,8 @@ describe('NodeFileSystem', () => {
               'no policy argument defaults to nativePolicy; parent === child on the host platform returns true',
           },
         ])('Then $label', ({ parent, child, policy, expected }) => {
-          // Arrange
-          const sut = pathContains;
-
-          // Act
-          const result = sut(parent, child, policy);
+          // Arrange & Act
+          const result = pathContains(parent, child, policy);
 
           // Assert
           expect(result).toBe(expected);
@@ -1116,10 +1112,10 @@ describe('NodeFileSystem config-path capabilities', () => {
           const fs = new NodeFileSystem(tmp, posixPolicy);
 
           // Act
-          const sut = fs.homedir();
+          const result = fs.homedir();
 
           // Assert
-          expect(sut).toBe(os.homedir());
+          expect(result).toBe(os.homedir());
         } finally {
           await fsPromises.rm(tmp, { recursive: true, force: true });
         }
@@ -1156,10 +1152,10 @@ describe('NodeFileSystem config-path capabilities', () => {
           const fs = new NodeFileSystem(tmp, posixPolicy);
 
           // Act
-          const sut = fs.xdgConfigHome();
+          const result = fs.xdgConfigHome();
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         } finally {
           if (prior === undefined) delete process.env['XDG_CONFIG_HOME'];
           else process.env['XDG_CONFIG_HOME'] = prior;
@@ -1205,10 +1201,10 @@ describe('NodeFileSystem config-path capabilities', () => {
           const fs = new NodeFileSystem(tmp, policy);
 
           // Act
-          const sut = fs.systemConfigPath();
+          const result = fs.systemConfigPath();
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         } finally {
           Object.defineProperty(process, 'platform', {
             value: priorPlatform,

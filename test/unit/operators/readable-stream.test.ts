@@ -37,12 +37,12 @@ describe('readableStreamToAsyncIterable', () => {
         });
 
         // Act
-        const sut = await collect(readableStreamToAsyncIterable(stream));
+        const result = await collect(readableStreamToAsyncIterable(stream));
 
         // Assert
-        expect(sut).toHaveLength(2);
-        expect(sut[0]).toEqual(a);
-        expect(sut[1]).toEqual(b);
+        expect(result).toHaveLength(2);
+        expect(result[0]).toEqual(a);
+        expect(result[1]).toEqual(b);
       });
     });
   });
@@ -58,10 +58,10 @@ describe('readableStreamToAsyncIterable', () => {
         });
 
         // Act
-        const sut = await collect(readableStreamToAsyncIterable(stream));
+        const result = await collect(readableStreamToAsyncIterable(stream));
 
         // Assert — the `done: true` branch of the ternary fires here.
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });

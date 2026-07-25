@@ -50,11 +50,11 @@ describe('NodeCompressor', () => {
       describe('Given an Error instance', () => {
         describe('When describing', () => {
           it('Then returns its message', () => {
-            // Arrange
-            const sut = describeError(new Error('boom'));
+            // Arrange & Act
+            const result = describeError(new Error('boom'));
 
             // Assert
-            expect(sut).toBe('boom');
+            expect(result).toBe('boom');
           });
         });
       });
@@ -62,11 +62,11 @@ describe('NodeCompressor', () => {
       describe('Given a non-Error value', () => {
         describe('When describing', () => {
           it('Then returns String(value)', () => {
-            // Arrange
-            const sut = describeError(42);
+            // Arrange & Act
+            const result = describeError(42);
 
             // Assert
-            expect(sut).toBe('42');
+            expect(result).toBe('42');
           });
         });
       });
