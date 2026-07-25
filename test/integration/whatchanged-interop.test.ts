@@ -112,35 +112,43 @@ describe.skipIf(!GIT_AVAILABLE)('whatchanged interop', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('Then the emitted oids equal git log --no-merges (merge dropped, ancestors kept)', async () => {
-    // Arrange
-    const peer = nonEmptyLines(git(dir, 'log', '--no-merges', '--format=%H'));
+  describe('Given a repository with a root, a modify+add, a rename, an empty commit, and a merge', () => {
+    describe('When walking commits with no-merges', () => {
+      it('Then the emitted oids equal git log --no-merges (merge dropped, ancestors kept)', async () => {
+        // Arrange
+        const peer = nonEmptyLines(git(dir, 'log', '--no-merges', '--format=%H'));
 
-    // Act
-    const ours = (await repo.whatchanged()).map((e) => e.id);
+        // Act
+        const ours = (await repo.whatchanged()).map((e) => e.id);
 
-    // Assert
-    expect(ours).toEqual(peer);
-  });
+        // Assert
+        expect(ours).toEqual(peer);
+      });
+    });
 
-  it('Then each entry reconstructs git whatchanged raw lines byte-for-byte', async () => {
-    // Arrange & Act
-    const entries = await repo.whatchanged();
+    describe('When reconstructing each raw line from the structured changes', () => {
+      it('Then each entry reconstructs git whatchanged raw lines byte-for-byte', async () => {
+        // Arrange & Act
+        const entries = await repo.whatchanged();
 
-    // Assert — every commit's structured changes equal git's raw lines
-    for (const entry of entries) {
-      expect(entry.changes.changes.map(rawLine)).toEqual(gitRawLines(dir, entry.id));
-    }
-  });
+        // Assert — every commit's structured changes equal git's raw lines
+        for (const entry of entries) {
+          expect(entry.changes.changes.map(rawLine)).toEqual(gitRawLines(dir, entry.id));
+        }
+      });
+    });
 
-  it('Then the first-parent walk equals git log --first-parent --no-merges', async () => {
-    // Arrange
-    const peer = nonEmptyLines(git(dir, 'log', '--first-parent', '--no-merges', '--format=%H'));
+    describe('When walking commits in first-parent order', () => {
+      it('Then the first-parent walk equals git log --first-parent --no-merges', async () => {
+        // Arrange
+        const peer = nonEmptyLines(git(dir, 'log', '--first-parent', '--no-merges', '--format=%H'));
 
-    // Act
-    const ours = (await repo.whatchanged({ order: 'first-parent' })).map((e) => e.id);
+        // Act
+        const ours = (await repo.whatchanged({ order: 'first-parent' })).map((e) => e.id);
 
-    // Assert
-    expect(ours).toEqual(peer);
+        // Assert
+        expect(ours).toEqual(peer);
+      });
+    });
   });
 });

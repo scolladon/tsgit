@@ -131,7 +131,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive interop', () => {
   // Entry-stream faithfulness: paths, modes, order
   // -------------------------------------------------------------------------
 
-  describe('Given archive(ctx, { treeish: HEAD }) and git ls-tree -r -t HEAD', () => {
+  describe('Given archive(ctx, { treeish: HEAD }) and git ls-tree -r -t HEAD, When the entry streams are compared', () => {
     it('Then the path set, normalised modes, and pre-order match exactly', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -171,44 +171,48 @@ describe.skipIf(!GIT_AVAILABLE)('archive interop', () => {
   // -------------------------------------------------------------------------
 
   describe('Given archive(ctx, { treeish: HEAD })', () => {
-    it('Then regular file content matches git cat-file blob output', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const expectedContent = Buffer.from('hello\n');
+    describe('When inspecting a regular file entry', () => {
+      it('Then regular file content matches git cat-file blob output', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.peer });
+        const expectedContent = Buffer.from('hello\n');
 
-      // Act
-      const result = await archive(ctx, { treeish: 'HEAD' });
-      let aTxtContent: Uint8Array | undefined;
-      for await (const entry of result.entries) {
-        if (entry.path === 'a.txt') {
-          aTxtContent = entry.content;
-          break;
+        // Act
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        let aTxtContent: Uint8Array | undefined;
+        for await (const entry of result.entries) {
+          if (entry.path === 'a.txt') {
+            aTxtContent = entry.content;
+            break;
+          }
         }
-      }
 
-      // Assert
-      expect(aTxtContent).toBeDefined();
-      expect(Buffer.from(aTxtContent ?? new Uint8Array())).toEqual(expectedContent);
+        // Assert
+        expect(aTxtContent).toBeDefined();
+        expect(Buffer.from(aTxtContent ?? new Uint8Array())).toEqual(expectedContent);
+      });
     });
 
-    it('Then symlink content equals the link target bytes', async () => {
-      // Arrange
-      const ctx = createNodeContext({ workDir: pair.peer });
-      const expectedTarget = Buffer.from('a.txt');
+    describe('When inspecting a symlink entry', () => {
+      it('Then symlink content equals the link target bytes', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.peer });
+        const expectedTarget = Buffer.from('a.txt');
 
-      // Act
-      const result = await archive(ctx, { treeish: 'HEAD' });
-      let linkContent: Uint8Array | undefined;
-      for await (const entry of result.entries) {
-        if (entry.path === 'link') {
-          linkContent = entry.content;
-          break;
+        // Act
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        let linkContent: Uint8Array | undefined;
+        for await (const entry of result.entries) {
+          if (entry.path === 'link') {
+            linkContent = entry.content;
+            break;
+          }
         }
-      }
 
-      // Assert
-      expect(linkContent).toBeDefined();
-      expect(Buffer.from(linkContent ?? new Uint8Array())).toEqual(expectedTarget);
+        // Assert
+        expect(linkContent).toBeDefined();
+        expect(Buffer.from(linkContent ?? new Uint8Array())).toEqual(expectedTarget);
+      });
     });
   });
 
@@ -250,7 +254,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive interop', () => {
     },
   ];
 
-  describe('Given archive(ctx, { treeish }) for a commit-ish, bare tree, and annotated tag', () => {
+  describe('Given archive(ctx, { treeish }) for a commit-ish, bare tree, and annotated tag, When archive is called for each treeish kind', () => {
     it.each(COMMIT_METADATA_MATRIX)(
       'Then result.commit and result.commitTime match git for $label',
       async ({ resolveTreeish, resolveExpectedCommit, expectedCommitTime, checkTree }) => {
@@ -408,7 +412,7 @@ describe.skipIf(!GIT_AVAILABLE)('tar byte-faithfulness', () => {
     },
   ];
 
-  describe('Given archive(ctx, <treeish>) passed through tarArchive', () => {
+  describe('Given archive(ctx, <treeish>) passed through tarArchive, When the result is serialized to tar', () => {
     it.each(TAR_VARIANT_MATRIX)(
       'Then the tar bytes are byte-equal to git archive --format=tar for $label',
       async ({ resolveTreeish, gitArgs, prefix, fixedMtime, assertCommit }) => {
@@ -510,7 +514,7 @@ describe.skipIf(!GIT_AVAILABLE)('tar deep-path byte-faithfulness', () => {
     await deepPair.dispose();
   });
 
-  describe('Given a tree with file and directory paths exceeding 100 bytes', () => {
+  describe('Given a tree with file and directory paths exceeding 100 bytes, When the tree is archived and serialized to tar', () => {
     it('Then the tar bytes are byte-equal to git archive --format=tar HEAD (ustar split is faithful)', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: deepPair.peer });
@@ -600,7 +604,7 @@ describe.skipIf(!GIT_AVAILABLE)('tar UTF-8 path byte-faithfulness', () => {
     await utf8Pair.dispose();
   });
 
-  describe('Given a tree with non-ASCII filenames (UTF-8 multi-byte sequences)', () => {
+  describe('Given a tree with non-ASCII filenames (UTF-8 multi-byte sequences), When the tree is archived and serialized to tar', () => {
     it('Then the tar bytes are byte-equal to git archive --format=tar HEAD (UTF-8 paths faithfully encoded)', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: utf8Pair.peer });
@@ -778,7 +782,7 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
     },
   ];
 
-  describe('Given archive(ctx, <treeish>) passed through zipArchive', () => {
+  describe('Given archive(ctx, <treeish>) passed through zipArchive, When the result is serialized to zip', () => {
     it.each(ZIP_VARIANT_MATRIX)(
       'Then the zip is structurally faithful to git archive --format=zip for $label',
       async ({ resolveTreeish, gitArgs, prefix, fixedMtime, assertCommit }) => {
@@ -857,7 +861,7 @@ describe.skipIf(!GIT_AVAILABLE)('zip whole-archive byte-equality (all-stored fix
     await storedPair.dispose();
   });
 
-  describe('Given an all-stored tree (regular, exec, symlink, nested) archived through zipArchive', () => {
+  describe('Given an all-stored tree (regular, exec, symlink, nested) archived through zipArchive, When the whole archive is serialized', () => {
     it('Then the whole zip — local headers, central directory, EOCD — is byte-equal to git archive --format=zip HEAD', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: storedPair.peer });
@@ -1022,7 +1026,7 @@ describe.skipIf(!GIT_AVAILABLE)('zip cross-adapter parity (node vs memory)', () 
     await parityPair.dispose();
   });
 
-  describe('Given the same ArchiveResult serialized with NodeCompressor and MemoryCompressor', () => {
+  describe('Given the same ArchiveResult serialized with NodeCompressor and MemoryCompressor, When zipArchive runs with each compressor', () => {
     it('Then method-0 entries + ALL framing are byte-identical; method-8 entries round-trip to the same content', async () => {
       // Arrange
       const nodeCtx = createNodeContext({ workDir: parityPair.peer });

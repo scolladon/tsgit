@@ -191,7 +191,7 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
     { label: 'a blob', rev: () => built.blob },
   ];
 
-  describe('Given a single revision', () => {
+  describe('Given a single revision, When show reconstructs it', () => {
     it.each(SINGLE_REVISION_MATRIX)('Then $label reconstructs git show', async ({ rev }) => {
       // Arrange, Act & Assert
       await expectMatch(rev());
@@ -204,14 +204,14 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
     { label: 'a three-parent octopus merge', rev: () => built.octopus },
   ];
 
-  describe('Given a merge commit', () => {
+  describe('Given a merge commit, When show -m reconstructs it', () => {
     it.each(MERGE_MATRIX)('Then $label reconstructs git show -m', async ({ rev }) => {
       // Arrange, Act & Assert
       await expectMatchMerge(rev());
     });
   });
 
-  describe('Given multiple revisions', () => {
+  describe('Given multiple revisions, When show is called with both', () => {
     it('Then the concatenated stream reconstructs git show A B', async () => {
       // Arrange
       const expected = git(dir, 'show', '--no-color', built.modify, built.root);
@@ -229,25 +229,33 @@ describe.skipIf(!GIT_AVAILABLE)('show interop', () => {
   });
 
   describe('Given a <rev>:<path> tree lookup', () => {
-    it('Then a blob path reconstructs the raw blob', async () => {
-      // Arrange, Act & Assert
-      await expectMatch(`${built.modify}:a.txt`);
+    describe('When the path names a blob', () => {
+      it('Then a blob path reconstructs the raw blob', async () => {
+        // Arrange, Act & Assert
+        await expectMatch(`${built.modify}:a.txt`);
+      });
     });
-    it('Then a nested blob path resolves through sub-trees', async () => {
-      // Arrange, Act & Assert
-      await expectMatch(`${built.modify}:sub/b.txt`);
+    describe('When the path names a blob nested inside a sub-tree', () => {
+      it('Then a nested blob path resolves through sub-trees', async () => {
+        // Arrange, Act & Assert
+        await expectMatch(`${built.modify}:sub/b.txt`);
+      });
     });
-    it('Then an empty path lists the root tree, echoing the input', async () => {
-      // Arrange, Act & Assert
-      await expectMatch(`${built.modify}:`);
+    describe('When the path is empty', () => {
+      it('Then an empty path lists the root tree, echoing the input', async () => {
+        // Arrange, Act & Assert
+        await expectMatch(`${built.modify}:`);
+      });
     });
-    it('Then a sub-directory path lists that tree, echoing the input', async () => {
-      // Arrange, Act & Assert
-      await expectMatch(`${built.modify}:sub`);
+    describe('When the path names a sub-directory', () => {
+      it('Then a sub-directory path lists that tree, echoing the input', async () => {
+        // Arrange, Act & Assert
+        await expectMatch(`${built.modify}:sub`);
+      });
     });
   });
 
-  describe('Given withStat', () => {
+  describe('Given withStat, When show runs with the option', () => {
     it('Then a single-file change carries the per-file counts', async () => {
       // Arrange / Act
       const result = await show(built.ctx, built.modify, { withStat: true });

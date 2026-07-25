@@ -835,7 +835,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a distinct-types conflict resolved by a rename-suffix probe', () => {
       describe('When the conflict is reached on both tools', () => {
         it.each(RENAME_SUFFIX_CASES)('Then $label, matching git', async ({ run }) => {
-          // Act
+          // Arrange & Act
           const {
             peerOk,
             kind,

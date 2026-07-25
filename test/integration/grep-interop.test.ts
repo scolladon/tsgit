@@ -268,31 +268,33 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
   ];
 
   describe('Given a path tsgit excludes from a grep target', () => {
-    it.each(OMIT_MATRIX)(
-      'Then tsgit omits $label, does not throw, and git grep agrees',
-      async ({ path: excludedPath, run, gitArgs, stripHeadPrefix }) => {
-        // Act — must not throw (git exits 0 when no match found due to absent files)
-        let result: GrepResult | undefined;
-        let caught: unknown;
-        try {
-          result = await run();
-        } catch (e) {
-          caught = e;
-        }
-        const gitOutput = git(dir, 'grep', ...gitArgs);
+    describe('When grep runs against the excluded path', () => {
+      it.each(OMIT_MATRIX)(
+        'Then tsgit omits $label, does not throw, and git grep agrees',
+        async ({ path: excludedPath, run, gitArgs, stripHeadPrefix }) => {
+          // Arrange & Act — must not throw (git exits 0 when no match found due to absent files)
+          let result: GrepResult | undefined;
+          let caught: unknown;
+          try {
+            result = await run();
+          } catch (e) {
+            caught = e;
+          }
+          const gitOutput = git(dir, 'grep', ...gitArgs);
 
-        // Assert
-        expect(caught).toBeUndefined();
-        const tsgitPaths = result!.paths.map((p) => p.path as string);
-        const gitPaths = gitOutput
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map((p) => (stripHeadPrefix ? p.replace(/^HEAD:/, '') : p));
-        expect(tsgitPaths).not.toContain(excludedPath);
-        expect(gitPaths).not.toContain(excludedPath);
-      },
-    );
+          // Assert
+          expect(caught).toBeUndefined();
+          const tsgitPaths = result!.paths.map((p) => p.path as string);
+          const gitPaths = gitOutput
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((p) => (stripHeadPrefix ? p.replace(/^HEAD:/, '') : p));
+          expect(tsgitPaths).not.toContain(excludedPath);
+          expect(gitPaths).not.toContain(excludedPath);
+        },
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------

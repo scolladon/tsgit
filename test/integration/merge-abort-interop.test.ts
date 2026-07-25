@@ -79,30 +79,32 @@ describe.skipIf(!GIT_AVAILABLE)('merge --abort reflog interop', () => {
   });
 
   describe('Given a conflicted merge aborted on both tools', () => {
-    it('Then HEAD records `reset: moving to HEAD` and the branch reflog is unchanged', async () => {
-      // Arrange — identical pinned conflicting-merge history in both repos.
-      buildConflictingMerge(pair.peer);
-      buildConflictingMerge(pair.ours);
-      const peerBranchTop = topReflogSubject(pair.peer, 'refs/heads/main');
-      const oursBranchTop = topReflogSubject(pair.ours, 'refs/heads/main');
+    describe('When merge --abort runs on both tools', () => {
+      it('Then HEAD records `reset: moving to HEAD` and the branch reflog is unchanged', async () => {
+        // Arrange — identical pinned conflicting-merge history in both repos.
+        buildConflictingMerge(pair.peer);
+        buildConflictingMerge(pair.ours);
+        const peerBranchTop = topReflogSubject(pair.peer, 'refs/heads/main');
+        const oursBranchTop = topReflogSubject(pair.ours, 'refs/heads/main');
 
-      // Conflict on both tools (merge stops, HEAD unmoved).
-      const peerMerge = tryRunGit(['-C', pair.peer, 'merge', 'feature']);
-      expect(peerMerge.ok).toBe(false);
-      const repo = await openRepository({ cwd: pair.ours });
-      const oursMerge = await repo.merge.run({ rev: 'feature', author: AUTHOR });
-      expect(oursMerge.kind).toBe('conflict');
+        // Conflict on both tools (merge stops, HEAD unmoved).
+        const peerMerge = tryRunGit(['-C', pair.peer, 'merge', 'feature']);
+        expect(peerMerge.ok).toBe(false);
+        const repo = await openRepository({ cwd: pair.ours });
+        const oursMerge = await repo.merge.run({ rev: 'feature', author: AUTHOR });
+        expect(oursMerge.kind).toBe('conflict');
 
-      // Act — abort on both tools.
-      runGit(['-C', pair.peer, 'merge', '--abort']);
-      await repo.merge.abort();
-      await repo.dispose();
+        // Act — abort on both tools.
+        runGit(['-C', pair.peer, 'merge', '--abort']);
+        await repo.merge.abort();
+        await repo.dispose();
 
-      // Assert — identical faithful HEAD message, branch reflog left untouched.
-      expect(topReflogSubject(pair.peer, 'HEAD')).toBe('reset: moving to HEAD');
-      expect(topReflogSubject(pair.ours, 'HEAD')).toBe('reset: moving to HEAD');
-      expect(topReflogSubject(pair.peer, 'refs/heads/main')).toBe(peerBranchTop);
-      expect(topReflogSubject(pair.ours, 'refs/heads/main')).toBe(oursBranchTop);
+        // Assert — identical faithful HEAD message, branch reflog left untouched.
+        expect(topReflogSubject(pair.peer, 'HEAD')).toBe('reset: moving to HEAD');
+        expect(topReflogSubject(pair.ours, 'HEAD')).toBe('reset: moving to HEAD');
+        expect(topReflogSubject(pair.peer, 'refs/heads/main')).toBe(peerBranchTop);
+        expect(topReflogSubject(pair.ours, 'refs/heads/main')).toBe(oursBranchTop);
+      });
     });
   });
 });

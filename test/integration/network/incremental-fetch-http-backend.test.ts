@@ -131,7 +131,14 @@ const reachableOids = async (
   return seen;
 };
 
-const runIncrementalFetchScenario = async (forwardGitProtocol: boolean): Promise<void> => {
+interface IncrementalFetchOutcome {
+  readonly seen: readonly ObjectId[];
+  readonly expectedSeen: readonly ObjectId[];
+}
+
+const runIncrementalFetchScenario = async (
+  forwardGitProtocol: boolean,
+): Promise<IncrementalFetchOutcome> => {
   const slug = forwardGitProtocol ? 'v2' : 'v1';
   const protocolVersion = forwardGitProtocol ? 2 : 0;
   const source = await createBareSource(slug);
@@ -178,12 +185,12 @@ const runIncrementalFetchScenario = async (forwardGitProtocol: boolean): Promise
     const peerHead = await cloneRealGitPeer(peerDir, url, protocolVersion);
     expect(peerHead).toBe(c1);
 
-    // Assert — the full C1→C0 history is materialised locally (pack
-    // completeness), not just the ref pointer.
+    // The full C1→C0 history is materialised locally (pack completeness),
+    // not just the ref pointer — asserted by the caller against `expectedSeen`.
     const seen = await reachableOids(repo.ctx, c1);
-    expect(seen).toEqual([c1, c0]);
 
     await repo.dispose();
+    return { seen, expectedSeen: [c1, c0] };
   } finally {
     await server.close();
     await rm(source.parentDir, { recursive: true, force: true });
@@ -198,15 +205,21 @@ describe.skipIf(SKIP_REASON !== false)(
   () => {
     describe('Given a remote that advances after clone, When tsgit fetches over protocol v2', () => {
       it('Then it delivers exactly the new commit and checks out the tracked branch, matching real git', async () => {
-        // Arrange, Act & Assert — delegated to the shared scenario runner
-        await runIncrementalFetchScenario(true);
+        // Arrange & Act — delegated to the shared scenario runner (clone, remote advance, fetch)
+        const { seen, expectedSeen } = await runIncrementalFetchScenario(true);
+
+        // Assert — full C1→C0 history is materialised locally (pack completeness)
+        expect(seen).toEqual(expectedSeen);
       }, 60_000);
     });
 
     describe('Given a remote that advances after clone, When tsgit fetches over the corrected v1 fallback', () => {
       it('Then it delivers exactly the new commit, matching real git', async () => {
-        // Arrange, Act & Assert — delegated to the shared scenario runner
-        await runIncrementalFetchScenario(false);
+        // Arrange & Act — delegated to the shared scenario runner (clone, remote advance, fetch)
+        const { seen, expectedSeen } = await runIncrementalFetchScenario(false);
+
+        // Assert — full C1→C0 history is materialised locally (pack completeness)
+        expect(seen).toEqual(expectedSeen);
       }, 60_000);
     });
   },

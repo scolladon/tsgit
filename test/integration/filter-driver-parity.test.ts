@@ -271,7 +271,7 @@ describe('Given a node repo (command:false) declaring *.bin filter=lfs diff=lfs 
 
   describe('When status is queried after a clean checkout', () => {
     it('Then status is clean — identical outcome to memory adapter', async () => {
-      // Act
+      // Arrange & Act
       const result = await status(nodeFixture.ctx);
 
       // Assert

@@ -1015,7 +1015,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a valueless merge.custom.driver, NO attribute, and an auto-resolving content merge', () => {
       describe('When git merge engages the driver', () => {
         it('Then git refuses with exit 128 reporting merge.custom.driver at its line', () => {
-          // Act
+          // Arrange & Act
           const g = tryRunGit(['-C', m4Peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
             env: MERGE_AUTHOR_ENV,
           });
@@ -1057,7 +1057,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
       describe("When reconstructing git's two lines from tsgit merge structured fields", () => {
         it("Then the reconstructed lines match git's stderr after path-token normalization", async () => {
-          // Act — run both git and tsgit against the same-shape fixture
+          // Arrange & Act — run both git and tsgit against the same-shape fixture
           const g = tryRunGit(['-C', m4Peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
             env: MERGE_AUTHOR_ENV,
           });
@@ -1091,7 +1091,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given the same valueless driver but a fast-forward merge (no content merge)', () => {
       describe('When git merge and tsgit merge run', () => {
         it('Then git merge exits 0 (lazy — the driver table is never read)', () => {
-          // Act
+          // Arrange & Act
           const g = tryRunGit(['-C', ffPeer, 'merge', '-m', 'm', 'theirs'], {
             env: MERGE_AUTHOR_ENV,
           });
@@ -1121,7 +1121,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
       describe('When git status runs on the same fixture', () => {
         it('Then git status exits 0 on the same valueless-driver fixture (read command is lazy)', () => {
-          // Act
+          // Arrange & Act
           const g = tryRunGit(['-C', ffOurs, 'status', '--porcelain'], { env: MERGE_AUTHOR_ENV });
 
           // Assert

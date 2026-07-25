@@ -185,7 +185,7 @@ describe.skipIf(SKIP_REASON !== false)(
     });
 
     describe('Given a local git-http-backend, When clone with depth:1 runs', () => {
-      it('Then.git/shallow exists and walkCommits stops at the boundary', async () => {
+      it('Then .git/shallow exists and walkCommits stops at the boundary', async () => {
         // Arrange
         workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-shallow-it-'));
         const url = `http://127.0.0.1:${port}/source.git`;

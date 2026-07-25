@@ -222,45 +222,49 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
-    /**
-     * all=1 edge case: good=c8, bad=c9 → 1 candidate {c9}.
-     * bisect_good=-1 is the faithful git passthrough (not clamped to 0).
-     */
-    it('Then all=1 row returns remainingIfGood=-1 matching bisect_good=-1', async () => {
-      // Arrange
-      const good = commits[8]!;
-      const bad = commits[9]!;
-      const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
-      const expected = parseBisectVars(gitOut);
+    describe('When narrowed to a single candidate (good=c8, bad=c9)', () => {
+      /**
+       * all=1 edge case: good=c8, bad=c9 → 1 candidate {c9}.
+       * bisect_good=-1 is the faithful git passthrough (not clamped to 0).
+       */
+      it('Then all=1 row returns remainingIfGood=-1 matching bisect_good=-1', async () => {
+        // Arrange
+        const good = commits[8]!;
+        const bad = commits[9]!;
+        const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
+        const expected = parseBisectVars(gitOut);
 
-      // Act
-      const result = await bisectMidpoint(ctx, [good as never], bad as never);
+        // Act
+        const result = await bisectMidpoint(ctx, [good as never], bad as never);
 
-      // Assert — bisect_good=-1 is the faithful passthrough for all=1
-      expect(result?.nextCommit).toBe(expected.rev);
-      expect(result?.candidateCount).toBe(1);
-      expect(result?.remainingIfGood).toBe(-1);
-      expect(result?.remainingIfGood).toBe(expected.good);
-      expect(result?.remainingIfBad).toBe(0);
-      expect(result?.remainingSteps).toBe(0);
+        // Assert — bisect_good=-1 is the faithful passthrough for all=1
+        expect(result?.nextCommit).toBe(expected.rev);
+        expect(result?.candidateCount).toBe(1);
+        expect(result?.remainingIfGood).toBe(-1);
+        expect(result?.remainingIfGood).toBe(expected.good);
+        expect(result?.remainingIfBad).toBe(0);
+        expect(result?.remainingSteps).toBe(0);
+      });
     });
 
-    /**
-     * good=[] empty-good case: candidates = full history reachable from bad.
-     * git rev-list --bisect <bad> accepts no ^good and returns the midpoint.
-     */
-    it('Then good=[] uses all bad-reachable commits as candidates', async () => {
-      // Arrange — all 10 commits are candidates (c0..c9), bad=c9
-      const bad = commits[9]!;
-      const gitWinner = git(dir, 'rev-list', '--bisect', bad).trim();
+    describe('When no good commits are given', () => {
+      /**
+       * good=[] empty-good case: candidates = full history reachable from bad.
+       * git rev-list --bisect <bad> accepts no ^good and returns the midpoint.
+       */
+      it('Then good=[] uses all bad-reachable commits as candidates', async () => {
+        // Arrange — all 10 commits are candidates (c0..c9), bad=c9
+        const bad = commits[9]!;
+        const gitWinner = git(dir, 'rev-list', '--bisect', bad).trim();
 
-      // Act
-      const result = await bisectMidpoint(ctx, [], bad as never);
+        // Act
+        const result = await bisectMidpoint(ctx, [], bad as never);
 
-      // Assert — nextCommit matches git rev-list --bisect with no exclusions
-      expect(result).not.toBeUndefined();
-      expect(result?.nextCommit).toBe(gitWinner);
-      expect(result?.candidateCount).toBe(10);
+        // Assert — nextCommit matches git rev-list --bisect with no exclusions
+        expect(result).not.toBeUndefined();
+        expect(result?.nextCommit).toBe(gitWinner);
+        expect(result?.candidateCount).toBe(10);
+      });
     });
   });
 
@@ -280,46 +284,50 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
       await Promise.all(fixtures.map((f) => rm(f.dir, { recursive: true, force: true })));
     });
 
-    it.each(HISTORY_FIXTURE_ROWS)(
-      'Then tsgit nextCommit matches git rev-list --bisect winner for "$label"',
-      async ({ index }) => {
-        // Arrange
-        const { dir, ctx, good, bad } = fixtures[index]!;
-        const gitWinner = git(dir, 'rev-list', '--bisect', bad, `^${good}`).trim();
+    describe('When bisectMidpoint picks the next commit', () => {
+      it.each(HISTORY_FIXTURE_ROWS)(
+        'Then tsgit nextCommit matches git rev-list --bisect winner for "$label"',
+        async ({ index }) => {
+          // Arrange
+          const { dir, ctx, good, bad } = fixtures[index]!;
+          const gitWinner = git(dir, 'rev-list', '--bisect', bad, `^${good}`).trim();
 
-        // Act
-        const result = await bisectMidpoint(ctx, [good as never], bad as never);
+          // Act
+          const result = await bisectMidpoint(ctx, [good as never], bad as never);
 
-        // Assert
-        expect(result).not.toBeUndefined();
-        expect(result?.nextCommit).toBe(gitWinner);
-      },
-    );
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.nextCommit).toBe(gitWinner);
+        },
+      );
+    });
 
-    it.each(HISTORY_FIXTURE_ROWS)(
-      'Then tsgit structured counts match git rev-list --bisect-vars for "$label"',
-      async ({ index }) => {
-        // Arrange
-        const { dir, ctx, good, bad } = fixtures[index]!;
-        const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
-        const expected = parseBisectVars(gitOut);
+    describe('When bisectMidpoint reports its structured counts', () => {
+      it.each(HISTORY_FIXTURE_ROWS)(
+        'Then tsgit structured counts match git rev-list --bisect-vars for "$label"',
+        async ({ index }) => {
+          // Arrange
+          const { dir, ctx, good, bad } = fixtures[index]!;
+          const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
+          const expected = parseBisectVars(gitOut);
 
-        // Act
-        const result = await bisectMidpoint(ctx, [good as never], bad as never);
+          // Act
+          const result = await bisectMidpoint(ctx, [good as never], bad as never);
 
-        // Assert
-        expect(result?.candidateCount).toBe(expected.all);
-        expect(result?.remainingIfGood).toBe(expected.good);
-        expect(result?.remainingIfBad).toBe(expected.bad);
-        expect(result?.remainingSteps).toBe(expected.steps);
-      },
-    );
+          // Assert
+          expect(result?.candidateCount).toBe(expected.all);
+          expect(result?.remainingIfGood).toBe(expected.good);
+          expect(result?.remainingIfBad).toBe(expected.bad);
+          expect(result?.remainingSteps).toBe(expected.steps);
+        },
+      );
+    });
   });
 
   /**
    * Empty candidate set guard: good is a descendant of bad → no candidates.
    */
-  describe('Given good is a descendant of bad (inverted range)', () => {
+  describe('Given good is a descendant of bad (inverted range), When bisectMidpoint runs', () => {
     let dir = '';
     let ctx: Context;
 

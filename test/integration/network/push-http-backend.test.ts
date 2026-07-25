@@ -549,49 +549,51 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
     },
   ];
 
-  it.each(REMOTE_RESOLUTION_MATRIX)(
-    'Given $label, When push runs with no explicit remote, Then it resolves the same remote real git does',
-    async ({ candidates, realConfig, tsgitConfigBlock, expectedRemote }) => {
-      // Arrange — real-git twin: add every candidate remote, then apply the
-      // row's precedence config on top.
-      const gitDir = await initGitRepo();
-      for (const name of candidates) {
-        git(gitDir, 'remote', 'add', name, bareUrl(name, 'real'));
-      }
-      for (const [key, value] of realConfig) {
-        git(gitDir, 'config', key, value);
-      }
-      await gitAsync(gitDir, 'push', '-q');
-      const gitChose = resolvedBareReal(candidates);
+  describe('Given a repo with matrix-defined remotes and precedence config, When push runs with no explicit remote', () => {
+    it.each(REMOTE_RESOLUTION_MATRIX)(
+      'Then $label resolves the same remote real git does',
+      async ({ candidates, realConfig, tsgitConfigBlock, expectedRemote }) => {
+        // Arrange — real-git twin: add every candidate remote, then apply the
+        // row's precedence config on top.
+        const gitDir = await initGitRepo();
+        for (const name of candidates) {
+          git(gitDir, 'remote', 'add', name, bareUrl(name, 'real'));
+        }
+        for (const [key, value] of realConfig) {
+          git(gitDir, 'config', key, value);
+        }
+        await gitAsync(gitDir, 'push', '-q');
+        const gitChose = resolvedBareReal(candidates);
 
-      // Arrange — tsgit twin: identical remotes + precedence config.
-      const { repo, dir } = await initTsgitRepo();
-      const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-      const remoteBlocks = candidates
-        .map((name) => `[remote "${name}"]\n  url = ${bareUrl(name, 'ts')}`)
-        .join('\n');
-      await appendConfig(repo, [remoteBlocks, tsgitConfigBlock].filter(Boolean).join('\n'));
+        // Arrange — tsgit twin: identical remotes + precedence config.
+        const { repo, dir } = await initTsgitRepo();
+        const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
+        const remoteBlocks = candidates
+          .map((name) => `[remote "${name}"]\n  url = ${bareUrl(name, 'ts')}`)
+          .join('\n');
+        await appendConfig(repo, [remoteBlocks, tsgitConfigBlock].filter(Boolean).join('\n'));
 
-      // Act
-      const result = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
+        // Act
+        const result = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
 
-      // Assert — tsgit resolves the exact remote real git resolved to, and
-      // the winning bare received the push.
-      expect(result.remote).toBe(gitChose);
-      expect(result.remote).toBe(expectedRemote);
-      expect(result.pushedRefs[0]).toMatchObject({ status: 'ok' });
-      const bareTip = runGit([
-        '--git-dir',
-        path.join(projectRoot, `${result.remote}-ts.git`),
-        'rev-parse',
-        'main',
-      ]).trim();
-      expect(bareTip).toBe(tsgitOid);
+        // Assert — tsgit resolves the exact remote real git resolved to, and
+        // the winning bare received the push.
+        expect(result.remote).toBe(gitChose);
+        expect(result.remote).toBe(expectedRemote);
+        expect(result.pushedRefs[0]).toMatchObject({ status: 'ok' });
+        const bareTip = runGit([
+          '--git-dir',
+          path.join(projectRoot, `${result.remote}-ts.git`),
+          'rev-parse',
+          'main',
+        ]).trim();
+        expect(bareTip).toBe(tsgitOid);
 
-      await repo.dispose();
-    },
-    30_000,
-  );
+        await repo.dispose();
+      },
+      30_000,
+    );
+  });
 
   const REFSPEC_PUSH_MATRIX: ReadonlyArray<{
     readonly label: string;
@@ -689,57 +691,59 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
     },
   ];
 
-  it.each(REFSPEC_PUSH_MATRIX)(
-    'Given $label, When push runs with no explicit refspec, Then it pushes the current branch to the configured ref, matching real git',
-    async ({
-      remotes,
-      unsetPushDefault,
-      realConfig,
-      tsgitConfigBlock,
-      expectedRemote,
-      expectedRef,
-    }) => {
-      // Arrange — real-git twin: apply the row's push.default/branch config,
-      // then push — a successful (non-throwing) push proves real git does
-      // NOT refuse this configuration.
-      const gitDir = await initGitRepo();
-      if (unsetPushDefault) {
-        git(gitDir, 'config', '--unset', 'push.default');
-      }
-      for (const name of remotes) {
-        git(gitDir, 'remote', 'add', name, bareUrl(name, 'real'));
-      }
-      for (const [key, value] of realConfig) {
-        git(gitDir, 'config', key, value);
-      }
-      await gitAsync(gitDir, 'push', '-q');
-
-      // Arrange — tsgit twin: identical remotes + config.
-      const { repo, dir } = await initTsgitRepo();
-      const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
-      const remoteBlocks = remotes
-        .map((name) => `[remote "${name}"]\n  url = ${bareUrl(name, 'ts')}`)
-        .join('\n');
-      await appendConfig(repo, [remoteBlocks, tsgitConfigBlock].filter(Boolean).join('\n'));
-
-      // Act
-      const result = await repo.push({});
-
-      // Assert — tsgit pushes to the configured ref on the configured
-      // remote, matching real git's own non-refusal above.
-      expect(result.remote).toBe(expectedRemote);
-      const bareTip = runGit([
-        '--git-dir',
-        path.join(projectRoot, `${result.remote}-ts.git`),
-        'rev-parse',
+  describe('Given a repo with matrix-defined push-default and branch config, When push runs with no explicit refspec', () => {
+    it.each(REFSPEC_PUSH_MATRIX)(
+      'Then $label pushes the current branch to the configured ref, matching real git',
+      async ({
+        remotes,
+        unsetPushDefault,
+        realConfig,
+        tsgitConfigBlock,
+        expectedRemote,
         expectedRef,
-      ]).trim();
-      expect(bareTip).toBe(tsgitOid);
+      }) => {
+        // Arrange — real-git twin: apply the row's push.default/branch config,
+        // then push — a successful (non-throwing) push proves real git does
+        // NOT refuse this configuration.
+        const gitDir = await initGitRepo();
+        if (unsetPushDefault) {
+          git(gitDir, 'config', '--unset', 'push.default');
+        }
+        for (const name of remotes) {
+          git(gitDir, 'remote', 'add', name, bareUrl(name, 'real'));
+        }
+        for (const [key, value] of realConfig) {
+          git(gitDir, 'config', key, value);
+        }
+        await gitAsync(gitDir, 'push', '-q');
 
-      await repo.dispose();
-    },
-    30_000,
-  );
+        // Arrange — tsgit twin: identical remotes + config.
+        const { repo, dir } = await initTsgitRepo();
+        const tsgitOid = git(dir, 'rev-parse', 'HEAD').trim();
+        const remoteBlocks = remotes
+          .map((name) => `[remote "${name}"]\n  url = ${bareUrl(name, 'ts')}`)
+          .join('\n');
+        await appendConfig(repo, [remoteBlocks, tsgitConfigBlock].filter(Boolean).join('\n'));
+
+        // Act
+        const result = await repo.push({});
+
+        // Assert — tsgit pushes to the configured ref on the configured
+        // remote, matching real git's own non-refusal above.
+        expect(result.remote).toBe(expectedRemote);
+        const bareTip = runGit([
+          '--git-dir',
+          path.join(projectRoot, `${result.remote}-ts.git`),
+          'rev-parse',
+          expectedRef,
+        ]).trim();
+        expect(bareTip).toBe(tsgitOid);
+
+        await repo.dispose();
+      },
+      30_000,
+    );
+  });
 
   describe('Given push.default=current and a detached HEAD, When push runs with no explicit refspec', () => {
     it('Then both real git and tsgit refuse before contacting the remote', async () => {

@@ -411,33 +411,37 @@ const STATUS_PORCELAIN_V2_MATRIX: ReadonlyArray<StatusScenario> = [
 ];
 
 describe.skipIf(!GIT_AVAILABLE)('status interop — staged column', () => {
-  it.each(STATUS_PORCELAIN_V1_MATRIX)(
-    'Then $label reconstructs git status --porcelain',
-    async ({ slug, arrange, expectedClean }) => {
-      // Arrange
-      const { dir, ctx } = await arrange(slug);
+  describe('Given the staged-column status matrix, When status runs for each scenario', () => {
+    it.each(STATUS_PORCELAIN_V1_MATRIX)(
+      'Then $label reconstructs git status --porcelain',
+      async ({ slug, arrange, expectedClean }) => {
+        // Arrange
+        const { dir, ctx } = await arrange(slug);
 
-      // Act
-      const result = await statusCmd(ctx);
+        // Act
+        const result = await statusCmd(ctx);
 
-      // Assert
-      if (expectedClean !== undefined) expect(result.clean).toBe(expectedClean);
-      expect(reconstruct(result)).toBe(gitPorcelain(dir));
-    },
-    SETUP_TIMEOUT,
-  );
+        // Assert
+        if (expectedClean !== undefined) expect(result.clean).toBe(expectedClean);
+        expect(reconstruct(result)).toBe(gitPorcelain(dir));
+      },
+      SETUP_TIMEOUT,
+    );
+  });
 });
 
 describe.skipIf(!GIT_AVAILABLE)('status interop — porcelain v2', () => {
-  it.each(STATUS_PORCELAIN_V2_MATRIX)(
-    'Then $label reconstructs git status --porcelain=v2',
-    async ({ slug, arrange }) => {
-      // Arrange
-      const { dir, ctx } = await arrange(slug);
+  describe('Given the porcelain-v2 status matrix, When status runs for each scenario', () => {
+    it.each(STATUS_PORCELAIN_V2_MATRIX)(
+      'Then $label reconstructs git status --porcelain=v2',
+      async ({ slug, arrange }) => {
+        // Arrange
+        const { dir, ctx } = await arrange(slug);
 
-      // Act / Assert
-      expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
-    },
-    SETUP_TIMEOUT,
-  );
+        // Act / Assert
+        expect(reconstructV2(await statusCmd(ctx))).toBe(gitPorcelainV2(dir));
+      },
+      SETUP_TIMEOUT,
+    );
+  });
 });

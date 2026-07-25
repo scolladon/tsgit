@@ -333,4 +333,23 @@ describe('scanItBlocks', () => {
     expect(sut).toHaveLength(1);
     expect(sut[0]?.title).toBe('Given x, When y, Then z');
   });
+
+  it("Given a nested call wrapping a regex literal with an embedded quote inside the it() body, When scanned, Then the block still closes (the quote is not a string delimiter)", () => {
+    // Arrange — kills the regression where a `'`/`"`/`` ` `` inside a
+    // /regex/ literal was misread as a string delimiter. The desync eats
+    // every following character (including the real closing parens) as
+    // string content, so findMatchingClose never sees depth return to 0 and
+    // returns -1 — silently dropping the whole it() block (this is the real
+    // config-interop.test.ts shape: a `/name '([^']+)'/` style regex nested
+    // one call deeper than the it() callback itself).
+    const source =
+      "it('Given x, When y, Then z', () => { helper(() => { const m = /name '([^']+)'/.exec(s); }); });";
+
+    // Act
+    const sut = scanItBlocks(source);
+
+    // Assert
+    expect(sut).toHaveLength(1);
+    expect(sut[0]?.title).toBe('Given x, When y, Then z');
+  });
 });

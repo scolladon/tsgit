@@ -51,11 +51,11 @@
       "threshold": 0
     },
     "underAssertedUnit": {
-      "tiers": ["unit"],
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "minAssertionsPerTest": 1
     },
     "gwtTitle": {
-      "tiers": ["unit"],
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "describeGiven": "^Given .+$",
       "describeWhen": "^When .+$",
       "describeCombined": "^Given .+?, When .+$",
@@ -63,19 +63,19 @@
       "legacyItGwt": "^Given .+?, When .+?, Then .+$"
     },
     "aaaBody": {
-      "tiers": ["unit"],
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "required": ["Arrange", "Assert"]
     },
     "sutNaming": {
-      "tiers": ["unit"],
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "banned": ["subject", "objectUnderTest", "systemUnderTest", "cut"]
     },
     "bareClassToThrow": {
-      "tiers": ["unit"],
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "regex": "\\.toThrow(?:Error)?\\s*\\(\\s*([A-Z]\\w*)\\s*\\)"
     },
     "emptyAaaSection": {
-      "tiers": ["unit"]
+      "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"]
     },
     "sutBindsResult": {
       "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
@@ -189,7 +189,7 @@
     "bareClassToThrow": true,
     "emptyAaaSection": true,
     "integrationProof": false,
-    "sutBindsResult": false
+    "sutBindsResult": true
   },
   "excludePaths": [
     "tooling/test/unit/test-pyramid/detect-*.test.ts",
@@ -200,6 +200,7 @@
     "tooling/test/unit/test-pyramid/scan-describe-blocks.test.ts",
     "tooling/test/integration/audit-test-pyramid.test.ts",
     "tooling/test/integration/audit-browser-surface.test.ts",
+    "tooling/test/integration/audit-write-surfaces.test.ts",
     "tooling/test/integration/check-mutation-budgets.test.ts",
     "tooling/test/integration/compute-mutation-scope.test.ts",
     "tooling/test/integration/has-code-changes.test.ts"

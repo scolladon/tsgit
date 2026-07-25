@@ -76,15 +76,17 @@ describe('NodeHookRunner (POSIX real-process smoke)', () => {
     },
   ];
 
-  it.each(skippedCases)('Given $label, When run, Then it resolves skipped', async ({ setup }) => {
-    // Arrange
-    await setup();
+  describe('Given a hook that cannot run (missing file or non-executable), When run', () => {
+    it.each(skippedCases)('Then $label resolves skipped', async ({ setup }) => {
+      // Arrange
+      await setup();
 
-    // Act
-    const result = await new NodeHookRunner().run(request('pre-commit'));
+      // Act
+      const result = await new NodeHookRunner().run(request('pre-commit'));
 
-    // Assert
-    expect(result).toEqual({ kind: 'skipped' });
+      // Assert
+      expect(result).toEqual({ kind: 'skipped' });
+    });
   });
 
   describe('Given an executable hook that exits 0, When run', () => {

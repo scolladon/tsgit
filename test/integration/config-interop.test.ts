@@ -1723,11 +1723,10 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
   describe('Given twin repos where git remote add writes url then fetch', () => {
     describe('When git and tsgit each add a remote named "o"', () => {
       it('Then the [remote "o"] section bytes are identical — url appears before fetch', async () => {
-        // Arrange — remote add flow: canonical git writes url then fetch refspec;
-        // tsgit must emit the same order (pins the end-of-section insertion fix).
-        // Both repos already have a clean [core] preamble from initBothRepos.
-
-        // Act — canonical git
+        // Arrange & Act — canonical git: remote add flow writes url then fetch
+        // refspec; tsgit must emit the same order (pins the end-of-section
+        // insertion fix). Both repos already have a clean [core] preamble from
+        // initBothRepos.
         const gitResult = tryRunGit(['-C', pair.peer, 'remote', 'add', 'o', 'https://e.com/r.git']);
         expect(gitResult.ok, `git remote add failed: ${gitResult.stderr}`).toBe(true);
 

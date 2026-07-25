@@ -655,7 +655,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 6: verify full-pack-parse detects a corrupt entry
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given a bundle with a corrupt pack entry byte and a recomputed (valid) SHA-1 trailer', () => {
+  describe('Given a bundle with a corrupt pack entry byte and a recomputed (valid) SHA-1 trailer, When bundleVerify is called', () => {
     it('Then bundleVerify throws DECOMPRESS_FAILED (pack-entry inflate failure)', async () => {
       // Arrange — valid bundle, then flip one byte in pack data and fix the trailer
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -836,7 +836,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     },
   ];
 
-  describe('Given a bad-header path passed to bundleVerify (directory or plain-text file)', () => {
+  describe('Given a bad-header path passed to bundleVerify (directory or plain-text file), When bundleVerify is called', () => {
     it.each(BAD_HEADER_MATRIX)(
       'Then BUNDLE_BAD_HEADER is thrown, reconstructing git "does not look like" error for $label',
       async ({ file, setup }) => {
@@ -899,7 +899,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 8: listHeads exact ref-name prefix filtering matches git
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given bundleListHeads with no filter', () => {
+  describe('Given bundleListHeads with no filter, When bundleListHeads is called', () => {
     it('Then all refs from the bundle header are returned in order', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -917,7 +917,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     });
   });
 
-  describe('Given bundleListHeads with exact full-name filter ["refs/tags/v1.0"]', () => {
+  describe('Given bundleListHeads with exact full-name filter ["refs/tags/v1.0"], When bundleListHeads is called', () => {
     it('Then only refs/tags/v1.0 is returned (exact-match)', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -937,7 +937,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     });
   });
 
-  describe('Given bundleListHeads with near-miss partial names ["v1.0", "tags/v1.0", "main"]', () => {
+  describe('Given bundleListHeads with near-miss partial names ["v1.0", "tags/v1.0", "main"], When bundleListHeads is called', () => {
     it('Then no refs are returned (partial names do not match full ref names, matching git)', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -970,7 +970,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 9: hash-algorithm field
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given bundleVerify on a v2 git bundle', () => {
+  describe('Given bundleVerify on a v2 git bundle, When the hash algorithm field is read', () => {
     it('Then hashAlgorithm is "sha1", reconstructing "The bundle uses this hash algorithm: sha1"', async () => {
       // Arrange
       const ctx = createNodeContext({ workDir: pair.peer });
@@ -998,7 +998,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Pin 10: tsgit verifies git-created incremental (thin) bundle
   // ─────────────────────────────────────────────────────────────────────
 
-  describe('Given a git-created incremental bundle (thin pack) with prerequisites present in the verifying repo', () => {
+  describe('Given a git-created incremental bundle (thin pack) with prerequisites present in the verifying repo, When bundleVerify is called', () => {
     it('Then tsgit bundleVerify succeeds with prerequisitesPresent:true and git also accepts the bundle', async () => {
       // Arrange — git creates an incremental bundle; its pack is thin (delta bases are
       // prerequisite objects outside the pack body). Verify against the full repo where
@@ -1028,7 +1028,7 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     });
   });
 
-  describe('Given a git-created incremental bundle (thin pack) with prerequisites absent from the verifying repo', () => {
+  describe('Given a git-created incremental bundle (thin pack) with prerequisites absent from the verifying repo, When bundleVerify is called', () => {
     it('Then tsgit bundleVerify reports prerequisitesPresent:false with missing oids and git also refuses', async () => {
       // Arrange — create the incremental bundle in the full repo, then copy it
       // to an initialised-but-empty scratch repo so both tsgit and git can run

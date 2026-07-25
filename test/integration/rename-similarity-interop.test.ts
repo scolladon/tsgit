@@ -1641,12 +1641,11 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  it.each([
-    { label: 'matrix #B3 — explicit default gate (merge:36000)', merge: 36000 },
-    { label: 'matrix #B4b — merge:0 maps to DEFAULT_MERGE_SCORE', merge: 0 },
-  ])(
-    'Given a mildly-dissimilar rewrite, When tsgit detects breaks with $label, Then re-merged to plain M (both tsgit and git)',
-    async ({ merge }) => {
+  describe('Given a mildly-dissimilar rewrite, When tsgit detects breaks with a merge-score gate variant', () => {
+    it.each([
+      { label: 'matrix #B3 — explicit default gate (merge:36000)', merge: 36000 },
+      { label: 'matrix #B4b — merge:0 maps to DEFAULT_MERGE_SCORE', merge: 0 },
+    ])('Then $label re-merges to plain M (both tsgit and git)', async ({ merge }) => {
       // Arrange — 20 lines old (all shared prefix), 10 shared in new → ~55% dissimilarity in tsgit,
       // ~50% in git — both < 60% default merge gate → re-merged in both.
       const pair = await makePeerPair('break-b3-b4b');
@@ -1703,8 +1702,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       } finally {
         await pair.dispose();
       }
-    },
-  );
+    });
+  });
 
   describe('Given a 60%-dissimilar rewrite (matrix #B5), When tsgit uses default -B', () => {
     it('Then M060 matches git byte-for-byte', async () => {

@@ -176,7 +176,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When the first note is added', () => {
       it('Then the blob OID matches git', () => {
-        // Act
+        // Arrange & Act
         // git stores one overwrite later; look up blob from the first notes commit tree
         const firstTreeEntries = runGit(['-C', pair.peer, 'ls-tree', `${gitFirstCommit}^{tree}`]);
         const blobOid = firstTreeEntries
@@ -189,7 +189,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the first notes commit tree OID matches git', () => {
-        // Act
+        // Arrange & Act
         const peerTree = runGit(['-C', pair.peer, 'rev-parse', `${gitFirstCommit}^{tree}`]).trim();
         const oursTree = runGit([
           '-C',
@@ -208,7 +208,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then cat-file -p of the notes commit matches git byte-for-byte', () => {
-        // Act
+        // Arrange & Act
         const peerOut = runGit(['-C', pair.peer, 'cat-file', '-p', gitFirstCommit]);
         const oursOut = runGit(['-C', pair.ours, 'cat-file', '-p', addResult.notesCommit]);
 
@@ -217,7 +217,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the reflog subject is the canonical notes-add message', () => {
-        // Act
+        // Arrange & Act
         const peerSubject = topReflogSubject(pair.peer, DEFAULT_NOTES_REF);
         // tsgit reflog after force overwrites; check first entry via gitFirstCommit
         const oursSubjectFirst =
@@ -239,7 +239,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then cat-file -p of the force notes commit matches git', () => {
-        // Act
+        // Arrange & Act
         const peerForce = notesCommitOid(pair.peer);
         const peerOut = runGit(['-C', pair.peer, 'cat-file', '-p', peerForce]);
         const oursOut = runGit(['-C', pair.ours, 'cat-file', '-p', forceResult.notesCommit]);
@@ -249,7 +249,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the force commit message header in cat-file contains the add message', () => {
-        // Act
+        // Arrange & Act
         const out = runGit(['-C', pair.ours, 'cat-file', '-p', forceResult.notesCommit]);
 
         // Assert
@@ -259,7 +259,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When notesList is called', () => {
       it('Then reconstructed output matches git notes list stdout', () => {
-        // Act
+        // Arrange & Act
         const ctx = createNodeContext({ workDir: pair.ours });
         return notesList(ctx).then((entries) => {
           const reconstructed = reconstructNotesList(entries);
@@ -273,7 +273,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When notesRead is called', () => {
       it('Then content matches git notes show stdout', () => {
-        // Act
+        // Arrange & Act
         const ctx = createNodeContext({ workDir: pair.ours });
         return notesRead(ctx, { object: annotatedOid }).then((result) => {
           // Assert
@@ -379,7 +379,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the notes tree is flat (no subtrees)', () => {
-        // Act
+        // Arrange & Act
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfter5]);
         const hasSubtrees = ls.split('\n').some((l) => l.startsWith('040000'));
 
@@ -476,7 +476,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the notes tree is fanned (has subtree entries)', () => {
-        // Act
+        // Arrange & Act
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfterFlip]);
         const hasSubtrees = ls.split('\n').some((l) => l.startsWith('040000'));
 
@@ -492,7 +492,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the tree remains fanned after partial removal (stickiness)', () => {
-        // Act
+        // Arrange & Act
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfterRemove]);
         const hasSubtrees = ls.split('\n').some((l) => l.startsWith('040000'));
 
@@ -503,7 +503,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When notesList is called on the fanned ref', () => {
       it('Then it enumerates every note, matching git notes list', async () => {
-        // Act
+        // Arrange & Act
         const ctx = createNodeContext({ workDir: pair.ours });
         const entries = await notesList(ctx);
         const reconstructed = reconstructNotesList(entries);
@@ -573,7 +573,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the notes ref is preserved (not deleted)', () => {
-        // Act
+        // Arrange & Act
         const peerRef = tryRunGit(['-C', pair.peer, 'rev-parse', DEFAULT_NOTES_REF]);
         const oursRef = tryRunGit(['-C', pair.ours, 'rev-parse', DEFAULT_NOTES_REF]);
 
@@ -583,7 +583,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the remove reflog subject matches git', () => {
-        // Act
+        // Arrange & Act
         const peerSubject = topReflogSubject(pair.peer, DEFAULT_NOTES_REF);
         const oursSubject = topReflogSubject(pair.ours, DEFAULT_NOTES_REF);
 
@@ -682,7 +682,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
       });
 
       it('Then the custom-entry is present in the notes tree', () => {
-        // Act — peer side
+        // Arrange & Act — peer side
         const ls = runGit(['-C', pair.peer, 'ls-tree', peerTreeAfterSecondAdd]);
 
         // Assert — peer side
@@ -937,7 +937,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When GIT_NOTES_REF names a ref outside refs/notes/', () => {
       it('Then both git and tsgit refuse', async () => {
-        // Act — git
+        // Arrange & Act — git
         const gitResult = tryRunGit(['-C', pair.peer, 'notes', 'add', '-m', 'x', annotatedOid], {
           env: { ...pinnedEnv(), GIT_NOTES_REF: 'build' },
         });
@@ -970,7 +970,7 @@ describe.skipIf(!GIT_AVAILABLE)('notes interop', () => {
 
     describe('When core.notesRef names a ref outside refs/notes/', () => {
       it('Then both git and tsgit refuse', async () => {
-        // Act — git
+        // Arrange & Act — git
         const gitResult = tryRunGit(
           ['-C', pair.peer, '-c', 'core.notesRef=build', 'notes', 'add', '-m', 'x', annotatedOid],
           { env: pinnedEnv() },

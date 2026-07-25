@@ -29,67 +29,74 @@ const author: AuthorIdentity = {
 };
 
 describe('integration — diff patch-text reconstruction', () => {
-  it('Given two commits modifying a file, When the patch is reconstructed, Then text matches the canonical unified-diff grammar', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await init(ctx);
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/lines.txt`, '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n');
-    await add(ctx, ['lines.txt']);
-    const c1 = await commit(ctx, { message: 'first', author });
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/lines.txt`, '1\n2\n3\n4\nFOUR\n6\n7\n8\n9\n10\n');
-    await add(ctx, ['lines.txt']);
-    const c2 = await commit(ctx, { message: 'second', author });
+  describe('Given two commits modifying a file, When the patch is reconstructed', () => {
+    it('Then text matches the canonical unified-diff grammar', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/lines.txt`, '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n');
+      await add(ctx, ['lines.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.workDir}/lines.txt`,
+        '1\n2\n3\n4\nFOUR\n6\n7\n8\n9\n10\n',
+      );
+      await add(ctx, ['lines.txt']);
+      const c2 = await commit(ctx, { message: 'second', author });
 
-    // Act
-    const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-    const result = await reconstructPatch(ctx, treeDiff);
+      // Act
+      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+      const result = await reconstructPatch(ctx, treeDiff);
 
-    // Assert — golden text frozen against the canonical grammar.
-    expect(result).toMatch(/^diff --git a\/lines\.txt b\/lines\.txt\n/);
-    expect(result).toContain('@@ -2,7 +2,7 @@');
-    expect(result).toContain('-5\n');
-    expect(result).toContain('+FOUR\n');
-    // Three context lines on each side of the change.
-    expect(result).toContain(' 2\n');
-    expect(result).toContain(' 3\n');
-    expect(result).toContain(' 4\n');
-    expect(result).toContain(' 6\n');
-    expect(result).toContain(' 7\n');
-    expect(result).toContain(' 8\n');
-    expect(result.endsWith('\n')).toBe(true);
+      // Assert — golden text frozen against the canonical grammar.
+      expect(result).toMatch(/^diff --git a\/lines\.txt b\/lines\.txt\n/);
+      expect(result).toContain('@@ -2,7 +2,7 @@');
+      expect(result).toContain('-5\n');
+      expect(result).toContain('+FOUR\n');
+      // Three context lines on each side of the change.
+      expect(result).toContain(' 2\n');
+      expect(result).toContain(' 3\n');
+      expect(result).toContain(' 4\n');
+      expect(result).toContain(' 6\n');
+      expect(result).toContain(' 7\n');
+      expect(result).toContain(' 8\n');
+      expect(result.endsWith('\n')).toBe(true);
+    });
   });
 
-  it('Given an add then a rename across two commits with detectRenames, When the patch is reconstructed, Then the rename block + a normal add block both appear', async () => {
-    // Arrange
-    const ctx = createMemoryContext();
-    await init(ctx);
-    const content = 'unique content to anchor rename detection\nline two\n';
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src.txt`, content);
-    await add(ctx, ['src.txt']);
-    const c1 = await commit(ctx, { message: 'first', author });
-    await rm(ctx, ['src.txt']);
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dst.txt`, content);
-    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/new.txt`, 'fresh\n');
-    await add(ctx, ['dst.txt', 'new.txt']);
-    const c2 = await commit(ctx, { message: 'rename and add', author });
+  describe('Given an add then a rename across two commits with detectRenames, When the patch is reconstructed', () => {
+    it('Then the rename block + a normal add block both appear', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const content = 'unique content to anchor rename detection\nline two\n';
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/src.txt`, content);
+      await add(ctx, ['src.txt']);
+      const c1 = await commit(ctx, { message: 'first', author });
+      await rm(ctx, ['src.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dst.txt`, content);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/new.txt`, 'fresh\n');
+      await add(ctx, ['dst.txt', 'new.txt']);
+      const c2 = await commit(ctx, { message: 'rename and add', author });
 
-    // Act
-    const treeDiff = await diff(ctx, {
-      from: c1.id,
-      to: c2.id,
-      detectRenames: true,
-      recursive: true,
+      // Act
+      const treeDiff = await diff(ctx, {
+        from: c1.id,
+        to: c2.id,
+        detectRenames: true,
+        recursive: true,
+      });
+      const result = await reconstructPatch(ctx, treeDiff);
+
+      // Assert — rename block (no hunks) + the brand-new file's add block both
+      // appear in the canonical text.
+      expect(result).toContain('diff --git a/src.txt b/dst.txt');
+      expect(result).toContain('similarity index 100%');
+      expect(result).toContain('rename from src.txt');
+      expect(result).toContain('rename to dst.txt');
+      expect(result).toContain('diff --git a/new.txt b/new.txt');
+      expect(result).toContain('new file mode 100644');
+      expect(result).toContain('+fresh');
     });
-    const result = await reconstructPatch(ctx, treeDiff);
-
-    // Assert — rename block (no hunks) + the brand-new file's add block both
-    // appear in the canonical text.
-    expect(result).toContain('diff --git a/src.txt b/dst.txt');
-    expect(result).toContain('similarity index 100%');
-    expect(result).toContain('rename from src.txt');
-    expect(result).toContain('rename to dst.txt');
-    expect(result).toContain('diff --git a/new.txt b/new.txt');
-    expect(result).toContain('new file mode 100644');
-    expect(result).toContain('+fresh');
   });
 });

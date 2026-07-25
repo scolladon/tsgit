@@ -61,82 +61,86 @@ const gitDeterministicEnv = (): NodeJS.ProcessEnv => ({
 });
 
 describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
-  it('Given a single-line modify, When tsgit emits the patch, Then it matches `git diff` byte-for-byte AND the frozen golden', async () => {
-    // Arrange — build the same history in a tmp `git` repo and in tsgit.
-    const pair = await makePeerPair('diff-patch-modify');
-    try {
-      runGit(['init', '-q', '-b', 'main', pair.peer]);
-      await writeFsFile(pair.peer, 'a.txt', 'old\n');
-      runGit(['-C', pair.peer, 'add', 'a.txt']);
-      runGit(['-C', pair.peer, 'commit', '-q', '-m', 'first'], { env: gitDeterministicEnv() });
-      await writeFsFile(pair.peer, 'a.txt', 'new\n');
-      runGit(['-C', pair.peer, 'add', 'a.txt']);
-      runGit(['-C', pair.peer, 'commit', '-q', '-m', 'second'], { env: gitDeterministicEnv() });
-      const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
-      const golden = await loadGolden('modify-single-line');
+  describe('Given a single-line modify, When tsgit emits the patch', () => {
+    it('Then it matches `git diff` byte-for-byte AND the frozen golden', async () => {
+      // Arrange — build the same history in a tmp `git` repo and in tsgit.
+      const pair = await makePeerPair('diff-patch-modify');
+      try {
+        runGit(['init', '-q', '-b', 'main', pair.peer]);
+        await writeFsFile(pair.peer, 'a.txt', 'old\n');
+        runGit(['-C', pair.peer, 'add', 'a.txt']);
+        runGit(['-C', pair.peer, 'commit', '-q', '-m', 'first'], { env: gitDeterministicEnv() });
+        await writeFsFile(pair.peer, 'a.txt', 'new\n');
+        runGit(['-C', pair.peer, 'add', 'a.txt']);
+        runGit(['-C', pair.peer, 'commit', '-q', '-m', 'second'], { env: gitDeterministicEnv() });
+        const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
+        const golden = await loadGolden('modify-single-line');
 
-      const ctx = createMemoryContext();
-      await init(ctx);
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'old\n');
-      await add(ctx, ['a.txt']);
-      const c1 = await commit(ctx, { message: 'first', author });
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'new\n');
-      await add(ctx, ['a.txt']);
-      const c2 = await commit(ctx, { message: 'second', author });
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'old\n');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'new\n');
+        await add(ctx, ['a.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
 
-      // Act
-      const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-      const result = await reconstructPatch(ctx, treeDiff);
+        // Act
+        const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
+        const result = await reconstructPatch(ctx, treeDiff);
 
-      // Assert — double pin: actual matches live git AND matches the frozen
-      // golden. If live drifts (new git version) the golden still catches it.
-      expect(result).toBe(live);
-      expect(result).toBe(golden);
-    } finally {
-      await pair.dispose();
-    }
+        // Assert — double pin: actual matches live git AND matches the frozen
+        // golden. If live drifts (new git version) the golden still catches it.
+        expect(result).toBe(live);
+        expect(result).toBe(golden);
+      } finally {
+        await pair.dispose();
+      }
+    });
   });
 
-  it('Given an added file then a deleted file, When tsgit emits the combined patch, Then headers match git AND the frozen golden', async () => {
-    // Arrange — first commit adds two files; second deletes one. The
-    // `keep.txt` shared between the two endpoints contributes nothing to the
-    // diff; `fresh.txt` (added between the endpoints) is the only entry.
-    const pair = await makePeerPair('diff-patch-add-delete');
-    try {
-      runGit(['init', '-q', '-b', 'main', pair.peer]);
-      await writeFsFile(pair.peer, 'keep.txt', 'keep\n');
-      runGit(['-C', pair.peer, 'add', 'keep.txt']);
-      runGit(['-C', pair.peer, 'commit', '-q', '-m', 'first'], { env: gitDeterministicEnv() });
-      await writeFsFile(pair.peer, 'gone.txt', 'bye\n');
-      await writeFsFile(pair.peer, 'fresh.txt', 'hello\n');
-      runGit(['-C', pair.peer, 'add', 'gone.txt', 'fresh.txt']);
-      runGit(['-C', pair.peer, 'commit', '-q', '-m', 'second'], { env: gitDeterministicEnv() });
-      runGit(['-C', pair.peer, 'rm', '-q', 'gone.txt']);
-      runGit(['-C', pair.peer, 'commit', '-q', '-m', 'third'], { env: gitDeterministicEnv() });
-      const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~2', 'HEAD');
-      const golden = await loadGolden('add-and-delete');
+  describe('Given an added file then a deleted file, When tsgit emits the combined patch', () => {
+    it('Then headers match git AND the frozen golden', async () => {
+      // Arrange — first commit adds two files; second deletes one. The
+      // `keep.txt` shared between the two endpoints contributes nothing to the
+      // diff; `fresh.txt` (added between the endpoints) is the only entry.
+      const pair = await makePeerPair('diff-patch-add-delete');
+      try {
+        runGit(['init', '-q', '-b', 'main', pair.peer]);
+        await writeFsFile(pair.peer, 'keep.txt', 'keep\n');
+        runGit(['-C', pair.peer, 'add', 'keep.txt']);
+        runGit(['-C', pair.peer, 'commit', '-q', '-m', 'first'], { env: gitDeterministicEnv() });
+        await writeFsFile(pair.peer, 'gone.txt', 'bye\n');
+        await writeFsFile(pair.peer, 'fresh.txt', 'hello\n');
+        runGit(['-C', pair.peer, 'add', 'gone.txt', 'fresh.txt']);
+        runGit(['-C', pair.peer, 'commit', '-q', '-m', 'second'], { env: gitDeterministicEnv() });
+        runGit(['-C', pair.peer, 'rm', '-q', 'gone.txt']);
+        runGit(['-C', pair.peer, 'commit', '-q', '-m', 'third'], { env: gitDeterministicEnv() });
+        const live = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~2', 'HEAD');
+        const golden = await loadGolden('add-and-delete');
 
-      const ctx = createMemoryContext();
-      await init(ctx);
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/keep.txt`, 'keep\n');
-      await add(ctx, ['keep.txt']);
-      const c1 = await commit(ctx, { message: 'first', author });
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'bye\n');
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/fresh.txt`, 'hello\n');
-      await add(ctx, ['gone.txt', 'fresh.txt']);
-      await commit(ctx, { message: 'second', author });
-      await rm(ctx, ['gone.txt']);
-      const c3 = await commit(ctx, { message: 'third', author });
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/keep.txt`, 'keep\n');
+        await add(ctx, ['keep.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/gone.txt`, 'bye\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/fresh.txt`, 'hello\n');
+        await add(ctx, ['gone.txt', 'fresh.txt']);
+        await commit(ctx, { message: 'second', author });
+        await rm(ctx, ['gone.txt']);
+        const c3 = await commit(ctx, { message: 'third', author });
 
-      // Act
-      const treeDiff = await diff(ctx, { from: c1.id, to: c3.id, recursive: true });
-      const result = await reconstructPatch(ctx, treeDiff);
+        // Act
+        const treeDiff = await diff(ctx, { from: c1.id, to: c3.id, recursive: true });
+        const result = await reconstructPatch(ctx, treeDiff);
 
-      // Assert — double pin against live git + frozen golden.
-      expect(result).toBe(live);
-      expect(result).toBe(golden);
-    } finally {
-      await pair.dispose();
-    }
+        // Assert — double pin against live git + frozen golden.
+        expect(result).toBe(live);
+        expect(result).toBe(golden);
+      } finally {
+        await pair.dispose();
+      }
+    });
   });
 });

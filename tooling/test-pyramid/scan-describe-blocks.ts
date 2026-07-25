@@ -36,6 +36,47 @@ const lineAt = (source: string, idx: number): number => {
 const isWhitespace = (c: string): boolean =>
   c === ' ' || c === '\t' || c === '\n' || c === '\r';
 
+// A `/` opens a /regex/ literal (rather than being division) when the last
+// significant character before it implies "start of an expression" — an
+// operator, opening bracket, or separator. Division (`a / b`) is always
+// preceded by an identifier/number/`)`/`]`, none of which are in this set.
+const REGEX_CONTEXT_RE = /[(,=:;!&|?{[+\-*%<>~^]/;
+
+const isRegexContext = (source: string, slashIdx: number): boolean => {
+  let j = slashIdx - 1;
+  while (j >= 0 && isWhitespace(source[j]!)) j -= 1;
+  if (j < 0) return true;
+  return REGEX_CONTEXT_RE.test(source[j]!);
+};
+
+// Skips a /regex/flags literal as an atomic unit. Quotes and parens inside
+// it (including inside a [...] character class, where `/` is not special)
+// must not affect the caller's paren-depth or string-tracking state —
+// without this, e.g. `/name '([^']+)'/` desyncs the scanner: the first `'`
+// looks like a string open, the second like its close, and the group's `)`
+// then decrements depth for a paren that was never really counted.
+const skipRegexLiteral = (source: string, slashIdx: number): number => {
+  let i = slashIdx + 1;
+  let inClass = false;
+  while (i < source.length) {
+    const c = source[i]!;
+    if (c === '\\') {
+      i += 2;
+      continue;
+    }
+    if (c === '\n') return -1;
+    if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) {
+      i += 1;
+      break;
+    }
+    i += 1;
+  }
+  while (i < source.length && /[a-z]/i.test(source[i]!)) i += 1;
+  return i;
+};
+
 const findMatchingClose = (source: string, openIdx: number): number => {
   if (source[openIdx] !== '(') return -1;
   let depth = 1;
@@ -61,6 +102,12 @@ const findMatchingClose = (source: string, openIdx: number): number => {
       const end = source.indexOf('*/', i + 2);
       if (end < 0) return -1;
       i = end + 2;
+      continue;
+    }
+    if (c === '/' && isRegexContext(source, i)) {
+      const after = skipRegexLiteral(source, i);
+      if (after < 0) return -1;
+      i = after;
       continue;
     }
     if (c === '"' || c === "'" || c === '`') inString = c;

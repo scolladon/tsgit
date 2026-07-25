@@ -52,7 +52,11 @@ describe.each(supported)('Given the $name scenario', (scenario) => {
 describe.each(skipped)('Given the $name scenario', (scenario) => {
   describe.skip(`When the Workers driver runs it [SKIPPED — unsupported on ${WORKERS_RUNTIME}: see scenario for reason]`, () => {
     it('Then the result matches the scenario expected golden', () => {
-      expect(scenario.expected).toBeDefined();
+      // Arrange & Act
+      const result = scenario.expected;
+
+      // Assert
+      expect(result).toBeDefined();
     });
   });
 });

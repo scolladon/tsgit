@@ -293,3 +293,25 @@ describe('Given a describe.skipIf(cond)("outer", body) wrapping an inner describ
     });
   });
 });
+
+describe('Given nested describe() bodies where the inner one contains a regex literal with an embedded quote', () => {
+  describe('When scanDescribeBlocks runs', () => {
+    it('Then both blocks still close (the quote inside the regex is not a string delimiter)', () => {
+      // Arrange — kills the regression where a `'`/`"`/`` ` `` inside a
+      // /regex/ literal was misread as a string delimiter. The desync eats
+      // every following character (including real closing parens) as string
+      // content, so findMatchingClose never sees depth return to 0 and
+      // returns -1 — silently dropping BOTH describe() blocks from the scan
+      // (this is the real config-interop.test.ts shape: a `/name
+      // '([^']+)'/` style regex nested two describes deep).
+      const source =
+        "describe('outer', () => { describe('inner', () => { const m = /name '([^']+)'/.exec(s); }); });";
+
+      // Act
+      const sut = scanDescribeBlocks(source);
+
+      // Assert
+      expect(sut.map((b) => b.title)).toEqual(['outer', 'inner']);
+    });
+  });
+});

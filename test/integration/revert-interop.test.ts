@@ -85,7 +85,7 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
     await pair.dispose();
   });
 
-  describe('Given the tip commit reverted on main', () => {
+  describe('Given the tip commit reverted on main, When repo.revert.run reverts it', () => {
     it('Then tsgit matches git: resulting tree, Revert message, single parent', async () => {
       // Arrange — identical pinned history in both repos.
       runGit(['init', '-q', '-b', 'main', pair.peer]);
@@ -124,7 +124,7 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
     });
   });
 
-  describe('Given a tsgit-started multi-revert conflict', () => {
+  describe('Given a tsgit-started multi-revert conflict, When git revert --continue runs', () => {
     it('Then git revert --continue finishes it (tsgit sequencer is git-readable)', async () => {
       // Arrange — git builds the history; tsgit starts the multi-revert and stops.
       const dir = pair.ours;
@@ -147,7 +147,7 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
     });
   });
 
-  describe('Given a git-started multi-revert conflict', () => {
+  describe('Given a git-started multi-revert conflict, When repo.revert.continue runs', () => {
     it('Then repo.revert.continue finishes it (tsgit reads git abbreviated todo)', async () => {
       // Arrange — git starts the multi-revert and stops on the first conflict.
       const dir = pair.ours;
@@ -169,7 +169,7 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
     });
   });
 
-  describe('Given a lone revert conflict aborted (no move)', () => {
+  describe('Given a lone revert conflict aborted (no move), When both tools abort', () => {
     it('Then tsgit and git agree: branch reflog unchanged, HEAD records `reset: moving to`', async () => {
       // Arrange — reverting c3 alone conflicts (c4 re-touched line 1) and never
       // moves the branch; the seed is git-built + date-pinned on both repos.
@@ -196,7 +196,7 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
     });
   });
 
-  describe('Given a merge commit reverted with no mainline', () => {
+  describe('Given a merge commit reverted with no mainline, When revert is attempted', () => {
     it('Then both git and tsgit refuse', async () => {
       // Arrange
       const dir = pair.ours;
