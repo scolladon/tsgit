@@ -40,11 +40,11 @@ describe('runFilterDriver', () => {
         const runner = new FakeRunner(0, outputBytes);
 
         // Act
-        const sut = await runFilterDriver(ctx, runner, 'upper', enc('raw input'));
+        const result = await runFilterDriver(ctx, runner, 'upper', enc('raw input'));
 
         // Assert
-        expect(sut.ok).toBe(true);
-        expect(sut.ok === true && dec(sut.bytes)).toBe('FILTERED OUTPUT');
+        expect(result.ok).toBe(true);
+        expect(result.ok === true && dec(result.bytes)).toBe('FILTERED OUTPUT');
       });
     });
   });
@@ -57,11 +57,11 @@ describe('runFilterDriver', () => {
         const runner = new FakeRunner(1, enc('partial'));
 
         // Act
-        const sut = await runFilterDriver(ctx, runner, 'myfilter', enc('data'));
+        const result = await runFilterDriver(ctx, runner, 'myfilter', enc('data'));
 
         // Assert
-        expect(sut.ok).toBe(false);
-        expect(sut.ok === false && sut.exitCode).toBe(1);
+        expect(result.ok).toBe(false);
+        expect(result.ok === false && result.exitCode).toBe(1);
       });
     });
   });
@@ -74,11 +74,11 @@ describe('runFilterDriver', () => {
         const runner = new FakeRunner(128);
 
         // Act
-        const sut = await runFilterDriver(ctx, runner, 'lfs', enc('ptr'));
+        const result = await runFilterDriver(ctx, runner, 'lfs', enc('ptr'));
 
         // Assert
-        expect(sut.ok).toBe(false);
-        expect(sut.ok === false && sut.exitCode).toBe(128);
+        expect(result.ok).toBe(false);
+        expect(result.ok === false && result.exitCode).toBe(128);
       });
     });
   });
@@ -91,11 +91,11 @@ describe('runFilterDriver', () => {
         const runner = new FakeRunner(0, undefined);
 
         // Act
-        const sut = await runFilterDriver(ctx, runner, 'noop', enc('input'));
+        const result = await runFilterDriver(ctx, runner, 'noop', enc('input'));
 
         // Assert
-        expect(sut.ok).toBe(true);
-        expect(sut.ok === true && sut.bytes.length).toBe(0);
+        expect(result.ok).toBe(true);
+        expect(result.ok === true && result.bytes.length).toBe(0);
       });
     });
   });

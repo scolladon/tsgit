@@ -12,9 +12,10 @@ describe('writeTree', () => {
       it('Then returns the canonical empty-tree id', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = await writeTree(ctx, []);
+        // Act
+        const result = await writeTree(ctx, []);
         // Assert
-        expect(sut).toMatch(/^[0-9a-f]{40}$/);
+        expect(result).toMatch(/^[0-9a-f]{40}$/);
       });
     });
   });
@@ -27,6 +28,7 @@ describe('writeTree', () => {
         const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
         const blobId = await writeObject(ctx, blob);
         const entries: TreeEntry[] = [{ name: 'a.txt', mode: '100644' as never, id: blobId }];
+        // Act
         const treeId = await writeTree(ctx, entries);
         const tree = await readTree(ctx, treeId);
         // Assert
@@ -44,9 +46,9 @@ describe('writeTree', () => {
         const oversized = {
           length: 1_000_001,
         } as unknown as ReadonlyArray<TreeEntry>;
+        // Act + Assert
         try {
           await writeTree(ctx, oversized);
-          // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('TREE_ENTRY_LIMIT_EXCEEDED');
@@ -63,6 +65,7 @@ describe('writeTree', () => {
         const atCap = {
           length: 1_000_000,
         } as unknown as ReadonlyArray<TreeEntry>;
+        // Act
         let caught: unknown;
         try {
           await writeTree(ctx, atCap);

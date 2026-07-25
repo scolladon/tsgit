@@ -22,11 +22,11 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given no hooksPath', () => {
     describe('When resolveHooksDir', () => {
       it('Then it defaults to <gitDir>/hooks', () => {
-        // Arrange
-        const sut = resolveHooksDir(undefined, layout());
+        // Arrange & Act
+        const result = resolveHooksDir(undefined, layout());
 
         // Assert
-        expect(sut).toBe('/repo/.git/hooks');
+        expect(result).toBe('/repo/.git/hooks');
       });
     });
   });
@@ -34,11 +34,11 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given an absolute POSIX hooksPath', () => {
     describe('When resolveHooksDir', () => {
       it('Then it is used verbatim', () => {
-        // Arrange
-        const sut = resolveHooksDir('/opt/githooks', layout());
+        // Arrange & Act
+        const result = resolveHooksDir('/opt/githooks', layout());
 
         // Assert
-        expect(sut).toBe('/opt/githooks');
+        expect(result).toBe('/opt/githooks');
       });
     });
   });
@@ -46,11 +46,11 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given an absolute Windows hooksPath', () => {
     describe('When resolveHooksDir', () => {
       it('Then it is used verbatim', () => {
-        // Arrange
-        const sut = resolveHooksDir('C:\\githooks', layout());
+        // Arrange & Act
+        const result = resolveHooksDir('C:\\githooks', layout());
 
         // Assert
-        expect(sut).toBe('C:\\githooks');
+        expect(result).toBe('C:\\githooks');
       });
     });
   });
@@ -58,7 +58,7 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given a ~/ hooksPath with a known homeDir', () => {
     describe('When resolveHooksDir', () => {
       it('Then it expands against homeDir', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expect(resolveHooksDir('~/.githooks', layout({ homeDir: '/home/ada' }))).toBe(
           '/home/ada/.githooks',
         );
@@ -69,11 +69,11 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given a ~/ hooksPath with no homeDir', () => {
     describe('When resolveHooksDir', () => {
       it('Then it falls back to <gitDir>/hooks', () => {
-        // Arrange
-        const sut = resolveHooksDir('~/.githooks', layout());
+        // Arrange & Act
+        const result = resolveHooksDir('~/.githooks', layout());
 
         // Assert
-        expect(sut).toBe('/repo/.git/hooks');
+        expect(result).toBe('/repo/.git/hooks');
       });
     });
   });
@@ -81,11 +81,11 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given a relative hooksPath', () => {
     describe('When resolveHooksDir', () => {
       it('Then it resolves against the working-tree root', () => {
-        // Arrange
-        const sut = resolveHooksDir('.husky', layout());
+        // Arrange & Act
+        const result = resolveHooksDir('.husky', layout());
 
         // Assert
-        expect(sut).toBe('/repo/.husky');
+        expect(result).toBe('/repo/.husky');
       });
     });
   });
@@ -93,7 +93,7 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given a relative hooksPath with a drive-letter sequence mid-string', () => {
     describe('When resolveHooksDir', () => {
       it('Then it stays relative', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         // The drive-letter form is absolute only when it anchors the start.
         expect(resolveHooksDir('hooks/c:/sub', layout())).toBe('/repo/hooks/c:/sub');
       });
@@ -103,27 +103,27 @@ describe('primitives/run-hook resolveHooksDir', () => {
   describe('Given an empty hooksPath', () => {
     describe('When resolveHooksDir', () => {
       it('Then it does NOT resolve to the default <gitDir>/hooks', () => {
-        // Arrange
-        const sut = resolveHooksDir('', layout());
+        // Arrange & Act
+        const result = resolveHooksDir('', layout());
 
         // Assert — absent fires the default dir; empty must not collapse to it
-        expect(sut).not.toBe(`${layout().gitDir}/hooks`);
+        expect(result).not.toBe(`${layout().gitDir}/hooks`);
       });
 
       it('Then it does NOT resolve to the worktree root', () => {
-        // Arrange
-        const sut = resolveHooksDir('', layout());
+        // Arrange & Act
+        const result = resolveHooksDir('', layout());
 
         // Assert — empty must not resolve against the CWD / worktree root
-        expect(sut).not.toBe(`${layout().workDir}/`);
+        expect(result).not.toBe(`${layout().workDir}/`);
       });
 
       it('Then it resolves to the no-hooks sentinel directory under gitDir', () => {
-        // Arrange
-        const sut = resolveHooksDir('', layout());
+        // Arrange & Act
+        const result = resolveHooksDir('', layout());
 
         // Assert — a reserved dir guaranteed to hold no hook script
-        expect(sut).toBe(`${layout().gitDir}/${NO_HOOKS_SUBDIR}`);
+        expect(result).toBe(`${layout().gitDir}/${NO_HOOKS_SUBDIR}`);
       });
     });
   });
@@ -155,66 +155,49 @@ describe('primitives/run-hook runHook', () => {
         // Arrange
         const ctx = buildCtx();
 
-        // Act & Assert
+        // Act + Assert
         await expect(runHook(ctx, 'pre-commit')).resolves.toBeUndefined();
       });
     });
   });
 
-  describe('Given a hook that exits 1', () => {
+  describe('Given a hook that exits non-zero', () => {
     describe('When runHook', () => {
-      it('Then it throws HOOK_FAILED carrying the hook, exit code and stderr', async () => {
-        // Arrange
-        const runner = new MemoryHookRunner({
-          'commit-msg': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'bad message' },
-        });
-        const ctx = createMemoryContext({ hooks: runner });
-
-        // Act
-        let caught: unknown;
-        try {
-          await runHook(ctx, 'commit-msg');
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data).toEqual({
-          code: 'HOOK_FAILED',
-          hook: 'commit-msg',
-          exitCode: 1,
-          stderr: 'bad message',
-        });
-      });
-    });
-  });
-
-  describe('Given a hook that exits with a non-1 non-zero code', () => {
-    describe('When runHook', () => {
-      it('Then it still throws HOOK_FAILED', async () => {
-        // Arrange
-        const runner = new MemoryHookRunner({
-          'pre-push': { kind: 'ran', exitCode: 2, stdout: '', stderr: 'nope' },
-        });
-        const ctx = createMemoryContext({ hooks: runner });
-
-        // Act
-        let caught: unknown;
-        try {
-          await runHook(ctx, 'pre-push');
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'HOOK_FAILED',
-          hook: 'pre-push',
+      it.each([
+        { hookName: 'commit-msg', exitCode: 1, stderr: 'bad message', label: 'exit code 1' },
+        {
+          hookName: 'pre-push',
           exitCode: 2,
           stderr: 'nope',
-        });
-      });
+          label: 'a non-1 non-zero exit code (2)',
+        },
+      ] as const)(
+        'Then it throws HOOK_FAILED carrying the hook, exit code and stderr ($label)',
+        async ({ hookName, exitCode, stderr }) => {
+          // Arrange
+          const runner = new MemoryHookRunner({
+            [hookName]: { kind: 'ran', exitCode, stdout: '', stderr },
+          });
+          const ctx = createMemoryContext({ hooks: runner });
+
+          // Act
+          let caught: unknown;
+          try {
+            await runHook(ctx, hookName);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'HOOK_FAILED',
+            hook: hookName,
+            exitCode,
+            stderr,
+          });
+        },
+      );
     });
   });
 
@@ -413,7 +396,7 @@ describe('primitives/run-hook runInformationalHook', () => {
         // Arrange
         const ctx = createMemoryContext();
 
-        // Act & Assert
+        // Act + Assert
         await expect(runInformationalHook(ctx, 'post-commit')).resolves.toBeUndefined();
       });
     });
@@ -444,7 +427,7 @@ describe('primitives/run-hook runInformationalHook', () => {
         });
         const ctx = createMemoryContext({ hooks: runner });
 
-        // Act & Assert
+        // Act + Assert
         await expect(runInformationalHook(ctx, 'post-merge')).resolves.toBeUndefined();
       });
     });
@@ -460,7 +443,7 @@ describe('primitives/run-hook runInformationalHook', () => {
         });
         const ctx = createMemoryContext({ hooks: runner });
 
-        // Act & Assert
+        // Act + Assert
         await expect(runInformationalHook(ctx, 'post-checkout')).resolves.toBeUndefined();
         expect(runner.calls[0]?.name).toBe('post-checkout');
       });

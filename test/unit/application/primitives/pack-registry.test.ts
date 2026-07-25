@@ -41,7 +41,10 @@ describe('pack-registry', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const sut = createPackRegistry(ctx);
+
+        // Act
         const result = await sut.all();
+
         // Assert
         expect(result).toEqual([]);
       });
@@ -51,7 +54,10 @@ describe('pack-registry', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const sut = createPackRegistry(ctx);
+
+        // Act
         const result = await sut.lookup('a'.repeat(40) as ObjectId);
+
         // Assert
         expect(result).toBeUndefined();
       });
@@ -93,13 +99,14 @@ describe('pack-registry', () => {
         };
         const sut = createPackRegistry(wrapped);
 
+        // Act
         try {
           await sut.all();
         } catch {
-          // Assert
           // parsePackIndex will throw on our fake bytes; that's expected.
         }
-        // Good entry is statted; the unsafe one must have been filtered out.
+
+        // Assert — good entry is statted; the unsafe one must have been filtered out.
         expect(statsSeen.some((p) => p.includes('pack-good'))).toBe(true);
         expect(statsSeen.some((p) => p.includes(badName))).toBe(false);
       });
@@ -134,12 +141,16 @@ describe('pack-registry', () => {
           },
         };
         const sut = createPackRegistry(wrapped);
+
+        // Act
         let caught: unknown;
         try {
           await sut.all();
         } catch (error) {
           caught = error;
         }
+
+        // Assert
         expect(caught).toBeDefined();
         const data = (caught as { data?: { code?: string; reason?: string } }).data;
         expect(data?.code).toBe('INVALID_PACK_INDEX');
@@ -208,14 +219,17 @@ describe('pack-registry', () => {
           },
         };
         const sut = createPackRegistry(wrapped);
+
+        // Act
         let caught: unknown;
         try {
           await sut.all();
         } catch (error) {
           caught = error;
         }
-        const data = (caught as { data?: { code?: string; reason?: string } }).data;
+
         // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } }).data;
         expect(data?.code).toBe('INVALID_PACK_INDEX');
         // Kills the L46 `ConditionalExpression -> false` and `BlockStatement -> {}`
         // mutants: without the post-read length check, the oversized zero-filled
@@ -254,7 +268,7 @@ describe('nextOffsetForEntry', () => {
       it('Then throws INVALID_PACK_INDEX with reason containing "offset not in pack index"', () => {
         // Arrange
         const sut = nextOffsetForEntry;
-        // Act / Assert
+        // Act + Assert
         try {
           sut(table, 200);
           expect.unreachable();
@@ -316,15 +330,17 @@ describe('RegisteredPack.offsetTable — negative trailerStart guard', () => {
         const registry = createPackRegistry(wrappedCtx);
         const packs = await registry.all();
         const pack = packs[0]!;
-
-        // Act / Assert
         const sut = pack.offsetTable;
+
+        // Act
         let caught: unknown;
         try {
           await sut();
         } catch (error) {
           caught = error;
         }
+
+        // Assert
         expect(caught).toBeDefined();
         const data = (caught as { data?: { code?: string; reason?: string } }).data;
         expect(data?.code).toBe('INVALID_PACK_INDEX');

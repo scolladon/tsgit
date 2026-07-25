@@ -51,7 +51,10 @@ describe('ref-store', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const sut = createRefStore(ctx);
+
+        // Act
         const result = await sut.resolveDirect('refs/nope' as RefName);
+
         // Assert
         expect(result.kind).toBe('missing');
       });
@@ -65,7 +68,10 @@ describe('ref-store', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
         const sut = createRefStore(ctx);
+
+        // Act
         const result = await sut.resolveDirect('HEAD' as RefName);
+
         // Assert
         expect(result.kind).toBe('symbolic');
         if (result.kind === 'symbolic') expect(result.target).toBe('refs/heads/main');
@@ -79,8 +85,11 @@ describe('ref-store', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const sut = createRefStore(ctx);
+
+        // Act
         await sut.writeLoose('refs/heads/new' as RefName, 'd'.repeat(40) as ObjectId);
         const result = await sut.resolveDirect('refs/heads/new' as RefName);
+
         // Assert
         if (result.kind === 'direct') expect(result.id).toBe('d'.repeat(40));
       });
@@ -96,8 +105,11 @@ describe('ref-store', () => {
           packedRefs: [{ name: 'refs/heads/main' as RefName, id: 'c'.repeat(40) as ObjectId }],
         });
         const sut = createRefStore(ctx);
+
+        // Act
         await sut.removeLoose('refs/heads/main' as RefName);
         const result = await sut.resolveDirect('refs/heads/main' as RefName);
+
         // Assert
         if (result.kind === 'direct') expect(result.id).toBe('c'.repeat(40));
       });
@@ -117,7 +129,10 @@ describe('ref-store', () => {
           ],
         });
         const sut = createRefStore(ctx);
+
+        // Act
         const result = await sut.resolveDirect('refs/tags/second' as RefName);
+
         // Assert
         expect(result.kind).toBe('direct');
         if (result.kind === 'direct') expect(result.id).toBe('b'.repeat(40));
@@ -133,7 +148,8 @@ describe('ref-store', () => {
         // mutant: under `true`, rm is always called and would fail on missing path.
         const ctx = await buildSeededContext();
         const sut = createRefStore(ctx);
-        // Assert
+
+        // Act + Assert
         await expect(sut.removeLoose('refs/heads/never' as RefName)).resolves.toBeUndefined();
       });
     });
@@ -146,8 +162,11 @@ describe('ref-store', () => {
         // Kills the BlockStatement `{}` mutant on writeLoose body.
         const ctx = await buildSeededContext();
         const sut = createRefStore(ctx);
+
+        // Act
         await sut.writeLoose('refs/heads/new2' as RefName, 'e'.repeat(40) as ObjectId);
         const exists = await ctx.fs.exists('/repo/.git/refs/heads/new2');
+
         // Assert
         expect(exists).toBe(true);
       });
@@ -165,17 +184,22 @@ describe('ref-store', () => {
           packedRefs: [{ name: 'refs/tags/vol' as RefName, id: 'a'.repeat(40) as ObjectId }],
         });
         const sut = createRefStore(ctx);
+
+        // Act
         const first = await sut.resolveDirect('refs/tags/vol' as RefName);
+
         // Assert
         expect(first.kind).toBe('direct');
         if (first.kind === 'direct') expect(first.id).toBe('a'.repeat(40));
 
-        // Rewrite packed-refs with a different id + different mtime/size.
+        // Act — Rewrite packed-refs with a different id + different mtime/size.
         await ctx.fs.writeUtf8(
           '/repo/.git/packed-refs',
           `# pack-refs with: peeled\n${'b'.repeat(40)} refs/tags/vol\n`,
         );
         const second = await sut.resolveDirect('refs/tags/vol' as RefName);
+
+        // Assert
         expect(second.kind).toBe('direct');
         if (second.kind === 'direct') expect(second.id).toBe('b'.repeat(40));
       });
@@ -203,11 +227,13 @@ describe('ref-store', () => {
           },
         };
         const sut = createRefStore(wrapped);
+
+        // Act
         await sut.resolveDirect('refs/tags/cached' as RefName);
         await sut.resolveDirect('refs/tags/cached' as RefName);
-        // At-most-once: leaves room for a future legitimate stat-then-read
-        // pair without pinning the implementation.
-        // Assert
+
+        // Assert — at-most-once: leaves room for a future legitimate
+        // stat-then-read pair without pinning the implementation.
         expect(reads).toBeLessThanOrEqual(1);
       });
     });
@@ -241,8 +267,11 @@ describe('ref-store', () => {
         // Kills any mutant that drops the WeakMap cache: a second call would
         // create a fresh store and the identity check would fail.
         const ctx = await buildSeededContext();
+
+        // Act
         const a = getRefStore(ctx);
         const b = getRefStore(ctx);
+
         // Assert
         expect(a).toBe(b);
       });
@@ -256,7 +285,8 @@ describe('ref-store', () => {
         // Kills the mutant where the cache key is shared across all contexts.
         const ctxA = await buildSeededContext();
         const ctxB = await buildSeededContext();
-        // Assert
+
+        // Act + Assert
         expect(getRefStore(ctxA)).not.toBe(getRefStore(ctxB));
       });
     });

@@ -36,40 +36,85 @@ async function collectChunks(it: AsyncIterable<Uint8Array>): Promise<Uint8Array[
 }
 
 describe('streamBlob', () => {
-  describe('Given a loose blob, When drained', () => {
-    it.each([
-      { content: () => ENC.encode('hello streaming world'), label: 'a loose blob' },
-      {
-        content: () => ENC.encode('single chunk content that fits in one inflate output'),
-        label: 'a loose blob whose content is exactly one inflate chunk',
-      },
-      {
-        content: () => {
-          const large = new Uint8Array(200 * 1024);
-          for (let i = 0; i < large.length; i += 1) {
-            large[i] = i % 251;
-          }
-          return large;
+  describe('Given a loose blob', () => {
+    describe('When drained', () => {
+      it.each([
+        { content: () => ENC.encode('hello streaming world'), label: 'a loose blob' },
+        {
+          content: () => ENC.encode('single chunk content that fits in one inflate output'),
+          label: 'a loose blob whose content is exactly one inflate chunk',
         },
-        label: 'a large loose blob (multi-chunk inflate)',
-      },
-    ])('Then $label yields bytes byte-equal to readBlob content', async ({ content }) => {
-      // Arrange
-      const blob: Blob = {
-        type: 'blob',
-        content: content(),
-        id: '' as ObjectId,
-      };
-      const ctx = await buildSeededContext({ objects: [blob] });
-      const id = await writeObject(ctx, blob);
+        {
+          content: () => {
+            const large = new Uint8Array(200 * 1024);
+            for (let i = 0; i < large.length; i += 1) {
+              large[i] = i % 251;
+            }
+            return large;
+          },
+          label: 'a large loose blob (multi-chunk inflate)',
+        },
+      ])('Then $label yields bytes byte-equal to readBlob content', async ({ content }) => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: content(),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
 
-      // Act
-      const sut = await streamBlob(ctx, id);
-      const result = await collect(sut);
+        // Act
+        const sut = await streamBlob(ctx, id);
+        const result = await collect(sut);
 
-      // Assert
-      const oracle = await readBlob(ctx, id);
-      expect(result).toEqual(oracle.content);
+        // Assert
+        const oracle = await readBlob(ctx, id);
+        expect(result).toEqual(oracle.content);
+      });
+
+      it('Then read was called (not readSlice) — pins the loose route', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('route pin test'),
+          id: '' as ObjectId,
+        };
+        const baseCtx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(baseCtx, blob);
+
+        const { ctx, calls } = instrumentedContext(baseCtx);
+
+        // Act
+        const sut = await streamBlob(ctx, id);
+        await collect(sut);
+
+        // Assert
+        const log = calls();
+        expect(log.some((e) => e.method === 'read')).toBe(true);
+        expect(log.some((e) => e.method === 'readSlice')).toBe(false);
+      });
+
+      it('Then createInflateStream is invoked (pins the streaming inflate path, not whole-buffer inflate)', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('inflate-spy content'),
+          id: '' as ObjectId,
+        };
+        const baseCtx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(baseCtx, blob);
+
+        const spy = vi.spyOn(baseCtx.compressor, 'createInflateStream');
+
+        // Act
+        const sut = await streamBlob(baseCtx, id);
+        await collect(sut);
+
+        // Assert
+        expect(spy).toHaveBeenCalledOnce();
+        spy.mockRestore();
+      });
     });
   });
 
@@ -218,7 +263,7 @@ describe('streamBlob', () => {
         // Arrange
         const { ctx, id } = await build();
 
-        // Act / Assert
+        // Act + Assert
         try {
           const sut = await streamBlob(ctx, id);
           await collect(sut);
@@ -248,8 +293,10 @@ describe('streamBlob', () => {
       const ctx = await buildSeededContext({ objects: [blob] });
       const id = await writeObject(ctx, blob);
 
-      // Act / Assert — should not throw
+      // Act
       const sut = await streamBlob(ctx, id);
+
+      // Assert — should not throw
       await expect(collect(sut)).resolves.toBeDefined();
     });
   });
@@ -278,7 +325,7 @@ describe('streamBlob', () => {
       const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
       await ctx.fs.write(loosePath, compressed);
 
-      // Act / Assert
+      // Act + Assert
       try {
         const sut = await streamBlob(ctx, id);
         await collect(sut);
@@ -312,8 +359,10 @@ describe('streamBlob', () => {
       const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
       await ctx.fs.write(loosePath, compressed);
 
-      // Act / Assert — should not throw with verifyHash: false
+      // Act
       const sut = await streamBlob(ctx, id, { verifyHash: false });
+
+      // Assert — should not throw with verifyHash: false
       await expect(collect(sut)).resolves.toBeDefined();
     });
   });
@@ -331,7 +380,7 @@ describe('streamBlob', () => {
       const id = await writeObject(ctx, blob);
       controller.abort();
 
-      // Act / Assert
+      // Act + Assert
       try {
         const sut = await streamBlob(ctx, id);
         await collect(sut);
@@ -363,30 +412,6 @@ describe('streamBlob', () => {
     });
   });
 
-  describe('Given a loose blob, When drained', () => {
-    it('Then read was called (not readSlice) — pins the loose route', async () => {
-      // Arrange
-      const blob: Blob = {
-        type: 'blob',
-        content: ENC.encode('route pin test'),
-        id: '' as ObjectId,
-      };
-      const baseCtx = await buildSeededContext({ objects: [blob] });
-      const id = await writeObject(baseCtx, blob);
-
-      const { ctx, calls } = instrumentedContext(baseCtx);
-
-      // Act
-      const sut = await streamBlob(ctx, id);
-      await collect(sut);
-
-      // Assert
-      const log = calls();
-      expect(log.some((e) => e.method === 'read')).toBe(true);
-      expect(log.some((e) => e.method === 'readSlice')).toBe(false);
-    });
-  });
-
   describe('Given a packed base (non-delta) blob, When streamBlob is drained', () => {
     it('Then concatenated bytes are byte-equal to readBlob content and materialised is false', async () => {
       // Arrange
@@ -408,32 +433,54 @@ describe('streamBlob', () => {
     });
   });
 
-  describe('Given a packed base blob, When drained', () => {
-    it('Then readSlice was called and no loose-object read was called — pins the packed route', async () => {
-      // Arrange
-      const content = ENC.encode('packed route pin test');
-      const baseCtx = await buildSeededContext();
-      const ids = await writeSyntheticPack(baseCtx, 'route-pin', [
-        { kind: 'base', type: 'blob', content },
-      ]);
-      const id = ids[0] as ObjectId;
-      const { ctx, calls } = instrumentedContext(baseCtx);
+  describe('Given a packed base blob', () => {
+    describe('When drained', () => {
+      it('Then readSlice was called and no loose-object read was called — pins the packed route', async () => {
+        // Arrange
+        const content = ENC.encode('packed route pin test');
+        const baseCtx = await buildSeededContext();
+        const ids = await writeSyntheticPack(baseCtx, 'route-pin', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const { ctx, calls } = instrumentedContext(baseCtx);
 
-      // Act
-      const sut = await streamBlob(ctx, id);
-      await collect(sut);
+        // Act
+        const sut = await streamBlob(ctx, id);
+        await collect(sut);
 
-      // Assert
-      const log = calls();
-      // Packed base path must call readSlice (not whole-file read of the loose object)
-      expect(log.some((e) => e.method === 'readSlice')).toBe(true);
-      // The loose path would call read on the loose object path (under /objects/XX/...)
-      // Pack registry reads .idx files (under /objects/pack/) — those reads are expected.
-      // The distinguishing check: no loose object path should be read (two-char dir prefix pattern).
-      const looseObjectReadPattern = /\/objects\/[0-9a-f]{2}\//;
-      expect(
-        log.filter((e) => e.method === 'read').every((e) => !looseObjectReadPattern.test(e.path)),
-      ).toBe(true);
+        // Assert
+        const log = calls();
+        // Packed base path must call readSlice (not whole-file read of the loose object)
+        expect(log.some((e) => e.method === 'readSlice')).toBe(true);
+        // The loose path would call read on the loose object path (under /objects/XX/...)
+        // Pack registry reads .idx files (under /objects/pack/) — those reads are expected.
+        // The distinguishing check: no loose object path should be read (two-char dir prefix pattern).
+        const looseObjectReadPattern = /\/objects\/[0-9a-f]{2}\//;
+        expect(
+          log.filter((e) => e.method === 'read').every((e) => !looseObjectReadPattern.test(e.path)),
+        ).toBe(true);
+      });
+
+      it('Then createInflateStream is invoked (pins the streaming inflate path, not whole-buffer inflate)', async () => {
+        // Arrange
+        const content = ENC.encode('packed inflate-spy content');
+        const baseCtx = await buildSeededContext();
+        const ids = await writeSyntheticPack(baseCtx, 'inflate-spy-packed', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+
+        const spy = vi.spyOn(baseCtx.compressor, 'createInflateStream');
+
+        // Act
+        const sut = await streamBlob(baseCtx, id);
+        await collect(sut);
+
+        // Assert
+        expect(spy).toHaveBeenCalledOnce();
+        spy.mockRestore();
+      });
     });
   });
 
@@ -466,7 +513,7 @@ describe('streamBlob', () => {
       const ctx = await buildSeededContext();
       const id = 'f'.repeat(40) as ObjectId;
 
-      // Act / Assert
+      // Act + Assert
       try {
         await streamBlob(ctx, id);
         expect.unreachable();
@@ -541,7 +588,7 @@ describe('streamBlob', () => {
       // Spy routing: readSlice IS called (packed path), loose read IS NOT.
       const { ctx, calls } = instrumentedContext(ctxBase);
 
-      // Act / Assert
+      // Act + Assert
       try {
         const sut = await streamBlob(ctx, id);
         await collect(sut);
@@ -587,10 +634,11 @@ describe('streamBlob', () => {
 
       const id = packA.ids[0] as ObjectId;
 
-      // Act / Assert — should not throw with verifyHash: false
+      // Act
       const sut = await streamBlob(ctxBase, id, { verifyHash: false });
       const result = await collect(sut);
-      // The wrong (B) bytes are yielded without error
+
+      // Assert — the wrong (B) bytes are yielded without error
       expect(result).toEqual(contentB);
     });
   });
@@ -776,52 +824,6 @@ describe('streamBlob', () => {
     });
   });
 
-  // LOW: spy that createInflateStream is invoked on loose and packed-base paths
-  describe('Given a loose blob, When drained', () => {
-    it('Then createInflateStream is invoked (pins the streaming inflate path, not whole-buffer inflate)', async () => {
-      // Arrange
-      const blob: Blob = {
-        type: 'blob',
-        content: ENC.encode('inflate-spy content'),
-        id: '' as ObjectId,
-      };
-      const baseCtx = await buildSeededContext({ objects: [blob] });
-      const id = await writeObject(baseCtx, blob);
-
-      const spy = vi.spyOn(baseCtx.compressor, 'createInflateStream');
-
-      // Act
-      const sut = await streamBlob(baseCtx, id);
-      await collect(sut);
-
-      // Assert
-      expect(spy).toHaveBeenCalledOnce();
-      spy.mockRestore();
-    });
-  });
-
-  describe('Given a packed-base blob, When drained', () => {
-    it('Then createInflateStream is invoked (pins the streaming inflate path, not whole-buffer inflate)', async () => {
-      // Arrange
-      const content = ENC.encode('packed inflate-spy content');
-      const baseCtx = await buildSeededContext();
-      const ids = await writeSyntheticPack(baseCtx, 'inflate-spy-packed', [
-        { kind: 'base', type: 'blob', content },
-      ]);
-      const id = ids[0] as ObjectId;
-
-      const spy = vi.spyOn(baseCtx.compressor, 'createInflateStream');
-
-      // Act
-      const sut = await streamBlob(baseCtx, id);
-      await collect(sut);
-
-      // Assert
-      expect(spy).toHaveBeenCalledOnce();
-      spy.mockRestore();
-    });
-  });
-
   describe('Given a deltified blob, When resolvePackChain is called', () => {
     it('Then the delta route invokes resolvePackChain (not the direct inflate path)', async () => {
       // Arrange
@@ -894,7 +896,7 @@ describe('streamBlob', () => {
         },
       };
 
-      // Act / Assert
+      // Act + Assert
       try {
         const sut = await streamBlob(ctx as typeof baseCtx, id);
         await collect(sut);
@@ -933,7 +935,7 @@ describe('streamBlob', () => {
         },
       };
 
-      // Act / Assert
+      // Act + Assert
       try {
         const sut = await streamBlob(ctx as typeof baseCtx, id);
         await collect(sut);

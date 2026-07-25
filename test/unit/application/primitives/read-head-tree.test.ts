@@ -24,10 +24,10 @@ describe('readHeadTree', () => {
         await init(ctx);
 
         // Act
-        const sut = await readHeadTree(ctx);
+        const result = await readHeadTree(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -45,16 +45,16 @@ describe('readHeadTree', () => {
         await commit(ctx, { message: 'first', author });
 
         // Act
-        const sut = await readHeadTree(ctx);
+        const result = await readHeadTree(ctx);
 
         // Assert — exactly the two leaves, full-path keyed, regular mode, no `src`.
-        expect(sut?.entries.size).toBe(2);
-        expect(sut?.entries.get('a.txt' as FilePath)).toBeUndefined();
-        expect(sut?.entries.get('src' as FilePath)).toBeUndefined();
-        const leaf = sut?.entries.get('src/a.txt' as FilePath);
+        expect(result?.entries.size).toBe(2);
+        expect(result?.entries.get('a.txt' as FilePath)).toBeUndefined();
+        expect(result?.entries.get('src' as FilePath)).toBeUndefined();
+        const leaf = result?.entries.get('src/a.txt' as FilePath);
         expect(leaf?.mode).toBe(FILE_MODE.REGULAR);
         expect(leaf?.id).toMatch(/^[0-9a-f]{40}$/);
-        expect(sut?.entries.get('b.txt' as FilePath)?.mode).toBe(FILE_MODE.REGULAR);
+        expect(result?.entries.get('b.txt' as FilePath)?.mode).toBe(FILE_MODE.REGULAR);
       });
     });
   });
@@ -76,7 +76,7 @@ describe('readHeadTree', () => {
         const treeOid = commitObj.type === 'commit' ? commitObj.data.tree : '';
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref}`, `${treeOid}\n`);
 
-        // Act / Assert — specific data, not just the class.
+        // Act + Assert — specific data, not just the class.
         try {
           await readHeadTree(ctx);
           expect.unreachable('readHeadTree should reject a non-commit HEAD');

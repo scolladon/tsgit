@@ -34,10 +34,10 @@ describe('resolveFilterDriver', () => {
         await seed(ctx, attrs);
 
         // Act
-        const sut = await choose(ctx, 'a.y');
+        const result = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({ kind: 'identity' });
+        expect(result).toEqual({ kind: 'identity' });
       });
     });
   });
@@ -50,10 +50,10 @@ describe('resolveFilterDriver', () => {
         await seed(ctx, '*.y filter=myf\n', '[filter "myf"]\n\tclean = up\n\tsmudge = down\n');
 
         // Act
-        const sut = await choose(ctx, 'a.y');
+        const result = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           kind: 'external',
           name: 'myf',
           clean: 'up',
@@ -72,10 +72,10 @@ describe('resolveFilterDriver', () => {
         await seed(ctx, 'a.y filter=myf\n');
 
         // Act
-        const sut = await choose(ctx, 'a.y');
+        const result = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({ kind: 'identity' });
+        expect(result).toEqual({ kind: 'identity' });
       });
     });
   });
@@ -92,10 +92,10 @@ describe('resolveFilterDriver', () => {
         );
 
         // Act
-        const sut = await choose(ctx, 'a.y');
+        const result = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           kind: 'external',
           name: 'myf',
           clean: 'up',
@@ -134,10 +134,10 @@ describe('resolveFilterDriver', () => {
         await seed(ctx, attrs, config);
 
         // Act
-        const sut = await choose(ctx, 'a.y');
+        const result = await choose(ctx, 'a.y');
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
   });

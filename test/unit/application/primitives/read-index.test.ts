@@ -13,11 +13,14 @@ describe('readIndex', () => {
       it('Then returns { version: 2, entries: [], extensions: [] }', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = await readIndex(ctx);
+
+        // Act
+        const result = await readIndex(ctx);
+
         // Assert
-        expect(sut.version).toBe(2);
-        expect(sut.entries).toEqual([]);
-        expect(sut.extensions).toEqual([]);
+        expect(result.version).toBe(2);
+        expect(result.entries).toEqual([]);
+        expect(result.extensions).toEqual([]);
       });
     });
   });
@@ -29,10 +32,13 @@ describe('readIndex', () => {
         const ctx = await buildSeededContext({
           index: { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) },
         });
-        const sut = await readIndex(ctx);
+
+        // Act
+        const result = await readIndex(ctx);
+
         // Assert
-        expect(sut.version).toBe(2);
-        expect(sut.entries).toEqual([]);
+        expect(result.version).toBe(2);
+        expect(result.entries).toEqual([]);
       });
     });
   });
@@ -57,6 +63,8 @@ describe('readIndex', () => {
         bytes.set(body, 0);
         bytes.set(trailer, body.length);
         await ctx.fs.write('/repo/.git/index', bytes);
+
+        // Act
         try {
           await readIndex(ctx);
           // Assert
@@ -86,6 +94,8 @@ describe('readIndex', () => {
             },
           },
         };
+
+        // Act
         let caught: unknown;
         try {
           await readIndex(wrapped);
@@ -94,8 +104,9 @@ describe('readIndex', () => {
         } catch (error) {
           caught = error;
         }
-        // At-cap (size === MAX) must NOT trip the `> MAX` predicate. A `>= MAX`
-        // mutant would surface "exceeds 256 MiB"; we positively assert the
+
+        // Assert — at-cap (size === MAX) must NOT trip the `> MAX` predicate. A
+        // `>= MAX` mutant would surface "exceeds 256 MiB"; we positively assert the
         // *other* error fires instead, proving the predicate held its boundary.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
@@ -119,6 +130,8 @@ describe('readIndex', () => {
             read: async () => oversized,
           },
         };
+
+        // Act
         try {
           await readIndex(wrapped);
           // Assert
@@ -143,9 +156,12 @@ describe('readIndex', () => {
           ctx,
         );
         await ctx.fs.write('/repo/.git/index', bytes);
-        const sut = await readIndex(ctx);
+
+        // Act
+        const result = await readIndex(ctx);
+
         // Assert
-        expect(sut.entries).toEqual([]);
+        expect(result.entries).toEqual([]);
       });
     });
   });
@@ -156,6 +172,8 @@ describe('readIndex', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.write('/repo/.git/index', new Uint8Array([0, 0, 0, 0, 0]));
+
+        // Act
         try {
           await readIndex(ctx);
           // Assert
@@ -182,6 +200,8 @@ describe('readIndex', () => {
           hashConfig: { digestLength: 32 as const, hexLength: 64 as const },
         };
         await ctx.fs.write('/repo/.git/index', new Uint8Array(25));
+
+        // Act
         let caught: unknown;
         try {
           await readIndex(wrapped);
@@ -190,6 +210,8 @@ describe('readIndex', () => {
         } catch (error) {
           caught = error;
         }
+
+        // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
         expect((caught as TsgitError).message).toMatch(/shorter than the hash trailer/);
@@ -246,6 +268,8 @@ describe('readIndex', () => {
             },
           },
         };
+
+        // Act
         try {
           await readIndex(wrapped);
           // Assert

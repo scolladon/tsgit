@@ -34,10 +34,10 @@ describe('primitives/read-sparse-checkout', () => {
           const ctx = createMemoryContext();
 
           // Act
-          const sut = await readSparsePatternText(ctx);
+          const result = await readSparsePatternText(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -50,10 +50,10 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '/src/\n');
 
           // Act
-          const sut = await readSparsePatternText(ctx);
+          const result = await readSparsePatternText(ctx);
 
           // Assert
-          expect(sut).toBe('/src/\n');
+          expect(result).toBe('/src/\n');
         });
       });
     });
@@ -67,10 +67,10 @@ describe('primitives/read-sparse-checkout', () => {
           await ctx.fs.write(sparsePath(ctx), new TextEncoder().encode(atCap));
 
           // Act
-          const sut = await readSparsePatternText(ctx);
+          const result = await readSparsePatternText(ctx);
 
           // Assert
-          expect(sut).toBe(atCap);
+          expect(result).toBe(atCap);
         });
       });
     });
@@ -156,10 +156,10 @@ describe('primitives/read-sparse-checkout', () => {
           const ctx = createMemoryContext();
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -172,10 +172,10 @@ describe('primitives/read-sparse-checkout', () => {
           await seedConfig(ctx, '[core]\n\tsparseCheckout = false\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -189,12 +189,12 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '/*\n!/*/\n/src/\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert — under `src` included, sibling dir excluded.
-          expect(sut).toBeDefined();
-          expect(sut?.('src/main.ts' as FilePath)).toBe(true);
-          expect(sut?.('docs/readme.md' as FilePath)).toBe(false);
+          expect(result).toBeDefined();
+          expect(result?.('src/main.ts' as FilePath)).toBe(true);
+          expect(result?.('docs/readme.md' as FilePath)).toBe(false);
         });
       });
     });
@@ -208,11 +208,11 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '/src/\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert
-          expect(sut?.('src/main.ts' as FilePath)).toBe(true);
-          expect(sut?.('docs/readme.md' as FilePath)).toBe(false);
+          expect(result?.('src/main.ts' as FilePath)).toBe(true);
+          expect(result?.('docs/readme.md' as FilePath)).toBe(false);
         });
       });
     });
@@ -226,13 +226,13 @@ describe('primitives/read-sparse-checkout', () => {
           await seedConfig(ctx, '[core]\n\tsparseCheckout = true\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert — nothing is in the sparse set. The literal `Stryker was here!`
           // pins the `?? ''` fallback: a non-empty fallback would compile that
           // string into a rule and this path would flip to `true`.
-          expect(sut?.('src/main.ts' as FilePath)).toBe(false);
-          expect(sut?.('Stryker was here!' as FilePath)).toBe(false);
+          expect(result?.('src/main.ts' as FilePath)).toBe(false);
+          expect(result?.('Stryker was here!' as FilePath)).toBe(false);
         });
       });
     });
@@ -248,11 +248,11 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '/*\n!/*/\n/docs/\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert — `readme` excluded proves the non-cone interpretation; a
           // `coneRequested = true` mutant would parse cone and include it.
-          expect(sut?.('readme' as FilePath)).toBe(false);
+          expect(result?.('readme' as FilePath)).toBe(false);
         });
       });
     });
@@ -267,10 +267,10 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '/*\n!/*/\n/docs/\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert — cone mode includes the root file.
-          expect(sut?.('readme' as FilePath)).toBe(true);
+          expect(result?.('readme' as FilePath)).toBe(true);
         });
       });
     });
@@ -286,7 +286,7 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '*.ts\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert — degraded → exactly one warning with the exact message;
           // non-cone matching applies.
@@ -294,7 +294,7 @@ describe('primitives/read-sparse-checkout', () => {
           expect(warn).toHaveBeenCalledWith(
             '.git/info/sparse-checkout is not cone-shaped; falling back to non-cone matching',
           );
-          expect(sut?.('src/main.ts' as FilePath)).toBe(true);
+          expect(result?.('src/main.ts' as FilePath)).toBe(true);
         });
       });
     });
@@ -308,10 +308,10 @@ describe('primitives/read-sparse-checkout', () => {
           await seedPatternFile(ctx, '*.ts\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert
-          expect(sut?.('src/main.ts' as FilePath)).toBe(true);
+          expect(result?.('src/main.ts' as FilePath)).toBe(true);
         });
       });
     });
@@ -327,10 +327,10 @@ describe('primitives/read-sparse-checkout', () => {
           await seedConfig(ctx, '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n');
 
           // Act
-          const sut = await loadSparseMatcher(ctx);
+          const result = await loadSparseMatcher(ctx);
 
           // Assert — a callable matcher is returned, and no warning was logged.
-          expect(typeof sut).toBe('function');
+          expect(typeof result).toBe('function');
           expect(warn).not.toHaveBeenCalled();
         });
       });

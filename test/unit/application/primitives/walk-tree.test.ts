@@ -19,6 +19,7 @@ describe('walkTree', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeTree(ctx, []);
+        // Act
         const out = await collect(walkTree(ctx, id));
         // Assert
         expect(out).toEqual([]);
@@ -46,6 +47,7 @@ describe('walkTree', () => {
           { name: 'b', mode: '100644' as FileMode, id: b2 },
         ];
         const id = await writeTree(ctx, entries);
+        // Act
         const out = await collect(walkTree(ctx, id));
         // Assert
         expect(out.map((e) => e.path)).toEqual(['a', 'b']);
@@ -67,6 +69,7 @@ describe('walkTree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'sub', mode: '040000' as FileMode, id: subId },
         ]);
+        // Act
         const out = await collect(walkTree(ctx, rootId, { recursive: false }));
         // Assert
         expect(out.length).toBe(1);
@@ -91,9 +94,9 @@ describe('walkTree', () => {
           { name: 'c', mode: '100644' as FileMode, id: b1 },
         ];
         const id = await writeTree(ctx, entries);
+        // Act + Assert
         try {
           await collect(walkTree(ctx, id, { maxEntries: 2 }));
-          // Assert
           expect.unreachable();
         } catch (error) {
           const code = (error as { data: { code: string } }).data.code;
@@ -119,6 +122,7 @@ describe('walkTree', () => {
           { name: 'c', mode: '100644' as FileMode, id: b1 },
         ];
         const id = await writeTree(ctx, entries);
+        // Act
         const out = await collect(walkTree(ctx, id, { maxEntries: 3 }));
         // Assert
         expect(out.length).toBe(3);
@@ -146,6 +150,7 @@ describe('walkTree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'sub', mode: '160000' as FileMode, id: subTreeId },
         ]);
+        // Act
         const out = await collect(walkTree(ctx, rootId));
         // Assert
         expect(out.map((e) => e.path)).toEqual(['sub']);
@@ -166,6 +171,7 @@ describe('walkTree', () => {
         const id = await writeTree(ctx, [
           { name: 'submodule', mode: '160000' as FileMode, id: b1 },
         ]);
+        // Act
         const out = await collect(walkTree(ctx, id));
         // Assert
         expect(out.length).toBe(1);
@@ -188,9 +194,9 @@ describe('walkTree', () => {
         const controller = new AbortController();
         controller.abort();
         const aborted = { ...ctx, signal: controller.signal };
+        // Act + Assert
         try {
           await collect(walkTree(aborted, id));
-          // Assert
           expect.unreachable();
         } catch (error) {
           const code = (error as { data: { code: string } }).data.code;
@@ -216,6 +222,7 @@ describe('walkTree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'sub', mode: '040000' as FileMode, id: subId },
         ]);
+        // Act
         const out = await collect(walkTree(ctx, rootId));
         // Assert
         expect(out.map((e) => e.path)).toEqual(['sub', 'sub/inner']);
@@ -239,8 +246,9 @@ describe('walkTree', () => {
           type: 'tree' as const,
           id: realTreeId, // matches what readObject will return for the entry's id
           entries: [{ name: 'loop', mode: '40000' as FileMode, id: realTreeId }],
-          // Assert
         };
+
+        // Act + Assert
         try {
           for await (const _ of walkTree(ctx, syntheticRoot, { recursive: true })) void _;
           expect.unreachable();
@@ -270,9 +278,9 @@ describe('walkTree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'root', mode: '040000' as FileMode, id: midId },
         ]);
+        // Act + Assert
         try {
           await collect(walkTree(ctx, rootId, { maxDepth: 1 }));
-          // Assert
           expect.unreachable();
         } catch (error) {
           const code = (error as { data: { code: string } }).data.code;
@@ -300,6 +308,7 @@ describe('walkTree', () => {
         const id = await writeTree(ctx, entries);
         const controller = new AbortController();
         const aborted = { ...ctx, signal: controller.signal };
+        // Act + Assert
         try {
           const out: WTE[] = [];
           for await (const e of walkTree(aborted, id)) {
@@ -307,7 +316,6 @@ describe('walkTree', () => {
             // Abort AFTER the first entry is yielded.
             controller.abort();
           }
-          // Assert
           expect.unreachable();
         } catch (error) {
           const code = (error as { data: { code: string } }).data.code;
@@ -327,9 +335,9 @@ describe('walkTree', () => {
           content: new Uint8Array([1]),
           id: '' as ObjectId,
         } satisfies Blob);
+        // Act + Assert
         try {
           await collect(walkTree(ctx, blobId));
-          // Assert
           expect.unreachable();
         } catch (error) {
           const code = (error as { data: { code: string } }).data.code;

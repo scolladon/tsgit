@@ -24,10 +24,10 @@ describe('stash-ref primitive', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readStashStack(ctx);
+        const result = await readStashStack(ctx);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
 
@@ -104,10 +104,10 @@ describe('stash-ref primitive', () => {
         await pushStashRef(ctx, W2, 'WIP on main: 222 c');
 
         // Act — drop index 1 (W1)
-        const sut = await dropStashEntry(ctx, 1);
+        const result = await dropStashEntry(ctx, 1);
 
         // Assert
-        expect(sut).toEqual({ dropped: W1, remaining: 2 });
+        expect(result).toEqual({ dropped: W1, remaining: 2 });
         expect(await resolveStashEntry(ctx, 0)).toBe(W2);
         expect(await resolveStashEntry(ctx, 1)).toBe(W0);
         // refs/stash still points at the unchanged tip W2.
@@ -130,10 +130,10 @@ describe('stash-ref primitive', () => {
         await pushStashRef(ctx, W1, 'WIP on main: 111 b');
 
         // Act
-        const sut = await dropStashEntry(ctx, 0);
+        const result = await dropStashEntry(ctx, 0);
 
         // Assert
-        expect(sut).toEqual({ dropped: W1, remaining: 1 });
+        expect(result).toEqual({ dropped: W1, remaining: 1 });
         expect(await resolveStashEntry(ctx, 0)).toBe(W0);
         const tip = await getRefStore(ctx).resolveDirect(STASH_REF);
         expect(tip).toEqual({ kind: 'direct', id: W0 });
@@ -149,10 +149,10 @@ describe('stash-ref primitive', () => {
         await pushStashRef(ctx, W0, 'WIP on main: 000 a');
 
         // Act
-        const sut = await dropStashEntry(ctx, 0);
+        const result = await dropStashEntry(ctx, 0);
 
         // Assert
-        expect(sut).toEqual({ dropped: W0, remaining: 0 });
+        expect(result).toEqual({ dropped: W0, remaining: 0 });
         expect(await readStashStack(ctx)).toEqual([]);
         const tip = await getRefStore(ctx).resolveDirect(STASH_REF);
         expect(tip).toEqual({ kind: 'missing' });

@@ -16,9 +16,12 @@ describe('readObject', () => {
         const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
         const ctx = await buildSeededContext({ objects: [blob] });
         const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
-        const sut = await readObject(ctx, id);
+
+        // Act
+        const result = await readObject(ctx, id);
+
         // Assert
-        expect(sut.type).toBe('blob');
+        expect(result.type).toBe('blob');
       });
     });
   });
@@ -28,6 +31,8 @@ describe('readObject', () => {
       it('Then throws OBJECT_NOT_FOUND', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+
+        // Act
         try {
           await readObject(ctx, 'f'.repeat(40) as ObjectId);
           // Assert
@@ -55,6 +60,7 @@ describe('readObject', () => {
           compressed,
         );
 
+        // Act
         try {
           await readObject(ctx, fakeId);
           // Assert
@@ -82,9 +88,11 @@ describe('readObject', () => {
           compressed,
         );
 
-        const sut = await readObject(ctx, fakeId, { verifyHash: false });
+        // Act
+        const result = await readObject(ctx, fakeId, { verifyHash: false });
+
         // Assert
-        expect(sut.type).toBe('blob');
+        expect(result.type).toBe('blob');
       });
     });
   });
@@ -100,11 +108,11 @@ describe('readObject', () => {
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
 
           // Act
-          const sut = await readObject(ctx, id, { maxBytes: 8 });
+          const result = await readObject(ctx, id, { maxBytes: 8 });
 
           // Assert
-          expect(sut.type).toBe('blob');
-          expect((sut as Blob).content).toEqual(content);
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(content);
         });
       });
     });
@@ -118,7 +126,7 @@ describe('readObject', () => {
           const ctx = await buildSeededContext({ objects: [blob] });
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
 
-          // Act / Assert
+          // Act
           try {
             await readObject(ctx, id, { maxBytes: 8 });
             // Assert
@@ -146,10 +154,10 @@ describe('readObject', () => {
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
 
           // Act
-          const sut = await readObject(ctx, id);
+          const result = await readObject(ctx, id);
 
           // Assert
-          expect((sut as Blob).content).toHaveLength(1024);
+          expect((result as Blob).content).toHaveLength(1024);
         });
       });
     });
@@ -162,7 +170,7 @@ describe('readObject', () => {
           const ctx = await buildSeededContext({ objects: [blob] });
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
 
-          // Act / Assert
+          // Act
           try {
             await readObject(ctx, id, { maxBytes: 0 });
             // Assert
@@ -201,7 +209,7 @@ describe('readObject', () => {
             compressed,
           );
 
-          // Act / Assert — cap is 4. Declared size (1) ≤ 4 would pass a
+          // Act + Assert — cap is 4. Declared size (1) ≤ 4 would pass a
           // declared-size cap; actual content is 8 > 4 → must reject.
           try {
             await readObject(ctx, fakeId, { maxBytes: 4, verifyHash: false });
@@ -232,11 +240,11 @@ describe('readObject', () => {
           ]);
 
           // Act
-          const sut = await readObject(ctx, id as ObjectId, { maxBytes: 8 });
+          const result = await readObject(ctx, id as ObjectId, { maxBytes: 8 });
 
           // Assert
-          expect(sut.type).toBe('blob');
-          expect((sut as Blob).content).toEqual(content);
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(content);
         });
       });
     });
@@ -251,7 +259,7 @@ describe('readObject', () => {
             { kind: 'base', type: 'blob', content },
           ]);
 
-          // Act / Assert
+          // Act
           try {
             await readObject(ctx, id as ObjectId, { maxBytes: 8 });
             // Assert
@@ -283,7 +291,7 @@ describe('readObject', () => {
           ]);
           const deltaId = ids[1] as ObjectId;
 
-          // Act / Assert
+          // Act
           try {
             await readObject(ctx, deltaId, { maxBytes: 8 });
             // Assert
@@ -314,10 +322,10 @@ describe('readObject', () => {
           const deltaId = ids[1] as ObjectId;
 
           // Act
-          const sut = await readObject(ctx, deltaId, { maxBytes: 8 });
+          const result = await readObject(ctx, deltaId, { maxBytes: 8 });
 
           // Assert
-          expect((sut as Blob).content).toEqual(targetContent);
+          expect((result as Blob).content).toEqual(targetContent);
         });
       });
     });
@@ -399,10 +407,10 @@ describe('readObject — lazy-fetch (partial clone)', () => {
         const ctx: Context = { ...base, promisor: supplyingPromisor(base, id, blob, calls) };
 
         // Act
-        const sut = await readObject(ctx, id);
+        const result = await readObject(ctx, id);
 
         // Assert
-        expect(sut.type).toBe('blob');
+        expect(result.type).toBe('blob');
         expect(calls.count).toBe(1);
       });
     });
@@ -452,7 +460,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
           },
         };
 
-        // Act & Assert
+        // Act
         try {
           await readObject(ctx, 'f'.repeat(40) as ObjectId);
           // Assert
@@ -516,7 +524,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
           },
         };
 
-        // Act & Assert
+        // Act
         try {
           await readObject(ctx, 'f'.repeat(40) as ObjectId);
           // Assert
@@ -568,10 +576,10 @@ describe('readObject — lazy-fetch (partial clone)', () => {
         };
 
         // Act
-        const sut = await readObject(ctx, id);
+        const result = await readObject(ctx, id);
 
         // Assert
-        expect(sut.type).toBe('blob');
+        expect(result.type).toBe('blob');
         expect(calls.count).toBe(0);
       });
     });
@@ -599,7 +607,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
           },
         };
 
-        // Act & Assert — a non-OBJECT_NOT_FOUND error is rethrown untouched.
+        // Act — a non-OBJECT_NOT_FOUND error is rethrown untouched.
         try {
           await readObject(ctx, fakeId);
           // Assert
@@ -607,6 +615,8 @@ describe('readObject — lazy-fetch (partial clone)', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
         }
+
+        // Assert
         expect(calls.count).toBe(0);
       });
     });

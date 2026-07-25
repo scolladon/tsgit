@@ -13,9 +13,12 @@ describe('readBlob', () => {
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([9]), id: '' as ObjectId };
         const id = await writeObject(ctx, blob);
-        const sut = await readBlob(ctx, id);
+
+        // Act
+        const result = await readBlob(ctx, id);
+
         // Assert
-        expect(sut.type).toBe('blob');
+        expect(result.type).toBe('blob');
       });
     });
   });
@@ -89,9 +92,12 @@ describe('readBlob', () => {
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([7]), id: '' as ObjectId };
         const id = await writeObject(ctx, blob);
-        const sut = await readBlob(ctx, id, { verifyHash: false });
+
+        // Act
+        const result = await readBlob(ctx, id, { verifyHash: false });
+
         // Assert
-        expect(sut.type).toBe('blob');
+        expect(result.type).toBe('blob');
       });
     });
   });
@@ -107,9 +113,12 @@ describe('readBlob', () => {
           id: '' as ObjectId,
         };
         const id = await writeObject(ctx, blob);
-        const sut = await readBlob(ctx, id, { maxBytes: 4 });
+
+        // Act
+        const result = await readBlob(ctx, id, { maxBytes: 4 });
+
         // Assert
-        expect(sut.content).toEqual(new Uint8Array([1, 2, 3, 4]));
+        expect(result.content).toEqual(new Uint8Array([1, 2, 3, 4]));
       });
     });
   });
@@ -125,6 +134,8 @@ describe('readBlob', () => {
           id: '' as ObjectId,
         };
         const id = await writeObject(ctx, blob);
+
+        // Act
         try {
           await readBlob(ctx, id, { maxBytes: 4 });
           // Assert
