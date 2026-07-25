@@ -24,6 +24,7 @@ import { detectBadTitle } from './test-pyramid/detect-bad-title.ts';
 import { detectBannedSutName } from './test-pyramid/detect-banned-sut-name.ts';
 import { detectBareClassThrow } from './test-pyramid/detect-bare-class-throw.ts';
 import { detectEmptyAaaSection } from './test-pyramid/detect-empty-aaa-section.ts';
+import type { AcceptedRecord } from './test-pyramid/detect-integration-proof.ts';
 import { detectIntegrationProof } from './test-pyramid/detect-integration-proof.ts';
 import { detectMissingAaa } from './test-pyramid/detect-missing-aaa.ts';
 import { detectOverMocked } from './test-pyramid/detect-over-mocked.ts';
@@ -31,16 +32,11 @@ import { detectSutBindsResult } from './test-pyramid/detect-sut-binds-result.ts'
 import { detectUnderAsserted } from './test-pyramid/detect-under-asserted.ts';
 import {
   GATING_KEYS,
-  parseManifest,
   type GatingKey,
   type PyramidManifest,
+  parseManifest,
 } from './test-pyramid/parse-manifest.ts';
-import {
-  renderJson,
-  renderMarkdown,
-  type AuditOutcome,
-} from './test-pyramid/render-report.ts';
-import type { AcceptedRecord } from './test-pyramid/detect-integration-proof.ts';
+import { type AuditOutcome, renderJson, renderMarkdown } from './test-pyramid/render-report.ts';
 import type { SourceFile } from './test-pyramid/types.ts';
 
 interface CliArgs {
@@ -53,6 +49,14 @@ interface CliArgs {
 const DEFAULT_MANIFEST = 'test-pyramid-budgets.json';
 const DEFAULT_OUT = 'reports';
 
+// The value following a `--flag <value>` pair, or a thrown error if the
+// argument list ends before the value arrives.
+const requireValue = (argv: readonly string[], i: number, flag: string): string => {
+  const next = argv[i + 1];
+  if (next === undefined) throw new Error(`${flag} requires a path argument`);
+  return next;
+};
+
 export const parseArgs = (argv: readonly string[]): CliArgs => {
   let root = process.cwd();
   let manifestPath = DEFAULT_MANIFEST;
@@ -61,19 +65,13 @@ export const parseArgs = (argv: readonly string[]): CliArgs => {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--root') {
-      const next = argv[i + 1];
-      if (next === undefined) throw new Error('--root requires a path argument');
-      root = next;
+      root = requireValue(argv, i, '--root');
       i += 1;
     } else if (arg === '--manifest') {
-      const next = argv[i + 1];
-      if (next === undefined) throw new Error('--manifest requires a path argument');
-      manifestPath = next;
+      manifestPath = requireValue(argv, i, '--manifest');
       i += 1;
     } else if (arg === '--out') {
-      const next = argv[i + 1];
-      if (next === undefined) throw new Error('--out requires a path argument');
-      outDir = next;
+      outDir = requireValue(argv, i, '--out');
       i += 1;
     } else if (arg === '--report-only') {
       reportOnly = true;
@@ -111,7 +109,9 @@ const readSourceFiles = async (
   return out;
 };
 
-export const runAudit = async (args: CliArgs): Promise<{
+export const runAudit = async (
+  args: CliArgs,
+): Promise<{
   readonly manifest: PyramidManifest;
   readonly outcome: AuditOutcome;
 }> => {
@@ -121,9 +121,7 @@ export const runAudit = async (args: CliArgs): Promise<{
   const allPaths = await collectFiles(args.root, manifest);
   const isExcluded = (filePath: string): boolean =>
     manifest.excludePaths.some((pattern) => minimatch(filePath, pattern));
-  const classifiedPaths = allPaths.filter(
-    (p) => classifyTestFile(manifest, p) !== 'unclassified',
-  );
+  const classifiedPaths = allPaths.filter((p) => classifyTestFile(manifest, p) !== 'unclassified');
   const filesForTally = classifiedPaths;
   const filesForHeuristics = classifiedPaths.filter((p) => !isExcluded(p));
   const files = await readSourceFiles(args.root, filesForHeuristics);
@@ -228,9 +226,7 @@ if (isMainModule()) {
     if (!args.reportOnly) {
       const violations = collectGatingViolations(manifest, outcome);
       if (violations.length > 0) {
-        process.stderr.write(
-          `audit gating failed: ${violations.join(', ')}\n`,
-        );
+        process.stderr.write(`audit gating failed: ${violations.join(', ')}\n`);
         code = 1;
       }
     }

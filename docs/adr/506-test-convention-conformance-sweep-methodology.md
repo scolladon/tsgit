@@ -73,6 +73,10 @@ a minimisation: no assertion changes, no `src/` change. Two facts fix the proof 
    fixed** is `const sut = <call>(…)` where `sut` holds the *outcome* and is only read as
    data. Test *input* never binds to `sut`. A throwing/rejecting test keeps the error
    assertion on `.data` (never a bare `toThrow(Class)` — gated by `bareClassToThrow`).
+   Integration tests with multiple repository actors bind the primary actor to a
+   descriptive name (`repo`/`bare`), not `sut` — the unit under test is the network
+   operation, not one object; a single `sut` would be ambiguous. This intentional
+   cross-tier non-uniformity is confined to the multi-actor case.
 
 2. **Axis 2 — AAA markers.** Every non-skipped `it`/`test` body carries `// Arrange`,
    `// Act`, `// Assert` (all three; the gate floor is `Arrange`+`Assert`). A genuinely
@@ -105,7 +109,11 @@ would drop a distinguishing/boundary input, merge two guard conditions of an `if
 into one row, weaken an error assertion, or share mutable state across `it.each` rows.
 `.skip`/`.todo`/`.fails` blocks are left verbatim. `*.properties.test.ts` files conform
 *structure* only — the `fc.property(…)` invariant and arbitraries are byte-preserved
-(ADR-134/136: properties are additive and non-substitutable).
+(ADR-134/136: properties are additive and non-substitutable). For
+`*.properties.test.ts`, "byte-preserved" scopes the `fc.property(…)` invariant
+assertion, the arbitraries, and `numRuns`; axis-1 local renames inside the callback
+(`const sut = parse(x)` → `const result = parse(x)`) are permitted and are required by
+the all-tiers `sutBindsResult` gate.
 
 **Proof model (standing).** Behaviour preservation is proven **by construction** (every
 Arrange→Act→Assert triple and its `expect(…)` is preserved 1:1; a collapse re-expands to N

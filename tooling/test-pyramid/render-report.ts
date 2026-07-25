@@ -3,6 +3,8 @@
  *
  * Two emitters: machine-readable JSON and human-readable Markdown. Both pure.
  */
+
+import type { TallyResult, TierStatus, TierTally } from './count-tier-files.ts';
 import type { BadTitleFinding } from './detect-bad-title.ts';
 import type { BannedSutFinding } from './detect-banned-sut-name.ts';
 import type { BareClassThrowFinding } from './detect-bare-class-throw.ts';
@@ -17,7 +19,6 @@ import type { MissingAaaFinding } from './detect-missing-aaa.ts';
 import type { OverMockedFinding } from './detect-over-mocked.ts';
 import type { SutBindsResultFinding } from './detect-sut-binds-result.ts';
 import type { UnderAssertedFinding } from './detect-under-asserted.ts';
-import type { TallyResult, TierStatus, TierTally } from './count-tier-files.ts';
 
 export interface AuditFindings {
   readonly overMocked: ReadonlyArray<OverMockedFinding>;
@@ -104,9 +105,7 @@ const renderBannedSut = (findings: ReadonlyArray<BannedSutFinding>): string => {
     .join('\n');
 };
 
-const renderBareClassThrow = (
-  findings: ReadonlyArray<BareClassThrowFinding>,
-): string => {
+const renderBareClassThrow = (findings: ReadonlyArray<BareClassThrowFinding>): string => {
   if (findings.length === 0) return '_none_';
   return findings
     .map(
@@ -116,9 +115,7 @@ const renderBareClassThrow = (
     .join('\n');
 };
 
-const renderEmptyAaaSection = (
-  findings: ReadonlyArray<EmptyAaaSectionFinding>,
-): string => {
+const renderEmptyAaaSection = (findings: ReadonlyArray<EmptyAaaSectionFinding>): string => {
   if (findings.length === 0) return '_none_';
   return findings
     .map((f) => `- \`${f.path}:${f.line}\` — empty ${f.marker} section (${f.title})`)
@@ -128,7 +125,10 @@ const renderEmptyAaaSection = (
 const renderSutBindsResult = (findings: ReadonlyArray<SutBindsResultFinding>): string => {
   if (findings.length === 0) return '_none_';
   return findings
-    .map((f) => `- \`${f.path}:${f.line}\` — \`sut = ${f.callee}(…)\` binds a call result (${f.title})`)
+    .map(
+      (f) =>
+        `- \`${f.path}:${f.line}\` — \`sut = ${f.callee}(…)\` binds a call result (${f.title})`,
+    )
     .join('\n');
 };
 
@@ -164,9 +164,24 @@ const renderMisplacedProof = (findings: ReadonlyArray<MisplacedFinding>): string
 
 const renderIntegrationProof = (findings: IntegrationProofFindings): string => {
   const parts: string[] = [];
-  parts.push('', '### Integration usefulness — missing proof header', '', renderMissingProof(findings.missing));
-  parts.push('', '### Integration usefulness — duplicate proof', '', renderDuplicateProof(findings.duplicate));
-  parts.push('', '### Integration usefulness — misplaced bucket', '', renderMisplacedProof(findings.misplaced));
+  parts.push(
+    '',
+    '### Integration usefulness — missing proof header',
+    '',
+    renderMissingProof(findings.missing),
+  );
+  parts.push(
+    '',
+    '### Integration usefulness — duplicate proof',
+    '',
+    renderDuplicateProof(findings.duplicate),
+  );
+  parts.push(
+    '',
+    '### Integration usefulness — misplaced bucket',
+    '',
+    renderMisplacedProof(findings.misplaced),
+  );
   return parts.join('\n');
 };
 
@@ -208,15 +223,15 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
 
   sections.push('', '## Findings');
   sections.push('', '### Over-mocked integration tests', '', renderOverMocked(findings.overMocked));
-  sections.push('', '### Under-asserted unit tests', '', renderUnderAsserted(findings.underAsserted));
-  sections.push('', '### Non-GWT unit test titles', '', renderBadTitle(findings.badTitle));
-  sections.push('', '### Missing AAA body comments', '', renderMissingAaa(findings.missingAaa));
   sections.push(
     '',
-    '### Empty AAA sections',
+    '### Under-asserted unit tests',
     '',
-    renderEmptyAaaSection(findings.emptyAaaSection),
+    renderUnderAsserted(findings.underAsserted),
   );
+  sections.push('', '### Non-GWT unit test titles', '', renderBadTitle(findings.badTitle));
+  sections.push('', '### Missing AAA body comments', '', renderMissingAaa(findings.missingAaa));
+  sections.push('', '### Empty AAA sections', '', renderEmptyAaaSection(findings.emptyAaaSection));
   sections.push('', '### Banned SUT name synonyms', '', renderBannedSut(findings.bannedSut));
   sections.push(
     '',

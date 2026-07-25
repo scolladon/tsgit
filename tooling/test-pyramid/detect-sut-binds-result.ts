@@ -11,6 +11,9 @@
  *
  * Best-effort and heuristic by design: a dotted/member call (`a.b(…)`) is
  * out of scope for this bare-call check — see ADR-506 §"Harness extension".
+ * Two further best-effort false-negatives (also out of scope, same reason):
+ * a generic-call `const sut = compute<T>(x)` and a paren-wrapped
+ * `const sut = (compute(x))` are not flagged.
  */
 import { classifyTestFile } from './classify-test-file.ts';
 import type { PyramidManifest, SutBindsResultHeuristic } from './parse-manifest.ts';

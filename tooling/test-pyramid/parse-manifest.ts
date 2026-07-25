@@ -166,11 +166,7 @@ const parseTier = (raw: unknown, index: number): TierDefinition => {
   return { name, glob, target, warnBelow, warnAbove: warnAboveValue };
 };
 
-const compileRegex = (
-  pattern: string,
-  heuristicName: string,
-  flags: string,
-): RegExp => {
+const compileRegex = (pattern: string, heuristicName: string, flags: string): RegExp => {
   try {
     return new RegExp(pattern, flags);
   } catch (cause) {
@@ -179,11 +175,7 @@ const compileRegex = (
   }
 };
 
-const requireTier = (
-  raw: unknown,
-  field: string,
-  tierNames: ReadonlySet<TierName>,
-): TierName => {
+const requireTier = (raw: unknown, field: string, tierNames: ReadonlySet<TierName>): TierName => {
   if (typeof raw !== 'string' || raw.length === 0) {
     return fail(`${field} tier must be a non-empty string`);
   }
@@ -221,10 +213,7 @@ const requireRegexPattern = (raw: unknown, field: string): string => {
   return raw;
 };
 
-const parseOverMocked = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): OverMockedHeuristic => {
+const parseOverMocked = (raw: unknown, tierNames: ReadonlySet<TierName>): OverMockedHeuristic => {
   if (!isObject(raw)) {
     return fail('overMockedIntegration must be an object');
   }
@@ -261,20 +250,14 @@ const parseUnderAsserted = (
   return { tiers, minAssertionsPerTest };
 };
 
-const parseGwtTitle = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): GwtTitleHeuristic => {
+const parseGwtTitle = (raw: unknown, tierNames: ReadonlySet<TierName>): GwtTitleHeuristic => {
   if (!isObject(raw)) {
     return fail('gwtTitle must be an object');
   }
   const tiers = requireTiers(raw.tiers, 'gwtTitle', tierNames);
   const describeGiven = requireRegexPattern(raw.describeGiven, 'gwtTitle.describeGiven');
   const describeWhen = requireRegexPattern(raw.describeWhen, 'gwtTitle.describeWhen');
-  const describeCombined = requireRegexPattern(
-    raw.describeCombined,
-    'gwtTitle.describeCombined',
-  );
+  const describeCombined = requireRegexPattern(raw.describeCombined, 'gwtTitle.describeCombined');
   const itThen = requireRegexPattern(raw.itThen, 'gwtTitle.itThen');
   const legacyItGwt = requireRegexPattern(raw.legacyItGwt, 'gwtTitle.legacyItGwt');
   return {
@@ -292,10 +275,7 @@ const parseGwtTitle = (
   };
 };
 
-const parseAaaBody = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): AaaBodyHeuristic => {
+const parseAaaBody = (raw: unknown, tierNames: ReadonlySet<TierName>): AaaBodyHeuristic => {
   if (!isObject(raw)) {
     return fail('aaaBody must be an object');
   }
@@ -320,10 +300,7 @@ const parseAaaBody = (
   return { tiers, required: markers };
 };
 
-const parseSutNaming = (
-  raw: unknown,
-  tierNames: ReadonlySet<TierName>,
-): SutNamingHeuristic => {
+const parseSutNaming = (raw: unknown, tierNames: ReadonlySet<TierName>): SutNamingHeuristic => {
   if (!isObject(raw)) {
     return fail('sutNaming must be an object');
   }
@@ -476,8 +453,14 @@ const parseIntegrationProof = (
   const buckets = parseBuckets(raw.buckets);
   const surfaceRegexSource = requireRegexPattern(raw.surfaceRegex, 'integrationProof.surfaceRegex');
   const surfaceRegex = compileRegex(surfaceRegexSource, 'integrationProof.surfaceRegex', '');
-  const uniqueMinLength = requirePositiveInt(raw.uniqueMinLength, 'integrationProof.uniqueMinLength');
-  const uniqueMaxLength = requirePositiveInt(raw.uniqueMaxLength, 'integrationProof.uniqueMaxLength');
+  const uniqueMinLength = requirePositiveInt(
+    raw.uniqueMinLength,
+    'integrationProof.uniqueMinLength',
+  );
+  const uniqueMaxLength = requirePositiveInt(
+    raw.uniqueMaxLength,
+    'integrationProof.uniqueMaxLength',
+  );
   if (uniqueMinLength >= uniqueMaxLength) {
     return fail('integrationProof uniqueMinLength must be < uniqueMaxLength');
   }

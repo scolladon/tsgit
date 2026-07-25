@@ -22,9 +22,7 @@ export interface BannedSutFinding {
   readonly alias: string;
 }
 
-const sortFindings = (
-  findings: ReadonlyArray<BannedSutFinding>,
-): ReadonlyArray<BannedSutFinding> =>
+const sortFindings = (findings: ReadonlyArray<BannedSutFinding>): ReadonlyArray<BannedSutFinding> =>
   [...findings].sort((a, b) => {
     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
     return a.line - b.line;

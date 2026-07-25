@@ -20,7 +20,9 @@
       "tooling/test/unit/fixture-generator.test.ts",
       "tooling/test/unit/hot-paths-consistency.test.ts",
       "tooling/test-pyramid/detect-sut-binds-result.ts",
-      "tooling/test/unit/test-pyramid/detect-sut-binds-result.test.ts"
+      "tooling/test/unit/test-pyramid/detect-sut-binds-result.test.ts",
+      "tooling/test-pyramid/**/*.ts",
+      "tooling/audit-test-pyramid.ts"
     ]
   },
   "formatter": {

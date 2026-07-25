@@ -48,6 +48,26 @@ const findFirstJsdoc = (
   return { start: open, end: close };
 };
 
+interface CollectedKeys {
+  surface?: string;
+  bucket?: string;
+  unique?: string;
+}
+
+// Applies one `@proves` body line to the accumulator — a no-op unless the
+// line is a well-formed `key: value` line for a still-unset key.
+const applyKeyLine = (out: CollectedKeys, raw: string): void => {
+  const inner = stripCommentStar(raw);
+  if (inner.trim().length === 0) return;
+  const match = inner.match(KEY_LINE);
+  if (match === null) return;
+  const [, key, value] = match;
+  if (key === undefined || value === undefined) return;
+  if (key === 'surface' && out.surface === undefined) out.surface = value;
+  else if (key === 'bucket' && out.bucket === undefined) out.bucket = value;
+  else if (key === 'unique' && out.unique === undefined) out.unique = value;
+};
+
 const collectKeys = (
   block: string,
 ): { readonly surface?: string; readonly bucket?: string; readonly unique?: string } => {
@@ -55,25 +75,12 @@ const collectKeys = (
   if (provesIdx === -1) return {};
   const after = block.slice(provesIdx);
   const lines = after.split('\n').slice(1);
-  const out: { surface?: string; bucket?: string; unique?: string } = {};
-  for (const raw of lines) {
-    const inner = stripCommentStar(raw);
-    if (inner.trim().length === 0) continue;
-    const match = inner.match(KEY_LINE);
-    if (match === null) continue;
-    const [, key, value] = match;
-    if (key === undefined || value === undefined) continue;
-    if (key === 'surface' && out.surface === undefined) out.surface = value;
-    else if (key === 'bucket' && out.bucket === undefined) out.bucket = value;
-    else if (key === 'unique' && out.unique === undefined) out.unique = value;
-  }
+  const out: CollectedKeys = {};
+  for (const raw of lines) applyKeyLine(out, raw);
   return out;
 };
 
-const validateUnique = (
-  value: string,
-  config: IntegrationProofHeuristic,
-): ProvesError | null => {
+const validateUnique = (value: string, config: IntegrationProofHeuristic): ProvesError | null => {
   // `collectKeys` already splits the JSDoc on `\n` and the per-line regex
   // (`KEY_LINE`) cannot capture across line breaks, so a multi-line `unique`
   // value never reaches here. Length bounds are the only failure modes.

@@ -12,12 +12,8 @@
  * Pure function. Caller owns I/O.
  */
 import { classifyTestFile } from './classify-test-file.ts';
-import {
-  parseProvesHeader,
-  type ProvesError,
-  type ProvesHeader,
-} from './parse-proves-header.ts';
 import type { DirectoryClass, PyramidManifest } from './parse-manifest.ts';
+import { type ProvesError, type ProvesHeader, parseProvesHeader } from './parse-proves-header.ts';
 import type { SourceFile } from './types.ts';
 
 export interface MissingFinding {

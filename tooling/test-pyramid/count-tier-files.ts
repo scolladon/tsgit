@@ -27,11 +27,7 @@ export interface TallyResult {
 
 const roundOne = (value: number): number => Math.round(value * 10) / 10;
 
-const statusFor = (
-  share: number,
-  warnBelow: number,
-  warnAbove: number | null,
-): TierStatus => {
+const statusFor = (share: number, warnBelow: number, warnAbove: number | null): TierStatus => {
   if (share < warnBelow) return 'warn-below';
   if (warnAbove !== null && share > warnAbove) return 'warn-above';
   return 'ok';
