@@ -37,12 +37,12 @@ describe('history-rewrite helpers', () => {
           const expectedTree = obj.type === 'commit' ? obj.data.tree : undefined;
 
           // Act
-          const sut = await readCommitData(ctx, head);
+          const result = await readCommitData(ctx, head);
 
           // Assert
-          expect(sut.tree).toBe(expectedTree);
-          expect(sut.parents).toEqual([]);
-          expect(sut.message).toContain('first');
+          expect(result.tree).toBe(expectedTree);
+          expect(result.parents).toEqual([]);
+          expect(result.message).toContain('first');
         });
       });
     });
@@ -88,11 +88,11 @@ describe('history-rewrite helpers', () => {
           const expectedTree = obj.type === 'commit' ? obj.data.tree : undefined;
 
           // Act
-          const sut = await treeOf(ctx, head);
+          const result = await treeOf(ctx, head);
 
           // Assert
-          expect(sut).toBe(expectedTree);
-          const tree = await readObject(ctx, sut);
+          expect(result).toBe(expectedTree);
+          const tree = await readObject(ctx, result);
           expect(tree.type).toBe('tree');
         });
       });
@@ -107,10 +107,10 @@ describe('history-rewrite helpers', () => {
           const { ctx } = await seedCommit();
 
           // Act
-          const sut = await requireSymbolicHead(ctx, 'demo');
+          const result = await requireSymbolicHead(ctx, 'demo');
 
           // Assert
-          expect(sut).toBe('refs/heads/main' as RefName);
+          expect(result).toBe('refs/heads/main' as RefName);
         });
       });
     });

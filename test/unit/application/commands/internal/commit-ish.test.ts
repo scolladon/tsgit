@@ -47,10 +47,10 @@ describe('resolveCommitIsh', () => {
         const id = 'a'.repeat(40);
 
         // Act
-        const sut = await resolveCommitIsh(ctx, id);
+        const result = await resolveCommitIsh(ctx, id);
 
         // Assert
-        expect(sut).toBe(id);
+        expect(result).toBe(id);
       });
     });
   });
@@ -62,10 +62,10 @@ describe('resolveCommitIsh', () => {
         const { ctx, head } = await seedCommit();
 
         // Act
-        const sut = await resolveCommitIsh(ctx, head.slice(0, 7));
+        const result = await resolveCommitIsh(ctx, head.slice(0, 7));
 
         // Assert
-        expect(sut).toBe(head);
+        expect(result).toBe(head);
       });
     });
   });
@@ -78,10 +78,10 @@ describe('resolveCommitIsh', () => {
         await branchCreate(ctx, { name: 'feature' });
 
         // Act
-        const sut = await resolveCommitIsh(ctx, 'feature');
+        const result = await resolveCommitIsh(ctx, 'feature');
 
         // Assert
-        expect(sut).toBe(head);
+        expect(result).toBe(head);
       });
     });
   });
@@ -128,10 +128,10 @@ describe('resolveCommitIsh', () => {
         });
 
         // Act
-        const sut = await resolveCommitIsh(ctx, 'origin/main');
+        const result = await resolveCommitIsh(ctx, 'origin/main');
 
         // Assert
-        expect(sut).toBe(head);
+        expect(result).toBe(head);
       });
     });
   });
@@ -157,11 +157,11 @@ describe('resolveCommitIsh', () => {
         await updateRef(ctx, 'refs/tags/v1' as RefName, tagId, { reflogMessage: 'seed' });
 
         // Act
-        const sut = await resolveCommitIsh(ctx, 'v1');
+        const result = await resolveCommitIsh(ctx, 'v1');
 
         // Assert — peeled to the commit, not the tag object
-        expect(sut).toBe(head);
-        expect(sut).not.toBe(tagId);
+        expect(result).toBe(head);
+        expect(result).not.toBe(tagId);
       });
     });
   });
@@ -175,11 +175,11 @@ describe('resolveCommitIsh', () => {
         await updateRef(ctx, `refs/heads/${hexName}` as RefName, head, { reflogMessage: 'seed' });
 
         // Act
-        const sut = await resolveCommitIsh(ctx, hexName);
+        const result = await resolveCommitIsh(ctx, hexName);
 
         // Assert — resolved as an object id, not DWIM'd to the same-named branch
-        expect(sut).toBe(hexName);
-        expect(sut).not.toBe(head);
+        expect(result).toBe(hexName);
+        expect(result).not.toBe(head);
       });
     });
   });

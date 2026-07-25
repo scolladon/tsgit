@@ -37,10 +37,10 @@ describe('cherry-pick-state', () => {
         await writeCherryPickHead(ctx, OID);
 
         // Act
-        const sut = await readCherryPickHead(ctx);
+        const result = await readCherryPickHead(ctx);
 
         // Assert
-        expect(sut).toBe(OID);
+        expect(result).toBe(OID);
       });
     });
 
@@ -50,10 +50,10 @@ describe('cherry-pick-state', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readCherryPickHead(ctx);
+        const result = await readCherryPickHead(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
 
@@ -64,10 +64,10 @@ describe('cherry-pick-state', () => {
         await ctx.fs.writeUtf8(headPath(ctx), '\n');
 
         // Act
-        const sut = await readCherryPickHead(ctx);
+        const result = await readCherryPickHead(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
 
@@ -149,10 +149,10 @@ describe('cherry-pick-state', () => {
         },
       ])('Then $label', ({ draft, paths, expected }) => {
         // Arrange + Act
-        const sut = conflictMergeMsg(draft, paths);
+        const result = conflictMergeMsg(draft, paths);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });

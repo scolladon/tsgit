@@ -71,10 +71,10 @@ describe('internal/working-tree', () => {
       describe('When validatePath', () => {
         it('Then returns it as a FilePath', () => {
           // Arrange
-          const sut = validatePath('src/foo.ts');
+          const result = validatePath('src/foo.ts');
 
           // Assert
-          expect(sut).toBe('src/foo.ts');
+          expect(result).toBe('src/foo.ts');
         });
       });
     });
@@ -574,10 +574,10 @@ describe('internal/working-tree', () => {
           await ctx.fs.write(`${ctx.layout.workDir}/${path}`, data);
 
           // Act
-          const sut = await readFile(ctx, path);
+          const result = await readFile(ctx, path);
 
           // Assert
-          expect(sut).toEqual(data);
+          expect(result).toEqual(data);
         });
       });
     });

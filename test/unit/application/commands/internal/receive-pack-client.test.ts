@@ -52,11 +52,11 @@ describe('discoverReceivePackRefs', () => {
         const session = fakeSession(successAdvertisement());
 
         // Act
-        const sut = await discoverReceivePackRefs(session);
+        const result = await discoverReceivePackRefs(session);
 
         // Assert
-        expect(sut.refs).toHaveLength(1);
-        expect(sut.refs[0]?.name).toBe('refs/heads/main');
+        expect(result.refs).toHaveLength(1);
+        expect(result.refs[0]?.name).toBe('refs/heads/main');
       });
     });
   });
@@ -67,10 +67,10 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the agent slot is always appended', () => {
         // Arrange & Act
-        const sut = selectPushCapabilities(['report-status']);
+        const result = selectPushCapabilities(['report-status']);
 
         // Assert — pins the trailing `[...intersected, AGENT]` step.
-        expect(sut.some((c) => c.startsWith('agent='))).toBe(true);
+        expect(result.some((c) => c.startsWith('agent='))).toBe(true);
       });
     });
   });
@@ -85,10 +85,10 @@ describe('selectPushCapabilities', () => {
         ['delete-refs'],
       ] as const)('Then %s IS in the result', (cap) => {
         // Arrange & Act
-        const sut = selectPushCapabilities([cap]);
+        const result = selectPushCapabilities([cap]);
 
         // Assert — the intersect keeps any v1-supported capability.
-        expect(sut).toContain(cap);
+        expect(result).toContain(cap);
       });
     });
   });
@@ -99,10 +99,10 @@ describe('selectPushCapabilities', () => {
         // Arrange & Act — kills the no-intersect mutant. Without the intersect
         // step, the function would echo unsupported capabilities back to the
         // server.
-        const sut = selectPushCapabilities(['quiet']);
+        const result = selectPushCapabilities(['quiet']);
 
         // Assert
-        expect(sut).not.toContain('quiet');
+        expect(result).not.toContain('quiet');
       });
     });
   });
@@ -110,13 +110,13 @@ describe('selectPushCapabilities', () => {
   describe('Given the server advertises its own agent string', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the result has exactly one agent= entry (the client one)', () => {
-        // Arrange — kills the `c !== AGENT` filter mutant on the clientWants
+        // Arrange & Act — kills the `c !== AGENT` filter mutant on the clientWants
         // step. Without it, AGENT would survive the intersect and then get
         // appended again at the end, producing two agent= entries.
-        const sut = selectPushCapabilities(['agent=git/2.x', 'report-status']);
+        const result = selectPushCapabilities(['agent=git/2.x', 'report-status']);
 
         // Assert
-        const agentEntries = sut.filter((c) => c.startsWith('agent='));
+        const agentEntries = result.filter((c) => c.startsWith('agent='));
         expect(agentEntries).toHaveLength(1);
         expect(agentEntries[0]).not.toBe('agent=git/2.x');
       });
@@ -126,12 +126,12 @@ describe('selectPushCapabilities', () => {
   describe('Given the server does NOT advertise atomic', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then atomic is NOT in the result', () => {
-        // Arrange — pins the negotiation contract: we only ask for what the
+        // Arrange & Act — pins the negotiation contract: we only ask for what the
         // server can give us.
-        const sut = selectPushCapabilities(['report-status']);
+        const result = selectPushCapabilities(['report-status']);
 
         // Assert
-        expect(sut).not.toContain('atomic');
+        expect(result).not.toContain('atomic');
       });
     });
   });
@@ -140,10 +140,10 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the negotiated push-cert=<nonce> token IS in the result', () => {
         // Arrange & Act
-        const sut = selectPushCapabilities(['report-status', 'push-cert=abc123'], true);
+        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], true);
 
         // Assert — negotiateCapabilities echoes back the SERVER's value.
-        expect(sut).toContain('push-cert=abc123');
+        expect(result).toContain('push-cert=abc123');
       });
     });
   });
@@ -152,10 +152,10 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then no push-cert token is in the result', () => {
         // Arrange & Act — kills the "always want push-cert" mutant.
-        const sut = selectPushCapabilities(['report-status', 'push-cert=abc123']);
+        const result = selectPushCapabilities(['report-status', 'push-cert=abc123']);
 
         // Assert
-        expect(sut.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
+        expect(result.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
       });
     });
   });
@@ -164,10 +164,10 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then no push-cert token is in the result', () => {
         // Arrange & Act — the intersect step still applies to push-cert.
-        const sut = selectPushCapabilities(['report-status'], true);
+        const result = selectPushCapabilities(['report-status'], true);
 
         // Assert
-        expect(sut.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
+        expect(result.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
       });
     });
   });

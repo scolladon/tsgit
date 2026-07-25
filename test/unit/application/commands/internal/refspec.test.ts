@@ -8,11 +8,11 @@ describe('parseRefspec — happy paths', () => {
   describe('Given a short branch name', () => {
     describe('When parsed', () => {
       it('Then both sides expand to refs/heads/<name> with normal force', () => {
-        // Arrange
-        const sut = parseRefspec('main');
+        // Arrange & Act
+        const result = parseRefspec('main');
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           force: 'normal',
           src: 'refs/heads/main',
           dst: 'refs/heads/main',
@@ -26,13 +26,13 @@ describe('parseRefspec — happy paths', () => {
     describe('When parsed', () => {
       it('Then force is "force" and both sides expand', () => {
         // Arrange & Act — kills the `startsWith("+")` → `===` mutant.
-        const sut = parseRefspec('+main');
+        const result = parseRefspec('+main');
 
         // Assert
-        expect(sut.force).toBe('force');
-        expect(sut.src).toBe('refs/heads/main');
-        expect(sut.dst).toBe('refs/heads/main');
-        expect(sut.isDelete).toBe(false);
+        expect(result.force).toBe('force');
+        expect(result.src).toBe('refs/heads/main');
+        expect(result.dst).toBe('refs/heads/main');
+        expect(result.isDelete).toBe(false);
       });
     });
   });
@@ -40,13 +40,13 @@ describe('parseRefspec — happy paths', () => {
   describe('Given a fully-qualified src:dst', () => {
     describe('When parsed', () => {
       it('Then no expansion is applied', () => {
-        // Arrange
-        const sut = parseRefspec('refs/heads/release:refs/heads/main');
+        // Arrange & Act
+        const result = parseRefspec('refs/heads/release:refs/heads/main');
 
         // Assert
-        expect(sut.src).toBe('refs/heads/release');
-        expect(sut.dst).toBe('refs/heads/main');
-        expect(sut.isDelete).toBe(false);
+        expect(result.src).toBe('refs/heads/release');
+        expect(result.dst).toBe('refs/heads/main');
+        expect(result.isDelete).toBe(false);
       });
     });
   });
@@ -55,11 +55,11 @@ describe('parseRefspec — happy paths', () => {
     describe('When parsed', () => {
       it('Then both sides expand independently', () => {
         // Arrange & Act
-        const sut = parseRefspec('local:remote');
+        const result = parseRefspec('local:remote');
 
         // Assert
-        expect(sut.src).toBe('refs/heads/local');
-        expect(sut.dst).toBe('refs/heads/remote');
+        expect(result.src).toBe('refs/heads/local');
+        expect(result.dst).toBe('refs/heads/remote');
       });
     });
   });
@@ -68,13 +68,13 @@ describe('parseRefspec — happy paths', () => {
     describe('When parsed', () => {
       it('Then isDelete is true and src is empty', () => {
         // Arrange & Act — kills the `srcRaw === ''` guard mutant.
-        const sut = parseRefspec(':refs/heads/feature');
+        const result = parseRefspec(':refs/heads/feature');
 
         // Assert
-        expect(sut.isDelete).toBe(true);
-        expect(sut.src).toBe('');
-        expect(sut.dst).toBe('refs/heads/feature');
-        expect(sut.force).toBe('normal');
+        expect(result.isDelete).toBe(true);
+        expect(result.src).toBe('');
+        expect(result.dst).toBe('refs/heads/feature');
+        expect(result.force).toBe('normal');
       });
     });
   });
@@ -83,12 +83,12 @@ describe('parseRefspec — happy paths', () => {
     describe('When parsed', () => {
       it('Then force is "force" and isDelete is true', () => {
         // Arrange & Act — covers force + delete composition.
-        const sut = parseRefspec('+:refs/heads/feature');
+        const result = parseRefspec('+:refs/heads/feature');
 
         // Assert
-        expect(sut.force).toBe('force');
-        expect(sut.isDelete).toBe(true);
-        expect(sut.dst).toBe('refs/heads/feature');
+        expect(result.force).toBe('force');
+        expect(result.isDelete).toBe(true);
+        expect(result.dst).toBe('refs/heads/feature');
       });
     });
   });
@@ -99,11 +99,11 @@ describe('parseRefspec — happy paths', () => {
         // Arrange & Act — short-form expansion happens on the dst even in
         // the delete path (dst can be `feature` short form, kills the
         // expandShort-only-when-non-empty mutant).
-        const sut = parseRefspec(':feature');
+        const result = parseRefspec(':feature');
 
         // Assert
-        expect(sut.dst).toBe('refs/heads/feature');
-        expect(sut.isDelete).toBe(true);
+        expect(result.dst).toBe('refs/heads/feature');
+        expect(result.isDelete).toBe(true);
       });
     });
   });
@@ -113,11 +113,11 @@ describe('parseRefspec — happy paths', () => {
       it('Then HEAD is preserved on the src side', () => {
         // Arrange & Act — kills the `name === 'HEAD'` short-circuit mutant
         // inside expandShort (without it HEAD would expand to refs/heads/HEAD).
-        const sut = parseRefspec('HEAD:refs/heads/staging');
+        const result = parseRefspec('HEAD:refs/heads/staging');
 
         // Assert
-        expect(sut.src).toBe('HEAD');
-        expect(sut.dst).toBe('refs/heads/staging');
+        expect(result.src).toBe('HEAD');
+        expect(result.dst).toBe('refs/heads/staging');
       });
     });
   });
@@ -126,11 +126,11 @@ describe('parseRefspec — happy paths', () => {
     describe('When parsed', () => {
       it('Then both sides are preserved verbatim', () => {
         // Arrange & Act
-        const sut = parseRefspec('refs/tags/v1.0:refs/tags/v1.0');
+        const result = parseRefspec('refs/tags/v1.0:refs/tags/v1.0');
 
         // Assert
-        expect(sut.src).toBe('refs/tags/v1.0');
-        expect(sut.dst).toBe('refs/tags/v1.0');
+        expect(result.src).toBe('refs/tags/v1.0');
+        expect(result.dst).toBe('refs/tags/v1.0');
       });
     });
   });
@@ -177,7 +177,7 @@ describe('parseRefspec — errors', () => {
           label: 'a refspec "main:HEAD" — HEAD as dst is rejected',
         },
       ])('Then $label throws REFSPEC_INVALID', ({ raw, reason }) => {
-        // Arrange + Assert
+        // Act + Assert
         assertRefspecInvalid(() => parseRefspec(raw), reason, raw);
       });
     });
@@ -186,7 +186,7 @@ describe('parseRefspec — errors', () => {
   describe('Given empty input', () => {
     describe('When parsed', () => {
       it('Then the reason is EXACTLY the empty-refspec message (not the after-force-prefix variant)', () => {
-        // Arrange — the empty-input guard fires on line 47 before the
+        // Arrange & Act — the empty-input guard fires on line 47 before the
         // force-prefix logic. Pinning the EXACT reason kills three same-line
         // mutants: the ConditionalExpression→false and BlockStatement→{}
         // mutants both fall through to the "after force prefix" guard, and

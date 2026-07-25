@@ -26,13 +26,13 @@ describe('resolveCurrentIdentity', () => {
         __resetConfigCacheForTests();
 
         // Act
-        const sut = await resolveCurrentIdentity(ctx);
+        const result = await resolveCurrentIdentity(ctx);
 
         // Assert
-        expect(sut.name).toBe('Ada');
-        expect(sut.email).toBe('a@x');
-        expect(sut.timezoneOffset).toBe('+0000');
-        expect(typeof sut.timestamp).toBe('number');
+        expect(result.name).toBe('Ada');
+        expect(result.email).toBe('a@x');
+        expect(result.timezoneOffset).toBe('+0000');
+        expect(typeof result.timestamp).toBe('number');
       });
     });
   });

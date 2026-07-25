@@ -37,7 +37,7 @@ describe('readGitignore', () => {
         // Arrange
         const ctx = await seed();
 
-        // Assert
+        // Act + Assert
         expect(await readGitignore(ctx, '')).toBeUndefined();
       });
     });
@@ -51,12 +51,12 @@ describe('readGitignore', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n!keep.log\n');
 
         // Act
-        const sut = await readGitignore(ctx, '');
+        const result = await readGitignore(ctx, '');
 
         // Assert
-        expect(sut).toHaveLength(2);
-        expect(sut?.[0]?.pattern).toBe('*.log');
-        expect(sut?.[1]?.negated).toBe(true);
+        expect(result).toHaveLength(2);
+        expect(result?.[0]?.pattern).toBe('*.log');
+        expect(result?.[1]?.negated).toBe(true);
       });
     });
   });
@@ -69,11 +69,11 @@ describe('readGitignore', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/.gitignore`, '*.tmp\n');
 
         // Act
-        const sut = await readGitignore(ctx, 'sub' as FilePath);
+        const result = await readGitignore(ctx, 'sub' as FilePath);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut?.[0]?.pattern).toBe('*.tmp');
+        expect(result).toHaveLength(1);
+        expect(result?.[0]?.pattern).toBe('*.tmp');
       });
     });
   });
@@ -108,13 +108,13 @@ describe('readGitignore', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, content);
 
         // Act
-        const sut = await readGitignore(ctx, '');
+        const result = await readGitignore(ctx, '');
 
         // Assert — the boundary-sized payload is parsed into a one-rule ruleset
         // (the body is the literal pattern `xx…x`). A bare `toBeDefined()` would
         // also pass if the parser returned `[]` — this assertion proves the
         // content actually round-tripped.
-        expect(sut).toHaveLength(1);
+        expect(result).toHaveLength(1);
       });
     });
   });
@@ -127,7 +127,7 @@ describe('readInfoExclude', () => {
         // Arrange
         const ctx = await seed();
 
-        // Assert
+        // Act + Assert
         expect(await readInfoExclude(ctx)).toBeUndefined();
       });
     });
@@ -141,11 +141,11 @@ describe('readInfoExclude', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/exclude`, 'secret.txt\n');
 
         // Act
-        const sut = await readInfoExclude(ctx);
+        const result = await readInfoExclude(ctx);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut?.[0]?.pattern).toBe('secret.txt');
+        expect(result).toHaveLength(1);
+        expect(result?.[0]?.pattern).toBe('secret.txt');
       });
     });
   });
@@ -183,10 +183,10 @@ describe('readGlobalExcludes', () => {
         }
 
         // Act
-        const sut = await readGlobalExcludes(ctx);
+        const result = await readGlobalExcludes(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -224,11 +224,11 @@ describe('readGlobalExcludes', () => {
         await ctx.fs.writeUtf8('/repo/global-ignore', '*.swp\n');
 
         // Act
-        const sut = await readGlobalExcludes(ctx);
+        const result = await readGlobalExcludes(ctx);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut?.[0]?.pattern).toBe('*.swp');
+        expect(result).toHaveLength(1);
+        expect(result?.[0]?.pattern).toBe('*.swp');
       });
     });
   });
@@ -245,11 +245,11 @@ describe('readGlobalExcludes', () => {
         await ctx.fs.writeUtf8('/repo/home/.config/git/ignore', '*.bak\n');
 
         // Act
-        const sut = await readGlobalExcludes(ctx);
+        const result = await readGlobalExcludes(ctx);
 
         // Assert
-        expect(sut).toHaveLength(1);
-        expect(sut?.[0]?.pattern).toBe('*.bak');
+        expect(result).toHaveLength(1);
+        expect(result?.[0]?.pattern).toBe('*.bak');
       });
     });
   });
@@ -295,10 +295,10 @@ describe('readGlobalExcludes', () => {
         await ctx.fs.writeUtf8('/repo/home-alone', 'global-rule\n');
 
         // Act
-        const sut = await readGlobalExcludes(ctx);
+        const result = await readGlobalExcludes(ctx);
 
         // Assert — resolves to homeDir verbatim and reads the file there.
-        expect(sut).toHaveLength(1);
+        expect(result).toHaveLength(1);
       });
     });
   });
@@ -349,11 +349,11 @@ describe('readGlobalExcludes', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'build/\n');
 
         // Act
-        const sut = await readGitignore(ctx, '');
+        const result = await readGitignore(ctx, '');
 
         // Assert — content proves the exact `<workDir>/.gitignore` path.
-        expect(sut).toHaveLength(1);
-        expect(sut?.[0]?.pattern).toBe('build/');
+        expect(result).toHaveLength(1);
+        expect(result?.[0]?.pattern).toBe('build/');
       });
     });
   });
@@ -370,10 +370,10 @@ describe('readGlobalExcludes', () => {
         await ctx.fs.writeUtf8('/repo/abs-path', '*.tmp\n');
 
         // Act
-        const sut = await readGlobalExcludes(ctx);
+        const result = await readGlobalExcludes(ctx);
 
         // Assert
-        expect(sut).toHaveLength(1);
+        expect(result).toHaveLength(1);
       });
     });
   });

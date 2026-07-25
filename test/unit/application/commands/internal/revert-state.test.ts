@@ -81,10 +81,10 @@ describe('revert-state', () => {
         },
       ])('Then $label', ({ message, expected }) => {
         // Arrange + Act
-        const sut = revertMessage(commitWith(message), OID);
+        const result = revertMessage(commitWith(message), OID);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -112,10 +112,10 @@ describe('revert-state', () => {
         await writeRevertHead(ctx, OID);
 
         // Act
-        const sut = await readRevertHead(ctx);
+        const result = await readRevertHead(ctx);
 
         // Assert
-        expect(sut).toBe(OID);
+        expect(result).toBe(OID);
       });
     });
 
@@ -125,10 +125,10 @@ describe('revert-state', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readRevertHead(ctx);
+        const result = await readRevertHead(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
 

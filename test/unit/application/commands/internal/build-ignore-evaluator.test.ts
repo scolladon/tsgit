@@ -22,6 +22,7 @@ describe('buildIgnoreEvaluator', () => {
         // Arrange
         const ctx = await seed();
 
+        // Act
         const sut = await buildIgnoreEvaluator(ctx);
 
         // Assert
@@ -80,11 +81,11 @@ describe('buildIgnoreEvaluator', () => {
           },
         });
         const evalCtx = { ...ctx, fs: countingFs };
-        const ev = await buildIgnoreEvaluator(evalCtx);
+        const sut = await buildIgnoreEvaluator(evalCtx);
 
         // Act
-        const first = await ev.loadDirRules('sub' as FilePath);
-        const second = await ev.loadDirRules('sub' as FilePath);
+        const first = await sut.loadDirRules('sub' as FilePath);
+        const second = await sut.loadDirRules('sub' as FilePath);
 
         // Assert — only one read on the .gitignore AND both calls return
         // the same parsed ruleset (a mutant that returned an empty array

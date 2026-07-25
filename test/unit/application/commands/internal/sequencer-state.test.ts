@@ -47,10 +47,10 @@ describe('sequencer-state', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readSequencerHead(ctx);
+        const result = await readSequencerHead(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
 
@@ -99,10 +99,10 @@ describe('sequencer-state', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readAbortSafety(ctx);
+        const result = await readAbortSafety(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -162,10 +162,10 @@ describe('sequencer-state', () => {
         await ctx.fs.writeUtf8(seqPath(ctx, 'todo'), `pick ${id.slice(0, 7)} subj\n`);
 
         // Act
-        const sut = await readSequencerTodo(ctx);
+        const result = await readSequencerTodo(ctx);
 
         // Assert
-        expect(sut).toEqual([{ command: 'pick', oid: id, subject: 'subj' }]);
+        expect(result).toEqual([{ command: 'pick', oid: id, subject: 'subj' }]);
       });
     });
 
@@ -175,10 +175,10 @@ describe('sequencer-state', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readSequencerTodo(ctx);
+        const result = await readSequencerTodo(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
 
@@ -255,10 +255,10 @@ describe('sequencer-state', () => {
         );
 
         // Act
-        const sut = await readSequencerOpts(ctx);
+        const result = await readSequencerOpts(ctx);
 
         // Assert
-        expect(sut).toEqual({ noCommit: true, recordOrigin: false, allowEmpty: true });
+        expect(result).toEqual({ noCommit: true, recordOrigin: false, allowEmpty: true });
       });
     });
   });
@@ -324,10 +324,10 @@ describe('sequencer-state', () => {
         );
 
         // Act
-        const sut = await readSequencerOpts(ctx);
+        const result = await readSequencerOpts(ctx);
 
         // Assert
-        expect(sut).toEqual({ noCommit: true, recordOrigin: false, allowEmpty: false });
+        expect(result).toEqual({ noCommit: true, recordOrigin: false, allowEmpty: false });
       });
     });
   });
@@ -340,10 +340,10 @@ describe('sequencer-state', () => {
         await ctx.fs.writeUtf8(seqPath(ctx, 'opts'), '[options]\n\tno-commit = false\n');
 
         // Act
-        const sut = await readSequencerOpts(ctx);
+        const result = await readSequencerOpts(ctx);
 
         // Assert
-        expect(sut).toEqual({ noCommit: false, recordOrigin: false, allowEmpty: false });
+        expect(result).toEqual({ noCommit: false, recordOrigin: false, allowEmpty: false });
       });
     });
   });

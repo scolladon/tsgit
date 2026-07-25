@@ -18,10 +18,10 @@ describe('application/commands/internal/remote-config', () => {
       describe('When validateRemoteName runs', () => {
         it('Then it returns the same name verbatim', () => {
           // Arrange + Act
-          const sut = validateRemoteName('origin');
+          const result = validateRemoteName('origin');
 
           // Assert
-          expect(sut).toBe('origin');
+          expect(result).toBe('origin');
         });
       });
     });
@@ -40,7 +40,7 @@ describe('application/commands/internal/remote-config', () => {
           { input: 'a\\b', label: 'a backslash' },
           { input: 'a]b', label: 'a closing bracket' },
         ])('Then it throws REMOTE_NAME_INVALID for $label', ({ input }) => {
-          // Arrange
+          // Arrange + Act
           let caught: unknown;
           try {
             validateRemoteName(input);
@@ -58,10 +58,10 @@ describe('application/commands/internal/remote-config', () => {
       describe('When validateRemoteName runs', () => {
         it('Then it accepts the name (unusual but legal)', () => {
           // Arrange + Act
-          const sut = validateRemoteName('two parts');
+          const result = validateRemoteName('two parts');
 
           // Assert
-          expect(sut).toBe('two parts');
+          expect(result).toBe('two parts');
         });
       });
     });
@@ -69,7 +69,7 @@ describe('application/commands/internal/remote-config', () => {
     describe('Given an empty name', () => {
       describe('When validateRemoteName runs', () => {
         it('Then it throws REMOTE_NAME_INVALID with reason "empty"', () => {
-          // Arrange
+          // Arrange + Act
           let caught: unknown;
           try {
             validateRemoteName('');
@@ -90,7 +90,7 @@ describe('application/commands/internal/remote-config', () => {
     describe('Given a name with a newline', () => {
       describe('When validateRemoteName runs', () => {
         it('Then it throws REMOTE_NAME_INVALID with the forbidden-char reason', () => {
-          // Arrange
+          // Arrange + Act
           let caught: unknown;
           try {
             validateRemoteName('a\nb');
@@ -145,10 +145,10 @@ describe('application/commands/internal/remote-config', () => {
           },
         ])('Then $label', ({ config, expected }) => {
           // Arrange + Act
-          const sut = listBranchReferrers(config, 'origin');
+          const result = listBranchReferrers(config, 'origin');
 
           // Assert
-          expect(sut).toEqual(expected);
+          expect(result).toEqual(expected);
         });
       });
     });
@@ -165,10 +165,10 @@ describe('application/commands/internal/remote-config', () => {
           };
 
           // Act
-          const sut = listBranchReferrers(config, 'origin');
+          const result = listBranchReferrers(config, 'origin');
 
           // Assert
-          expect(sut.map((r) => r.branch)).toEqual(['main', 'dev']);
+          expect(result.map((r) => r.branch)).toEqual(['main', 'dev']);
         });
       });
     });
@@ -209,10 +209,10 @@ describe('application/commands/internal/remote-config', () => {
           },
         ])('Then $label', ({ refspecs, expected }) => {
           // Arrange + Act
-          const sut = rewriteDefaultFetchRefspecs(refspecs, 'old', 'new');
+          const result = rewriteDefaultFetchRefspecs(refspecs, 'old', 'new');
 
           // Assert
-          expect(sut).toEqual(expected);
+          expect(result).toEqual(expected);
         });
       });
     });

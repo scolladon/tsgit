@@ -158,10 +158,10 @@ describe('rebase-state', () => {
         await writeRebaseStop(ctx, STOP);
 
         // Act
-        const sut = await readRebaseState(ctx);
+        const result = await readRebaseState(ctx);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           headName: 'refs/heads/topic',
           onto: ONTO,
           origHead: ORIG,
@@ -242,10 +242,10 @@ describe('rebase-state', () => {
         await writeRebaseStop(ctx, EDIT_STOP);
 
         // Act
-        const sut = await readRebaseState(ctx);
+        const result = await readRebaseState(ctx);
 
         // Assert
-        expect(sut?.amend).toBe(T2);
+        expect(result?.amend).toBe(T2);
       });
     });
   });
@@ -304,14 +304,14 @@ describe('rebase-state', () => {
         await writeRebaseStop(ctx, SQUASH_STOP);
 
         // Act
-        const sut = await readRebaseState(ctx);
+        const result = await readRebaseState(ctx);
 
         // Assert
-        expect(sut?.currentFixups).toEqual([
+        expect(result?.currentFixups).toEqual([
           { action: 'squash', oid: T2 },
           { action: 'fixup', oid: T3 },
         ]);
-        expect(sut?.rewrittenPending).toEqual([T1, T2]);
+        expect(result?.rewrittenPending).toEqual([T1, T2]);
       });
     });
 
@@ -326,10 +326,10 @@ describe('rebase-state', () => {
         );
 
         // Act
-        const sut = await readRebaseState(ctx);
+        const result = await readRebaseState(ctx);
 
         // Assert — only `squash <oid>` survives; the oid-less verb is skipped
-        expect(sut?.currentFixups).toEqual([{ action: 'squash', oid: T2 }]);
+        expect(result?.currentFixups).toEqual([{ action: 'squash', oid: T2 }]);
       });
     });
 
@@ -436,10 +436,10 @@ describe('rebase-state', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readRebaseState(ctx);
+        const result = await readRebaseState(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
 

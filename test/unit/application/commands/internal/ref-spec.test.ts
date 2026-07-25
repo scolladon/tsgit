@@ -12,11 +12,11 @@ describe('internal/ref-spec', () => {
     describe("Given 'refs/heads/main:refs/remotes/origin/main'", () => {
       describe('When parseRefspec', () => {
         it('Then non-force, src/dst set, no wildcard', () => {
-          // Arrange
-          const sut = parseRefspec('refs/heads/main:refs/remotes/origin/main');
+          // Arrange & Act
+          const result = parseRefspec('refs/heads/main:refs/remotes/origin/main');
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             force: false,
             src: 'refs/heads/main',
             dst: 'refs/remotes/origin/main',
@@ -29,12 +29,12 @@ describe('internal/ref-spec', () => {
     describe("Given '+refs/heads/main:refs/remotes/origin/main'", () => {
       describe('When parseRefspec', () => {
         it("Then force is true and '+' is stripped from src", () => {
-          // Arrange
-          const sut = parseRefspec('+refs/heads/main:refs/remotes/origin/main');
+          // Arrange & Act
+          const result = parseRefspec('+refs/heads/main:refs/remotes/origin/main');
 
           // Assert
-          expect(sut.force).toBe(true);
-          expect(sut.src).toBe('refs/heads/main');
+          expect(result.force).toBe(true);
+          expect(result.src).toBe('refs/heads/main');
         });
       });
     });
@@ -42,11 +42,11 @@ describe('internal/ref-spec', () => {
     describe("Given 'refs/heads/*:refs/remotes/origin/*'", () => {
       describe('When parseRefspec', () => {
         it('Then hasWildcard is true', () => {
-          // Arrange
-          const sut = parseRefspec('refs/heads/*:refs/remotes/origin/*');
+          // Arrange & Act
+          const result = parseRefspec('refs/heads/*:refs/remotes/origin/*');
 
           // Assert
-          expect(sut.hasWildcard).toBe(true);
+          expect(result.hasWildcard).toBe(true);
         });
       });
     });
@@ -90,7 +90,7 @@ describe('internal/ref-spec', () => {
             label: 'a refspec whose dst has two "*"',
           },
         ])('Then $label throws REFSPEC_INVALID', ({ raw, reason }) => {
-          // Arrange
+          // Arrange & Act
           let caught: unknown;
           try {
             parseRefspec(raw);
@@ -138,10 +138,10 @@ describe('internal/ref-spec', () => {
           const spec = parseRefspec(specSource);
 
           // Act
-          const sut = applyRefspec(spec, ref);
+          const result = applyRefspec(spec, ref);
 
           // Assert
-          expect(sut).toBe(expected);
+          expect(result).toBe(expected);
         });
       });
     });
@@ -170,10 +170,10 @@ describe('internal/ref-spec', () => {
           const spec = parseRefspec(specSource);
 
           // Act
-          const sut = applyRefspec(spec, ref);
+          const result = applyRefspec(spec, ref);
 
           // Assert
-          expect(sut).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
