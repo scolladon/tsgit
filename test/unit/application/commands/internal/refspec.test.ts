@@ -177,7 +177,7 @@ describe('parseRefspec — errors', () => {
           label: 'a refspec "main:HEAD" — HEAD as dst is rejected',
         },
       ])('Then $label throws REFSPEC_INVALID', ({ raw, reason }) => {
-        // Act + Assert
+        // Arrange + Act + Assert
         assertRefspecInvalid(() => parseRefspec(raw), reason, raw);
       });
     });
