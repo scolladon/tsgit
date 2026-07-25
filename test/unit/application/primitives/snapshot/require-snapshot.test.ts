@@ -10,10 +10,10 @@ describe('requireSnapshot', () => {
         const value = { kind: 'tree' as const };
 
         // Act
-        const sut = await requireSnapshot(Promise.resolve(value), 'never thrown');
+        const result = await requireSnapshot(Promise.resolve(value), 'never thrown');
 
         // Assert
-        expect(sut).toBe(value);
+        expect(result).toBe(value);
       });
     });
   });

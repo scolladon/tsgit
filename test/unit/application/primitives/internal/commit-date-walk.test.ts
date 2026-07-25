@@ -75,10 +75,10 @@ describe('commit-date-walk core', () => {
           // Arrange
           const first = 'a'.repeat(40) as ObjectId;
           const second = 'b'.repeat(40) as ObjectId;
-          const sut = commitWithParents([first, second]);
+          const commit = commitWithParents([first, second]);
 
           // Act
-          const result = selectParents(sut, true);
+          const result = selectParents(commit, true);
 
           // Assert
           expect(result).toEqual([first]);
@@ -90,10 +90,10 @@ describe('commit-date-walk core', () => {
           // Arrange
           const first = 'a'.repeat(40) as ObjectId;
           const second = 'b'.repeat(40) as ObjectId;
-          const sut = commitWithParents([first, second]);
+          const commit = commitWithParents([first, second]);
 
           // Act
-          const result = selectParents(sut, false);
+          const result = selectParents(commit, false);
 
           // Assert
           expect(result).toEqual([first, second]);
@@ -105,10 +105,10 @@ describe('commit-date-walk core', () => {
       describe('When firstParent is true', () => {
         it('Then an empty parent list is returned', () => {
           // Arrange
-          const sut = commitWithParents([]);
+          const commit = commitWithParents([]);
 
           // Act
-          const result = selectParents(sut, true);
+          const result = selectParents(commit, true);
 
           // Assert
           expect(result).toEqual([]);

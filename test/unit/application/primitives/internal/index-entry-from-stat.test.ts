@@ -26,21 +26,21 @@ describe('Given an lstat result plus a mode, id, and path', () => {
   describe('When building a stage-0 index entry', () => {
     it('Then it copies the stat-cache fields with seconds floored from milliseconds', () => {
       // Arrange + Act
-      const sut = indexEntryFromStat(stat, FILE_MODE.GITLINK, ID, 'lib' as FilePath);
+      const result = indexEntryFromStat(stat, FILE_MODE.GITLINK, ID, 'lib' as FilePath);
       // Assert
-      expect(sut.ctimeSeconds).toBe(1_700_000_123);
-      expect(sut.mtimeSeconds).toBe(1_700_000_987);
-      expect(sut.ctimeNanoseconds).toBe(0);
-      expect(sut.mtimeNanoseconds).toBe(0);
-      expect(sut.dev).toBe(42);
-      expect(sut.ino).toBe(99);
-      expect(sut.uid).toBe(501);
-      expect(sut.gid).toBe(20);
-      expect(sut.fileSize).toBe(7);
-      expect(sut.mode).toBe(FILE_MODE.GITLINK);
-      expect(sut.id).toBe(ID);
-      expect(sut.path).toBe('lib');
-      expect(sut.flags).toBe(STAGE0_FLAGS);
+      expect(result.ctimeSeconds).toBe(1_700_000_123);
+      expect(result.mtimeSeconds).toBe(1_700_000_987);
+      expect(result.ctimeNanoseconds).toBe(0);
+      expect(result.mtimeNanoseconds).toBe(0);
+      expect(result.dev).toBe(42);
+      expect(result.ino).toBe(99);
+      expect(result.uid).toBe(501);
+      expect(result.gid).toBe(20);
+      expect(result.fileSize).toBe(7);
+      expect(result.mode).toBe(FILE_MODE.GITLINK);
+      expect(result.id).toBe(ID);
+      expect(result.path).toBe('lib');
+      expect(result.flags).toBe(STAGE0_FLAGS);
     });
   });
 });

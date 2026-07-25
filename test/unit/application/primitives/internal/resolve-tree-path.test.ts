@@ -28,10 +28,10 @@ describe('descendTreePath', () => {
           entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
         };
         // Act
-        const sut = await descendTreePath(ctx, root, 'file', 'HEAD');
+        const result = await descendTreePath(ctx, root, 'file', 'HEAD');
         // Assert
-        expect(sut.id).toBe(fileId);
-        expect(sut.mode).toBe(FILE_MODE.REGULAR);
+        expect(result.id).toBe(fileId);
+        expect(result.mode).toBe(FILE_MODE.REGULAR);
       });
     });
   });
@@ -58,9 +58,9 @@ describe('descendTreePath', () => {
           entries: [{ mode: FILE_MODE.DIRECTORY, name: 'a', id: aId }],
         };
         // Act
-        const sut = await descendTreePath(ctx, root, 'a/b/c', 'HEAD');
+        const result = await descendTreePath(ctx, root, 'a/b/c', 'HEAD');
         // Assert
-        expect(sut.id).toBe(cId);
+        expect(result.id).toBe(cId);
       });
     });
   });
@@ -139,9 +139,9 @@ describe('descendTreePath', () => {
           entries: [{ mode: FILE_MODE.EXECUTABLE, name: 'run', id: fileId }],
         };
         // Act
-        const sut = await descendTreePath(ctx, root, 'run', 'HEAD');
+        const result = await descendTreePath(ctx, root, 'run', 'HEAD');
         // Assert
-        expect(sut.mode).toBe(FILE_MODE.EXECUTABLE);
+        expect(result.mode).toBe(FILE_MODE.EXECUTABLE);
       });
     });
   });
@@ -161,10 +161,10 @@ describe('findTreeEntry', () => {
         };
         const rootId = await writeObject(ctx, root);
         // Act
-        const sut = await findTreeEntry(ctx, rootId, 'file');
+        const result = await findTreeEntry(ctx, rootId, 'file');
         // Assert
-        expect(sut?.id).toBe(fileId);
-        expect(sut?.mode).toBe(FILE_MODE.REGULAR);
+        expect(result?.id).toBe(fileId);
+        expect(result?.mode).toBe(FILE_MODE.REGULAR);
       });
     });
   });
@@ -181,9 +181,9 @@ describe('findTreeEntry', () => {
           entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
         };
         // Act
-        const sut = await findTreeEntry(ctx, root, 'file');
+        const result = await findTreeEntry(ctx, root, 'file');
         // Assert
-        expect(sut?.id).toBe(fileId);
+        expect(result?.id).toBe(fileId);
       });
     });
   });
@@ -211,9 +211,9 @@ describe('findTreeEntry', () => {
         };
         const rootId = await writeObject(ctx, root);
         // Act
-        const sut = await findTreeEntry(ctx, rootId, 'a/b/c');
+        const result = await findTreeEntry(ctx, rootId, 'a/b/c');
         // Assert
-        expect(sut?.id).toBe(cId);
+        expect(result?.id).toBe(cId);
       });
     });
   });
@@ -257,10 +257,10 @@ describe('findTreeEntry', () => {
         const { root, path } = await arrange(ctx);
 
         // Act
-        const sut = await findTreeEntry(ctx, root, path);
+        const result = await findTreeEntry(ctx, root, path);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });

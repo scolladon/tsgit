@@ -17,10 +17,13 @@ describe('qualifyKey', () => {
     describe('When qualifyKey runs', () => {
       it('Then returns "<section>.<name>" with both lower-cased', () => {
         // Arrange
-        const sut = qualifyKey(section('User', undefined, []), 'Name');
+        const input = section('User', undefined, []);
+
+        // Act
+        const result = qualifyKey(input, 'Name');
 
         // Assert
-        expect(sut).toBe('user.name');
+        expect(result).toBe('user.name');
       });
     });
   });
@@ -29,10 +32,13 @@ describe('qualifyKey', () => {
     describe('When qualifyKey runs', () => {
       it('Then preserves subsection case while lower-casing section and name', () => {
         // Arrange
-        const sut = qualifyKey(section('Remote', 'My.Fork', []), 'URL');
+        const input = section('Remote', 'My.Fork', []);
+
+        // Act
+        const result = qualifyKey(input, 'URL');
 
         // Assert
-        expect(sut).toBe('remote.My.Fork.url');
+        expect(result).toBe('remote.My.Fork.url');
       });
     });
   });
@@ -73,11 +79,8 @@ describe('collectValues', () => {
           expected: [],
         },
       ])('Then $label', ({ sections, parsed, expected }) => {
-        // Arrange
-        const sut = collectValues;
-
-        // Act
-        const result = sut(sections, parsed);
+        // Arrange & Act
+        const result = collectValues(sections, parsed);
 
         // Assert
         expect(result).toEqual(expected);
@@ -133,11 +136,10 @@ describe('collectScopedValues', () => {
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange
-        const sut = collectScopedValues;
         const parsed = { section: 'user', subsection: undefined, name: 'name' };
 
         // Act
-        const result = sut(input, parsed);
+        const result = collectScopedValues(input, parsed);
 
         // Assert
         expect(result).toEqual(expected);

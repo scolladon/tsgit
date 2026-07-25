@@ -161,12 +161,11 @@ describe('buildAttributeProvider', () => {
         },
       ])('Then $label', async ({ path, homeDir, arrange, expected }) => {
         // Arrange
-        const sut = merge;
         const ctx = createMemoryContext(homeDir === undefined ? {} : { homeDir });
         await arrange(ctx);
 
         // Act
-        const result = await sut(ctx, path);
+        const result = await merge(ctx, path);
 
         // Assert
         expect(result).toEqual(expected);
@@ -210,13 +209,12 @@ describe('buildAttributeProvider', () => {
         "Then the global source is skipped (yields 'unspecified') ($label)",
         async ({ arrange, hostile }) => {
           // Arrange
-          const sut = merge;
           const ctx = createMemoryContext();
           await arrange(ctx);
           const target = hostile === true ? withSymlinkLstat(ctx) : ctx;
 
           // Act
-          const result = await sut(target, 'a.txt');
+          const result = await merge(target, 'a.txt');
 
           // Assert
           expect(result).toBe('unspecified');
@@ -358,11 +356,11 @@ describe('maybeBuildAttributeProvider', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await maybeBuildAttributeProvider(ctx);
+        const result = await maybeBuildAttributeProvider(ctx);
 
         // Assert — the conditional `ctx.command !== undefined` must be checked:
         // when command is absent the right-hand branch must run, not always-build.
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -376,10 +374,10 @@ describe('maybeBuildAttributeProvider', () => {
         });
 
         // Act
-        const sut = await maybeBuildAttributeProvider(ctx);
+        const result = await maybeBuildAttributeProvider(ctx);
 
         // Assert
-        expect(sut).toBeDefined();
+        expect(result).toBeDefined();
       });
     });
   });

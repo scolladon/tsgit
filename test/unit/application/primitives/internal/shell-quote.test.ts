@@ -19,11 +19,8 @@ describe('sqQuote', () => {
           expected: "'x; rm -rf /'",
         },
       ])('Then $label is wrapped verbatim in single quotes', ({ input, expected }) => {
-        // Arrange
-        const sut = sqQuote;
-
-        // Act
-        const result = sut(input);
+        // Arrange & Act
+        const result = sqQuote(input);
 
         // Assert
         expect(result).toBe(expected);
@@ -34,11 +31,8 @@ describe('sqQuote', () => {
   describe('Given a value containing an embedded single quote', () => {
     describe('When quoted', () => {
       it('Then the quote is escaped as close-quote, escaped-quote, reopen-quote', () => {
-        // Arrange
-        const sut = sqQuote;
-
-        // Act
-        const result = sut("O'Brien");
+        // Arrange & Act
+        const result = sqQuote("O'Brien");
 
         // Assert
         expect(result).toBe("'O'\\''Brien'");
@@ -49,11 +43,8 @@ describe('sqQuote', () => {
   describe('Given a value containing two embedded single quotes', () => {
     describe('When quoted', () => {
       it('Then each quote is escaped independently', () => {
-        // Arrange
-        const sut = sqQuote;
-
-        // Act
-        const result = sut("it's Bob's");
+        // Arrange & Act
+        const result = sqQuote("it's Bob's");
 
         // Assert
         expect(result).toBe("'it'\\''s Bob'\\''s'");
