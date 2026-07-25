@@ -124,7 +124,7 @@ describe('parseGitInt — property tests', () => {
   describe('Given an arbitrary ASCII string', () => {
     describe('When parseGitInt is called', () => {
       it('Then it never throws and never returns NaN (totality)', () => {
-        // Act + Assert
+        // Arrange + Act + Assert
         fc.assert(
           fc.property(arbAsciiString(), (raw) => {
             const result = parseGitInt(raw);
@@ -143,7 +143,7 @@ describe('parseGitInt — property tests', () => {
   describe('Given an arbitrary in-range git int string', () => {
     describe('When parseGitInt is called', () => {
       it('Then it returns ok with the correct numeric value (decode round-trip)', () => {
-        // Act + Assert
+        // Arrange + Act + Assert
         fc.assert(
           fc.property(arbInRangeGitIntString(), ({ raw, value }) => {
             const result = parseGitInt(raw);
@@ -160,7 +160,7 @@ describe('parseGitInt — property tests', () => {
   describe('Given an arbitrary string with trailing non-unit / multi-char unit / no digits', () => {
     describe('When parseGitInt is called', () => {
       it('Then it returns not-ok with reason invalid unit (negative grammar)', () => {
-        // Act + Assert
+        // Arrange + Act + Assert
         fc.assert(
           fc.property(arbTrailingGarbageString(), (raw) => {
             const result = parseGitInt(raw);

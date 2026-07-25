@@ -2519,10 +2519,8 @@ describe('primitives/config-read value grammar', () => {
       ['hash', '[test]\n\tab#cd = x\n\tv = ok\n'],
       ['semicolon', '[test]\n\tab;cd = x\n\tv = ok\n'],
     ])('Then a %s comment before the equals sign causes CONFIG_PARSE_ERROR', (_label, text) => {
-      // Arrange — the comment swallows the `=`, landing the line on the
+      // Arrange + Act + Assert — the comment swallows the `=`, landing the line on the
       // valueless-key path; `ab#cd` / `ab;cd` fail the key grammar → git refuses.
-
-      // Act + Assert
       try {
         parseIniSections(text, 'test.cfg');
         expect.unreachable('parseIniSections must throw when comment swallows =');
@@ -2736,9 +2734,7 @@ describe('primitives/config-read value grammar', () => {
         label: 'a malformed header on line 3 of a multi-line file reports `line: 3`',
       },
     ])('Then $label', ({ text, expectedData }) => {
-      // Arrange
-
-      // Act + Assert
+      // Arrange + Act + Assert
       try {
         parseIniSections(text, 'test-source');
         expect.unreachable('parseIniSections must throw on a malformed quoted subsection header');
@@ -2768,9 +2764,7 @@ describe('primitives/config-read value grammar', () => {
         label: 'a failure on a continuation line reports the continuation physical line',
       },
     ])('Then $label', ({ text, line }) => {
-      // Arrange
-
-      // Act + Assert
+      // Arrange + Act + Assert
       try {
         parseIniSections(text);
         expect.unreachable('parseIniSections must throw on a malformed value');
@@ -3205,9 +3199,7 @@ describe('primitives/config-read valueless keys', () => {
         { text: '[a]\nkey\r \n', label: 'lone CR before trailing space (key\\r )' },
         { text: '[a]\n\tab#cd = x\n', label: 'a comment swallowing the = (ab#cd = x)' },
       ])('Then throws CONFIG_PARSE_ERROR with line 2 and the source ($label)', ({ text }) => {
-        // Arrange
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
           parseIniSections(text, 'test.cfg');
           expect.unreachable('must throw on a key that violates the grammar');
@@ -3236,10 +3228,8 @@ describe('primitives/config-read valueless keys', () => {
 
     describe('Given `[a] key` on a header line followed by a body entry, When parseIniSections', () => {
       it('Then the header opens a section and the same-line valueless key joins the body entry', () => {
-        // Arrange — `[a] key` is a header `[a]` plus a same-line valueless entry;
+        // Arrange + Act — `[a] key` is a header `[a]` plus a same-line valueless entry;
         // the following `v = ok` lands in the same re-opened section.
-
-        // Act
         const result = parseIniSections('[a]\n[a] key\n\tv = ok\n');
 
         // Assert — first `[a]` is empty; the second carries the same-line key and `v`.
@@ -3571,10 +3561,8 @@ describe('primitives/config-read tokenizeConfig', () => {
 
   describe('Given a not-header body line starting with [ (`[half`), When tokenizeConfig', () => {
     it('Then it refuses with CONFIG_PARSE_ERROR on its physical line like git', () => {
-      // Arrange — `[half` is not a valid header and has no key char at column 0,
+      // Arrange + Act + Assert — `[half` is not a valid header and has no key char at column 0,
       // so git refuses it (bad config line 2); the parser must not skip it.
-
-      // Act + Assert
       try {
         tokenizeConfig('[a]\n\t[half\n');
         expect.unreachable('tokenizeConfig must refuse a bracket-shaped non-header line');
@@ -3679,9 +3667,7 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given a malformed section header', () => {
     describe('When tokenizeConfig parses it', () => {
       it('Then CONFIG_PARSE_ERROR carries line 1 and the partial section name', () => {
-        // Arrange
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
           tokenizeConfig('[s "a" x]\n\tk = v\n');
           expect.unreachable('tokenizeConfig must refuse a malformed header');
@@ -3697,9 +3683,7 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given a bad key line under a valid header', () => {
     describe('When tokenizeConfig parses it', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
-        // Arrange
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
           tokenizeConfig('[a]\nbad!key\n');
           expect.unreachable('tokenizeConfig must refuse a bad key line');
@@ -3715,9 +3699,7 @@ describe('primitives/config-read tokenizeConfig', () => {
   describe('Given an entry value with an unclosed quote', () => {
     describe('When tokenizeConfig parses it', () => {
       it('Then CONFIG_PARSE_ERROR carries line 2', () => {
-        // Arrange
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
           tokenizeConfig('[a]\nk = "unclosed\n');
           expect.unreachable('tokenizeConfig must refuse an unclosed quote');
@@ -4695,9 +4677,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given `[a] ` (trailing space after the bracket), When parseIniSections', () => {
       it('Then the section records as a with the trailing gap ignored', () => {
-        // Arrange — a gap after `]` is fine; only whitespace INSIDE the brackets refuses
-
-        // Act
+        // Arrange + Act — a gap after `]` is fine; only whitespace INSIDE the brackets refuses
         const result = parseIniSections('[a] \nk=1\n');
 
         // Assert
@@ -4887,9 +4867,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given the orphan key `orphan`, When parseConfigKey', () => {
       it('Then it is unaddressable — CONFIG_KEY_INVALID with reason missing-name', () => {
-        // Arrange
-
-        // Act + Assert
+        // Arrange + Act + Assert
         try {
           parseConfigKey('orphan');
           expect.unreachable('orphan key must be unaddressable');
@@ -4952,9 +4930,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given a `;`-led whole-line comment that also holds a later `#`, When tokenizeConfig', () => {
       it('Then the earliest marker (the `;`) starts the comment so the line is one comment token', () => {
-        // Arrange — `;` sits at column 0, before the `#`; the earliest marker must win.
-
-        // Act
+        // Arrange + Act — `;` sits at column 0, before the `#`; the earliest marker must win.
         const tokens = tokenizeConfig('; a # b\n');
 
         // Assert — cutting at the later `#` instead would leave `; a`, which the key grammar refuses.
@@ -4985,9 +4961,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given a key followed by spaces then `=` (`k   =`), When parseIniSections', () => {
       it('Then the space run is skipped and a.k = v is recorded', () => {
-        // Arrange — isolates the post-key space skip on the `=` branch
-
-        // Act
+        // Arrange + Act — isolates the post-key space skip on the `=` branch
         const result = parseIniSections('[a]\n\tk   = v\n');
 
         // Assert
@@ -4999,9 +4973,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given a key followed by a TAB then `=` (`k\\t=`), When parseIniSections', () => {
       it('Then the TAB is skipped and a.k = v is recorded', () => {
-        // Arrange — isolates the post-key TAB skip on the `=` branch
-
-        // Act
+        // Arrange + Act — isolates the post-key TAB skip on the `=` branch
         const result = parseIniSections('[a]\n\tk\t= v\n');
 
         // Assert
@@ -5013,9 +4985,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
     describe('Given the post-key terminator branches, When parseIniSections', () => {
       it('Then a bare EOL records a valueless entry', () => {
-        // Arrange — isolates the EOL branch
-
-        // Act
+        // Arrange + Act — isolates the EOL branch
         const result = parseIniSections('[a]\n\tk\n');
 
         // Assert
@@ -5025,9 +4995,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
 
       it('Then a CR-at-EOL records a valueless entry', () => {
-        // Arrange — isolates the CR-at-EOL branch
-
-        // Act
+        // Arrange + Act — isolates the CR-at-EOL branch
         const result = parseIniSections('[a]\n\tk\r\n');
 
         // Assert
@@ -5037,9 +5005,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
 
       it('Then an `=` records a valued entry', () => {
-        // Arrange — isolates the `=` branch
-
-        // Act
+        // Arrange + Act — isolates the `=` branch
         const result = parseIniSections('[a]\n\tk = v\n');
 
         // Assert

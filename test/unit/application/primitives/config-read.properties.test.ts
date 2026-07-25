@@ -57,7 +57,7 @@ describe('config-read valueless key grammar properties', () => {
   describe('Given an arbitrary valid key', () => {
     describe('When parseIniSections parses [s]\\n\\t<key>\\n', () => {
       it('Then exactly one entry { key, value: null } is recorded (grammar totality)', () => {
-        // Act + Assert — fast-check invokes the predicate per sample;
+        // Arrange + Act + Assert — fast-check invokes the predicate per sample;
         // each call wraps an arbitrary key in a section, parses, and
         // asserts exactly one valueless entry is recorded.
         fc.assert(
@@ -78,7 +78,7 @@ describe('config-read valueless key grammar properties', () => {
   describe('Given an arbitrary valid key with a junk character appended', () => {
     describe('When parseIniSections parses [s]\\n<key><junk>\\n', () => {
       it('Then CONFIG_PARSE_ERROR is thrown with .data.line === 2 (negative grammar)', () => {
-        // Act + Assert — fast-check invokes the predicate per sample;
+        // Arrange + Act + Assert — fast-check invokes the predicate per sample;
         // each call builds a junk line, attempts a parse, and asserts the error.
         fc.assert(
           fc.property(arbValidKey(), arbJunkChar(), (key, junk) => {
@@ -119,7 +119,7 @@ describe('config-read same-line and orphan grammar properties', () => {
   describe('Given an arbitrary header identity, a valid key, and a safe value', () => {
     describe('When parseIniSections parses the header with a same-line entry', () => {
       it('Then the section records the key/value (round-trip), and the no-`=` form records null', () => {
-        // Act + Assert
+        // Arrange + Act + Assert
         fc.assert(
           fc.property(
             arbSafeHeaderIdentity(),
