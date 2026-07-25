@@ -52,9 +52,9 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
-        const sut = detectSimilarityRenames(ctx, diff);
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff);
         // Assert
-        const result = await sut;
         expect(result.changes).toEqual(diff.changes);
       });
     });
@@ -83,8 +83,7 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         // Act
-        const sut = detectSimilarityRenames(ctx, diff);
-        const result = await sut;
+        const result = await detectSimilarityRenames(ctx, diff);
         // Assert
         expect(result.changes).toHaveLength(1);
         const change = result.changes[0];
@@ -124,8 +123,7 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         // Act
-        const sut = detectSimilarityRenames(ctx, diff);
-        const result = await sut;
+        const result = await detectSimilarityRenames(ctx, diff);
         // Assert
         expect(result.changes).toHaveLength(1);
         const change = result.changes[0];
@@ -463,8 +461,7 @@ describe('detectSimilarityRenames', () => {
         };
 
         // Act
-        const sut = detectSimilarityRenames(ctx, diff, { copies: 'on' });
-        const result = await sut;
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
 
         // Assert — modify still present AND copy was detected
         const modifies = result.changes.filter((c) => c.type === 'modify');
@@ -736,8 +733,12 @@ describe('detectSimilarityRenames', () => {
         };
 
         // Act — limit=0 (unlimited) under copies:'harder'; preimage passed positionally
-        const sut = detectSimilarityRenames(ctx, diff, { copies: 'harder', limit: 0 }, preimage);
-        const result = await sut;
+        const result = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', limit: 0 },
+          preimage,
+        );
 
         // Assert — copy detected from the unchanged harder source (no limit fallback to 'on')
         const copies = result.changes.filter((c) => c.type === 'copy');
@@ -908,8 +909,7 @@ describe('detectSimilarityRenames', () => {
         };
 
         // Act
-        const sut = detectSimilarityRenames(ctx, diff);
-        const result = await sut;
+        const result = await detectSimilarityRenames(ctx, diff);
 
         // Assert — no break: modify stays plain
         expect(result.changes).toHaveLength(1);
@@ -1424,8 +1424,7 @@ describe('detectSimilarityRenames', () => {
         ];
         const diff: TreeDiff = { changes };
         // Act
-        const sut = detectSimilarityRenames(ctx, diff);
-        const result = await sut;
+        const result = await detectSimilarityRenames(ctx, diff);
         const renames = result.changes.filter((c) => c.type === 'rename');
         const adds = result.changes.filter((c) => c.type === 'add');
         const deletes = result.changes.filter((c) => c.type === 'delete');
@@ -1579,8 +1578,7 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         // Act
-        const sut = detectSimilarityRenames(ctx, diff, { threshold: threshold1pct });
-        const result = await sut;
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: threshold1pct });
         const renames = result.changes.filter((c) => c.type === 'rename');
         const adds = result.changes.filter((c) => c.type === 'add');
         // Assert — cap=4 evicts s5 from d1's matrix (b1..b4 fill 4 slots at 65% each,
@@ -1696,8 +1694,7 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         // Act
-        const sut = detectSimilarityRenames(ctx, diff, { copies: 'on', limit: 2 });
-        const result = await sut;
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on', limit: 2 });
         const copies = result.changes.filter((c) => c.type === 'copy');
         const adds = result.changes.filter((c) => c.type === 'add');
         // Assert — inexact pass skipped: no copies, dst remains as add
@@ -2324,10 +2321,9 @@ describe('detectSimilarityRenames', () => {
         };
 
         // Act — gate at 45000, strictly between the max-denominator (30000) and min-denominator (60000) scores
-        const sut = detectSimilarityRenames(ctx, diff, {
+        const result = await detectSimilarityRenames(ctx, diff, {
           breakRewrites: { score: 45000, merge: DEFAULT_MERGE_SCORE },
         });
-        const result = await sut;
 
         // Assert — max denominator keeps the score below the gate: no break, so no rename and the modify survives
         expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
@@ -3738,11 +3734,8 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
         label: 'the candidate is below the minimum: no slot is replaced',
       },
     ])('Then $label', ({ slots, candidate, expected }) => {
-      // Arrange
-      const sut = recordIfBetter;
-
-      // Act
-      sut(slots, candidate);
+      // Arrange & Act
+      recordIfBetter(slots, candidate);
 
       // Assert
       expect(slots.map((s) => s.score)).toEqual(expected);
@@ -3752,7 +3745,6 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
   describe('When the candidate ties the minimum exactly', () => {
     it('Then the existing entry is kept (strictly-better replacement only)', () => {
       // Arrange — the minimum (20) is a distinct object at index 1
-      const sut = recordIfBetter;
       const original = renameTriple(20);
       const slots: ScoredTriple[] = [
         renameTriple(50),
@@ -3762,7 +3754,7 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
       ];
 
       // Act — a candidate equal to the minimum (a different object)
-      sut(slots, renameTriple(20));
+      recordIfBetter(slots, renameTriple(20));
 
       // Assert — equal score does not displace; the original object is retained
       expect(slots[1]).toBe(original);
@@ -3771,11 +3763,11 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
 
   describe('When the cap constant is read', () => {
     it('Then it is git NUM_CANDIDATE_PER_DST of 4', () => {
-      // Arrange / Act
-      const sut = NUM_CANDIDATE_PER_DST;
+      // Arrange & Act
+      const result = NUM_CANDIDATE_PER_DST;
 
       // Assert
-      expect(sut).toBe(4);
+      expect(result).toBe(4);
     });
   });
 });
@@ -3805,11 +3797,8 @@ describe('Given the size prefilter isSizeRejected', () => {
           'the size delta sits exactly on the reachability boundary (max*(MAX-thr) equals (max-min)*MAX exactly: 2*30000 === 1*60000): the pair is not rejected (strict inequality, inclusive boundary survives)',
       },
     ])('Then $label', ({ sfSize, dfSize, expected }) => {
-      // Arrange
-      const sut = isSizeRejected;
-
-      // Act
-      const result = sut(sfSize, dfSize, DEFAULT_RENAME_THRESHOLD);
+      // Arrange & Act
+      const result = isSizeRejected(sfSize, dfSize, DEFAULT_RENAME_THRESHOLD);
 
       // Assert
       expect(result).toBe(expected);
