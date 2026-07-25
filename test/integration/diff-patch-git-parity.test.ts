@@ -86,12 +86,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
 
       // Act
       const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-      const sut = await reconstructPatch(ctx, treeDiff);
+      const result = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin: actual matches live git AND matches the frozen
       // golden. If live drifts (new git version) the golden still catches it.
-      expect(sut).toBe(live);
-      expect(sut).toBe(golden);
+      expect(result).toBe(live);
+      expect(result).toBe(golden);
     } finally {
       await pair.dispose();
     }
@@ -130,11 +130,11 @@ describe.skipIf(!GIT_AVAILABLE)('integration — diff patch git parity', () => {
 
       // Act
       const treeDiff = await diff(ctx, { from: c1.id, to: c3.id, recursive: true });
-      const sut = await reconstructPatch(ctx, treeDiff);
+      const result = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin against live git + frozen golden.
-      expect(sut).toBe(live);
-      expect(sut).toBe(golden);
+      expect(result).toBe(live);
+      expect(result).toBe(golden);
     } finally {
       await pair.dispose();
     }

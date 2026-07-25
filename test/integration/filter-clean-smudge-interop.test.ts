@@ -451,8 +451,8 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
         expect(dec(tsWorktreeBytes)).toBe(dec(gitWorktreeBytes));
 
         // Committed blob bytes are UPPERCASE (cleaned); worktree = blob bytes (raw, no smudge)
-        const sut = await readBlob(ctx, gitBlobOid as ObjectId);
-        expect(dec(sut.content)).toBe('HELLO SMUDGE OPT\n');
+        const result = await readBlob(ctx, gitBlobOid as ObjectId);
+        expect(dec(result.content)).toBe('HELLO SMUDGE OPT\n');
       });
     });
   });

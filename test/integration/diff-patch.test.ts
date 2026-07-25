@@ -42,21 +42,21 @@ describe('integration — diff patch-text reconstruction', () => {
 
     // Act
     const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-    const sut = await reconstructPatch(ctx, treeDiff);
+    const result = await reconstructPatch(ctx, treeDiff);
 
     // Assert — golden text frozen against the canonical grammar.
-    expect(sut).toMatch(/^diff --git a\/lines\.txt b\/lines\.txt\n/);
-    expect(sut).toContain('@@ -2,7 +2,7 @@');
-    expect(sut).toContain('-5\n');
-    expect(sut).toContain('+FOUR\n');
+    expect(result).toMatch(/^diff --git a\/lines\.txt b\/lines\.txt\n/);
+    expect(result).toContain('@@ -2,7 +2,7 @@');
+    expect(result).toContain('-5\n');
+    expect(result).toContain('+FOUR\n');
     // Three context lines on each side of the change.
-    expect(sut).toContain(' 2\n');
-    expect(sut).toContain(' 3\n');
-    expect(sut).toContain(' 4\n');
-    expect(sut).toContain(' 6\n');
-    expect(sut).toContain(' 7\n');
-    expect(sut).toContain(' 8\n');
-    expect(sut.endsWith('\n')).toBe(true);
+    expect(result).toContain(' 2\n');
+    expect(result).toContain(' 3\n');
+    expect(result).toContain(' 4\n');
+    expect(result).toContain(' 6\n');
+    expect(result).toContain(' 7\n');
+    expect(result).toContain(' 8\n');
+    expect(result.endsWith('\n')).toBe(true);
   });
 
   it('Given an add then a rename across two commits with detectRenames, When the patch is reconstructed, Then the rename block + a normal add block both appear', async () => {
@@ -80,16 +80,16 @@ describe('integration — diff patch-text reconstruction', () => {
       detectRenames: true,
       recursive: true,
     });
-    const sut = await reconstructPatch(ctx, treeDiff);
+    const result = await reconstructPatch(ctx, treeDiff);
 
     // Assert — rename block (no hunks) + the brand-new file's add block both
     // appear in the canonical text.
-    expect(sut).toContain('diff --git a/src.txt b/dst.txt');
-    expect(sut).toContain('similarity index 100%');
-    expect(sut).toContain('rename from src.txt');
-    expect(sut).toContain('rename to dst.txt');
-    expect(sut).toContain('diff --git a/new.txt b/new.txt');
-    expect(sut).toContain('new file mode 100644');
-    expect(sut).toContain('+fresh');
+    expect(result).toContain('diff --git a/src.txt b/dst.txt');
+    expect(result).toContain('similarity index 100%');
+    expect(result).toContain('rename from src.txt');
+    expect(result).toContain('rename to dst.txt');
+    expect(result).toContain('diff --git a/new.txt b/new.txt');
+    expect(result).toContain('new file mode 100644');
+    expect(result).toContain('+fresh');
   });
 });

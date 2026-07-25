@@ -137,9 +137,12 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
   });
 
   it('Then an exact commit with two same-commit tags matches git (newer wins)', async () => {
-    const sut = await describeCmd(richCtx, c1);
-    expect(sut.exact).toBe(true);
-    expect(render(sut)).toBe(gitDescribe(rich, c1));
+    // Act
+    const result = await describeCmd(richCtx, c1);
+
+    // Assert
+    expect(result.exact).toBe(true);
+    expect(render(result)).toBe(gitDescribe(rich, c1));
   });
 
   it('Then exactMatch on an untagged HEAD co-refuses with git', async () => {
@@ -328,9 +331,12 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
     });
 
     it('Then --always reconstructs git describe --always', async () => {
-      const sut = await describeCmd(ctx, undefined, { always: true });
-      expect(sut.tag).toBeUndefined();
-      expect(render(sut)).toBe(gitDescribe(dir, '--always'));
+      // Act
+      const result = await describeCmd(ctx, undefined, { always: true });
+
+      // Assert
+      expect(result.tag).toBeUndefined();
+      expect(render(result)).toBe(gitDescribe(dir, '--always'));
     });
 
     it('Then describe co-refuses with git (no --always)', async () => {
@@ -428,11 +434,11 @@ describe.skipIf(!GIT_AVAILABLE)('describe interop', () => {
         const { dir, ctx } = await build();
         try {
           // Act
-          const sut = await describeCmd(ctx, undefined, { dirty: true });
+          const result = await describeCmd(ctx, undefined, { dirty: true });
 
           // Assert
-          expect(sut.dirty).toBe(expectedDirty);
-          expect(render(sut)).toBe(gitDescribe(dir, '--dirty'));
+          expect(result.dirty).toBe(expectedDirty);
+          expect(render(result)).toBe(gitDescribe(dir, '--dirty'));
         } finally {
           await rm(dir, { recursive: true, force: true });
         }

@@ -422,7 +422,7 @@ describe.skipIf(!GIT_AVAILABLE)('tar byte-faithfulness', () => {
         );
 
         // Act
-        const sut = tarArchive(result, {
+        const tarStream = tarArchive(result, {
           umask: 0o0002,
           uname: 'root',
           gname: 'root',
@@ -433,7 +433,7 @@ describe.skipIf(!GIT_AVAILABLE)('tar byte-faithfulness', () => {
               ? { mtime: result.commitTime }
               : {}),
         });
-        const ourBytes = await collectTarBytes(sut);
+        const ourBytes = await collectTarBytes(tarStream);
 
         // Assert
         assertCommit?.(result);
@@ -523,13 +523,13 @@ describe.skipIf(!GIT_AVAILABLE)('tar deep-path byte-faithfulness', () => {
       );
 
       // Act
-      const sut = tarArchive(result, {
+      const tarStream = tarArchive(result, {
         umask: 0o0002,
         uname: 'root',
         gname: 'root',
         ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
       });
-      const ourBytes = await collectTarBytes(sut);
+      const ourBytes = await collectTarBytes(tarStream);
 
       // Assert — byte-equal: the 110-byte dir path uses name='jjjjjjjjjj/'
       // (split before the trailing slash, not at it) and the 119-byte file path
@@ -611,13 +611,13 @@ describe.skipIf(!GIT_AVAILABLE)('tar UTF-8 path byte-faithfulness', () => {
       );
 
       // Act
-      const sut = tarArchive(result, {
+      const tarStream = tarArchive(result, {
         umask: 0o0002,
         uname: 'root',
         gname: 'root',
         ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
       });
-      const ourBytes = await collectTarBytes(sut);
+      const ourBytes = await collectTarBytes(tarStream);
 
       // Assert — byte-equal: café.txt name field carries 0xC3 0xA9 (not 0xE9)
       // and the long-dir split preserves the UTF-8 ñ (0xC3 0xB1) across prefix+name
@@ -789,7 +789,7 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
         const gitBytes = runGitBinary(['-C', zipPair.peer, ...gitArgs(treeish)], gitZipEnv());
 
         // Act
-        const sut = zipArchive(
+        const zipStream = zipArchive(
           result,
           { deflateRaw: ctx.compressor.deflateRaw },
           {
@@ -802,7 +802,7 @@ describe.skipIf(!GIT_AVAILABLE)('zip byte-faithfulness (node adapter, TZ=UTC)', 
                 : {}),
           },
         );
-        const ourBytes = await collectZipBytes(sut);
+        const ourBytes = await collectZipBytes(zipStream);
 
         // Assert — method-0 + framing byte-exact; method-8 round-trips (not byte-pinned)
         assertCommit?.(result);
@@ -868,7 +868,7 @@ describe.skipIf(!GIT_AVAILABLE)('zip whole-archive byte-equality (all-stored fix
       );
 
       // Act
-      const sut = zipArchive(
+      const zipStream = zipArchive(
         result,
         { deflateRaw: ctx.compressor.deflateRaw },
         {
@@ -876,7 +876,7 @@ describe.skipIf(!GIT_AVAILABLE)('zip whole-archive byte-equality (all-stored fix
           ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
         },
       );
-      const ourBytes = await collectZipBytes(sut);
+      const ourBytes = await collectZipBytes(zipStream);
 
       // Assert — every entry stored ⇒ whole archive byte-identical to git
       expect(ourBytes).toEqual(gitBytes);

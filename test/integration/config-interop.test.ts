@@ -390,10 +390,10 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
           // Act — tsgit (fresh context to bypass cache)
           const ctx = createNodeContext({ workDir: pair.ours });
-          const sut = await getConfigValue({ ctx, key: getKey, scope: 'local' });
+          const result = await getConfigValue({ ctx, key: getKey, scope: 'local' });
 
           // Assert
-          expect(sut.value, `tsgit value for ${getKey}`).toBe(gitValue);
+          expect(result.value, `tsgit value for ${getKey}`).toBe(gitValue);
         },
       );
     });
@@ -1182,9 +1182,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         expect(extractFromA(oursConfig)).toBe(extractFromA(peerConfig));
       }, 60_000);
     });
-  });
 
-  describe('Given twin repos with a multi-line entry `[a]\\n\\tkey = one\\\\\\n   two\\n\\tother = x\\n`', () => {
     describe('When git and tsgit each unset a.key (row B)', () => {
       it('Then the [a] section bytes are identical — unset removes the whole span', async () => {
         // Arrange — row B: unset removes all physical lines of the continuation span
@@ -2201,109 +2199,73 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       }, 60_000);
     });
 
-    describe('When git and tsgit both refuse a missing old name (lookup miss)', () => {
-      it('Then git exits non-zero with "no such section" and tsgit throws CONFIG_SECTION_NOT_FOUND with name "t.y"', async () => {
-        // Arrange
-        const { peerConfigPath } = await seedTwinConfigs(pair, seedConf);
+    describe('When git and tsgit both refuse an old name that does not resolve to an existing section', () => {
+      const LOOKUP_MISS_ROWS: ReadonlyArray<{
+        readonly label: string;
+        readonly seed: string;
+        readonly oldName: string;
+        readonly newName: string;
+        readonly expectedName: string;
+      }> = [
+        {
+          label: 'a missing old name (lookup miss)',
+          seed: seedConf,
+          oldName: 't.y',
+          newName: 'u',
+          expectedName: 't.y',
+        },
+        {
+          label: 'an old name with bad chars (lookup miss, not grammar error)',
+          seed: seedConf,
+          oldName: 'bad!name',
+          newName: 't',
+          expectedName: 'bad!name',
+        },
+        {
+          label: 'a case-mismatched old name ("s" vs [S])',
+          seed: '[S]\n\tk = a\n',
+          oldName: 's',
+          newName: 't',
+          expectedName: 's',
+        },
+      ];
 
-        // Act — git
-        const gitResult = tryRunGit([
-          'config',
-          '--file',
-          peerConfigPath,
-          '--rename-section',
-          't.y',
-          'u',
-        ]);
-        expect(gitResult.ok).toBe(false);
-        expect(gitResult.stderr).toMatch(/no such section/i);
+      it.each(LOOKUP_MISS_ROWS)(
+        'Then git exits non-zero with "no such section" and tsgit throws CONFIG_SECTION_NOT_FOUND with name "$expectedName" for $label',
+        async ({ seed, oldName, newName, expectedName }) => {
+          // Arrange
+          const { peerConfigPath } = await seedTwinConfigs(pair, seed);
 
-        // Act — tsgit
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let caught: TsgitError | undefined;
-        try {
-          await renameConfigSection({ ctx, oldName: 't.y', newName: 'u' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
+          // Act — git
+          const gitResult = tryRunGit([
+            'config',
+            '--file',
+            peerConfigPath,
+            '--rename-section',
+            oldName,
+            newName,
+          ]);
+          expect(gitResult.ok).toBe(false);
+          expect(gitResult.stderr).toMatch(/no such section/i);
 
-        // Assert
-        expect(caught?.data).toMatchObject({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: 't.y',
-          scope: 'local',
-        });
-      }, 60_000);
-    });
+          // Act — tsgit
+          const ctx = createNodeContext({ workDir: pair.ours });
+          let caught: TsgitError | undefined;
+          try {
+            await renameConfigSection({ ctx, oldName, newName });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
 
-    describe('When git and tsgit both refuse an old name with bad chars (lookup miss, not grammar error)', () => {
-      it('Then git exits non-zero with "no such section" and tsgit throws CONFIG_SECTION_NOT_FOUND with name "bad!name"', async () => {
-        // Arrange
-        const { peerConfigPath } = await seedTwinConfigs(pair, seedConf);
-
-        // Act — git
-        const gitResult = tryRunGit([
-          'config',
-          '--file',
-          peerConfigPath,
-          '--rename-section',
-          'bad!name',
-          't',
-        ]);
-        expect(gitResult.ok).toBe(false);
-        expect(gitResult.stderr).toMatch(/no such section/i);
-
-        // Act — tsgit
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let caught: TsgitError | undefined;
-        try {
-          await renameConfigSection({ ctx, oldName: 'bad!name', newName: 't' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert — old name never validated; tsgit carries raw input in error
-        expect(caught?.data).toMatchObject({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: 'bad!name',
-          scope: 'local',
-        });
-      }, 60_000);
-    });
-
-    describe('When git and tsgit encounter a case-mismatched old name ("s" vs [S])', () => {
-      it('Then git exits non-zero with "no such section" and tsgit throws CONFIG_SECTION_NOT_FOUND', async () => {
-        // Arrange — file has [S] but we look for s (raw/case-sensitive matching)
-        const { peerConfigPath } = await seedTwinConfigs(pair, '[S]\n\tk = a\n');
-
-        // Act — git
-        const gitResult = tryRunGit([
-          'config',
-          '--file',
-          peerConfigPath,
-          '--rename-section',
-          's',
-          't',
-        ]);
-        expect(gitResult.ok).toBe(false);
-        expect(gitResult.stderr).toMatch(/no such section/i);
-
-        // Act — tsgit
-        const ctx = createNodeContext({ workDir: pair.ours });
-        let caught: TsgitError | undefined;
-        try {
-          await renameConfigSection({ ctx, oldName: 's', newName: 't' });
-        } catch (err) {
-          caught = err as TsgitError;
-        }
-
-        // Assert
-        expect(caught?.data).toMatchObject({
-          code: 'CONFIG_SECTION_NOT_FOUND',
-          name: 's',
-          scope: 'local',
-        });
-      }, 60_000);
+          // Assert — old name never validated; tsgit carries raw input in error
+          expect(caught?.data).toMatchObject({
+            code: 'CONFIG_SECTION_NOT_FOUND',
+            name: expectedName,
+            scope: 'local',
+          });
+        },
+        60_000,
+      );
     });
   });
 
@@ -2641,9 +2603,62 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
   });
 
   describe('Given same-line header blocks seeded into twin configs', () => {
-    const renameRow = (label: string, bytes: string, oldName: string, newName: string): void => {
-      describe(`When git and tsgit each --rename-section for ${label}`, () => {
-        it('Then the renamed config bytes are identical', async () => {
+    const RENAME_ROWS: ReadonlyArray<{
+      readonly label: string;
+      readonly bytes: string;
+      readonly oldName: string;
+      readonly newName: string;
+    }> = [
+      { label: 'a same-line entry (W8)', bytes: '[a] key = v\n', oldName: 'a', newName: 'b' },
+      {
+        label: 'a same-line entry with a body (R1)',
+        bytes: '[a] key = v\n\tk2 = w\n',
+        oldName: 'a',
+        newName: 'b',
+      },
+      {
+        label: 'a same-line valueless entry (N3)',
+        bytes: '[a] key\n',
+        oldName: 'a',
+        newName: 'b',
+      },
+      {
+        label: 'trailing spaces after the bracket (N4)',
+        bytes: '[a]  \n\tk = v\n',
+        oldName: 'a',
+        newName: 'b',
+      },
+      { label: 'a raw no-space tail (C1)', bytes: '[a]   key=v\n', oldName: 'a', newName: 'b' },
+      {
+        label: 'a trailing comment in the tail (C2)',
+        bytes: '[a] key = v ; cmt\n',
+        oldName: 'a',
+        newName: 'b',
+      },
+      {
+        label: 'a continuation tail (C7)',
+        bytes: '[a] key = one\\\n  two\n',
+        oldName: 'a',
+        newName: 'b',
+      },
+      {
+        label: 'a bad-key sibling block (D2a)',
+        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
+        oldName: 'b',
+        newName: 'c',
+      },
+      {
+        label: 'the bad-key block itself (D2c)',
+        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
+        oldName: 'a',
+        newName: 'c',
+      },
+    ];
+
+    describe('When git and tsgit each --rename-section', () => {
+      it.each(RENAME_ROWS)(
+        'Then the renamed config bytes are identical for "$label"',
+        async ({ bytes, oldName, newName }) => {
           // Arrange — same starting bytes in both repos, no preamble
           const { peerConfigPath } = await seedTwinConfigs(pair, bytes);
 
@@ -2665,13 +2680,48 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
           // Assert
           const { oursConfig, peerConfig } = await readTwinConfigs(pair);
           expect(oursConfig).toBe(peerConfig);
-        }, 60_000);
-      });
-    };
+        },
+        60_000,
+      );
+    });
 
-    const removeRow = (label: string, bytes: string, sectionName: string): void => {
-      describe(`When git and tsgit each --remove-section for ${label}`, () => {
-        it('Then the resulting config bytes are identical', async () => {
+    const REMOVE_ROWS: ReadonlyArray<{
+      readonly label: string;
+      readonly bytes: string;
+      readonly sectionName: string;
+    }> = [
+      { label: 'a same-line block (W9)', bytes: '[a] key = v\n', sectionName: 'a' },
+      {
+        label: 'a same-line block before a section (C3)',
+        bytes: '[a] key = v\n\tk2=w\n[c]\n\tk3=x\n',
+        sectionName: 'a',
+      },
+      {
+        label: 'one of two same-line blocks (C5)',
+        bytes: '[a] k1 = v1\n[b] k2 = v2\n',
+        sectionName: 'a',
+      },
+      {
+        label: 'a section below an orphan line (N7)',
+        bytes: 'o = 1\n[a]\n\tk = v\n',
+        sectionName: 'a',
+      },
+      {
+        label: 'a bad-key sibling block (D2b)',
+        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
+        sectionName: 'b',
+      },
+      {
+        label: 'a malformed-value sibling block (D2d)',
+        bytes: '[a]\n\tk = "unclosed\n[b]\n\tk = w\n',
+        sectionName: 'b',
+      },
+    ];
+
+    describe('When git and tsgit each --remove-section', () => {
+      it.each(REMOVE_ROWS)(
+        'Then the resulting config bytes are identical for "$label"',
+        async ({ bytes, sectionName }) => {
           // Arrange
           const { peerConfigPath } = await seedTwinConfigs(pair, bytes);
 
@@ -2692,27 +2742,10 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
           // Assert
           const { oursConfig, peerConfig } = await readTwinConfigs(pair);
           expect(oursConfig).toBe(peerConfig);
-        }, 60_000);
-      });
-    };
-
-    renameRow('a same-line entry (W8)', '[a] key = v\n', 'a', 'b');
-    renameRow('a same-line entry with a body (R1)', '[a] key = v\n\tk2 = w\n', 'a', 'b');
-    renameRow('a same-line valueless entry (N3)', '[a] key\n', 'a', 'b');
-    renameRow('trailing spaces after the bracket (N4)', '[a]  \n\tk = v\n', 'a', 'b');
-    renameRow('a raw no-space tail (C1)', '[a]   key=v\n', 'a', 'b');
-    renameRow('a trailing comment in the tail (C2)', '[a] key = v ; cmt\n', 'a', 'b');
-    renameRow('a continuation tail (C7)', '[a] key = one\\\n  two\n', 'a', 'b');
-
-    removeRow('a same-line block (W9)', '[a] key = v\n', 'a');
-    removeRow('a same-line block before a section (C3)', '[a] key = v\n\tk2=w\n[c]\n\tk3=x\n', 'a');
-    removeRow('one of two same-line blocks (C5)', '[a] k1 = v1\n[b] k2 = v2\n', 'a');
-    removeRow('a section below an orphan line (N7)', 'o = 1\n[a]\n\tk = v\n', 'a');
-
-    renameRow('a bad-key sibling block (D2a)', '[a]\n\tbad!key = v\n[b]\n\tk = w\n', 'b', 'c');
-    renameRow('the bad-key block itself (D2c)', '[a]\n\tbad!key = v\n[b]\n\tk = w\n', 'a', 'c');
-    removeRow('a bad-key sibling block (D2b)', '[a]\n\tbad!key = v\n[b]\n\tk = w\n', 'b');
-    removeRow('a malformed-value sibling block (D2d)', '[a]\n\tk = "unclosed\n[b]\n\tk = w\n', 'b');
+        },
+        60_000,
+      );
+    });
   });
 
   describe('Given chained section headers on one physical line', () => {

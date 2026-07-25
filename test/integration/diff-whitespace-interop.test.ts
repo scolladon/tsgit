@@ -162,7 +162,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await diff(ctx, {
+        const result = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'all',
@@ -170,8 +170,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
 
         // Assert — W1: no changes survive
-        expect(nameStatusFrom(sut).join('\n')).toBe(liveNames.trim());
-        expect(sut.changes).toHaveLength(0);
+        expect(nameStatusFrom(result).join('\n')).toBe(liveNames.trim());
+        expect(result.changes).toHaveLength(0);
       } finally {
         await pair.dispose();
       }
@@ -200,16 +200,16 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sutAll = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
-        const sutAtEol = await diff(ctx, {
+        const resultAll = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
+        const resultAtEol = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'at-eol',
         });
 
         // Assert — W3: -w drops it, --ignore-space-at-eol keeps it
-        expect(sutAll.changes).toHaveLength(0);
-        expect(sutAtEol.changes).toHaveLength(1);
+        expect(resultAll.changes).toHaveLength(0);
+        expect(resultAtEol.changes).toHaveLength(1);
       } finally {
         await pair.dispose();
       }
@@ -238,16 +238,16 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sutChange = await diff(ctx, {
+        const resultChange = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'change',
         });
-        const sutAll = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
+        const resultAll = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
 
         // Assert — B-none: presence change significant under -b; not under -w
-        expect(sutChange.changes).toHaveLength(1);
-        expect(sutAll.changes).toHaveLength(0);
+        expect(resultChange.changes).toHaveLength(1);
+        expect(resultAll.changes).toHaveLength(0);
       } finally {
         await pair.dispose();
       }
@@ -276,16 +276,16 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sutChange = await diff(ctx, {
+        const resultChange = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'change',
         });
-        const sutAll = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
+        const resultAll = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
 
         // Assert — B-zero: run to zero is presence change for -b; -w ignores removal
-        expect(sutChange.changes).toHaveLength(1);
-        expect(sutAll.changes).toHaveLength(0);
+        expect(resultChange.changes).toHaveLength(1);
+        expect(resultAll.changes).toHaveLength(0);
       } finally {
         await pair.dispose();
       }
@@ -314,20 +314,20 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sutChange = await diff(ctx, {
+        const resultChange = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'change',
         });
-        const sutAtEol = await diff(ctx, {
+        const resultAtEol = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'at-eol',
         });
 
         // Assert — B-amt: amount/kind hidden under -b; at-eol only ignores trailing
-        expect(sutChange.changes).toHaveLength(0);
-        expect(sutAtEol.changes).toHaveLength(1);
+        expect(resultChange.changes).toHaveLength(0);
+        expect(resultAtEol.changes).toHaveLength(1);
       } finally {
         await pair.dispose();
       }
@@ -368,14 +368,14 @@ describe.skipIf(!GIT_AVAILABLE)(
           const c2 = await commit(ctx, { message: 'second', author });
 
           // Act
-          const sut = await diff(ctx, {
+          const result = await diff(ctx, {
             from: c1.id,
             to: c2.id,
             ignoreWhitespace: 'change',
           });
 
           // Assert — internal whitespace-only edit hides entirely under -b
-          expect(sut.changes).toHaveLength(0);
+          expect(result.changes).toHaveLength(0);
         } finally {
           await pair.dispose();
         }
@@ -405,16 +405,16 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sutAtEol = await diff(ctx, {
+        const resultAtEol = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'at-eol',
         });
-        const sutNoMode = await diff(ctx, { from: c1.id, to: c2.id });
+        const resultNoMode = await diff(ctx, { from: c1.id, to: c2.id });
 
         // Assert — EOL1: at-eol drops trailing-ws change; no-mode sees it
-        expect(sutAtEol.changes).toHaveLength(0);
-        expect(sutNoMode.changes).toHaveLength(1);
+        expect(resultAtEol.changes).toHaveLength(0);
+        expect(resultNoMode.changes).toHaveLength(1);
       } finally {
         await pair.dispose();
       }
@@ -443,32 +443,32 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act — CR1: all four modes ignore trailing CR
-        const sutCrAtEol = await diff(ctx, {
+        const resultCrAtEol = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreCrAtEol: true,
         });
-        const sutAtEol = await diff(ctx, {
+        const resultAtEol = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'at-eol',
         });
-        const sutChange = await diff(ctx, {
+        const resultChange = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'change',
         });
-        const sutAll = await diff(ctx, {
+        const resultAll = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'all',
         });
 
         // Assert — all four EOL-touching modes drop the CRLF to LF change
-        expect(sutCrAtEol.changes).toHaveLength(0);
-        expect(sutAtEol.changes).toHaveLength(0);
-        expect(sutChange.changes).toHaveLength(0);
-        expect(sutAll.changes).toHaveLength(0);
+        expect(resultCrAtEol.changes).toHaveLength(0);
+        expect(resultAtEol.changes).toHaveLength(0);
+        expect(resultChange.changes).toHaveLength(0);
+        expect(resultAll.changes).toHaveLength(0);
       } finally {
         await pair.dispose();
       }
@@ -497,20 +497,20 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sutCrAtEol = await diff(ctx, {
+        const resultCrAtEol = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreCrAtEol: true,
         });
-        const sutChange = await diff(ctx, {
+        const resultChange = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreWhitespace: 'change',
         });
 
         // Assert — CR-narrow: mid-line CR is significant; only trailing CR is ignored
-        expect(sutCrAtEol.changes).toHaveLength(1);
-        expect(sutChange.changes).toHaveLength(1);
+        expect(resultCrAtEol.changes).toHaveLength(1);
+        expect(resultChange.changes).toHaveLength(1);
       } finally {
         await pair.dispose();
       }
@@ -548,11 +548,11 @@ describe.skipIf(!GIT_AVAILABLE)(
           withStat: true,
         });
         const lineKey = resolveLineKey({ ignoreWhitespace: 'all' });
-        const sut = await reconstructPatch(ctx, treeDiff, { lineKey });
+        const result = await reconstructPatch(ctx, treeDiff, { lineKey });
 
         // Assert — M1: patch double-pinned; numstat 1 added 1 deleted
-        expect(sut).toBe(live);
-        expect(sut).toBe(golden);
+        expect(result).toBe(live);
+        expect(result).toBe(golden);
         const statChanges = (treeDiff as StatTreeDiff).changes;
         expect(statChanges).toHaveLength(1);
         const statChange = statChanges[0];
@@ -627,7 +627,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           withStat: true,
         });
         const lineKey = resolveLineKey({ ignoreWhitespace: 'all' });
-        const sut = await reconstructPatch(ctx, treeDiff, { lineKey });
+        const result = await reconstructPatch(ctx, treeDiff, { lineKey });
 
         // Assert — D1: only g.txt in change-set; f.txt dropped entirely
         const ns = nameStatusFrom(treeDiff);
@@ -643,8 +643,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(treeDiff.changes.length > 0).toBe(true);
 
         // Patch double-pinned
-        expect(sut).toBe(livePatch);
-        expect(sut).toBe(golden);
+        expect(result).toBe(livePatch);
+        expect(result).toBe(golden);
       } finally {
         await pair.dispose();
       }
@@ -673,10 +673,10 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
+        const result = await diff(ctx, { from: c1.id, to: c2.id, ignoreWhitespace: 'all' });
 
         // Assert — D2: drop holds even without terminating LF
-        expect(sut.changes).toHaveLength(0);
+        expect(result.changes).toHaveLength(0);
       } finally {
         await pair.dispose();
       }
@@ -741,7 +741,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           ignoreBlankLines: true,
           withStat: true,
         });
-        const sut = await reconstructPatch(ctx, treeDiff, { ignoreBlankLines: true });
+        const result = await reconstructPatch(ctx, treeDiff, { ignoreBlankLines: true });
 
         // Assert — BL1: file STAYS in changes (name-status M); numstat omitted; patch empty
         const ns = nameStatusFrom(treeDiff);
@@ -757,9 +757,9 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(treeDiff.changes.length > 0).toBe(true);
 
         // Patch is empty (0 bytes, no diff header)
-        expect(sut).toBe(livePatch);
-        expect(sut).toBe(golden);
-        expect(sut).toBe('');
+        expect(result).toBe(livePatch);
+        expect(result).toBe(golden);
+        expect(result).toBe('');
       } finally {
         await pair.dispose();
       }
@@ -1010,7 +1010,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const c2 = await commit(ctx, { message: 'second', author });
 
         // Act
-        const sut = await diff(ctx, {
+        const result = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           ignoreCrAtEol: true,
@@ -1018,7 +1018,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
 
         // Assert — C2: CR removal hidden; blank insertion hidden => empty change set
-        expect(sut.changes).toHaveLength(0);
+        expect(result.changes).toHaveLength(0);
       } finally {
         await pair.dispose();
       }

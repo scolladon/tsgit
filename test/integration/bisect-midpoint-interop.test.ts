@@ -228,14 +228,13 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
      */
     it('Then all=1 row returns remainingIfGood=-1 matching bisect_good=-1', async () => {
       // Arrange
-      const sut = bisectMidpoint;
       const good = commits[8]!;
       const bad = commits[9]!;
       const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
       const expected = parseBisectVars(gitOut);
 
       // Act
-      const result = await sut(ctx, [good as never], bad as never);
+      const result = await bisectMidpoint(ctx, [good as never], bad as never);
 
       // Assert — bisect_good=-1 is the faithful passthrough for all=1
       expect(result?.nextCommit).toBe(expected.rev);
@@ -252,12 +251,11 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
      */
     it('Then good=[] uses all bad-reachable commits as candidates', async () => {
       // Arrange — all 10 commits are candidates (c0..c9), bad=c9
-      const sut = bisectMidpoint;
       const bad = commits[9]!;
       const gitWinner = git(dir, 'rev-list', '--bisect', bad).trim();
 
       // Act
-      const result = await sut(ctx, [], bad as never);
+      const result = await bisectMidpoint(ctx, [], bad as never);
 
       // Assert — nextCommit matches git rev-list --bisect with no exclusions
       expect(result).not.toBeUndefined();
@@ -286,12 +284,11 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
       'Then tsgit nextCommit matches git rev-list --bisect winner for "$label"',
       async ({ index }) => {
         // Arrange
-        const sut = bisectMidpoint;
         const { dir, ctx, good, bad } = fixtures[index]!;
         const gitWinner = git(dir, 'rev-list', '--bisect', bad, `^${good}`).trim();
 
         // Act
-        const result = await sut(ctx, [good as never], bad as never);
+        const result = await bisectMidpoint(ctx, [good as never], bad as never);
 
         // Assert
         expect(result).not.toBeUndefined();
@@ -303,13 +300,12 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
       'Then tsgit structured counts match git rev-list --bisect-vars for "$label"',
       async ({ index }) => {
         // Arrange
-        const sut = bisectMidpoint;
         const { dir, ctx, good, bad } = fixtures[index]!;
         const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
         const expected = parseBisectVars(gitOut);
 
         // Act
-        const result = await sut(ctx, [good as never], bad as never);
+        const result = await bisectMidpoint(ctx, [good as never], bad as never);
 
         // Assert
         expect(result?.candidateCount).toBe(expected.all);
@@ -338,12 +334,11 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
 
     it('Then bisectMidpoint returns undefined', async () => {
       // Arrange — good=HEAD (c1), bad=c0 (ancestor of good)
-      const sut = bisectMidpoint;
       const head = git(dir, 'rev-parse', 'HEAD').trim();
       const c0 = git(dir, 'rev-parse', 'HEAD~1').trim();
 
       // Act
-      const result = await sut(ctx, [head as never], c0 as never);
+      const result = await bisectMidpoint(ctx, [head as never], c0 as never);
 
       // Assert
       expect(result).toBeUndefined();

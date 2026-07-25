@@ -97,11 +97,11 @@ describe.skipIf(!GIT_AVAILABLE)('integration — recursive (sub-directory) diff 
 
       // Act
       const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-      const sut = await reconstructPatch(ctx, treeDiff);
+      const result = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin.
-      expect(sut).toBe(live);
-      expect(sut).toBe(golden);
+      expect(result).toBe(live);
+      expect(result).toBe(golden);
     } finally {
       await pair.dispose();
     }
@@ -142,11 +142,11 @@ describe.skipIf(!GIT_AVAILABLE)('integration — recursive (sub-directory) diff 
 
       // Act
       const treeDiff = await diff(ctx, { from: c1.id, to: c2.id, recursive: true });
-      const sut = await reconstructPatch(ctx, treeDiff);
+      const result = await reconstructPatch(ctx, treeDiff);
 
       // Assert — double pin.
-      expect(sut).toBe(live);
-      expect(sut).toBe(golden);
+      expect(result).toBe(live);
+      expect(result).toBe(golden);
     } finally {
       await pair.dispose();
     }

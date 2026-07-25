@@ -35,10 +35,10 @@ describe('integration — add --all', () => {
     await ctx.fs.symlink('src/a.ts', `${ctx.layout.workDir}/link`);
 
     // Act
-    const sut = await add(ctx, [], { all: true });
+    const result = await add(ctx, [], { all: true });
 
     // Assert — bulk-mode added paths are sorted and exclude the embedded repo.
-    expect(sut.added).toEqual([
+    expect(result.added).toEqual([
       'README.md',
       'dist/main.js',
       'link',
@@ -46,8 +46,8 @@ describe('integration — add --all', () => {
       'src/a.ts',
       'src/b.ts',
     ]);
-    expect(sut.modified).toEqual([]);
-    expect(sut.removed).toEqual([]);
+    expect(result.modified).toEqual([]);
+    expect(result.removed).toEqual([]);
 
     // On-disk index reflects exactly the same set.
     const idx = await readIndex(ctx);

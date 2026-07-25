@@ -76,12 +76,12 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
         // Act
         const added = await repo.add(['a.txt']);
         runGit(['-C', pair.peer, 'add', 'a.txt']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
         expect(added.added).toEqual(['a.txt']);
       });
     });
@@ -97,12 +97,12 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
         // Act
         await repo.add(['sub']);
         runGit(['-C', pair.peer, 'add', 'sub']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
       });
     });
   });
@@ -119,12 +119,12 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
         // Act
         await repo.add(['a.txt']);
         runGit(['-C', pair.peer, 'add', 'a.txt']);
-        const sut = snapshot(pair.ours);
+        const result = snapshot(pair.ours);
 
         // Assert
         const peer = snapshot(pair.peer);
-        expect(sut.stage).toBe(peer.stage);
-        expect(sut.tree).toBe(peer.tree);
+        expect(result.stage).toBe(peer.stage);
+        expect(result.tree).toBe(peer.tree);
       });
     });
   });
